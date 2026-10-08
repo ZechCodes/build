@@ -32,6 +32,7 @@ fn request(store: &Store, repo: &Path) -> SnapshotRequest {
             isolation: Default::default(),
             managed: false,
             created_by_agent: false,
+            locked: false,
             directories: vec![WorkspaceDirectory {
                 id: "dir-1".into(),
                 source_id: "source-1".into(),

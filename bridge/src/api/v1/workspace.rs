@@ -117,6 +117,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             WorkspaceDetail
         ),
         v1_method!(
+            "workspace.set_locked",
+            workspace_set_locked,
+            WorkspaceSetLockedParams,
+            WorkspaceRow
+        ),
+        v1_method!(
             "workspace.delete",
             workspace_delete,
             WorkspaceIdParams,
@@ -152,6 +158,13 @@ pub struct WorkspaceListParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceIdParams {
     pub workspace_id: String,
+}
+
+/// The user's removal guard. Agents have no corresponding MCP action.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct WorkspaceSetLockedParams {
+    pub workspace_id: String,
+    pub locked: bool,
 }
 
 /// The workspaces whose size on disk the Workspaces tab wants (3.4.0, #273):
@@ -295,6 +308,9 @@ pub struct WorkspaceRow {
     /// Whether an agent created this workspace. Older peers omit the field.
     #[serde(default)]
     pub created_by_agent: bool,
+    /// User-controlled removal guard, additive in wire 3.14.0.
+    #[serde(default)]
+    pub locked: bool,
     /// When a clean-only Done archived the workspace; otherwise `null`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
@@ -641,6 +657,13 @@ fn workspace_rename(
 /// The removal itself runs off the app mutex, but the shape never changes:
 /// the acknowledgement here and the value the drain publishes are the same
 /// `{workspace_id, deleted}`, so no placeholder is needed.
+fn workspace_set_locked(
+    app: &mut AppState,
+    params: WorkspaceSetLockedParams,
+) -> Result<Answer<WorkspaceRow>, ApiError> {
+    answer(app.workspace_set_locked(&params.wire())).map_err(refine)
+}
+
 fn workspace_delete(
     app: &mut AppState,
     params: WorkspaceIdParams,
@@ -744,6 +767,11 @@ mod tests {
     #[test]
     fn the_workspace_rename_fixture_round_trips() {
         round_trips("workspace.rename");
+    }
+
+    #[test]
+    fn the_workspace_set_locked_fixture_round_trips() {
+        round_trips("workspace.set_locked");
     }
 
     #[test]

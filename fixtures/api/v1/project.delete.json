@@ -3,5 +3,5 @@
   "since": "1.0.0",
   "params": { "project_id": "proj-1", "confirm": true },
   "result": { "project_id": "proj-1", "deleted": true },
-  "errors": ["not_found", "conflict", "invalid_params", "unavailable", "internal"]
+  "errors": ["not_found", "conflict", "invalid_params", "unavailable", "locked", "internal"]
 }

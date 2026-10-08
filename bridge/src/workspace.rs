@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::process::Command;
 
+pub const LOCKED_REFUSAL: &str = "Workspace is locked. Unlock it to delete it.";
+
 pub const MANIFEST_FILE: &str = ".build-workspace.json";
 pub(crate) const PENDING_MARKER_FILE: &str = ".build-workspace.pending";
 
@@ -79,6 +81,9 @@ pub struct Workspace {
     /// an agentless workspace stays muted across board pulls and restarts.
     #[serde(default)]
     pub created_by_agent: bool,
+    /// Only the user can change this removal guard. Older manifests are unlocked.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 /// Source snapshot used while provisioning. Remote sources have already been
@@ -337,6 +342,32 @@ impl WorkspaceRegistry {
         Ok(workspace.clone())
     }
 
+    /// Persist the user's removal guard before publishing it in memory. Adopted
+    /// checkouts keep metadata here so their working copies remain untouched.
+    pub fn set_locked(&mut self, id: &str, locked: bool) -> Result<Workspace, String> {
+        let mut workspace = self
+            .workspaces
+            .get(id)
+            .cloned()
+            .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
+        workspace.locked = locked;
+        if workspace.managed {
+            persist(&workspace)?;
+        } else {
+            validate_segment("workspace id", id)?;
+            let directory = self.root.join(".locks");
+            let path = directory.join(id);
+            if locked {
+                fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+                atomic_write(&path, b"locked").map_err(|error| error.to_string())?;
+            } else if path.exists() {
+                fs::remove_file(path).map_err(|error| error.to_string())?;
+            }
+        }
+        self.workspaces.insert(id.to_string(), workspace.clone());
+        Ok(workspace)
+    }
+
     /// Drop one workspace from the index, its root having been removed. The
     /// manifest went with the directory, so the next reload agrees.
     pub(crate) fn forget(&mut self, id: &str) {
@@ -568,6 +599,7 @@ impl WorkspaceRegistry {
             isolation,
             managed: true,
             created_by_agent: false,
+            locked: false,
         };
         Ok(workspace)
     }
@@ -939,6 +971,7 @@ impl WorkspaceRegistry {
             isolation: Isolation::default(),
             managed: false,
             created_by_agent: false,
+            locked: self.root.join(".locks").join(&id).is_file(),
         };
         if let Some(proof) = proof {
             workspace.directories[0].finished_head = proof

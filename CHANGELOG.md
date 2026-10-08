@@ -6,6 +6,18 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## [0.2.13] - Unreleased
+
+Wire 3.14.0.
+
+### Added
+
+- Lock or unlock a workspace from the control beside its name. The persisted
+  lock prevents workspace deletion, Done, reclaim, project deletion, and run
+  cleanup by users or agents until the user unlocks it. Locked workspaces also
+  hold automatic build-output pruning. Agents can inspect the lock but have no
+  MCP action to change it (#398).
+
 ## [0.2.12] - 2026-10-07
 
 Wire 3.13.0.

@@ -255,6 +255,7 @@ impl AppState {
         } else {
             MergeCleanup::Prune
         };
+        self.refuse_locked_merge_cleanup(is_merge_action, cleanup, &bound.worktree.path)?;
         if cleanup == MergeCleanup::Release {
             if let Some(workspace_id) = self.surviving_workspace_of_run(&run_id) {
                 return Err(format!(
@@ -410,8 +411,26 @@ impl AppState {
         Ok(view)
     }
 
+    /// Validate destructive merge cleanup before committing or merging. Other
+    /// Git actions and a merge that keeps its checkout remain available.
+    fn refuse_locked_merge_cleanup(
+        &self,
+        is_merge: bool,
+        cleanup: MergeCleanup,
+        path: &std::path::Path,
+    ) -> Result<(), String> {
+        if is_merge && cleanup == MergeCleanup::Prune {
+            self.refuse_removing_locked_workspace_at(path)?;
+        }
+        Ok(())
+    }
+
     /// Prune a merged run's worktree once its `Merged` verdict is durable.
     pub(in crate::app) fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
+        if let Err(error) = self.refuse_removing_locked_workspace_at(&worktree.path) {
+            eprintln!("merge cleanup kept {}: {error}", worktree.path.display());
+            return;
+        }
         if let Ok(orch) = self.orch_for(project_id) {
             orch.discard_checkout(worktree, /* keep_branch */ false);
         }

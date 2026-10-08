@@ -92,6 +92,7 @@
     "not_found",
     "invalid_params",
     "conflict",
+    "locked",
     "internal"
   ]
 }

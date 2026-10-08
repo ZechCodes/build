@@ -199,7 +199,7 @@ fn scoped_uploads_and_directory_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.13.0");
+    assert_eq!(API_VERSION, "3.14.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -209,6 +209,85 @@ fn media_page_features_are_announced_together() {
         .unwrap()
         .iter()
         .any(|entry| entry == "thread.attachmentChunks"));
+}
+
+#[test]
+fn workspace_lock_is_an_announced_typed_boolean_mutation() {
+    assert!(capabilities(false).contains(&"workspace.set_locked"));
+    let fixture = read_json(&fixtures_root().join("v1/workspace.set_locked.json"));
+    assert_eq!(fixture["since"], "3.14.0");
+    assert_eq!(fixture["params"]["locked"], true);
+    assert_eq!(fixture["result"]["locked"], true);
+    assert_eq!(
+        fixture["result"]["workspace_id"],
+        fixture["params"]["workspace_id"]
+    );
+    let (_, handler) = v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "workspace.set_locked")
+        .expect("workspace lock has a typed handler");
+    for locked in [true, false] {
+        let mut params = fixture["params"].clone();
+        params["locked"] = serde_json::json!(locked);
+        assert!(handler.parse_params(&params).is_ok());
+        let mut result = fixture["result"].clone();
+        result["locked"] = serde_json::json!(locked);
+        assert_eq!(handler.round_trip_result(&result).unwrap(), result);
+    }
+    for invalid in [Value::Null, serde_json::json!("true"), serde_json::json!(1)] {
+        let mut params = fixture["params"].clone();
+        params["locked"] = invalid;
+        assert!(handler.parse_params(&params).is_err());
+    }
+    for field in ["workspace_id", "locked"] {
+        let mut absent = fixture["params"].clone();
+        absent.as_object_mut().unwrap().remove(field);
+        assert!(handler.parse_params(&absent).is_err());
+    }
+    let mut injected = fixture["params"].clone();
+    injected["root"] = serde_json::json!("/tmp/forged");
+    assert!(handler.parse_params(&injected).is_err());
+}
+
+#[test]
+fn workspace_board_pushes_preserve_the_locked_workspace_row() {
+    let workspaces: Vec<Value> = event_examples()
+        .into_iter()
+        .flat_map(|event| event["items"].as_array().cloned().unwrap_or_default())
+        .flat_map(|item| {
+            item["state"]["workspaces"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .collect();
+    assert!(workspaces.iter().any(|row| row["locked"] == true));
+    for row in workspaces {
+        let parsed: v1::workspace::WorkspaceListRow = typed(&row, "board workspace");
+        assert_eq!(serde_json::to_value(parsed).unwrap(), row);
+    }
+}
+
+#[test]
+fn workspace_removal_contracts_name_the_locked_refusal() {
+    for method in [
+        "workspace.delete",
+        "workspace.finish",
+        "workspace.reclaim",
+        "project.delete",
+        "run.abandon",
+        "run.git_action",
+    ] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert!(
+            fixture["errors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|code| code == "locked"),
+            "{method}: lock refusal is part of its contract"
+        );
+    }
 }
 
 #[test]

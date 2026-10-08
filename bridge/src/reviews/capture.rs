@@ -384,6 +384,7 @@ mod tests {
             isolation: Default::default(),
             managed: false,
             created_by_agent: false,
+            locked: false,
         }
     }
 

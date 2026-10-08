@@ -301,10 +301,15 @@ impl AppState {
         if self.workspaces.get(&workspace_id).is_none() {
             self.adopt_legacy_workspaces();
         }
-        self.workspaces
+        let workspace = self
+            .workspaces
             .get(&workspace_id)
             .cloned()
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))
+            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        if workspace.locked {
+            return Err(crate::workspace::LOCKED_REFUSAL.to_string());
+        }
+        Ok(workspace)
     }
 
     /// Stop everything standing in this workspace and hand its removal to the
@@ -368,6 +373,9 @@ impl AppState {
         &self,
         workspace: &Workspace,
     ) -> Result<WorkspaceBoundary, String> {
+        if workspace.locked {
+            return Err(crate::workspace::LOCKED_REFUSAL.to_string());
+        }
         if !workspace.managed {
             return Err(
                 "Build cannot remove an adopted checkout. Only workspaces Build created can be deleted."

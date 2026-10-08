@@ -16,13 +16,38 @@ mod validation;
 
 pub fn methods() -> &'static [(&'static str, super::Handler)] {
     v1_methods![
-        v1_method!("tasks.review.open", open, ReviewOpenParams, ReviewOpenResult),
-        v1_method!("tasks.review.push", push, ReviewPushParams, ReviewPushResult),
-        v1_method!("tasks.review.update", update, ReviewUpdateParams, ReviewResult),
+        v1_method!(
+            "tasks.review.open",
+            open,
+            ReviewOpenParams,
+            ReviewOpenResult
+        ),
+        v1_method!(
+            "tasks.review.push",
+            push,
+            ReviewPushParams,
+            ReviewPushResult
+        ),
+        v1_method!(
+            "tasks.review.update",
+            update,
+            ReviewUpdateParams,
+            ReviewResult
+        ),
         v1_method!("tasks.review.merge", merge, ReviewMergeParams, ReviewResult),
         v1_method!("tasks.review.close", close, ReviewCloseParams, ReviewResult),
-        v1_method!("tasks.review.reopen", reopen, ReviewVersionParams, ReviewResult),
-        v1_method!("tasks.review.refresh", refresh, ReviewVersionParams, ReviewResult),
+        v1_method!(
+            "tasks.review.reopen",
+            reopen,
+            ReviewVersionParams,
+            ReviewResult
+        ),
+        v1_method!(
+            "tasks.review.refresh",
+            refresh,
+            ReviewVersionParams,
+            ReviewResult
+        ),
         v1_method!(
             "tasks.review.snapshot",
             snapshot,
@@ -106,13 +131,14 @@ impl ReviewReviewer {
         match self {
             Self::User => crate::tracker::Assignee::User,
             Self::ProjectAgent => crate::tracker::Assignee::ProjectAgent,
-            Self::Agent { agent_id } => crate::tracker::Assignee::Agent { agent_id: agent_id.clone() },
+            Self::Agent { agent_id } => crate::tracker::Assignee::Agent {
+                agent_id: agent_id.clone(),
+            },
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewOpenParams {
     pub workspace_id: String,
     pub request_id: String,
@@ -138,7 +164,6 @@ pub struct ReviewPushSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewPushParams {
     pub task_id: String,
     pub expected_version: u64,
@@ -146,7 +171,6 @@ pub struct ReviewPushParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewUpdateParams {
     pub task_id: String,
     pub expected_version: u64,
@@ -170,7 +194,6 @@ pub struct ReviewMergeSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewMergeParams {
     pub task_id: String,
     pub expected_version: u64,
@@ -179,7 +202,6 @@ pub struct ReviewMergeParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewCloseParams {
     pub task_id: String,
     pub expected_version: u64,
@@ -187,7 +209,6 @@ pub struct ReviewCloseParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct ReviewVersionParams {
     pub task_id: String,
     pub expected_version: u64,
@@ -219,15 +240,24 @@ pub struct ReviewPushResult {
     pub recovery: Option<String>,
 }
 
-fn open(app: &mut AppState, params: ReviewOpenParams) -> Result<Answer<ReviewOpenResult>, ApiError> {
+fn open(
+    app: &mut AppState,
+    params: ReviewOpenParams,
+) -> Result<Answer<ReviewOpenResult>, ApiError> {
     answer(app.review_open(params, Actor::User))
 }
 
-fn push(app: &mut AppState, params: ReviewPushParams) -> Result<Answer<ReviewPushResult>, ApiError> {
+fn push(
+    app: &mut AppState,
+    params: ReviewPushParams,
+) -> Result<Answer<ReviewPushResult>, ApiError> {
     answer(app.review_push(params, Actor::User))
 }
 
-fn update(app: &mut AppState, params: ReviewUpdateParams) -> Result<Answer<ReviewResult>, ApiError> {
+fn update(
+    app: &mut AppState,
+    params: ReviewUpdateParams,
+) -> Result<Answer<ReviewResult>, ApiError> {
     answer(app.review_update(params, Actor::User))
 }
 
@@ -239,11 +269,17 @@ fn close(app: &mut AppState, params: ReviewCloseParams) -> Result<Answer<ReviewR
     answer(app.review_close(params, Actor::User))
 }
 
-fn reopen(app: &mut AppState, params: ReviewVersionParams) -> Result<Answer<ReviewResult>, ApiError> {
+fn reopen(
+    app: &mut AppState,
+    params: ReviewVersionParams,
+) -> Result<Answer<ReviewResult>, ApiError> {
     answer(app.review_reopen(params, Actor::User))
 }
 
-fn refresh(app: &mut AppState, params: ReviewVersionParams) -> Result<Answer<ReviewResult>, ApiError> {
+fn refresh(
+    app: &mut AppState,
+    params: ReviewVersionParams,
+) -> Result<Answer<ReviewResult>, ApiError> {
     answer(app.review_refresh(params, Actor::User))
 }
 
@@ -283,11 +319,18 @@ mod tests {
 
     #[test]
     fn pull_request_verbs_are_registered_and_refuse_undeclared_parameters() {
-        for verb in ["open", "push", "update", "merge", "close", "reopen", "refresh"] {
+        for verb in [
+            "open", "push", "update", "merge", "close", "reopen", "refresh",
+        ] {
             let name = format!("tasks.review.{verb}");
-            let handler = methods().iter().find(|(method, _)| *method == name)
+            let handler = methods()
+                .iter()
+                .find(|(method, _)| *method == name)
                 .unwrap_or_else(|| panic!("missing {name}"));
-            assert!(handler.1.parse_params(&json!({"author": {"kind":"user"}, "path":"/tmp/repo"})).is_err());
+            assert!(handler
+                .1
+                .parse_params(&json!({"author": {"kind":"user"}, "path":"/tmp/repo"}))
+                .is_err());
         }
     }
 }

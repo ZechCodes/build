@@ -32,14 +32,20 @@ fn selections<'a>(ids: impl Iterator<Item = &'a str>, required: bool) -> Result<
 }
 
 fn branch(value: &str) -> Result<(), String> {
-    if value.trim().is_empty() || value.len() > 1_024 || !git2::Reference::is_valid_name(&crate::isolation::local_branch_ref(value)) {
+    if value.trim().is_empty()
+        || value.len() > 1_024
+        || !git2::Reference::is_valid_name(&crate::isolation::local_branch_ref(value))
+    {
         return Err(invalid("branch must name a local Git branch"));
     }
     Ok(())
 }
 
 fn bases(values: &[ReviewBaseSelection], required: bool) -> Result<(), String> {
-    selections(values.iter().map(|value| value.directory_id.as_str()), required)?;
+    selections(
+        values.iter().map(|value| value.directory_id.as_str()),
+        required,
+    )?;
     values.iter().try_for_each(|value| branch(&value.branch))
 }
 
@@ -47,8 +53,13 @@ impl ReviewOpenParams {
     pub fn validate(&self) -> Result<(), String> {
         identifier(&self.workspace_id)?;
         identifier(&self.request_id)?;
-        if self.title.trim().is_empty() || self.title.len() > crate::tracker::MAX_TITLE_BYTES || self.title.contains(['\n', '\r', '\0']) {
-            return Err(invalid("title must be a nonempty single line of at most 200 bytes"));
+        if self.title.trim().is_empty()
+            || self.title.len() > crate::tracker::MAX_TITLE_BYTES
+            || self.title.contains(['\n', '\r', '\0'])
+        {
+            return Err(invalid(
+                "title must be a nonempty single line of at most 200 bytes",
+            ));
         }
         if self.description.len() > crate::tracker::MAX_BODY_BYTES {
             return Err(invalid("description must be at most 32000 bytes"));
@@ -57,14 +68,22 @@ impl ReviewOpenParams {
             identifier(agent_id)?;
         }
         bases(&self.bases, false)?;
-        selections(self.excluded_git_directory_ids.iter().map(String::as_str), false)
+        selections(
+            self.excluded_git_directory_ids.iter().map(String::as_str),
+            false,
+        )
     }
 }
 
 impl ReviewPushParams {
     pub fn validate(&self) -> Result<(), String> {
         identifier(&self.task_id)?;
-        selections(self.sources.iter().map(|source| source.directory_id.as_str()), true)?;
+        selections(
+            self.sources
+                .iter()
+                .map(|source| source.directory_id.as_str()),
+            true,
+        )?;
         for source in &self.sources {
             oid(&source.expected_head)?;
             if let Some(received) = &source.expected_received_head {
@@ -86,7 +105,12 @@ impl ReviewMergeParams {
     pub fn validate(&self) -> Result<(), String> {
         identifier(&self.task_id)?;
         identifier(&self.snapshot_id)?;
-        selections(self.sources.iter().map(|source| source.directory_id.as_str()), true)?;
+        selections(
+            self.sources
+                .iter()
+                .map(|source| source.directory_id.as_str()),
+            true,
+        )?;
         for source in &self.sources {
             oid(&source.expected_base_head)?;
             if let Some(push) = &source.push {
@@ -101,8 +125,9 @@ impl ReviewMergeParams {
 impl ReviewCloseParams {
     pub fn validate(&self) -> Result<(), String> {
         identifier(&self.task_id)?;
-        crate::reviews::records::review_description(&self.description)
-            .ok_or_else(|| invalid("description must contain 1 to 2000 UTF-8 bytes after trimming"))?;
+        crate::reviews::records::review_description(&self.description).ok_or_else(|| {
+            invalid("description must contain 1 to 2000 UTF-8 bytes after trimming")
+        })?;
         Ok(())
     }
 }

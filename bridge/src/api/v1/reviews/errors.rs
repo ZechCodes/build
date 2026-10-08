@@ -12,9 +12,22 @@ struct Refusal {
     details: Value,
 }
 
-pub(crate) fn encode(code: &str, message: impl Into<String>, details: Value) -> String {
-    let refusal = Refusal { code: code.into(), message: message.into(), details };
-    format!("{PREFIX}{}", serde_json::to_string(&refusal).expect("refusal serializes"))
+pub(crate) fn encode(code: &str, message: impl Into<String>, mut details: Value) -> String {
+    let message = message.into();
+    if let Some(details) = details.as_object_mut() {
+        details
+            .entry("reason")
+            .or_insert_with(|| Value::String(reason(&message).unwrap_or(code).into()));
+    }
+    let refusal = Refusal {
+        code: code.into(),
+        message,
+        details,
+    };
+    format!(
+        "{PREFIX}{}",
+        serde_json::to_string(&refusal).expect("refusal serializes")
+    )
 }
 
 pub(crate) fn decode(message: &str) -> Option<ApiError> {
@@ -37,29 +50,83 @@ pub(crate) fn service(message: String, details: Value) -> String {
         return message;
     }
     let code = service_code(&message);
-    encode(code, crate::source_sync::without_credentials(&message), details)
+    encode(
+        code,
+        crate::source_sync::without_credentials(&message),
+        details,
+    )
 }
 
 fn service_code(message: &str) -> &str {
-    if message.starts_with("stale") {
-        return "stale_version";
+    if let Some((_, code, _)) = REFUSALS
+        .iter()
+        .find(|(needle, _, _)| message.contains(needle))
+    {
+        return code;
     }
-    if message.contains("already running") || message.starts_with("busy:") || message == crate::reclaim::BUSY || message == crate::reclaim::RESERVED {
+    if message == crate::reclaim::BUSY || message == crate::reclaim::RESERVED {
         return "busy";
     }
-    if message.starts_with("unknown ") {
-        return "not_found";
+    let prefixes = [
+        ("stale", "stale_version"),
+        ("unknown ", "not_found"),
+        ("invalid review params:", "invalid_params"),
+        ("conflict:", "conflict"),
+        ("invalid pull request:", "conflict"),
+        ("busy:", "busy"),
+        ("only Closed", "conflict"),
+        ("review request ", "conflict"),
+        ("restore ", "unavailable"),
+    ];
+    if let Some((_, code)) = prefixes
+        .iter()
+        .find(|(prefix, _)| message.starts_with(prefix))
+    {
+        return code;
     }
-    if message.starts_with("invalid review params:") {
-        return "invalid_params";
-    }
-    if message.starts_with("conflict:") || message.starts_with("invalid pull request:") || message.contains("already belongs to active PR") || message.contains("changed") || message.contains("before reopening") || message.starts_with("only Closed") || message.contains("unrelated") || message.contains("base branch") || message.contains("mid-operation") || message.contains("in-progress Git") || message.contains("is already completed") || message.starts_with("review request ") {
-        return "conflict";
-    }
-    if message.starts_with("unavailable:") || message.contains("unavailable") || message.contains("missing") || message.starts_with("restore ") {
-        return "unavailable";
-    }
-    "internal"
+    let phrases = [
+        ("changed", "conflict"),
+        ("unrelated", "conflict"),
+        ("base branch", "conflict"),
+        ("mid-operation", "conflict"),
+        ("before reopening", "conflict"),
+        ("is already completed", "conflict"),
+        ("unavailable", "unavailable"),
+        ("missing", "unavailable"),
+    ];
+    phrases
+        .iter()
+        .find(|(phrase, _)| message.contains(phrase))
+        .map_or("internal", |(_, code)| code)
+}
+
+const REFUSALS: &[(&str, &str, &str)] = &[
+    (
+        "dedicated review branch already exists",
+        "conflict",
+        "branch_collision",
+    ),
+    (
+        "dedicated review branch and stable task suffix are already reserved",
+        "conflict",
+        "branch_collision",
+    ),
+    ("Git operation in progress", "busy", "git_operation"),
+    ("in-progress Git", "busy", "git_operation"),
+    ("already running", "busy", "operation_running"),
+    ("review base unavailable", "conflict", "missing_base"),
+    (
+        "already belongs to active PR",
+        "conflict",
+        "active_workspace_review",
+    ),
+];
+
+fn reason(message: &str) -> Option<&'static str> {
+    REFUSALS
+        .iter()
+        .find(|(needle, _, _)| message.contains(needle))
+        .map(|(_, _, reason)| *reason)
 }
 
 #[cfg(test)]
@@ -69,9 +136,47 @@ mod tests {
 
     #[test]
     fn structured_refusals_survive_the_deferred_boundary() {
-        let error = ApiError::classify(encode("conflict", "received ref changed", json!({"directory_id":"dir-1","recovery":"Refresh the published review"})));
+        let error = ApiError::classify(encode(
+            "conflict",
+            "received ref changed",
+            json!({"directory_id":"dir-1","recovery":"Refresh the published review"}),
+        ));
         assert_eq!(error.code(), "conflict");
         assert_eq!(error.details().unwrap()["directory_id"], "dir-1");
         assert!(!error.retryable());
+    }
+
+    #[test]
+    fn landed_pr_service_refusals_have_directory_recovery_details_and_stable_codes() {
+        for (message, code, reason) in [
+            (
+                "dedicated review branch already exists for task: task-1",
+                "conflict",
+                "branch_collision",
+            ),
+            (
+                "review repository has a Git operation in progress",
+                "busy",
+                "git_operation",
+            ),
+            (
+                "source review base unavailable: reference not found",
+                "conflict",
+                "missing_base",
+            ),
+            (
+                "workspace workspace-1 already belongs to active PR task-1",
+                "conflict",
+                "active_workspace_review",
+            ),
+        ] {
+            let error = ApiError::classify(service(
+                message.into(),
+                json!({"directory_id":"dir-1","recovery":"Resolve the reported state and refresh."}),
+            ));
+            assert_eq!(error.code(), code, "{message}");
+            assert_eq!(error.details().unwrap()["reason"], reason, "{message}");
+            assert_eq!(error.details().unwrap()["directory_id"], "dir-1");
+        }
     }
 }

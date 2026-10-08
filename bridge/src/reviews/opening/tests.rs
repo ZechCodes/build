@@ -342,6 +342,58 @@ fn cancel_restores_original_branch_and_teardown_and_keeps_other_remote_settings(
 }
 
 #[test]
+fn retry_and_cancel_refuse_a_replaced_workspace_directory() {
+    let (home, source) = init_repo();
+    let store = Store::new(home.path().join("db")).unwrap();
+    let mut request = request(home.path(), &source);
+    let original_path = request.workspace.directories[0].path.clone();
+    let mut checks = hooks();
+    checks.fail_at = Some(OpeningStep::RefReceived);
+    assert!(open(&store, &request, &checks).is_err());
+    let opening = store
+        .load_review_opening(&request.project_path, &request.request_id)
+        .unwrap()
+        .unwrap();
+    let replacement = request.workspace.root.join("replacement");
+    git_in(
+        &source,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "build/replacement",
+            replacement.to_str().unwrap(),
+        ],
+    );
+    request.workspace.directories[0].path = replacement.clone();
+    for error in [
+        open(&store, &request, &hooks()).unwrap_err(),
+        cancel(&store, &request, &hooks()).unwrap_err(),
+    ] {
+        assert!(error.contains("placement changed"), "{error}");
+    }
+    let original = git2::Repository::open(&original_path).unwrap();
+    assert_eq!(
+        original.head().unwrap().name(),
+        Some(opening.bindings[0].dedicated_branch_ref.as_str())
+    );
+    assert!(original
+        .find_remote(&opening.bindings[0].remote_name)
+        .is_ok());
+    let replacement = git2::Repository::open(replacement).unwrap();
+    assert_eq!(
+        replacement.head().unwrap().name(),
+        Some("refs/heads/build/replacement")
+    );
+    assert!(store.load_tracker_task(&opening.task.id).unwrap().is_none());
+    request.workspace.directories[0].path = original_path;
+    assert_eq!(
+        open(&store, &request, &hooks()).unwrap().task.id,
+        opening.task.id
+    );
+}
+
+#[test]
 fn cancel_retains_an_externally_advanced_branch_and_the_recoverable_claim() {
     let (home, source) = init_repo();
     let store = Store::new(home.path().join("db")).unwrap();

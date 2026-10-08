@@ -28,6 +28,21 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
+  it("announces PR mutations and their shared feature while retaining Snapshot verbs", () => {
+    const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
+    expect(greeting.result.api_version).toBe("3.15.0");
+    expect(greeting.result.capabilities).toContain("tasks.pullRequests");
+    for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {
+      const method = `tasks.review.${verb}`;
+      expect(greeting.result.capabilities).toContain(method);
+      const fixture = methodFixtures.find(({ body }) => body.method === method)?.body;
+      expect(fixture?.since, method).toBe("3.15.0");
+    }
+    for (const verb of ["snapshot", "get", "diff", "act", "complete"]) {
+      expect(greeting.result.capabilities).toContain(`tasks.review.${verb}`);
+    }
+  });
+
   it("keeps review snapshots and Git actions independently gated", () => {
     for (const verb of ["snapshot", "get", "diff", "complete"]) {
       const fixture = methodFixtures.find(({ body }) => body.method === `tasks.review.${verb}`).body;

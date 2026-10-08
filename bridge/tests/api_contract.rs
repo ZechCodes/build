@@ -199,7 +199,7 @@ fn scoped_uploads_and_directory_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.14.0");
+    assert_eq!(API_VERSION, "3.15.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -318,6 +318,23 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
         blob["result"]["range"]["version"].as_str().unwrap().len(),
         40
     );
+}
+
+#[test]
+fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
+    let advertised = capabilities(false);
+    assert_eq!(API_VERSION, "3.15.0");
+    assert!(advertised.contains(&"tasks.pullRequests"));
+    for verb in ["open", "push", "update", "merge", "close", "reopen", "refresh"] {
+        let method = format!("tasks.review.{verb}");
+        assert!(advertised.contains(&method.as_str()), "{method}: not announced");
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["since"], "3.15.0");
+    }
+    for verb in ["snapshot", "get", "diff", "act", "complete"] {
+        let method = format!("tasks.review.{verb}");
+        assert!(advertised.contains(&method.as_str()), "{method}: retired");
+    }
 }
 
 #[test]

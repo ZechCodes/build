@@ -13,6 +13,6 @@
   cursor: pointer;
 }
 .workspace-lock-toggle svg { width: 1em; height: 1em; }
-.workspace-lock-toggle:hover { color: var(--ink2); }
+.workspace-lock-toggle:not(:disabled):hover { color: var(--ink2); }
 .workspace-lock-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .workspace-lock-toggle:disabled { opacity: 0.5; cursor: default; }

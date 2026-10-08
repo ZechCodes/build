@@ -1,4 +1,6 @@
 //! Always-on review synchronization, independent of subscriptions.
+#[cfg(test)]
+mod rebase_tests;
 pub(crate) mod reconcile;
 mod scheduler;
 #[cfg(test)]

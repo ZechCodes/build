@@ -25,6 +25,11 @@ impl Scheduler {
             failures: 0,
             queued: false,
         });
+        // Polling recovers idle tasks, but must not shorten an event's
+        // debounce window or an already queued retry deadline.
+        if immediate && entry.queued {
+            return;
+        }
         if !entry.queued {
             entry.first = now;
         }
@@ -97,5 +102,21 @@ mod tests {
         scheduler.enqueue("bad".into(), start, true);
         assert_eq!(scheduler.ready(start, 8), ["good"]);
         assert_eq!(scheduler.ready(start + Duration::from_secs(2), 8), ["bad"]);
+    }
+    #[test]
+    fn periodic_poll_preserves_an_active_event_quiet_window() {
+        let mut scheduler = Scheduler::default();
+        let start = Instant::now();
+        scheduler.enqueue("task".into(), start, false);
+        scheduler.enqueue("task".into(), start + Duration::from_millis(100), true);
+        assert!(scheduler
+            .ready(start + Duration::from_millis(100), 8)
+            .is_empty());
+        assert!(scheduler
+            .ready(start + Duration::from_millis(499), 8)
+            .is_empty());
+        assert_eq!(scheduler.ready(start + QUIET, 8), ["task"]);
+        scheduler.enqueue("task".into(), start + Duration::from_secs(1), true);
+        assert_eq!(scheduler.ready(start + Duration::from_secs(1), 8), ["task"]);
     }
 }

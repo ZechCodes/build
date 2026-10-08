@@ -286,6 +286,25 @@
           "task_id": "task-1"
         }
       }
+    },
+    {
+      "review_status": "merged",
+      "params": {
+        "task_id": "task-1",
+        "expected_version": 7
+      },
+      "reply": {
+        "id": 405,
+        "ok": false,
+        "error": "Only Closed unmerged PRs can reopen",
+        "error_code": "conflict",
+        "retryable": false,
+        "details": {
+          "reason": "conflict",
+          "task_id": "task-1",
+          "recovery": "Open a new PR after merge."
+        }
+      }
     }
   ]
 }

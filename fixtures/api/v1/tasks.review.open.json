@@ -503,6 +503,37 @@
           "recovery": "Use the linked review task, or close it before opening another review."
         }
       }
+    },
+    {
+      "note": "A dedicated branch collision in a workspace with one Git directory does not adopt or overwrite that branch.",
+      "params": {
+        "workspace_id": "workspace-1",
+        "request_id": "open-review-1",
+        "title": "Review API and UI changes",
+        "description": "Publish the committed API and UI changes.",
+        "reviewer": {
+          "kind": "project_agent"
+        },
+        "bases": [
+          {
+            "directory_id": "dir-api",
+            "branch": "main"
+          }
+        ]
+      },
+      "reply": {
+        "id": 405,
+        "ok": false,
+        "error": "dedicated review branch already exists for task: task-1",
+        "error_code": "conflict",
+        "retryable": false,
+        "details": {
+          "reason": "branch_collision",
+          "workspace_id": "workspace-1",
+          "directory_id": "dir-api",
+          "recovery": "Restore the selected workspace and source placement, then retry the same request_id to resume or read its published result."
+        }
+      }
     }
   ]
 }

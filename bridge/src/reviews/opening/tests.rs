@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod preflight;
+
 struct Hooks {
     dispatches: AtomicUsize,
     fail_at: Option<OpeningStep>,
@@ -652,4 +654,88 @@ fn explicit_history_deletion_releases_receiver_head_base_and_target_pins() {
         .find_reference(&saved.review.bindings[0].receiving_ref)
         .is_ok());
     assert!(store.load_review(&saved.task.id).unwrap().is_none());
+}
+
+#[test]
+fn cancel_preserves_all_setup_and_claim_when_original_branch_has_another_holder() {
+    let (home, source) = init_repo();
+    let store = Store::new(home.path().join("db")).unwrap();
+    let request = request(home.path(), &source);
+    let mut checks = hooks();
+    checks.fail_at = Some(OpeningStep::SnapshotPinned);
+    assert!(open(&store, &request, &checks).is_err());
+    let opening = store
+        .load_review_opening(&request.project_path, &request.request_id)
+        .unwrap()
+        .unwrap();
+    let binding = &opening.bindings[0];
+    let holder = home.path().join("original-holder");
+    git_in(
+        &source,
+        &["worktree", "add", holder.to_str().unwrap(), "build/work"],
+    );
+    let working = git2::Repository::open(&binding.working_repository).unwrap();
+    let config = std::fs::read(working.commondir().join("config")).unwrap();
+    let receiver = git2::Repository::open_bare(&binding.receiving_repository).unwrap();
+    let saved_refs = || {
+        receiver
+            .references()
+            .unwrap()
+            .map(|reference| {
+                let reference = reference.unwrap();
+                (
+                    reference.name().unwrap().to_owned(),
+                    reference.target().unwrap(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let refs = saved_refs();
+    assert_eq!(
+        refs.keys()
+            .filter(|name| name.starts_with("refs/build/reviews/"))
+            .count(),
+        3
+    );
+    let error = cancel(&store, &request, &hooks()).unwrap_err();
+    assert!(
+        error.contains("original") && error.contains("build/work"),
+        "{error}"
+    );
+    assert_eq!(
+        working.head().unwrap().name(),
+        Some(binding.dedicated_branch_ref.as_str())
+    );
+    assert!(working
+        .find_reference(&binding.dedicated_branch_ref)
+        .is_ok());
+    assert_eq!(
+        std::fs::read(working.commondir().join("config")).unwrap(),
+        config
+    );
+    assert_eq!(saved_refs(), refs);
+    assert_eq!(
+        crate::isolation::branch_teardown(&binding.working_repository).unwrap(),
+        BranchTeardown::KeepsBranch
+    );
+    assert!(store
+        .load_review_opening(&request.project_path, &request.request_id)
+        .unwrap()
+        .unwrap()
+        .state
+        .is_claiming_workspace());
+    assert!(store
+        .reserve_review_opening(
+            &request.project_path,
+            "competing-request",
+            request.request.clone()
+        )
+        .is_err());
+    git_in(&source, &["worktree", "remove", holder.to_str().unwrap()]);
+    let cancelled = cancel(&store, &request, &hooks()).unwrap();
+    assert_eq!(cancelled.state, ReviewOpeningState::Cancelled);
+    assert_eq!(
+        working.head().unwrap().name(),
+        Some("refs/heads/build/work")
+    );
 }

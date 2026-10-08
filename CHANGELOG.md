@@ -34,6 +34,8 @@ Wire 3.14.0.
 
 ### Fixed
 
+- Recover interrupted initial PR receiving-ref writes and preserve review
+  opening setup when another worktree holds the original branch (#402).
 - Keep long task comments and loaded images in place when ages, references or
   review metadata refresh, and follow new comments when reading at the bottom
   (#410).

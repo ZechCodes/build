@@ -64,6 +64,12 @@ fn unwind(
     hooks: &dyn OpeningHooks,
     opening: &ReviewOpening,
 ) -> Result<(), String> {
+    // A holder or an external branch change must preserve every directory's
+    // setup, including snapshot pins. Validate all branches before any unwind.
+    for binding in &opening.bindings {
+        hooks.check_workspace(&request.workspace)?;
+        git::validate_cleanup(&opening.task.id, &opening.request_id, binding)?;
+    }
     publication::cleanup_opening_pins(
         &opening.task.id,
         &format!("opening-{}", opening.task.id),

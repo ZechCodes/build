@@ -729,6 +729,8 @@ the task, PR header and first snapshot in one store transaction. Failed or
 interrupted preparations retain their recovery claim; retry resumes the same
 identity, and explicit cancellation removes only owned setup at expected
 values. The original workspace branches and dirty index/files are preserved.
+Cancellation checks all original branches for checkout, rebase and bisect
+holders before removing setup, and repeats that check before restoring HEAD.
 `receivers.rs` owns a local bare repository per source repository outside the
 workspace, and `publication.rs` imports and pins explicit committed OIDs there.
 Branch, config and receiver ref writes use registered Git locks that can

@@ -1,7 +1,7 @@
 import "../styles/taskReview.css";
 import { readCached, subscribeCache } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
-import { reviewSupportAddress, readReviewSupport, NO_REVIEW_SUPPORT } from "./taskReviewSupport.js";
+import { reviewSupportAddress, readReviewSupport, reviewSupportFor, NO_REVIEW_SUPPORT } from "./taskReviewSupport.js";
 import { createTaskReviewRepository, reviewAddress } from "./taskReviewCache.js";
 import { reviewSnapshot, reviewDirectory, defaultReviewView, reviewHeadHtml, reviewDirectoryHtml } from "./taskReviewRender.js";
 import { mountTaskReviewControls } from "./taskReviewControls.js";
@@ -62,7 +62,7 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintControls(saved) {
-    const key = JSON.stringify([saved?.id, support.snapshot, support.complete, review()?.state]);
+    const key = JSON.stringify([saved?.id, support.snapshot, support.complete, review()?.state, review()?.mode]);
     if (controlsKey === key) return controls?.update(review(), workspaces());
     controlsKey = key;
     controls?.dispose();
@@ -173,7 +173,7 @@ export function mountTaskReviewPage(host, options) {
     const [cached, capabilities] = await Promise.all([readCached(reviewAddress(scope)), readReviewSupport(deviceId)]);
     if (disposed || serial !== readSerial) return;
     record = cached?.value || null;
-    support = capabilities;
+    support = reviewSupportFor(record?.review, capabilities);
     paint();
   }
   const unwatchRecord = subscribeCache(reviewAddress(scope), () => void hydrate());

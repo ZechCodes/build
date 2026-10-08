@@ -1,0 +1,27 @@
+.workspace-changes-header { flex: 0 0 auto; min-width: 0; }
+.workspace-review-entry { padding: 12px 16px; border-bottom: 1px solid var(--line); min-width: 0; }
+.workspace-review-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.workspace-review-heading h2 { font-size: 16px; margin: 0 auto 0 0; }
+.workspace-review-heading a { overflow-wrap: anywhere; }
+.workspace-review-heading > span { font-size: 12px; color: var(--muted); }
+.workspace-review-badge { padding: 3px 8px; border: 1px solid var(--line); border-radius: 20px; }
+.workspace-review-publication { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; margin-top: 10px; min-width: 0; font-size: 12px; }
+.workspace-review-publication > span { color: var(--muted); overflow-wrap: anywhere; }
+.workspace-review-publication p { margin: 0; overflow-wrap: anywhere; }
+.workspace-review-publication .btn { text-align: left; white-space: normal; max-width: 100%; }
+.workspace-review-destination { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; user-select: text; }
+.workspace-review-modal { max-height: calc(100dvh - 32px); overflow-y: auto; min-width: 0; }
+.workspace-review-modal p, .workspace-review-modal code { overflow-wrap: anywhere; user-select: text; }
+.workspace-review-form { display: grid; gap: 12px; }
+.workspace-review-form > label, .workspace-review-source label { display: grid; gap: 6px; }
+.workspace-review-form input:not([type="checkbox"]), .workspace-review-form textarea, .workspace-review-form select { width: 100%; min-width: 0; box-sizing: border-box; }
+.workspace-review-source { min-width: 0; margin: 10px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.workspace-review-source legend { padding: 0 4px; font-weight: 600; }
+.workspace-review-source .workspace-review-exclude { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.workspace-review-source input[type="checkbox"] { width: auto; flex: none; }
+.workspace-review-form .row { justify-content: flex-end; flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .workspace-review-publication { display: grid; }
+  .workspace-review-publication .btn { width: 100%; }
+  .workspace-review-modal { width: calc(100vw - 32px); box-sizing: border-box; }
+}

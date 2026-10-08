@@ -24,6 +24,7 @@ import { mountGitPane } from "../core/gitPane.js";
 import { mountWorkspaceRefPicker } from "../core/workspaceRefPicker.js";
 import { directoryCacheId } from "../core/directoryScope.js";
 import { deleteCached } from "../core/localCache.js";
+import { mountWorkspaceReviewEntry } from "../core/workspaceReviewEntry.js";
 
 import { directoryTabsHtml, wireDirectoryTabs } from "../core/workspaceDirectoryTabs.js";
 export { directoryTabsHtml, wireDirectoryTabs } from "../core/workspaceDirectoryTabs.js";
@@ -137,10 +138,11 @@ function gatedViewingContext(viewingContext) {
  * repaints the row, and turns a directory's offer into the git surface once its
  * record says it has git.
  */
-export function mountWorkspaceChanges(body, { directories, current, git, viewingContext = null, onSelectDirectory }) {
+export function mountWorkspaceChanges(body, { directories, current, git, review = null, viewingContext = null, onSelectDirectory }) {
   let standing = current;
   const model = () => directories.map((directory) => ({ ...directory, current: directory.sourceId === standing }));
-  body.innerHTML = `<div class="workspace-changes">${directoryTabsHtml(model())}<div class="workspace-changes-body"></div></div>`;
+  body.innerHTML = `<div class="workspace-changes">${review ? '<div class="workspace-changes-header"></div>' : ""}${directoryTabsHtml(model())}<div class="workspace-changes-body"></div></div>`;
+  const reviewEntry = review ? mountWorkspaceReviewEntry(body.querySelector(".workspace-changes-header"), review) : null;
   const host = body.querySelector(".workspace-changes-body");
   const surfaces = new Map(); // source id → { element, pane, gate }
   const directoryOf = (sourceId) => directories.find((directory) => directory.sourceId === sourceId);
@@ -213,6 +215,6 @@ export function mountWorkspaceChanges(body, { directories, current, git, viewing
         if (!hadGit.get(sourceId) && directoryHasGit(directoryOf(sourceId))) paintSurface(surface, sourceId);
       }
     },
-    dispose: () => surfaces.forEach((surface) => surface.pane?.dispose()),
+    dispose() { reviewEntry?.dispose(); surfaces.forEach((surface) => surface.pane?.dispose()); },
   };
 }

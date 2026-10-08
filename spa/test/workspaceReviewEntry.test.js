@@ -2,6 +2,7 @@
 import "fake-indexeddb/auto";
 import { beforeEach, expect, it, vi } from "vitest";
 import { wipeCache } from "../src/core/localCache.js";
+import { writeReviewRecord } from "../src/core/taskReviewCache.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { writeTasksRecord } from "../src/core/trackerCache.js";
 import { mountWorkspaceReviewEntry } from "../src/core/workspaceReviewEntry.js";
@@ -46,4 +47,14 @@ it("keeps the chosen task and shows a failed read without attempting a snapshot"
   await vi.waitFor(() => expect(document.querySelector('[data-workspace-review-error]').textContent).toContain("Machine unavailable"));
   expect(callRpc.mock.calls.map(([method]) => method)).toEqual(["tasks.review.get"]);
   expect(document.querySelector('[data-review-task]').value).toBe("task-1");
+});
+
+it("opens the legacy picker again for a workspace with an attached snapshot review", async () => {
+  await rememberReviewSupport(options.deviceId, { reviews: { get: true, snapshot: true } });
+  await writeTasksRecord(options.deviceId, options.projectId, { tasks: [{ id: "task-1", number: 42, title: "Work" }] });
+  await writeReviewRecord({ ...options, taskId: "task-1" }, { ...fixture.result.review, workspace_id: options.workspaceId }, 1);
+  entry = mountWorkspaceReviewEntry(document.querySelector('#entry'), { ...options, callRpc: vi.fn() });
+  await vi.waitFor(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull());
+  document.querySelector('[data-workspace-review]').click();
+  await vi.waitFor(() => expect(document.querySelector('[data-review-task]')).not.toBeNull());
 });

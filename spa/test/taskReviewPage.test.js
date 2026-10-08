@@ -8,6 +8,7 @@ import { writeReviewRecord } from "../src/core/taskReviewCache.js";
 import { mountTaskReviewPage } from "../src/core/taskReviewPage.js";
 import { writeTaskRecord } from "../src/core/trackerCache.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
+import prFixture from "../../fixtures/api/v1/tasks.review.open.json";
 
 const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn() }));
 vi.mock("../src/core/taskReviewChanges.js", () => ({ mountTaskReviewChanges: (host, options) => {
@@ -27,8 +28,8 @@ beforeEach(async () => {
   page?.dispose(); vi.clearAllMocks(); await wipeCache(); await wipeUiRecords();
   document.body.innerHTML = '<div id="review"></div>';
 });
-async function mount(saved = review) {
-  await rememberReviewSupport(scope.deviceId, { reviews: support });
+async function mount(saved = review, cachedSupport = support) {
+  await rememberReviewSupport(scope.deviceId, { reviews: cachedSupport });
   if (saved) await writeReviewRecord(scope, saved, 1);
   page = mountTaskReviewPage(document.querySelector("#review"), {
     ...scope, callRpc: vi.fn(() => new Promise(() => {})),
@@ -36,6 +37,29 @@ async function mount(saved = review) {
   });
   await vi.waitFor(() => expect(document.querySelector('[data-review-snapshot]')).not.toBeNull());
 }
+
+it("routes cached PRs to read-only controls and suppresses legacy git actions", async () => {
+  const cachedSupport = { ...support, act: true, pullRequests: true, open: true, push: true };
+  await mount(prFixture.result.review, cachedSupport);
+  expect(document.querySelector('[data-review-read-only]').textContent).toContain("Open");
+  expect(document.querySelector('[data-review-save]')).toBeNull();
+  expect(document.querySelector('[data-review-complete]')).toBeNull();
+  expect(document.querySelector('[data-review-act]')).toBeNull();
+  expect(panes.changes).toHaveBeenCalled();
+
+  await writeReviewRecord(scope, { ...prFixture.result.review, version: 2,
+    pull_request: { ...prFixture.result.review.pull_request, status: "approved" } }, 2);
+  await vi.waitFor(() => expect(document.querySelector('[data-review-read-only]').textContent).toContain("Approved"));
+  expect(document.querySelector('[data-review-act]')).toBeNull();
+});
+
+it("keeps legacy snapshot, completion and git action controls on PR-capable devices", async () => {
+  await mount(review, { ...support, act: true, pullRequests: true, open: true, push: true });
+  expect(document.querySelector('[data-review-save]')).not.toBeNull();
+  expect(document.querySelector('[data-review-complete]')).not.toBeNull();
+  expect(document.querySelector('[data-review-act]')).not.toBeNull();
+  expect(document.querySelector('[data-review-read-only]')).toBeNull();
+});
 
 it("renders every saved directory and switches Changes to embedded Files in the same directory", async () => {
   await mount();

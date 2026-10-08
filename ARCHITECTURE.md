@@ -980,13 +980,31 @@ dedicated merge lifecycle service. Existing Snapshot-mode Merge and Push
 behavior is preserved.
 
 The task page embeds the saved review (`spa/src/core/taskReviewPage.js`), with
-every saved directory and Changes/Files views. Workspace Changes can save a
-review on a task (`workspaceReviewEntry.js`). Snapshot/base changes and explicit
-completion live in `taskReviewControls.js`; assigning a reviewer uses the
+every saved directory and Changes/Files views. The Workspace Changes header
+and workspace-name menu open one shared PR creation form
+(`workspaceReviewEntry.js`, `workspaceReviewForm.js`). It selects a reviewer
+and per-directory bases, previews dedicated branches, and retains the exact
+submitted opening in F's durable create draft for explicit recovery. The form
+returns a definitively rejected opening to an editable durable draft; uncertain
+outcomes retain the submitted request. Titles are checked against the bridge's
+200-byte UTF-8 limit before submission. Draft cleanup only changes the matching
+submitted value and write stamp, preserving a newer draft from another tab.
+The header paints the bound PR, snapshots and publication observations from
+cache. Push
+confirms the destination and saved review version, working head and received
+head through F's action draft; a stale request stays pinned until the user
+explicitly selects the latest cached changes. Another branch or a detached
+checkout offers switching back rather than publishing that checkout.
+Reviewed-snapshot notes say changed or rewritten, or remain absent when
+unchanged; an exact commits-since-review count requires a cached observation
+that supplies it. PR task controls show read-only status while lifecycle UI is
+pending. Older bridges and pure-folder workspaces retain the legacy snapshot
+form. Legacy snapshot/base changes and explicit completion live in
+`taskReviewControls.js`; assigning a reviewer uses the
 ordinary assignee picker and a note naming the snapshot. Opinions and line
 comments use `taskReviewFeedback.js` and stay in the task timeline, with no
-reviewer or model restrictions. `taskReviewActions.js` offers separate Merge
-and Push selections for each source, displays destinations and saved/live heads,
+reviewer or model restrictions. For legacy reviews, `taskReviewActions.js` offers
+separate Merge and Push selections for each source, displays destinations and saved/live heads,
 and keeps per-source results visible. Choices and submitted intent live in
 `build-ui`; Git is sent only on an explicit action. Recorded success can finish
 the selected steps' review after reconnect, while a failure or interruption

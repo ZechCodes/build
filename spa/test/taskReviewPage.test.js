@@ -6,6 +6,7 @@ import { wipeUiRecords } from "../src/core/localUiStore.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { writeReviewRecord } from "../src/core/taskReviewCache.js";
 import { mountTaskReviewPage } from "../src/core/taskReviewPage.js";
+import { writeTaskRecord } from "../src/core/trackerCache.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 
 const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn() }));
@@ -74,6 +75,30 @@ it("does not call review verbs or draw actions without cached support", async ()
   await new Promise((resolve) => setTimeout(resolve, 40));
   expect(callRpc).not.toHaveBeenCalled();
   expect(document.querySelector('[data-review-update]')).toBeNull();
+});
+
+it("uses the timeline's cached roster names in a reply draft and updates them when the feed moves", async () => {
+  await rememberReviewSupport(scope.deviceId, { reviews: { ...support, comments: true } });
+  await writeReviewRecord(scope, review, 1);
+  const parent = { type: "comment", id: "tc-parent", author: { kind: "agent", agent_id: "agent-one" }, body: "Parent excerpt" };
+  await writeTaskRecord(scope.deviceId, scope.projectId, scope.taskId, { task: { id: scope.taskId }, timeline: [parent] });
+  const projectKey = `${scope.deviceId}/${scope.projectId}`;
+  const feed = { projects: [{ projectKey, name: "Build" }],
+    workspaces: [{ projectKey, id: "ws", name: "Workspace" }],
+    items: [{ projectKey, entity_id: "ws", agents: [{ id: "agent-one", name: "Ada" }] }] };
+  const callRpc = vi.fn(() => new Promise(() => {}));
+  page = mountTaskReviewPage(document.querySelector("#review"), {
+    ...scope, projectKey, feed: () => feed, callRpc, task: () => ({ id: scope.taskId }),
+  });
+  await vi.waitFor(() => expect(document.querySelector('[data-review-feedback]')).not.toBeNull());
+  await page.reply({ ...parent, id: parent.id });
+  await vi.waitFor(() => expect(document.querySelector('[data-review-target]').textContent).toBe("Replying to Workspace · Ada · Parent excerpt"));
+  const field = document.querySelector('#task-review-feedback-body');
+  feed.items[0].agents[0].name = "Grace";
+  page.feedMoved();
+  expect(document.querySelector('[data-review-target]').textContent).toBe("Replying to Workspace · Grace · Parent excerpt");
+  expect(document.querySelector('#task-review-feedback-body')).toBe(field);
+  expect(callRpc.mock.calls.every(([method]) => method === "tasks.review.get")).toBe(true);
 });
 
 it("refreshes destinations after saving a snapshot whose mutation omits them", async () => {

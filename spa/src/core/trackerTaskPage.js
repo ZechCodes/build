@@ -62,6 +62,7 @@ import { mountNewMessagesPill } from "./newMessagesPill.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { createTaskChecklist } from "./taskChecklist.js";
 import { readTaskChecklistSupport, taskChecklistSupportAddress } from "./taskChecklistSupport.js";
+import { createTaskReplyNavigation } from "./taskCommentReplies.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -81,6 +82,7 @@ export function focusTaskComment(host, commentId, { scroll = true } = {}) {
 
 export function mountTaskPage(host, options) {
   wireReaderMotion(host);
+  const replyNavigation = createTaskReplyNavigation(host);
   const readingPolicy = followConversation();
   let reviewPage = null;
   const state = {
@@ -747,6 +749,7 @@ export function mountTaskPage(host, options) {
   }
 
   function wireReviewComments() {
+    replyNavigation.wire();
     host.querySelectorAll('[data-review-anchor]').forEach((button) => {
       button.onclick = () => void reviewPage?.openAnchor(JSON.parse(button.dataset.reviewAnchor));
     });
@@ -796,6 +799,7 @@ export function mountTaskPage(host, options) {
     feedMoved() { paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
+      replyNavigation.dispose();
       checklist.dispose();
       reviewPage?.dispose();
       commentDraft.dispose();

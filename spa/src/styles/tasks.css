@@ -10,6 +10,8 @@
    than reflowing. A column that wraps under another is not a column, and on a
    phone the reader would lose the only thing the layout is for. */
 
+@import "./taskCommentReplies.css";
+
 /* ---- the tab's own header ------------------------------------------------ */
 
 .task-head {

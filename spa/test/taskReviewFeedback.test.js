@@ -4,6 +4,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { mountTaskReviewFeedback, openTaskReviewer } from "../src/core/taskReviewFeedback.js";
 import { timelineRows } from "../src/core/trackerTimeline.js";
 import { timelineHtml } from "../src/core/trackerTaskRender.js";
+import { writeTaskRecord } from "../src/core/trackerCache.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -24,6 +25,32 @@ const mount = (host, callRpc = vi.fn(async () => ({})), over = {}) => mountTaskR
 beforeEach(() => { document.body.innerHTML = ""; });
 
 describe("task review feedback", () => {
+  it("restores a reply label with its cached parent author and excerpt, and follows cache changes", async () => {
+    const taskId = "reply-label";
+    const parent = { type: "comment", id: "tc-parent", author: { kind: "agent", agent_id: "agent-one" },
+      body: "**Check** `the patch`", created_at: "2026-10-07T10:00:00Z" };
+    const task = { id: taskId, identities: { "agent-one": { name: "Ada" } } };
+    await writeTaskRecord("device", "project", taskId, { task, timeline: [parent] });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const callRpc = vi.fn();
+    const feedback = mount(host, callRpc, { taskId });
+    feedback.comment(null, parent.id);
+    await until(() => host.querySelector('[data-review-target]').textContent.includes("Replying to Ada"));
+    expect(host.querySelector('[data-review-target]').textContent).toContain("Check the patch");
+    expect(host.querySelector('[data-review-target]').textContent).not.toContain(parent.id);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    feedback.dispose();
+    const restored = mount(host, callRpc, { taskId });
+    await until(() => host.querySelector('[data-review-target]').textContent.includes("Replying to Ada"));
+    await writeTaskRecord("device", "project", taskId, { task, timeline: [{ ...parent, body: "New excerpt" }] });
+    await until(() => host.querySelector('[data-review-target]').textContent.includes("New excerpt"));
+    await writeTaskRecord("device", "project", taskId, { task, timeline: [] });
+    await until(() => host.querySelector('[data-review-target]').textContent === "Replying to a comment");
+    expect(callRpc).not.toHaveBeenCalled();
+    restored.dispose();
+  });
+
   it("sends an anchored opinion and reply through the task comment verb", async () => {
     const host = document.createElement("div");
     document.body.append(host);

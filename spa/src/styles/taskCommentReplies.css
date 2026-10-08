@@ -1,0 +1,19 @@
+/* A compact quote: two fixed lines even as the cached author name changes. */
+.tracker-task-comment-reply {
+  display:block; width:100%; min-width:0; min-height:44px;
+  margin:8px 0; padding:6px 10px; border:0; border-left:2px solid var(--line3);
+  border-radius:0 4px 4px 0; background:var(--panel2); color:var(--dim);
+  font:inherit; font-size:12px; line-height:18px; text-align:left;
+}
+.task-reply-head { display:flex; align-items:center; gap:6px; height:18px; min-width:0; }
+.task-reply-head .task-avatar { flex:0 0 18px; width:18px; height:18px; font-size:10px; }
+.task-reply-head .task-avatar.is-project { border-radius:4px; }
+.task-reply-author { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.task-reply-head .task-when { flex:none; margin-left:auto; font-size:11px; }
+.task-reply-excerpt { display:block; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.task-comment-replies {
+  display:block; min-height:32px; margin:6px 0 0; padding:4px 8px;
+  border:0; border-radius:4px; background:none; color:var(--dim); font:inherit; font-size:12px;
+}
+[data-review-target] { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+@media (any-pointer:coarse) { .task-comment-replies { min-height:44px; } }

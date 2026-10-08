@@ -21,6 +21,7 @@ import { composerPartIds } from "./composer.js";
 import { attachmentListHtml } from "./attachmentTiles.js";
 import { ICON_PAPERCLIP } from "./icons.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { commentReplyIndex, commentReplyHtml, commentRepliesHtml } from "./taskCommentReplies.js";
 
 /** The head: what the task is called, and the two facts that are independent
  *  of each other — is it still open, and where does it stand on the board.
@@ -95,20 +96,21 @@ const reviewMetadataHtml = (row, context) => {
   const label = snapshotLabel(snapshotId, context.reviewSnapshots);
   const snapshot = label ? `<span>${label}</span>` : "";
   const place = reviewAnchorHtml(row.anchor);
-  const reply = row.replyTo ? `<span>Reply to ${esc(row.replyTo)}</span>` : "";
-  const empty = !snapshot && !verdict && !place && !reply;
-  return `<div class="task-review-comment-meta"${empty ? " hidden" : ""}>${snapshot}${verdict}${place}${reply}</div>`;
+  const empty = !snapshot && !verdict && !place;
+  return `<div class="task-review-comment-meta"${empty ? " hidden" : ""}>${snapshot}${verdict}${place}</div>`;
 };
 
 /// The id an action line in a conversation lands on: a comment is linked as
 /// `#comment-<id>` (core/trackerActionLine.js), so the row has to answer to it.
-const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}">
+const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}" data-comment-id="${esc(row.key)}">
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
       <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
       ${reviewMetadataHtml(row, context)}
+      ${commentReplyHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context, false, taskMarkdownScope(context, "comment", row.key))}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" }) || '<div class="thread-attachments task-comment-attachments" hidden></div>'}
+      ${commentRepliesHtml(row, context)}
       ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}
     </div>
   </li>`;
@@ -164,9 +166,10 @@ const timelineEntryParts = (row, context) => {
  *  the mounted page patches these entries with the shared keyed list painter. */
 export function timelineParts(rows, context) {
   if (!rows.length) return { frame: `<p class="empty task-empty">Nothing has happened on this task yet.</p>`, rows: [] };
+  const index = commentReplyIndex(rows);
   return {
     frame: '<ul class="task-timeline"></ul>',
-    rows: rows.flatMap((row) => timelineEntryParts(row, context)),
+    rows: rows.flatMap((row) => timelineEntryParts(row, { ...context, replyIndex: index })),
   };
 }
 

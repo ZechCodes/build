@@ -901,9 +901,9 @@ and Push destinations independently of the retrying actor, so a browser can
 resume an agent's intent, including older actor-hashed request IDs. Running or
 interrupted work also keeps its recovery identity.
 
-For a partial plan with known outcomes, an explicit current-version and current-
-target confirmation refreshes admission under the merge lease and receiving/target
-ref locks. Only unresolved target preconditions and admission versions change;
+For a partial plan with known outcomes, explicit confirmation of the current
+version and target tips refreshes admission under the merge lease and receiving
+and target ref locks. Only unresolved target preconditions and admission versions change;
 the request ID, original actor, saved heads, source identities, Push destinations
 and action results remain. Successful sources must remain integrated, and Git
 fences each remaining merge against its confirmed tip. Running or uncertain work

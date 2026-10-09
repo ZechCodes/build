@@ -23,6 +23,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { untilDom } from "./untilCondition.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -147,7 +148,9 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
   history.replaceState(null, "", ROUTE_HASH);
-  Object.assign(wire, { listed: [online], sessions: [], greeting: {}, landing: null });
+  // Nothing lands until a case says so: a dial the last case's app still had
+  // out waits here for ever instead of landing in this case's list.
+  Object.assign(wire, { listed: [online], sessions: [], greeting: {}, landing: new Promise(() => {}) });
   const app = await import("../src/app.js");
   modules = {
     app,
@@ -222,7 +225,7 @@ async function reloadOntoRoute() {
   app.initRouter();
   devices.initDevicePicker();
   const booted = gate.boot();
-  await vi.waitFor(() => expect(workspaceRow()).not.toBeNull());
+  await untilDom(workspaceRow);
   expect(wire.sessions).toHaveLength(0);
   return { land, booted };
 }

@@ -31,6 +31,28 @@ const confirmScrim = () =>
     return scrim;
   });
 
+/** The first node matching `selector`, once the page has one: resolves on the
+ *  mutation that adds it, however long the work behind it takes (#426). Gives
+ *  up with the selector's name well inside Vitest's own timeout, and leaves no
+ *  observer behind either way. */
+const nodeAppears = (selector, deadlineMs = 10_000) =>
+  new Promise((done, fail) => {
+    const present = document.querySelector(selector);
+    if (present) return done(present);
+    const observer = new MutationObserver(() => {
+      const node = document.querySelector(selector);
+      if (!node) return;
+      clearTimeout(deadline);
+      observer.disconnect();
+      done(node);
+    });
+    const deadline = setTimeout(() => {
+      observer.disconnect();
+      fail(new Error(`${selector} did not appear within ${deadlineMs} ms`));
+    }, deadlineMs);
+    observer.observe(document, { childList: true, subtree: true });
+  });
+
 /** What the cache says a machine's bridge does to the branch on Done (#87):
  *  every machine in this file deletes it unless a case says otherwise. */
 async function cacheBranchDelete(deviceId, deletes) {
@@ -46,12 +68,16 @@ const DELETING_ADAPTER = { capabilities: { branches: { finishDelete: true } } };
 /** One pass of the sync layer, with the feed reading what it wrote. What
  *  `refreshFeed` did when the feed read the wire itself: the board, the two
  *  lists and a row per work item, on disk and delivered. */
-async function readTheBoard() {
-  const { startCacheSync } = await import("../src/core/cacheSync.js");
+async function readTheBoard(deviceId = "dev-1") {
+  const { passInFlight, startCacheSync } = await import("../src/core/cacheSync.js");
   const { startFeed } = await import("../src/core/taskFeed.js");
   startCacheSync();
+  // The pass starts with the sync layer. Until it ends, a refresh asked of the
+  // same session is folded into it and reads nothing new (#426).
+  const pass = passInFlight(deviceId);
+  expect(pass, "starting the sync layer starts a pass").not.toBeNull();
   await startFeed();
-  for (let index = 0; index < 20; index += 1) await flush();
+  await pass;
 }
 
 async function stopReaders() {
@@ -216,11 +242,19 @@ describe("the branch surface", () => {
 
   it("offers Git initialization in Changes and remounts Git after it succeeds", async () => {
     let initialized = false;
+    // The test answers the initialization itself, so the remount can only
+    // follow the answer however long the machine takes to give it.
+    let initAsked;
+    const asked = new Promise((done) => (initAsked = done));
+    let answerInit;
+    const answered = new Promise((done) => (answerInit = done));
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: initialized ? [{ ...row, branch: "main", primary: true, worktree_id: null }] : [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized, base_branch: "main" }] };
       if (method === "project.init_git") {
+        initAsked();
+        await answered;
         initialized = true;
         return { project_id: "p1", name: "notes", is_git: true, base_branch: "main" };
       }
@@ -231,15 +265,18 @@ describe("the branch surface", () => {
     });
     await readTheBoard();
     await openBranch();
-    await flush();
-    expect(document.querySelector("#init-git")).toBeTruthy();
+    const initialize = await nodeAppears("#init-git");
     expect(bridge.call.mock.calls.some(([method]) => method.startsWith("git."))).toBe(false);
 
-    document.querySelector("#init-git").click();
+    initialize.click();
+    await asked;
+    expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
+    expect(document.querySelector("#tabbody .gitpane")).toBeNull();
+
+    answerInit();
     // The pass the initialization asks for is what tells the surface the
     // project is a repository now, so the remount waits on the cache.
-    for (let index = 0; index < 20; index += 1) await flush();
-    expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
+    await nodeAppears("#tabbody .gitpane");
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     await stopReaders();
   });

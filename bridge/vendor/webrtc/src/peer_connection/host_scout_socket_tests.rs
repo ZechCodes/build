@@ -1,7 +1,7 @@
 //! Ignored real-socket pressure gate, confined to socket-pressure.py namespaces.
 
 use super::{HostScouts, process};
-use crate::peer_connection::host_sweep::{HostSweepControl, SweepSubnet};
+use crate::peer_connection::host_sweep::{HostSweepControl, SweepSubnet, live_owner};
 use crate::runtime::{AsyncUdpSocket, EcnCodepoint, Transmit};
 use futures::FutureExt;
 use std::io;
@@ -195,7 +195,7 @@ fn scout_pressure_keeps_advertised_ice_socket_immediately_writable() {
         while started.elapsed() < Duration::from_secs(2) {
             let now = Instant::now();
             scouts.refresh(now);
-            scouts.send_one(now, &control, "fixture", 40000, expires, Some(&interfaces));
+            scouts.send_one(now, &control, "fixture", 40000, expires, |subnet, destination| subnet.still_owned(&interfaces, live_owner, destination));
             pressure.observe(&scouts, &bound);
             if iteration % 20 == 0 { pressure.writes_now(&*socket, target); }
             iteration += 1;

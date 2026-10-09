@@ -278,13 +278,54 @@ fn ambiguous_source_address_ownership_and_interface_replacement_are_skipped() {
     );
     let subnet = SweepSubnet::for_socket(local, &[wifi.clone()], |_| 2).unwrap();
     let remote = Ipv4Addr::new(192, 168, 2, 2);
-    assert!(subnet.still_owned(&[wifi.clone()], 2, remote));
-    assert!(!subnet.still_owned(&[wifi.clone()], 3, remote));
+    let live = |_: &str, _: Ipv4Addr| (2, Some(Ipv4Addr::new(255, 255, 255, 0)));
+    assert!(subnet.still_owned(&[wifi.clone()], live, remote));
+    assert!(!subnet.still_owned(
+        &[wifi.clone()],
+        |_, _| (3, Some(Ipv4Addr::new(255, 255, 255, 0))),
+        remote
+    ));
     let own_new = interface("192.168.2.2:0", "255.255.255.0:0", "wifi");
-    assert!(!subnet.still_owned(&[wifi.clone(), own_new], 2, remote));
+    assert!(!subnet.still_owned(&[wifi.clone(), own_new], live, remote));
     let changed_mask = interface("192.168.2.1:0", "255.255.255.128:0", "wifi");
-    assert!(!subnet.still_owned(&[changed_mask], 2, remote));
-    assert!(!subnet.still_owned(&[], 2, remote));
+    assert!(!subnet.still_owned(&[changed_mask], live, remote));
+    assert!(!subnet.still_owned(&[], live, remote));
+}
+
+#[test]
+fn a_live_address_or_mask_change_under_the_same_index_ends_ownership() {
+    // The list is the pass's cached read; only the live lookup sees the change.
+    let local = address("192.168.2.1:45000");
+    let wifi = interface("192.168.2.1:0", "255.255.255.0:0", "wifi");
+    let subnet = SweepSubnet::for_socket(local, &[wifi.clone()], |_| 2).unwrap();
+    let remote = Ipv4Addr::new(192, 168, 2, 2);
+    assert!(
+        !subnet.still_owned(
+            &[wifi.clone()],
+            |_, _| (2, Some(Ipv4Addr::new(255, 255, 255, 128))),
+            remote
+        ),
+        "a mask narrowed since the list was read must stop the send"
+    );
+    assert!(
+        !subnet.still_owned(&[wifi], |_, _| (2, None), remote),
+        "an address removed since the list was read must stop the send"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_live_owner_reads_the_kernel_mask_for_one_address() {
+    // Loopback carries 127.0.0.1/8 on every Linux host, and nothing else in 127/8 by default.
+    let (index, mask) = live_owner("lo", Ipv4Addr::LOCALHOST);
+    assert_ne!(index, 0, "loopback has an index");
+    assert_eq!(mask, Some(Ipv4Addr::new(255, 0, 0, 0)));
+    assert_eq!(
+        live_owner("lo", Ipv4Addr::new(127, 0, 0, 77)).1,
+        None,
+        "an address the interface does not carry has no live mask"
+    );
+    assert_eq!(live_owner("no-such-if0", Ipv4Addr::LOCALHOST), (0, None));
 }
 
 #[test]

@@ -195,8 +195,22 @@ impl SweepSubnet {
         Self::from_interface(local, owner, index(&owner.name), &local_addresses)
     }
 
-    pub fn still_owned(&self, interfaces: &[Interface], index: u32, destination: Ipv4Addr) -> bool {
+    /// Whether a send may still leave this subnet's source for `destination`. `interfaces` is
+    /// the pass's list, which may be up to 100 ms old; `live` reads the interface's index and
+    /// the mask it holds the source address under from the kernel at send time, so an address
+    /// or mask changed under the same index since the list was read stops the send.
+    pub fn still_owned(
+        &self,
+        interfaces: &[Interface],
+        live: LiveOwner,
+        destination: Ipv4Addr,
+    ) -> bool {
+        let IpAddr::V4(local) = self.local.ip() else {
+            return false;
+        };
+        let (index, mask) = live(&self.interface_name, local);
         if index != self.interface_index
+            || mask != Some(Ipv4Addr::from(self.mask))
             || interfaces.iter().any(|interface| {
                 interface.addr.map(|addr| addr.ip()) == Some(IpAddr::V4(destination))
             })
@@ -218,6 +232,78 @@ impl SweepSubnet {
                 && !matches!(interface.hop, Some(NextHop::Destination(_)))
         })
     }
+}
+
+/// The kernel's current view of a sweep source: the index of the interface named, and the
+/// mask that interface holds the address under, `None` when it no longer carries the address.
+pub(crate) type LiveOwner = fn(&str, Ipv4Addr) -> (u32, Option<Ipv4Addr>);
+
+/// Two ioctls, without the core lock's cost of a full netlink dump (#376). `name` is the
+/// `getifaddrs` name, which for IPv4 is the address's label, so an alias like `eth0:1` reads
+/// that alias. Passing the address asks the kernel for the entry with that label and address
+/// rather than the label's first one, so a secondary address is read as itself.
+#[cfg(target_os = "linux")]
+pub(crate) fn live_owner(name: &str, local: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    let Ok(c_name) = std::ffi::CString::new(name) else {
+        return (0, None);
+    };
+    // SAFETY: CString supplies the NUL-terminated interface name required by libc.
+    let index = unsafe { libc::if_nametoindex(c_name.as_ptr()) };
+    let bytes = c_name.as_bytes_with_nul();
+    if bytes.len() > libc::IFNAMSIZ {
+        return (index, None);
+    }
+    // SAFETY: plain socket creation; ownership of the descriptor moves into `OwnedFd` below.
+    let raw = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) };
+    if raw < 0 {
+        return (index, None);
+    }
+    // SAFETY: `raw` is a fresh descriptor owned by nothing else.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+    let read = |request| {
+        use std::os::fd::AsRawFd;
+        // SAFETY: an all-zero ifreq is a valid value of this plain C struct.
+        let mut ifreq: libc::ifreq = unsafe { std::mem::zeroed() };
+        for (slot, byte) in ifreq.ifr_name.iter_mut().zip(bytes) {
+            *slot = *byte as libc::c_char;
+        }
+        // SAFETY: sockaddr_in fits the union's sockaddr slot and is written whole.
+        unsafe {
+            let address = (&raw mut ifreq.ifr_ifru.ifru_addr).cast::<libc::sockaddr_in>();
+            address.write(libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: 0,
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from(local).to_be(),
+                },
+                sin_zero: [0; 8],
+            });
+        }
+        // SAFETY: the request reads and writes only the ifreq it is handed.
+        if unsafe { libc::ioctl(socket.as_raw_fd(), request as _, &mut ifreq) } < 0 {
+            return None;
+        }
+        // SAFETY: the kernel wrote an AF_INET sockaddr into the slot it was asked about.
+        let address = unsafe {
+            (&raw const ifreq.ifr_ifru.ifru_addr)
+                .cast::<libc::sockaddr_in>()
+                .read()
+        };
+        Some(Ipv4Addr::from(u32::from_be(address.sin_addr.s_addr)))
+    };
+    // Without an entry carrying both label and address the kernel answers with the label's
+    // first address, so the address read proves the entry before its mask is trusted.
+    if read(libc::SIOCGIFADDR) != Some(local) {
+        return (index, None);
+    }
+    (index, read(libc::SIOCGIFNETMASK))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn live_owner(_: &str, _: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
+    (0, None)
 }
 
 fn private_ipv4(ip: Ipv4Addr) -> bool {

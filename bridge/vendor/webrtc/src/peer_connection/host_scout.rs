@@ -1,7 +1,6 @@
 //! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
-use rtc::shared::ifaces::Interface;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
@@ -455,7 +454,7 @@ impl HostScouts {
         ufrag: &str,
         port: u16,
         expires: Instant,
-        interfaces: Option<&[Interface]>,
+        owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Option<&'static str> {
         let Some(index) = self
             .groups
@@ -466,7 +465,7 @@ impl HostScouts {
             return self.changed_pause(stale.map(|group| group.unavailable));
         };
         let result = control.while_allowed(self.generation, ufrag, port, || {
-            self.send_group(index, now, expires, interfaces)
+            self.send_group(index, now, expires, owns)
         });
         self.update_pending();
         self.finish_attempt(result)
@@ -476,7 +475,7 @@ impl HostScouts {
         index: usize,
         now: Instant,
         expires: Instant,
-        interfaces: Option<&[Interface]>,
+        owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Result<bool, &'static str> {
         let group = &mut self.groups[index];
         let destination = group
@@ -485,16 +484,8 @@ impl HostScouts {
         let IpAddr::V4(source) = group.subnet.local.ip() else {
             return Err("unsupported-platform");
         };
-        // The pass's interface list, read outside the core lock; the index is read live.
-        let valid = interfaces.is_some_and(|interfaces| {
-            let Ok(name) = std::ffi::CString::new(group.subnet.interface_name.as_str()) else {
-                return false;
-            };
-            // SAFETY: the name is terminated and only a read-only interface lookup occurs.
-            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-            group.subnet.still_owned(interfaces, index, destination)
-        });
-        if !valid {
+        // The pass's interface list, read outside the core lock, with the index and mask live.
+        if !owns(&group.subnet, destination) {
             group.clear();
             return Err("no-on-link-interface");
         }
@@ -966,7 +957,7 @@ mod tests {
         scouts.groups.push(group);
         let control = HostSweepControl::default();
         assert_eq!(
-            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, None),
+            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, |_, _| false),
             Some("neighbor-table-too-large")
         );
     }

@@ -219,8 +219,8 @@ Only an accepted UDP host candidate's existing bound socket is used. Its exact
 source IP must have one current owning interface, a contiguous actual IPv4 mask,
 and an RFC 1918 or link-local subnet of at most 1024 total addresses. Network,
 broadcast and every current local address are excluded. Before every send the
-interface's index is read live, and its name, address and mask are checked
-against an interface list at most 100 ms old (#376, below). Linux's Tokio socket adapter
+interface's index, and the mask it holds the source address under, are read
+live; the other checks use an interface list at most 100 ms old (#376, below). Linux's Tokio socket adapter
 uses IP_PKTINFO plus MSG_DONTROUTE and MSG_DONTWAIT on that same socket, so there
 is no gateway or source-port fallback. Other platforms and runtimes skip until
 an equivalent explicit-interface operation is supplied. A candidate port of
@@ -363,6 +363,16 @@ an interface read that parks while the test takes the core lock with
 interface read shared by passes inside 100 ms; a `host_sweep_tests.rs` case
 pins the NAT gate state the driver reads. Data-channel latency during a
 sweep was not measured.
+
+The cached list alone would miss an address or mask changed under the same
+interface index in the up-to-100 ms it stands, which the per-send `getifaddrs`
+caught. Each send, scout or real indication, therefore reads the source's
+mask live with `SIOCGIFADDR` and `SIOCGIFNETMASK` on the address's label,
+passing the address so the kernel answers for that entry rather than the
+label's first one, and stops unless the address is still there with the
+subnet's mask. Two ioctls cost far less than the dump. `host_sweep_tests.rs`
+pins a mask narrowed or an address removed under an unchanged list, and reads
+loopback's real 127.0.0.1/8 entry.
 
 An IPv6 host candidate is skipped as `ipv6-unsupported` (it was reported as
 `non-private-subnet`): the sweep enumerates IPv4 subnets only. The bridge and

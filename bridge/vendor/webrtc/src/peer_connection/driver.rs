@@ -2,7 +2,9 @@
 //!
 //! Follows the rtc EventLoop pattern with async select
 
-use super::host_sweep::{HostSweep, SweepCredentials, SweepSubnet, binding_indication};
+use super::host_sweep::{
+    HostSweep, LiveOwner, SweepCredentials, SweepSubnet, binding_indication, live_owner,
+};
 use super::transports::stun_gatherer::{
     RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
 };
@@ -276,10 +278,11 @@ const SWEEP_INTERFACES_FRESH: Duration = Duration::from_millis(100);
 ///
 /// `getifaddrs` is a netlink dump. Read under the core lock on every probe, it held up every
 /// data-channel write queued behind it (#376), so it is read at most once per
-/// [`SWEEP_INTERFACES_FRESH`], outside the lock. Each send still rechecks the interface's live
-/// index, and its name, address and mask against this list.
+/// [`SWEEP_INTERFACES_FRESH`], outside the lock. Each send still reads the interface's index,
+/// and the mask it holds the source address under, live; see [`SweepSubnet::still_owned`].
 pub(super) struct SweepInterfaces {
     read: fn() -> std::io::Result<Vec<Interface>>,
+    pub(super) live: LiveOwner,
     read_at: Option<Instant>,
     list: Option<Vec<Interface>>,
 }
@@ -288,6 +291,7 @@ impl SweepInterfaces {
     pub(super) fn reading(read: fn() -> std::io::Result<Vec<Interface>>) -> Self {
         Self {
             read,
+            live: live_owner,
             read_at: None,
             list: None,
         }
@@ -305,6 +309,11 @@ impl SweepInterfaces {
 
     pub(super) fn current(&self) -> Option<&[Interface]> {
         self.list.as_deref()
+    }
+
+    pub(super) fn owns(&self, subnet: &SweepSubnet, destination: std::net::Ipv4Addr) -> bool {
+        self.current()
+            .is_some_and(|interfaces| subnet.still_owned(interfaces, self.live, destination))
     }
 }
 
@@ -1108,7 +1117,7 @@ where
                 self.host_sweep.remote_ufrag(),
                 port,
                 expires,
-                self.sweep_interfaces.current(),
+                |subnet, destination| self.sweep_interfaces.owns(subnet, destination),
             )
         {
             self.host_sweep.note_progress(reason);
@@ -1274,14 +1283,7 @@ where
     fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
         // Recheck before each emission: a route is no longer safe after its
         // interface/address/mask disappears or changes. No routing fallback is allowed.
-        let valid = self.sweep_interfaces.current().is_some_and(|interfaces| {
-            probe.subnet.still_owned(
-                interfaces,
-                sweep_interface_index(&probe.subnet.interface_name),
-                probe.destination,
-            )
-        });
-        if !valid {
+        if !self.sweep_interfaces.owns(&probe.subnet, probe.destination) {
             self.host_sweep.skip(probe.port, "no-on-link-interface");
             return;
         }

@@ -6,6 +6,7 @@
 // read off a real greeting, and the picker are the modules the app runs.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { called, painted } from "./waits.js";
 
 let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, heldGithubRepos, watchGithubRepos, uiAddress, DEVICES_ADDRESS;
 
@@ -423,8 +424,11 @@ describe("the account-wide sheet", () => {
     const select = document.querySelector("#nrdevice");
     select.value = "desk";
     select.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
-    const input = document.querySelector("[data-source-value]");
+    // The search and the remote field are each the machine's choice landing,
+    // in either order: wait for both.
+    await called(call, () => reposCalls(call).length >= 1);
+    expect(reposCalls(call)).toHaveLength(1);
+    const input = await painted(() => document.querySelector("[data-source-value]"));
     expect(input.value).toBe("bot"); // the draft's remote, painted with the form
     await held((record) => Array.isArray(record?.repos));
     expect(input.getAttribute("role")).toBe("combobox");

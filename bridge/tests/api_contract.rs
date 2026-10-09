@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.16.0");
+    assert_eq!(API_VERSION, "3.17.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -329,7 +329,7 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.16.0");
+    assert_eq!(API_VERSION, "3.17.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1167,10 +1167,11 @@ fn project_source_paths_are_announced_on_every_scoped_file_verb() {
         "fs.read",
         "fs.write",
         "fs.createDirectory",
+        "fs.createFile",
         "fs.uploadBegin",
     ] {
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
-        assert_eq!(fixture["project_source_path"]["since"], "3.16.0");
+        assert_eq!(fixture["project_source_path"]["since"], "3.17.0");
         assert_eq!(
             fixture["project_source_path"]["capability"],
             "fs.projectSourcePath"

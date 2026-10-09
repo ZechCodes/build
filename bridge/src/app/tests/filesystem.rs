@@ -1931,6 +1931,46 @@ fn project_source_files_refuse_symlink_escape_without_writing() {
     );
 }
 
+/// Every scoped verb other than `fs.write`, naming the folder a tab opened,
+/// is refused with `conflict` once the source has moved away from it.
+fn refuse_every_scoped_verb_naming(
+    state: &mut AppState,
+    project_id: &str,
+    opened: &std::path::Path,
+) {
+    let sender = SessionSender::detached("uploader");
+    for (method, extra) in [
+        ("fs.tree", json!({})),
+        ("fs.read", json!({})),
+        (
+            "fs.createDirectory",
+            json!({ "parent": "", "name": "assets" }),
+        ),
+        (
+            "fs.createFile",
+            json!({ "parent": "", "name": "created.md" }),
+        ),
+        (
+            "fs.uploadBegin",
+            json!({ "parent": "", "name": "new.bin", "size": 1 }),
+        ),
+    ] {
+        let mut params = json!({
+            "project_id": project_id, "source_id": "source-2",
+            "source_path": opened.display().to_string(),
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        if method == "fs.read" {
+            params["path"] = json!("notes.md");
+        }
+        let refused = upload_call(state, &sender, method, params);
+        assert_eq!(refused["error_code"], "conflict", "{method}: {refused}");
+    }
+}
+
 /// A source moved after a tab captured it: the same `source_id` now resolves
 /// to the new folder. The tab's `source_path` is the folder it opened, and the
 /// bridge refuses every scoped verb that names the old one, even when the
@@ -1962,33 +2002,7 @@ fn project_source_files_refuse_a_source_path_captured_before_the_source_moved() 
     assert_eq!(save["ok"], false, "{save}");
     assert_eq!(save["error_code"], "conflict", "{save}");
     assert_eq!(save["error"], MOVED_SOURCE, "{save}");
-    let sender = SessionSender::detached("uploader");
-    for (method, extra) in [
-        ("fs.tree", json!({})),
-        ("fs.read", json!({})),
-        (
-            "fs.createDirectory",
-            json!({ "parent": "", "name": "assets" }),
-        ),
-        (
-            "fs.uploadBegin",
-            json!({ "parent": "", "name": "new.bin", "size": 1 }),
-        ),
-    ] {
-        let mut params = json!({
-            "project_id": project_id, "source_id": "source-2",
-            "source_path": plain.display().to_string(),
-        });
-        params
-            .as_object_mut()
-            .unwrap()
-            .extend(extra.as_object().unwrap().clone());
-        if method == "fs.read" {
-            params["path"] = json!("notes.md");
-        }
-        let refused = upload_call(&mut state, &sender, method, params);
-        assert_eq!(refused["error_code"], "conflict", "{method}: {refused}");
-    }
+    refuse_every_scoped_verb_naming(&mut state, &project_id, &plain);
     assert_eq!(
         std::fs::read_to_string(moved.join("notes.md")).unwrap(),
         "plain source\n"
@@ -1998,6 +2012,7 @@ fn project_source_files_refuse_a_source_path_captured_before_the_source_moved() 
         "plain source\n"
     );
     assert!(!moved.join("assets").exists());
+    assert!(!moved.join("created.md").exists());
     assert!(!moved.join("new.bin").exists());
 
     // The folder the source row now names is accepted.

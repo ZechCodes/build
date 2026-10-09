@@ -38,7 +38,7 @@ describe("project source filesystem support", () => {
     capabilities.fs = { projectSources: true, projectSourcePath: true };
     const project = { sources: [{ id: "docs", path: "/docs" }] };
     const rpc = projectFilesRpc(machine, "code", { project, currentProject: () => project });
-    for (const method of ["fs.tree", "fs.read", "fs.write", "fs.createDirectory", "fs.uploadBegin"]) {
+    for (const method of ["fs.tree", "fs.read", "fs.write", "fs.createDirectory", "fs.createFile", "fs.uploadBegin"]) {
       await rpc(method, { project_id: "p", source_id: "docs", path: "README.md" });
       expect(machine.rpc).toHaveBeenLastCalledWith(method, { project_id: "p", source_id: "docs", path: "README.md", source_path: "/docs" });
     }

@@ -539,6 +539,6 @@ it("gates task body preconditions by capability name", () => {
 });
 
 it("gates project source paths by capability name", () => {
-  expect(v1.capabilitiesOf({ api_version: "3.16.0", capabilities: ["fs.projectSources", "fs.projectSourcePath"] }).fs.projectSourcePath).toBe(true);
+  expect(v1.capabilitiesOf({ api_version: "3.17.0", capabilities: ["fs.projectSources", "fs.projectSourcePath"] }).fs.projectSourcePath).toBe(true);
   expect(v1.capabilitiesOf({ api_version: "3.14.0", capabilities: ["fs.projectSources"] }).fs.projectSourcePath).toBe(false);
 });

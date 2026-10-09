@@ -108,8 +108,9 @@ impl<'r> Walk<'r> {
     }
 
     fn run(&mut self) -> Option<()> {
-        // The count follows libgit2's walk and stop rule, not `git rev-list`:
-        // they can disagree, for example when commit times are skewed (#462).
+        // Follows libgit2's walk and stop rule with its timestamp-only
+        // ordering; commit-graph generation numbers are not used (#462).
+        // Results can differ from `git rev-list`, for example under clock skew.
         while self.interesting() {
             let Some(oid) = self.queue.pop(&self.commits) else {
                 break;

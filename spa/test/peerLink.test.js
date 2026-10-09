@@ -2,12 +2,19 @@
 // the offer and the trickle both ways, settled once both channels are open.
 // A failure anywhere leaves the caller on the relay, with no retry loop.
 
-import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, onTestFinished, vi } from "vitest";
 import { openPeerLink } from "../src/core/peerLink.js";
 import { clearConnectionDiagnosticHistory, connectionDiagnosticHistory, connectionDiagnosticReport } from "../src/core/connectionDiagnostics.js";
 import { diagnosticsJson } from "../src/core/connectionDiagnosticsModel.js";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// Diagnostic entries carry `at: Date.now()`, and the leak checks below look for
+// candidate port 5000 anywhere in the serialized history. Every real clock
+// reading from 1791500000000 to 1791500099999 contains "5000" (#428), so the
+// tests that make that check pin the clock to an instant whose digits stay clear
+// of it for the minute or so of fake time they advance.
+const DIAGNOSTIC_CLOCK = 1791511111111;
 
 class FakeEventTarget {
   constructor() {
@@ -346,6 +353,8 @@ describe("openPeerLink", () => {
   });
 
   it("reports native host gathering separately from successful candidate signaling without copying candidate contents", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: DIAGNOSTIC_CLOCK });
+    onTestFinished(() => vi.useRealTimers());
     clearConnectionDiagnosticHistory();
     let answerCandidate;
     const stood = stand({ signalImpl: async (method) => {
@@ -988,6 +997,7 @@ describe("openPeerLink", () => {
 // pair carries.
 describe("a session that landed on a relayed pair", () => {
   it("reports browser-no-host-candidates and keeps TURN when native gathering finishes without a local host", async () => {
+    vi.setSystemTime(DIAGNOSTIC_CLOCK);
     const { peer, resolved, candidateSinks, signalled } = await landedOnRelay({ alsoDirect: null });
     peer.gather({ type: "relay", candidate: "candidate:1 1 udp 1 203.0.113.1 5000 typ relay" });
     peer.iceGatheringState = "complete";
@@ -1006,6 +1016,7 @@ describe("a session that landed on a relayed pair", () => {
   });
 
   it("does not report absent browser hosts when the local offer already contains a host candidate", async () => {
+    vi.setSystemTime(DIAGNOSTIC_CLOCK);
     const { peer, resolved, candidateSinks, signalled } = await landedOnRelay({
       alsoDirect: null,
       signalImpl: async (method) => {

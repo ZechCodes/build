@@ -7,6 +7,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -62,19 +63,8 @@ const settle = async () => {
   for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
-/** The first node under `host` matching `selector` that `ready` accepts, once
- *  the view has painted it: however many turns its reads and writes take. */
-const painted = (host, selector, ready = () => true) => new Promise((resolve) => {
-  const observer = new MutationObserver(() => check());
-  const check = () => {
-    const node = [...host.querySelectorAll(selector)].find(ready);
-    if (!node) return false;
-    observer.disconnect();
-    resolve(node);
-    return true;
-  };
-  if (!check()) observer.observe(host, { subtree: true, childList: true, attributes: true });
-});
+/** The first node under `host` matching `selector` that `ready` accepts, once painted. */
+const paintedIn = (host, selector, ready = () => true) => painted(() => [...host.querySelectorAll(selector)].find(ready), host);
 
 // Every drawn row, by its path from the checkout's root.
 const treeNames = (host) => [...host.querySelectorAll(".fdir, .ffile")].map((row) => row.dataset.path);
@@ -578,12 +568,12 @@ describe("a file over one record", () => {
     const file = { bytes: bigText(8000), mime: "text/plain", version: "v1" };
     const call = machine(file);
     const { host } = await open(call);
-    const firstRow = await painted(host, ".fsrc tr");
+    const firstRow = await paintedIn(host, ".fsrc tr");
     const firstPage = lineNumbers(host).length;
     const { end } = (await readBodyPages(head("big.log"), "v1")).pages[0];
 
     await scrollToSentinel(host);
-    await painted(host, `.fsrc tr[data-new-line="${firstPage + 1}"]`);
+    await paintedIn(host, `.fsrc tr[data-new-line="${firstPage + 1}"]`);
 
     expect(reads(call).at(-1)).toEqual({ run_id: "run-1", path: "big.log", range: { offset: end, bytes: BODY_PAGE_BYTES } });
     expect((await readBodyPages(head("big.log"), "v1")).pages).toHaveLength(2);
@@ -800,7 +790,7 @@ describe("a file over one record", () => {
     const file = { bytes: "p".repeat(3 * TEXT_CAP + 7), mime: "image/png", version: "v1" };
     const call = machine(file);
     const { host } = await open(call, "shot.png");
-    const image = await painted(host, "img.fimg", (node) => node.getAttribute("src")?.startsWith("blob:"));
+    const image = await paintedIn(host, "img.fimg", (node) => node.getAttribute("src")?.startsWith("blob:"));
 
     expect(reads(call).slice(1).map((params) => params.range)).toEqual([0, 1, 2, 3].map((index) =>
       ({ offset: index * TEXT_CAP, bytes: TEXT_CAP })));
@@ -818,7 +808,7 @@ describe("a file over one record", () => {
     const call = machine(file);
     const revoke = vi.spyOn(URL, "revokeObjectURL");
     const { host } = await open(call, "clip.mp4");
-    const video = await painted(host, "video.fmedia", (node) => node.getAttribute("src")?.startsWith("blob:"));
+    const video = await paintedIn(host, "video.fmedia", (node) => node.getAttribute("src")?.startsWith("blob:"));
     const address = video.getAttribute("src");
     expect(reads(call)[0].range).toEqual({ offset: 0, bytes: TEXT_CAP, raw: true });
     expect(reads(call).filter((params) => params.path === "clip.mp4").every((params) => params.range.raw)).toBe(true);

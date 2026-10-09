@@ -319,4 +319,5 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     },
     { debounceMs: 180 },
   );
+  return { whenDraftRestored: draftRecord.ready.then(() => {}) };
 }

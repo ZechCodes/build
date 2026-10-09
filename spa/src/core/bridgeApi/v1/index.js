@@ -153,6 +153,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     },
     fs: {
       projectSources: names.has("fs.projectSources"),
+      projectSourcePath: names.has("fs.projectSourcePath"),
       uploads: names.has("fs.uploadBegin"),
       createDirectory: names.has("fs.createDirectory"),
       createFile: names.has("fs.createFile"),

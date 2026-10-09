@@ -1,4 +1,4 @@
-use crate::api::v1::git::{FsCreateDirectoryParams, FsCreateDirectoryResult, ScopeParams};
+use crate::api::v1::git::{FileScopeParams, FsCreateDirectoryParams, FsCreateDirectoryResult};
 use crate::api::v1::WireParams;
 use crate::api::ApiError;
 use crate::app::{expand_tilde, mime_hint};
@@ -14,6 +14,11 @@ use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState
 
 pub(in crate::app) mod uploads;
 
+/// The refusal when a caller's `source_path` no longer names the folder its
+/// project source resolves to: the source moved after the caller opened it.
+pub(crate) const MOVED_SOURCE: &str =
+    "Build cannot use this project folder: it moved. Reopen Files before reading or saving it.";
+
 /// The directory whose files an `fs.*` call may reach.
 ///
 /// Workspace and project browsing name one configured source explicitly. The legacy
@@ -28,6 +33,8 @@ enum FileScope {
     ProjectSource {
         project_id: String,
         source_id: String,
+        /// The folder the caller opened the source at, when it says.
+        source_path: Option<String>,
     },
     Legacy(TermScope),
 }
@@ -40,6 +47,9 @@ impl FileScope {
             if let Some(source_id) = source_id {
                 return Self::project_source(params, source_id);
             }
+        }
+        if params.get("source_path").is_some() {
+            return Err("source_path must name a project source scope".to_string());
         }
         let has_legacy_scope = ["run_id", "project_id", "worktree_id"]
             .iter()
@@ -71,9 +81,11 @@ impl FileScope {
         }
         let project_id = scope_field(params, "project_id")?
             .ok_or_else(|| "missing required param: project_id".to_string())?;
+        let source_path = scope_field(params, "source_path")?;
         Ok(Self::ProjectSource {
             project_id,
             source_id,
+            source_path,
         })
     }
 
@@ -86,6 +98,7 @@ impl FileScope {
             Self::ProjectSource {
                 project_id,
                 source_id,
+                source_path,
             } => {
                 let project = state
                     .projects
@@ -98,7 +111,14 @@ impl FileScope {
                     .ok_or_else(|| {
                         format!("unknown source_id {source_id} in project {project_id}")
                     })?;
-                Ok(source.path.clone())
+                if source_path
+                    .as_ref()
+                    .is_some_and(|opened| *opened != source.path.display().to_string())
+                {
+                    return Err(MOVED_SOURCE.to_string());
+                }
+                std::fs::canonicalize(&source.path)
+                    .map_err(|error| format!("cannot resolve scope root: {error}"))
             }
             Self::Legacy(scope) => scope.resolve_root(state),
         }
@@ -203,7 +223,7 @@ impl AppState {
 
     fn file_mutation_scope(
         &mut self,
-        params: &ScopeParams,
+        params: &FileScopeParams,
     ) -> Result<(FileScope, std::path::PathBuf), ApiError> {
         let scope = FileScope::parse(&params.wire()).map_err(ApiError::classify)?;
         let root = scope.resolve_root(self).map_err(ApiError::classify)?;
@@ -715,6 +735,47 @@ mod scope_tests {
             FileScope::parse(&json!({ "run_id": "run-1" })).unwrap(),
             FileScope::Legacy(TermScope::Run { run_id }) if run_id == "run-1"
         ));
+    }
+
+    /// A configured source path reached through a symlink resolves to the
+    /// directory it names, as a workspace source does, so a caller that skips
+    /// the fence never trusts an unresolved path.
+    #[cfg(unix)]
+    #[test]
+    fn project_source_scope_resolves_the_canonical_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        let docs = directory.path().join("docs");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::create_dir(&docs).unwrap();
+        let alias = directory.path().join("docs-link");
+        std::os::unix::fs::symlink(&docs, &alias).unwrap();
+        let mut state = AppState::new_unrooted(
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = state.add_project(home, "main".into());
+        let mut sources = state.projects.get(&project_id).unwrap().sources.clone();
+        sources.push(crate::app::projects::ProjectSource::added(
+            "source-2".into(),
+            "Docs".into(),
+            "docs".into(),
+            alias.clone(),
+            false,
+            "main".into(),
+        ));
+        assert!(state.projects.set_sources(&project_id, sources));
+
+        let scope = FileScope::parse(&json!({
+            "project_id": project_id,
+            "source_id": "source-2",
+        }))
+        .unwrap();
+        let root = scope.resolve_root(&mut state).unwrap();
+        assert_ne!(root, alias);
+        assert_eq!(root, std::fs::canonicalize(&docs).unwrap());
     }
 
     #[test]

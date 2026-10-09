@@ -33,6 +33,23 @@ describe("project source filesystem support", () => {
     }
     expect(machine.rpc).not.toHaveBeenCalled();
   });
+  it("names the folder it opened so the bridge itself refuses a source that moved", async () => {
+    const machine = context();
+    capabilities.fs = { projectSources: true, projectSourcePath: true };
+    const project = { sources: [{ id: "docs", path: "/docs" }] };
+    const rpc = projectFilesRpc(machine, "code", { project, currentProject: () => project });
+    for (const method of ["fs.tree", "fs.read", "fs.write", "fs.createDirectory", "fs.createFile", "fs.uploadBegin"]) {
+      await rpc(method, { project_id: "p", source_id: "docs", path: "README.md" });
+      expect(machine.rpc).toHaveBeenLastCalledWith(method, { project_id: "p", source_id: "docs", path: "README.md", source_path: "/docs" });
+    }
+  });
+  it("sends no source path to a bridge that does not announce it", async () => {
+    const machine = context();
+    capabilities.fs.projectSources = true;
+    const project = { sources: [{ id: "docs", path: "/docs" }] };
+    await projectFilesRpc(machine, "code", { project, currentProject: () => project })("fs.write", { project_id: "p", source_id: "docs", path: "README.md" });
+    expect(machine.rpc).toHaveBeenCalledWith("fs.write", { project_id: "p", source_id: "docs", path: "README.md" });
+  });
   it("keeps rendering support in the device cache for a cold mount", async () => {
     await rememberProjectFilesSupport("d", { fs: { projectSources: true } });
     expect(await readProjectFilesSupport("d")).toBe(true);

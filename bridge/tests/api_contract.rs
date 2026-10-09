@@ -164,6 +164,11 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
             .find(|(name, _)| *name == method)
             .unwrap();
         for field in ["root", "source_path", "host_path", "caller", "session_id"] {
+            // Scoped verbs take `source_path` (#360) only as a precondition the
+            // bridge compares with its own source row; it never picks the root.
+            if field == "source_path" && fixture.get("project_source_path").is_some() {
+                continue;
+            }
             let mut injected = fixture["params"].clone();
             injected[field] = serde_json::json!("/tmp/forged");
             assert!(
@@ -200,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.16.0");
+    assert_eq!(API_VERSION, "3.17.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -324,7 +329,7 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.16.0");
+    assert_eq!(API_VERSION, "3.17.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1151,5 +1156,37 @@ fn project_file_sources_are_announced_with_scoped_contract_examples() {
             handler.round_trip_result(&example["result"]).unwrap(),
             example["result"]
         );
+    }
+}
+
+#[test]
+fn project_source_paths_are_announced_on_every_scoped_file_verb() {
+    assert!(capabilities(false).contains(&"fs.projectSourcePath"));
+    for method in [
+        "fs.tree",
+        "fs.read",
+        "fs.write",
+        "fs.createDirectory",
+        "fs.createFile",
+        "fs.uploadBegin",
+    ] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["project_source_path"]["since"], "3.17.0");
+        assert_eq!(
+            fixture["project_source_path"]["capability"],
+            "fs.projectSourcePath"
+        );
+        let example = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| example["params"]["source_path"].is_string())
+            .unwrap_or_else(|| panic!("{method}: no source_path example"));
+        let handler = &v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        handler.parse_params(&example["params"]).unwrap();
     }
 }

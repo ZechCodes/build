@@ -259,7 +259,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.16.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.17.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -367,6 +367,12 @@ runtime that starts them.
   3.16.0 adds `fs.createFile` (#433), announced by its verb name: one empty
   regular file in a resolved file scope, with `fs.createDirectory`'s fence and
   `already_exists` refusal. `fs.write` still only replaces a file it has read.
+  3.17.0 adds `fs.projectSourcePath` (#360): `fs.tree`, `fs.read`,
+  `fs.write`, `fs.createDirectory`, `fs.createFile` and `fs.uploadBegin`
+  accept `source_path` beside `project_id` plus `source_id`, the path the
+  source row carried when the client opened it. If the source has since moved,
+  the bridge refuses the call with `conflict` instead of reaching the new
+  folder. Beside any other scope it is `invalid_params`.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,
@@ -508,7 +514,12 @@ An explicit toolbar return restores the project's last face from local UI
 state (`spa/src/core/projectRailState.js`); ordinary project links still open
 Tasks. Moving a source changes its Files cache namespace. An open draft stays
 visible, but its captured source location must still match before any read or
-save is dispatched, so moving a folder cannot redirect that draft's save.
+save is dispatched, so moving a folder cannot redirect that draft's save. On
+a bridge that announces `fs.projectSourcePath` the SPA also sends that
+captured location as `source_path`, so the bridge refuses a stale scope
+itself even when the client's copy of the project is out of date. A
+project source's root resolves to its canonical path, as a workspace
+source's does.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.

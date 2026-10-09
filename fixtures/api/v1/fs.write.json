@@ -38,7 +38,8 @@
         "expected_revision": "3d2a1f0b9c8e7d6a",
         "content_b64": "dXNlIHN0ZDo6aW87Cg==",
         "project_id": "proj-1",
-        "source_id": "source-2"
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs"
       },
       "result": {
         "path": "src/main.rs",
@@ -51,5 +52,13 @@
         "revision": "3d2a1f0b9c8e7d6a"
       }
     }
-  ]
+  ],
+  "project_source_path": {
+    "since": "3.17.0",
+    "capability": "fs.projectSourcePath",
+    "params": [
+      "source_path"
+    ],
+    "refused_with": "conflict"
+  }
 }

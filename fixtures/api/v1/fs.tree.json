@@ -26,6 +26,7 @@
   "errors": [
     "not_found",
     "invalid_params",
+    "conflict",
     "internal"
   ],
   "project_sources": {
@@ -41,7 +42,8 @@
       "params": {
         "path": "src",
         "project_id": "proj-1",
-        "source_id": "source-2"
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs"
       },
       "result": {
         "path": "src",
@@ -62,5 +64,13 @@
         ]
       }
     }
-  ]
+  ],
+  "project_source_path": {
+    "since": "3.17.0",
+    "capability": "fs.projectSourcePath",
+    "params": [
+      "source_path"
+    ],
+    "refused_with": "conflict"
+  }
 }

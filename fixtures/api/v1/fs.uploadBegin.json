@@ -18,6 +18,7 @@
     "invalid_params",
     "already_exists",
     "busy",
+    "conflict",
     "internal"
   ],
   "examples": [
@@ -28,7 +29,8 @@
         "parent": "assets",
         "name": "sample.bin",
         "size": 4,
-        "replace": true
+        "replace": true,
+        "source_path": "/home/me/src/docs"
       },
       "result": {
         "upload_id": "upload-8",
@@ -36,5 +38,13 @@
         "chunk_bytes": 4194304
       }
     }
-  ]
+  ],
+  "project_source_path": {
+    "since": "3.17.0",
+    "capability": "fs.projectSourcePath",
+    "params": [
+      "source_path"
+    ],
+    "refused_with": "conflict"
+  }
 }

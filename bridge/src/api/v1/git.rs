@@ -152,6 +152,19 @@ pub struct ScopeParams {
     pub entity_id: Option<String>,
 }
 
+/// The scope of a file verb: [`ScopeParams`] plus, for a project source, the
+/// folder the caller opened it at (#360).
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FileScopeParams {
+    #[serde(flatten)]
+    pub scope: ScopeParams,
+    /// The `path` the project source row carried when the caller opened it.
+    /// Only beside `project_id` + `source_id`; once the source has moved the
+    /// call is refused with `conflict` instead of reaching the new folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+}
+
 /// How many commits a CURSORED `git.log` answers with when the caller names
 /// no limit.
 ///
@@ -289,7 +302,7 @@ pub struct FsMkdirParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsTreeParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: FileScopeParams,
     /// Scope-relative; the scope root when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -298,7 +311,7 @@ pub struct FsTreeParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsReadParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: FileScopeParams,
     pub path: String,
     /// One page of the file (#95): the answer carries the bytes from
     /// `offset`, whole lines of at most `bytes`, and `range` says where they
@@ -311,7 +324,7 @@ pub struct FsReadParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsWriteParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: FileScopeParams,
     pub path: String,
     /// The revision `fs.read` answered with; a stale one is refused.
     pub expected_revision: String,
@@ -323,7 +336,7 @@ pub struct FsWriteParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsCreateDirectoryParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: FileScopeParams,
     /// An existing scope-relative directory; empty means the scope root.
     pub parent: String,
     /// One child name, with no separators, `.` or `..`.
@@ -334,7 +347,7 @@ pub struct FsCreateDirectoryParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsUploadBeginParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: FileScopeParams,
     pub parent: String,
     pub name: String,
     /// Exact decoded byte count expected when the upload finishes.

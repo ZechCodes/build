@@ -48,7 +48,8 @@ use std::collections::BTreeSet;
 /// 3.14.0 adds user-controlled workspace locks (#398).
 /// 3.15.0 adds PR review mutations, summaries and sync observations (#405).
 /// 3.16.0 adds scoped empty file creation (`fs.createFile`, #433).
-pub const API_VERSION: &str = "3.16.0";
+/// 3.17.0 adds `source_path` on project source file scopes (#360).
+pub const API_VERSION: &str = "3.17.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -90,6 +91,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "diffs.perFile",
     "errors.codes",
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
+    "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
     "tasks.agentIdentities",
     "tasks.attachmentChunks",
@@ -401,6 +403,7 @@ impl ApiError {
         }
         if sentence.starts_with("stale thread_id")
             || sentence.starts_with("stale unversioned mutation")
+            || sentence == crate::app::MOVED_SOURCE
         {
             return ApiError::conflict(message, None);
         }

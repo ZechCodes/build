@@ -1,6 +1,6 @@
 {
-  "api_version": "3.15.0",
-  "commit": "2740ed51",
+  "api_version": "3.16.0",
+  "commit": "f6c7af86",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -28,6 +28,7 @@
     "entity.mute",
     "entity.seen",
     "fs.createDirectory",
+    "fs.createFile",
     "fs.list",
     "fs.mkdir",
     "fs.read",
@@ -176,6 +177,7 @@
     "entity.seen",
     "errors.codes",
     "fs.createDirectory",
+    "fs.createFile",
     "fs.list",
     "fs.mediaRawPages",
     "fs.mkdir",

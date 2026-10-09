@@ -8,7 +8,7 @@ protocol versions; see
 
 ## [0.2.13] - Unreleased
 
-Wire 3.16.0.
+Wire 3.17.0.
 
 ### Added
 
@@ -33,6 +33,10 @@ Wire 3.16.0.
 
 ### Changed
 
+- Project Files calls name the folder a source was opened at, and the bridge
+  refuses a read, save, new folder, new file or upload once that source has moved
+  (`fs.projectSourcePath`). A project source's file root resolves to its
+  canonical path (#360).
 - Open reviews from Changes or the workspace menu; review lifecycle and workspace retention are explicit (#405).
 - Task comment replies quote their parent's author and excerpt, jump to and
   briefly highlight the full comment on activation, and show reply counts (#411).

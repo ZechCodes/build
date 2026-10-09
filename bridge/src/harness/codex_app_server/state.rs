@@ -13,6 +13,10 @@ use semver::Version;
 
 const MINIMUM_VERSION: &str = "0.153.0";
 
+/// How many completed turns a session remembers, so a late notification for
+/// one of them is recognised as late rather than as a turn of its own.
+const REMEMBERED_TURNS: usize = 32;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEffect {
     Request(PendingOperation),
@@ -33,6 +37,9 @@ pub enum SessionEvent {
     Connection(ConnectionEvent),
     ThreadStarted(String),
     TurnStarted(String),
+    /// An item notification names its turn. Codex announces a turn before
+    /// any of its items, so an item is never a turn's first word.
+    ItemObserved(String),
     ObservedCompletion(TurnCompletion),
     ObservedError(ErrorNotification),
     VersionEvidence(Result<String, String>),
@@ -62,9 +69,15 @@ pub struct CodexSessionState {
     active_model: Option<String>,
     active_effort: Option<String>,
     requested_choice: ModelChoice,
+    /// The last choice Codex was given and took, in a request's own terms
+    /// (`None` keeps Codex's default): what the session spawned with, then
+    /// each accepted `turn/start`'s. A compaction's choice never reaches
+    /// Codex, so it never lands here.
+    applied_choice: ModelChoice,
     queued_turns: VecDeque<AcceptedTurn>,
     queued_bytes: usize,
     last_completion: Option<TurnCompletion>,
+    completed_turns: VecDeque<String>,
     reported_error: Option<String>,
 }
 
@@ -99,6 +112,9 @@ struct WorkingTurn {
     steer: Option<PendingSteer>,
     interrupt: Option<PendingInterrupt>,
     completion: Option<TurnCompletion>,
+    /// A compaction turn takes no steer input; Codex refuses it (#421), so
+    /// messages sent meanwhile wait for a turn of their own.
+    compaction: bool,
     /// The choice this turn was started with. A message frozen to the same
     /// choice can be steered into it — the way a claude child absorbs a
     /// message into its running turn — and only a message that chooses
@@ -149,6 +165,7 @@ impl CodexSessionState {
             selected_model,
             resume_id,
             phase: Phase::Starting,
+            applied_choice: requested_choice.clone(),
             thread_id: None,
             active_model: None,
             active_effort: None,
@@ -156,6 +173,7 @@ impl CodexSessionState {
             queued_turns: VecDeque::new(),
             queued_bytes: 0,
             last_completion: None,
+            completed_turns: VecDeque::new(),
             reported_error: None,
         }
     }
@@ -185,6 +203,7 @@ impl CodexSessionState {
             SessionEvent::Connection(event) => self.apply_connection(event, now, limits),
             lifecycle @ (SessionEvent::ThreadStarted(_)
             | SessionEvent::TurnStarted(_)
+            | SessionEvent::ItemObserved(_)
             | SessionEvent::ObservedCompletion(_)
             | SessionEvent::ObservedError(_)
             | SessionEvent::Eof) => self.apply_lifecycle(lifecycle, now, limits),
@@ -220,6 +239,7 @@ impl CodexSessionState {
         match event {
             SessionEvent::ThreadStarted(id) => self.thread_started(id, now),
             SessionEvent::TurnStarted(id) => self.turn_started(id, now),
+            SessionEvent::ItemObserved(id) => self.item_observed(id, now),
             SessionEvent::ObservedCompletion(completion) => {
                 self.complete_turn(completion, now, limits)
             }
@@ -646,8 +666,8 @@ impl CodexSessionState {
                 "turn/start response input did not match".to_string(),
             ));
         }
+        let accepted = turn.clone();
         let accepted_choice = turn.applied_choice.clone();
-        let running_choice = accepted_choice.clone();
         let observed = observed_id.clone();
         let completed = completion.clone();
         let interrupt_after_start = *interrupt_after_start;
@@ -664,6 +684,7 @@ impl CodexSessionState {
         })?;
         let id = result.turn.id;
         ensure_optional_id(&observed, &id, "turn/start")?;
+        self.applied_choice = accepted_choice.clone();
         if let Some(model) = accepted_choice.model {
             self.active_model = Some(model);
         }
@@ -674,14 +695,14 @@ impl CodexSessionState {
             ensure_id(&completion.turn_id, &id, "completed turn")?;
             self.finish_turn(completion, limits)
         } else {
-            Ok(self.enter_working(id, running_choice, interrupt_after_start))
+            Ok(self.enter_working(id, &accepted, interrupt_after_start))
         }
     }
 
     fn enter_working(
         &mut self,
         id: String,
-        choice: ModelChoice,
+        turn: &AcceptedTurn,
         interrupt_after_start: bool,
     ) -> Vec<SessionEffect> {
         self.phase = Phase::Working(WorkingTurn {
@@ -689,7 +710,8 @@ impl CodexSessionState {
             steer: None,
             interrupt: interrupt_after_start.then_some(PendingInterrupt::Response),
             completion: None,
-            choice,
+            compaction: turn.is_compaction(),
+            choice: turn.applied_choice.clone(),
         });
         interrupt_after_start
             .then(|| {
@@ -732,9 +754,9 @@ impl CodexSessionState {
             *compaction_answered = true;
             return Ok(Vec::new());
         };
-        let choice = turn.applied_choice.clone();
+        let turn = turn.clone();
         let interrupt_after_start = *interrupt_after_start;
-        Ok(self.enter_working(id, choice, interrupt_after_start))
+        Ok(self.enter_working(id, &turn, interrupt_after_start))
     }
 
     /// A refused `/compact` is the agent's news, not the session's end: the
@@ -764,9 +786,9 @@ impl CodexSessionState {
                 compaction_answered: true,
                 ..
             } => {
-                let choice = turn.applied_choice.clone();
+                let turn = turn.clone();
                 let interrupt_after_start = *interrupt_after_start;
-                Ok(self.enter_working(id, choice, interrupt_after_start))
+                Ok(self.enter_working(id, &turn, interrupt_after_start))
             }
             Phase::StartingTurn {
                 observed_id,
@@ -778,18 +800,42 @@ impl CodexSessionState {
                 Ok(Vec::new())
             }
             Phase::Working(working) if working.id == id => Ok(Vec::new()),
-            Phase::Waiting
-                if self
-                    .last_completion
-                    .as_ref()
-                    .is_some_and(|completion| completion.turn_id == id) =>
-            {
-                Ok(Vec::new())
-            }
+            Phase::Waiting if self.completed_turns.contains(&id) => Ok(Vec::new()),
+            Phase::Waiting => Ok(self.adopt_codex_turn(id)),
             _ => Err(StateError(format!(
                 "turn/started named unexpected turn {id}"
             ))),
         }
+    }
+
+    /// Codex starts turns of its own too — after a compaction, say (#421) —
+    /// and the session works it like one it asked for. Such a turn runs on
+    /// what Codex last applied, not on what was last requested: a
+    /// compaction's frozen choice never reaches Codex.
+    fn adopt_codex_turn(&mut self, id: String) -> Vec<SessionEffect> {
+        let turn = AcceptedTurn {
+            turn: Turn::new(String::new()),
+            applied_choice: self.applied_choice.clone(),
+        };
+        self.enter_working(id, &turn, false)
+    }
+
+    /// An item is a turn's announcement only while the session awaits one.
+    /// One for a turn already completed, or arriving while nothing runs, is
+    /// late news of a turn that is over.
+    fn item_observed(
+        &mut self,
+        id: String,
+        now: Duration,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        if self.completed_turn(&id) || matches!(self.phase, Phase::Waiting) {
+            return Ok(Vec::new());
+        }
+        self.turn_started(id, now)
+    }
+
+    fn completed_turn(&self, id: &str) -> bool {
+        self.completed_turns.iter().any(|completed| completed == id)
     }
 
     fn complete_turn(
@@ -1124,6 +1170,12 @@ impl CodexSessionState {
     }
 
     fn remember_completion(&mut self, completion: TurnCompletion) {
+        if !self.completed_turn(&completion.turn_id) {
+            if self.completed_turns.len() == REMEMBERED_TURNS {
+                self.completed_turns.pop_front();
+            }
+            self.completed_turns.push_back(completion.turn_id.clone());
+        }
         self.last_completion = Some(completion);
     }
 
@@ -1421,9 +1473,11 @@ fn expect_interrupted(
 /// its next step boundary.
 ///
 /// A `/compact` never steers: it is an operation of its own, not words for the
-/// running turn.
+/// running turn. Nor does anything steer into a compaction's turn.
 fn steers_into(turn: &AcceptedTurn, working: &WorkingTurn) -> bool {
-    !turn.is_compaction() && (turn.turn.choice.is_none() || turn.applied_choice == working.choice)
+    !turn.is_compaction()
+        && !working.compaction
+        && (turn.turn.choice.is_none() || turn.applied_choice == working.choice)
 }
 
 fn retained_steer_turn(steer: PendingSteer) -> AcceptedTurn {

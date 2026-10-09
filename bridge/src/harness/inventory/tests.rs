@@ -1107,7 +1107,8 @@ fn only_a_nonblank_string_is_a_credential() {
             );
             device.write(
                 ".pi/agent/auth.json",
-                &serde_json::json!({"anthropic": {"type": "oauth", "access": value, "refresh": value}}).to_string(),
+                &serde_json::json!({"anthropic": {"type": "oauth", "access": value, "refresh": value},
+                                    "openai": {"type": "api_key", "key": value}}).to_string(),
             );
             let inventory = device.inventory();
             inventory.sweep();
@@ -1119,8 +1120,24 @@ fn only_a_nonblank_string_is_a_credential() {
                     "custom={custom} value={value} {id}"
                 );
             }
+            assert!(
+                context(&snapshot, "pi").facts.providers.is_empty(),
+                "{value}"
+            );
         }
     }
+    // The positive control: a string key is one.
+    let device = Device::new();
+    device.write(
+        ".pi/agent/auth.json",
+        r#"{"openai": {"type": "api_key", "key": "sk-SECRET"}}"#,
+    );
+    let inventory = device.inventory();
+    inventory.sweep();
+    assert_eq!(
+        facts_of(&inventory.snapshot(), "pi"),
+        (AuthMethod::ApiKey, AuthStatus::SignedIn, Health::Fresh)
+    );
 }
 
 /// #466 round 3: externally managed ChatGPT tokens are signed in only while

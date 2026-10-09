@@ -195,12 +195,17 @@ const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.de
 const heldValue = async (context, entityId, kind, sub = "") =>
   (await readCached(addressOf(context, entityId, kind, sub)))?.value;
 
+/** Cache reads and coordinated requests can yield before dispatch. Check the
+ *  captured pass at the wire boundary, including reads with their own loaders. */
+const callWhileActive = (context, method, params, envelope) =>
+  context.active() ? context.call(method, params, envelope) : Promise.resolve(null);
+
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
  *  not serve the verb. The next trigger or push asks again. */
 async function ask(context, method, params, priority) {
   try {
-    return await context.call(method, params, requestPriorityFields(priority));
+    return await callWhileActive(context, method, params, requestPriorityFields(priority));
   } catch {
     return null;
   }
@@ -254,9 +259,9 @@ function dirsOf(paths) {
  * workspace worth reading in the order the reader will want them, then the
  * lifetime rules.
  *
- * Re-entrant by device and no more: a tab that comes back while a pass is
- * running does not start a second one, and another device's pass is another
- * device's business.
+ * Re-entrant by device and no more: asks during a pass share one follow-up,
+ * which starts after the current pass finishes. Another device's pass is
+ * another device's business.
  *
  * Answers whether the pass got all the way through — what the caller needs to
  * know to decide whether this session has been read at all.
@@ -265,9 +270,12 @@ export async function syncDevice(deviceId) {
   if (!holdingLock) return false;
   const running = passes.get(deviceId);
   if (running) {
-    // The same session asking twice is one pass: a tab coming back while its
-    // own pass is out has nothing to add.
-    if (running.session === sessionOf(deviceId)) return false;
+    // The current pass may already have read a record changed by this ask.
+    // Every ask during it shares one later pass, and waits for that answer.
+    if (running.session === sessionOf(deviceId)) {
+      running.again = true;
+      return running.done.then(() => running.next ?? false);
+    }
     // A newer session, though, is a different machine's answer — possibly a
     // different bridge — and the pass out is reading a session that has gone.
     // It is stood down and waited out rather than this ask being dropped: a
@@ -325,18 +333,28 @@ const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
  *  rejects: a pass that threw is a pass that did not finish, and the caller's
  *  question is only ever whether it got all the way through. */
 function startPass(deviceId) {
-  const turn = { session: sessionOf(deviceId), superseded: false, reading: false, done: null };
+  const turn = { session: sessionOf(deviceId), superseded: false, reading: false, again: false, next: null, done: null };
   turn.done = (async () => {
     try {
       return await orderedSync(deviceId, turn);
     } catch {
       return false;
     } finally {
-      if (passes.get(deviceId) === turn) passes.delete(deviceId);
+      finishPass(deviceId, turn);
     }
   })();
   passes.set(deviceId, turn);
   return turn.done;
+}
+
+/** Only the owning turn can hand off to its follow-up. A stopped lifetime or
+ *  a superseded session leaves its queued callers with false, never new work. */
+function finishPass(deviceId, turn) {
+  if (passes.get(deviceId) !== turn) return;
+  passes.delete(deviceId);
+  if (turn.again && !turn.superseded && holdingLock && sessionOf(deviceId) === turn.session) {
+    turn.next = startPass(deviceId);
+  }
 }
 
 async function orderedSync(deviceId, turn) {
@@ -1109,7 +1127,7 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
   const diff = await coordinatedRead({
     key,
     priority,
-    load: (envelope) => context.call(method, params, envelope),
+    load: (envelope) => callWhileActive(context, method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
   await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
@@ -1159,7 +1177,7 @@ async function syncThreads(context, entityId, row, priority) {
 async function syncThread(context, entityId, agent, priority) {
   await syncThreadWindow({
     deviceId: context.deviceId,
-    call: context.call,
+    call: (method, params, envelope) => callWhileActive(context, method, params, envelope),
     active: context.active,
     entityId,
     agentId: agent.id,
@@ -1260,12 +1278,7 @@ function subscriptionLanded(deviceId, subscriptionId) {
   if (subscriptionId === "s-background") fileRecoveries.delete(deviceId);
   const running = passes.get(deviceId);
   if (running && !running.reading) return;
-  void readAgainAfter(deviceId, session);
-}
-
-async function readAgainAfter(deviceId, session) {
-  await passes.get(deviceId)?.done;
-  if (holdingLock && sessionOf(deviceId) === session) await syncDevice(deviceId);
+  void syncDevice(deviceId);
 }
 
 /** The active subscription follows the reader: the workspace they are standing
@@ -1742,7 +1755,7 @@ async function readFileBody(context, entityId, scope, path) {
 function backgroundPageReader(context, scope, path, mime = "") {
   if (!filePagesReadable(context.deviceId)) return null;
   const readPage = filePageReader(context.deviceId, (range) =>
-    context.call("fs.read", { ...scope, path, range }, requestPriorityFields("background")), mime);
+    callWhileActive(context, "fs.read", { ...scope, path, range }, requestPriorityFields("background")), mime);
   return async (offset, bytes) => {
     const page = await readPage(offset, bytes);
     return context.active() ? page : null;
@@ -1758,7 +1771,7 @@ const freshFileAnswer = (context, scope, path, heldFile, readPage) => {
   const raw = filePagesReadable(context.deviceId)
     && bridgeCapabilities(context.deviceId)?.bodies?.mediaRawPages === true
     && isMediaPath(path);
-  return context.call("fs.read", {
+  return callWhileActive(context, "fs.read", {
     ...scope, path,
     ...(raw ? { range: { offset: 0, bytes: 1_048_576, raw: true } } : {}),
   }, requestPriorityFields("background"));
@@ -1789,7 +1802,7 @@ async function readReviews(context, projectId, ids = null, hinted = []) {
   if (!context.active()) return;
   await refreshCachedReviews({
     deviceId: context.deviceId, projectId, active: context.active, discoveredTaskIds,
-    callRpc: (method, params) => context.call(method, params, requestPriorityFields("background")),
+    callRpc: (method, params) => callWhileActive(context, method, params, requestPriorityFields("background")),
   }, ids);
 }
 
@@ -1923,8 +1936,8 @@ export function stopCacheSync() {
   fileReads.clear();
   fileRecoveries.clear();
   forgetPushes();
-  // Whatever is still out stands down where it stands: its writes are all
-  // behind `active()`, which this takes away with the lock.
+  // Whatever is still out stands down where it stands: remaining reads and
+  // writes are behind `active()`, and queued follow-ups lose their turn.
   for (const turn of passes.values()) turn.superseded = true;
   passes.clear();
   clearTimeout(lockWait);

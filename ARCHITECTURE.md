@@ -759,7 +759,10 @@ user last gave an opinion on, with `commits_since_review` (commits reachable
 from `received_head` and not from that snapshot's head) or
 `rewritten_since_review: true` when that head is no longer an ancestor (#427).
 The bridge counts in the receiving repository, where snapshot pins keep a
-rewritten head readable (`reviews/sync/observations.rs`). The fields are
+rewritten head readable, with one two-colour walk capped at 2000 commits
+(`reviews/sync/since_review.rs`); past the cap both fields stay absent. A
+stored result for the same `received_head` and baseline is reused, so idle
+polls walk no history. The fields are
 optional additions to 3.15.0 under `tasks.review.pullRequests`; agents'
 opinions never set the baseline. A new opinion does not trigger a
 reconciliation, so the next event or 30 s poll refreshes the count.
@@ -1008,7 +1011,8 @@ checkout offers switching back rather than publishing that checkout.
 Reviewed-snapshot notes say changed or rewritten, or remain absent when
 unchanged; an exact commits-since-review count ("2 commits since your last
 review") paints only from a cached observation whose `reviewed_snapshot_id`
-names the same snapshot as the cached timeline's last user opinion, and an older
+names the same snapshot as the cached timeline's last user opinion and whose
+`snapshot_head` is the displayed snapshot's head, and an older
 bridge's observation leaves the qualitative note. PR task controls show read-only status while lifecycle UI is
 pending. Older bridges and pure-folder workspaces retain the legacy snapshot
 form. Legacy snapshot/base changes and explicit completion live in

@@ -130,3 +130,28 @@ fn rewritten_history_flags_the_rewrite_without_a_count() {
     assert_eq!(observation.commits_since_review, None);
     assert!(observation.rewritten_since_review);
 }
+
+#[test]
+fn an_unchanged_poll_reuses_the_count_without_walking_history() {
+    let f = Fixture::new();
+    f.commit("first.txt");
+    f.push();
+    f.sync();
+    review_latest(&f, Actor::User, "2026-10-09T00:00:01Z");
+    f.commit("second.txt");
+    f.push();
+    f.sync();
+    assert_eq!(f.observation().commits_since_review, Some(1));
+    let walks = super::since_review::walks();
+    assert!(!f.sync().persisted);
+    assert_eq!(
+        super::since_review::walks(),
+        walks,
+        "same head and baseline reuse the stored count"
+    );
+    f.commit("third.txt");
+    f.push();
+    f.sync();
+    assert_eq!(f.observation().commits_since_review, Some(2));
+    assert_eq!(super::since_review::walks(), walks + 1);
+}

@@ -1,4 +1,5 @@
 //! Independent observation revisions; timestamps alone never cause a write.
+use super::since_review as walk;
 use super::{latest, SyncResult};
 use crate::reviews::model::*;
 use crate::reviews::publication::{self, ReceivedCommit};
@@ -32,16 +33,16 @@ pub(super) fn persist(
             tip,
             capture_error,
         );
+        let previous = prior
+            .iter()
+            .find(|obs| obs.directory_id == binding.directory_id);
         if let Some(reviewed) = &reviewed {
-            since_review(&mut observation, binding, reviewed);
+            since_review(&mut observation, binding, reviewed, previous);
         }
         result.retry |= matches!(
             observation.health,
             ReviewSyncHealth::Unavailable | ReviewSyncHealth::Interrupted
         );
-        let previous = prior
-            .iter()
-            .find(|obs| obs.directory_id == binding.directory_id);
         if unchanged(previous, &observation) {
             continue;
         }
@@ -148,13 +149,20 @@ fn pending(
 }
 
 /// Counted in the receiving repository, where snapshot pins keep a rewritten
-/// reviewed head readable.
+/// reviewed head readable. A stored result for the same head and baseline is
+/// reused, so idle polls walk no history (#453).
 fn since_review(
     observation: &mut ReviewSyncObservation,
     binding: &ReviewBranchBinding,
     reviewed: &ReviewSnapshot,
+    previous: Option<&ReviewSyncObservation>,
 ) {
     observation.reviewed_snapshot_id = Some(reviewed.id.clone());
+    if let Some(previous) = previous.filter(|previous| reusable(previous, observation)) {
+        observation.commits_since_review = previous.commits_since_review;
+        observation.rewritten_since_review = previous.rewritten_since_review;
+        return;
+    }
     let reviewed_head = reviewed
         .directories
         .iter()
@@ -168,23 +176,21 @@ fn since_review(
     let (Some(reviewed_head), Some(head)) = (reviewed_head, head) else {
         return;
     };
-    if reviewed_head == head {
-        observation.commits_since_review = Some(0);
-        return;
-    }
     let Ok(repository) = git2::Repository::open_bare(&binding.receiving_repository) else {
         return;
     };
-    match repository.graph_descendant_of(head, reviewed_head) {
-        Ok(true) => {
-            observation.commits_since_review = repository
-                .graph_ahead_behind(head, reviewed_head)
-                .ok()
-                .map(|(ahead, _)| ahead as u64);
-        }
-        Ok(false) => observation.rewritten_since_review = true,
-        Err(_) => {}
+    match walk::since_review(&repository, head, reviewed_head, walk::WALK_LIMIT) {
+        Some(walk::SinceReview::Count(count)) => observation.commits_since_review = Some(count),
+        Some(walk::SinceReview::Rewritten) => observation.rewritten_since_review = true,
+        None => {}
     }
+}
+
+/// An absent result (budget spent, unreadable) is retried on the next pass.
+fn reusable(previous: &ReviewSyncObservation, observation: &ReviewSyncObservation) -> bool {
+    previous.reviewed_snapshot_id == observation.reviewed_snapshot_id
+        && previous.received_head == observation.received_head
+        && (previous.commits_since_review.is_some() || previous.rewritten_since_review)
 }
 
 fn unchanged(

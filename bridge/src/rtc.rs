@@ -58,9 +58,9 @@ pub(crate) mod client_hint;
 mod mdns;
 mod policy;
 mod remote;
-mod sweep;
 #[cfg(test)]
 mod superseded_tests;
+mod sweep;
 #[cfg(test)]
 mod sweep_integration_tests;
 

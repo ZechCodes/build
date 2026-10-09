@@ -11,6 +11,10 @@ fn peers() -> (Arc<SessionPeers>, Arc<RecordingPeerFactory>) {
     (SessionPeers::with_factory(factory.clone()), factory)
 }
 
+fn session(id: &str) -> SessionSender {
+    SessionSender::detached(id)
+}
+
 /// Offer on `sender` from a blocking thread, the way a frame handler does.
 async fn offered(
     peers: &Arc<SessionPeers>,
@@ -31,9 +35,9 @@ async fn offered(
 async fn a_newer_session_of_the_same_client_closes_its_failed_predecessor() {
     let (peers, factory) = peers();
     let client = uuid::Uuid::new_v4();
-    let old = offered(&peers, &factory, &SessionSender::detached("old"), Some(client)).await;
+    let old = offered(&peers, &factory, &session("old"), Some(client)).await;
     old.fail_ice();
-    let new = offered(&peers, &factory, &SessionSender::detached("new"), Some(client)).await;
+    let new = offered(&peers, &factory, &session("new"), Some(client)).await;
     assert_eq!(peers.count(), 1, "only the newer session keeps a peer");
     old.closed().await;
     assert!(!new.is_closed());
@@ -43,8 +47,8 @@ async fn a_newer_session_of_the_same_client_closes_its_failed_predecessor() {
 async fn a_predecessor_whose_ice_fails_after_the_newer_session_opened_is_closed() {
     let (peers, factory) = peers();
     let client = uuid::Uuid::new_v4();
-    let old = offered(&peers, &factory, &SessionSender::detached("old"), Some(client)).await;
-    let new = offered(&peers, &factory, &SessionSender::detached("new"), Some(client)).await;
+    let old = offered(&peers, &factory, &session("old"), Some(client)).await;
+    let new = offered(&peers, &factory, &session("new"), Some(client)).await;
     assert!(!old.is_closed(), "a predecessor that still carries is kept");
     old.fail_ice();
     assert_eq!(peers.count(), 1);
@@ -56,13 +60,16 @@ async fn a_predecessor_whose_ice_fails_after_the_newer_session_opened_is_closed(
 async fn the_hint_alone_never_closes_a_session_whose_ice_has_not_failed() {
     let (peers, factory) = peers();
     let client = uuid::Uuid::new_v4();
-    let old = offered(&peers, &factory, &SessionSender::detached("old"), Some(client)).await;
+    let old = offered(&peers, &factory, &session("old"), Some(client)).await;
     old.fail_ice();
     old.recover_ice();
-    let new = offered(&peers, &factory, &SessionSender::detached("new"), Some(client)).await;
+    let new = offered(&peers, &factory, &session("new"), Some(client)).await;
     new.fail_ice();
     new.recover_ice();
-    assert!(!old.is_closed(), "an ICE restart that recovered is connected");
+    assert!(
+        !old.is_closed(),
+        "an ICE restart that recovered is connected"
+    );
     assert!(!new.is_closed());
     assert_eq!(peers.count(), 2);
 }
@@ -71,10 +78,10 @@ async fn the_hint_alone_never_closes_a_session_whose_ice_has_not_failed() {
 async fn a_failed_session_is_never_closed_for_an_older_one() {
     let (peers, factory) = peers();
     let client = uuid::Uuid::new_v4();
-    let old = offered(&peers, &factory, &SessionSender::detached("old"), Some(client)).await;
-    let new = offered(&peers, &factory, &SessionSender::detached("new"), Some(client)).await;
+    let old = offered(&peers, &factory, &session("old"), Some(client)).await;
+    let new = offered(&peers, &factory, &session("new"), Some(client)).await;
     new.fail_ice();
-    let newest = offered(&peers, &factory, &SessionSender::detached("newest"), None).await;
+    let newest = offered(&peers, &factory, &session("newest"), None).await;
     assert!(
         !new.is_closed(),
         "the newest failed session may still restart"
@@ -87,21 +94,24 @@ async fn a_failed_session_is_never_closed_for_an_older_one() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sessions_without_a_shared_hint_keep_todays_behaviour() {
     let (peers, factory) = peers();
-    let unhinted = offered(&peers, &factory, &SessionSender::detached("unhinted"), None).await;
+    let unhinted = offered(&peers, &factory, &session("unhinted"), None).await;
     let other = offered(
         &peers,
         &factory,
-        &SessionSender::detached("other"),
+        &session("other"),
         Some(uuid::Uuid::new_v4()),
     )
     .await;
     unhinted.fail_ice();
     other.fail_ice();
     for (id, hint) in [("next", None), ("third", Some(uuid::Uuid::new_v4()))] {
-        offered(&peers, &factory, &SessionSender::detached(id), hint).await;
+        offered(&peers, &factory, &session(id), hint).await;
     }
     assert!(!unhinted.is_closed(), "no hint, nothing to correlate");
-    assert!(!other.is_closed(), "another client's hint is not this one's");
+    assert!(
+        !other.is_closed(),
+        "another client's hint is not this one's"
+    );
     assert_eq!(peers.count(), 4);
 }
 
@@ -111,9 +121,9 @@ async fn sessions_without_a_shared_hint_keep_todays_behaviour() {
 async fn a_hint_bound_on_a_later_offer_still_supersedes() {
     let (peers, factory) = peers();
     let client = uuid::Uuid::new_v4();
-    let old = offered(&peers, &factory, &SessionSender::detached("old"), Some(client)).await;
+    let old = offered(&peers, &factory, &session("old"), Some(client)).await;
     old.fail_ice();
-    let new_sender = SessionSender::detached("new");
+    let new_sender = session("new");
     offered(&peers, &factory, &new_sender, None).await;
     assert!(!old.is_closed());
     offered(&peers, &factory, &new_sender, Some(client)).await;
@@ -127,10 +137,10 @@ async fn a_hint_bound_on_a_later_offer_still_supersedes() {
 async fn a_superseded_session_that_offers_again_negotiates_a_fresh_peer() {
     let (peers, factory) = peers();
     let client = uuid::Uuid::new_v4();
-    let old_sender = SessionSender::detached("old");
+    let old_sender = session("old");
     let old = offered(&peers, &factory, &old_sender, Some(client)).await;
     old.fail_ice();
-    offered(&peers, &factory, &SessionSender::detached("new"), Some(client)).await;
+    offered(&peers, &factory, &session("new"), Some(client)).await;
     assert_eq!(peers.count(), 1);
     old.closed().await;
     let again = offered(&peers, &factory, &old_sender, Some(client)).await;

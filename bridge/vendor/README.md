@@ -391,6 +391,17 @@ notification is checked without touching the host's network:
 
     nice -n 10 cargo test --locked --manifest-path bridge/vendor/Cargo.toml -p webrtc --lib the_address_watch -- --ignored
 
+A watch whose receive buffer overflows loses notifications. The kernel
+reports that once, as `ENOBUFS`, and the peek counts it as a change like any
+other, so nothing on the list stands until the next read. The ignored
+`an_overflowed_address_watch_reads_as_changed_until_drained` shrinks the
+watch's buffer in a private namespace, floods it with address changes, and
+pins the overflow read as a change and the drained watch read as quiet. It
+runs the same way, with `an_overflowed_address_watch` as the filter. An
+interface that goes down keeps its IPv4 addresses and reports nothing to the
+watch; neither `getifaddrs` nor the sweep ever checked it, and a send on it
+fails. Deleting an interface deletes its addresses, which the watch reports.
+
 The list's 100 ms bound is checked again once the core lock is held: a wait
 for the lock can outlast it. A pass whose list is past the bound by then
 does nothing and stays due, and the next wake reads the list afresh before

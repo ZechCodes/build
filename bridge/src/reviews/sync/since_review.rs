@@ -50,15 +50,18 @@ thread_local! { static LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::
 
 /// libgit2's ahead/behind paint: commits reached only from the head are the
 /// ones since review. A commit popped with both colours marks its parents
-/// stale, and the walk ends once only stale commits are queued, so a commit
-/// first reached from the head is still repainted when the reviewed side
-/// arrives later, whatever the timestamps. Every commit lookup spends one unit
+/// stale, and the walk ends once only stale commits are queued and every root
+/// it popped is stale, so a commit first reached from the head is still
+/// repainted when the reviewed side arrives later, whatever the timestamps. Every commit lookup spends one unit
 /// of the budget, parents of a wide merge included.
 struct Walk<'r> {
     repository: &'r Repository,
     budget: usize,
     commits: HashMap<Oid, Painted>,
     queue: BinaryHeap<(i64, Oid)>,
+    /// Parentless commits already popped; like libgit2, the walk goes on
+    /// while one is not yet stale, so a repaint reaches the root first.
+    roots: Vec<Oid>,
 }
 
 struct Painted {
@@ -75,6 +78,7 @@ impl<'r> Walk<'r> {
             budget,
             commits: HashMap::new(),
             queue: BinaryHeap::new(),
+            roots: Vec::new(),
         }
     }
 
@@ -107,16 +111,26 @@ impl<'r> Walk<'r> {
     }
 
     fn run(&mut self) -> Option<()> {
-        while self.queue.iter().any(|(_, oid)| !self.commits[oid].stale) {
-            let (_, oid) = self.queue.pop()?;
+        while self.interesting() {
+            let Some((_, oid)) = self.queue.pop() else {
+                break;
+            };
             let painted = &self.commits[&oid];
             let (colour, parents) = (painted.colour, painted.parents.clone());
             let stale = painted.stale || colour == BOTH;
+            if parents.is_empty() {
+                self.roots.push(oid);
+            }
             for parent in parents {
                 self.paint(parent, colour, stale)?;
             }
         }
         Some(())
+    }
+
+    fn interesting(&self) -> bool {
+        let fresh = |oid: &Oid| !self.commits[oid].stale;
+        self.queue.iter().any(|(_, oid)| fresh(oid)) || self.roots.iter().any(fresh)
     }
 
     fn outcome(&self, reviewed: Oid) -> SinceReview {
@@ -175,20 +189,22 @@ mod tests {
         );
     }
 
+    fn commit_at(repo: &Repository, message: &str, seconds: i64, parents: &[Oid]) -> Oid {
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let sig = git2::Signature::new("t", "t@example.com", &git2::Time::new(seconds, 0)).unwrap();
+        let parents: Vec<_> = parents
+            .iter()
+            .map(|p| repo.find_commit(*p).unwrap())
+            .collect();
+        let parents: Vec<_> = parents.iter().collect();
+        repo.commit(None, &sig, &sig, message, &tree, &parents)
+            .unwrap()
+    }
+
     /// ancestor ← reviewed, ancestor ← side, merge of [reviewed, side].
     fn merge_fixture(repo: &Repository, times: [i64; 4], salt: usize) -> (Oid, Oid) {
-        let tree = repo.head().unwrap().peel_to_tree().unwrap();
         let at = |label: &str, seconds, parents: &[Oid]| {
-            let sig =
-                git2::Signature::new("t", "t@example.com", &git2::Time::new(seconds, 0)).unwrap();
-            let parents: Vec<_> = parents
-                .iter()
-                .map(|p| repo.find_commit(*p).unwrap())
-                .collect();
-            let parents: Vec<_> = parents.iter().collect();
-            let message = format!("{label} {salt}");
-            repo.commit(None, &sig, &sig, &message, &tree, &parents)
-                .unwrap()
+            commit_at(repo, &format!("{label} {salt}"), seconds, parents)
         };
         let ancestor = at("ancestor", times[0], &[]);
         let reviewed = at("reviewed", times[1], &[ancestor]);
@@ -211,6 +227,124 @@ mod tests {
         let repo = Repository::open(&path).unwrap();
         let (merge, reviewed) = merge_fixture(&repo, [100, 10, 110, 120], 0);
         assert_counts_like_libgit2(&repo, merge, reviewed);
+    }
+
+    #[test]
+    fn a_root_reached_first_from_the_head_is_repainted_before_the_walk_ends() {
+        let (_dir, path) = init_repo();
+        let repo = Repository::open(&path).unwrap();
+        let root = commit_at(&repo, "root", 100, &[]);
+        let intermediate = commit_at(&repo, "intermediate", 1, &[root]);
+        let reviewed = commit_at(&repo, "reviewed", 10, &[intermediate]);
+        let side = commit_at(&repo, "side", 110, &[root]);
+        let merge = commit_at(&repo, "merge", 120, &[reviewed, side]);
+        assert_counts_like_libgit2(&repo, merge, reviewed);
+    }
+
+    /// Every head/baseline pair of a small DAG (parents by index) matches
+    /// libgit2: the count when the baseline is an ancestor, else a rewrite.
+    fn assert_dag_matches_libgit2(times: [i64; 12], edges: &[&[usize]]) {
+        let (_dir, path) = init_repo();
+        let repo = Repository::open(&path).unwrap();
+        let mut nodes = Vec::new();
+        for (n, parents) in edges.iter().enumerate() {
+            let parents: Vec<_> = parents.iter().map(|&p| nodes[p]).collect();
+            nodes.push(commit_at(&repo, &format!("node {n}"), times[n], &parents));
+        }
+        for &head in &nodes {
+            for &reviewed in &nodes {
+                let expected = if head == reviewed {
+                    SinceReview::Count(0)
+                } else if repo.graph_descendant_of(head, reviewed).unwrap() {
+                    let (ahead, _) = repo.graph_ahead_behind(head, reviewed).unwrap();
+                    SinceReview::Count(ahead as u64)
+                } else {
+                    SinceReview::Rewritten
+                };
+                assert_eq!(
+                    since_review(&repo, head, reviewed, WALK_LIMIT),
+                    Some(expected),
+                    "head {head} reviewed {reviewed}"
+                );
+            }
+        }
+    }
+
+    // Overcounting histories from the #453 round-3 probe (seed 0x453547e146c).
+    #[test]
+    fn skewed_dags_count_like_graph_ahead_behind() {
+        assert_dag_matches_libgit2(
+            [99, 162, 80, 87, 195, 2, 158, 121, 109, 139, 178, 83],
+            &[
+                &[],
+                &[0],
+                &[0],
+                &[2],
+                &[0],
+                &[1, 3],
+                &[4],
+                &[2],
+                &[1, 2, 3],
+                &[0, 1, 6],
+                &[0, 2, 8],
+                &[1, 5, 9],
+            ],
+        );
+        assert_dag_matches_libgit2(
+            [56, 21, 159, 131, 39, 89, 182, 157, 96, 107, 154, 30],
+            &[
+                &[],
+                &[0],
+                &[1],
+                &[0, 1],
+                &[],
+                &[0, 3],
+                &[0, 2, 5],
+                &[4, 5, 6],
+                &[7],
+                &[2, 3],
+                &[2, 5, 6, 8],
+                &[1, 8],
+            ],
+        );
+    }
+
+    #[test]
+    fn same_second_dags_count_like_graph_ahead_behind() {
+        assert_dag_matches_libgit2(
+            [100; 12],
+            &[
+                &[],
+                &[],
+                &[],
+                &[0],
+                &[2, 3],
+                &[3, 4],
+                &[5],
+                &[],
+                &[0, 2, 4, 6],
+                &[8],
+                &[7],
+                &[1, 6],
+            ],
+        );
+        assert_dag_matches_libgit2(
+            [100; 12],
+            &[
+                &[],
+                &[0],
+                &[1],
+                &[2],
+                &[0],
+                &[0],
+                &[0],
+                &[1, 3],
+                &[4, 7],
+                &[1, 3, 5, 8],
+                &[1, 2, 5, 7],
+                &[2],
+            ],
+        );
     }
 
     #[test]

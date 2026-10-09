@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
+import { untilDom } from "./untilCondition.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -389,7 +390,7 @@ describe("agent rail chat ownership", () => {
     // The queued draft is drawn once its own receipt lands, however many turns
     // that takes, so the case waits for its row rather than counting turns.
     const messages = () => [...host().querySelectorAll(".thread-message")].map((node) => node.textContent);
-    await vi.waitFor(() => expect(messages().some((text) => text.includes("send this when ready"))).toBe(true));
+    await untilDom(() => messages().some((text) => text.includes("send this when ready")));
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(1);
     expect(calls.filter((entry) => entry.method === "thread.post").map((entry) => entry.params.body)).toEqual([
       "create this agent",

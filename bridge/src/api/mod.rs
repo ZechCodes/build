@@ -90,6 +90,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "diffs.perFile",
     "errors.codes",
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
+    "fs.projectSourcePath", // Since 3.15.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
     "tasks.agentIdentities",
     "tasks.attachmentChunks",
@@ -401,6 +402,7 @@ impl ApiError {
         }
         if sentence.starts_with("stale thread_id")
             || sentence.starts_with("stale unversioned mutation")
+            || sentence == crate::app::MOVED_SOURCE
         {
             return ApiError::conflict(message, None);
         }

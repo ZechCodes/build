@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::fs::FS_MEDIA_READ_MAX_BYTES;
+use crate::app::fs::{FS_MEDIA_READ_MAX_BYTES, MOVED_SOURCE};
 use base64::Engine as _;
 
 /// Add a git worktree Build did not create, at `dir/name` on `branch`, cut
@@ -1925,6 +1925,150 @@ fn project_source_files_refuse_symlink_escape_without_writing() {
         "project_id": project_id, "source_id": "source-2", "path": "escape",
     }));
     assert_eq!(tree.unwrap_err(), "path escapes the worktree");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("notes.md")).unwrap(),
+        "git source\n"
+    );
+}
+
+/// A source moved after a tab captured it: the same `source_id` now resolves
+/// to the new folder. The tab's `source_path` is the folder it opened, and the
+/// bridge refuses every scoped verb that names the old one, even when the
+/// revision would still match there.
+#[test]
+fn project_source_files_refuse_a_source_path_captured_before_the_source_moved() {
+    let (directory, mut state, project_id, _repo, plain) = project_files_fixture();
+    let moved = directory.path().join("moved");
+    std::fs::create_dir(&moved).unwrap();
+    std::fs::write(moved.join("notes.md"), "plain source\n").unwrap();
+    let mut stale = project_file_params(&project_id, "source-2", "notes.md");
+    stale["source_path"] = json!(plain.display().to_string());
+    let read = state.handle(req(
+        "fs.read",
+        json!({
+            "project_id": project_id, "source_id": "source-2", "path": "notes.md",
+            "source_path": plain.display().to_string(),
+        }),
+    ));
+    assert_eq!(read["ok"], true, "{read}");
+
+    let update = state.handle(req(
+        "project.update_source",
+        json!({ "project_id": project_id, "source_id": "source-2", "path": moved }),
+    ));
+    assert_eq!(update["ok"], true, "{update}");
+
+    let save = state.handle(req("fs.write", stale.clone()));
+    assert_eq!(save["ok"], false, "{save}");
+    assert_eq!(save["error_code"], "conflict", "{save}");
+    assert_eq!(save["error"], MOVED_SOURCE, "{save}");
+    let sender = SessionSender::detached("uploader");
+    for (method, extra) in [
+        ("fs.tree", json!({})),
+        ("fs.read", json!({})),
+        (
+            "fs.createDirectory",
+            json!({ "parent": "", "name": "assets" }),
+        ),
+        (
+            "fs.uploadBegin",
+            json!({ "parent": "", "name": "new.bin", "size": 1 }),
+        ),
+    ] {
+        let mut params = json!({
+            "project_id": project_id, "source_id": "source-2",
+            "source_path": plain.display().to_string(),
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        if method == "fs.read" {
+            params["path"] = json!("notes.md");
+        }
+        let refused = upload_call(&mut state, &sender, method, params);
+        assert_eq!(refused["error_code"], "conflict", "{method}: {refused}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(moved.join("notes.md")).unwrap(),
+        "plain source\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.md")).unwrap(),
+        "plain source\n"
+    );
+    assert!(!moved.join("assets").exists());
+    assert!(!moved.join("new.bin").exists());
+
+    // The folder the source row now names is accepted.
+    let row_path = state.projects.get(&project_id).unwrap().sources[1]
+        .path
+        .display()
+        .to_string();
+    let mut fresh = stale;
+    fresh["source_path"] = json!(row_path);
+    let saved = state.handle(req("fs.write", fresh));
+    assert_eq!(saved["ok"], true, "{saved}");
+    assert_eq!(
+        std::fs::read_to_string(moved.join("notes.md")).unwrap(),
+        "after\n"
+    );
+}
+
+#[test]
+fn source_path_is_refused_outside_a_project_source_scope() {
+    let (_directory, mut state, project_id, repo, _plain) = project_files_fixture();
+    let path = repo.display().to_string();
+    for params in [
+        json!({ "project_id": project_id, "source_path": path }),
+        json!({ "run_id": "run-1", "source_path": path }),
+        json!({ "workspace_id": "workspace-1", "source_id": "source-1", "source_path": path }),
+    ] {
+        let refused = state.handle(req("fs.tree", params));
+        assert_eq!(refused["error_code"], "invalid_params", "{refused}");
+    }
+}
+
+/// Paths a Windows or case-insensitive client might expect to alias another
+/// file stay literal names on the bridge: a NUL byte, a `\` separator and a
+/// case variant neither reach outside the source nor create or replace a file.
+#[test]
+fn project_source_files_refuse_nul_backslash_and_case_variant_paths_without_writing() {
+    let (directory, mut state, project_id, repo, plain) = project_files_fixture();
+    let outside = directory.path().join("outside.md");
+    std::fs::write(&outside, "plain source\n").unwrap();
+    let before: Vec<_> = std::fs::read_dir(&plain)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    let mut paths = vec![
+        "notes.md\0",
+        "notes.md\0/../../outside.md",
+        "..\\outside.md",
+        "..\\..\\outside.md",
+        "sub\\notes.md",
+    ];
+    // On a case-insensitive filesystem a variant is the same file inside the
+    // source; where case matters it must not reach notes.md.
+    if !plain.join("NOTES.md").exists() {
+        paths.extend(["NOTES.md", "Notes.MD"]);
+    }
+    for path in paths {
+        let params = project_file_params(&project_id, "source-2", path);
+        for call in [AppState::fs_tree, AppState::fs_read, AppState::fs_write] {
+            assert!(call(&mut state, &params).is_err(), "{path:?}");
+        }
+    }
+    let after: Vec<_> = std::fs::read_dir(&plain)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(before, after);
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "plain source\n");
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.md")).unwrap(),
+        "plain source\n"
+    );
     assert_eq!(
         std::fs::read_to_string(repo.join("notes.md")).unwrap(),
         "git source\n"

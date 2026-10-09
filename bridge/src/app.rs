@@ -176,6 +176,7 @@ pub(crate) use config::{announce_isolation_downgrade, expand_tilde};
 use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
+pub(crate) use fs::MOVED_SOURCE;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 use projects::{
     default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,

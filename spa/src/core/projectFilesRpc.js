@@ -17,7 +17,13 @@ export function projectFilesRpc(context, primarySourceId, sourceOwner = null) {
       if (sourceOwner && sourceGeneration(sourceOwner.project, params.source_id) !== sourceGeneration(sourceOwner.currentProject(), params.source_id)) {
         throw new Error("This project folder moved. Reopen Files before reading or saving it.");
       }
-      if (!params.source_id || bridgeCapabilities(context.deviceId).fs?.projectSources) return context.rpc(method, params, ...options);
+      const fs = bridgeCapabilities(context.deviceId).fs;
+      if (params.source_id && fs?.projectSources && fs.projectSourcePath && sourceOwner) {
+        // The bridge refuses this folder itself once the source has moved.
+        const opened = sourceOwner.project?.sources?.find((entry) => entry.id === params.source_id);
+        if (opened) return context.rpc(method, { ...params, source_path: opened.path }, ...options);
+      }
+      if (!params.source_id || fs?.projectSources) return context.rpc(method, params, ...options);
       if (params.source_id !== primarySourceId) throw new Error("Update the bridge to browse this project folder.");
       const { source_id: _source, ...legacy } = params;
       return context.rpc(method, legacy, ...options);

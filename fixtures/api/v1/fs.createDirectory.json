@@ -15,6 +15,7 @@
     "invalid_params",
     "already_exists",
     "busy",
+    "conflict",
     "internal"
   ],
   "examples": [
@@ -23,11 +24,20 @@
         "project_id": "proj-1",
         "source_id": "source-2",
         "parent": "",
-        "name": "assets"
+        "name": "assets",
+        "source_path": "/home/me/src/docs"
       },
       "result": {
         "path": "assets"
       }
     }
-  ]
+  ],
+  "project_source_path": {
+    "since": "3.15.0",
+    "capability": "fs.projectSourcePath",
+    "params": [
+      "source_path"
+    ],
+    "refused_with": "conflict"
+  }
 }

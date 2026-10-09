@@ -164,6 +164,11 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
             .find(|(name, _)| *name == method)
             .unwrap();
         for field in ["root", "source_path", "host_path", "caller", "session_id"] {
+            // Scoped verbs take `source_path` (#360) only as a precondition the
+            // bridge compares with its own source row; it never picks the root.
+            if field == "source_path" && fixture.get("project_source_path").is_some() {
+                continue;
+            }
             let mut injected = fixture["params"].clone();
             injected[field] = serde_json::json!("/tmp/forged");
             assert!(
@@ -1151,5 +1156,36 @@ fn project_file_sources_are_announced_with_scoped_contract_examples() {
             handler.round_trip_result(&example["result"]).unwrap(),
             example["result"]
         );
+    }
+}
+
+#[test]
+fn project_source_paths_are_announced_on_every_scoped_file_verb() {
+    assert!(capabilities(false).contains(&"fs.projectSourcePath"));
+    for method in [
+        "fs.tree",
+        "fs.read",
+        "fs.write",
+        "fs.createDirectory",
+        "fs.uploadBegin",
+    ] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["project_source_path"]["since"], "3.15.0");
+        assert_eq!(
+            fixture["project_source_path"]["capability"],
+            "fs.projectSourcePath"
+        );
+        let example = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| example["params"]["source_path"].is_string())
+            .unwrap_or_else(|| panic!("{method}: no source_path example"));
+        let handler = &v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        handler.parse_params(&example["params"]).unwrap();
     }
 }

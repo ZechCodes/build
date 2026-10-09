@@ -50,6 +50,7 @@
       "fs.list",
       "fs.mediaRawPages",
       "fs.mkdir",
+      "fs.projectSourcePath",
       "fs.projectSources",
       "fs.read",
       "fs.tree",

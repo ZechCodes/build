@@ -96,7 +96,7 @@ describe("adapter selection", () => {
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
-      fs: { projectSources: false, uploads: false, createDirectory: false, createFile: false },
+      fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
       errors: { codes: true },
@@ -180,7 +180,7 @@ describe("adapter selection", () => {
       expect(selected.major).toBe(3);
       expect(selected.create(vi.fn()).capabilities).toEqual({
         changes: { subscriptions: false, kinds: [] },
-        fs: { projectSources: false, uploads: false, createDirectory: false, createFile: false },
+        fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
         requests: { priority: false },
         rtc: { clientLanCache: false },
         errors: { codes: false },
@@ -536,4 +536,9 @@ it("gates task body preconditions by capability name", () => {
   const previous = v1.capabilitiesOf({ api_version: "3.9.0", capabilities: ["tasks.update", "fs.projectSources"] });
   expect(previous.tasks.bodyPrecondition).toBe(false);
   expect(previous.fs.projectSources).toBe(true);
+});
+
+it("gates project source paths by capability name", () => {
+  expect(v1.capabilitiesOf({ api_version: "3.15.0", capabilities: ["fs.projectSources", "fs.projectSourcePath"] }).fs.projectSourcePath).toBe(true);
+  expect(v1.capabilitiesOf({ api_version: "3.14.0", capabilities: ["fs.projectSources"] }).fs.projectSourcePath).toBe(false);
 });

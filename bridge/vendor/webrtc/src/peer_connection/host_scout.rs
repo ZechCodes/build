@@ -506,7 +506,8 @@ impl HostScouts {
         if send_at >= interfaces_until {
             return Ok(false);
         }
-        // The pass's interface list, read outside the core lock, with the index and mask live.
+        // The pass's interface list and indexes, read outside the core lock, standing while
+        // the kernel reports no address change.
         if !owns(&group.subnet, destination) {
             // `clear` takes the resources lock, so this send's guards go first.
             drop(budget);
@@ -514,9 +515,16 @@ impl HostScouts {
             group.clear();
             return Err("no-on-link-interface");
         }
-        // The live lookups take time of their own; the list must still stand when they end.
-        // Only bookkeeping, with no wait, separates this check from the send.
-        if Instant::now() >= interfaces_until {
+        // The window, the snapshot and the list must all still stand when the check ends.
+        // Only bookkeeping, with no wait, separates this instant from the send.
+        let send_at = Instant::now();
+        if send_at >= expires {
+            return Err("window-expired");
+        }
+        if group.fresh(send_at).is_none() {
+            return Err(group.unavailable);
+        }
+        if send_at >= interfaces_until {
             return Ok(false);
         }
         if !budget.claim_tick(send_at) {
@@ -1061,6 +1069,56 @@ mod tests {
         assert_eq!(
             scouts.counters.attempted, 0,
             "nothing is sent on a list that lapsed before the send"
+        );
+    }
+    #[test]
+    fn a_window_that_expires_during_the_ownership_check_ends_the_scout() {
+        let now = Instant::now();
+        let (mut scouts, control) = sendable_scouts(now, 4245);
+        let expires = Instant::now() + Duration::from_millis(20);
+        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
+            std::thread::sleep(Duration::from_millis(40));
+            true
+        };
+        assert_eq!(
+            scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                expires,
+                now + FRESH,
+                slow_owns
+            ),
+            Some("window-expired")
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent once the probe's window has closed"
+        );
+    }
+    #[test]
+    fn a_neighbour_snapshot_that_lapses_during_the_ownership_check_ends_the_scout() {
+        let observed = Instant::now();
+        let (mut scouts, control) = sendable_scouts(observed, 4246);
+        let now = observed + FRESH - Duration::from_millis(20);
+        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
+            std::thread::sleep(Duration::from_millis(40));
+            true
+        };
+        std::thread::sleep(now.saturating_duration_since(Instant::now()));
+        scouts.send_one(
+            now,
+            &control,
+            "fixture",
+            40000,
+            now + FRESH,
+            now + FRESH,
+            slow_owns,
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent to a destination the snapshot no longer authorizes"
         );
     }
     #[test]

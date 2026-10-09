@@ -408,8 +408,10 @@ indication folds it into the deadline `send_real` checks after the budget
 lock, with the neighbour snapshot's lapse and the probe's window
 (`real_send_deadline`). `host_scout.rs` pins a scout held on a lapsed list,
 and a driver test pins the real-indication deadline taking the list's lapse
-when it comes first. A scout checks the lapse again after the ownership
-check, with only bookkeeping before the send. A
+when it comes first. A scout checks the window, the neighbour snapshot and
+the list again at one instant after the ownership check, with only
+bookkeeping before the send; `host_scout.rs` pins each lapsing during a slow
+check. A
 scout whose source is no longer owned releases its send's resource and
 budget locks before clearing the group, which takes the resource lock again;
 `host_scout.rs` pins both, the second with a 10 s deadlock bound. The

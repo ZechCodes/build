@@ -62,12 +62,13 @@ impl DeviceEnvironment {
         &self.claude_managed_root
     }
 
-    /// Whether `name` is set to something other than blanks. Only presence
-    /// is ever asked: a credential variable's value is not Build's to read.
+    /// Whether `name` is set to a credential, by the one presence rule
+    /// files follow too ([`super::adapters::is_blank`]). Only presence is ever
+    /// asked: a credential variable's value is not Build's to read.
     pub(super) fn has(&self, name: &str) -> bool {
         self.vars
             .get(OsStr::new(name))
-            .is_some_and(|value| !value.as_encoded_bytes().trim_ascii().is_empty())
+            .is_some_and(|value| !super::adapters::is_blank(&value.to_string_lossy()))
     }
 
     /// The directory `variable` names, or `relative` under the home.

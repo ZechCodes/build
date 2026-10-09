@@ -114,13 +114,29 @@ fn config_dir(environment: &DeviceEnvironment) -> PathBuf {
     environment.dir_or_home("CLAUDE_CONFIG_DIR", ".claude")
 }
 
-/// `.claude.json`: in the config directory when `CLAUDE_CONFIG_DIR` moves
-/// it, beside it in the home directory otherwise.
+/// The global config Claude Code reads, in its own order (2.1.284,
+/// `getGlobalClaudeFile` → `Lo`, traced in #466/c/tc-01M4HBBFWR9RWTQC2NBTCPR15Y):
+/// `<config dir>/.config.json` when that exists at all; otherwise
+/// `.claude<suffix>.json` in `CLAUDE_CONFIG_DIR`, or in the home directory
+/// when that is unset. The suffix (`VK`) is `-custom-oauth` under
+/// `CLAUDE_CODE_CUSTOM_OAUTH_URL` and empty for the production endpoint; the
+/// internal `local` and `staging` builds' suffixes are not followed.
 fn global_config_path(environment: &DeviceEnvironment) -> PathBuf {
-    if environment.has("CLAUDE_CONFIG_DIR") {
-        config_dir(environment).join(".claude.json")
+    let legacy = config_dir(environment).join(".config.json");
+    // `existsSync`: anything there, a symlink followed.
+    if std::fs::metadata(&legacy).is_ok() {
+        return legacy;
+    }
+    let suffix = if environment.has("CLAUDE_CODE_CUSTOM_OAUTH_URL") {
+        "-custom-oauth"
     } else {
-        environment.home().join(".claude.json")
+        ""
+    };
+    let name = format!(".claude{suffix}.json");
+    if environment.has("CLAUDE_CONFIG_DIR") {
+        config_dir(environment).join(name)
+    } else {
+        environment.home().join(name)
     }
 }
 
@@ -182,6 +198,7 @@ impl AuthAdapter for ClaudeAuth {
         let mut watched = settings_paths(environment).unwrap_or_default();
         watched.push(environment.claude_managed_root().join("managed-settings.d"));
         watched.push(credentials_path(environment));
+        watched.push(config_dir(environment).join(".config.json"));
         watched.push(global_config_path(environment));
         watched
     }

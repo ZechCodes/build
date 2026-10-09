@@ -50,9 +50,17 @@ pub trait AuthAdapter: Send + Sync {
     ) -> Result<AuthFacts, ObservationFailed>;
 }
 
-/// Whether a JSON value is there and holds something, read without keeping
-/// it: `null`, an empty string and a whitespace-only string are absent, and
-/// a credential's value is looked at in place and skipped, never held.
+/// The one presence rule, for files and variables alike: a credential is
+/// there only as a string holding something other than whitespace, by
+/// Unicode's definition (`str::trim`).
+pub(in crate::harness::inventory) fn is_blank(value: &str) -> bool {
+    value.trim().is_empty()
+}
+
+/// Whether a JSON value is a credential by [`is_blank`]'s rule, read without
+/// keeping it: only a nonblank string counts; `null`, booleans, numbers,
+/// arrays and objects do not. A value is looked at in place and skipped,
+/// never held.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Present(pub bool);
 
@@ -62,6 +70,8 @@ impl<'de> Deserialize<'de> for Present {
     }
 }
 
+/// Reads any JSON value as [`Present`] does: `true` for a nonblank string
+/// alone.
 struct PresenceVisitor;
 
 impl<'de> Visitor<'de> for PresenceVisitor {
@@ -72,7 +82,7 @@ impl<'de> Visitor<'de> for PresenceVisitor {
     }
 
     fn visit_str<E: de::Error>(self, value: &str) -> Result<bool, E> {
-        Ok(!value.trim().is_empty())
+        Ok(!is_blank(value))
     }
 
     fn visit_unit<E: de::Error>(self) -> Result<bool, E> {
@@ -88,29 +98,29 @@ impl<'de> Visitor<'de> for PresenceVisitor {
     }
 
     fn visit_bool<E: de::Error>(self, _: bool) -> Result<bool, E> {
-        Ok(true)
+        Ok(false)
     }
 
     fn visit_i64<E: de::Error>(self, _: i64) -> Result<bool, E> {
-        Ok(true)
+        Ok(false)
     }
 
     fn visit_u64<E: de::Error>(self, _: u64) -> Result<bool, E> {
-        Ok(true)
+        Ok(false)
     }
 
     fn visit_f64<E: de::Error>(self, _: f64) -> Result<bool, E> {
-        Ok(true)
+        Ok(false)
     }
 
     fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
         while seq.next_element::<IgnoredAny>()?.is_some() {}
-        Ok(true)
+        Ok(false)
     }
 
     fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
         while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
-        Ok(true)
+        Ok(false)
     }
 }
 
@@ -222,7 +232,7 @@ mod tests {
             absent: Present,
         }
         let held: Holder =
-            serde_json::from_str(r#"{"secret": {"nested": "sk-ant-x"}, "empty": " "}"#).unwrap();
+            serde_json::from_str(r#"{"secret": "sk-ant-x", "empty": "\u2003"}"#).unwrap();
         assert_eq!(
             (held.secret, held.empty, held.absent),
             (Present(true), Present(false), Present(false))

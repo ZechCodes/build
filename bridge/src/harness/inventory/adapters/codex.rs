@@ -110,7 +110,9 @@ fn from_file(file: &AuthFile) -> AuthFacts {
         .as_ref()
         .is_some_and(|tokens| tokens.access_token.0 || tokens.refresh_token.0);
     let method = match (Mode::of(file.auth_mode.as_deref()), tokens, file.api_key.0) {
-        (Mode::ExternalTokens, ..) => AuthMethod::External,
+        // A mode names how tokens arrive; only a token is a sign-in.
+        (Mode::ExternalTokens, true, _) => AuthMethod::External,
+        (Mode::ExternalTokens, false, _) => AuthMethod::None,
         (Mode::ApiKey, _, true) | (Mode::Unstated, false, true) => AuthMethod::ApiKey,
         (Mode::ChatGpt, true, _) | (Mode::Unstated, true, false) => AuthMethod::Oauth,
         (Mode::Unstated, true, true) => AuthMethod::Mixed,

@@ -101,7 +101,7 @@ enum KeyKind {
 impl KeyKind {
     /// Read in place, without copying the value anywhere.
     fn of(value: &str) -> KeyKind {
-        if value.trim().is_empty() {
+        if super::is_blank(value) {
             return KeyKind::Missing;
         }
         if value.starts_with('!') {
@@ -132,6 +132,30 @@ impl<'de> Deserialize<'de> for KeyKind {
                 Ok(KeyKind::of(value))
             }
             fn visit_unit<E: de::Error>(self) -> Result<KeyKind, E> {
+                Ok(KeyKind::Missing)
+            }
+            // Only a string is a key; any other value holds none.
+            fn visit_bool<E: de::Error>(self, _: bool) -> Result<KeyKind, E> {
+                Ok(KeyKind::Missing)
+            }
+            fn visit_i64<E: de::Error>(self, _: i64) -> Result<KeyKind, E> {
+                Ok(KeyKind::Missing)
+            }
+            fn visit_u64<E: de::Error>(self, _: u64) -> Result<KeyKind, E> {
+                Ok(KeyKind::Missing)
+            }
+            fn visit_f64<E: de::Error>(self, _: f64) -> Result<KeyKind, E> {
+                Ok(KeyKind::Missing)
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<KeyKind, A::Error> {
+                while seq.next_element::<de::IgnoredAny>()?.is_some() {}
+                Ok(KeyKind::Missing)
+            }
+            fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<KeyKind, A::Error> {
+                while map
+                    .next_entry::<de::IgnoredAny, de::IgnoredAny>()?
+                    .is_some()
+                {}
                 Ok(KeyKind::Missing)
             }
         }

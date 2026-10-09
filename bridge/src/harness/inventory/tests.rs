@@ -959,3 +959,268 @@ fn empty_or_blank_credential_values_count_as_absent() {
     }
     assert!(context(&snapshot, "pi").facts.providers.is_empty());
 }
+
+/// Where the Claude Code global config and credentials sit, with the config
+/// directory moved (`custom`) or not.
+fn claude_paths(device: &Device, custom: bool) -> (&'static str, &'static str) {
+    if custom {
+        device.set(
+            "CLAUDE_CONFIG_DIR",
+            &device.home().join("custom-claude").display().to_string(),
+        );
+        (
+            "custom-claude/.claude.json",
+            "custom-claude/.credentials.json",
+        )
+    } else {
+        (".claude.json", ".claude/.credentials.json")
+    }
+}
+
+/// Values that hold nothing: null, empty, and whitespace by Unicode's rule,
+/// vertical tab, no-break and em spaces included.
+const BLANKS: [&str; 6] = [
+    "",
+    " \t\r\n",
+    "\u{000b}",
+    "\u{00a0}",
+    "\u{2003}",
+    "\u{3000}\u{2028}",
+];
+
+/// Every credential variable the three adapters read by name.
+const CREDENTIAL_VARIABLES: [&str; 6] = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CODEX_API_KEY",
+    "GROQ_API_KEY",
+    "OPENAI_API_KEY",
+];
+
+/// #466 round 3: a blank variable is no credential, by the same rule as a
+/// blank value in a file.
+#[test]
+fn blank_credential_variables_are_absent_by_unicode_whitespace() {
+    for custom in [false, true] {
+        for blank in BLANKS {
+            let device = Device::new();
+            claude_paths(&device, custom);
+            for variable in CREDENTIAL_VARIABLES {
+                device.set(variable, blank);
+            }
+            let inventory = device.inventory();
+            inventory.sweep();
+            let snapshot = inventory.snapshot();
+            for id in ["claude", "codex", "pi"] {
+                assert_eq!(
+                    facts_of(&snapshot, id).1,
+                    AuthStatus::NotSignedIn,
+                    "custom={custom} blank={blank:?} {id}"
+                );
+            }
+        }
+    }
+}
+
+/// #466 round 3: the same blanks in every file field read, and in every
+/// settings `env` entry.
+#[test]
+fn blank_credential_file_values_are_absent_by_unicode_whitespace() {
+    let blanks = BLANKS
+        .iter()
+        .map(|blank| serde_json::json!(blank))
+        .chain([serde_json::Value::Null]);
+    for custom in [false, true] {
+        for blank in blanks.clone() {
+            let device = Device::new();
+            let (global, credentials) = claude_paths(&device, custom);
+            device.write(
+                global,
+                &serde_json::json!({"primaryApiKey": blank}).to_string(),
+            );
+            device.write(
+                credentials,
+                &serde_json::json!({"claudeAiOauth": {"accessToken": blank, "refreshToken": blank, "expiresAt": 99999999999999u64}}).to_string(),
+            );
+            device.write(
+                ".claude/settings.json",
+                &serde_json::json!({"apiKeyHelper": blank, "env": {"ANTHROPIC_API_KEY": blank, "CLAUDE_CODE_USE_BEDROCK": blank}}).to_string(),
+            );
+            device.write(
+                ".codex/auth.json",
+                &serde_json::json!({"OPENAI_API_KEY": blank, "tokens": {"access_token": blank, "refresh_token": blank}}).to_string(),
+            );
+            device.write(
+                ".pi/agent/auth.json",
+                &serde_json::json!({"openai": {"type": "api_key", "key": blank},
+                                    "anthropic": {"type": "oauth", "access": blank, "refresh": blank}}).to_string(),
+            );
+            let inventory = device.inventory();
+            inventory.sweep();
+            let snapshot = inventory.snapshot();
+            for id in ["claude", "codex", "pi"] {
+                assert_eq!(
+                    facts_of(&snapshot, id),
+                    (AuthMethod::None, AuthStatus::NotSignedIn, Health::Fresh),
+                    "custom={custom} blank={blank} {id}"
+                );
+            }
+        }
+    }
+}
+
+/// #466 round 3: a credential is a nonblank string. `false`, `0`, `[]` and
+/// `{}` are not one, in any credential field.
+#[test]
+fn only_a_nonblank_string_is_a_credential() {
+    let not_strings = [
+        serde_json::json!(false),
+        serde_json::json!(true),
+        serde_json::json!(0),
+        serde_json::json!(1),
+        serde_json::json!([]),
+        serde_json::json!(["sk"]),
+        serde_json::json!({}),
+        serde_json::json!({"key": "sk"}),
+    ];
+    for custom in [false, true] {
+        for value in &not_strings {
+            let device = Device::new();
+            let (global, credentials) = claude_paths(&device, custom);
+            device.write(
+                global,
+                &serde_json::json!({"primaryApiKey": value}).to_string(),
+            );
+            device.write(
+                credentials,
+                &serde_json::json!({"claudeAiOauth": {"accessToken": value, "refreshToken": value}}).to_string(),
+            );
+            device.write(
+                ".claude/settings.json",
+                &serde_json::json!({"apiKeyHelper": value, "env": {"ANTHROPIC_API_KEY": value}})
+                    .to_string(),
+            );
+            device.write(
+                ".codex/auth.json",
+                &serde_json::json!({"OPENAI_API_KEY": value, "tokens": {"access_token": value, "refresh_token": value}}).to_string(),
+            );
+            device.write(
+                ".pi/agent/auth.json",
+                &serde_json::json!({"anthropic": {"type": "oauth", "access": value, "refresh": value}}).to_string(),
+            );
+            let inventory = device.inventory();
+            inventory.sweep();
+            let snapshot = inventory.snapshot();
+            for id in ["claude", "codex", "pi"] {
+                assert_eq!(
+                    facts_of(&snapshot, id).1,
+                    AuthStatus::NotSignedIn,
+                    "custom={custom} value={value} {id}"
+                );
+            }
+        }
+    }
+}
+
+/// #466 round 3: externally managed ChatGPT tokens are signed in only while
+/// a token is there.
+#[test]
+fn codex_external_token_mode_needs_a_token() {
+    let token_sets = [
+        (
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            AuthStatus::NotSignedIn,
+        ),
+        (
+            serde_json::json!(""),
+            serde_json::json!(" "),
+            AuthStatus::NotSignedIn,
+        ),
+        (
+            serde_json::json!("\u{00a0}"),
+            serde_json::json!("\u{2003}"),
+            AuthStatus::NotSignedIn,
+        ),
+        (
+            serde_json::json!(0),
+            serde_json::json!(false),
+            AuthStatus::NotSignedIn,
+        ),
+        (
+            serde_json::json!("at-SECRET"),
+            serde_json::Value::Null,
+            AuthStatus::SignedIn,
+        ),
+    ];
+    for (access, refresh, expected) in token_sets {
+        let device = Device::new();
+        device.write(
+            ".codex/auth.json",
+            &serde_json::json!({"auth_mode": "chatgptAuthTokens",
+                                "tokens": {"access_token": access, "refresh_token": refresh}})
+            .to_string(),
+        );
+        let inventory = device.inventory();
+        inventory.sweep();
+        let (method, status, _) = facts_of(&inventory.snapshot(), "codex");
+        assert_eq!(status, expected, "access={access} refresh={refresh}");
+        if expected == AuthStatus::SignedIn {
+            assert_eq!(method, AuthMethod::External);
+        }
+    }
+}
+
+/// #466 round 3: Claude Code 2.1.284 reads `<config dir>/.config.json` when
+/// it exists, and only otherwise `.claude.json`.
+#[test]
+fn claude_global_config_follows_claude_code_s_precedence() {
+    // (legacy file, its key, fallback key, expected status)
+    let cases = [
+        (true, true, false, AuthStatus::SignedIn),
+        (true, false, true, AuthStatus::NotSignedIn),
+        (false, false, true, AuthStatus::SignedIn),
+        (false, false, false, AuthStatus::NotSignedIn),
+    ];
+    for custom in [false, true] {
+        for (legacy, legacy_key, fallback_key, expected) in cases {
+            let device = Device::new();
+            let (global, _) = claude_paths(&device, custom);
+            let legacy_path = if custom {
+                "custom-claude/.config.json"
+            } else {
+                ".claude/.config.json"
+            };
+            let with_key = |key: bool| {
+                if key {
+                    r#"{"primaryApiKey": "sk-ant-api-SECRET"}"#
+                } else {
+                    "{}"
+                }
+            };
+            if legacy {
+                device.write(legacy_path, with_key(legacy_key));
+            }
+            device.write(global, with_key(fallback_key));
+            let inventory = device.inventory();
+            inventory.sweep();
+            assert_eq!(
+                facts_of(&inventory.snapshot(), "claude").1,
+                expected,
+                "custom={custom} legacy={legacy} legacy_key={legacy_key} fallback_key={fallback_key}"
+            );
+        }
+    }
+    // A custom OAuth endpoint names its own global config.
+    let device = Device::new();
+    device.set("CLAUDE_CODE_CUSTOM_OAUTH_URL", "https://example.test/oauth");
+    device.write(".claude.json", r#"{"primaryApiKey": "sk-ant-api-SECRET"}"#);
+    device.write(".claude-custom-oauth.json", "{}");
+    let inventory = device.inventory();
+    inventory.sweep();
+    assert_eq!(
+        facts_of(&inventory.snapshot(), "claude").1,
+        AuthStatus::NotSignedIn
+    );
+}

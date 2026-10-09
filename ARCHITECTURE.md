@@ -896,10 +896,22 @@ replays Git; it finalizes recorded complete integration or preserves incomplete
 or uncertain work for explicit retry, excluding live merge workers.
 
 Explicit merge retries keep the saved completed or partially integrated plan
-and its recorded results. Running or interrupted work also keeps its recovery
-identity. If a failed plan integrated no source and has no uncertain Git work,
-the caller can confirm the current review version to admit a fresh plan after
-the review changes. Successful integration is retained rather than repeated.
+and its recorded results. RPC selection matches the snapshot, included directories
+and Push destinations independently of the retrying actor, so a browser can
+resume an agent's intent, including older actor-hashed request IDs. Running or
+interrupted work also keeps its recovery identity.
+
+For a partial plan with known outcomes, an explicit current-version and current-
+target confirmation refreshes admission under the merge lease and receiving/target
+ref locks. Only unresolved target preconditions and admission versions change;
+the request ID, original actor, saved heads, source identities, Push destinations
+and action results remain. Successful sources must remain integrated, and Git
+fences each remaining merge against its confirmed tip. Running or uncertain work
+cannot be refreshed. The SPA offers a separate preparation step with fixed Push
+choices; preparing the form never dispatches Git. Historical plans retain their
+publication-only recovery path without admitting a new merge. If a failed plan
+integrated no source and has no uncertain Git work, the caller can still confirm
+the current review version to admit a fresh plan after the review changes.
 
 Reclaim holds a workspace while a durable merge is running or publication of a
 recorded successful merge tip remains unsettled, even after the PR reaches Done

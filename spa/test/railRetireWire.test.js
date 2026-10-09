@@ -232,6 +232,10 @@ afterEach(async () => {
   sync.stopCacheSync();
   feed.stopFeed();
   (await import("../src/core/inboxView.js")).unmountInboxList();
+  // The shell's rail listens to the app-wide reference index, which keeps
+  // re-reading task lists; left standing, a read landing after the file's
+  // document is gone repaints it ("document is not defined", full run 2).
+  (await import("../src/core/shell.js")).stopShell();
   delete globalThis.RTCPeerConnection;
 });
 

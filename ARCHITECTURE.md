@@ -362,8 +362,7 @@ runtime that starts them.
   `reopen` and `refresh`, under the `tasks.review.` namespace (#405). Each is
   announced by its verb name; `tasks.review.pullRequests` separately announces PR
   mode, lifecycle, summaries and sync observations. Legacy Snapshot review
-  verbs retain their contracts and individual capabilities. Sync observations
-  also carry the optional commits-since-review fields (#427). See Task reviews.
+  verbs retain their contracts and individual capabilities. See Task reviews.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,

@@ -356,6 +356,8 @@ impl Dump {
             }
             return Ok(());
         }
+        // Hints take the same dynamic states as scout snapshots; PERMANENT and NOARP entries
+        // are configured rather than observed and are never prioritized.
         if owner <= 0
             || owner as u32 != interface_index
             || !matches!(
@@ -389,6 +391,9 @@ impl Dump {
             return Err(oversized_dump());
         }
         self.states.insert(address, state);
+        // Only kernel-resolved dynamic entries are probed. PERMANENT and NOARP neighbours are
+        // configured, not observed: their presence says nothing about a device answering now,
+        // so they never become real-indication destinations. They still count toward pressure.
         let target = match state {
             libc::NUD_REACHABLE | libc::NUD_STALE | libc::NUD_DELAY => &mut self.addresses,
             libc::NUD_INCOMPLETE => &mut self.incomplete,
@@ -960,5 +965,27 @@ mod tests {
             .consume(&message(1, 0, SEQUENCE, &[])[..8], OWNER)
             .unwrap_err();
         assert_eq!(failure_reason(&error), "neighbor-snapshot-unavailable");
+    }
+
+    #[test]
+    fn permanent_and_noarp_neighbors_are_never_usable_destinations() {
+        let mut dump = Dump::scout();
+        for (state, octet) in [
+            (libc::NUD_PERMANENT, 1),
+            (libc::NUD_NOARP, 2),
+            (libc::NUD_REACHABLE, 3),
+        ] {
+            dump.consume(
+                &neighbor(2, OWNER, state, Ipv4Addr::new(10, 1, 2, octet)),
+                OWNER,
+            )
+            .unwrap();
+        }
+        assert_eq!(dump.addresses, vec![Ipv4Addr::new(10, 1, 2, 3)]);
+        assert!(dump.incomplete.is_empty() && dump.failed.is_empty());
+        assert_eq!(
+            dump.netns_total, 3,
+            "they still count toward table pressure"
+        );
     }
 }

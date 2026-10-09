@@ -377,6 +377,11 @@ without one. Equal `gc_thresh2` and `gc_thresh3` are a valid tuning and now
 admit scouts under the same pending cap and 75% occupancy ceiling; before,
 they refused every scout as `neighbor-pressure`.
 
+PERMANENT and NOARP neighbours are never real-indication destinations, nor
+prioritized: they are configured rather than observed, so they say nothing
+about a device answering now. They still count toward table pressure. The
+decision is documented where `host_neighbors.rs` classifies states.
+
 #383 recovery regressions cover direct-selected PRFLX followed by a native
 credential-changing restart onto relay: fresh sweep counters start at zero,
 old tuple evidence is retired, and the recovery candidate port can follow a

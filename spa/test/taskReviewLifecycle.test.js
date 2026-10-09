@@ -100,7 +100,8 @@ it("offers reclaim only for a settled merge and follows cached locks, including 
   await whenDom(host, () => host.querySelector('[data-review-delete-error]')?.textContent.includes('Workspace is locked'));
   expect(callRpc).toHaveBeenCalledWith('workspace.reclaim', { workspace_id: review.workspace_id });
   expect(button.disabled).toBe(false);
-  controls.update(merged, { review: merged, merge_intents: [{ state: 'failed' }] });
+  const publicationFailure = mergeFixture.examples[1].result;
+  controls.update(publicationFailure.review, publicationFailure);
   expect(host.querySelector('[data-review-reclaim]')).toBeNull();
 });
 

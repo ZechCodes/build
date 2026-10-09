@@ -840,6 +840,21 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     void tabs.open(key);
   };
 
+  /** A file the New menu just made: its path may still hold the body of a
+   *  file deleted there before, and an ignored path sends no push to replace
+   *  it. Read it into the cache first, so an open tab of that path repaints
+   *  through its watch and a new one opens on the new body. */
+  const openCreated = async (key) => {
+    const address = fileAddress(key);
+    try {
+      const file = await callRpc("fs.read", { ...scopeOf(key), path: pathOf(key) });
+      if (address) await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage: storePageReader(key, file) });
+    } catch {
+      if (address) await deleteCached([address]);
+    }
+    if (!disposed) openFromTree(key);
+  };
+
   const tree = roots
     ? mountFileRoots(treeListEl, { roots, collapsedAddress: layoutAddress("roots"), treeFor, onOpen: openFromTree })
     : mountFileTree(treeListEl, { ...treeFor(checkout.roots[0]), onOpen: (path) => openFromTree(path) });
@@ -858,7 +873,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     treeEl, viewerEl: body.querySelector("#fpreview"), roots: checkout.roots,
     keyOf: checkout.keyOf, tree, callRpc, deviceId: filesDeviceId(cacheScope),
     listingAddress: (root, parent) => rootAddress(root, "tree", parent),
-    onOpen: openFromTree,
+    onOpen: (key) => void openCreated(key),
   });
 
   if (openKey) void tree.reveal(openKey);

@@ -32,18 +32,22 @@ const mount = (source, callRpc) => {
 };
 const fakeRpc = () => {
   const listings = { "": [{ name: "ignored", kind: "dir" }], ignored: [] };
+  const bodies = {};
   let file;
   const callRpc = vi.fn(async (method, params) => {
     if (method === "fs.tree") return { path: params.path, entries: [...(listings[params.path] || [])] };
     if (method === "fs.createDirectory") { listings[params.parent].push({ name: params.name, kind: "dir" }); return { path: `${params.parent}/${params.name}` }; }
     if (method === "fs.createFile") { listings[params.parent].push({ name: params.name, kind: "file", size: 0 }); return { path: `${params.parent}/${params.name}` }; }
-    if (method === "fs.read") return { path: params.path, size: 0, truncated: false, mime: "text/plain", content_b64: "", editable: true, encoding: "utf-8", revision: "e3b0c442" };
+    if (method === "fs.read") {
+      const body = bodies[params.path] || "";
+      return { path: params.path, size: body.length, truncated: false, mime: "text/plain", content_b64: btoa(body), editable: true, encoding: "utf-8", revision: body ? "old" : "e3b0c442" };
+    }
     if (method === "fs.uploadBegin") { file = params; return { upload_id: "u", path: `${params.parent}/${params.name}`, chunk_bytes: 2 }; }
     if (method === "fs.uploadChunk") return { received: params.offset + atob(params.content_b64).length };
     if (method === "fs.uploadFinish") { listings[file.parent].push({ name: file.name, kind: "file", size: file.size }); return { path: `${file.parent}/${file.name}`, size: file.size }; }
     throw new Error(`Unexpected ${method}`);
   });
-  return callRpc;
+  return Object.assign(callRpc, { listings, bodies });
 };
 const chooseFiles = (host) => {
   host.querySelector('[data-path="ignored"] [data-upload-action="upload"]').click();
@@ -84,6 +88,40 @@ for (const source of sources) {
     await vi.waitFor(() => expect(host.querySelector('[data-path="ignored/notes.md"]')?.getAttribute("aria-current")).toBe("true"));
     expect(rpc).toHaveBeenCalledWith("fs.createFile", { ...source.scope, parent: "ignored", name: "notes.md" });
     expect(rpc.mock.calls.some(([method, params]) => method === "fs.read" && params.path === "ignored/notes.md")).toBe(true);
+  });
+}
+const createFileFromMenu = (host, name) => {
+  host.querySelector('[data-path="ignored"] .fupload-new .caret').click();
+  host.querySelector('[data-path="ignored"] .fupload-new [data-action="file"]').click();
+  const input = host.querySelector('.fupload-folder input[aria-label="New file name"]'); input.value = name;
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+};
+const reads = (rpc, path) => rpc.mock.calls.filter(([method, params]) => method === "fs.read" && params.path === path).length;
+// An ignored path sends no files push, so a body held from before a delete
+// would otherwise come back as the new empty file's.
+for (const [label, openOther] of [["shown", false], ["open behind another tab", true]]) {
+  it(`shows a recreated file empty, not the body held from before it was deleted, when its tab is ${label}`, async () => {
+    await rememberFileUploadSupport(device, { fs: { uploads: true, createDirectory: true, createFile: true } });
+    const rpc = fakeRpc();
+    rpc.listings.ignored.push({ name: "notes.txt", kind: "file", size: 11 }, { name: "other.txt", kind: "file", size: 0 });
+    rpc.bodies["ignored/notes.txt"] = "old content";
+    const { host } = mount(sources[2], rpc);
+    await vi.waitFor(() => expect(host.querySelector('[data-path="ignored"] .fupload-new .caret')).toBeTruthy());
+    host.querySelector('[data-path="ignored"]').click();
+    await vi.waitFor(() => expect(host.querySelector('[data-path="ignored/notes.txt"]')).toBeTruthy());
+    host.querySelector('[data-path="ignored/notes.txt"]').click();
+    await vi.waitFor(() => expect(host.querySelector(".fpbody")?.textContent).toContain("old content"));
+    if (openOther) {
+      host.querySelector('[data-path="ignored/other.txt"]').click();
+      await vi.waitFor(() => expect(host.querySelector(".fppath")?.textContent).toBe("ignored/other.txt"));
+    }
+    rpc.listings.ignored.splice(rpc.listings.ignored.findIndex((entry) => entry.name === "notes.txt"), 1);
+    delete rpc.bodies["ignored/notes.txt"];
+    const before = reads(rpc, "ignored/notes.txt");
+    createFileFromMenu(host, "notes.txt");
+    await vi.waitFor(() => expect(reads(rpc, "ignored/notes.txt")).toBeGreaterThan(before));
+    await vi.waitFor(() => expect(host.querySelector(".fppath")?.textContent).toBe("ignored/notes.txt"));
+    await vi.waitFor(() => expect(host.querySelector(".fpbody")?.textContent).not.toContain("old content"));
   });
 }
 it("keeps an upload and completion refresh through a Files remount", async () => {

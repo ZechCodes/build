@@ -1,6 +1,7 @@
-//! Commits since the user's last reviewed head, under a traversal budget so
-//! one large history cannot stall the serial sync worker (#453).
+//! Commits since the user's last reviewed head, under a commit budget so one
+//! large history cannot stall the serial sync worker (#453).
 use git2::{Oid, Repository};
+use std::collections::{BinaryHeap, HashMap};
 
 /// Commits examined at most per calculation; past it the count is absent.
 pub(super) const WALK_LIMIT: usize = 2000;
@@ -34,23 +35,37 @@ pub(super) fn since_review(
         return Some(SinceReview::Count(0));
     }
     let mut walk = Walk::new(repository, limit);
-    walk.paint(head, AFTER)?;
-    walk.paint(reviewed, REVIEWED)?;
+    walk.paint(head, AFTER, false)?;
+    walk.paint(reviewed, REVIEWED, false)?;
     walk.run()?;
     Some(walk.outcome(reviewed))
 }
 
 const AFTER: u8 = 1;
 const REVIEWED: u8 = 2;
+const BOTH: u8 = AFTER | REVIEWED;
 
-/// Git's two-colour, newest-first walk: commits painted only from the head
-/// are the ones since review; it stops once every queued commit is reachable
-/// from the reviewed head, or when the budget is spent.
+#[cfg(test)]
+thread_local! { static LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
+/// libgit2's ahead/behind paint: commits reached only from the head are the
+/// ones since review. A commit popped with both colours marks its parents
+/// stale, and the walk ends once only stale commits are queued, so a commit
+/// first reached from the head is still repainted when the reviewed side
+/// arrives later, whatever the timestamps. Every commit lookup spends one unit
+/// of the budget, parents of a wide merge included.
 struct Walk<'r> {
     repository: &'r Repository,
     budget: usize,
-    colours: std::collections::HashMap<Oid, u8>,
-    queue: std::collections::BinaryHeap<(i64, Oid)>,
+    commits: HashMap<Oid, Painted>,
+    queue: BinaryHeap<(i64, Oid)>,
+}
+
+struct Painted {
+    time: i64,
+    parents: Vec<Oid>,
+    colour: u8,
+    stale: bool,
 }
 
 impl<'r> Walk<'r> {
@@ -58,44 +73,57 @@ impl<'r> Walk<'r> {
         Self {
             repository,
             budget,
-            colours: Default::default(),
-            queue: Default::default(),
+            commits: HashMap::new(),
+            queue: BinaryHeap::new(),
         }
     }
 
-    fn paint(&mut self, oid: Oid, colour: u8) -> Option<()> {
-        let painted = self.colours.entry(oid).or_default();
-        if *painted & colour == colour {
-            return Some(());
+    fn load(&mut self, oid: Oid) -> Option<Painted> {
+        self.budget = self.budget.checked_sub(1)?;
+        #[cfg(test)]
+        LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+        let commit = self.repository.find_commit(oid).ok()?;
+        Some(Painted {
+            time: commit.time().seconds(),
+            parents: commit.parent_ids().collect(),
+            colour: 0,
+            stale: false,
+        })
+    }
+
+    fn paint(&mut self, oid: Oid, colour: u8, stale: bool) -> Option<()> {
+        if !self.commits.contains_key(&oid) {
+            let loaded = self.load(oid)?;
+            self.commits.insert(oid, loaded);
         }
-        *painted |= colour;
-        let time = self.repository.find_commit(oid).ok()?.time().seconds();
-        self.queue.push((time, oid));
+        let painted = self.commits.get_mut(&oid)?;
+        let changed = painted.colour | colour != painted.colour || (stale && !painted.stale);
+        painted.colour |= colour;
+        painted.stale |= stale;
+        if changed {
+            self.queue.push((painted.time, oid));
+        }
         Some(())
     }
 
-    fn only_after(&self, oid: &Oid) -> bool {
-        self.colours.get(oid) == Some(&AFTER)
-    }
-
     fn run(&mut self) -> Option<()> {
-        while self.queue.iter().any(|(_, oid)| self.only_after(oid)) {
+        while self.queue.iter().any(|(_, oid)| !self.commits[oid].stale) {
             let (_, oid) = self.queue.pop()?;
-            self.budget = self.budget.checked_sub(1)?;
-            let colour = self.colours[&oid];
-            let commit = self.repository.find_commit(oid).ok()?;
-            for parent in commit.parent_ids() {
-                self.paint(parent, colour)?;
+            let painted = &self.commits[&oid];
+            let (colour, parents) = (painted.colour, painted.parents.clone());
+            let stale = painted.stale || colour == BOTH;
+            for parent in parents {
+                self.paint(parent, colour, stale)?;
             }
         }
         Some(())
     }
 
     fn outcome(&self, reviewed: Oid) -> SinceReview {
-        if self.colours[&reviewed] & AFTER == 0 {
+        if self.commits[&reviewed].colour & AFTER == 0 {
             return SinceReview::Rewritten;
         }
-        let count = self.colours.values().filter(|&&c| c == AFTER).count();
+        let count = self.commits.values().filter(|c| c.colour == AFTER).count();
         SinceReview::Count(count as u64)
     }
 }
@@ -147,6 +175,84 @@ mod tests {
         );
     }
 
+    /// ancestor ← reviewed, ancestor ← side, merge of [reviewed, side].
+    fn merge_fixture(repo: &Repository, times: [i64; 4], salt: usize) -> (Oid, Oid) {
+        let tree = repo.head().unwrap().peel_to_tree().unwrap();
+        let at = |label: &str, seconds, parents: &[Oid]| {
+            let sig =
+                git2::Signature::new("t", "t@example.com", &git2::Time::new(seconds, 0)).unwrap();
+            let parents: Vec<_> = parents
+                .iter()
+                .map(|p| repo.find_commit(*p).unwrap())
+                .collect();
+            let parents: Vec<_> = parents.iter().collect();
+            let message = format!("{label} {salt}");
+            repo.commit(None, &sig, &sig, &message, &tree, &parents)
+                .unwrap()
+        };
+        let ancestor = at("ancestor", times[0], &[]);
+        let reviewed = at("reviewed", times[1], &[ancestor]);
+        let side = at("side", times[2], &[ancestor]);
+        (at("merge", times[3], &[reviewed, side]), reviewed)
+    }
+
+    fn assert_counts_like_libgit2(repo: &Repository, merge: Oid, reviewed: Oid) {
+        let (ahead, _) = repo.graph_ahead_behind(merge, reviewed).unwrap();
+        assert_eq!(ahead, 2);
+        assert_eq!(
+            since_review(repo, merge, reviewed, WALK_LIMIT),
+            Some(SinceReview::Count(ahead as u64))
+        );
+    }
+
+    #[test]
+    fn clock_skew_counts_like_graph_ahead_behind() {
+        let (_dir, path) = init_repo();
+        let repo = Repository::open(&path).unwrap();
+        let (merge, reviewed) = merge_fixture(&repo, [100, 10, 110, 120], 0);
+        assert_counts_like_libgit2(&repo, merge, reviewed);
+    }
+
+    #[test]
+    fn same_second_merges_count_like_graph_ahead_behind() {
+        let (_dir, path) = init_repo();
+        let repo = Repository::open(&path).unwrap();
+        for salt in 0..32 {
+            let (merge, reviewed) = merge_fixture(&repo, [100; 4], salt);
+            assert_counts_like_libgit2(&repo, merge, reviewed);
+        }
+    }
+
+    #[test]
+    fn the_budget_caps_lookups_on_a_wide_merge() {
+        let (_dir, path) = init_repo();
+        let repo = Repository::open(&path).unwrap();
+        let reviewed = head(&path);
+        let base = repo.find_commit(reviewed).unwrap();
+        let tree = base.tree().unwrap();
+        let sig = repo.signature().unwrap();
+        let sides: Vec<_> = (0..60)
+            .map(|n| {
+                let oid = repo
+                    .commit(None, &sig, &sig, &format!("side {n}"), &tree, &[&base])
+                    .unwrap();
+                repo.find_commit(oid).unwrap()
+            })
+            .collect();
+        let parents: Vec<_> = sides.iter().collect();
+        let merge = repo
+            .commit(None, &sig, &sig, "wide", &tree, &parents)
+            .unwrap();
+        let before = LOOKUPS.with(std::cell::Cell::get);
+        assert_eq!(since_review(&repo, merge, reviewed, 20), None);
+        let lookups = LOOKUPS.with(std::cell::Cell::get) - before;
+        assert!(lookups <= 21, "{lookups} lookups for a budget of 20");
+        assert_eq!(
+            since_review(&repo, merge, reviewed, WALK_LIMIT),
+            Some(SinceReview::Count(61))
+        );
+    }
+
     #[test]
     fn a_reviewed_head_off_the_history_is_rewritten() {
         let (_dir, path) = init_repo();
@@ -174,11 +280,16 @@ mod tests {
         );
         let old = commit(&path, "old");
         git_in(&path, &["commit", "--amend", "-m", "rewritten"]);
-        // Two commits prove this rewrite; one cannot, whatever their timestamps.
+        commit(&path, "e");
+        commit(&path, "f");
         assert_eq!(
-            since_review(&repo, head(&path), old, 1),
+            since_review(&repo, head(&path), old, 2),
             None,
             "an exhausted budget is not proof of a rewrite"
+        );
+        assert_eq!(
+            since_review(&repo, head(&path), old, WALK_LIMIT),
+            Some(SinceReview::Rewritten)
         );
     }
 }

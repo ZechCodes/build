@@ -362,6 +362,10 @@
       "type": "models.changed"
     },
     {
+      "type": "harnesses.changed",
+      "revision": 42
+    },
+    {
       "type": "term.output",
       "term_id": "term-1",
       "data": "aGVsbG8gd29ybGQK",

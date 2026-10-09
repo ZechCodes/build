@@ -42,6 +42,10 @@ impl Harness for ClaudeHarness {
         "claude"
     }
 
+    fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
+        &crate::harness::inventory::CLAUDE_AUTH
+    }
+
     /// Every row carries `min_cli`: the Claude Code version whose changelog
     /// says "Added Claude <model>" (anthropics/claude-code CHANGELOG.md), cited
     /// beside it. An older CLI is refused by the API or runs the model at a

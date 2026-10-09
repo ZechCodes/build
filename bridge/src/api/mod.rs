@@ -49,7 +49,9 @@ use std::collections::BTreeSet;
 /// 3.15.0 adds PR review mutations, summaries and sync observations (#405).
 /// 3.16.0 adds scoped empty file creation (`fs.createFile`, #433).
 /// 3.17.0 adds `source_path` on project source file scopes (#360).
-pub const API_VERSION: &str = "3.17.0";
+/// 3.18.0 adds the harness inventory: `harnesses.list`, `harnesses.refresh`
+/// and the `harnesses.changed` push (#434).
+pub const API_VERSION: &str = "3.18.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.

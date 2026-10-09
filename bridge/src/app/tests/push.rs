@@ -166,7 +166,8 @@ async fn the_greeting_announces_push_events() {
             "changes",
             "bridge.update_status",
             "models.changed",
-            "rtc.diagnostics"
+            "rtc.diagnostics",
+            "harnesses.changed"
         ]),
         "{hello:?}"
     );

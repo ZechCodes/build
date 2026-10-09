@@ -220,35 +220,14 @@ pub fn provider_catalogs_from(
         .collect()
 }
 
-/// Whether a program can be found on `PATH`.
+/// Whether a program can be found on `PATH`, as an executable file.
 ///
-/// Answered once per program and remembered. This is asked every time a tool
-/// list is built — which is every session open — and a harness that was
-/// installed a moment ago is not going to be uninstalled between two of them.
-/// A bridge restart asks again, which is when the answer could have changed.
-///
-/// No execution: existence and the executable bit, nothing run. Probing by
-/// running `--version` is what the codex harness does to read a version, and
-/// it costs a process per ask; this question does not need one.
+/// Asked afresh every time: an install or removal is seen at once, without a
+/// bridge restart (#434). No execution: the `PATH` walk, existence and the
+/// executable bit, a few `stat`s per ask (`harness::installed::executable`,
+/// the same resolution the CLI probes and the harness inventory use).
 pub fn binary_is_on_path(program: &str) -> bool {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
-        std::sync::OnceLock::new();
-    let seen = SEEN.get_or_init(Default::default);
-    if let Some(found) = seen.lock().ok().and_then(|seen| seen.get(program).copied()) {
-        return found;
-    }
-    let found = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path).any(|directory| {
-                let candidate = directory.join(program);
-                std::fs::metadata(&candidate).is_ok_and(|found| found.is_file())
-            })
-        })
-        .unwrap_or(false);
-    if let Ok(mut seen) = seen.lock() {
-        seen.insert(program.to_string(), found);
-    }
-    found
+    crate::harness::installed::executable::identify(program).is_some()
 }
 
 /// Whether `model` has the shape of a model id: short, and shell-sane

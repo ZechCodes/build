@@ -36,6 +36,14 @@ impl Harness for PiHarness {
         "pi"
     }
 
+    fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
+        &crate::harness::inventory::PI_AUTH
+    }
+
+    fn cli_probe(&self) -> &'static dyn crate::harness::installed::CliProbe {
+        &crate::harness::installed::VERSION_FLAG
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         Vec::new()
     }

@@ -79,6 +79,9 @@ pub struct CodexSessionState {
     last_completion: Option<TurnCompletion>,
     completed_turns: VecDeque<String>,
     reported_error: Option<String>,
+    /// The CLI version this session said it runs, held for the harness
+    /// inventory until the session ends. Shared by every copy of the state.
+    running_version: Option<crate::harness::inventory::ReportedVersion>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,6 +178,7 @@ impl CodexSessionState {
             last_completion: None,
             completed_turns: VecDeque::new(),
             reported_error: None,
+            running_version: None,
         }
     }
 
@@ -246,6 +250,7 @@ impl CodexSessionState {
             SessionEvent::ObservedError(notification) => self.observe_error(notification),
             SessionEvent::Eof => {
                 self.phase = Phase::Ended;
+                self.running_version = None;
                 Ok(vec![SessionEffect::Close])
             }
             _ => unreachable!(),
@@ -456,11 +461,8 @@ impl CodexSessionState {
         };
         match leading_user_agent_version(&user_agent) {
             Some(version) => {
-                crate::harness::installed::observe_version(
-                    crate::models::AgentProvider::CodexAppServer,
-                    &version.to_string(),
-                );
-                accept_version(version)?;
+                accept_version(version.clone())?;
+                self.report_running_version(&version);
                 self.finish_initialize()
             }
             None => {
@@ -490,8 +492,16 @@ impl CodexSessionState {
             .ok_or_else(|| {
                 version_rejection(format!("could not parse Codex version from {observed:?}"))
             })?;
-        accept_version(version)?;
+        accept_version(version.clone())?;
+        self.report_running_version(&version);
         self.finish_initialize()
+    }
+
+    fn report_running_version(&mut self, version: &Version) {
+        self.running_version = crate::harness::inventory::report_running_version(
+            AgentProvider::CodexAppServer,
+            &version.to_string(),
+        );
     }
 
     fn finish_initialize(&mut self) -> Result<Vec<SessionEffect>, StateError> {

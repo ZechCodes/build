@@ -4,14 +4,14 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Clone, PartialEq, Eq)]
-pub(super) struct Executable {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Executable {
     path: PathBuf,
     resolved: PathBuf,
     modified: Option<SystemTime>,
 }
 
-pub(super) fn identify(binary: &str) -> Option<Executable> {
+pub fn identify(binary: &str) -> Option<Executable> {
     let path = std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into());
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -19,11 +19,21 @@ pub(super) fn identify(binary: &str) -> Option<Executable> {
     identify_on_path(binary, &path, &home)
 }
 
-fn identify_on_path(binary: &str, path: &std::ffi::OsStr, home: &Path) -> Option<Executable> {
+/// The same, on an explicit `PATH` and home: the device environment the
+/// harness inventory observes, which a test points at a temporary home.
+pub fn identify_on_path(binary: &str, path: &std::ffi::OsStr, home: &Path) -> Option<Executable> {
     if binary.contains('/') {
         return at(home.join(binary));
     }
     std::env::split_paths(path).find_map(|directory| at(home.join(directory).join(binary)))
+}
+
+impl Executable {
+    /// The `PATH` hit, as a spawn would run it: a wrapper script stays the
+    /// wrapper rather than the binary it resolves to.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 fn at(path: PathBuf) -> Option<Executable> {
@@ -62,5 +72,33 @@ mod tests {
             .expect("the executable in the relative bin directory");
         assert_eq!(found.path, binary);
         assert!(identify_on_path("missing", std::ffi::OsStr::new("bin"), home.path()).is_none());
+    }
+
+    #[test]
+    fn installs_removals_and_symlink_retargets_change_the_identity() {
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let path = std::ffi::OsStr::new("bin");
+        assert!(identify_on_path("claude", path, home.path()).is_none());
+
+        let first = home.path().join("claude-2.1.280");
+        let second = home.path().join("claude-2.1.284");
+        crate::isolation::test_fixture::write_executable(&first, "#!/bin/sh\nexit 0\n");
+        crate::isolation::test_fixture::write_executable(&second, "#!/bin/sh\nexit 0\n");
+        std::os::unix::fs::symlink(&first, bin.join("claude")).unwrap();
+        let installed = identify_on_path("claude", path, home.path()).expect("installed");
+
+        std::fs::remove_file(bin.join("claude")).unwrap();
+        std::os::unix::fs::symlink(&second, bin.join("claude")).unwrap();
+        let retargeted = identify_on_path("claude", path, home.path()).expect("retargeted");
+        assert_ne!(
+            installed, retargeted,
+            "a retargeted symlink is a new install"
+        );
+        assert_eq!(retargeted.path(), bin.join("claude"));
+
+        std::fs::remove_file(bin.join("claude")).unwrap();
+        assert!(identify_on_path("claude", path, home.path()).is_none());
     }
 }

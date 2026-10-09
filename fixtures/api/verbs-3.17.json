@@ -1,6 +1,6 @@
 {
-  "api_version": "3.16.0",
-  "commit": "f6c7af86",
+  "api_version": "3.17.0",
+  "commit": "41404547",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -181,6 +181,7 @@
     "fs.list",
     "fs.mediaRawPages",
     "fs.mkdir",
+    "fs.projectSourcePath",
     "fs.projectSources",
     "fs.read",
     "fs.tree",

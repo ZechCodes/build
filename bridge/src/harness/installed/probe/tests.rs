@@ -488,3 +488,42 @@ fn a_codex_list_failure_or_empty_list_keeps_stderr() {
         assert!(error.contains("list-reason"), "{name}: {error}");
     }
 }
+
+/// Pi checks for updates and reports installs at startup unless told it is
+/// offline; a probe tells it, as it tells mise (#434).
+#[test]
+fn a_probe_tells_pi_to_stay_offline() {
+    let command = super::command_for_test("pi", &["--version"]);
+    let set: Vec<_> = command
+        .get_envs()
+        .filter_map(|(name, value)| Some((name.to_str()?, value?.to_str()?)))
+        .collect();
+    assert!(set.contains(&("PI_OFFLINE", "1")), "{set:?}");
+    assert!(set.contains(&("MISE_OFFLINE", "1")), "{set:?}");
+}
+
+/// Nothing of the bridge's or Build's own reaches a probe: not the daemon's
+/// identity, not an agent's MCP socket or token (#434).
+#[test]
+fn bridge_and_build_variables_are_withheld_from_probes() {
+    use super::child::withheld_from_probes;
+    for name in [
+        "BRIDGE_IDENTITY_FILE",
+        "BRIDGE_MCP_TOKEN",
+        "BRIDGE_MCP_SOCKET",
+        "BUILD_PI_MCP_OWNER",
+        "CLAUDECODE",
+        "CLAUDE_CODE_SESSION_ID",
+    ] {
+        assert!(withheld_from_probes(std::ffi::OsStr::new(name)), "{name}");
+    }
+    for name in [
+        "HOME",
+        "PATH",
+        "ANTHROPIC_API_KEY",
+        "CODEX_HOME",
+        "MISE_DATA_DIR",
+    ] {
+        assert!(!withheld_from_probes(std::ffi::OsStr::new(name)), "{name}");
+    }
+}

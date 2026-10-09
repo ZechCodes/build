@@ -25,7 +25,7 @@ use tokio::sync::watch;
 use crate::harness::{harness_for, Harness};
 use crate::models::{AgentProvider, ModelChoice};
 
-mod executable;
+pub mod executable;
 pub(crate) mod offer;
 pub(crate) mod probe;
 

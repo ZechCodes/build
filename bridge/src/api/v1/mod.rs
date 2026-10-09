@@ -37,7 +37,7 @@
 //! `capture.*`, `settings.*`, `models.list`), [`thread`] (`thread.*`,
 //! `agent.add/choose/remove`), [`changes`] (`changes.subscribe/unsubscribe`),
 //! [`git`] (`git.*`, `fs.*`, and the diff reads), [`github`]
-//! (`github.repos`), [`lifecycle`] (the `task.*` reads, `run.*`,
+//! (`github.repos`), [`harnesses`] (`harnesses.list`, `harnesses.refresh`), [`lifecycle`] (the `task.*` reads, `run.*`,
 //! `branch.dispatch/finish`, `entity.*`),
 //! [`workspace`] (`workspace.*`), [`updates`] (`bridge.update_status`,
 //! `bridge.check_update`, `bridge.install_update`), [`push`] (`push.registerKey`,
@@ -50,6 +50,7 @@ pub mod board;
 pub mod changes;
 pub mod git;
 pub mod github;
+pub mod harnesses;
 pub mod lifecycle;
 pub mod push;
 pub mod reviews;
@@ -338,13 +339,14 @@ pub fn call_typed<P: DeserializeOwned + Serialize, R: Serialize>(
 }
 
 /// Every family's table, in one place.
-fn families() -> [&'static [(&'static str, Handler)]; 11] {
+fn families() -> [&'static [(&'static str, Handler)]; 12] {
     [
         board::methods(),
         changes::methods(),
         thread::methods(),
         git::methods(),
         github::methods(),
+        harnesses::methods(),
         tasks::methods(),
         reviews::methods(),
         lifecycle::methods(),

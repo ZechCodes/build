@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.17.0",
+    "api_version": "3.18.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -77,6 +77,8 @@
       "git.status",
       "git.unpushed",
       "github.repos",
+      "harnesses.list",
+      "harnesses.refresh",
       "messages.context",
       "messages.fromAgent",
       "messages.taskNotices",
@@ -206,7 +208,8 @@
       "changes",
       "bridge.update_status",
       "models.changed",
-      "rtc.diagnostics"
+      "rtc.diagnostics",
+      "harnesses.changed"
     ],
     "coalesce_window_ms": 250,
     "changes": {

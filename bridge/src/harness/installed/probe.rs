@@ -96,7 +96,7 @@ pub fn version_in(said: &str) -> Option<Version> {
     })
 }
 
-mod child;
+pub(crate) mod child;
 
 /// The command a probe runs (#320's environment tests).
 #[cfg(test)]

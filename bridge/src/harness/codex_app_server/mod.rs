@@ -104,6 +104,14 @@ impl Harness for CodexAppServerHarness {
         "codex"
     }
 
+    fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
+        &crate::harness::inventory::CODEX_AUTH
+    }
+
+    fn reports_running_version(&self) -> bool {
+        true
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         codex::models()
     }

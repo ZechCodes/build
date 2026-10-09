@@ -85,12 +85,15 @@ const menuHtml = (rowsHtml, name, note = "") => {
  *  `mountSplitMenu` keeps the second half true. */
 const POPUP_ATTRIBUTES = ' aria-haspopup="menu" aria-expanded="false"';
 
-function menuButtonHtml(label, rowsHtml, { title = "", icon = false, iconHtml = "", arrow = true, note = "" } = {}) {
+function menuOpenerHtml(label, { title, icon, iconHtml, arrow }) {
   const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
-  const opener = icon || iconHtml
-    ? `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${iconHtml || esc(label)}</button>`
-    : `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
-  return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
+  if (icon || iconHtml) return `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${iconHtml || esc(label)}</button>`;
+  return `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
+}
+
+function menuButtonHtml(label, rowsHtml, { title = "", icon = false, iconHtml = "", arrow = true, note = "" } = {}) {
+  const opener = menuOpenerHtml(label, { title, icon, iconHtml, arrow });
+  return `<div class="splitbtn${icon || iconHtml ? " splitbtn-icon" : ""}">
     ${opener}
     ${menuHtml(rowsHtml, title, note)}
   </div>`;

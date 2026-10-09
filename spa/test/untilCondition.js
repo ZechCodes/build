@@ -76,3 +76,19 @@ export function untilCache(subscribeCache, prefixAddress, check) {
     recheck();
   });
 }
+
+/** Resolves with `check`'s first truthy answer: now, or after whichever
+ *  notice from `subscribe(listener)` (which answers its unsubscribe) makes
+ *  it so. */
+export function untilHeard(subscribe, check) {
+  const now = check();
+  if (now) return Promise.resolve(now);
+  return new Promise((resolve) => {
+    const stop = subscribe(() => {
+      const answer = check();
+      if (!answer) return;
+      stop();
+      resolve(answer);
+    });
+  });
+}

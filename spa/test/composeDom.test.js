@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { untilHeard } from "./untilCondition.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -701,7 +702,10 @@ describe("an account with more than one device", () => {
     press("c");
     type("#compose-text", "fix the login redirect");
     $("#compose-send").click();
-    await vi.waitFor(() => expect(pendingCaptureRows()).toHaveLength(1));
+    // Sent and watched, not just held: a routed record adopted before the send
+    // lands is written over by the send's own record.
+    await untilHeard(subscribePendingCaptures, () => pendingCaptureRows().some((row) => row.capture_id === "capture-1"));
+    expect(pendingCaptureRows()).toHaveLength(1);
     await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "task" } }));
     expect(pendingCaptureRows()[0].project).toBe("relaydb");
   });

@@ -109,6 +109,10 @@ impl Harness for CodexHarness {
         "codex"
     }
 
+    fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
+        &crate::harness::inventory::CODEX_AUTH
+    }
+
     /// The curated catalog, most capable first. (cached: 2026-09)
     ///
     /// What is offered is the installed CLI's own list ([`Harness::offer`]);

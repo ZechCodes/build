@@ -140,6 +140,9 @@ pub(super) struct ProtocolState {
     /// tasks ending together from run to run.
     pub(super) tasks: BTreeMap<String, String>,
     pub(super) surfaces: SurfaceLedger,
+    /// The CLI version this session said it runs, held for the harness
+    /// inventory while the stream is open.
+    pub(super) running_version: Option<crate::harness::inventory::ReportedVersion>,
 }
 
 impl ProtocolState {
@@ -169,6 +172,7 @@ impl ProtocolState {
             surfaces: SurfaceLedger::for_claude(
                 NEXT_SURFACE_GENERATION.fetch_add(1, Ordering::Relaxed),
             ),
+            running_version: None,
         }
     }
 

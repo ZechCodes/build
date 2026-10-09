@@ -36,7 +36,7 @@ enum Unread {
     Failed(std::io::Error),
 }
 
-pub(super) struct ProbeChild {
+pub(crate) struct ProbeChild {
     child: Child,
     lines: Receiver<Result<String, Unread>>,
     stderr: Stderr,
@@ -62,9 +62,16 @@ impl ProbeChild {
         talks: bool,
         deadline: Duration,
     ) -> std::io::Result<Self> {
+        ProbeChild::spawn(command(binary, args, talks), deadline)
+    }
+
+    /// A prepared probe command, cut off at `deadline`: what the harness
+    /// inventory runs, with the environment it observed rather than this
+    /// process's. Its stdio is the caller's to set.
+    pub(crate) fn spawn(mut command: Command, deadline: Duration) -> std::io::Result<Self> {
         let hard_expiry = Instant::now() + deadline;
         let diagnostic_reserve = MAX_STDERR_WAIT.min(deadline / 10);
-        let mut child = command(binary, args, talks).spawn()?;
+        let mut child = command.spawn()?;
         let lines = read_lines(child.stdout.take());
         let stderr = Stderr::capture(child.stderr.take());
         Ok(Self {
@@ -86,7 +93,7 @@ impl ProbeChild {
 
     /// The next line it said, `None` once it has said everything, or why it
     /// cannot be read: the deadline passed, or it said too much.
-    pub(super) fn next_line(&mut self) -> std::io::Result<Option<String>> {
+    pub(crate) fn next_line(&mut self) -> std::io::Result<Option<String>> {
         let left = self.expiry.saturating_duration_since(Instant::now());
         match self.lines.recv_timeout(left) {
             Ok(Ok(line)) => Ok(Some(line)),
@@ -103,7 +110,7 @@ impl ProbeChild {
     }
 
     /// Whether it exited successfully, waiting no longer than the deadline.
-    pub(super) fn succeeded(&mut self) -> std::io::Result<bool> {
+    pub(crate) fn succeeded(&mut self) -> std::io::Result<bool> {
         loop {
             if let Some(status) = self.child.try_wait()? {
                 return Ok(status.success());
@@ -165,15 +172,36 @@ pub(super) fn command(binary: &str, args: &[&str], talks: bool) -> Command {
     {
         command.env_remove(marker);
     }
+    for (name, _) in std::env::vars_os().filter(|(name, _)| withheld_from_probes(name)) {
+        command.env_remove(name);
+    }
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     command
-        .env("MISE_OFFLINE", "1")
+        .envs(OFFLINE_SWITCHES)
         .args(args)
         .stdin(if talks { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(home.unwrap_or_else(std::env::temp_dir));
     command
+}
+
+/// What every probe child is started with: offline to mise (above), and to
+/// Pi, whose startup otherwise checks for updates and reports installs.
+pub(crate) const OFFLINE_SWITCHES: [(&str, &str); 2] = [("MISE_OFFLINE", "1"), ("PI_OFFLINE", "1")];
+
+/// Whether a variable of this process is kept from every probe child: a
+/// parent agent's session markers, the daemon's identity, and anything else
+/// of the bridge's or Build's own (`BRIDGE_MCP_TOKEN`, `BUILD_PI_MCP_OWNER`):
+/// no CLI is asked about itself with an agent's MCP credentials in hand.
+pub(crate) fn withheld_from_probes(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    INHERITED_AGENT_MARKERS.contains(&name)
+        || DAEMON_IDENTITY_VARS.contains(&name)
+        || name.starts_with("BRIDGE_")
+        || name.starts_with("BUILD_")
 }
 
 impl Drop for ProbeChild {

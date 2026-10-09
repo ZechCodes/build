@@ -93,12 +93,12 @@ impl ProtocolReader {
         // A child that goes before its turn's result still ended that turn at
         // the limit, when the limit was what it last reported (task #58).
         self.conclude_usage_limit();
-        let changed = self
-            .state
-            .lock()
-            .unwrap()
-            .surfaces
-            .mark_retained_checklist_stale();
+        let changed = {
+            let mut state = self.state.lock().unwrap();
+            // A session that has ended runs no version.
+            state.running_version = None;
+            state.surfaces.mark_retained_checklist_stale()
+        };
         self.bump_revision_when(changed);
     }
 
@@ -291,10 +291,11 @@ impl ProtocolReader {
     /// dated id), so an exact comparison is the right one.
     fn read_init(&mut self, event: &Value) {
         if let Some(reported) = event["claude_code_version"].as_str() {
-            crate::harness::installed::observe_version(
+            let running = crate::harness::inventory::report_running_version(
                 crate::models::AgentProvider::ClaudeAdk,
                 reported,
             );
+            self.state.lock().unwrap().running_version = running;
         }
         let mismatch = {
             let mut state = self.state.lock().unwrap();

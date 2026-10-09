@@ -1,0 +1,10 @@
+{
+  "method": "harnesses.refresh",
+  "since": "3.18.0",
+  "params": {},
+  "result": {
+    "request": 3,
+    "revision": 42
+  },
+  "errors": []
+}

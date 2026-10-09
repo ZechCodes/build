@@ -1,0 +1,190 @@
+{
+  "method": "harnesses.list",
+  "since": "3.18.0",
+  "params": {},
+  "result": {
+    "revision": 42,
+    "refresh": {
+      "requested": 2,
+      "completed": 2
+    },
+    "harnesses": [
+      {
+        "id": "claude",
+        "label": "Claude Code TUI",
+        "cli_name": "Claude Code",
+        "auth_context": "claude",
+        "installation": {
+          "state": "installed",
+          "health": "fresh",
+          "checked_at_ms": 1791561600000
+        },
+        "version": {
+          "installed": "2.1.284",
+          "running": {
+            "reported": false,
+            "versions": []
+          }
+        }
+      },
+      {
+        "id": "codex",
+        "label": "Codex TUI",
+        "cli_name": "Codex",
+        "auth_context": "codex",
+        "installation": {
+          "state": "installed",
+          "health": "fresh",
+          "checked_at_ms": 1791561600000
+        },
+        "version": {
+          "installed": "0.160.0",
+          "running": {
+            "reported": false,
+            "versions": []
+          }
+        }
+      },
+      {
+        "id": "claude_adk",
+        "label": "Claude Code",
+        "cli_name": "Claude Code",
+        "auth_context": "claude",
+        "installation": {
+          "state": "installed",
+          "health": "fresh",
+          "checked_at_ms": 1791561600000
+        },
+        "version": {
+          "installed": "2.1.284",
+          "running": {
+            "reported": true,
+            "versions": [
+              {
+                "version": "2.1.280",
+                "sessions": 1
+              }
+            ]
+          }
+        }
+      },
+      {
+        "id": "codex_app_server",
+        "label": "Codex",
+        "cli_name": "Codex",
+        "auth_context": "codex",
+        "installation": {
+          "state": "installed",
+          "health": "fresh",
+          "checked_at_ms": 1791561600000
+        },
+        "version": {
+          "installed": "0.160.0",
+          "running": {
+            "reported": true,
+            "versions": []
+          }
+        }
+      },
+      {
+        "id": "pi",
+        "label": "Pi",
+        "cli_name": "Pi",
+        "auth_context": "pi",
+        "installation": {
+          "state": "not_installed",
+          "health": "fresh",
+          "checked_at_ms": 1791561600000
+        },
+        "version": {
+          "installed": null,
+          "running": {
+            "reported": false,
+            "versions": []
+          }
+        }
+      }
+    ],
+    "auth_contexts": [
+      {
+        "id": "claude",
+        "harnesses": [
+          "claude",
+          "claude_adk"
+        ],
+        "method": "oauth",
+        "status": "refresh_pending",
+        "verification": "saved_configuration",
+        "evidence": [
+          "cli_status",
+          "credentials_file"
+        ],
+        "health": "fresh",
+        "checked_at_ms": 1791561600000,
+        "credential_generation": 3,
+        "supported_login_methods": []
+      },
+      {
+        "id": "codex",
+        "harnesses": [
+          "codex",
+          "codex_app_server"
+        ],
+        "method": "api_key",
+        "status": "signed_in",
+        "verification": "saved_configuration",
+        "evidence": [
+          "credentials_file"
+        ],
+        "health": "stale",
+        "checked_at_ms": 1791561540000,
+        "credential_generation": 1,
+        "supported_login_methods": []
+      },
+      {
+        "id": "pi",
+        "harnesses": [
+          "pi"
+        ],
+        "method": "mixed",
+        "status": "signed_in",
+        "verification": "saved_configuration",
+        "evidence": [
+          "credentials_file",
+          "environment"
+        ],
+        "providers": [
+          {
+            "id": "anthropic",
+            "method": "oauth",
+            "status": "signed_in",
+            "evidence": [
+              "credentials_file"
+            ]
+          },
+          {
+            "id": "deepseek",
+            "method": "external",
+            "status": "unknown",
+            "evidence": [
+              "credentials_file"
+            ]
+          },
+          {
+            "id": "groq",
+            "method": "api_key",
+            "status": "signed_in",
+            "evidence": [
+              "environment"
+            ]
+          }
+        ],
+        "health": "fresh",
+        "checked_at_ms": 1791561600000,
+        "credential_generation": 2,
+        "supported_login_methods": []
+      }
+    ]
+  },
+  "errors": []
+}

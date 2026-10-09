@@ -185,6 +185,9 @@ async fn serve() {
         Ok(runtime) => runtime,
         Err(error) => exit_startup(error),
     };
+    // Sweeps from here on whether or not a client connects, restored from
+    // what the last daemon saw (stale until seen again).
+    build_bridge::harness::inventory::start(runtime.tasks_dir.join("harness-inventory.json"));
     // How the identity came to be paired is `pair`'s business to report; serve
     // only needs the keys.
     let loaded = match load_device_identity(&runtime.config).await {

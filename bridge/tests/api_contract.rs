@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.17.0");
+    assert_eq!(API_VERSION, "3.18.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -327,9 +327,41 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
 }
 
 #[test]
+fn the_harness_inventory_is_announced_with_its_push() {
+    let advertised = capabilities(false);
+    for verb in ["harnesses.list", "harnesses.refresh"] {
+        assert!(advertised.contains(&verb), "{verb}");
+        let fixture = read_json(&fixtures_root().join(format!("v1/{verb}.json")));
+        assert_eq!(fixture["since"], "3.18.0", "{verb}");
+        assert_eq!(fixture["params"], serde_json::json!({}), "{verb}");
+    }
+    assert!(changes::ANNOUNCED_EVENTS.contains(&changes::HARNESSES_CHANGED_EVENT));
+    let listed = read_json(&fixtures_root().join("v1/harnesses.list.json"));
+    let contexts = listed["result"]["auth_contexts"].as_array().unwrap();
+    let shared: Vec<_> = contexts
+        .iter()
+        .map(|context| (context["id"].clone(), context["harnesses"].clone()))
+        .collect();
+    assert_eq!(
+        shared,
+        [
+            (
+                serde_json::json!("claude"),
+                serde_json::json!(["claude", "claude_adk"])
+            ),
+            (
+                serde_json::json!("codex"),
+                serde_json::json!(["codex", "codex_app_server"])
+            ),
+            (serde_json::json!("pi"), serde_json::json!(["pi"])),
+        ]
+    );
+}
+
+#[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.17.0");
+    assert_eq!(API_VERSION, "3.18.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1081,6 +1113,10 @@ fn every_event_example_is_what_the_bridge_serialises() {
             }
             changes::MODELS_CHANGED_EVENT => {
                 assert_eq!(*event, changes::models_changed_payload());
+            }
+            changes::HARNESSES_CHANGED_EVENT => {
+                let revision = event["revision"].as_u64().expect("a revision");
+                assert_eq!(*event, changes::harnesses_changed_payload(revision));
             }
             other => panic!("{other}: the bridge sends no such push"),
         }

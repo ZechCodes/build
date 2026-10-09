@@ -56,6 +56,14 @@ impl Harness for AdkHarness {
         "claude"
     }
 
+    fn auth(&self) -> &'static dyn crate::harness::inventory::AuthAdapter {
+        &crate::harness::inventory::CLAUDE_AUTH
+    }
+
+    fn reports_running_version(&self) -> bool {
+        true
+    }
+
     fn models(&self) -> Vec<ModelOption> {
         ClaudeHarness.models()
     }

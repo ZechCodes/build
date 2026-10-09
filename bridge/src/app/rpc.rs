@@ -142,6 +142,7 @@ pub(in crate::app) fn dispatch_frame(
             app.drop_session(sender.session_id());
             app.unsubscribe_update_status(sender.session_id());
             app.unsubscribe_models_changed(sender.session_id());
+            app.unsubscribe_harnesses_changed(sender.session_id());
             (app.changes(), app.watchers())
         };
         changes.unsubscribe(sender.session_id());

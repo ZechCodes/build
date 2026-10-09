@@ -36,6 +36,7 @@ pub(crate) mod codex_app_server;
 #[cfg(test)]
 mod identity_env_tests;
 pub mod installed;
+pub mod inventory;
 pub(crate) mod pi;
 mod session;
 pub mod shell_tail;
@@ -181,6 +182,17 @@ pub trait Harness: Send + Sync {
     /// [`Harness::binary`] share a probe, and so one reading.
     fn cli_probe(&self) -> &'static dyn installed::CliProbe {
         &installed::NO_PROBE
+    }
+
+    /// The credential context this harness signs in through. Harnesses
+    /// sharing a CLI share one, so one sign-in serves both (#434).
+    fn auth(&self) -> &'static dyn inventory::AuthAdapter;
+
+    /// Whether this harness's live sessions say which CLI version they run.
+    /// The TUIs do not, and theirs stays unknown rather than borrowed from
+    /// the installed one.
+    fn reports_running_version(&self) -> bool {
+        false
     }
 
     /// Which of [`Harness::models`] the installed CLI runs, as `reading` found
@@ -944,6 +956,10 @@ mod tests {
 
             fn binary(&self) -> &'static str {
                 "sh"
+            }
+
+            fn auth(&self) -> &'static dyn inventory::AuthAdapter {
+                &inventory::CLAUDE_AUTH
             }
 
             fn models(&self) -> Vec<ModelOption> {

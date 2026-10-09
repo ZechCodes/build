@@ -253,6 +253,7 @@ pub(in crate::app) fn session_hello(
         let mut app = timer.lock(state);
         app.subscribe_update_status(sender);
         app.subscribe_models_changed(sender);
+        app.subscribe_harnesses_changed(sender);
     }
     timer.clock().clients().record(
         sender.session_id(),

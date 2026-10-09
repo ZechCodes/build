@@ -116,11 +116,12 @@ pub const CHANGES_EVENT: &str = "changes";
 /// The change events a browser session can be told about, announced in the
 /// `session.hello` greeting so a client knows what it may hear. `changes` is
 /// what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 4] = [
+pub const ANNOUNCED_EVENTS: [&str; 5] = [
     CHANGES_EVENT,
     "bridge.update_status",
     MODELS_CHANGED_EVENT,
     "rtc.diagnostics",
+    HARNESSES_CHANGED_EVENT,
 ];
 
 /// A CLI on this machine changed what it runs, so `models.list` would answer
@@ -130,6 +131,16 @@ pub const MODELS_CHANGED_EVENT: &str = "models.changed";
 /// The whole of a [`MODELS_CHANGED_EVENT`] push.
 pub fn models_changed_payload() -> serde_json::Value {
     serde_json::json!({ "type": MODELS_CHANGED_EVENT })
+}
+
+/// The harness inventory moved to `revision` (#434): installed, version or
+/// sign-in facts, so `harnesses.list` would answer differently now. A
+/// device-level invalidation carrying nothing but the revision to fence by.
+pub const HARNESSES_CHANGED_EVENT: &str = "harnesses.changed";
+
+/// The whole of a [`HARNESSES_CHANGED_EVENT`] push.
+pub fn harnesses_changed_payload(revision: u64) -> serde_json::Value {
+    serde_json::json!({ "type": HARNESSES_CHANGED_EVENT, "revision": revision })
 }
 
 // ------------------------------------------------------------ the wire ---

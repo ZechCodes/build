@@ -3,7 +3,7 @@
 //! Follows the rtc EventLoop pattern with async select
 
 use super::host_sweep::{
-    HostSweep, LiveOwner, SweepCredentials, SweepSubnet, binding_indication, live_owner,
+    HostSweep, SweepCredentials, SweepSubnet, binding_indication,
 };
 use super::transports::stun_gatherer::{
     RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
@@ -278,14 +278,15 @@ const SWEEP_INTERFACES_FRESH: Duration = Duration::from_millis(100);
 ///
 /// `getifaddrs` is a netlink dump. Read under the core lock on every probe, it held up every
 /// data-channel write queued behind it (#376), so it is read at most once per
-/// [`SWEEP_INTERFACES_FRESH`], outside the lock. Each send still reads the interface's index,
-/// and the mask it holds the source address under, live; see [`SweepSubnet::still_owned`].
-/// The rest of what a send checks against the list, which interfaces hold the source address
-/// and whether the destination is local, stands only while the kernel has reported no IPv4
-/// address change since the list was read.
+/// [`SWEEP_INTERFACES_FRESH`], outside the lock, with the index of each interface it names.
+/// What a send checks against them, the source interface's index, address and mask, which
+/// interfaces hold the source address and whether the destination is local, stands only while
+/// the kernel has reported no IPv4 address change since the list was read. That report is a
+/// nonblocking peek at a socket; a send asks the kernel nothing else, since an interface ioctl
+/// would wait on RTNL under the core lock. See [`SweepSubnet::still_owned`].
 pub(super) struct SweepInterfaces {
     read: fn() -> std::io::Result<Vec<Interface>>,
-    pub(super) live: LiveOwner,
+    pub(super) index: fn(&str) -> u32,
     #[cfg(target_os = "linux")]
     pub(super) watch: fn() -> std::io::Result<std::os::fd::OwnedFd>,
     #[cfg(target_os = "linux")]
@@ -294,13 +295,14 @@ pub(super) struct SweepInterfaces {
     changed: std::sync::atomic::AtomicBool,
     read_at: Option<Instant>,
     list: Option<Vec<Interface>>,
+    indices: Vec<(String, u32)>,
 }
 
 impl SweepInterfaces {
     pub(super) fn reading(read: fn() -> std::io::Result<Vec<Interface>>) -> Self {
         Self {
             read,
-            live: live_owner,
+            index: sweep_interface_index,
             #[cfg(target_os = "linux")]
             watch: super::host_sweep::address_watch,
             #[cfg(target_os = "linux")]
@@ -308,13 +310,16 @@ impl SweepInterfaces {
             changed: std::sync::atomic::AtomicBool::new(false),
             read_at: None,
             list: None,
+            indices: Vec::new(),
         }
     }
 
     pub(super) fn refresh(&mut self, now: Instant) {
         if self.stale(now) {
-            // The watch is drained or opened before the read, so a change during the read
-            // counts against the new list rather than being lost.
+            // The watch is drained or opened before the reads, so a change during them counts
+            // against the new list rather than being lost. An interface removed and recreated
+            // under the same name between the list and its index takes its addresses with it,
+            // which the watch reports.
             #[cfg(target_os = "linux")]
             match &self.watching {
                 Some(watching) => super::host_sweep::drain_address_watch(watching),
@@ -322,6 +327,13 @@ impl SweepInterfaces {
             }
             *self.changed.get_mut() = false;
             self.list = (self.read)().ok();
+            self.indices.clear();
+            for interface in self.list.iter().flatten() {
+                if !self.indices.iter().any(|(name, _)| *name == interface.name) {
+                    let index = (self.index)(&interface.name);
+                    self.indices.push((interface.name.clone(), index));
+                }
+            }
             self.read_at = Some(now);
         }
     }
@@ -371,7 +383,17 @@ impl SweepInterfaces {
         destination: std::net::Ipv4Addr,
     ) -> bool {
         self.current(now).is_some_and(|interfaces| {
-            self.unchanged() && subnet.still_owned(interfaces, self.live, destination)
+            self.unchanged()
+                && subnet.still_owned(
+                    interfaces,
+                    |name| {
+                        self.indices
+                            .iter()
+                            .find_map(|(read, index)| (read == name).then_some(*index))
+                            .unwrap_or(0)
+                    },
+                    destination,
+                )
         })
     }
 }

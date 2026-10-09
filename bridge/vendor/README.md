@@ -218,10 +218,9 @@ through normal ICE processing; the indication alone proves nothing.
 Only an accepted UDP host candidate's existing bound socket is used. Its exact
 source IP must have one current owning interface, a contiguous actual IPv4 mask,
 and an RFC 1918 or link-local subnet of at most 1024 total addresses. Network,
-broadcast and every current local address are excluded. Before every send the
-interface's index, and the mask it holds the source address under, are read
-live; the other checks use an interface list at most 100 ms old that the
-kernel has reported no IPv4 address change since (#376, below). Linux's Tokio socket adapter
+broadcast and every current local address are excluded. Every send checks
+these against an interface list, and the indexes read with it, at most 100 ms
+old that the kernel has reported no IPv4 address change since (#376, below). Linux's Tokio socket adapter
 uses IP_PKTINFO plus MSG_DONTROUTE and MSG_DONTWAIT on that same socket, so there
 is no gateway or source-port fallback. Other platforms and runtimes skip until
 an equivalent explicit-interface operation is supplied. A candidate port of
@@ -365,25 +364,27 @@ interface read shared by passes inside 100 ms; a `host_sweep_tests.rs` case
 pins the NAT gate state the driver reads. Data-channel latency during a
 sweep was not measured.
 
-The cached list alone would miss an address or mask changed under the same
-interface index in the up-to-100 ms it stands, which the per-send `getifaddrs`
-caught. Each send, scout or real indication, therefore reads the source's
-mask live with `SIOCGIFADDR` and `SIOCGIFNETMASK` on the address's label,
-passing the address so the kernel answers for that entry rather than the
-label's first one, and stops unless the address is still there with the
-subnet's mask. Two ioctls cost far less than the dump. `host_sweep_tests.rs`
-pins a mask narrowed or an address removed under an unchanged list, and reads
-loopback's real 127.0.0.1/8 entry.
-
-The list also answers which interfaces hold the source address and whether
-the destination has become local, and another interface can change either
-without touching the selected one. The sweep therefore keeps a netlink socket
-subscribed to `RTMGRP_IPV4_IFADDR`, drained just before each list read. A send
+The cached list alone would miss any address change in the up-to-100 ms it
+stands, which the per-send `getifaddrs` caught: the source's address or mask
+changed, a second interface taking the source address, or the destination
+becoming local. The sweep therefore keeps a netlink socket subscribed to
+`RTMGRP_IPV4_IFADDR`, opened or drained just before each list read. A send
 peeks it, and any queued notification, or a lost one (`ENOBUFS`), means the
-list no longer stands: nothing is sent until the next read, with no full dump
-under the lock. Driver regressions pin a source address taken by a second
-interface, a destination that became local, and trust returning with the next
-read, against a stand-in kernel. The ignored
+list no longer stands: nothing is sent until the next read. A mask set with
+`SIOCSIFNETMASK` removes the address and adds it back, and a renamed
+interface re-announces its addresses under the new label, so both are
+reported; a private namespace showed each. Each interface's index is looked
+up with the list, after the watch is opened, so an interface recreated under
+the same name before the lookup is reported by its addresses' removal.
+
+A send asks the kernel nothing but that peek. An earlier revision read the
+source's index and mask live with `if_nametoindex`, `SIOCGIFADDR` and
+`SIOCGIFNETMASK` at each send, under the core lock and, for a scout, its
+resource and budget locks; `devinet_ioctl` takes RTNL, so a netlink writer
+could hold every data-channel write behind it. Driver regressions pin a
+source address taken by a second interface, a destination that became local,
+a mask narrowed after the read, trust returning with the next read, and an
+ownership check making no interface lookup, against a stand-in kernel. The ignored
 `the_address_watch_hears_an_address_added_in_a_private_namespace` re-runs
 itself under `unshare -Urn` and adds an address there, so the real kernel's
 notification is checked without touching the host's network:
@@ -407,8 +408,8 @@ indication folds it into the deadline `send_real` checks after the budget
 lock, with the neighbour snapshot's lapse and the probe's window
 (`real_send_deadline`). `host_scout.rs` pins a scout held on a lapsed list,
 and a driver test pins the real-indication deadline taking the list's lapse
-when it comes first. The live lookups take time of their own, so a scout
-checks the lapse again after them, with only bookkeeping before the send. A
+when it comes first. A scout checks the lapse again after the ownership
+check, with only bookkeeping before the send. A
 scout whose source is no longer owned releases its send's resource and
 budget locks before clearing the group, which takes the resource lock again;
 `host_scout.rs` pins both, the second with a 10 s deadlock bound. The

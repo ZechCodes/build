@@ -514,7 +514,7 @@ fn a_pass_that_waits_past_the_interface_bound_for_the_core_lock_does_not_run() {
 }
 
 /// A stand-in kernel for the interface checks at send time: the address table a full read
-/// returns, the live index and mask lookup, and the notification socket the kernel writes to
+/// returns, the index lookup made with it, and the notification socket the kernel writes to
 /// whenever an IPv4 address is added or removed. `the_address_watch_hears_an_address_added_in_a_private_namespace`
 /// pins that the real kernel writes one.
 #[cfg(target_os = "linux")]
@@ -550,13 +550,30 @@ mod fake_kernel {
         Ok(ours.into())
     }
 
-    /// `wifi`, index 2, still holds every address under 255.255.255.0.
-    pub(super) fn live(_: &str, _: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
-        (2, Some(Ipv4Addr::new(255, 255, 255, 0)))
+    /// Every interface is `wifi`'s index 2.
+    pub(super) fn index(_: &str) -> u32 {
+        2
     }
 
     pub(super) fn add_address(interface: Interface) {
         TABLE.with(|table| table.borrow_mut().push(interface));
+        notify();
+    }
+
+    /// Sets the mask an address is held under, as `SIOCSIFNETMASK` does: the kernel removes
+    /// the address and adds it back, and reports both.
+    pub(super) fn set_mask(ip: Ipv4Addr, mask: &str) {
+        TABLE.with(|table| {
+            for interface in table.borrow_mut().iter_mut() {
+                if interface.addr.map(|addr| addr.ip()) == Some(ip.into()) {
+                    interface.mask = Some(format!("{mask}:0").parse().unwrap());
+                }
+            }
+        });
+        notify();
+    }
+
+    fn notify() {
         NOTIFY.with(|notify| {
             if let Some(notify) = notify.borrow().as_ref() {
                 notify.send(b"RTM_NEWADDR").unwrap();
@@ -584,7 +601,7 @@ fn watched_wifi() -> (
     let subnet =
         SweepSubnet::for_socket("192.168.2.1:45000".parse().unwrap(), &[wifi], |_| 2).unwrap();
     let mut interfaces = SweepInterfaces::reading(fake_kernel::table);
-    interfaces.live = fake_kernel::live;
+    interfaces.index = fake_kernel::index;
     interfaces.watch = fake_kernel::watch;
     let now = std::time::Instant::now();
     interfaces.refresh(now);
@@ -669,5 +686,52 @@ fn a_real_indication_stops_when_the_interface_list_lapses_first() {
     assert_eq!(
         real_send_deadline(Some(neighbors), window, Some(window), now),
         neighbors
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_send_time_ownership_check_asks_the_kernel_for_nothing_but_the_watch() {
+    use std::cell::Cell;
+
+    // Sends check ownership under the core lock (and a scout's under its resources and budget
+    // too). An interface ioctl there waits on RTNL behind any netlink writer, so every lookup
+    // a check needs is made when the list is read, outside the lock.
+    thread_local! {
+        static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
+    fn counted(name: &str) -> u32 {
+        LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+        fake_kernel::index(name)
+    }
+
+    let (mut interfaces, subnet, now) = watched_wifi();
+    interfaces.index = counted;
+    let later = now + std::time::Duration::from_millis(100);
+    interfaces.refresh(later);
+    assert_eq!(LOOKUPS.with(Cell::get), 1, "the read looks up the index");
+    LOOKUPS.with(|lookups| lookups.set(0));
+    let now = later;
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    assert!(interfaces.owns(now, &subnet, remote));
+    assert_eq!(
+        LOOKUPS.with(Cell::get),
+        0,
+        "an ownership check must not make an interface lookup"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_mask_narrowed_after_the_read_stops_the_send() {
+    let (interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    // The interface, its index and the source address are unchanged; only the mask is not.
+    fake_kernel::set_mask(std::net::Ipv4Addr::new(192, 168, 2, 1), "255.255.255.128");
+    assert!(
+        !interfaces.owns(now, &subnet, remote),
+        "a mask narrowed since the read must stop the send"
     );
 }

@@ -279,7 +279,7 @@ index b7c5c8d..4232db2 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..1bd304b 100644
+index 8a0a53a..5b80699 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,9 @@
@@ -310,7 +310,7 @@ index 8a0a53a..1bd304b 100644
  use rtc::shared::{FourTuple, TaggedBytesMut, TransportContext, TransportProtocol};
  use rtc::{rtcp, rtp};
  use std::collections::HashMap;
-@@ -253,6 +256,80 @@ fn is_link_local(ip: &IpAddr) -> bool {
+@@ -253,6 +256,90 @@ fn is_link_local(ip: &IpAddr) -> bool {
      }
  }
  
@@ -356,21 +356,31 @@ index 8a0a53a..1bd304b 100644
 +    }
 +
 +    pub(super) fn refresh(&mut self, now: Instant) {
-+        let fresh = self
-+            .read_at
-+            .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH);
-+        if !fresh {
++        if self.stale(now) {
 +            self.list = (self.read)().ok();
 +            self.read_at = Some(now);
 +        }
 +    }
 +
-+    pub(super) fn current(&self) -> Option<&[Interface]> {
-+        self.list.as_deref()
++    /// Whether the list read is [`SWEEP_INTERFACES_FRESH`] old or more at `now`, or missing.
++    pub(super) fn stale(&self, now: Instant) -> bool {
++        !self
++            .read_at
++            .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH)
 +    }
 +
-+    pub(super) fn owns(&self, subnet: &SweepSubnet, destination: std::net::Ipv4Addr) -> bool {
-+        self.current()
++    /// The list, while it is still within its age bound at `now`.
++    pub(super) fn current(&self, now: Instant) -> Option<&[Interface]> {
++        (!self.stale(now)).then_some(self.list.as_deref()).flatten()
++    }
++
++    pub(super) fn owns(
++        &self,
++        now: Instant,
++        subnet: &SweepSubnet,
++        destination: std::net::Ipv4Addr,
++    ) -> bool {
++        self.current(now)
 +            .is_some_and(|interfaces| subnet.still_owned(interfaces, self.live, destination))
 +    }
 +}
@@ -391,7 +401,7 @@ index 8a0a53a..1bd304b 100644
  /// Unified inner message type for the peer connection driver
  #[derive(Debug)]
  pub(crate) enum PeerConnectionDriverEvent {
-@@ -267,6 +344,20 @@ pub(crate) enum PeerConnectionDriverEvent {
+@@ -267,6 +354,20 @@ pub(crate) enum PeerConnectionDriverEvent {
          ice_transport_policy: RTCIceTransportPolicy,
      },
      IceGathering,
@@ -412,7 +422,7 @@ index 8a0a53a..1bd304b 100644
      Close,
  }
  
-@@ -283,6 +374,10 @@ where
+@@ -283,6 +384,10 @@ where
      tcp_transport: RTCTcpTransport,
      mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
      udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
@@ -423,7 +433,7 @@ index 8a0a53a..1bd304b 100644
      /// Reused scratch buffer for concatenating a run of same-destination datagrams
      /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
      gso_scratch: Vec<u8>,
-@@ -391,6 +486,33 @@ where
+@@ -391,6 +496,33 @@ where
              ));
          }
  
@@ -457,7 +467,7 @@ index 8a0a53a..1bd304b 100644
          self.tcp_transport = RTCTcpTransport::new(tcp_listeners);
  
          // Rebuilt, not updated: a gatherer's STUN clients and TURN allocations are keyed by
-@@ -446,6 +568,10 @@ where
+@@ -446,6 +578,10 @@ where
              ),
              mdns_socket: None,
              udp_sockets: HashMap::new(),
@@ -468,7 +478,7 @@ index 8a0a53a..1bd304b 100644
              gso_scratch: Vec::new(),
              tcp_transport: RTCTcpTransport::new(HashMap::new()),
              ice_gathering_active: false,
-@@ -473,6 +599,7 @@ where
+@@ -473,6 +609,7 @@ where
      /// on its next re-check; the wake makes that immediate. Idempotent on the clean path.
      pub(crate) fn signal_stopped(&self) {
          self.inner.closing.store(true, Ordering::Release);
@@ -476,7 +486,7 @@ index 8a0a53a..1bd304b 100644
          self.inner.data_channel_backpressure.notify_waiters();
      }
  
-@@ -588,6 +715,10 @@ where
+@@ -588,6 +725,10 @@ where
              // momentarily full channel), this check still guarantees the loop —
              // and thus a dedicated reactor thread — terminates instead of leaking.
              if self.inner.closing.load(Ordering::Acquire) {
@@ -487,7 +497,7 @@ index 8a0a53a..1bd304b 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -595,6 +726,7 @@ where
+@@ -595,6 +736,7 @@ where
              }
  
              self.poll_pass().await?;
@@ -495,7 +505,7 @@ index 8a0a53a..1bd304b 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +983,364 @@ where
+@@ -851,6 +993,372 @@ where
          }
      }
  
@@ -512,6 +522,11 @@ index 8a0a53a..1bd304b 100644
 +        let core = inner.core.lock().await;
 +        // The reads and the lock take time, and the scouts' snapshots must not postdate `now`.
 +        let now = Instant::now();
++        if !self.host_sweep.is_empty() && self.sweep_interfaces.stale(now) {
++            // The wait for the lock outlasted the list's age bound, or a plan arrived after
++            // the reads. Leaving the pass undone keeps it due, so the next wake reads afresh.
++            return;
++        }
 +        if self.host_sweep.is_empty() {
 +            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +            if core
@@ -593,7 +608,7 @@ index 8a0a53a..1bd304b 100644
 +        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +        self.host_scouts.refresh(now);
 +        (self.host_sweep.nat_open() && !self.host_sweep.unprepared_ports(now).is_empty())
-+            .then(|| self.read_sweep_subnets())
++            .then(|| self.read_sweep_subnets(now))
 +    }
 +
 +    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
@@ -623,7 +638,7 @@ index 8a0a53a..1bd304b 100644
 +            |subnet, ip| scouts.usable(subnet, ip, now),
 +            |subnet, ip| scouts.early_usable(subnet, ip, now),
 +        ) {
-+            self.send_host_probe(probe);
++            self.send_host_probe(now, probe);
 +        } else if self.host_sweep.combined_attempts() < 32768
 +            && self.host_sweep.scouts_allowed(now, false)
 +            && let Some((port, expires)) = self.host_sweep.active_port(now)
@@ -633,7 +648,7 @@ index 8a0a53a..1bd304b 100644
 +                self.host_sweep.remote_ufrag(),
 +                port,
 +                expires,
-+                |subnet, destination| self.sweep_interfaces.owns(subnet, destination),
++                |subnet, destination| self.sweep_interfaces.owns(now, subnet, destination),
 +            )
 +        {
 +            self.host_sweep.note_progress(reason);
@@ -734,13 +749,13 @@ index 8a0a53a..1bd304b 100644
 +
 +    /// Enumerate and prioritize once per pass, sharing the authorized address arrays across
 +    /// due ports. Neighbor queries share one absolute budget.
-+    fn read_sweep_subnets(&self) -> PreparedSubnets {
++    fn read_sweep_subnets(&self, now: Instant) -> PreparedSubnets {
 +        if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
 +            return Err("unsupported-platform");
 +        }
 +        let interfaces = self
 +            .sweep_interfaces
-+            .current()
++            .current(now)
 +            .ok_or("no-on-link-interface")?;
 +        #[cfg(target_os = "linux")]
 +        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
@@ -796,10 +811,13 @@ index 8a0a53a..1bd304b 100644
 +        (subnets, reasons)
 +    }
 +
-+    fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
++    fn send_host_probe(&mut self, now: Instant, probe: super::host_sweep::SweepProbe) {
 +        // Recheck before each emission: a route is no longer safe after its
 +        // interface/address/mask disappears or changes. No routing fallback is allowed.
-+        if !self.sweep_interfaces.owns(&probe.subnet, probe.destination) {
++        if !self
++            .sweep_interfaces
++            .owns(now, &probe.subnet, probe.destination)
++        {
 +            self.host_sweep.skip(probe.port, "no-on-link-interface");
 +            return;
 +        }
@@ -860,7 +878,7 @@ index 8a0a53a..1bd304b 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1773,55 @@ where
+@@ -1283,8 +1791,55 @@ where
          }
      }
  
@@ -917,7 +935,7 @@ index 8a0a53a..1bd304b 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1934,10 @@ where
+@@ -1397,6 +1952,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -928,7 +946,7 @@ index 8a0a53a..1bd304b 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2293,18 @@ where
+@@ -1752,11 +2311,18 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -3874,10 +3892,10 @@ index 0000000..cae9b5c
 +}
 diff --git b/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 new file mode 100644
-index 0000000..2f906e0
+index 0000000..05596e8
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,509 @@
 +use super::driver::{PeerConnectionDriver, PeerConnectionDriverEvent};
 +use super::tests::new_test_peer_connection;
 +use super::{PeerConnection, PeerConnectionImpl};
@@ -4304,7 +4322,88 @@ index 0000000..2f906e0
 +    );
 +    interfaces.refresh(start + Duration::from_millis(100));
 +    assert_eq!(READS.with(Cell::get), 2, "a 100 ms old list is read again");
-+    assert!(interfaces.current().is_some());
++    let read_at = start + Duration::from_millis(100);
++    assert!(interfaces.current(read_at).is_some());
++    assert!(
++        interfaces
++            .current(read_at + Duration::from_millis(100))
++            .is_none(),
++        "a list is not used once it is 100 ms old"
++    );
++}
++
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++#[test]
++fn a_pass_that_waits_past_the_interface_bound_for_the_core_lock_does_not_run() {
++    use super::driver::SweepInterfaces;
++    use rtc::shared::ifaces::Interface;
++    use std::cell::RefCell;
++    use std::sync::mpsc;
++    use std::time::{Duration, Instant};
++
++    thread_local! {
++        static READ: RefCell<Option<mpsc::Sender<()>>> = const { RefCell::new(None) };
++    }
++    fn signalled_interfaces() -> std::io::Result<Vec<Interface>> {
++        READ.with(|read| {
++            if let Some(read) = read.borrow().as_ref() {
++                let _ = read.send(());
++            }
++        });
++        Ok(Vec::new())
++    }
++
++    let runtime = default_runtime().unwrap();
++    let mut connection = None;
++    runtime.block_on(Box::pin(async {
++        connection = Some(new_test_peer_connection().await);
++    }));
++    let (mut inner, _events) = connection.unwrap();
++    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
++    let mut core = None;
++    runtime.block_on(Box::pin(async {
++        core = Some(inner.core.lock().await);
++    }));
++    let (read_tx, read_rx) = mpsc::channel();
++    let driver_inner = Arc::clone(&inner);
++    let pass = std::thread::spawn(move || {
++        READ.with(|read| *read.borrow_mut() = Some(read_tx));
++        let mut driver = PeerConnectionDriver::new(
++            driver_inner,
++            Vec::<SocketAddr>::new(),
++            Vec::<SocketAddr>::new(),
++            rtc::ice::mdns::MulticastDnsMode::Disabled,
++            Vec::new(),
++            RTCIceTransportPolicy::All,
++            false,
++        );
++        driver.sweep_interfaces = SweepInterfaces::reading(signalled_interfaces);
++        let started = Instant::now();
++        driver.host_sweep.start(1, "ufrag".into(), 40000, started);
++        let runtime = default_runtime().unwrap();
++        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
++        let stale = driver.host_sweep.deadline();
++        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
++        (started, stale, driver.host_sweep.deadline())
++    });
++    read_rx
++        .recv_timeout(Duration::from_secs(10))
++        .expect("the pass must read the interface list before the lock");
++    std::thread::sleep(Duration::from_millis(150));
++    drop(core);
++    let (started, stale, fresh) = pass.join().unwrap();
++    // A pass that runs cancels this plan, whose credentials the core never had; an abandoned
++    // pass leaves it due at its start.
++    assert_eq!(
++        stale,
++        Some(started),
++        "a list older than 100 ms by the time the lock is held must not be used"
++    );
++    assert_ne!(
++        fresh,
++        Some(started),
++        "the next pass reads the list again and runs"
++    );
 +}
 diff --git a/webrtc/src/peer_connection/host_sweep_nat.rs b/webrtc/src/peer_connection/host_sweep_nat.rs
 index e69de29..94bcefa 100644

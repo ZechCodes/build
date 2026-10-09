@@ -424,5 +424,86 @@ fn sweep_passes_share_one_interface_read_until_it_is_stale() {
     );
     interfaces.refresh(start + Duration::from_millis(100));
     assert_eq!(READS.with(Cell::get), 2, "a 100 ms old list is read again");
-    assert!(interfaces.current().is_some());
+    let read_at = start + Duration::from_millis(100);
+    assert!(interfaces.current(read_at).is_some());
+    assert!(
+        interfaces
+            .current(read_at + Duration::from_millis(100))
+            .is_none(),
+        "a list is not used once it is 100 ms old"
+    );
+}
+
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+#[test]
+fn a_pass_that_waits_past_the_interface_bound_for_the_core_lock_does_not_run() {
+    use super::driver::SweepInterfaces;
+    use rtc::shared::ifaces::Interface;
+    use std::cell::RefCell;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static READ: RefCell<Option<mpsc::Sender<()>>> = const { RefCell::new(None) };
+    }
+    fn signalled_interfaces() -> std::io::Result<Vec<Interface>> {
+        READ.with(|read| {
+            if let Some(read) = read.borrow().as_ref() {
+                let _ = read.send(());
+            }
+        });
+        Ok(Vec::new())
+    }
+
+    let runtime = default_runtime().unwrap();
+    let mut connection = None;
+    runtime.block_on(Box::pin(async {
+        connection = Some(new_test_peer_connection().await);
+    }));
+    let (mut inner, _events) = connection.unwrap();
+    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
+    let mut core = None;
+    runtime.block_on(Box::pin(async {
+        core = Some(inner.core.lock().await);
+    }));
+    let (read_tx, read_rx) = mpsc::channel();
+    let driver_inner = Arc::clone(&inner);
+    let pass = std::thread::spawn(move || {
+        READ.with(|read| *read.borrow_mut() = Some(read_tx));
+        let mut driver = PeerConnectionDriver::new(
+            driver_inner,
+            Vec::<SocketAddr>::new(),
+            Vec::<SocketAddr>::new(),
+            rtc::ice::mdns::MulticastDnsMode::Disabled,
+            Vec::new(),
+            RTCIceTransportPolicy::All,
+            false,
+        );
+        driver.sweep_interfaces = SweepInterfaces::reading(signalled_interfaces);
+        let started = Instant::now();
+        driver.host_sweep.start(1, "ufrag".into(), 40000, started);
+        let runtime = default_runtime().unwrap();
+        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
+        let stale = driver.host_sweep.deadline();
+        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
+        (started, stale, driver.host_sweep.deadline())
+    });
+    read_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the pass must read the interface list before the lock");
+    std::thread::sleep(Duration::from_millis(150));
+    drop(core);
+    let (started, stale, fresh) = pass.join().unwrap();
+    // A pass that runs cancels this plan, whose credentials the core never had; an abandoned
+    // pass leaves it due at its start.
+    assert_eq!(
+        stale,
+        Some(started),
+        "a list older than 100 ms by the time the lock is held must not be used"
+    );
+    assert_ne!(
+        fresh,
+        Some(started),
+        "the next pass reads the list again and runs"
+    );
 }

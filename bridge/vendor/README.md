@@ -374,6 +374,14 @@ subnet's mask. Two ioctls cost far less than the dump. `host_sweep_tests.rs`
 pins a mask narrowed or an address removed under an unchanged list, and reads
 loopback's real 127.0.0.1/8 entry.
 
+The list's 100 ms bound is checked again once the core lock is held: a wait
+for the lock can outlast it. A pass whose list is past the bound by then
+does nothing and stays due, and the next wake reads the list afresh before
+taking the lock; every use of the list also checks its age at the pass's
+post-lock instant. A driver regression holds the core lock for 150 ms while
+a pass waits and pins that the pass leaves its plan untouched, then runs on
+the next wake.
+
 An IPv6 host candidate is skipped as `ipv6-unsupported` (it was reported as
 `non-private-subnet`): the sweep enumerates IPv4 subnets only. The bridge and
 the SPA's diagnostics both accept the new fixed code.

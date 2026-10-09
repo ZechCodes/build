@@ -298,21 +298,31 @@ impl SweepInterfaces {
     }
 
     pub(super) fn refresh(&mut self, now: Instant) {
-        let fresh = self
-            .read_at
-            .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH);
-        if !fresh {
+        if self.stale(now) {
             self.list = (self.read)().ok();
             self.read_at = Some(now);
         }
     }
 
-    pub(super) fn current(&self) -> Option<&[Interface]> {
-        self.list.as_deref()
+    /// Whether the list read is [`SWEEP_INTERFACES_FRESH`] old or more at `now`, or missing.
+    pub(super) fn stale(&self, now: Instant) -> bool {
+        !self
+            .read_at
+            .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH)
     }
 
-    pub(super) fn owns(&self, subnet: &SweepSubnet, destination: std::net::Ipv4Addr) -> bool {
-        self.current()
+    /// The list, while it is still within its age bound at `now`.
+    pub(super) fn current(&self, now: Instant) -> Option<&[Interface]> {
+        (!self.stale(now)).then_some(self.list.as_deref()).flatten()
+    }
+
+    pub(super) fn owns(
+        &self,
+        now: Instant,
+        subnet: &SweepSubnet,
+        destination: std::net::Ipv4Addr,
+    ) -> bool {
+        self.current(now)
             .is_some_and(|interfaces| subnet.still_owned(interfaces, self.live, destination))
     }
 }
@@ -996,6 +1006,11 @@ where
         let core = inner.core.lock().await;
         // The reads and the lock take time, and the scouts' snapshots must not postdate `now`.
         let now = Instant::now();
+        if !self.host_sweep.is_empty() && self.sweep_interfaces.stale(now) {
+            // The wait for the lock outlasted the list's age bound, or a plan arrived after
+            // the reads. Leaving the pass undone keeps it due, so the next wake reads afresh.
+            return;
+        }
         if self.host_sweep.is_empty() {
             #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
             if core
@@ -1077,7 +1092,7 @@ where
         #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
         self.host_scouts.refresh(now);
         (self.host_sweep.nat_open() && !self.host_sweep.unprepared_ports(now).is_empty())
-            .then(|| self.read_sweep_subnets())
+            .then(|| self.read_sweep_subnets(now))
     }
 
     #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
@@ -1107,7 +1122,7 @@ where
             |subnet, ip| scouts.usable(subnet, ip, now),
             |subnet, ip| scouts.early_usable(subnet, ip, now),
         ) {
-            self.send_host_probe(probe);
+            self.send_host_probe(now, probe);
         } else if self.host_sweep.combined_attempts() < 32768
             && self.host_sweep.scouts_allowed(now, false)
             && let Some((port, expires)) = self.host_sweep.active_port(now)
@@ -1117,7 +1132,7 @@ where
                 self.host_sweep.remote_ufrag(),
                 port,
                 expires,
-                |subnet, destination| self.sweep_interfaces.owns(subnet, destination),
+                |subnet, destination| self.sweep_interfaces.owns(now, subnet, destination),
             )
         {
             self.host_sweep.note_progress(reason);
@@ -1218,13 +1233,13 @@ where
 
     /// Enumerate and prioritize once per pass, sharing the authorized address arrays across
     /// due ports. Neighbor queries share one absolute budget.
-    fn read_sweep_subnets(&self) -> PreparedSubnets {
+    fn read_sweep_subnets(&self, now: Instant) -> PreparedSubnets {
         if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
             return Err("unsupported-platform");
         }
         let interfaces = self
             .sweep_interfaces
-            .current()
+            .current(now)
             .ok_or("no-on-link-interface")?;
         #[cfg(target_os = "linux")]
         let neighbor_deadline = Instant::now() + Duration::from_millis(5);
@@ -1280,10 +1295,13 @@ where
         (subnets, reasons)
     }
 
-    fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
+    fn send_host_probe(&mut self, now: Instant, probe: super::host_sweep::SweepProbe) {
         // Recheck before each emission: a route is no longer safe after its
         // interface/address/mask disappears or changes. No routing fallback is allowed.
-        if !self.sweep_interfaces.owns(&probe.subnet, probe.destination) {
+        if !self
+            .sweep_interfaces
+            .owns(now, &probe.subnet, probe.destination)
+        {
             self.host_sweep.skip(probe.port, "no-on-link-interface");
             return;
         }

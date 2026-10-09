@@ -560,7 +560,7 @@ fn fs_create_directory_selects_one_workspace_source() {
 }
 
 #[test]
-fn fs_upload_and_directory_creation_accept_a_symlinked_scope_root() {
+fn fs_upload_and_entry_creation_accept_a_symlinked_scope_root() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project = state.project_at(0);
@@ -579,6 +579,14 @@ fn fs_upload_and_directory_creation_accept_a_symlinked_scope_root() {
         }),
     ));
     assert_eq!(created["ok"], true, "{created:?}");
+    let created_file = state.handle(req(
+        "fs.createFile",
+        json!({
+            "project_id": project_id, "source_id": source_id, "parent": "assets", "name": "notes.md",
+        }),
+    ));
+    assert_eq!(created_file["ok"], true, "{created_file:?}");
+    assert!(repo.join("assets/notes.md").is_file());
     let sender = SessionSender::detached("uploader");
     let begun = upload_call(
         &mut state,

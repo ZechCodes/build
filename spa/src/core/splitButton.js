@@ -46,7 +46,7 @@ function menuItemsHtml(options) {
   return options
     .map(
       (o) =>
-        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"${roleAttributes(o)} tabindex="-1"><span class="mt">${esc(o.menuLabel ?? o.label)}</span>${o.description ? `<span class="md">${esc(o.description)}</span>` : ""}</div>`,
+        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"${roleAttributes(o)} tabindex="-1"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
     )
     .join("");
 }

@@ -1144,6 +1144,60 @@ describe("a refresh requested during a pass", () => {
     expect(calls("board.list")).toHaveLength(2);
   });
 
+  it("reads a fresh diff after stop/start while the old same-session read waits for idle", async () => {
+    await boot([branchItem()]);
+    await cache.deleteCached([{ deviceId: "dev-1", entityId: "run-1", kind: "diff" }]);
+    const before = calls("run.diff").length;
+    const idle = [];
+    let queuedIdle;
+    const waitingForIdle = new Promise((resolve) => { queuedIdle = resolve; });
+    globalThis.requestIdleCallback = (callback) => {
+      idle.push(callback);
+      queuedIdle();
+    };
+
+    const requests = await import("../src/core/readRequests.js");
+    const coordinatedRead = requests.coordinatedRead;
+    let coordinatedDiffs = 0;
+    let restartedDiff;
+    const restartReachedDiff = new Promise((resolve) => { restartedDiff = resolve; });
+    const reader = vi.spyOn(requests, "coordinatedRead").mockImplementation((request) => {
+      const pending = coordinatedRead(request);
+      if (request.key.includes("run.diff")) {
+        coordinatedDiffs += 1;
+        if (coordinatedDiffs === 2) restartedDiff();
+      }
+      return pending;
+    });
+
+    try {
+      const first = sync.syncDevice("dev-1");
+      await waitingForIdle;
+      expect(calls("run.diff")).toHaveLength(before);
+      sync.stopCacheSync();
+
+      // Start the lifetime before putting its device back, so this explicit
+      // pass owns the restart and gives the test a promise for all its writes.
+      const context = contexts.get("dev-1");
+      contexts.delete("dev-1");
+      sync.startCacheSync();
+      contexts.set("dev-1", context);
+      script["run.diff"] = () => ({ diff_key: "after-restart", files: [{ path: "fresh.js" }] });
+      const restarted = sync.syncDevice("dev-1");
+      await restartReachedDiff;
+      expect(calls("run.diff")).toHaveLength(before);
+
+      for (const callback of idle.splice(0)) callback();
+      expect(await Promise.all([first, restarted])).toEqual([false, true]);
+      expect(calls("run.diff").slice(before)).toHaveLength(1);
+      expect((await read("run-1", "diff"))?.value).toMatchObject({
+        diff_key: "after-restart", files: [{ path: "fresh.js" }],
+      });
+    } finally {
+      reader.mockRestore();
+    }
+  });
+
   it("discards the old session's queued refresh when its replacement asks", async () => {
     await boot([branchItem()]);
     const held = holdNextRead("git.status");

@@ -155,3 +155,133 @@ fn the_compacted_notification_is_decoded() {
         ServerNotification::ContextCompacted
     );
 }
+
+const EARLIER_TURN_ID: &str = "turn-before-compaction";
+const CODEX_TURN_ID: &str = "turn-codex-started";
+
+/// Waiting after an ordinary turn and then a `/compact`, the way #421's agent
+/// was when Codex spoke again nine minutes later.
+fn waiting_after_compaction() -> CodexSessionState {
+    let starting = apply(
+        advance_to_waiting(),
+        SessionEvent::SendTurn("go".to_string()),
+    )
+    .state;
+    let working = apply(
+        starting,
+        correlated(start_turn("go"), Ok(json!({"turn":{"id":EARLIER_TURN_ID}}))),
+    )
+    .state;
+    let waiting = apply(working, turn_completed(EARLIER_TURN_ID, None)).state;
+    let compacting = apply(waiting, SessionEvent::SendTurn("/compact".to_string())).state;
+    let answered = apply(compacting, compaction_answered()).state;
+    let started = apply(answered, SessionEvent::TurnStarted(TURN_ID.to_string())).state;
+    let completed = apply(started, turn_completed(TURN_ID, None)).state;
+    assert_eq!(completed.live_status(), Some(AgentStatus::Waiting));
+    completed
+}
+
+#[test]
+fn a_turn_codex_starts_on_its_own_after_a_compaction_is_worked_until_it_completes() {
+    let started = apply(
+        waiting_after_compaction(),
+        SessionEvent::TurnStarted(CODEX_TURN_ID.to_string()),
+    );
+    assert!(started.effects.is_empty());
+    assert_eq!(started.state.live_status(), Some(AgentStatus::Working));
+
+    let completed = apply(started.state, turn_completed(CODEX_TURN_ID, None));
+    assert_eq!(completed.state.live_status(), Some(AgentStatus::Waiting));
+    assert!(completed
+        .effects
+        .contains(&SessionEffect::CloseTurn(CODEX_TURN_ID.to_string())));
+}
+
+#[test]
+fn a_message_sent_into_a_turn_codex_started_on_its_own_steers_into_it() {
+    let started = apply(
+        waiting_after_compaction(),
+        SessionEvent::TurnStarted(CODEX_TURN_ID.to_string()),
+    )
+    .state;
+
+    let sent = apply(started, SessionEvent::SendTurn("more".to_string()));
+    assert_eq!(
+        sent.effects,
+        vec![SessionEffect::Request(PendingOperation::SteerTurn {
+            thread_id: THREAD_ID.to_string(),
+            turn_id: CODEX_TURN_ID.to_string(),
+            input: "more".to_string(),
+        })]
+    );
+}
+
+#[test]
+fn a_late_item_from_an_earlier_turn_leaves_the_waiting_session_waiting() {
+    for turn_id in [EARLIER_TURN_ID, TURN_ID, "turn-before-this-process"] {
+        let late = apply(
+            waiting_after_compaction(),
+            SessionEvent::ItemObserved(turn_id.to_string()),
+        );
+        assert!(late.effects.is_empty());
+        assert_eq!(late.state.live_status(), Some(AgentStatus::Waiting));
+    }
+}
+
+#[test]
+fn a_late_item_from_an_earlier_turn_never_becomes_the_next_turn() {
+    let starting = apply(
+        waiting_after_compaction(),
+        SessionEvent::SendTurn("next".to_string()),
+    )
+    .state;
+    let late = apply(
+        starting,
+        SessionEvent::ItemObserved(EARLIER_TURN_ID.to_string()),
+    )
+    .state;
+
+    let answered = apply(
+        late,
+        correlated(start_turn("next"), Ok(json!({"turn":{"id":CODEX_TURN_ID}}))),
+    );
+    assert_eq!(answered.state.live_status(), Some(AgentStatus::Working));
+    let late_again = apply(
+        answered.state,
+        SessionEvent::ItemObserved(EARLIER_TURN_ID.to_string()),
+    );
+    assert_eq!(late_again.state.live_status(), Some(AgentStatus::Working));
+    let completed = apply(late_again.state, turn_completed(CODEX_TURN_ID, None));
+    assert_eq!(completed.state.live_status(), Some(AgentStatus::Waiting));
+}
+
+#[test]
+fn a_message_sent_during_a_compaction_turn_waits_for_a_turn_of_its_own() {
+    let answered = apply(compacting(), compaction_answered()).state;
+    let compacting_turn = apply(answered, SessionEvent::TurnStarted(TURN_ID.to_string())).state;
+
+    let sent = apply(compacting_turn, SessionEvent::SendTurn("after".to_string()));
+    assert!(sent.effects.is_empty());
+    assert_eq!(sent.state.queued_turn_count(), 1);
+
+    let completed = apply(sent.state, turn_completed(TURN_ID, None));
+    assert!(completed
+        .effects
+        .contains(&SessionEffect::Request(start_turn("after"))));
+    assert_eq!(completed.state.queued_turn_count(), 0);
+}
+
+#[test]
+fn a_message_sent_while_a_compaction_turn_is_announced_before_its_answer_is_queued() {
+    let started = apply(compacting(), SessionEvent::TurnStarted(TURN_ID.to_string())).state;
+    let compacting_turn = apply(started, compaction_answered()).state;
+    assert_eq!(compacting_turn.live_status(), Some(AgentStatus::Working));
+
+    let sent = apply(compacting_turn, SessionEvent::SendTurn("after".to_string()));
+    assert!(sent.effects.is_empty());
+
+    let completed = apply(sent.state, turn_completed(TURN_ID, None));
+    assert!(completed
+        .effects
+        .contains(&SessionEffect::Request(start_turn("after"))));
+}

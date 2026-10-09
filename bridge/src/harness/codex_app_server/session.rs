@@ -703,7 +703,7 @@ impl SessionCore {
                 {
                     self.surfaces_revision.bump();
                 }
-                self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
+                self.apply_state(SessionEvent::ItemObserved(item.turn_id.clone()))?;
                 self.observe_user_message(item);
                 self.observe_compaction(item);
                 self.translate(&notification)
@@ -1253,6 +1253,7 @@ fn session_event_kind(event: &SessionEvent) -> &'static str {
         SessionEvent::Connection(_) => "connection",
         SessionEvent::ThreadStarted(_) => "thread_started",
         SessionEvent::TurnStarted(_) => "turn_started",
+        SessionEvent::ItemObserved(_) => "item_observed",
         SessionEvent::ObservedCompletion(_) => "turn_completed",
         SessionEvent::ObservedError(_) => "error_notification",
         SessionEvent::VersionEvidence(_) => "version_evidence",

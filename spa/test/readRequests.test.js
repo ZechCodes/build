@@ -103,7 +103,6 @@ describe("coordinatedRead", () => {
     await Promise.resolve();
     if (priority === "foreground") {
       await replacement;
-      await nextTurn();
     }
     for (const callback of idle.splice(0)) callback();
     const [stoppedAnswer, replacementAnswer] = await Promise.all([stopped, replacement]);

@@ -15,7 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use serde::de::IgnoredAny;
+use serde::de::{self, IgnoredAny, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use super::environment::DeviceEnvironment;
@@ -50,16 +50,67 @@ pub trait AuthAdapter: Send + Sync {
     ) -> Result<AuthFacts, ObservationFailed>;
 }
 
-/// Whether a JSON value is there and not `null`, read without keeping it: a
-/// credential's value is skipped by the parser, never held.
+/// Whether a JSON value is there and holds something, read without keeping
+/// it: `null`, an empty string and a whitespace-only string are absent, and
+/// a credential's value is looked at in place and skipped, never held.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct Present(pub bool);
 
 impl<'de> Deserialize<'de> for Present {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Present(
-            Option::<IgnoredAny>::deserialize(deserializer)?.is_some(),
-        ))
+        deserializer.deserialize_any(PresenceVisitor).map(Present)
+    }
+}
+
+struct PresenceVisitor;
+
+impl<'de> Visitor<'de> for PresenceVisitor {
+    type Value = bool;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("any value")
+    }
+
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<bool, E> {
+        Ok(!value.trim().is_empty())
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<bool, E> {
+        Ok(false)
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<bool, E> {
+        Ok(false)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, inner: D) -> Result<bool, D::Error> {
+        inner.deserialize_any(PresenceVisitor)
+    }
+
+    fn visit_bool<E: de::Error>(self, _: bool) -> Result<bool, E> {
+        Ok(true)
+    }
+
+    fn visit_i64<E: de::Error>(self, _: i64) -> Result<bool, E> {
+        Ok(true)
+    }
+
+    fn visit_u64<E: de::Error>(self, _: u64) -> Result<bool, E> {
+        Ok(true)
+    }
+
+    fn visit_f64<E: de::Error>(self, _: f64) -> Result<bool, E> {
+        Ok(true)
+    }
+
+    fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<bool, A::Error> {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(true)
+    }
+
+    fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<bool, A::Error> {
+        while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+        Ok(true)
     }
 }
 
@@ -171,7 +222,7 @@ mod tests {
             absent: Present,
         }
         let held: Holder =
-            serde_json::from_str(r#"{"secret": {"nested": "sk-ant-x"}, "empty": null}"#).unwrap();
+            serde_json::from_str(r#"{"secret": {"nested": "sk-ant-x"}, "empty": " "}"#).unwrap();
         assert_eq!(
             (held.secret, held.empty, held.absent),
             (Present(true), Present(false), Present(false))

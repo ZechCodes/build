@@ -5,7 +5,8 @@
 //! goes through the root pre-action hook, which in 2.1.284 schedules an
 //! OAuth refresh and can run `policyHelper`s before any auth-specific guard
 //! (#466). So the method and status come from the saved credentials file —
-//! `expiresAt` and which tokens it holds, never their values — and from the
+//! `expiresAt` and which tokens it holds, never their values — the global
+//! config's `primaryApiKey` (an API key saved by `/login`), and from the
 //! settings and environment a session reads, by name: an `apiKeyHelper` in
 //! any settings source, a cloud provider switch, a token or key variable.
 
@@ -32,6 +33,14 @@ struct Settings {
     env: std::collections::BTreeMap<String, Present>,
 }
 
+/// The global config (`.claude.json`), for the one sign-in it can hold: an
+/// API key saved by `/login`.
+#[derive(Debug, Default, Deserialize)]
+struct GlobalConfig {
+    #[serde(default, rename = "primaryApiKey")]
+    primary_api_key: Present,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct CredentialsFile {
     #[serde(default, rename = "claudeAiOauth")]
@@ -52,6 +61,7 @@ struct OauthCredentials {
 struct Saved {
     settings: Vec<Settings>,
     oauth: Option<OauthCredentials>,
+    saved_api_key: bool,
 }
 
 impl Saved {
@@ -65,7 +75,13 @@ impl Saved {
         let oauth = read_json::<CredentialsFile>(&credentials_path(environment))?
             .and_then(|file| file.oauth)
             .filter(|oauth| oauth.access.0 || oauth.refresh.0);
-        Ok(Saved { settings, oauth })
+        let saved_api_key = read_json::<GlobalConfig>(&global_config_path(environment))?
+            .is_some_and(|config| config.primary_api_key.0);
+        Ok(Saved {
+            settings,
+            oauth,
+            saved_api_key,
+        })
     }
 
     /// Where `name` is set for a session: the environment, or a settings
@@ -96,6 +112,16 @@ const LONG_LIVED_TOKENS: [&str; 2] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH
 
 fn config_dir(environment: &DeviceEnvironment) -> PathBuf {
     environment.dir_or_home("CLAUDE_CONFIG_DIR", ".claude")
+}
+
+/// `.claude.json`: in the config directory when `CLAUDE_CONFIG_DIR` moves
+/// it, beside it in the home directory otherwise.
+fn global_config_path(environment: &DeviceEnvironment) -> PathBuf {
+    if environment.has("CLAUDE_CONFIG_DIR") {
+        config_dir(environment).join(".claude.json")
+    } else {
+        environment.home().join(".claude.json")
+    }
 }
 
 fn credentials_path(environment: &DeviceEnvironment) -> PathBuf {
@@ -156,6 +182,7 @@ impl AuthAdapter for ClaudeAuth {
         let mut watched = settings_paths(environment).unwrap_or_default();
         watched.push(environment.claude_managed_root().join("managed-settings.d"));
         watched.push(credentials_path(environment));
+        watched.push(global_config_path(environment));
         watched
     }
 
@@ -204,6 +231,13 @@ fn from_saved(environment: &DeviceEnvironment, saved: &Saved, now: SystemTime) -
     }
     if let Some(source) = saved.sets(environment, "ANTHROPIC_API_KEY") {
         note(AuthMethod::ApiKey, AuthStatus::SignedIn, source);
+    }
+    if saved.saved_api_key {
+        note(
+            AuthMethod::ApiKey,
+            AuthStatus::SignedIn,
+            Evidence::CredentialsFile,
+        );
     }
     if let Some(oauth) = &saved.oauth {
         let status = oauth_status(oauth.expires_at, oauth.refresh.0, now);

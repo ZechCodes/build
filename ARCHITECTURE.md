@@ -1168,13 +1168,15 @@ nothing here is a provider check), the kinds of `evidence` it was read from,
 credential changes, and `supported_login_methods` (empty until in-app sign-in
 lands). Pi's context lists each provider on its own.
 
-The adapters are passive and metadata-only (`inventory/adapters/`): the
-inventory runs no CLI. Claude Code's `auth status` is not passive through its
+The adapters are passive and metadata-only (`inventory/adapters/`): no
+authentication read starts a process (installed versions still come from the
+CLI readings above and their own sanitized probes). Claude Code's `auth status` is not passive through its
 startup (2.1.284's root pre-action hook can refresh OAuth and run policy
 helpers, #466), Codex's `login status` prints part of an API key and its app
 server's account read could refresh, and Pi has no status verb. Claude
 Code's adapter reads `expiresAt` and which tokens `.credentials.json` holds
-(under `CLAUDE_CONFIG_DIR`), an `apiKeyHelper` in any settings source a
+(under `CLAUDE_CONFIG_DIR`), `primaryApiKey` in the global `.claude.json` (an
+API key saved by `/login`), an `apiKeyHelper` in any settings source a
 session started in the home directory reads (user, the home's own project
 and local `.claude` settings, managed policy and its `managed-settings.d/`
 drop-ins), and token, key and cloud-provider variables by name. Codex's reads
@@ -1183,7 +1185,8 @@ drop-ins), and token, key and cloud-provider variables by name. Codex's reads
 and never resolves a key (a `!command` key reads as `external`). Every file is
 opened without blocking, refused unless regular, and read up to 1 MiB; a
 missing file means nothing is saved, and one that is there but unreadable or
-malformed fails the observation, so the prior facts stand, stale.
+malformed fails the observation, so the prior facts stand, stale. A `null`,
+empty or blank value, in a file or a variable, counts as absent.
 
 The service sweeps every 15 s from daemon start with no client needed
 (`inventory::start` in `main.rs`): executables each sweep (installs, removals

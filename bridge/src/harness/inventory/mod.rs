@@ -10,7 +10,7 @@
 //! Each sweep looks for every harness's executable (a few `stat`s), takes the
 //! installed version from the CLI readings (`harness::installed`, on their own
 //! ten-minute schedule), and observes each credential context through its
-//! passive, metadata-only adapter ([`adapters`]; no CLI is run) at most once
+//! passive, metadata-only adapter ([`adapters`]; it starts no process) at most once
 //! per [`AUTH_CHECK_INTERVAL`],
 //! backing off after failures. An executable or credential file that
 //! changes, or an explicit `harnesses.refresh`, checks again sooner, no more

@@ -101,7 +101,7 @@ enum KeyKind {
 impl KeyKind {
     /// Read in place, without copying the value anywhere.
     fn of(value: &str) -> KeyKind {
-        if value.is_empty() {
+        if value.trim().is_empty() {
             return KeyKind::Missing;
         }
         if value.starts_with('!') {
@@ -155,13 +155,15 @@ fn provider_from(id: &str, credential: &Credential, now: SystemTime) -> Option<P
             access,
             expires,
         } if access.0 || refresh.0 => (AuthMethod::Oauth, oauth_status(*expires, refresh.0, now)),
+        // OAuth with neither token holds nothing.
+        Credential::Oauth { .. } => return None,
         Credential::ApiKey { key } => match key {
             KeyKind::Literal => (AuthMethod::ApiKey, AuthStatus::SignedIn),
             KeyKind::Interpolated => (AuthMethod::ApiKey, AuthStatus::Unknown),
             KeyKind::Command => (AuthMethod::External, AuthStatus::Unknown),
             KeyKind::Missing => return None,
         },
-        _ => (AuthMethod::Unknown, AuthStatus::Unknown),
+        Credential::Other => (AuthMethod::Unknown, AuthStatus::Unknown),
     };
     Some(ProviderAuth {
         id: id.to_string(),
@@ -245,6 +247,7 @@ mod tests {
         assert_eq!(KeyKind::of("$$literal"), KeyKind::Literal);
         assert_eq!(KeyKind::of("$!literal"), KeyKind::Literal);
         assert_eq!(KeyKind::of(""), KeyKind::Missing);
+        assert_eq!(KeyKind::of("  "), KeyKind::Missing);
     }
 
     #[test]

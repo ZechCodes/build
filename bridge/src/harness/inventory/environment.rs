@@ -1,7 +1,7 @@
 //! The device environment the inventory observes: the home and variables a
 //! harness spawns with, captured once per sweep, so every adapter reads the
 //! same facts and a test can point all of them at a temporary home. Nothing
-//! is run in it: the inventory starts no CLI (#466).
+//! is run in it: no authentication read starts a process (#466).
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -62,12 +62,12 @@ impl DeviceEnvironment {
         &self.claude_managed_root
     }
 
-    /// Whether `name` is set to something nonempty. Only presence is ever
-    /// asked: a credential variable's value is not Build's to read.
+    /// Whether `name` is set to something other than blanks. Only presence
+    /// is ever asked: a credential variable's value is not Build's to read.
     pub(super) fn has(&self, name: &str) -> bool {
         self.vars
             .get(OsStr::new(name))
-            .is_some_and(|value| !value.is_empty())
+            .is_some_and(|value| !value.as_encoded_bytes().trim_ascii().is_empty())
     }
 
     /// The directory `variable` names, or `relative` under the home.

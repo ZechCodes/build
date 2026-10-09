@@ -881,3 +881,81 @@ fn a_restart_restores_nonsecret_observations_as_stale() {
     );
     assert!(restarted.revision > before.revision);
 }
+
+/// #466 round 2: an API key saved by `/login` lives as `primaryApiKey` in
+/// Claude Code's global config, not in the credentials file.
+#[test]
+fn a_claude_api_key_saved_by_login_reads_as_signed_in() {
+    let device = Device::new();
+    device.write(
+        ".claude.json",
+        r#"{"primaryApiKey": "sk-ant-api-SECRET", "numStartups": 3}"#,
+    );
+    let inventory = device.inventory();
+    inventory.sweep();
+    let snapshot = inventory.snapshot();
+    assert_eq!(
+        facts_of(&snapshot, "claude"),
+        (AuthMethod::ApiKey, AuthStatus::SignedIn, Health::Fresh)
+    );
+    assert_eq!(
+        context(&snapshot, "claude").facts.evidence,
+        [Evidence::CredentialsFile]
+    );
+    assert!(!serde_json::to_string(&snapshot).unwrap().contains("SECRET"));
+
+    // With the config directory moved, the global config moves with it.
+    let moved = Device::new();
+    moved.set(
+        "CLAUDE_CONFIG_DIR",
+        &moved.home().join("custom-claude").display().to_string(),
+    );
+    moved.write(
+        "custom-claude/.claude.json",
+        r#"{"primaryApiKey": "sk-ant-api-SECRET"}"#,
+    );
+    let inventory = moved.inventory();
+    inventory.sweep();
+    assert_eq!(
+        facts_of(&inventory.snapshot(), "claude").0,
+        AuthMethod::ApiKey
+    );
+}
+
+/// #466 round 2: an empty or whitespace-only value is no credential, in a
+/// file, a settings `env` or the environment.
+#[test]
+fn empty_or_blank_credential_values_count_as_absent() {
+    let device = Device::new();
+    device.write(
+        ".claude/settings.json",
+        r#"{"env": {"ANTHROPIC_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "   "}}"#,
+    );
+    device.write(".claude.json", r#"{"primaryApiKey": " "}"#);
+    device.write(
+        ".claude/.credentials.json",
+        r#"{"claudeAiOauth": {"accessToken": "", "refreshToken": "  ", "expiresAt": 99999999999999}}"#,
+    );
+    device.write(
+        ".codex/auth.json",
+        r#"{"OPENAI_API_KEY": " ", "tokens": {"access_token": "", "refresh_token": ""}}"#,
+    );
+    device.write(
+        ".pi/agent/auth.json",
+        r#"{"openai": {"type": "api_key", "key": "   "},
+            "anthropic": {"type": "oauth", "access": "", "refresh": " ", "expires": 99999999999999}}"#,
+    );
+    device.set("CODEX_API_KEY", "  ");
+    device.set("GROQ_API_KEY", " ");
+    let inventory = device.inventory();
+    inventory.sweep();
+    let snapshot = inventory.snapshot();
+    for id in ["claude", "codex", "pi"] {
+        assert_eq!(
+            facts_of(&snapshot, id),
+            (AuthMethod::None, AuthStatus::NotSignedIn, Health::Fresh),
+            "{id}"
+        );
+    }
+    assert!(context(&snapshot, "pi").facts.providers.is_empty());
+}

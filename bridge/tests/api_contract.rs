@@ -401,6 +401,9 @@ fn pull_request_contracts_refuse_caller_identity_and_paths_at_every_selection() 
 fn pull_request_fixtures_keep_sync_health_and_partial_git_results_visible() {
     let get = read_json(&fixtures_root().join("v1/tasks.review.get.json"));
     assert!(get["result"]["review"].get("mode").is_none());
+    let observation = &get["examples"][1]["result"]["sync"][0];
+    assert_eq!(observation["reviewed_snapshot_id"], "snapshot-1");
+    assert_eq!(observation["commits_since_review"], 2);
     let refresh = read_json(&fixtures_root().join("v1/tasks.review.refresh.json"));
     assert_eq!(
         refresh["examples"][0]["result"]["sync"][1]["health"],

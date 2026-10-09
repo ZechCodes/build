@@ -305,11 +305,14 @@ mod tests {
         let value = json!({
             "task_id": "task-1", "directory_id": "dir-git", "revision": 8,
             "health": "current", "working_head": "working", "received_head": "received",
-            "snapshot_head": "published", "pending_commits": 2, "observed_at": "now"
+            "snapshot_head": "published", "pending_commits": 2,
+            "reviewed_snapshot_id": "snapshot-1", "commits_since_review": 3, "observed_at": "now"
         });
         let observation: ReviewSyncObservation = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(observation.revision, 8);
         assert_eq!(observation.pending_commits, Some(2));
+        assert_eq!(observation.commits_since_review, Some(3));
+        assert!(!observation.rewritten_since_review);
         assert_eq!(serde_json::to_value(&observation).unwrap(), value);
         assert_eq!(
             serde_json::from_value::<ReviewSyncObservation>(value).unwrap(),

@@ -10,6 +10,8 @@ use std::time::Duration;
 mod observations;
 #[path = "recovery.rs"]
 pub(crate) mod recovery;
+#[path = "since_review.rs"]
+pub(crate) mod since_review;
 
 #[derive(Debug)]
 pub struct SyncResult {
@@ -385,3 +387,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "since_review_tests.rs"]
+mod since_review_tests;

@@ -15,6 +15,9 @@ Wire 3.17.0.
 - New file from the Files tree: `fs.createFile` creates one empty file in a
   workspace or project source, refusing names that already exist (#433).
 - PR-style review tasks with dedicated branches and local push synchronization (#405).
+- PR sync observations count the commits since the user's last reviewed
+  snapshot, or flag a rewritten history, and the Changes header shows
+  "N commits since your last review" (#427).
 - Internal PR lifecycle and durable merge service: current-snapshot opinions,
   recoverable Closed reopening, guarded merge finalization, interrupted-operation
   recovery and explicit retry of saved publication results (#404).

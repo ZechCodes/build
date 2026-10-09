@@ -240,6 +240,8 @@
             "received_head": "2222222222222222222222222222222222222222",
             "snapshot_head": "2222222222222222222222222222222222222222",
             "pending_commits": 0,
+            "reviewed_snapshot_id": "snapshot-1",
+            "commits_since_review": 2,
             "observed_at": "2026-10-08T17:00:00Z"
           },
           {

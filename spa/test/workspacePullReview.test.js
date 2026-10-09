@@ -116,6 +116,8 @@ it("formats reviewed snapshot notes without guessing an ancestry count", () => {
   expect(formatReviewSinceNote({ head: "same", reviewedHead: "same" })).toBe("");
   expect(formatReviewSinceNote({ head: "new" })).toBe("");
   expect(formatReviewSinceNote({ count: 2 })).toBe("2 commits since your last review");
+  expect(formatReviewSinceNote({ count: 1, head: "new", reviewedHead: "old" })).toBe("1 commit since your last review");
+  expect(formatReviewSinceNote({ count: 0, head: "same", reviewedHead: "same" })).toBe("");
   expect(pendingReviewText({ sync: { pending_commits: 3 }, binding: {} })).toBe("3 commits not pushed to review");
   expect(pendingReviewText({ sync: { pending_commits: 1 }, binding: {} })).toBe("1 commit not pushed to review");
 });
@@ -204,6 +206,28 @@ it("renders changed and rewritten notes against the user's cached reviewed snaps
   await vi.waitFor(() => expect(document.querySelector("#entry").textContent).toContain("Changed since your last review"));
   await writeReviewReply(actionScope, { review: { ...review, version: 3, snapshots: [review.snapshots[0], { ...next,
     publication: { reason: "received", directories: [{ directory_id: "dir-api", rewritten: true }] } }] } }, 3);
+  await vi.waitFor(() => expect(document.querySelector("#entry").textContent).toContain("History rewritten since your last review"));
+});
+
+it("renders the bridge's exact count only when it was taken against the user's cached reviewed snapshot", async () => {
+  await enable();
+  const actionScope = { ...scope, taskId: "task-1" };
+  await writeTaskRecord(scope.deviceId, scope.projectId, "task-1", taskRecord(opened.result.task, [
+    { type: "comment", author: { kind: "user" }, opinion: { snapshot_id: "snapshot-1", verdict: "approve" } },
+  ]));
+  const next = { ...opened.result.review.snapshots[0], id: "snapshot-2", number: 2,
+    directories: opened.result.review.snapshots[0].directories.map((directory) => ({ ...directory, head: "4".repeat(40) })) };
+  const review = { ...opened.result.review, version: 2, snapshots: [opened.result.review.snapshots[0], next] };
+  const counted = { ...pushed.result.sync[0], revision: 4, reviewed_snapshot_id: "snapshot-1", commits_since_review: 2,
+    snapshot_head: "4".repeat(40), received_head: "5".repeat(40) };
+  await writeReviewReply(actionScope, { review, sync: [counted] }, 2);
+  mount();
+  await vi.waitFor(() => expect(document.querySelector("#entry").textContent).toContain("2 commits since your last review"));
+  await writeReviewReply(actionScope, { review: { ...review, version: 3 }, sync: [{ ...counted, revision: 5, reviewed_snapshot_id: "snapshot-0" }] }, 3);
+  // Both directories fall back to the qualitative note; neither keeps the stale count.
+  await vi.waitFor(() => expect(document.querySelector("#entry").textContent.split("Changed since your last review")).toHaveLength(3));
+  expect(document.querySelector("#entry").textContent).not.toContain("commits since your last review");
+  await writeReviewReply(actionScope, { review: { ...review, version: 4 }, sync: [{ ...counted, revision: 6, commits_since_review: undefined, rewritten_since_review: true }] }, 4);
   await vi.waitFor(() => expect(document.querySelector("#entry").textContent).toContain("History rewritten since your last review"));
 });
 

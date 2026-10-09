@@ -251,6 +251,9 @@ fn sync_revision_is_separate_from_review_version_and_lifecycle() {
         received_head: None,
         snapshot_head: Some("abc123".into()),
         pending_commits: None,
+        reviewed_snapshot_id: None,
+        commits_since_review: None,
+        rewritten_since_review: false,
         observed_at: NOW.into(),
         error: Some("receiver missing".into()),
     };

@@ -58,7 +58,7 @@ impl AppState {
             .ok()?
             .load_tracker_timeline(&task.id)
             .ok()?;
-        let last = timeline.last()?;
+        let last = timeline.iter().rev().find(|entry| !ended_tracking(entry))?;
         let at = entry_at(last).to_string();
         let assigned_to_user = matches!(task.assignee, Some(Assignee::User));
         let mut row = json!({
@@ -117,8 +117,22 @@ impl AppState {
         };
         !timeline
             .iter()
+            .filter(|entry| !ended_tracking(entry))
             .any(|entry| after(Some(cleared), entry_id(entry)))
     }
+}
+
+/// Whether an entry is Build ending tracking because the task finished
+/// (#444). Bookkeeping the inbox does not see: it lands beside the move that
+/// finished the task, which is what the row should say, or — from the boot
+/// pass — on its own, where it must not bring back a row the user cleared or
+/// move it up the list.
+fn ended_tracking(entry: &TimelineEntry) -> bool {
+    let TimelineEntry::Event(event) = entry else {
+        return false;
+    };
+    event.kind == crate::tracker::TaskEventKind::Untracked
+        && event.payload.get("by").and_then(Value::as_str) == Some(crate::tracker::FINISHED_UNTRACK)
 }
 
 /// Events the user has not read: everything after the mark that is news,

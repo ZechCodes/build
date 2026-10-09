@@ -152,6 +152,12 @@ pub(in crate::app) fn load_stored_tasks(dir: std::path::PathBuf) -> Result<Store
         Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
         Err(error) => return Err(format!("store import failed: {error}")),
     }
+    match store.end_tracking_on_finished_tasks() {
+        Ok(0) => {}
+        Ok(ended) => eprintln!("store: ended tracking on {ended} finished tasks"),
+        // Bookkeeping: a store that could not drop them still serves.
+        Err(error) => eprintln!("store: ending tracking on finished tasks: {error}"),
+    }
     for source in store
         .review_action_source_paths()
         .map_err(|error| error.to_string())?

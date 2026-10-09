@@ -235,6 +235,7 @@ mod tracker;
 mod tracker_activity;
 mod tracker_agent_files;
 mod tracker_dispatch;
+mod tracker_finished;
 mod tracker_identity_removal;
 mod tracker_inbox_wire;
 mod tracker_list_pages;

@@ -40,6 +40,9 @@ pub struct TaskFilter<'a> {
 /// from; this key does.
 const LIST_KEY: &str = "tracker_list_key";
 
+/// Set once [`Store::end_tracking_on_finished_tasks`] has run (#444).
+const ENDED_TRACKING_KEY: &str = "tracker_tracking_ended_on_finished";
+
 /// Where a list read starts and how much of it to read: the tasks numbered
 /// below `below`, at most `take` of them, out of at most `scan` rows read.
 /// The default is the whole list.
@@ -168,6 +171,50 @@ impl Store {
             )
             .map(|_| ())
         })
+    }
+
+    /// Take the trackers off every task that finished before tracking ended
+    /// with the work (#444), once per store: an `untracked` event each, by
+    /// Build, `by: "finished"`. Run at boot; the marker in `meta` makes every
+    /// later run a no-op, so a finished task an agent tracks on purpose after
+    /// this keeps its tracker. Answers how many tasks it changed.
+    ///
+    /// `updated_at` stays where it was: this is bookkeeping, not a change to
+    /// the task, and must not reorder anybody's list.
+    pub fn end_tracking_on_finished_tasks(&self) -> Result<usize, StoreError> {
+        self.in_transaction(|tx| {
+            let done: Option<String> = tx
+                .query_row(
+                    "SELECT value FROM meta WHERE key = ?1",
+                    [ENDED_TRACKING_KEY],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if done.is_some() {
+                return Ok(0);
+            }
+            let now = super::now_rfc3339();
+            let tasks = finished_tracked_tasks(tx)?;
+            for mut task in tasks.iter().cloned() {
+                let events = task.end_tracking(&now);
+                write_tracker_task(tx, &task)?;
+                append_activity(tx, &[], &events)?;
+            }
+            tx.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+                rusqlite::params![ENDED_TRACKING_KEY, now],
+            )?;
+            Ok(tasks.len())
+        })
+    }
+
+    /// Test-only: forget that the boot pass ran, so a test can stage the
+    /// shape it found and run it again.
+    #[cfg(test)]
+    pub fn forget_ended_tracking(&self) {
+        self.connection()
+            .execute("DELETE FROM meta WHERE key = ?1", [ENDED_TRACKING_KEY])
+            .expect("the marker is cleared");
     }
 
     /// Migrate read-time identity and completion metadata without overwriting
@@ -448,6 +495,23 @@ pub(super) fn next_task_number(tx: &Transaction, project_path: &str) -> Result<u
         |row| row.get(0),
     )?;
     Ok(highest as u64 + 1)
+}
+
+/// Every task that is Done or closed and still has somebody tracking it.
+fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
+    let mut statement = tx.prepare(
+        "SELECT id, record FROM tracker_tasks \
+         WHERE (state = 'closed' OR status = ?1) \
+         AND json_array_length(record, '$.trackers') > 0",
+    )?;
+    let rows = statement.query_map([crate::tracker::DONE_STATUS], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (id, raw) = row?;
+        decode(&raw, "tracker_tasks", &id)
+    })
+    .collect()
 }
 
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {

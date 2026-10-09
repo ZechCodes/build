@@ -396,14 +396,20 @@ describe("swapping with the panel unpinned", () => {
   beforeEach(() => atWidth(390));
   afterEach(() => atWidth(1024));
 
+  // Each press re-mounts the panel across reads of the disk: wait for the
+  // panel open on the conversation pressed, not for a count of turns. The
+  // workspace's bubble is drawn from the row read, so it is waited for too.
+  const openOn = (who) => painted(() => panelIsOpen() && headWho() === who);
+  const workspaceBubble = () => painted(() => agentBubble("wa-1"));
+
   it("keeps the open panel open, on the project's conversation", async () => {
     await mountWorkspaceRail();
-    agentBubble("wa-1").click();
-    await flush();
+    (await workspaceBubble()).click();
+    await openOn("Fix login redirect");
     expect(panelIsOpen()).toBe(true);
 
     projectBubble().click();
-    await flush();
+    await openOn("Sort the workspaces");
 
     expect(panelIsOpen()).toBe(true);
     expect(headWho()).toBe("Sort the workspaces");
@@ -411,13 +417,13 @@ describe("swapping with the panel unpinned", () => {
 
   it("keeps it open on the way back to the workspace's own", async () => {
     await mountWorkspaceRail();
-    agentBubble("wa-1").click();
-    await flush();
+    (await workspaceBubble()).click();
+    await openOn("Fix login redirect");
     projectBubble().click();
-    await flush();
+    await openOn("Sort the workspaces");
 
     agentBubble("wa-1").click();
-    await flush();
+    await openOn("Fix login redirect");
 
     expect(panelIsOpen()).toBe(true);
     expect(headWho()).toBe("Fix login redirect");

@@ -759,9 +759,10 @@ user last gave an opinion on, with `commits_since_review` (commits reachable
 from `received_head` and not from that snapshot's head) or
 `rewritten_since_review: true` when that head is no longer an ancestor (#427).
 The bridge counts in the receiving repository, where snapshot pins keep a
-rewritten head readable, with libgit2's ahead/behind paint (stale-commit
-termination, so clock skew and same-second merges count as `git rev-list`
-does) capped at 2000 commit lookups, wide merges' parents included
+rewritten head readable, with a port of libgit2's `graph_ahead_behind`
+(its paint, stop rule and priority-queue tie order, so the count agrees with
+libgit2; it can differ from `git rev-list`, for example under clock skew,
+#462) capped at 2000 commit lookups, wide merges' parents included
 (`reviews/sync/since_review.rs`); past the cap both fields stay absent. A
 stored result for the same `received_head` and baseline is reused, so idle
 polls walk no history. The fields are

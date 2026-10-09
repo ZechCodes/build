@@ -1,7 +1,7 @@
 //! Commits since the user's last reviewed head, under a commit budget so one
 //! large history cannot stall the serial sync worker (#453).
 use git2::{Oid, Repository};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::HashMap;
 
 /// Commits examined at most per calculation; past it the count is absent.
 pub(super) const WALK_LIMIT: usize = 2000;
@@ -38,7 +38,7 @@ pub(super) fn since_review(
     walk.paint(head, AFTER, false)?;
     walk.paint(reviewed, REVIEWED, false)?;
     walk.run()?;
-    Some(walk.outcome(reviewed))
+    Some(walk.outcome(head, reviewed))
 }
 
 const AFTER: u8 = 1;
@@ -48,19 +48,16 @@ const BOTH: u8 = AFTER | REVIEWED;
 #[cfg(test)]
 thread_local! { static LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
 
-/// libgit2's ahead/behind paint: commits reached only from the head are the
-/// ones since review. A commit popped with both colours marks its parents
-/// stale, and the walk ends once only stale commits are queued and every root
-/// it popped is stale, so a commit first reached from the head is still
-/// repainted when the reviewed side arrives later, whatever the timestamps. Every commit lookup spends one unit
-/// of the budget, parents of a wide merge included.
+/// libgit2's ahead/behind (`graph.c`, 1.9): the paint of `mark_parents`,
+/// then the count of `ahead_behind`. A commit popped with both colours marks
+/// its parents stale, and the paint ends once every queued commit and every
+/// root it popped is stale. Every commit lookup spends one unit of the budget,
+/// parents of a wide merge included.
 struct Walk<'r> {
     repository: &'r Repository,
     budget: usize,
     commits: HashMap<Oid, Painted>,
-    queue: BinaryHeap<(i64, Oid)>,
-    /// Parentless commits already popped; like libgit2, the walk goes on
-    /// while one is not yet stale, so a repaint reaches the root first.
+    queue: TimeQueue,
     roots: Vec<Oid>,
 }
 
@@ -77,7 +74,7 @@ impl<'r> Walk<'r> {
             repository,
             budget,
             commits: HashMap::new(),
-            queue: BinaryHeap::new(),
+            queue: TimeQueue::default(),
             roots: Vec::new(),
         }
     }
@@ -105,14 +102,16 @@ impl<'r> Walk<'r> {
         painted.colour |= colour;
         painted.stale |= stale;
         if changed {
-            self.queue.push((painted.time, oid));
+            self.queue.insert(oid, &self.commits);
         }
         Some(())
     }
 
     fn run(&mut self) -> Option<()> {
+        // The count follows libgit2's walk and stop rule, not `git rev-list`:
+        // they can disagree, for example when commit times are skewed (#462).
         while self.interesting() {
-            let Some((_, oid)) = self.queue.pop() else {
+            let Some(oid) = self.queue.pop(&self.commits) else {
                 break;
             };
             let painted = &self.commits[&oid];
@@ -130,15 +129,91 @@ impl<'r> Walk<'r> {
 
     fn interesting(&self) -> bool {
         let fresh = |oid: &Oid| !self.commits[oid].stale;
-        self.queue.iter().any(|(_, oid)| fresh(oid)) || self.roots.iter().any(fresh)
+        self.queue.items.iter().any(fresh) || self.roots.iter().any(fresh)
     }
 
-    fn outcome(&self, reviewed: Oid) -> SinceReview {
+    /// `ahead_behind`: head-only commits reachable from either tip without
+    /// passing through a commit painted both colours.
+    fn outcome(&self, head: Oid, reviewed: Oid) -> SinceReview {
         if self.commits[&reviewed].colour & AFTER == 0 {
             return SinceReview::Rewritten;
         }
-        let count = self.commits.values().filter(|c| c.colour == AFTER).count();
-        SinceReview::Count(count as u64)
+        let mut seen = std::collections::HashSet::new();
+        let mut pending = vec![head, reviewed];
+        let mut count = 0;
+        while let Some(oid) = pending.pop() {
+            let Some(painted) = self.commits.get(&oid) else {
+                continue;
+            };
+            if painted.colour == BOTH || !seen.insert(oid) {
+                continue;
+            }
+            count += u64::from(painted.colour == AFTER);
+            pending.extend(&painted.parents);
+        }
+        SinceReview::Count(count)
+    }
+}
+
+/// libgit2's `git_pqueue` under `git_commit_list_time_cmp`: newest first, and
+/// equal times compare equal, so ties fall where its sift rules leave them.
+#[derive(Default)]
+struct TimeQueue {
+    items: Vec<Oid>,
+}
+
+impl TimeQueue {
+    /// Positive when `a` belongs below `b`, as in libgit2.
+    fn cmp(commits: &HashMap<Oid, Painted>, a: Oid, b: Oid) -> std::cmp::Ordering {
+        commits[&b].time.cmp(&commits[&a].time)
+    }
+
+    fn insert(&mut self, oid: Oid, commits: &HashMap<Oid, Painted>) {
+        self.items.push(oid);
+        let mut at = self.items.len() - 1;
+        while at > 0 {
+            let parent = (at - 1) >> 1;
+            if Self::cmp(commits, self.items[parent], oid).is_le() {
+                break;
+            }
+            self.items[at] = self.items[parent];
+            at = parent;
+        }
+        self.items[at] = oid;
+    }
+
+    fn pop(&mut self, commits: &HashMap<Oid, Painted>) -> Option<Oid> {
+        let top = *self.items.first()?;
+        let last = self.items.pop()?;
+        if !self.items.is_empty() {
+            self.items[0] = last;
+            self.sift_down(commits);
+        }
+        Some(top)
+    }
+
+    fn sift_down(&mut self, commits: &HashMap<Oid, Painted>) {
+        let moving = self.items[0];
+        let mut at = 0;
+        loop {
+            let mut kid = (at << 1) + 1;
+            let Some(&left) = self.items.get(kid) else {
+                break;
+            };
+            let mut child = left;
+            if let Some(&right) = self.items.get(kid + 1) {
+                if Self::cmp(commits, left, right).is_gt() {
+                    child = right;
+                    kid += 1;
+                }
+            }
+            if Self::cmp(commits, moving, child).is_le() {
+                break;
+            }
+            self.items[at] = child;
+            at = kid;
+        }
+        self.items[at] = moving;
     }
 }
 
@@ -345,6 +420,67 @@ mod tests {
                 &[2],
             ],
         );
+    }
+
+    /// The #453 round-3 nested shape, every commit at the same second: whether
+    /// the walk stops in time depends on how its queue breaks ties.
+    #[test]
+    fn equal_time_nested_merges_follow_libgit2_queue_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init_bare(dir.path()).unwrap();
+        let tree = repo.treebuilder(None).unwrap().write().unwrap();
+        let tree = repo.find_tree(tree).unwrap();
+        let sig =
+            git2::Signature::new("Probe", "probe@example.test", &git2::Time::new(100, 0)).unwrap();
+        let commit = |message: String, parents: &[Oid]| {
+            let parents: Vec<_> = parents
+                .iter()
+                .map(|p| repo.find_commit(*p).unwrap())
+                .collect();
+            let parents: Vec<_> = parents.iter().collect();
+            repo.commit(None, &sig, &sig, &message, &tree, &parents)
+                .unwrap()
+        };
+        for (salt, head_oid) in [
+            (1, "71642a293a103a43c2a6b4af4c4db71ced087fc6"),
+            (6, "430a734b38403791cefa17e8209099723b2fa39f"),
+            (13, "9c5ddd1b74c06a083a306cdebdb2f2f098a4ce95"),
+            (19, "c240947ae83457631f67f989f640e1bccca0ea37"),
+            (21, "e879555c97b11a835eee8e96b0048be7e69f7c62"),
+            (37, "5a282c86932cfe1867bb3c0a488e5a232b896101"),
+            (40, "91fbc8a1014a96cd80b477615f32f8c5c5fe1482"),
+            (46, "f3b9ff1d685988488d0d69f324c1c2b10d7a4602"),
+            (52, "a7f45a0dccc166ce77d9c5fdf87420cff220d1b9"),
+            (72, "dd7a79892cb34b85b4fd5bb635320d2a65e23e51"),
+            (73, "d2defbf9616c7f0e5c36652417bfd6fc611cdc36"),
+            (77, "3b3649feb38d169c5905f8260b01baea5487462a"),
+            (80, "7f2c0e9c7e51c8c4a46c66920c0264f2abf6c972"),
+            (81, "f45fd78cf60319a9d9deba49351364a20511b53f"),
+            (86, "5506498390521f86bd2af2573955df095db91273"),
+            (97, "627e8e25f81b5242759e0af2ed3bf6aa3687f440"),
+            (108, "bf84dfc8695eef4361e1882c43ad85b6d9768aec"),
+            (111, "3e66082d3dc61e2dc0eea7b096d21be03c1614fd"),
+            (112, "b53c441d1e25ccfede53f1be8ed256a8b429516f"),
+            (119, "b03d7649b9f7495b83ec6a83456798d60e9ad4c6"),
+            (121, "f0e7c8bb051fc9be935f6a8cb482f09881bbe50c"),
+        ] {
+            let at =
+                |label: &str, parents: &[Oid]| commit(format!("equal-{salt}-{label}"), parents);
+            let a = at("A", &[]);
+            let b = at("B", &[a]);
+            let c = at("C", &[b]);
+            let d = at("D", &[a]);
+            let reviewed = at("R", &[c, d]);
+            let s = at("S", &[b]);
+            let head = at("H", &[reviewed, s]);
+            assert_eq!(head.to_string(), head_oid, "salt {salt} fixture identity");
+            let (ahead, _) = repo.graph_ahead_behind(head, reviewed).unwrap();
+            assert_eq!(
+                since_review(&repo, head, reviewed, WALK_LIMIT),
+                Some(SinceReview::Count(ahead as u64)),
+                "salt {salt}"
+            );
+        }
     }
 
     #[test]

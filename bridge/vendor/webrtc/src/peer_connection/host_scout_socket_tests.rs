@@ -195,7 +195,7 @@ fn scout_pressure_keeps_advertised_ice_socket_immediately_writable() {
         while started.elapsed() < Duration::from_secs(2) {
             let now = Instant::now();
             scouts.refresh(now);
-            scouts.send_one(now, &control, "fixture", 40000, expires, |subnet, destination| subnet.still_owned(&interfaces, live_owner, destination));
+            scouts.send_one(now, &control, "fixture", 40000, expires, now + Duration::from_millis(100), |subnet, destination| subnet.still_owned(&interfaces, live_owner, destination));
             pressure.observe(&scouts, &bound);
             if iteration % 20 == 0 { pressure.writes_now(&*socket, target); }
             iteration += 1;

@@ -426,6 +426,11 @@ fn sweep_passes_share_one_interface_read_until_it_is_stale() {
     assert_eq!(READS.with(Cell::get), 2, "a 100 ms old list is read again");
     let read_at = start + Duration::from_millis(100);
     assert!(interfaces.current(read_at).is_some());
+    assert_eq!(
+        interfaces.usable_until(),
+        Some(read_at + Duration::from_millis(100)),
+        "real indications stop at the list's lapse, checked after their last wait"
+    );
     assert!(
         interfaces
             .current(read_at + Duration::from_millis(100))
@@ -639,5 +644,30 @@ fn the_next_read_after_an_address_change_is_trusted_again() {
     assert!(
         interfaces.owns(later, &subnet, remote),
         "a list read after the change, with no change since, stands again"
+    );
+}
+
+#[test]
+fn a_real_indication_stops_when_the_interface_list_lapses_first() {
+    use super::driver::real_send_deadline;
+    use std::time::{Duration, Instant};
+
+    let now = Instant::now();
+    let neighbors = now + Duration::from_millis(80);
+    let window = now + Duration::from_secs(25);
+    let interfaces = now + Duration::from_millis(50);
+    assert_eq!(
+        real_send_deadline(Some(neighbors), window, Some(interfaces), now),
+        interfaces,
+        "the list lapsing before the neighbour snapshot ends the send there"
+    );
+    assert_eq!(
+        real_send_deadline(Some(neighbors), window, None, now),
+        now,
+        "with no list read, nothing may be sent"
+    );
+    assert_eq!(
+        real_send_deadline(Some(neighbors), window, Some(window), now),
+        neighbors
     );
 }

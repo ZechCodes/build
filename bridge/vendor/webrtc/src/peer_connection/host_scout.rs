@@ -454,6 +454,7 @@ impl HostScouts {
         ufrag: &str,
         port: u16,
         expires: Instant,
+        interfaces_until: Instant,
         owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Option<&'static str> {
         let Some(index) = self
@@ -465,7 +466,7 @@ impl HostScouts {
             return self.changed_pause(stale.map(|group| group.unavailable));
         };
         let result = control.while_allowed(self.generation, ufrag, port, || {
-            self.send_group(index, now, expires, owns)
+            self.send_group(index, now, expires, interfaces_until, owns)
         });
         self.update_pending();
         self.finish_attempt(result)
@@ -475,6 +476,7 @@ impl HostScouts {
         index: usize,
         now: Instant,
         expires: Instant,
+        interfaces_until: Instant,
         owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Result<bool, &'static str> {
         let group = &mut self.groups[index];
@@ -484,11 +486,6 @@ impl HostScouts {
         let IpAddr::V4(source) = group.subnet.local.ip() else {
             return Err("unsupported-platform");
         };
-        // The pass's interface list, read outside the core lock, with the index and mask live.
-        if !owns(&group.subnet, destination) {
-            group.clear();
-            return Err("no-on-link-interface");
-        }
         let resource_handle = Arc::clone(&group.resources);
         let mut resources = resource_handle.lock().map_err(|_| "send-error")?;
         let mut budget = process()
@@ -503,6 +500,16 @@ impl HostScouts {
         }
         if group.fresh(send_at).is_none() {
             return Err(group.unavailable);
+        }
+        // The interface list ages like the neighbour snapshot: both are checked at the send
+        // instant, after the waits above. A lapsed list holds this tick for the next read.
+        if send_at >= interfaces_until {
+            return Ok(false);
+        }
+        // The pass's interface list, read outside the core lock, with the index and mask live.
+        if !owns(&group.subnet, destination) {
+            group.clear();
+            return Err("no-on-link-interface");
         }
         if !budget.claim_tick(send_at) {
             return Ok(false);
@@ -957,8 +964,56 @@ mod tests {
         scouts.groups.push(group);
         let control = HostSweepControl::default();
         assert_eq!(
-            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, |_, _| false),
+            scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                now + FRESH,
+                now + FRESH,
+                |_, _| false
+            ),
             Some("neighbor-table-too-large")
+        );
+    }
+    #[test]
+    fn an_interface_list_that_lapses_before_the_send_holds_the_scout() {
+        let now = Instant::now();
+        let mut subnet = test_subnet(&[]);
+        // An index no other test opens a scout window on.
+        subnet.interface_index = 4242;
+        let mut group = test_group(subnet);
+        group.snapshot = Some(ScoutSnapshot {
+            observed_at: now,
+            usable: Vec::new(),
+            incomplete: Vec::new(),
+            failed: Vec::new(),
+            netns_total: 0,
+            incomplete_total: 0,
+            table_entries: 0,
+            gc_thresh2: 512,
+            gc_thresh3: 1024,
+        });
+        let mut scouts = HostScouts::default();
+        scouts.groups.push(group);
+        scouts.generation = 7;
+        let control = HostSweepControl::default();
+        assert!(control.start(7, "fixture", 40000));
+        // The pass vouched for the list at `now`, but it lapses at `now`: the send instant,
+        // after the scout's waits, is past it however short those waits were.
+        assert_eq!(
+            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, now, |_, _| {
+                true
+            }),
+            None
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent on a lapsed list"
+        );
+        assert!(
+            scouts.groups[0].snapshot.is_some(),
+            "a lapsed list holds the scout without dropping its neighbours"
         );
     }
 }

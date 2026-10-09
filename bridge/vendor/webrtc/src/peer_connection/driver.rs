@@ -354,6 +354,11 @@ impl SweepInterfaces {
             .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH)
     }
 
+    /// When the list lapses: a send at or after this instant may not use it.
+    pub(super) fn usable_until(&self) -> Option<Instant> {
+        self.read_at.map(|at| at + SWEEP_INTERFACES_FRESH)
+    }
+
     /// The list, while it is still within its age bound at `now`.
     pub(super) fn current(&self, now: Instant) -> Option<&[Interface]> {
         (!self.stale(now)).then_some(self.list.as_deref()).flatten()
@@ -375,6 +380,22 @@ impl Default for SweepInterfaces {
     fn default() -> Self {
         Self::reading(ifaces)
     }
+}
+
+/// The last instant a real indication may leave: whichever lapses first of the neighbour
+/// snapshot that authorized the destination, the probe's window and the interface list
+/// ownership was checked against. `send_real` checks it after its last wait; a missing
+/// snapshot or list lapses at `now`.
+pub(super) fn real_send_deadline(
+    neighbors: Option<Instant>,
+    window: Instant,
+    interfaces: Option<Instant>,
+    now: Instant,
+) -> Instant {
+    neighbors
+        .unwrap_or(now)
+        .min(window)
+        .min(interfaces.unwrap_or(now))
 }
 
 /// Each sweep-capable host socket's subnet, or why it has none, built outside the core lock
@@ -1176,6 +1197,7 @@ where
                 self.host_sweep.remote_ufrag(),
                 port,
                 expires,
+                self.sweep_interfaces.usable_until().unwrap_or(now),
                 |subnet, destination| self.sweep_interfaces.owns(now, subnet, destination),
             )
         {
@@ -1360,11 +1382,12 @@ where
         };
         let destination = std::net::SocketAddrV4::new(probe.destination, probe.port);
         #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-        let expires = self
-            .host_scouts
-            .usable_until(&probe.subnet)
-            .unwrap_or_else(Instant::now)
-            .min(probe.expires);
+        let expires = real_send_deadline(
+            self.host_scouts.usable_until(&probe.subnet),
+            probe.expires,
+            self.sweep_interfaces.usable_until(),
+            Instant::now(),
+        );
         let result = self.inner.host_sweep_control.while_allowed(
             self.host_sweep.generation(),
             self.host_sweep.remote_ufrag(),

@@ -398,6 +398,17 @@ post-lock instant. A driver regression holds the core lock for 150 ms while
 a pass waits and pins that the pass leaves its plan untouched, then runs on
 the next wake.
 
+The post-lock instant is still earlier than the send, so the list's lapse,
+100 ms after its read, also travels to each emission and is checked after
+the last wait, beside the neighbour snapshot's age. A scout checks it at its
+send instant, after the scout mutexes, and only then runs the ownership
+check; a lapsed list holds that tick without dropping the neighbours. A real
+indication folds it into the deadline `send_real` checks after the budget
+lock, with the neighbour snapshot's lapse and the probe's window
+(`real_send_deadline`). `host_scout.rs` pins a scout held on a lapsed list,
+and a driver test pins the real-indication deadline taking the list's lapse
+when it comes first.
+
 An IPv6 host candidate is skipped as `ipv6-unsupported` (it was reported as
 `non-private-subnet`): the sweep enumerates IPv4 subnets only. The bridge and
 the SPA's diagnostics both accept the new fixed code.

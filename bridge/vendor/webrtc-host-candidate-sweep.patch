@@ -1038,10 +1038,10 @@ index 8a0a53a..0bd4fd4 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..cc78b31 100644
+index e69de29..dc0771c 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,1496 @@
+@@ -0,0 +1,1501 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -1391,6 +1391,11 @@ index e69de29..cc78b31 100644
 +
 +/// Whether the kernel has reported an address change since the watch was last drained. A
 +/// notification lost to a full receive buffer reports as `ENOBUFS`, which counts as a change.
++///
++/// Sends call this under the core lock, so it must never wait. The socket is opened
++/// `SOCK_NONBLOCK` and the peek also passes `MSG_DONTWAIT`, so an empty queue returns
++/// `EAGAIN` at once. A one-byte `MSG_PEEK` copies one byte and consumes nothing; it does no
++/// netlink request and takes no RTNL lock, unlike the dumps it replaces.
 +#[cfg(target_os = "linux")]
 +pub(crate) fn address_changed(watch: &std::os::fd::OwnedFd) -> bool {
 +    let mut byte = [0u8; 1];
@@ -6180,10 +6185,10 @@ index e69de29..b1598dd 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_scout.rs b/webrtc/src/peer_connection/host_scout.rs
-index e69de29..d0e9a36 100644
+index e69de29..6d2bece 100644
 --- a/webrtc/src/peer_connection/host_scout.rs
 +++ b/webrtc/src/peer_connection/host_scout.rs
-@@ -0,0 +1,1023 @@
+@@ -0,0 +1,1110 @@
 +//! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 +use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 +use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
@@ -6694,8 +6699,16 @@ index e69de29..d0e9a36 100644
 +        }
 +        // The pass's interface list, read outside the core lock, with the index and mask live.
 +        if !owns(&group.subnet, destination) {
++            // `clear` takes the resources lock, so this send's guards go first.
++            drop(budget);
++            drop(resources);
 +            group.clear();
 +            return Err("no-on-link-interface");
++        }
++        // The live lookups take time of their own; the list must still stand when they end.
++        // Only bookkeeping, with no wait, separates this check from the send.
++        if Instant::now() >= interfaces_until {
++            return Ok(false);
 +        }
 +        if !budget.claim_tick(send_at) {
 +            return Ok(false);
@@ -7160,6 +7173,85 @@ index e69de29..d0e9a36 100644
 +                |_, _| false
 +            ),
 +            Some("neighbor-table-too-large")
++        );
++    }
++    /// One scout group with a fresh, empty snapshot, ready to send to its first address.
++    fn sendable_scouts(now: Instant, interface_index: u32) -> (HostScouts, HostSweepControl) {
++        let mut subnet = test_subnet(&[]);
++        // An index no other test opens a scout window on.
++        subnet.interface_index = interface_index;
++        let mut group = test_group(subnet);
++        group.snapshot = Some(ScoutSnapshot {
++            observed_at: now,
++            usable: Vec::new(),
++            incomplete: Vec::new(),
++            failed: Vec::new(),
++            netns_total: 0,
++            incomplete_total: 0,
++            table_entries: 0,
++            gc_thresh2: 512,
++            gc_thresh3: 1024,
++        });
++        let mut scouts = HostScouts::default();
++        scouts.groups.push(group);
++        scouts.generation = 7;
++        let control = HostSweepControl::default();
++        assert!(control.start(7, "fixture", 40000));
++        (scouts, control)
++    }
++    #[test]
++    fn a_source_no_longer_owned_at_the_send_ends_the_scout_without_deadlock() {
++        let (done_tx, done_rx) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            let now = Instant::now();
++            let (mut scouts, control) = sendable_scouts(now, 4243);
++            let reason = scouts.send_one(
++                now,
++                &control,
++                "fixture",
++                40000,
++                now + FRESH,
++                now + FRESH,
++                |_, _| false,
++            );
++            done_tx
++                .send((reason, scouts.groups[0].snapshot.is_none()))
++                .unwrap();
++        });
++        let (reason, cleared) = done_rx
++            .recv_timeout(Duration::from_secs(10))
++            .expect("clearing a group must not wait on the guards its send holds");
++        assert_eq!(reason, Some("no-on-link-interface"));
++        assert!(
++            cleared,
++            "the group forgets the neighbours of a source it lost"
++        );
++    }
++    #[test]
++    fn an_interface_list_that_lapses_during_the_ownership_check_holds_the_scout() {
++        let now = Instant::now();
++        let (mut scouts, control) = sendable_scouts(now, 4244);
++        let lapses = Instant::now() + Duration::from_millis(20);
++        // The live lookups take long enough that the list lapses while they run.
++        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
++            std::thread::sleep(Duration::from_millis(40));
++            true
++        };
++        assert_eq!(
++            scouts.send_one(
++                now,
++                &control,
++                "fixture",
++                40000,
++                now + FRESH,
++                lapses,
++                slow_owns
++            ),
++            None
++        );
++        assert_eq!(
++            scouts.counters.attempted, 0,
++            "nothing is sent on a list that lapsed before the send"
 +        );
 +    }
 +    #[test]

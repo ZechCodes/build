@@ -347,6 +347,11 @@ pub(crate) fn address_watch() -> std::io::Result<std::os::fd::OwnedFd> {
 
 /// Whether the kernel has reported an address change since the watch was last drained. A
 /// notification lost to a full receive buffer reports as `ENOBUFS`, which counts as a change.
+///
+/// Sends call this under the core lock, so it must never wait. The socket is opened
+/// `SOCK_NONBLOCK` and the peek also passes `MSG_DONTWAIT`, so an empty queue returns
+/// `EAGAIN` at once. A one-byte `MSG_PEEK` copies one byte and consumes nothing; it does no
+/// netlink request and takes no RTNL lock, unlike the dumps it replaces.
 #[cfg(target_os = "linux")]
 pub(crate) fn address_changed(watch: &std::os::fd::OwnedFd) -> bool {
     let mut byte = [0u8; 1];

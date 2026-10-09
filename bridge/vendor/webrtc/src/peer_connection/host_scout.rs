@@ -508,8 +508,16 @@ impl HostScouts {
         }
         // The pass's interface list, read outside the core lock, with the index and mask live.
         if !owns(&group.subnet, destination) {
+            // `clear` takes the resources lock, so this send's guards go first.
+            drop(budget);
+            drop(resources);
             group.clear();
             return Err("no-on-link-interface");
+        }
+        // The live lookups take time of their own; the list must still stand when they end.
+        // Only bookkeeping, with no wait, separates this check from the send.
+        if Instant::now() >= interfaces_until {
+            return Ok(false);
         }
         if !budget.claim_tick(send_at) {
             return Ok(false);
@@ -974,6 +982,85 @@ mod tests {
                 |_, _| false
             ),
             Some("neighbor-table-too-large")
+        );
+    }
+    /// One scout group with a fresh, empty snapshot, ready to send to its first address.
+    fn sendable_scouts(now: Instant, interface_index: u32) -> (HostScouts, HostSweepControl) {
+        let mut subnet = test_subnet(&[]);
+        // An index no other test opens a scout window on.
+        subnet.interface_index = interface_index;
+        let mut group = test_group(subnet);
+        group.snapshot = Some(ScoutSnapshot {
+            observed_at: now,
+            usable: Vec::new(),
+            incomplete: Vec::new(),
+            failed: Vec::new(),
+            netns_total: 0,
+            incomplete_total: 0,
+            table_entries: 0,
+            gc_thresh2: 512,
+            gc_thresh3: 1024,
+        });
+        let mut scouts = HostScouts::default();
+        scouts.groups.push(group);
+        scouts.generation = 7;
+        let control = HostSweepControl::default();
+        assert!(control.start(7, "fixture", 40000));
+        (scouts, control)
+    }
+    #[test]
+    fn a_source_no_longer_owned_at_the_send_ends_the_scout_without_deadlock() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let now = Instant::now();
+            let (mut scouts, control) = sendable_scouts(now, 4243);
+            let reason = scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                now + FRESH,
+                now + FRESH,
+                |_, _| false,
+            );
+            done_tx
+                .send((reason, scouts.groups[0].snapshot.is_none()))
+                .unwrap();
+        });
+        let (reason, cleared) = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("clearing a group must not wait on the guards its send holds");
+        assert_eq!(reason, Some("no-on-link-interface"));
+        assert!(
+            cleared,
+            "the group forgets the neighbours of a source it lost"
+        );
+    }
+    #[test]
+    fn an_interface_list_that_lapses_during_the_ownership_check_holds_the_scout() {
+        let now = Instant::now();
+        let (mut scouts, control) = sendable_scouts(now, 4244);
+        let lapses = Instant::now() + Duration::from_millis(20);
+        // The live lookups take long enough that the list lapses while they run.
+        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
+            std::thread::sleep(Duration::from_millis(40));
+            true
+        };
+        assert_eq!(
+            scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                now + FRESH,
+                lapses,
+                slow_owns
+            ),
+            None
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent on a list that lapsed before the send"
         );
     }
     #[test]

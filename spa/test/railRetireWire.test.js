@@ -28,6 +28,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { untilDom } from "./untilCondition.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -328,11 +329,15 @@ it("resolves the rail's first catalog read to nothing when its machine is retire
 it("finishes the retirement with an agent's conversation on screen", async () => {
   wire.conversation = conversationWithAgent;
   const standing = await standWithFirstReadHeld();
-  await settle();
+  // The agent is drawn from the cached row, a read of its own after the rail
+  // stands: wait for it rather than for a count of turns.
+  const railSays = (text) => untilDom(() => document.querySelector("#agent-rail")?.textContent.includes(text));
+  await railSays("Existing agent");
   expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
 
   await retireAndRelease(standing);
   await expectRestoodOnLanding(standing);
+  await railSays("Existing agent");
   expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
 });
 

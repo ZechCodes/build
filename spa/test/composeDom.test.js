@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilHeard } from "./untilCondition.js";
+import { untilCalled, untilHeard } from "./untilCondition.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -701,6 +701,7 @@ describe("an account with more than one device", () => {
     await twoDevices();
     press("c");
     type("#compose-text", "fix the login redirect");
+    const refreshes = refreshFeed.mock.calls.length;
     $("#compose-send").click();
     // Sent and watched, not just held: a routed record adopted before the send
     // lands is written over by the send's own record.
@@ -708,5 +709,9 @@ describe("an account with more than one device", () => {
     expect(pendingCaptureRows()).toHaveLength(1);
     await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "task" } }));
     expect(pendingCaptureRows()[0].project).toBe("relaydb");
+    // The send ends on its feed refresh. Left running past the case, a step
+    // after teardown fails into hold(), which writes to a storage the file's
+    // environment no longer has.
+    await untilCalled(refreshFeed, refreshes + 1);
   });
 });

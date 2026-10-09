@@ -1,6 +1,7 @@
 //! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
 use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
+use rtc::shared::ifaces::Interface;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, UdpSocket};
@@ -433,6 +434,7 @@ impl HostScouts {
         ufrag: &str,
         port: u16,
         expires: Instant,
+        interfaces: Option<&[Interface]>,
     ) -> Option<&'static str> {
         let Some(index) = self
             .groups
@@ -448,7 +450,7 @@ impl HostScouts {
             );
         };
         let result = control.while_allowed(self.generation, ufrag, port, || {
-            self.send_group(index, now, expires)
+            self.send_group(index, now, expires, interfaces)
         });
         self.update_pending();
         self.finish_attempt(result)
@@ -458,6 +460,7 @@ impl HostScouts {
         index: usize,
         now: Instant,
         expires: Instant,
+        interfaces: Option<&[Interface]>,
     ) -> Result<bool, &'static str> {
         let group = &mut self.groups[index];
         let destination = group
@@ -466,16 +469,15 @@ impl HostScouts {
         let IpAddr::V4(source) = group.subnet.local.ip() else {
             return Err("unsupported-platform");
         };
-        let valid = rtc::shared::ifaces::ifaces()
-            .ok()
-            .is_some_and(|interfaces| {
-                let Ok(name) = std::ffi::CString::new(group.subnet.interface_name.as_str()) else {
-                    return false;
-                };
-                // SAFETY: the name is terminated and only a read-only interface lookup occurs.
-                let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-                group.subnet.still_owned(&interfaces, index, destination)
-            });
+        // The pass's interface list, read outside the core lock; the index is read live.
+        let valid = interfaces.is_some_and(|interfaces| {
+            let Ok(name) = std::ffi::CString::new(group.subnet.interface_name.as_str()) else {
+                return false;
+            };
+            // SAFETY: the name is terminated and only a read-only interface lookup occurs.
+            let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+            group.subnet.still_owned(interfaces, index, destination)
+        });
         if !valid {
             group.clear();
             return Err("no-on-link-interface");

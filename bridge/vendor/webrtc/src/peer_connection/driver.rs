@@ -41,7 +41,7 @@ use rtc::peer_connection::transport::RTCIceCandidateInit;
 use rtc::rtp_transceiver::{RTCRtpReceiverId, RTCRtpSenderId};
 use rtc::sansio::Protocol;
 use rtc::shared::error::{Error, Result};
-use rtc::shared::ifaces::ifaces;
+use rtc::shared::ifaces::{Interface, ifaces};
 use rtc::shared::{FourTuple, TaggedBytesMut, TransportContext, TransportProtocol};
 use rtc::{rtcp, rtp};
 use std::collections::HashMap;
@@ -268,6 +268,59 @@ fn sweep_interface_index(_: &str) -> u32 {
     0
 }
 
+/// How long one interface list stands for the sweep: the age bound of the neighbour
+/// snapshots that authorize a destination, so neither read is older than the other.
+const SWEEP_INTERFACES_FRESH: Duration = Duration::from_millis(100);
+
+/// The interface list sweep passes validate against, read before the core lock is taken.
+///
+/// `getifaddrs` is a netlink dump. Read under the core lock on every probe, it held up every
+/// data-channel write queued behind it (#376), so it is read at most once per
+/// [`SWEEP_INTERFACES_FRESH`], outside the lock. Each send still rechecks the interface's live
+/// index, and its name, address and mask against this list.
+pub(super) struct SweepInterfaces {
+    read: fn() -> std::io::Result<Vec<Interface>>,
+    read_at: Option<Instant>,
+    list: Option<Vec<Interface>>,
+}
+
+impl SweepInterfaces {
+    pub(super) fn reading(read: fn() -> std::io::Result<Vec<Interface>>) -> Self {
+        Self {
+            read,
+            read_at: None,
+            list: None,
+        }
+    }
+
+    pub(super) fn refresh(&mut self, now: Instant) {
+        let fresh = self
+            .read_at
+            .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH);
+        if !fresh {
+            self.list = (self.read)().ok();
+            self.read_at = Some(now);
+        }
+    }
+
+    pub(super) fn current(&self) -> Option<&[Interface]> {
+        self.list.as_deref()
+    }
+}
+
+impl Default for SweepInterfaces {
+    fn default() -> Self {
+        Self::reading(ifaces)
+    }
+}
+
+/// Each sweep-capable host socket's subnet, or why it has none, built outside the core lock
+/// for a pass with a port due for preparation. `Err` holds the reason no socket has one.
+type PreparedSubnets = std::result::Result<
+    HashMap<SocketAddr, std::result::Result<SweepSubnet, &'static str>>,
+    &'static str,
+>;
+
 /// Unified inner message type for the peer connection driver
 #[derive(Debug)]
 pub(crate) enum PeerConnectionDriverEvent {
@@ -313,6 +366,7 @@ where
     mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
     udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
     pub(super) host_sweep: HostSweep,
+    pub(super) sweep_interfaces: SweepInterfaces,
     #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
     host_scouts: super::host_scout::HostScouts,
     /// Reused scratch buffer for concatenating a run of same-destination datagrams
@@ -506,6 +560,7 @@ where
             mdns_socket: None,
             udp_sockets: HashMap::new(),
             host_sweep: HostSweep::default(),
+            sweep_interfaces: SweepInterfaces::default(),
             #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
             host_scouts: super::host_scout::HostScouts::default(),
             gso_scratch: Vec::new(),
@@ -920,14 +975,18 @@ where
     }
 
     /// One probe at most per wake; the scheduler shares one 200pps budget across all ports.
-    /// The core lock covers validation and the nonblocking syscall, so restart and
-    /// selection cannot change the socket's generation between the two.
-    async fn poll_host_sweep(&mut self, now: Instant) {
+    /// The system reads come first, before the core lock (#376). The core lock then covers
+    /// validation and the nonblocking syscall, so restart and selection cannot change the
+    /// socket's generation between the two.
+    pub(super) async fn poll_host_sweep(&mut self, now: Instant) {
         if !self.inner.host_candidate_sweep {
             return;
         }
+        let prepared = self.read_sweep_state(now);
         let inner = Arc::clone(&self.inner);
         let core = inner.core.lock().await;
+        // The reads and the lock take time, and the scouts' snapshots must not postdate `now`.
+        let now = Instant::now();
         if self.host_sweep.is_empty() {
             #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
             if core
@@ -982,7 +1041,7 @@ where
             &live_hosts,
         );
         if self.host_sweep.gate_nat(now, nat.reason()) {
-            self.prepare_host_sweep_ports(now, &hosts);
+            self.prepare_host_sweep_ports(now, &hosts, prepared);
             #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
             self.poll_host_scouts(now, relay, &live_hosts);
         } else {
@@ -996,6 +1055,19 @@ where
         self.host_sweep.defer_tick(now);
         drop(core);
         self.report_host_sweep().await;
+    }
+
+    /// Reads the system state a sweep pass decides from, without the core lock that every
+    /// data-channel write waits on: the interface list, the scouts' neighbour dumps and, when a
+    /// port is due for preparation, its subnets. Each read can take up to 5 ms.
+    fn read_sweep_state(&mut self, now: Instant) -> Option<PreparedSubnets> {
+        if self.host_sweep.is_empty() {
+            return None;
+        }
+        self.sweep_interfaces.refresh(now);
+        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+        self.host_scouts.refresh(now);
+        (!self.host_sweep.unprepared_ports(now).is_empty()).then(|| self.read_sweep_subnets())
     }
 
     #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
@@ -1012,8 +1084,6 @@ where
             self.host_sweep.initial_grace_until().unwrap_or(now),
             now,
         );
-        self.host_scouts.refresh(now);
-        let now = Instant::now();
         let scouts = &self.host_scouts;
         self.host_sweep.settle_discovery(
             now,
@@ -1037,6 +1107,7 @@ where
                 self.host_sweep.remote_ufrag(),
                 port,
                 expires,
+                self.sweep_interfaces.current(),
             )
         {
             self.host_sweep.note_progress(reason);
@@ -1094,20 +1165,26 @@ where
         relay
     }
 
-    fn prepare_host_sweep_ports(&mut self, now: Instant, hosts: &[SocketAddr]) {
+    fn prepare_host_sweep_ports(
+        &mut self,
+        now: Instant,
+        hosts: &[SocketAddr],
+        prepared: Option<PreparedSubnets>,
+    ) {
         let ports = self.host_sweep.unprepared_ports(now);
         if ports.is_empty() {
             return;
         }
-        if hosts.is_empty() && self.ice_gathering_active {
+        // Wait while gathering has produced no host yet, or for the next pass's reads when the
+        // port fell due after this pass read.
+        let Some(prepared) = prepared.filter(|_| !hosts.is_empty() || !self.ice_gathering_active)
+        else {
             for port in ports {
                 self.host_sweep.defer_preparation(port, now);
             }
             return;
-        }
-        // Enumerate and prioritize once per poll, sharing the authorized address
-        // arrays across due ports. Neighbor queries share one absolute budget.
-        let (subnets, reasons) = self.sweep_subnets(hosts);
+        };
+        let (subnets, reasons) = self.sweep_subnets(hosts, prepared);
         for port in ports {
             if subnets.is_empty() {
                 self.host_sweep
@@ -1127,17 +1204,50 @@ where
         }
     }
 
-    fn sweep_subnets(&self, hosts: &[SocketAddr]) -> (Vec<SweepSubnet>, Vec<&'static str>) {
+    /// Enumerate and prioritize once per pass, sharing the authorized address arrays across
+    /// due ports. Neighbor queries share one absolute budget.
+    fn read_sweep_subnets(&self) -> PreparedSubnets {
         if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
-            return (Vec::new(), vec!["unsupported-platform"]);
+            return Err("unsupported-platform");
         }
-        let Ok(interfaces) = ifaces() else {
-            return (Vec::new(), vec!["no-on-link-interface"]);
+        let interfaces = self
+            .sweep_interfaces
+            .current()
+            .ok_or("no-on-link-interface")?;
+        #[cfg(target_os = "linux")]
+        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
+        Ok(self
+            .udp_sockets
+            .iter()
+            .filter(|(_, socket)| socket.supports_host_candidate_sweep())
+            .map(|(local, _)| {
+                let subnet = SweepSubnet::for_socket(*local, interfaces, sweep_interface_index);
+                #[cfg(target_os = "linux")]
+                let subnet = subnet.map(|mut subnet| {
+                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
+                        subnet.interface_index,
+                        neighbor_deadline,
+                    ) {
+                        subnet.prioritize(&neighbors);
+                    }
+                    subnet
+                });
+                (*local, subnet)
+            })
+            .collect())
+    }
+
+    fn sweep_subnets(
+        &self,
+        hosts: &[SocketAddr],
+        prepared: PreparedSubnets,
+    ) -> (Vec<SweepSubnet>, Vec<&'static str>) {
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(reason) => return (Vec::new(), vec![reason]),
         };
         let mut subnets = Vec::new();
         let mut reasons = Vec::new();
-        #[cfg(target_os = "linux")]
-        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
         for local in hosts {
             let Some(socket) = self.udp_sockets.get(local) else {
                 reasons.push("no-host-socket");
@@ -1147,18 +1257,10 @@ where
                 reasons.push("unsupported-platform");
                 continue;
             }
-            match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
-                Ok(mut subnet) => {
-                    #[cfg(target_os = "linux")]
-                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
-                        subnet.interface_index,
-                        neighbor_deadline,
-                    ) {
-                        subnet.prioritize(&neighbors);
-                    }
-                    subnets.push(subnet);
-                }
-                Err(reason) => reasons.push(reason),
+            match prepared.get(local).cloned() {
+                Some(Ok(subnet)) => subnets.push(subnet),
+                Some(Err(reason)) => reasons.push(reason),
+                None => reasons.push("no-host-socket"),
             }
         }
         reasons.sort_unstable();
@@ -1167,11 +1269,11 @@ where
     }
 
     fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
-        // Re-enumerate before each emission: a route is no longer safe after its
+        // Recheck before each emission: a route is no longer safe after its
         // interface/address/mask disappears or changes. No routing fallback is allowed.
-        let valid = ifaces().ok().is_some_and(|interfaces| {
+        let valid = self.sweep_interfaces.current().is_some_and(|interfaces| {
             probe.subnet.still_owned(
-                &interfaces,
+                interfaces,
                 sweep_interface_index(&probe.subnet.interface_name),
                 probe.destination,
             )

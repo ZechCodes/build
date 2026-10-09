@@ -332,3 +332,97 @@ fn delayed_old_clear_does_not_retire_the_new_generation() {
         );
     }));
 }
+
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+#[test]
+fn a_sweep_pass_reads_interfaces_while_the_core_lock_is_free() {
+    use super::driver::SweepInterfaces;
+    use rtc::shared::ifaces::Interface;
+    use std::cell::RefCell;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    // The pass's interface read parks here, as a slow netlink dump would, until released.
+    thread_local! {
+        static READ_GATE: RefCell<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+            const { RefCell::new(None) };
+    }
+    fn parked_interfaces() -> std::io::Result<Vec<Interface>> {
+        READ_GATE.with(|gate| {
+            if let Some((entered, release)) = gate.borrow().as_ref() {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        });
+        Ok(Vec::new())
+    }
+
+    let runtime = default_runtime().unwrap();
+    let mut connection = None;
+    runtime.block_on(Box::pin(async {
+        connection = Some(new_test_peer_connection().await);
+    }));
+    let (mut inner, _events) = connection.unwrap();
+    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let driver_inner = Arc::clone(&inner);
+    let pass = std::thread::spawn(move || {
+        READ_GATE.with(|gate| *gate.borrow_mut() = Some((entered_tx, release_rx)));
+        let mut driver = PeerConnectionDriver::new(
+            driver_inner,
+            Vec::<SocketAddr>::new(),
+            Vec::<SocketAddr>::new(),
+            rtc::ice::mdns::MulticastDnsMode::Disabled,
+            Vec::new(),
+            RTCIceTransportPolicy::All,
+            false,
+        );
+        driver.sweep_interfaces = SweepInterfaces::reading(parked_interfaces);
+        driver
+            .host_sweep
+            .start(1, "ufrag".into(), 40000, Instant::now());
+        default_runtime()
+            .unwrap()
+            .block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("an active sweep pass must read the interface list");
+    let core_free = inner.core.try_lock().is_some();
+    release_tx.send(()).unwrap();
+    pass.join().unwrap();
+    assert!(
+        core_free,
+        "the core lock must stay free while the sweep reads system state"
+    );
+}
+
+#[test]
+fn sweep_passes_share_one_interface_read_until_it_is_stale() {
+    use super::driver::SweepInterfaces;
+    use rtc::shared::ifaces::Interface;
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static READS: Cell<usize> = const { Cell::new(0) };
+    }
+    fn counted_interfaces() -> std::io::Result<Vec<Interface>> {
+        READS.with(|reads| reads.set(reads.get() + 1));
+        Ok(Vec::new())
+    }
+
+    let mut interfaces = SweepInterfaces::reading(counted_interfaces);
+    let start = Instant::now();
+    interfaces.refresh(start);
+    interfaces.refresh(start + Duration::from_millis(99));
+    assert_eq!(
+        READS.with(Cell::get),
+        1,
+        "passes within 100 ms reuse the list"
+    );
+    interfaces.refresh(start + Duration::from_millis(100));
+    assert_eq!(READS.with(Cell::get), 2, "a 100 ms old list is read again");
+    assert!(interfaces.current().is_some());
+}

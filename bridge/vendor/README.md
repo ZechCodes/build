@@ -1,4 +1,4 @@
-# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375)
+# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376)
 
 The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
@@ -218,8 +218,9 @@ through normal ICE processing; the indication alone proves nothing.
 Only an accepted UDP host candidate's existing bound socket is used. Its exact
 source IP must have one current owning interface, a contiguous actual IPv4 mask,
 and an RFC 1918 or link-local subnet of at most 1024 total addresses. Network,
-broadcast and every current local address are excluded. Interface name, index,
-address and mask are rechecked before every send. Linux's Tokio socket adapter
+broadcast and every current local address are excluded. Before every send the
+interface's index is read live, and its name, address and mask are checked
+against an interface list at most 100 ms old (#376, below). Linux's Tokio socket adapter
 uses IP_PKTINFO plus MSG_DONTROUTE and MSG_DONTWAIT on that same socket, so there
 is no gateway or source-port fallback. Other platforms and runtimes skip until
 an equivalent explicit-interface operation is supplied. A candidate port of
@@ -343,6 +344,22 @@ and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
 UDP test pins the actual advertised source port and interface. The namespace
 fixture in `web/rtc-lan-upgrade/` proves the authenticated PRFLX upgrade and
 subnet-size skip with real Chromium and encrypted data channels.
+
+#376: a sweep pass held the core lock, which every data-channel write and
+ICE/SCTP pass also takes, through its netlink reads: the scouts' neighbour
+dumps (up to 5 ms every 20–100 ms), the preparation's neighbour snapshots (up
+to 5 ms) and a `getifaddrs` before every probe. The driver now does all of
+those reads first, then takes the core lock for the decisions and the
+nonblocking send. The interface list is read at most once per 100 ms, the
+same age bound as the neighbour snapshots that authorize a destination, and
+each pass reuses it. Preparation builds every sweep-capable socket's subnet
+outside the lock; a port that falls due after the reads is deferred to the
+next pass. The send path still validates generation, credentials and port
+under `HostSweepControl` and the core lock. Two driver regressions pin it:
+an interface read that parks while the test takes the core lock with
+`try_lock` (it fails with the reads moved back under the lock), and one
+interface read shared by passes inside 100 ms. Data-channel latency during a
+sweep was not measured.
 
 #383 recovery regressions cover direct-selected PRFLX followed by a native
 credential-changing restart onto relay: fresh sweep counters start at zero,

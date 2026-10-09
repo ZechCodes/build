@@ -1,8 +1,7 @@
 //! Only explicit ref-fenced confirmation may replace unresolved preconditions.
 use super::execution::{advance, require_intent};
 use super::*;
-use crate::reviews::actions::{ActionStatus, ReviewAction, StepStatus};
-use crate::reviews::merge::progress::successful_merge;
+use crate::reviews::merge::progress::{successful_merge, uncertain_action};
 use crate::reviews::records::Review;
 use crate::store::reviews::{check_version, load_review};
 
@@ -77,22 +76,6 @@ fn refuse_uncertain(review: &Review, intent: &ReviewMergeIntent) -> Result<(), S
         ));
     }
     Ok(())
-}
-
-fn uncertain_action(row: &ReviewAction) -> bool {
-    row.status == ActionStatus::Running
-        || row.steps.is_empty()
-        || row.steps.iter().enumerate().any(|(index, step)| {
-            match step.status {
-                StepStatus::Running | StepStatus::Interrupted => true,
-                StepStatus::Succeeded => step.result_head.is_none(),
-                // A later Pending step after a definite failure never started Git.
-                StepStatus::Pending => !row.steps[..index]
-                    .iter()
-                    .any(|earlier| earlier.status == StepStatus::Failed),
-                StepStatus::Failed => false,
-            }
-        })
 }
 
 fn refresh_unresolved(

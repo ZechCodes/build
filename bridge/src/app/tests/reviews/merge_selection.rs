@@ -6,6 +6,20 @@ use crate::reviews::model::ReviewMergeIntent;
 
 #[test]
 fn rpc_publication_retry_selects_its_exact_saved_vector_before_a_newer_matching_plan() {
+    publication_retry(false, false);
+}
+
+#[test]
+fn rpc_identical_vector_retry_selects_pending_publication_before_a_completed_plan() {
+    publication_retry(true, false);
+}
+
+#[test]
+fn rpc_settled_historical_plan_does_not_shadow_another_identical_pending_plan() {
+    publication_retry(true, true);
+}
+
+fn publication_retry(identical_vector: bool, another_pending_plan: bool) {
     let home = tempfile::tempdir().unwrap();
     let (_repo_home, mut state, project) = tracked(home.path());
     let extra = init_repo_named(home.path(), "second-source");
@@ -21,7 +35,10 @@ fn rpc_publication_retry_selects_its_exact_saved_vector_before_a_newer_matching_
         .unwrap()
         .directories
         .clone();
-    for directory in &directories {
+    for (index, directory) in directories.iter().enumerate() {
+        if identical_vector && index == 0 {
+            continue;
+        }
         std::fs::write(directory.path.join("reviewed.txt"), "reviewed work\n").unwrap();
         git_in(&directory.path, &["add", "reviewed.txt"]);
         git_in(&directory.path, &["commit", "-m", "saved vector fixture"]);
@@ -50,25 +67,43 @@ fn rpc_publication_retry_selects_its_exact_saved_vector_before_a_newer_matching_
         )
         .unwrap();
     let original = partial["merge_intents"][0].clone();
+    let mut pending = vec![original.clone()];
+    if another_pending_plan {
+        pending.push(admit_legacy_plan(&state, &original, "legacy-pending-plan"));
+    }
     git2::Repository::init_bare(&remote).unwrap();
     git_in(&directories[1].source_path, &["restore", "README.md"]);
     // Older adapters could admit another plan with updated target preconditions.
     // Keep both genuine service results so this assertion exercises RPC selection.
-    admit_legacy_newer_plan(&state, &original);
+    let completed = admit_legacy_plan(&state, &original, "legacy-newer-plan");
+    assert_eq!(completed["state"], "succeeded");
     let before = review_call(
         &mut state,
         "tasks.review.get",
         json!({"task_id":pr["task"]["id"]}),
     );
-    assert_eq!(before["merge_intents"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        before["merge_intents"].as_array().unwrap().len(),
+        pending.len() + 1
+    );
     assert!(state
         .store
         .as_ref()
         .unwrap()
         .workspace_review_publication_pending(&workspace_id)
         .unwrap());
-    params["expected_version"] = before["review"]["version"].clone();
-    let retried = review_call(&mut state, "tasks.review.merge", params);
+    let mut current = before.clone();
+    // Once the newest pending plan is published, its historical Failed state
+    // must not hide the older plan's still-unpublished successful result.
+    for saved in pending.iter().rev() {
+        params["expected_version"] = current["review"]["version"].clone();
+        current = review_call(&mut state, "tasks.review.merge", params.clone());
+        assert_saved_publication(&current, saved);
+        assert_eq!(
+            merge_steps(&current["review"]),
+            merge_steps(&before["review"])
+        );
+    }
     assert!(
         !state
             .store
@@ -78,6 +113,9 @@ fn rpc_publication_retry_selects_its_exact_saved_vector_before_a_newer_matching_
             .unwrap(),
         "retry must settle the selected original plan, even when a newer plan succeeded"
     );
+}
+
+fn assert_saved_publication(retried: &Value, original: &Value) {
     let selected = retried["merge_intents"]
         .as_array()
         .unwrap()
@@ -90,13 +128,9 @@ fn rpc_publication_retry_selects_its_exact_saved_vector_before_a_newer_matching_
         "the publication result must be linked to the original saved plan"
     );
     assert_eq!(selected["request"], original["request"]);
-    assert_eq!(
-        merge_steps(&retried["review"]),
-        merge_steps(&before["review"])
-    );
 }
 
-fn admit_legacy_newer_plan(state: &AppState, original: &Value) {
+fn admit_legacy_plan(state: &AppState, original: &Value, request_id: &str) -> Value {
     let saved: ReviewMergeIntent = serde_json::from_value(original.clone()).unwrap();
     let store = state.store.as_ref().unwrap();
     let review = store.load_review(&saved.request.task_id).unwrap().unwrap();
@@ -117,7 +151,7 @@ fn admit_legacy_newer_plan(state: &AppState, original: &Value) {
     }
     let job = MergeJob {
         project_path: saved.project_path,
-        request_id: "legacy-newer-plan".into(),
+        request_id: request_id.into(),
         request,
         sources: review
             .snapshots
@@ -132,11 +166,14 @@ fn admit_legacy_newer_plan(state: &AppState, original: &Value) {
             })
             .collect(),
     };
-    let completed = crate::reviews::merge::merge(store, &job, || {}).unwrap();
-    assert_eq!(
-        completed.pull_request.unwrap().status,
-        crate::reviews::model::PullRequestStatus::Merged
-    );
+    crate::reviews::merge::merge(store, &job, || {}).unwrap();
+    serde_json::to_value(
+        store
+            .load_review_merge_intent(&job.project_path, &job.request_id)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 fn merge_steps(review: &Value) -> usize {

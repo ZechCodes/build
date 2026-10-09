@@ -1,4 +1,4 @@
-use crate::reviews::actions::{ReviewAction, StepKind, StepStatus};
+use crate::reviews::actions::{ActionStatus, ReviewAction, StepKind, StepStatus};
 use crate::reviews::model::{ReviewMergeIntent, ReviewMergePush};
 use crate::reviews::records::Review;
 
@@ -57,6 +57,22 @@ pub(crate) fn publication_settled(review: &Review, intent: &ReviewMergeIntent) -
                 .push
                 .as_ref()
                 .is_none_or(|push| pushed(review, intent, &source.directory_id, push))
+        })
+}
+
+pub(crate) fn uncertain_action(row: &ReviewAction) -> bool {
+    row.status == ActionStatus::Running
+        || row.steps.is_empty()
+        || row.steps.iter().enumerate().any(|(index, step)| {
+            match step.status {
+                StepStatus::Running | StepStatus::Interrupted => true,
+                StepStatus::Succeeded => step.result_head.is_none(),
+                // A later Pending step after a definite failure never started Git.
+                StepStatus::Pending => !row.steps[..index]
+                    .iter()
+                    .any(|earlier| earlier.status == StepStatus::Failed),
+                StepStatus::Failed => false,
+            }
         })
 }
 

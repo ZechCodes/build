@@ -275,8 +275,7 @@ async fn an_offer_whose_peer_is_closed_mid_answer_answers_through_a_fresh_peer()
     };
     old.closed().await;
     gate.wait_until_answering().await;
-    factory.stop_holding_answers();
-    gate.release();
+    gate.open();
     restart.await.unwrap().unwrap();
     newer.await.unwrap().unwrap();
 
@@ -324,12 +323,16 @@ async fn a_real_peer_closes_only_while_failed_and_a_restart_clears_failure() {
     use super::ice_diagnostic_tests::with_ice_credentials;
     use rtc::peer_connection::RTCPeerConnectionBuilder;
 
-    let peer = webrtc_peer("restarting");
+    let mut peer = webrtc_peer("restarting");
     let signaling = session("restarting");
     let mut browser = RTCPeerConnectionBuilder::new().build().unwrap();
     browser.create_data_channel("app", None).unwrap();
     let initial = browser.create_offer(None).unwrap().sdp;
     peer.answer(&initial, &[], signaling.clone()).await.unwrap();
+    // The agent's own state events now land elsewhere: the restart's checking
+    // event may arrive after a queued close has run, so the answer alone must
+    // clear the failure.
+    peer.ice = Arc::default();
     peer.ice.observe(RTCIceConnectionState::Failed);
     let restart = with_ice_credentials(&initial, "restart", "restart-password-0123456789");
     peer.answer(&restart, &[], signaling.clone()).await.unwrap();

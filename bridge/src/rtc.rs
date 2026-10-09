@@ -1745,6 +1745,7 @@ pub mod recording {
         /// after the fact still hears about it.
         answering: Semaphore,
         release: Notify,
+        open: AtomicBool,
     }
 
     impl AnswerGate {
@@ -1752,6 +1753,7 @@ pub mod recording {
             Arc::new(AnswerGate {
                 answering: Semaphore::new(0),
                 release: Notify::new(),
+                open: AtomicBool::new(false),
             })
         }
 
@@ -1767,10 +1769,18 @@ pub mod recording {
             self.release.notify_waiters();
         }
 
+        /// Release every held answer and hold none from here on.
+        pub fn open(&self) {
+            self.open.store(true, Ordering::SeqCst);
+            self.release();
+        }
+
         async fn hold(&self) {
             let waiting = self.release.notified();
             self.answering.add_permits(1);
-            waiting.await;
+            if !self.open.load(Ordering::SeqCst) {
+                waiting.await;
+            }
         }
     }
 
@@ -1920,11 +1930,6 @@ pub mod recording {
             let gate = AnswerGate::new();
             *self.gate.lock().unwrap() = Some(gate.clone());
             gate
-        }
-
-        /// Peers opened from here on answer at once again.
-        pub fn stop_holding_answers(&self) {
-            *self.gate.lock().unwrap() = None;
         }
 
         /// Make every peer opened from here on refuse the offers it is given —

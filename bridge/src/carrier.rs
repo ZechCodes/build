@@ -106,7 +106,7 @@ pub struct Opening(Arc<OpeningState>);
 struct OpeningState {
     is_open: AtomicBool,
     client_hint: OnceLock<uuid::Uuid>,
-    /// Process-wide opening order, so a newer session of one client is known.
+    /// Process-wide opening order, so a newer session presenting a hint is known.
     ordinal: u64,
 }
 

@@ -1399,13 +1399,20 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   source-address probing is Linux-only; other hosts retain multicast discovery.
   Neither the hint nor the cached address enters logs, pushes or diagnostics.
 - **Superseded failed sessions**: `SessionPeers` closes a session's peer
-  whose ICE connection state is `failed` once a newer open session bound to
+  whose ICE connection state is `failed` once a newer open session presenting
   the same hint holds a peer (#373). It checks on every offer and whenever a
-  peer's ICE fails, so either order closes it at once instead of after the
-  20-second write stall. A peer that is connected, checking or disconnected is
-  never closed this way, since the hint is not an identity; sessions without
-  a hint are unaffected. Only the peer goes: the session stays open, and an
-  ICE restart from it negotiates a fresh peer like a first offer.
+  peer's ICE fails, so a reload closes the old peer at once in either order
+  instead of after the 20-second write stall. The peer decides again under its
+  negotiation lock, the one an offer holds: an accepted ICE restart clears the
+  failure, so a close queued before a restart leaves the recovered peer alone.
+  An offer never closes the peer it is answering through; an offer whose peer
+  was closed mid-answer answers through a fresh registered peer. Only the peer
+  goes: the session stays open, and its next offer negotiates a fresh peer.
+  Sessions without a hint are unaffected. The hint correlates sessions as a
+  bearer value; it is not authenticated client isolation. Any session that
+  presents a hint, including another paired client that has learned it, can
+  get a failed peer of an older session with that hint closed. It cannot close
+  a peer whose ICE has not failed or one that restarts first.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
   counts and discovery reasons without names, addresses or credentials. Actual
   direct-check snapshots on ICE restart or close report up to 64 tracked remote

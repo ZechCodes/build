@@ -83,6 +83,8 @@ pub enum RtcError {
     Refused(String),
     #[error("session {0} has ended")]
     Ended(String),
+    #[error("the peer of session {0} was closed as superseded")]
+    Retired(String),
 }
 
 /// What a peer calls when its ICE fails.
@@ -101,6 +103,14 @@ pub trait SessionPeer: Send + Sync {
 
     /// Run `hook` whenever ICE fails from here on.
     fn on_ice_failed(&self, _hook: IceFailedHook) {}
+
+    /// Close this peer if its ICE is still failed, decided where an offer
+    /// would wait: an offer answered first may have restarted ICE. Runs
+    /// `unregister` before closing, and every later answer is refused with
+    /// [`RtcError::Retired`].
+    async fn close_if_ice_failed(&self, _unregister: Box<dyn FnOnce() + Send>) -> bool {
+        false
+    }
 
     /// Answer the browser's offer.
     ///
@@ -249,6 +259,23 @@ impl SessionPeers {
         signaling: SessionSender,
         client_hint: Option<uuid::Uuid>,
     ) -> Result<String, RtcError> {
+        // A peer closed as superseded while this offer rode it has already
+        // left the map, so answering again builds a fresh registered peer.
+        match self.answer_once(offer_sdp, ice_servers, signaling.clone(), client_hint) {
+            Err(RtcError::Retired(_)) => {
+                self.answer_once(offer_sdp, ice_servers, signaling, client_hint)
+            }
+            answered => answered,
+        }
+    }
+
+    fn answer_once(
+        &self,
+        offer_sdp: &str,
+        ice_servers: &[Value],
+        signaling: SessionSender,
+        client_hint: Option<uuid::Uuid>,
+    ) -> Result<String, RtcError> {
         let session_id = signaling.session_id().to_string();
         let opening = signaling.opening();
         if !opening.is_open() {
@@ -259,9 +286,11 @@ impl SessionPeers {
             self.riding_or_opened(&session_id, &opening, client_hint)?;
         peer.bind_client_hint(client_hint);
         // A first offer is a newer session, and a later one may bind the hint.
-        self.close_superseded();
+        // The peer this offer answers through is not this offer's to close.
+        self.close_superseded(Some(&session_id));
         match self.awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
             Ok(answer) => Ok(answer),
+            Err(retired @ RtcError::Retired(_)) => Err(retired),
             Err(refused) => {
                 if opened_by_this_offer {
                     if let Some(unusable) = self.take(&session_id, &opening) {
@@ -395,7 +424,7 @@ impl SessionPeers {
                 let peers = self.me.clone();
                 opened.on_ice_failed(Arc::new(move || {
                     if let Some(peers) = peers.upgrade() {
-                        peers.close_superseded();
+                        peers.close_superseded(None);
                     }
                 }));
                 Ok((opened, true))
@@ -403,30 +432,56 @@ impl SessionPeers {
         }
     }
 
-    /// Close every peer whose ICE has failed while a newer open session of
-    /// the same paired client holds one (#373): a reloaded client's earlier
+    /// Close every peer whose ICE has failed while a newer open session
+    /// presenting the same hint holds one (#373): a reloaded client's earlier
     /// session would otherwise wait out the write stall. The hint is a bearer
-    /// value, not an identity, so it only ever picks among peers that have
-    /// already stopped carrying. Their sessions stay open: an ICE restart from
-    /// one negotiates a fresh peer, as a first offer would.
-    fn close_superseded(&self) {
+    /// value that correlates sessions, not an authenticated client identity:
+    /// any session presenting it counts. So it only ever picks among peers
+    /// that have already stopped carrying, and each peer decides again under
+    /// its own negotiation lock, where an ICE restart would have recovered
+    /// it. Their sessions stay open: a later offer negotiates a fresh peer.
+    fn close_superseded(&self, answering: Option<&str>) {
         let superseded: Vec<(String, Arc<dyn SessionPeer>)> = {
-            let mut peers = self.peers.lock().unwrap();
-            let ids: Vec<String> = peers
+            let peers = self.peers.lock().unwrap();
+            peers
                 .iter()
-                .filter(|(_, (opening, peer))| {
-                    peer.ice_failed() && has_newer_session(opening, peers.values())
+                .filter(|(id, (opening, peer))| {
+                    answering != Some(id.as_str())
+                        && peer.ice_failed()
+                        && has_newer_session(opening, peers.values())
                 })
-                .map(|(id, _)| id.clone())
-                .collect();
-            ids.into_iter()
-                .filter_map(|id| peers.remove(&id).map(|(_, peer)| (id, peer)))
+                .map(|(id, (_, peer))| (id.clone(), peer.clone()))
                 .collect()
         };
         for (session_id, peer) in superseded {
-            diagnostic(&session_id, "superseded_failed_peer_closed");
-            self.spawn_off(async move { peer.close().await });
+            let unregister = self.unregistering(&session_id, &peer);
+            self.spawn_off(async move {
+                if peer.close_if_ice_failed(unregister).await {
+                    diagnostic(&session_id, "superseded_failed_peer_closed");
+                }
+            });
         }
+    }
+
+    /// Take `peer` out of the map if it is still this session's.
+    fn unregistering(
+        &self,
+        session_id: &str,
+        peer: &Arc<dyn SessionPeer>,
+    ) -> Box<dyn FnOnce() + Send> {
+        let (peers, session_id, peer) = (self.me.clone(), session_id.to_string(), peer.clone());
+        Box::new(move || {
+            let Some(peers) = peers.upgrade() else {
+                return;
+            };
+            let mut registered = peers.peers.lock().unwrap();
+            if registered
+                .get(&session_id)
+                .is_some_and(|(_, current)| Arc::ptr_eq(current, &peer))
+            {
+                registered.remove(&session_id);
+            }
+        })
     }
 
     /// The peer of the sender's own opening, if that opening is open and has
@@ -466,7 +521,8 @@ impl SessionPeers {
     }
 }
 
-/// Whether an open session of `opening`'s paired client began after it.
+/// Whether an open session presenting `opening`'s hint began after it. Hint
+/// equality is bearer correlation, not proof both are one client.
 fn has_newer_session<'a>(
     opening: &Opening,
     mut registered: impl Iterator<Item = &'a RegisteredPeer>,
@@ -669,6 +725,8 @@ struct WebrtcPeer {
 #[derive(Default)]
 struct IceHealth {
     failed: AtomicBool,
+    /// Closed as superseded: no later offer may answer through this peer.
+    retired: AtomicBool,
     on_failed: OnceLock<IceFailedHook>,
 }
 
@@ -716,13 +774,22 @@ impl SessionPeer for WebrtcPeer {
         let _ = self.ice.on_failed.set(hook);
     }
 
+    async fn close_if_ice_failed(&self, unregister: Box<dyn FnOnce() + Send>) -> bool {
+        let mut negotiation = self.negotiation.lock().await;
+        if !self.ice_failed() || self.ice.retired.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        unregister();
+        self.close_negotiation(&mut negotiation).await;
+        true
+    }
+
     async fn answer(
         &self,
         offer_sdp: &str,
         ice_servers: &[Value],
         signaling: SessionSender,
     ) -> Result<String, RtcError> {
-        self.signaling.hold(signaling);
         let allowed: Vec<RTCIceServer> = self
             .policy
             .allowed_ice_servers(ice_servers)
@@ -737,6 +804,10 @@ impl SessionPeer for WebrtcPeer {
             .with_ice_servers(allowed)
             .build();
         let mut negotiation = self.negotiation.lock().await;
+        if self.ice.retired.load(Ordering::SeqCst) {
+            return Err(RtcError::Retired(self.session_id.clone()));
+        }
+        self.signaling.hold(signaling);
         let connection = match negotiation.as_ref() {
             Some(open) => {
                 open.connection.set_configuration(configuration).await?;
@@ -760,6 +831,10 @@ impl SessionPeer for WebrtcPeer {
             .begin_with_stats(&allowed_offer, Some(&previous_stats))
             .await;
         connection.set_remote_description(offer).await?;
+        if restarting {
+            // Checking again: a pending close must not take this peer now.
+            self.ice.failed.store(false, Ordering::SeqCst);
+        }
         self.remote.accept_offer(&allowed_offer).await;
         if restarting {
             self.intake
@@ -804,6 +879,13 @@ impl SessionPeer for WebrtcPeer {
 
     async fn close(&self) {
         let mut negotiation = self.negotiation.lock().await;
+        self.close_negotiation(&mut negotiation).await;
+    }
+}
+
+impl WebrtcPeer {
+    /// Tear the negotiation down, with the lock every offer takes held.
+    async fn close_negotiation(&self, negotiation: &mut Option<Negotiation>) {
         let stats = match negotiation.as_ref() {
             Some(open) => Some(
                 open.connection
@@ -821,9 +903,7 @@ impl SessionPeer for WebrtcPeer {
             eprintln!("rtc: session {} peer close: {e}", self.session_id);
         }
     }
-}
 
-impl WebrtcPeer {
     /// Build this session's peer connection: the two negotiated channels, the
     /// candidates it trickles back, and the one line it logs about the path
     /// that won.
@@ -1701,6 +1781,8 @@ pub mod recording {
         closing: Notify,
         ice_failed: AtomicBool,
         on_ice_failed: Mutex<Option<IceFailedHook>>,
+        retired: AtomicBool,
+        close_attempts: AtomicUsize,
     }
 
     impl RecordingPeer {
@@ -1728,6 +1810,11 @@ pub mod recording {
         /// An ICE restart that found a working pair again.
         pub fn recover_ice(&self) {
             self.ice_failed.store(false, Ordering::SeqCst);
+        }
+
+        /// How many times something asked to close this peer as superseded.
+        pub fn close_attempts(&self) -> usize {
+            self.close_attempts.load(Ordering::SeqCst)
         }
 
         /// Wait for this peer to be torn down, however far away the teardown
@@ -1759,6 +1846,16 @@ pub mod recording {
             *self.on_ice_failed.lock().unwrap() = Some(hook);
         }
 
+        async fn close_if_ice_failed(&self, unregister: Box<dyn FnOnce() + Send>) -> bool {
+            self.close_attempts.fetch_add(1, Ordering::SeqCst);
+            if !self.ice_failed() || self.retired.swap(true, Ordering::SeqCst) {
+                return false;
+            }
+            unregister();
+            self.close().await;
+            true
+        }
+
         async fn answer(
             &self,
             offer_sdp: &str,
@@ -1774,6 +1871,9 @@ pub mod recording {
             }
             if let Some(gate) = &self.gate {
                 gate.hold().await;
+            }
+            if self.retired.load(Ordering::SeqCst) {
+                return Err(RtcError::Retired(offer_sdp.to_string()));
             }
             if self.refuses_offers {
                 return Err(RtcError::Refused(offer_sdp.to_string()));
@@ -1820,6 +1920,11 @@ pub mod recording {
             let gate = AnswerGate::new();
             *self.gate.lock().unwrap() = Some(gate.clone());
             gate
+        }
+
+        /// Peers opened from here on answer at once again.
+        pub fn stop_holding_answers(&self) {
+            *self.gate.lock().unwrap() = None;
         }
 
         /// Make every peer opened from here on refuse the offers it is given —
@@ -1870,6 +1975,8 @@ pub mod recording {
                 closing: Notify::new(),
                 ice_failed: AtomicBool::new(false),
                 on_ice_failed: Mutex::new(None),
+                retired: AtomicBool::new(false),
+                close_attempts: AtomicUsize::new(0),
             });
             self.opens.fetch_add(1, Ordering::SeqCst);
             self.opened
@@ -2483,7 +2590,7 @@ mod ice_diagnostic_tests {
     use super::*;
     use log::Log;
 
-    fn with_ice_credentials(offer: &str, fragment: &str, password: &str) -> String {
+    pub(super) fn with_ice_credentials(offer: &str, fragment: &str, password: &str) -> String {
         offer
             .split_inclusive('\n')
             .map(|line| {

@@ -23,28 +23,40 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const DEVICE = "dev-1";
 const ROUTE_HASH = `#/device/${DEVICE}/project/proj-1/workspaces`;
 
-const wire = vi.hoisted(() => ({
-  // What the account lists, and each session this tab was handed, newest last.
-  listed: [],
-  sessions: [],
-  // What the next session answers `session.hello` with.
-  greeting: {},
-  // Held open until a case lets the session land.
-  landing: null,
-}));
+/** This case's side of the wire, made new for each case:
+ *  - listed: what the account lists;
+ *  - sessions: each session this tab was handed, newest last;
+ *  - greeting: what the next session answers `session.hello` with;
+ *  - landing: held open until the case lets a session land. */
+let wire;
 
-vi.mock("../src/api.js", async (importOriginal) => ({
-  ...(await importOriginal()),
-  fetchDevices: async () => wire.listed,
-  fetchGatewayToken: async () => "tok",
-  fetchIceServers: async () => [],
-}));
+/** The account's REST list and the session it mints, as one case's app sees
+ *  them. Mocked per case, after the reset, so each case's modules get their
+ *  own: work an earlier case's app still had out (a presence read, a dial)
+ *  answers from that case's wire, never this one's. */
+function standInForTheWire(own) {
+  vi.doMock("../src/api.js", async (importOriginal) => ({
+    ...(await importOriginal()),
+    fetchDevices: async () => own.listed,
+    fetchGatewayToken: async () => "tok",
+    fetchIceServers: async () => [],
+  }));
+  vi.doMock("../src/core/session.js", () => ({
+    openSession: async ({ deviceId }) => {
+      await own.landing;
+      const session = bridgeSession(own, deviceId);
+      own.sessions.push(session);
+      return session;
+    },
+  }));
+}
 
 vi.mock("../src/core/rendezvous.js", () => ({
   createRelayRendezvous: ({ deviceId }) => {
@@ -61,15 +73,6 @@ vi.mock("../src/core/rendezvous.js", () => ({
       },
     };
     return rendezvous;
-  },
-}));
-
-vi.mock("../src/core/session.js", () => ({
-  openSession: async ({ deviceId }) => {
-    await wire.landing;
-    const session = bridgeSession(deviceId);
-    wire.sessions.push(session);
-    return session;
   },
 }));
 
@@ -98,8 +101,8 @@ const cachedWorkspace = {
 };
 
 /** The machine's bridge, answering with what the cache already holds of it. */
-function bridgeSession(deviceId) {
-  const greeting = wire.greeting;
+function bridgeSession(own, deviceId) {
+  const greeting = own.greeting;
   const answers = {
     "session.hello": () => greeting,
     "project.list": () => ({ projects: [{ project_id: "proj-1", name: "Payments" }] }),
@@ -110,7 +113,7 @@ function bridgeSession(deviceId) {
   let carrierChanged = () => {};
   const session = {
     deviceId,
-    sessionId: `session-${deviceId}-${wire.sessions.length + 1}`,
+    sessionId: `session-${deviceId}-${own.sessions.length + 1}`,
     call: vi.fn(async (method) => (answers[method] ? answers[method]() : {})),
     peer: (carrier) => (carrier ? carrierChanged() : undefined),
     fail: () => {},
@@ -147,7 +150,9 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
   history.replaceState(null, "", ROUTE_HASH);
-  Object.assign(wire, { listed: [online], sessions: [], greeting: {}, landing: null });
+  // Nothing lands until the case says so.
+  wire = { listed: [online], sessions: [], greeting: {}, landing: new Promise(() => {}) };
+  standInForTheWire(wire);
   const app = await import("../src/app.js");
   modules = {
     app,
@@ -222,7 +227,7 @@ async function reloadOntoRoute() {
   app.initRouter();
   devices.initDevicePicker();
   const booted = gate.boot();
-  await vi.waitFor(() => expect(workspaceRow()).not.toBeNull());
+  await painted(workspaceRow);
   expect(wire.sessions).toHaveLength(0);
   return { land, booted };
 }

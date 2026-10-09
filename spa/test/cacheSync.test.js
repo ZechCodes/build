@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { called, passesSettled } from "./waits.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -181,6 +182,16 @@ describe("the order a pass reads in", () => {
     branchItem({ branch: "build/search", run_id: "run-2", worktree_id: "wt-2" }),
   ];
   const routeTo = (branch) => ({ name: "branch", deviceId: "dev-1", projectId: "p1", branch });
+  // These cases read the order of a whole pass, so they wait for the pass to
+  // finish rather than for the wire to go quiet: a read slower than the quiet
+  // window would end the case halfway, and the rest of its pass would land in
+  // the next case's calls.
+  const boot = async (items, route = { name: "inbox" }) => {
+    board = items;
+    App.route = route;
+    sync.startCacheSync();
+    await passesSettled(sync, "dev-1");
+  };
 
   it("reads the three lists before it reads any workspace", async () => {
     await boot(two);
@@ -192,6 +203,31 @@ describe("the order a pass reads in", () => {
 
   it("reads the routed workspace's shapes before the other's", async () => {
     await boot(two, routeTo("build/search"));
+    const entities = bridge.call.mock.calls
+      .map(([, params]) => params?.run_id)
+      .filter(Boolean);
+    expect(entities[0]).toBe("run-2");
+    expect(entities.lastIndexOf("run-2")).toBeLessThan(entities.indexOf("run-1"));
+  });
+
+  it("still reads the other workspace after a routed one that answers slowly", async () => {
+    // The routed read answers only when the case says so. Nothing else is
+    // asked while it is out, so the wire can go quiet with the pass half done:
+    // boot waits for the pass itself, however long the answer takes.
+    let answerRouted;
+    const routedAnswered = new Promise((resolve) => { answerRouted = resolve; });
+    script["git.status"] = async (params) => {
+      if (params.run_id === "run-2") await routedAnswered;
+      return ANSWERS["git.status"](params);
+    };
+    const routedStatus = () => paramsOf("git.status").some((params) => params.run_id === "run-2");
+    const booted = boot(two, routeTo("build/search"));
+    await called(bridge.call, routedStatus);
+    expect(paramsOf("git.status").some((params) => params.run_id === "run-1")).toBe(false);
+    expect(sync.passInFlight("dev-1")).not.toBeNull();
+    answerRouted();
+    await booted;
+    expect(paramsOf("git.status").some((params) => params.run_id === "run-1")).toBe(true);
     const entities = bridge.call.mock.calls
       .map(([, params]) => params?.run_id)
       .filter(Boolean);

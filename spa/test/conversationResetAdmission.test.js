@@ -6,6 +6,7 @@ import { passesSettled } from "./waits.js";
 const App = { route: { name: "inbox" }, devices: [{ id: "reset-device" }] };
 const contexts = new Map();
 const watchers = [];
+let heardWatcher = () => {};
 vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/deviceContexts.js", () => ({
@@ -14,7 +15,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   subscriptionsSettledFor: async () => {}, onSubscriptionHeld: () => () => {},
-  watchChanges: (watcher) => { watchers.push(watcher); return { dispose() {} }; },
+  watchChanges: (watcher) => { watchers.push(watcher); heardWatcher(watcher); return { dispose() {} }; },
 }));
 
 let cache, sync, board;
@@ -46,8 +47,11 @@ beforeEach(async () => {
   cache = await import("../src/core/localCache.js");
   sync = await import("../src/core/cacheSync.js");
   expect((await import("../src/appState.js")).App).toBe(App);
+  const inboxWatched = new Promise((resolve) => {
+    heardWatcher = (watcher) => { if (watcher.id === "s-inbox") resolve(); };
+  });
   sync.startCacheSync();
-  await vi.waitFor(() => expect(watchers.some((watcher) => watcher.id === "s-inbox")).toBe(true));
+  await inboxWatched;
   // The opening pass is out once it has subscribed. A test's own ask made
   // while it is still reading would be folded into it, not read again.
   const settled = passesSettled(sync, "reset-device");

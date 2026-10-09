@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { called, painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -112,26 +113,24 @@ it("opens a linked unwatched agent on a temporary bubble, finds it marked Not wa
   const { standShell } = await import("../src/core/shell.js");
   standShell(App.route);
 
-  await vi.waitFor(() => {
-    expect(stripIds()).toEqual(["ag-watched", "ag-quiet"]);
-    expect(bubbleOf("ag-quiet").classList.contains("active")).toBe(true);
-    expect(bubbleOf("ag-quiet").classList.contains("rail-bubble-unwatched")).toBe(true);
-    expect(rail().querySelector(".rail-watch")?.getAttribute("aria-pressed")).toBe("false");
-  });
+  await painted(() => bubbleOf("ag-quiet")?.classList.contains("active")
+    && rail().querySelector(".rail-watch")?.getAttribute("aria-pressed") === "false");
+  expect(stripIds()).toEqual(["ag-watched", "ag-quiet"]);
+  expect(bubbleOf("ag-quiet").classList.contains("rail-bubble-unwatched")).toBe(true);
 
   bubbleOf("ag-watched").click();
-  await vi.waitFor(() => expect(stripIds()).toEqual(["ag-watched"]));
+  await painted(() => stripIds().join() === "ag-watched");
 
   rail().querySelector(".rail-overview-toggle").click();
   // #186: the unwatched agent is under its own work item beside the watched
   // one, wearing the not-watching mark; there is no second section.
   const quietRow = () => rail().querySelector('.rail-overview-section .rail-overview-row-unwatched[data-overview-agent="ag-quiet"]');
-  await vi.waitFor(() => expect(quietRow()).toBeTruthy());
+  await painted(quietRow);
   expect(quietRow().querySelector('.rail-overview-watch[aria-label="Not watching"]')).toBeTruthy();
   expect(rail().querySelector('.rail-overview-section [data-overview-agent="ag-watched"]').classList.contains("rail-overview-row-unwatched")).toBe(false);
   expect(rail().querySelectorAll(".rail-overview-section")).toHaveLength(1);
   quietRow().click();
-  await vi.waitFor(() => expect(bubbleOf("ag-quiet")?.classList.contains("active")).toBe(true));
+  await painted(() => bubbleOf("ag-quiet")?.classList.contains("active"));
 
   // The bridge's answer is written into the cached row, so leaving before the
   // push that follows it lands keeps the bubble all the same.
@@ -139,11 +138,14 @@ it("opens a linked unwatched agent on a temporary bubble, finds it marked Not wa
   const cachedWatch = async () => (await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "row" }))
     ?.value?.agents?.find((one) => one.id === "ag-quiet")?.watched;
   rail().querySelector(".rail-watch").click();
-  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("conversation.watch", { entity_id: "run-1", agent_id: "ag-quiet" }));
+  await called(call, () => call.mock.calls.some(([method]) => method === "conversation.watch"));
+  expect(call).toHaveBeenCalledWith("conversation.watch", { entity_id: "run-1", agent_id: "ag-quiet" });
   await vi.waitFor(async () => expect(await cachedWatch()).toBe(true));
-  await vi.waitFor(() => expect(bubbleOf("ag-quiet").classList.contains("rail-bubble-unwatched")).toBe(false));
+  await painted(() => bubbleOf("ag-quiet")?.classList.contains("rail-bubble-unwatched") === false);
 
   bubbleOf("ag-watched").click();
-  await vi.waitFor(() => expect(bubbleOf("ag-watched").classList.contains("active")).toBe(true));
+  // The strip is drawn from the cached row the watch wrote, which the rail
+  // reads on its own turn after the press: wait for that read, not a poll.
+  await painted(() => bubbleOf("ag-watched")?.classList.contains("active") && stripIds().join() === "ag-watched,ag-quiet");
   expect(stripIds()).toEqual(["ag-watched", "ag-quiet"]);
 });

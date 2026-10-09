@@ -7,6 +7,7 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 // The rail paints from the cache, so this suite gives the modules a database
 // before anything imports them.
@@ -47,6 +48,7 @@ const { TASKS_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { writeRailWorkItem } = await import("./railCacheFixture.js");
 const { rememberAgentLineageSupport } = await import("../src/core/agentLineageSupport.js");
 
@@ -174,6 +176,10 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   await wipeCache();
+  // Which surface the reader left open is local UI state, which wipeCache does
+  // not reach: without this a case mounts with the last case's viewer open, and
+  // its press on the pill closes it instead of opening it.
+  await wipeUiRecords();
   resetAgentRailMemory();
   notifyError.mockClear();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -396,6 +402,18 @@ describe("the conversation header's menu", () => {
 });
 
 describe("the agent's goal and observed checklist", () => {
+  const checklistPill = () => {
+    const pill = panel().querySelector('[data-surface-kind="checklist"]');
+    if (!pill) throw new Error("the Tasks pill is not drawn yet");
+    return pill;
+  };
+  /** Presses the Tasks pill once it is drawn, from a viewer that is shut: a
+   *  press on an open one closes it. */
+  const openTasks = async () => {
+    const pill = await painted(() => panel().querySelector('[data-surface-kind="checklist"]'));
+    expect(pill.getAttribute("aria-pressed")).toBe("false");
+    pill.click();
+  };
   const observed = () => ({
     goal: { objective: "Ship the release", state: "active" },
     checklist: [{ id: "one", subject: "Run verification", state: "in_progress" }],
@@ -428,8 +446,10 @@ describe("the agent's goal and observed checklist", () => {
   it("shows task observation metadata inside the Tasks viewer", async () => {
     payload = branchRow({ surfaces: observed() });
     await mount();
-    panel().querySelector('[data-surface-kind="checklist"]').click();
-    await vi.waitFor(() => expect(panel().querySelector(".surface-checklist-context")?.textContent).toContain("Run verification"));
+    await openTasks();
+    await painted(() => panel().querySelector(".surface-checklist-context")?.textContent.includes("Run verification"));
+    // Open, not a closing frame: the press opened the viewer.
+    expect(checklistPill().getAttribute("aria-pressed")).toBe("true");
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("Run verification");
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("0/1");
   });
@@ -447,8 +467,10 @@ describe("the agent's goal and observed checklist", () => {
     payload = branchRow({ surfaces });
     await mount();
 
-    panel().querySelector('[data-surface-kind="checklist"]').click();
-    await vi.waitFor(() => expect(panel().querySelector(".surface-checklist-context")?.textContent).toContain("1 known completed"));
+    await openTasks();
+    await painted(() => panel().querySelector(".surface-checklist-context")?.textContent.includes("1 known completed"));
+    // Open, not a closing frame: the press opened the viewer.
+    expect(checklistPill().getAttribute("aria-pressed")).toBe("true");
     const context = panel().querySelector(".surface-checklist-context");
     expect(context.textContent).toContain("1 known completed · 3 omitted");
     expect(context.textContent).toContain("Last known");
@@ -706,6 +728,15 @@ describe("a Build agent on the rail's own branch", () => {
     return row;
   };
   const buildAgentRows = () => [...panel().querySelectorAll(".surface-build-agents > .surface-build-agent")];
+  /** Presses the Agents pill once the lineage read draws it, from a panel
+   *  that is shut, and waits for the one Build agent's row. */
+  const openAgents = async () => {
+    const pill = await painted(() => panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`));
+    expect(pill.getAttribute("aria-pressed")).toBe("false");
+    pill.click();
+    await painted(() => buildAgentRows().length === 1);
+    expect(buildAgentRows()).toHaveLength(1);
+  };
 
   it("is a button in the Agents panel, and a press opens it in place", async () => {
     payload = withWorker();
@@ -713,10 +744,8 @@ describe("a Build agent on the rail's own branch", () => {
     // The bridge greets as one that names makers (the fixture's own greeting
     // did not), and the lineage reader hears it off the cache.
     await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
-    await vi.waitFor(() => expect(panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`)).not.toBe(null));
     const hash = location.hash;
-    panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`).click();
-    await vi.waitFor(() => expect(buildAgentRows()).toHaveLength(1));
+    await openAgents();
 
     const [row] = buildAgentRows();
     expect(document.querySelector('.rail-bubble[data-agent="ag-1"]').getAttribute("aria-expanded")).toBe("true");
@@ -744,10 +773,8 @@ describe("a Build agent on the rail's own branch", () => {
     Object.assign(payload.agents[1], { provider: "codex_app_server", model: "gpt-6-astra", active_model: "gpt-6-astra" });
     await mount();
     await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
-    await vi.waitFor(() => expect(panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`)).not.toBe(null));
-    panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`).click();
-    await vi.waitFor(() => expect(buildAgentRows()).toHaveLength(1));
-    await vi.waitFor(() => expect(buildAgentRows()[0].querySelector(".surface-row-model")?.title).toBe("GPT-6 Astra"));
+    await openAgents();
+    await painted(() => buildAgentRows()[0].querySelector(".surface-row-model")?.title === "GPT-6 Astra");
     expect(buildAgentRows()[0].querySelector(".surface-row-model").textContent).toBe("6 Astra");
   });
 });

@@ -64,6 +64,7 @@ import { standShell, stopShell } from "../src/core/shell.js";
 import { fakeSession } from "./deviceSessionFixture.js";
 import { DEVICES_ADDRESS, readCached, wipeCache, writeCached } from "../src/core/localCache.js";
 import { readCachedDevices } from "../src/devices.js";
+import { called, painted } from "./waits.js";
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -821,11 +822,14 @@ describe("workspace surface", () => {
     await vi.waitFor(() => expect(document.querySelector(".modal-workspace-init")).not.toBeNull());
     document.querySelector('[data-init-target="both"]').click();
     document.querySelector("[data-confirm-init-git]").click();
-    await vi.waitFor(() => expect(document.querySelector("[data-init-error]").textContent).toContain("Workspace copy: copy failed"));
+    // The failures and the button that retries them are painted by separate
+    // steps of the same answer: wait for both.
+    await painted(() => document.querySelector("[data-init-error]")?.textContent.includes("Workspace copy: copy failed")
+      && document.querySelector("[data-confirm-init-git]")?.textContent === "Retry both");
     expect(document.querySelector("[data-init-error]").textContent).toContain("Original source: source failed");
     expect(document.querySelector("[data-confirm-init-git]").textContent).toBe("Retry both");
     document.querySelector("[data-confirm-init-git]").click();
-    await flush();
+    await called(call, () => call.mock.calls.filter(([method]) => method === "workspace.init_git").length >= 2);
     expect(call).toHaveBeenLastCalledWith("workspace.init_git", { workspace_id: "ws-1", source_id: "assets", target: "both" });
   });
 

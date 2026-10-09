@@ -307,10 +307,20 @@ describe("the account archive page", () => {
     await settle();
     const before = archiveReads();
 
-    await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
-    for (const entityId of ["run-1", "run-2", "run-3", "run-4", "run-5"]) {
-      await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { entityId });
+    // One pass's writes inside one frame: the frame is held until the last
+    // has landed, however long a loaded machine takes over them.
+    const framesHeld = [];
+    const nextFrame = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = (run) => framesHeld.push(run);
+    try {
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, { items: [] });
+      for (const entityId of ["run-1", "run-2", "run-3", "run-4", "run-5"]) {
+        await writeCached({ deviceId: "dev-1", entityId, kind: "row" }, { entityId });
+      }
+    } finally {
+      globalThis.requestAnimationFrame = nextFrame;
     }
+    framesHeld.splice(0).forEach((run) => run(performance.now()));
     await settle();
 
     expect(archiveReads() - before).toBe(App.devices.length);

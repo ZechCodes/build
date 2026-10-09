@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -386,15 +387,17 @@ describe("agent rail chat ownership", () => {
     await flush();
 
     resolveAdd({ entity_id: "run-1", agent: agent("created-agent", 1) });
-    await flush();
+    // The queued draft is drawn once its own receipt lands, however many turns
+    // that takes, so the case waits for its row rather than counting turns.
+    const messages = () => [...host().querySelectorAll(".thread-message")].map((node) => node.textContent);
+    await painted(() => messages().some((text) => text.includes("send this when ready")));
     expect(calls.filter((entry) => entry.method === "agent.add")).toHaveLength(1);
     expect(calls.filter((entry) => entry.method === "thread.post").map((entry) => entry.params.body)).toEqual([
       "create this agent",
       "send this when ready",
     ]);
-    const messages = [...host().querySelectorAll(".thread-message")].map((node) => node.textContent);
-    expect(messages.filter((text) => text.includes("create this agent"))).toHaveLength(1);
-    expect(messages.filter((text) => text.includes("send this when ready"))).toHaveLength(1);
+    expect(messages().filter((text) => text.includes("create this agent"))).toHaveLength(1);
+    expect(messages().filter((text) => text.includes("send this when ready"))).toHaveLength(1);
   });
 
   it("draws a creation message once when its cached echo arrives before its receipt", async () => {

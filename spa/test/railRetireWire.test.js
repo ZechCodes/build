@@ -28,6 +28,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -232,6 +233,10 @@ afterEach(async () => {
   sync.stopCacheSync();
   feed.stopFeed();
   (await import("../src/core/inboxView.js")).unmountInboxList();
+  // The shell's rail listens to the app-wide reference index, which keeps
+  // re-reading task lists; left standing, a read landing after the file's
+  // document is gone repaints it ("document is not defined", full run 2).
+  (await import("../src/core/shell.js")).stopShell();
   delete globalThis.RTCPeerConnection;
 });
 
@@ -324,11 +329,15 @@ it("resolves the rail's first catalog read to nothing when its machine is retire
 it("finishes the retirement with an agent's conversation on screen", async () => {
   wire.conversation = conversationWithAgent;
   const standing = await standWithFirstReadHeld();
-  await settle();
+  // The agent is drawn from the cached row, a read of its own after the rail
+  // stands: wait for it rather than for a count of turns.
+  const railSays = (text) => painted(() => document.querySelector("#agent-rail")?.textContent.includes(text));
+  await railSays("Existing agent");
   expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
 
   await retireAndRelease(standing);
   await expectRestoodOnLanding(standing);
+  await railSays("Existing agent");
   expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
 });
 

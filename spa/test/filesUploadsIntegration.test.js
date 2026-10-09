@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 vi.mock("../src/core/fileUploadRpc.js", () => ({ fileUploadRpc: (_context, callRpc) => callRpc }));
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -168,7 +169,9 @@ it("keeps an upload and completion refresh through a Files remount", async () =>
   const callRpc = (method, params) => method === "fs.uploadFinish" ? new Promise((resolve) => { finish = async () => resolve(await rpc(method, params)); }) : rpc(method, params);
   const first = mount(sources[0], callRpc);
   const engine = uploadsFor(device); engines.push(engine);
-  await vi.waitFor(() => expect(first.host.querySelector('[data-upload-action="upload"]')).toBeTruthy());
+  // The press is on the ignored folder's row, which the listing draws after
+  // the root's own upload action: wait for that row's action.
+  await painted(() => first.host.querySelector('[data-path="ignored"] [data-upload-action="upload"]'), first.host);
   chooseFiles(first.host);
   await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
   first.view.dispose(); first.host.remove();

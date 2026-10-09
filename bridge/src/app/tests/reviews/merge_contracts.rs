@@ -74,7 +74,7 @@ fn rpc_merge_retry_retains_partial_plan_and_only_retries_external_publication() 
 }
 
 #[test]
-fn merge_plan_identity_canonicalizes_source_order_and_separates_authenticated_actors() {
+fn merge_plan_identity_canonicalizes_source_order_and_retains_actor_handoffs() {
     let home = tempfile::tempdir().unwrap();
     let (_repo_home, mut state, project) = tracked(home.path());
     let extra = init_repo_named(home.path(), "second-source");
@@ -119,12 +119,10 @@ fn merge_plan_identity_canonicalizes_source_order_and_separates_authenticated_ac
     };
     let other = state.agent_action(&owner, &agent, action).unwrap();
     let plans = other["merge_intents"].as_array().unwrap();
-    assert_eq!(plans.len(), 2, "{other}");
-    assert_ne!(plans[0]["request_id"], plans[1]["request_id"]);
-    assert!(plans
-        .iter()
-        .any(|plan| plan["request"]["actor"]["kind"] == "user"));
-    assert!(plans
-        .iter()
-        .any(|plan| plan["request"]["actor"]["agent_id"] == agent));
+    assert_eq!(plans.len(), 1, "{other}");
+    assert_eq!(
+        plans[0]["request_id"],
+        first["merge_intents"][0]["request_id"]
+    );
+    assert_eq!(plans[0]["request"]["actor"]["kind"], "user");
 }

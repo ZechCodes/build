@@ -21,12 +21,13 @@ struct MergeWork {
     project_id: String,
     workspace_id: String,
     job: MergeJob,
+    refresh: Option<ReviewMergeRequest>,
     changes: Arc<crate::changes::ChangeBus>,
 }
 
 impl DeferredGitWork for MergeWork {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        let review = crate::reviews::merge::merge(&self.store, &self.job, || {
+        let review = crate::reviews::merge::merge_with_refresh(&self.store, &self.job, self.refresh.as_ref(), || {
             self.changes.note_tasks(&self.project_id, std::slice::from_ref(&self.job.request.task_id));
             self.changes.note_kind(&self.workspace_id, crate::changes::Kind::State);
             self.changes.note_board_lists(crate::changes::BoardLists::WORKSPACES);
@@ -63,7 +64,7 @@ impl AppState {
             .sort_by(|left, right| left.directory_id.cmp(&right.directory_id));
         let (project_id, task, review) = self.pull_request(&params.task_id)?;
         let store = self.tracker_store()?.clone();
-        let (request_id, request) = resolve_plan(&store, &review, &params, actor)?;
+        let (request_id, request, refresh) = resolve_plan(&store, &review, &params, actor)?;
         let sources = self.review_action_sources(&project_id, &review);
         let work = MergeWork {
             store,
@@ -75,6 +76,7 @@ impl AppState {
                 request,
                 sources,
             },
+            refresh,
             changes: self.changes.clone(),
         };
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
@@ -93,23 +95,25 @@ fn resolve_plan(
     review: &Review,
     params: &ReviewMergeParams,
     actor: Actor,
-) -> Result<(String, ReviewMergeRequest), String> {
+) -> Result<(String, ReviewMergeRequest, Option<ReviewMergeRequest>), String> {
     let identity = merge_identity(params, &actor)?;
     let prefix = format!("{identity}-");
     let existing = store
         .load_review_merge_intents(&params.task_id)
         .stored()?
         .into_iter()
-        .filter(|intent| intent.request_id == identity || intent.request_id.starts_with(&prefix))
-        .max_by_key(|intent| intent.request.expected_version);
+        .filter(|intent| matching_plan(intent, params))
+        .max_by_key(|intent| retained_plan_order(review, intent));
     if let Some(intent) = existing {
         if params.expected_version != intent.request.expected_version {
             version(review, params.expected_version)?;
         }
         if !can_refresh_plan(review, &intent) {
-            return Ok((intent.request_id, intent.request));
+            let refresh = refreshed_request(review, params, &intent)?;
+            return Ok((intent.request_id, intent.request, refresh));
         }
     }
+    refuse_changed_obligations(store, review, params)?;
     version(review, params.expected_version)?;
     if !review
         .pull_request
@@ -127,7 +131,114 @@ fn resolve_plan(
         ));
     }
     let request_id = format!("{prefix}{}", params.expected_version);
-    Ok((request_id, merge_request(review, params, actor)?))
+    Ok((request_id, merge_request(review, params, actor)?, None))
+}
+
+fn refreshed_request(
+    review: &Review,
+    params: &ReviewMergeParams,
+    intent: &ReviewMergeIntent,
+) -> Result<Option<ReviewMergeRequest>, String> {
+    let metadata = review.pull_request.as_ref().expect("PR checked");
+    if !metadata.status.is_active()
+        || metadata.latest_published_snapshot_id.as_deref() != Some(&intent.request.snapshot_id)
+        || intent.state == ReviewMergeState::Succeeded
+    {
+        return Ok(None);
+    }
+    let changed_targets = intent.request.sources.iter().any(|source| {
+        params.sources.iter().any(|selection| {
+            selection.directory_id == source.directory_id
+                && selection.expected_base_head != source.expected_base_head
+        })
+    });
+    let execution = intent
+        .execution_version
+        .unwrap_or(intent.request.expected_version);
+    if execution == review.version && !changed_targets {
+        return Ok(None);
+    }
+    version(review, params.expected_version)?;
+    Ok(Some(merge_request(
+        review,
+        params,
+        intent.request.actor.clone(),
+    )?))
+}
+
+/// A saved plan belongs to its task, not to the authenticated actor retrying it.
+/// Match the immutable selection so actor-hashed identities from older clients
+/// remain usable; refreshed target preconditions do not create duplicate merges.
+fn matching_plan(intent: &ReviewMergeIntent, params: &ReviewMergeParams) -> bool {
+    matching_directories(intent, params)
+        && intent.request.sources.iter().all(|source| {
+            params.sources.iter().any(|selection| {
+                source.directory_id == selection.directory_id
+                    && source
+                        .push
+                        .as_ref()
+                        .map(|push| (&push.remote, &push.branch))
+                        == selection
+                            .push
+                            .as_ref()
+                            .map(|push| (&push.remote, &push.branch))
+            })
+        })
+}
+
+fn matching_directories(intent: &ReviewMergeIntent, params: &ReviewMergeParams) -> bool {
+    intent.request.snapshot_id == params.snapshot_id
+        && intent.request.sources.len() == params.sources.len()
+        && intent.request.sources.iter().all(|source| {
+            params
+                .sources
+                .iter()
+                .any(|selection| source.directory_id == selection.directory_id)
+        })
+}
+
+fn refuse_changed_obligations(
+    store: &Store,
+    review: &Review,
+    params: &ReviewMergeParams,
+) -> Result<(), String> {
+    let retained = store
+        .load_review_merge_intents(&params.task_id)
+        .stored()?
+        .iter()
+        .any(|intent| {
+            matching_directories(intent, params) && retained_plan_order(review, intent).0
+        });
+    if retained {
+        return Err(errors::encode(
+            "conflict",
+            "Retained merge publication obligations must be preserved",
+            json!({
+                "task_id":params.task_id,"snapshot_id":params.snapshot_id,
+                "recovery":"Refresh the saved plan using its original Push destinations."
+            }),
+        ));
+    }
+    Ok(())
+}
+
+fn retained_plan_order(review: &Review, intent: &ReviewMergeIntent) -> (bool, u64, String, String) {
+    let retained = review.actions.iter().any(|action| {
+        intent.action_ids.contains(&action.id)
+            && (matches!(
+                action.status,
+                ActionStatus::Running | ActionStatus::Interrupted
+            ) || action.steps.iter().any(|step| {
+                matches!(step.status, StepStatus::Running | StepStatus::Interrupted)
+                    || (step.kind == StepKind::Merge && step.status == StepStatus::Succeeded)
+            }))
+    });
+    (
+        retained,
+        intent.request.expected_version,
+        intent.created_at.clone(),
+        intent.request_id.clone(),
+    )
 }
 
 /// A fresh version may replace a failed plan only before any integration.

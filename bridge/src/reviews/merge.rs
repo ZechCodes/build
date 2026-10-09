@@ -4,6 +4,7 @@ mod fence;
 mod plan;
 pub(crate) mod progress;
 mod recovery;
+mod refresh;
 pub use recovery::recover;
 
 use super::actions::{ActionSource, ActionStatus, StepKind, StepStatus};
@@ -31,12 +32,32 @@ pub enum MergeCheckpoint {
 }
 
 pub fn merge(store: &Store, job: &MergeJob, notify: impl Fn()) -> Result<Review, String> {
-    merge_observed(store, job, &notify, &|_| Ok(()))
+    merge_with_refresh(store, job, None, notify)
 }
 
+pub(crate) fn merge_with_refresh(
+    store: &Store,
+    job: &MergeJob,
+    refresh: Option<&ReviewMergeRequest>,
+    notify: impl Fn(),
+) -> Result<Review, String> {
+    merge_prepared_observed(store, job, refresh, &notify, &|_| Ok(()))
+}
+
+#[cfg(test)]
 fn merge_observed(
     store: &Store,
     job: &MergeJob,
+    notify: &impl Fn(),
+    checkpoint: &impl Fn(MergeCheckpoint) -> Result<(), String>,
+) -> Result<Review, String> {
+    merge_prepared_observed(store, job, None, notify, checkpoint)
+}
+
+fn merge_prepared_observed(
+    store: &Store,
+    job: &MergeJob,
+    refresh: Option<&ReviewMergeRequest>,
     notify: &impl Fn(),
     checkpoint: &impl Fn(MergeCheckpoint) -> Result<(), String>,
 ) -> Result<Review, String> {
@@ -62,6 +83,10 @@ fn merge_observed(
         Some(intent) => intent,
         None => admit(store, job, &review)?,
     };
+    if let Some(request) = refresh {
+        intent = refresh::plan(store, &review, &intent, request)?;
+        notify();
+    }
     let result = run(store, job, &review, &mut intent, notify, checkpoint);
     if let Err(error) = &result {
         // A storage error never starts later Git. Preserve recorded successes,
@@ -301,3 +326,6 @@ mod tests;
 
 #[cfg(test)]
 mod recovery_tests;
+
+#[cfg(test)]
+mod refresh_tests;

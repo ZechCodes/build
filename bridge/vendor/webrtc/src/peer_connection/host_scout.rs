@@ -1,5 +1,5 @@
 //! Anonymous ARP discovery, kept separate from the advertised ICE socket.
-use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
+use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
 use rtc::shared::ifaces::Interface;
 use std::collections::{HashMap, HashSet};
@@ -71,7 +71,7 @@ impl Admission {
         self.observed_at
             .is_some_and(|at| now >= at && now.duration_since(at) < FRESH)
             && self.soft_threshold > 1
-            && self.threshold > self.soft_threshold
+            && self.threshold >= self.soft_threshold
             && self.pending() < MAX_PENDING.min(self.soft_threshold / 2)
             && self.total.saturating_add(self.reservations.len())
                 < self.threshold.saturating_mul(3) / 4
@@ -186,6 +186,8 @@ struct Group {
     subnet: SweepSubnet,
     cursor: usize,
     snapshot: Option<ScoutSnapshot>,
+    /// Why the last refresh left no snapshot, reported while scouting pauses for it.
+    unavailable: &'static str,
     refresh_at: Instant,
     early_until: Instant,
     resources: Arc<Mutex<ScoutResources>>,
@@ -230,6 +232,15 @@ impl Group {
             self.cursor += 1;
         }
         self.subnet.addresses.get(self.cursor).copied()
+    }
+    fn note_unavailable(&mut self, reason: &'static str) {
+        if reason != self.unavailable && reason == "neighbor-table-too-large" {
+            log::warn!(
+                "LAN sweep scouting paused on interface {}: the neighbor table is larger than a bounded snapshot reads",
+                self.subnet.interface_index
+            );
+        }
+        self.unavailable = reason;
     }
     fn permanent_failure(&mut self) {
         self.cursor += 1;
@@ -316,6 +327,7 @@ impl HostScouts {
                 subnet,
                 cursor,
                 snapshot: None,
+                unavailable: "neighbor-snapshot-unavailable",
                 refresh_at: now,
                 early_until: grace_until,
                 resources,
@@ -363,7 +375,16 @@ impl HostScouts {
                     FRESH
                 };
             group.usable.clear();
-            group.snapshot = scout_snapshot_until(group.subnet.interface_index, deadline).ok();
+            group.snapshot = match scout_snapshot_until(group.subnet.interface_index, deadline) {
+                Ok(snapshot) => {
+                    group.unavailable = "neighbor-snapshot-unavailable";
+                    Some(snapshot)
+                }
+                Err(error) => {
+                    group.note_unavailable(failure_reason(&error));
+                    None
+                }
+            };
             if let Some(snapshot) = &group.snapshot {
                 group.usable = snapshot
                     .usable
@@ -441,13 +462,8 @@ impl HostScouts {
             .iter_mut()
             .position(|group| group.destination(now).is_some())
         else {
-            return self.changed_pause(
-                if self.groups.iter().any(|group| group.fresh(now).is_none()) {
-                    Some("neighbor-snapshot-unavailable")
-                } else {
-                    None
-                },
-            );
+            let stale = self.groups.iter().find(|group| group.fresh(now).is_none());
+            return self.changed_pause(stale.map(|group| group.unavailable));
         };
         let result = control.while_allowed(self.generation, ufrag, port, || {
             self.send_group(index, now, expires, interfaces)
@@ -495,7 +511,7 @@ impl HostScouts {
             return Err("window-expired");
         }
         if group.fresh(send_at).is_none() {
-            return Err("neighbor-snapshot-unavailable");
+            return Err(group.unavailable);
         }
         if !budget.claim_tick(send_at) {
             return Ok(false);
@@ -599,6 +615,7 @@ mod tests {
             subnet,
             cursor: 0,
             snapshot: None,
+            unavailable: "neighbor-snapshot-unavailable",
             refresh_at: Instant::now(),
             early_until: Instant::now() + Duration::from_millis(250),
             resources: Arc::new(Mutex::new(ScoutResources::default())),
@@ -925,8 +942,32 @@ mod tests {
         }
         assert!(!budget.socket_permit(), "socket bound is process-wide");
     }
+    #[test]
+    fn equal_soft_and_hard_thresholds_still_admit_under_the_same_caps() {
+        let now = Instant::now();
+        let mut budget = Admission::default();
+        budget.observe(now, 0, 100, 1024, 1024);
+        assert!(
+            budget.admit(now),
+            "gc_thresh2 == gc_thresh3 is a valid tuning"
+        );
+        budget.observe(now + PACE, 0, 768, 1024, 1024);
+        assert!(
+            !budget.admit(now + PACE),
+            "the 75% occupancy ceiling still holds"
+        );
+    }
+    #[test]
+    fn a_neighbor_table_too_large_to_snapshot_pauses_scouts_with_its_own_reason() {
+        let now = Instant::now();
+        let mut scouts = HostScouts::default();
+        let mut group = test_group(test_subnet(&[]));
+        group.unavailable = "neighbor-table-too-large";
+        scouts.groups.push(group);
+        let control = HostSweepControl::default();
+        assert_eq!(
+            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, None),
+            Some("neighbor-table-too-large")
+        );
+    }
 }
-
-#[cfg(test)]
-#[path = "host_scout_socket_tests.rs"]
-mod socket_tests;

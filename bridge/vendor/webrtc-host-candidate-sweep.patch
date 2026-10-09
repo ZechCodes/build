@@ -4325,10 +4325,10 @@ index e69de29..94bcefa 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_neighbors.rs b/webrtc/src/peer_connection/host_neighbors.rs
-index e69de29..e4e93ec 100644
+index e69de29..c4b4dc2 100644
 --- a/webrtc/src/peer_connection/host_neighbors.rs
 +++ b/webrtc/src/peer_connection/host_neighbors.rs
-@@ -0,0 +1,889 @@
+@@ -0,0 +1,964 @@
 +//! Read-only, bounded neighbor hints; callers retain subnet authorization.
 +
 +use std::collections::{HashMap, HashSet};
@@ -4611,13 +4611,16 @@ index e69de29..e4e93ec 100644
 +            .checked_add(data.len())
 +            .ok_or_else(invalid_dump)?;
 +        if self.bytes > MAX_BYTES {
-+            return Err(invalid_dump());
++            return Err(oversized_dump());
 +        }
 +        let mut done = false;
 +        while !data.is_empty() {
 +            self.check_deadline()?;
 +            self.messages += 1;
-+            if self.messages > MAX_MESSAGES || data.len() < HEADER_LEN {
++            if self.messages > MAX_MESSAGES {
++                return Err(oversized_dump());
++            }
++            if data.len() < HEADER_LEN {
 +                return Err(invalid_dump());
 +            }
 +            let length = u32::from_ne_bytes(data[..4].try_into().unwrap()) as usize;
@@ -4698,7 +4701,7 @@ index e69de29..e4e93ec 100644
 +                return Ok(());
 +            }
 +            if self.addresses.len() == MAX_ADDRESSES {
-+                return Err(invalid_dump());
++                return Err(oversized_dump());
 +            }
 +            self.seen.insert(address);
 +            self.addresses.push(address);
@@ -4714,7 +4717,7 @@ index e69de29..e4e93ec 100644
 +            return Ok(());
 +        }
 +        if self.states.len() == MAX_ADDRESSES {
-+            return Err(invalid_dump());
++            return Err(oversized_dump());
 +        }
 +        self.states.insert(address, state);
 +        let target = match state {
@@ -4783,6 +4786,35 @@ index e69de29..e4e93ec 100644
 +        return Ok(&[]);
 +    }
 +    Err(invalid_dump())
++}
++
++/// A dump past the read caps: the table is larger than a bounded snapshot reads, which is
++/// a property of the host rather than a transient failure, so it is reported apart.
++#[derive(Debug)]
++struct OversizedDump;
++
++impl std::fmt::Display for OversizedDump {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("neighbor table larger than a bounded dump reads")
++    }
++}
++
++impl std::error::Error for OversizedDump {}
++
++fn oversized_dump() -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, OversizedDump)
++}
++
++/// The fixed reason a failed snapshot pauses scouting with.
++pub(super) fn failure_reason(error: &io::Error) -> &'static str {
++    if error
++        .get_ref()
++        .is_some_and(|inner| inner.is::<OversizedDump>())
++    {
++        "neighbor-table-too-large"
++    } else {
++        "neighbor-snapshot-unavailable"
++    }
 +}
 +
 +fn invalid_dump() -> io::Error {
@@ -5217,6 +5249,49 @@ index e69de29..e4e93ec 100644
 +        assert_eq!(data.len(), HEADER_LEN + 4);
 +        assert_eq!(data[HEADER_LEN..], [libc::AF_INET as u8, 0, 0, 0]);
 +    }
++
++    #[test]
++    fn every_read_cap_reports_an_oversized_table_and_malformed_data_does_not() {
++        let mut messages = Dump::scout();
++        for _ in 0..MAX_MESSAGES {
++            messages
++                .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++                .unwrap();
++        }
++        let error = messages
++            .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
++
++        let mut bytes = Dump::scout();
++        let chunk = message(16, 0, SEQUENCE, &vec![0; 4096 - HEADER_LEN]);
++        for _ in 0..MAX_BYTES / chunk.len() {
++            bytes.consume(&chunk, OWNER).unwrap();
++        }
++        let error = bytes
++            .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
++
++        let mut states = Dump::scout();
++        for value in 0..MAX_ADDRESSES {
++            states
++                .consume(
++                    &neighbor(2, OWNER, 2, Ipv4Addr::from(0x0a000001 + value as u32)),
++                    OWNER,
++                )
++                .unwrap();
++        }
++        let error = states
++            .consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
++
++        let error = Dump::scout()
++            .consume(&message(1, 0, SEQUENCE, &[])[..8], OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-snapshot-unavailable");
++    }
 +}
 diff --git a/webrtc/src/peer_connection/host_neighbor_table.rs b/webrtc/src/peer_connection/host_neighbor_table.rs
 index e69de29..b1598dd 100644
@@ -5471,12 +5546,12 @@ index e69de29..b1598dd 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_scout.rs b/webrtc/src/peer_connection/host_scout.rs
-index e69de29..a942b00 100644
+index e69de29..91e8479 100644
 --- a/webrtc/src/peer_connection/host_scout.rs
 +++ b/webrtc/src/peer_connection/host_scout.rs
-@@ -0,0 +1,932 @@
+@@ -0,0 +1,973 @@
 +//! Anonymous ARP discovery, kept separate from the advertised ICE socket.
-+use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
++use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 +use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
 +use rtc::shared::ifaces::Interface;
 +use std::collections::{HashMap, HashSet};
@@ -5548,7 +5623,7 @@ index e69de29..a942b00 100644
 +        self.observed_at
 +            .is_some_and(|at| now >= at && now.duration_since(at) < FRESH)
 +            && self.soft_threshold > 1
-+            && self.threshold > self.soft_threshold
++            && self.threshold >= self.soft_threshold
 +            && self.pending() < MAX_PENDING.min(self.soft_threshold / 2)
 +            && self.total.saturating_add(self.reservations.len())
 +                < self.threshold.saturating_mul(3) / 4
@@ -5663,6 +5738,8 @@ index e69de29..a942b00 100644
 +    subnet: SweepSubnet,
 +    cursor: usize,
 +    snapshot: Option<ScoutSnapshot>,
++    /// Why the last refresh left no snapshot, reported while scouting pauses for it.
++    unavailable: &'static str,
 +    refresh_at: Instant,
 +    early_until: Instant,
 +    resources: Arc<Mutex<ScoutResources>>,
@@ -5707,6 +5784,15 @@ index e69de29..a942b00 100644
 +            self.cursor += 1;
 +        }
 +        self.subnet.addresses.get(self.cursor).copied()
++    }
++    fn note_unavailable(&mut self, reason: &'static str) {
++        if reason != self.unavailable && reason == "neighbor-table-too-large" {
++            log::warn!(
++                "LAN sweep scouting paused on interface {}: the neighbor table is larger than a bounded snapshot reads",
++                self.subnet.interface_index
++            );
++        }
++        self.unavailable = reason;
 +    }
 +    fn permanent_failure(&mut self) {
 +        self.cursor += 1;
@@ -5793,6 +5879,7 @@ index e69de29..a942b00 100644
 +                subnet,
 +                cursor,
 +                snapshot: None,
++                unavailable: "neighbor-snapshot-unavailable",
 +                refresh_at: now,
 +                early_until: grace_until,
 +                resources,
@@ -5840,7 +5927,16 @@ index e69de29..a942b00 100644
 +                    FRESH
 +                };
 +            group.usable.clear();
-+            group.snapshot = scout_snapshot_until(group.subnet.interface_index, deadline).ok();
++            group.snapshot = match scout_snapshot_until(group.subnet.interface_index, deadline) {
++                Ok(snapshot) => {
++                    group.unavailable = "neighbor-snapshot-unavailable";
++                    Some(snapshot)
++                }
++                Err(error) => {
++                    group.note_unavailable(failure_reason(&error));
++                    None
++                }
++            };
 +            if let Some(snapshot) = &group.snapshot {
 +                group.usable = snapshot
 +                    .usable
@@ -5918,13 +6014,8 @@ index e69de29..a942b00 100644
 +            .iter_mut()
 +            .position(|group| group.destination(now).is_some())
 +        else {
-+            return self.changed_pause(
-+                if self.groups.iter().any(|group| group.fresh(now).is_none()) {
-+                    Some("neighbor-snapshot-unavailable")
-+                } else {
-+                    None
-+                },
-+            );
++            let stale = self.groups.iter().find(|group| group.fresh(now).is_none());
++            return self.changed_pause(stale.map(|group| group.unavailable));
 +        };
 +        let result = control.while_allowed(self.generation, ufrag, port, || {
 +            self.send_group(index, now, expires, interfaces)
@@ -5972,7 +6063,7 @@ index e69de29..a942b00 100644
 +            return Err("window-expired");
 +        }
 +        if group.fresh(send_at).is_none() {
-+            return Err("neighbor-snapshot-unavailable");
++            return Err(group.unavailable);
 +        }
 +        if !budget.claim_tick(send_at) {
 +            return Ok(false);
@@ -6076,6 +6167,7 @@ index e69de29..a942b00 100644
 +            subnet,
 +            cursor: 0,
 +            snapshot: None,
++            unavailable: "neighbor-snapshot-unavailable",
 +            refresh_at: Instant::now(),
 +            early_until: Instant::now() + Duration::from_millis(250),
 +            resources: Arc::new(Mutex::new(ScoutResources::default())),
@@ -6402,11 +6494,35 @@ index e69de29..a942b00 100644
 +        }
 +        assert!(!budget.socket_permit(), "socket bound is process-wide");
 +    }
++    #[test]
++    fn equal_soft_and_hard_thresholds_still_admit_under_the_same_caps() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        budget.observe(now, 0, 100, 1024, 1024);
++        assert!(
++            budget.admit(now),
++            "gc_thresh2 == gc_thresh3 is a valid tuning"
++        );
++        budget.observe(now + PACE, 0, 768, 1024, 1024);
++        assert!(
++            !budget.admit(now + PACE),
++            "the 75% occupancy ceiling still holds"
++        );
++    }
++    #[test]
++    fn a_neighbor_table_too_large_to_snapshot_pauses_scouts_with_its_own_reason() {
++        let now = Instant::now();
++        let mut scouts = HostScouts::default();
++        let mut group = test_group(test_subnet(&[]));
++        group.unavailable = "neighbor-table-too-large";
++        scouts.groups.push(group);
++        let control = HostSweepControl::default();
++        assert_eq!(
++            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, None),
++            Some("neighbor-table-too-large")
++        );
++    }
 +}
-+
-+#[cfg(test)]
-+#[path = "host_scout_socket_tests.rs"]
-+mod socket_tests;
 diff --git a/webrtc/src/peer_connection/host_scout_socket_tests.rs b/webrtc/src/peer_connection/host_scout_socket_tests.rs
 index e69de29..588c25c 100644
 --- a/webrtc/src/peer_connection/host_scout_socket_tests.rs

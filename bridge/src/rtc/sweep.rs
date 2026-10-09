@@ -96,6 +96,7 @@ fn known_reason(reason: &str) -> bool {
             | "ambiguous-interface"
             | "neighbor-pressure"
             | "neighbor-snapshot-unavailable"
+            | "neighbor-table-too-large"
             | "scout-socket-limit"
             | "nat-evidence-missing"
             | "nat-address-mismatch"
@@ -178,6 +179,7 @@ mod tests {
         for reason in [
             "neighbor-pressure",
             "neighbor-snapshot-unavailable",
+            "neighbor-table-too-large",
             "scout-socket-limit",
         ] {
             let snapshot =

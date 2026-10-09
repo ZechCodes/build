@@ -14,7 +14,7 @@ const SWEEP_REASONS = new Set([
   "subnet-too-large", "no-host-socket", "no-on-link-interface", "non-private-subnet", "ipv6-unsupported", "invalid-netmask", "point-to-point",
   "unsupported-platform", "port-limit", "packet-limit", "window-expired", "resolved", "direct-selected", "generation-changed", "closed", "send-error",
   "no-usable-addresses", "completed", "ambiguous-interface",
-  "neighbor-pressure", "neighbor-snapshot-unavailable", "scout-socket-limit",
+  "neighbor-pressure", "neighbor-snapshot-unavailable", "neighbor-table-too-large", "scout-socket-limit",
   "nat-evidence-missing", "nat-address-mismatch", "interface-scout-cooldown",
 ]);
 const OPTIONAL_SWEEP_COUNTERS = new Set([

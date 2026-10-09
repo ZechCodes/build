@@ -368,6 +368,15 @@ An IPv6 host candidate is skipped as `ipv6-unsupported` (it was reported as
 `non-private-subnet`): the sweep enumerates IPv4 subnets only. The bridge and
 the SPA's diagnostics both accept the new fixed code.
 
+A neighbour dump past its read caps (256 KiB, 4096 messages, 1024 states on
+the interface) no longer reads as a transient `neighbor-snapshot-unavailable`.
+The host's table is larger than a bounded snapshot reads, so scouting pauses
+with `neighbor-table-too-large` and logs a warning once per pause. Scouts and
+real indications still need a fresh snapshot, so scouting is not attempted
+without one. Equal `gc_thresh2` and `gc_thresh3` are a valid tuning and now
+admit scouts under the same pending cap and 75% occupancy ceiling; before,
+they refused every scout as `neighbor-pressure`.
+
 #383 recovery regressions cover direct-selected PRFLX followed by a native
 credential-changing restart onto relay: fresh sweep counters start at zero,
 old tuple evidence is retired, and the recovery candidate port can follow a

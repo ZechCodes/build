@@ -1126,6 +1126,7 @@ describe("a refresh requested during a pass", () => {
     expect(calls("board.list")).toHaveLength(3);
     followUp.release();
     expect(await Promise.all([first, refreshed])).toEqual([true, true]);
+    expect(sync.passInFlight("dev-1")).toBeNull();
     expect(calls("board.list")).toHaveLength(3);
   });
 

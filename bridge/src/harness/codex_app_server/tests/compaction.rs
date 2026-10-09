@@ -285,3 +285,58 @@ fn a_message_sent_while_a_compaction_turn_is_announced_before_its_answer_is_queu
         .effects
         .contains(&SessionEffect::Request(start_turn("after"))));
 }
+
+#[test]
+fn a_turn_codex_starts_after_a_compaction_that_chose_another_model_keeps_the_applied_choice() {
+    let other =
+        |input: &str, revision| chosen_turn(input, Some("gpt-other"), Some("low"), revision);
+    let compacting = apply(
+        advance_to_waiting(),
+        SessionEvent::SendChosenTurn(other("/compact", 1)),
+    )
+    .state;
+    let answered = apply(compacting, compaction_answered()).state;
+    let started = apply(answered, SessionEvent::TurnStarted(TURN_ID.to_string())).state;
+    let waiting = apply(started, turn_completed(TURN_ID, None)).state;
+    let adopted = apply(
+        waiting,
+        SessionEvent::TurnStarted(CODEX_TURN_ID.to_string()),
+    )
+    .state;
+
+    let sent = apply(adopted, SessionEvent::SendChosenTurn(other("after", 2)));
+    assert!(sent.effects.is_empty());
+    assert_eq!(sent.state.queued_turn_count(), 1);
+
+    let completed = apply(sent.state, turn_completed(CODEX_TURN_ID, None));
+    assert!(completed
+        .effects
+        .contains(&SessionEffect::Request(start_turn_with(
+            "after",
+            Some("gpt-other"),
+            Some("low"),
+        ))));
+}
+
+#[test]
+fn a_message_choosing_the_applied_model_steers_into_a_turn_codex_started() {
+    let adopted = apply(
+        waiting_after_compaction(),
+        SessionEvent::TurnStarted(CODEX_TURN_ID.to_string()),
+    )
+    .state;
+
+    let sent = apply(
+        adopted,
+        SessionEvent::SendChosenTurn(chosen_turn(
+            "more",
+            Some(SELECTED_MODEL),
+            Some(SELECTED_EFFORT),
+            1,
+        )),
+    );
+    assert!(matches!(
+        sent.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::SteerTurn { turn_id, .. })] if turn_id == CODEX_TURN_ID
+    ));
+}

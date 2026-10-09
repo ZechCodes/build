@@ -802,11 +802,17 @@ impl CodexSessionState {
     }
 
     /// Codex starts turns of its own too — after a compaction, say (#421) —
-    /// and the session works it like one it asked for.
+    /// and the session works it like one it asked for. Such a turn runs on
+    /// what Codex last applied, not on what was last requested: a
+    /// compaction's frozen choice never reaches Codex.
     fn adopt_codex_turn(&mut self, id: String) -> Vec<SessionEffect> {
         let turn = AcceptedTurn {
             turn: Turn::new(String::new()),
-            applied_choice: self.requested_choice.clone(),
+            applied_choice: ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: self.active_model.clone(),
+                effort: self.active_effort.clone(),
+            },
         };
         self.enter_working(id, &turn, false)
     }

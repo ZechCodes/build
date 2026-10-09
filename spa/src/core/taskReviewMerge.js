@@ -376,7 +376,8 @@ export function mountTaskReviewMerge(host, options) {
     wireRecovery();
   }
   function requestForIntent(intent) {
-    return draft.submitted && draft.submittedRequestId === intent.request_id ? submittedRequest() : retryRequest(review, intent);
+    const current = activeStatus(review) && review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id;
+    return current && draft.submitted && draft.submittedRequestId === intent.request_id ? submittedRequest() : retryRequest(review, intent);
   }
   paint();
   return { ready, update(nextReview, nextRecord) { if (disposed) return; review = nextReview; record = nextRecord; paint(); },

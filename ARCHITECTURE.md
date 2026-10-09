@@ -913,7 +913,9 @@ fences each remaining merge against its confirmed tip. Running or uncertain work
 cannot be refreshed. The SPA offers a separate preparation step with fixed Push
 choices; preparing the form never dispatches Git. Submission consumes prepared
 mode and durably saves the confirmed targets. Both saved retry controls retain
-those targets across reloads; another explicit preparation permits new targets.
+those targets across reloads for the active latest plan; another explicit
+preparation permits new targets. Publication-only result retries use the intent's
+saved vector to address its original obligations.
 Historical plans retain their publication-only recovery path without admitting
 a new merge. If a failed plan integrated no source and has no uncertain Git work,
 the caller can still confirm

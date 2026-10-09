@@ -203,6 +203,27 @@ it("keeps submitted targets tied to the selected retained intent when switching 
   expect(repository.mutate.mock.calls[2]).toEqual(["merge", { ...params, expected_version: 7 }]);
 });
 
+it.each([
+  ["Merged", { status: "merged" }],
+  ["Closed", { status: "closed" }],
+  ["historical", { latest_published_snapshot_id: "snapshot-2" }],
+])("selects the intent's original publication vector after prepared targets become %s", async (_label, lifecycle) => {
+  const partial = { ...record, review: { ...review, version: 7, actions: [action("api"), action("ui", "failed", "skipped")] },
+    sync: record.sync.map((row) => ({ ...row, target_head: row.directory_id === "api" ? mergedHead : oldHead })),
+    merge_intents: [intent()] };
+  const repository = await mount(partial, { mutate: vi.fn().mockRejectedValue(new Error("Review changed")) });
+  await document.querySelector('[data-pr-merge-prepare="merge-1"]').onclick();
+  await submit();
+  const confirmedSources = [{ ...source("api"), expected_base_head: mergedHead }, source("ui")];
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...params, expected_version: 7, sources: confirmedSources });
+  const newer = { ...intent("succeeded"), request_id: "merge-2", request: { ...intent().request, sources: confirmedSources } };
+  const terminal = { ...partial, review: { ...partial.review, version: 8,
+    pull_request: { ...partial.review.pull_request, ...lifecycle } }, merge_intents: [intent(), newer] };
+  panel.update(terminal.review, terminal);
+  await document.querySelector('[data-pr-merge-retry="merge-1"]').onclick();
+  expect(repository.mutate.mock.calls[1]).toEqual(["merge", { ...params, expected_version: 8 }]);
+});
+
 it("highlights a partial merge and interruption without submitting after hydration or reconnect", async () => {
   await writeUiRecord(reviewActionDraftAddress(scope, "merge"), { selected: {}, submitted: params });
   const partial = { ...record, review: { ...review, actions: [action("api", "succeeded", "succeeded"), action("ui", "failed")] }, merge_intents: [intent("interrupted")] };

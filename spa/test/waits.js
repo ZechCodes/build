@@ -64,3 +64,10 @@ export const holds = (assertion) => () => {
     return false;
   }
 };
+
+/** Settles once no cache sync pass is out on `deviceId` (`sync` is the
+ *  cacheSync module the test imported), including one asked for while
+ *  another ran: an ask made mid-pass is folded into it, not read again. */
+export async function passesSettled(sync, deviceId) {
+  for (let pass = sync.passInFlight(deviceId); pass; pass = sync.passInFlight(deviceId)) await pass;
+}

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { passesSettled } from "./waits.js";
 
 const App = { route: { name: "inbox" }, devices: [{ id: "reset-device" }] };
 const contexts = new Map();
@@ -46,7 +47,7 @@ beforeEach(async () => {
   await vi.waitFor(() => expect(watchers.some((watcher) => watcher.id === "s-inbox")).toBe(true));
   // The opening pass is out once it has subscribed. A test's own ask made
   // while it is still reading would be folded into it, not read again.
-  await sync.passSettled("reset-device");
+  await passesSettled(sync, "reset-device");
   await cache.writeCached(address("thread", "ag-1"), { thread_id: "thread:ag-1", items: [], deliveredSequence: 0 });
 });
 

@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { passesSettled } from "./waits.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -126,7 +127,7 @@ const boot = async (items = [branchItem()], route = { name: "inbox" }) => {
   sync.startCacheSync();
   // The opening pass, all of it: a wire quiet for a few turns is not a pass
   // that has finished, since an answer or a cache transaction can take longer.
-  await sync.passSettled("dev-1");
+  await passesSettled(sync, "dev-1");
   await settle();
 };
 
@@ -187,7 +188,7 @@ describe("the three subscriptions", () => {
     expect(sync.BACKGROUND_COOLDOWN_MS).toBe(30000);
 
     document.dispatchEvent(new Event("visibilitychange"));
-    await sync.passSettled("dev-1");
+    await passesSettled(sync, "dev-1");
     await settle();
     expect(live()).toHaveLength(3);
   });

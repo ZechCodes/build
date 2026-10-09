@@ -40,6 +40,8 @@ async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
     support: "src/core/taskReviewSupport.js",
     cache: "src/core/taskReviewCache.js",
     local: "src/core/localCache.js",
+    drafts: "src/core/taskReviewDrafts.js",
+    ui: "src/core/localUiStore.js",
     taskRender: "src/core/trackerTaskRender.js",
   }, basePath);
   await page.evaluate(async ({ answer, holdReads }) => {
@@ -62,7 +64,7 @@ async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
       health: "current", pending_commits: 0 }));
     const patch = "diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-before\n+Reviewed API change\n";
     const calls = [];
-    const rpcState = { holdReads, reply: { ...answer, review: saved, sync }, mergeRefusal: null };
+    const rpcState = { holdReads, reply: { ...answer, review: saved, sync }, mergeRefusal: null, mergeReply: null };
     const callRpc = async (method, params) => {
       calls.push({ method, params });
       // Default reads remain outstanding: lifecycle facts must paint from
@@ -76,6 +78,7 @@ async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
       if (method === "tasks.review.merge" && rpcState.mergeRefusal) {
         throw Object.assign(new Error(rpcState.mergeRefusal.message), { code: rpcState.mergeRefusal.code });
       }
+      if (method === "tasks.review.merge" && rpcState.mergeReply) return structuredClone(rpcState.mergeReply);
       throw new Error(`Unexpected layout RPC ${method}`);
     };
     await support.rememberReviewSupport(scope.deviceId, { reviews: {
@@ -84,10 +87,11 @@ async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
     } });
     await local.writeCached(workspaceAddress, [workspace]);
     await cache.writeReviewReply(scope, { ...answer, review: saved, sync }, 1);
-    const mounted = review.mountTaskReviewPage(document.querySelector("#review"), {
+    const mountOptions = {
       ...scope, callRpc, task: () => answer.task, workspaces: () => [workspace],
-    });
-    window.__pullRequestLayout = { mounted, scope, calls, rpcState, workspaceAddress, workspace };
+    };
+    const mounted = review.mountTaskReviewPage(document.querySelector("#review"), mountOptions);
+    window.__pullRequestLayout = { mounted, mountOptions, scope, calls, rpcState, workspaceAddress, workspace };
     await mounted.ready;
   }, { answer: opened.result, holdReads });
   await page.waitForSelector('[data-review-pr-status]');
@@ -120,6 +124,73 @@ async function cachePartialMerge(page) {
     rpcState.mergeRefusal = { code: "stale_version", message: "The review changed while retrying the saved merge." };
   }, merged.examples[0].result);
   await page.waitForSelector('[data-pr-merge-result="merge-review-1"]');
+}
+
+async function cacheHistoricalPublication(page) {
+  return page.evaluate(async (answer) => {
+    const { cache, local, drafts, ui } = window.__layoutModules;
+    const fixture = window.__pullRequestLayout;
+    const { scope, rpcState } = fixture;
+    const held = (await local.readCached(cache.reviewAddress(scope))).value;
+    const partial = structuredClone(answer);
+    const heads = { "dir-api": "4".repeat(40), "dir-ui": "5".repeat(40) };
+    const targets = { "dir-api": "6".repeat(40), "dir-ui": "7".repeat(40) };
+    const branches = { "dir-api": "release/historical-api", "dir-ui": "release/historical-ui" };
+    const latest = { ...structuredClone(held.review.snapshots[0]), id: "snapshot-2", number: 2 };
+    for (const directory of latest.directories) if (heads[directory.id]) directory.head = heads[directory.id];
+    for (const source of partial.merge_intents[0].request.sources) source.push.branch = branches[source.directory_id];
+    for (const action of partial.review.actions) {
+      const push = action.steps.find((step) => step.kind === "push");
+      push.branch = branches[action.directory_id];
+      if (action.directory_id === "dir-api") {
+        action.status = "failed";
+        push.status = "failed";
+        push.error = "Historical API publication was rejected.";
+      }
+    }
+    partial.review = { ...held.review, version: 8, snapshots: [...held.review.snapshots, latest], actions: partial.review.actions,
+      bindings: held.review.bindings.map((binding) => ({ ...binding, last_received_head: heads[binding.directory_id] })),
+      destinations: held.review.destinations.map((destination) => ({ ...destination, snapshot_id: latest.id })),
+      pull_request: { ...held.review.pull_request, status: "open", latest_published_snapshot_id: latest.id } };
+    partial.sync = held.sync.map((row) => ({ ...row, revision: 8, target_head: targets[row.directory_id],
+      received_head: heads[row.directory_id], working_head: heads[row.directory_id], snapshot_head: heads[row.directory_id] }));
+    const currentDraft = { selected: {
+      "dir-api": { push: true, remote: "origin", branch: "release/snapshot-two-api" },
+      "dir-ui": { push: false, remote: "origin", branch: "release/snapshot-two-ui" },
+    }, submitted: null };
+    await ui.writeUiRecord(drafts.reviewActionDraftAddress({ ...scope, snapshotId: latest.id }, "merge"), currentDraft);
+    await cache.writeReviewReply(scope, partial, 8);
+    const settled = structuredClone(partial);
+    settled.review.version = 9;
+    const api = settled.review.actions.find((action) => action.directory_id === "dir-api");
+    api.status = "succeeded";
+    const push = api.steps.find((step) => step.kind === "push");
+    push.status = "succeeded";
+    push.result_head = push.input_head;
+    delete push.error;
+    rpcState.mergeReply = settled;
+    rpcState.reply = settled;
+    fixture.currentDraft = currentDraft;
+    return {
+      currentDraft, heads, targets,
+      historicalRequest: { task_id: scope.taskId, expected_version: 8, snapshot_id: "snapshot-1",
+        sources: partial.merge_intents[0].request.sources.map((source) => ({ directory_id: source.directory_id,
+          expected_base_head: source.expected_base_head, push: source.push })) },
+      currentRequest: { task_id: scope.taskId, expected_version: 9, snapshot_id: latest.id, sources: [
+        { directory_id: "dir-api", expected_base_head: targets["dir-api"], push: { remote: "origin", branch: "release/snapshot-two-api" } },
+        { directory_id: "dir-ui", expected_base_head: targets["dir-ui"] },
+      ] },
+    };
+  }, merged.examples[0].result);
+}
+
+async function readMergeDrafts(page) {
+  return page.evaluate(async () => {
+    const { drafts, ui } = window.__layoutModules;
+    const { scope } = window.__pullRequestLayout;
+    const read = async (snapshotId) => (await ui.readUiRecord(drafts.reviewActionDraftAddress({ ...scope, snapshotId }, "merge")))?.value;
+    return { historical: await read("snapshot-1"), current: await read("snapshot-2") };
+  });
 }
 
 async function publishNewerSnapshot(page) {
@@ -312,6 +383,85 @@ for (const { label, width, hasTouch } of viewports) {
       await assertNoPageOverflow(page);
       await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-prepared-recovery-${label}.png`);
+      expect(errors).toEqual([]);
+      await page.evaluate(() => window.__pullRequestLayout.mounted.dispose());
+    }, { width, height: 1100, hasTouch, plugins: [deviceShim] });
+  }, 60_000);
+
+  it(`keeps the latest snapshot draft when historical publication settles on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mountPullRequest(page, basePath);
+      const fixture = await cacheHistoricalPublication(page);
+      await page.waitForSelector('[data-review-snapshot] option[value="snapshot-2"]', { state: "attached" });
+      await page.locator('[data-review-snapshot]').selectOption("snapshot-2");
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
+      await activate(page, '[data-pr-merge-sheet] > summary', hasTouch);
+      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge PR");
+      expect(await page.locator('[data-pr-merge-branch="dir-api"]').inputValue()).toBe("release/snapshot-two-api");
+      expect(await page.locator('[data-pr-merge-push="dir-ui"]').isChecked()).toBe(false);
+      expect(await page.locator('[data-pr-merge-source="dir-api"]').textContent()).toContain(fixture.heads["dir-api"]);
+      expect(await page.locator('[data-pr-merge-source="dir-ui"]').textContent()).toContain(fixture.heads["dir-ui"]);
+      expect((await readMergeDrafts(page)).current).toEqual(fixture.currentDraft);
+
+      await activate(page, '[data-pr-merge-retry="merge-review-1"]', hasTouch);
+      await page.waitForFunction(() => !document.querySelector('[data-pr-merge-retry="merge-review-1"]'));
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
+      expect(await page.evaluate(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge"))).toEqual([
+        { method: "tasks.review.merge", params: fixture.historicalRequest },
+      ]);
+      expect(await page.evaluate(async () => {
+        const { cache, local } = window.__layoutModules;
+        return (await local.readCached(cache.reviewAddress(window.__pullRequestLayout.scope))).value.review.version;
+      })).toBe(9);
+      const saved = await readMergeDrafts(page);
+      expect(saved.current).toEqual(fixture.currentDraft);
+      const historicalRequest = { ...fixture.historicalRequest };
+      delete historicalRequest.task_id;
+      expect(saved.historical).toMatchObject({ submitted: historicalRequest, submittedRequestId: "merge-review-1" });
+      expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-2");
+      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge PR");
+      expect(await page.locator('[data-pr-merge-result="merge-review-1"]').textContent()).toContain("push origin/release/historical-api: succeeded");
+
+      const duplicate = await page.evaluate(async () => {
+        const { cache, local } = window.__layoutModules;
+        const fixture = window.__pullRequestLayout;
+        const form = document.querySelector('[data-pr-merge-form]');
+        const branch = document.querySelector('[data-pr-merge-branch="dir-api"]');
+        branch.focus();
+        branch.setSelectionRange(8, 14);
+        const held = (await local.readCached(cache.reviewAddress(fixture.scope))).value;
+        await cache.writeReviewReply(fixture.scope, structuredClone(fixture.rpcState.mergeReply), held.read_order + 1);
+        await fixture.mounted.whenPainted();
+        return { retained: form === document.querySelector('[data-pr-merge-form]'),
+          focused: document.activeElement === branch, start: branch.selectionStart, end: branch.selectionEnd };
+      });
+      expect(duplicate).toEqual({ retained: true, focused: true, start: 8, end: 14 });
+      await page.evaluate(async () => {
+        const fixture = window.__pullRequestLayout;
+        fixture.mounted.dispose();
+        fixture.mounted = window.__layoutModules.review.mountTaskReviewPage(document.querySelector("#review"), fixture.mountOptions);
+        await fixture.mounted.ready;
+      });
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
+      expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-2");
+      expect(await page.locator('[data-pr-merge-submit]').textContent()).toBe("Merge PR");
+      expect(await page.evaluate(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge").length)).toBe(1);
+      expect((await readMergeDrafts(page)).current).toEqual(fixture.currentDraft);
+      await activate(page, '[data-pr-merge-sheet] > summary', hasTouch);
+      expect(await page.locator('[data-pr-merge-push="dir-api"]').isChecked()).toBe(true);
+      expect(await page.locator('[data-pr-merge-branch="dir-api"]').inputValue()).toBe("release/snapshot-two-api");
+      expect(await page.locator('[data-pr-merge-push="dir-ui"]').isChecked()).toBe(false);
+      expect(await page.locator('[data-pr-merge-branch="dir-ui"]').inputValue()).toBe("release/snapshot-two-ui");
+      await assertNoPageOverflow(page);
+      await page.locator(".task-page-head").scrollIntoViewIfNeeded();
+      await captureLayout(page, `task-pr-historical-publication-${label}.png`);
+      await activate(page, '[data-pr-merge-submit]', hasTouch);
+      await page.waitForFunction(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge").length === 2);
+      expect(await page.evaluate(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge")[1])).toEqual({
+        method: "tasks.review.merge", params: fixture.currentRequest,
+      });
       expect(errors).toEqual([]);
       await page.evaluate(() => window.__pullRequestLayout.mounted.dispose());
     }, { width, height: 1100, hasTouch, plugins: [deviceShim] });

@@ -725,6 +725,12 @@ struct WebrtcPeer {
 #[derive(Default)]
 struct IceHealth {
     failed: AtomicBool,
+    /// An ICE restart was accepted and its generation has not reported yet.
+    /// The driver delivers events it drained earlier, so until the restart's
+    /// own checking event arrives a failure is the old generation's. The agent
+    /// queues that event whenever a restart leaves a failed state, behind
+    /// every event before it.
+    restarting: AtomicBool,
     /// Closed as superseded: no later offer may answer through this peer.
     retired: AtomicBool,
     on_failed: OnceLock<IceFailedHook>,
@@ -732,11 +738,19 @@ struct IceHealth {
 
 impl IceHealth {
     fn observe(&self, state: RTCIceConnectionState) {
-        let failed = state == RTCIceConnectionState::Failed;
-        self.failed.store(failed, Ordering::SeqCst);
-        if let Some(hook) = self.on_failed.get().filter(|_| failed) {
+        if state == RTCIceConnectionState::Checking {
+            self.restarting.store(false, Ordering::SeqCst);
+        }
+        self.failed
+            .store(state == RTCIceConnectionState::Failed, Ordering::SeqCst);
+        if let Some(hook) = self.on_failed.get().filter(|_| self.is_failed()) {
             hook();
         }
+    }
+
+    /// Failed in the current ICE generation.
+    fn is_failed(&self) -> bool {
+        self.failed.load(Ordering::SeqCst) && !self.restarting.load(Ordering::SeqCst)
     }
 }
 
@@ -767,7 +781,7 @@ impl SessionPeer for WebrtcPeer {
     }
 
     fn ice_failed(&self) -> bool {
-        self.ice.failed.load(Ordering::SeqCst)
+        self.ice.is_failed()
     }
 
     fn on_ice_failed(&self, hook: IceFailedHook) {
@@ -830,10 +844,16 @@ impl SessionPeer for WebrtcPeer {
             .remote
             .begin_with_stats(&allowed_offer, Some(&previous_stats))
             .await;
-        connection.set_remote_description(offer).await?;
         if restarting {
-            // Checking again: a pending close must not take this peer now.
-            self.ice.failed.store(false, Ordering::SeqCst);
+            // Before the agent restarts, so no failure of the old generation
+            // delivered from here on can take this peer.
+            self.ice.restarting.store(true, Ordering::SeqCst);
+        }
+        if let Err(refused) = connection.set_remote_description(offer).await {
+            if restarting {
+                self.ice.restarting.store(false, Ordering::SeqCst);
+            }
+            return Err(refused.into());
         }
         self.remote.accept_offer(&allowed_offer).await;
         if restarting {

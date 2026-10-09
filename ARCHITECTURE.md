@@ -1403,8 +1403,16 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   the same hint holds a peer (#373). It checks on every offer and whenever a
   peer's ICE fails, so a reload closes the old peer at once in either order
   instead of after the 20-second write stall. The peer decides again under its
-  negotiation lock, the one an offer holds: an accepted ICE restart clears the
-  failure, so a close queued before a restart leaves the recovered peer alone.
+  negotiation lock, the one an offer holds, on failure from its current ICE
+  generation. The native driver delivers state events after draining them, so
+  a `failed` drained before a restart can arrive after the restart was
+  accepted. An accepted restart therefore opens a new generation that counts
+  no failure until its own `checking` event arrives, which the agent queues
+  behind every older event whenever a restart leaves `failed`. A close queued
+  before a restart, or a late failure of the old generation, leaves the
+  restarted peer alone; a restart the native side refused leaves the old
+  failure standing. A restart accepted while the agent is still checking
+  queues no such event, so that peer keeps today's write-stall teardown.
   An offer never closes the peer it is answering through; an offer whose peer
   was closed mid-answer answers through a fresh registered peer. Only the peer
   goes: the session stays open, and its next offer negotiates a fresh peer.
@@ -1412,7 +1420,8 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   bearer value; it is not authenticated client isolation. Any session that
   presents a hint, including another paired client that has learned it, can
   get a failed peer of an older session with that hint closed. It cannot close
-  a peer whose ICE has not failed or one that restarts first.
+  a peer whose ICE has not failed in its current generation, including one
+  whose restart was accepted first.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
   counts and discovery reasons without names, addresses or credentials. Actual
   direct-check snapshots on ICE restart or close report up to 64 tracked remote

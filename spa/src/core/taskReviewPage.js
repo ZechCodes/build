@@ -182,7 +182,8 @@ export function mountTaskReviewPage(host, options) {
   function paintNewerSnapshot(saved) {
     const newer = node("newer-snapshot");
     const latest = review()?.pull_request?.latest_published_snapshot_id;
-    newer.hidden = !latest || !saved || saved.id === latest;
+    const active = ["open", "approved", "changes_requested"].includes(review()?.pull_request?.status);
+    newer.hidden = !active || !latest || !saved || saved.id === latest;
     const message = "A newer snapshot arrived while you were reviewing. Review the latest snapshot before merging.";
     if (newer.textContent !== message) newer.textContent = message;
   }

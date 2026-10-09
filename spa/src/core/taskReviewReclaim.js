@@ -15,11 +15,12 @@ export function mountTaskReviewReclaim(host, options) {
   let error = "";
   let disposed = false;
   let readSerial = 0;
+  const available = () => Boolean(options.support?.pullRequests && workspace && settledMerge(record));
 
   function paint() {
     if (disposed) return;
     keepReadingPlace(() => {
-      if (!options.support?.pullRequests || !workspace || !settledMerge(record)) { host.innerHTML = ""; return; }
+      if (!available()) { host.innerHTML = ""; return; }
       if (!host.querySelector('[data-review-reclaim]')) host.innerHTML = `<div class="task-review-reclaim">
         <p data-review-retention></p><button class="btn" type="button" data-review-reclaim>Reclaim workspace</button>
         <p class="warn" data-review-delete-error role="alert" hidden></p></div>`;
@@ -45,7 +46,7 @@ export function mountTaskReviewReclaim(host, options) {
   }
 
   async function reclaim() {
-    if (busy || disposed || workspace?.locked !== false || !settledMerge(record)) return;
+    if (busy || disposed || workspace?.locked !== false || !available()) return;
     busy = true; error = ""; paint();
     try {
       await callRpc("workspace.reclaim", { workspace_id: workspaceId });

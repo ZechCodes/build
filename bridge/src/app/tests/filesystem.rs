@@ -444,48 +444,89 @@ fn fs_create_directory_creates_root_and_nested_in_project_source() {
 }
 
 #[test]
-fn fs_create_directory_refuses_invalid_existing_and_symlinked_paths() {
+fn fs_create_file_creates_empty_files_where_fs_write_refuses() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let project = state.project_at(0);
+    let scope = json!({ "project_id": project.id, "source_id": project.sources[0].id });
+    std::fs::create_dir(repo.join("docs")).unwrap();
+    let mut write = scope.clone();
+    write["path"] = json!("notes.md");
+    write["expected_revision"] = json!("");
+    write["content_b64"] = json!("");
+    let refused = state.handle(req("fs.write", write));
+    assert_eq!(refused["ok"], false, "{refused:?}");
+    assert!(!repo.join("notes.md").exists());
+    for (parent, name, path) in [("", "notes.md", "notes.md"), ("docs", "plan", "docs/plan")] {
+        let mut params = scope.clone();
+        params["parent"] = json!(parent);
+        params["name"] = json!(name);
+        let response = state.handle(req("fs.createFile", params));
+        assert_eq!(response["ok"], true, "{response:?}");
+        assert_eq!(response["result"], json!({ "path": path }));
+        let metadata = std::fs::symlink_metadata(repo.join(path)).unwrap();
+        assert!(metadata.is_file());
+        assert_eq!(metadata.len(), 0);
+    }
+}
+
+#[test]
+fn fs_create_directory_and_file_refuse_invalid_existing_and_symlinked_paths() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
     std::fs::create_dir(repo.join("existing")).unwrap();
     std::os::unix::fs::symlink(repo.join("existing"), repo.join("linked")).unwrap();
-    for (parent, name) in [
-        ("..", "outside"),
-        ("/tmp", "outside"),
-        ("", "../outside"),
-        ("", "/tmp/outside"),
-        ("", ""),
-        ("", "."),
-        ("", ".git"),
-        ("", ".GiT"),
-        (".GIT", "new-child"),
-        (".git", "objects-new"),
-        ("linked", "child"),
-        ("existing/.", "child"),
-        ("existing//child", "child"),
-        ("", "bad\\name"),
-        ("", "bad\0name"),
-        ("README.md", "child"),
-        ("missing", "child"),
-    ] {
-        let response = state.handle(req(
-            "fs.createDirectory",
-            json!({
-                "project_id": project_id, "parent": parent, "name": name,
-            }),
-        ));
-        assert_eq!(response["ok"], false, "{parent}/{name}: {response:?}");
-        assert_eq!(response["error_code"], "invalid_params", "{response:?}");
+    std::os::unix::fs::symlink(repo.join("absent"), repo.join("dangling")).unwrap();
+    let readme = std::fs::read(repo.join("README.md")).unwrap();
+    for method in ["fs.createDirectory", "fs.createFile"] {
+        for (parent, name) in [
+            ("..", "outside"),
+            ("/tmp", "outside"),
+            ("", "../outside"),
+            ("", "/tmp/outside"),
+            ("", ""),
+            ("", "."),
+            ("", ".git"),
+            ("", ".GiT"),
+            (".GIT", "new-child"),
+            (".git", "objects-new"),
+            ("linked", "child"),
+            ("existing/.", "child"),
+            ("existing//child", "child"),
+            ("", "bad\\name"),
+            ("", "bad\0name"),
+            ("README.md", "child"),
+            ("missing", "child"),
+        ] {
+            let response = state.handle(req(
+                method,
+                json!({
+                    "project_id": project_id, "parent": parent, "name": name,
+                }),
+            ));
+            assert_eq!(
+                response["ok"], false,
+                "{method} {parent}/{name}: {response:?}"
+            );
+            assert_eq!(response["error_code"], "invalid_params", "{response:?}");
+        }
+        for name in ["existing", "README.md", "linked", "dangling"] {
+            let response = state.handle(req(
+                method,
+                json!({
+                    "project_id": project_id, "parent": "", "name": name,
+                }),
+            ));
+            assert_eq!(
+                response["error_code"], "already_exists",
+                "{method} {name}: {response:?}"
+            );
+        }
     }
-    let response = state.handle(req(
-        "fs.createDirectory",
-        json!({
-            "project_id": project_id, "parent": "", "name": "existing",
-        }),
-    ));
-    assert_eq!(response["error_code"], "already_exists", "{response:?}");
     assert!(!repo.join("existing/child").exists());
+    assert!(!repo.join("absent").exists());
+    assert_eq!(std::fs::read(repo.join("README.md")).unwrap(), readme);
 }
 
 #[test]
@@ -1123,7 +1164,7 @@ fn fs_upload_cleanup_preserves_a_reused_temp_name() {
 }
 
 #[tokio::test]
-async fn fs_upload_and_create_directory_are_pushed_with_the_new_path() {
+async fn fs_upload_and_create_verbs_are_pushed_with_the_new_path() {
     use super::push::{greeted_push_session, pushes_until, settled_pushes};
     let (dir, repo) = init_repo();
     let (_state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
@@ -1146,6 +1187,16 @@ async fn fs_upload_and_create_directory_are_pushed_with_the_new_path() {
         ),
     );
     assert_eq!(created["ok"], true, "{created:?}");
+    let created_file = handler.call(
+        sender.clone(),
+        req(
+            "fs.createFile",
+            json!({
+                "project_id": project_id, "parent": "assets", "name": "empty.txt",
+            }),
+        ),
+    );
+    assert_eq!(created_file["ok"], true, "{created_file:?}");
     let begun = handler.call(
         sender.clone(),
         req(
@@ -1172,17 +1223,20 @@ async fn fs_upload_and_create_directory_are_pushed_with_the_new_path() {
         req("fs.uploadFinish", json!({"upload_id": id})),
     );
     assert_eq!(finished["ok"], true, "{finished:?}");
-    let frames = pushes_until(&mut rx, &key, |frames| {
+    let pushed = |frames: &[Value], path: &str| {
         frames.iter().any(|frame| {
             frame["items"].as_array().is_some_and(|items| {
                 items.iter().any(|item| {
                     item["entity_id"] == project_id
                         && item["files"]["paths"]
                             .as_array()
-                            .is_some_and(|paths| paths.contains(&json!("assets/new.bin")))
+                            .is_some_and(|paths| paths.contains(&json!(path)))
                 })
             })
         })
+    };
+    let frames = pushes_until(&mut rx, &key, |frames| {
+        pushed(frames, "assets/new.bin") && pushed(frames, "assets/empty.txt")
     })
     .await;
     assert!(!frames.is_empty());
@@ -1190,6 +1244,7 @@ async fn fs_upload_and_create_directory_are_pushed_with_the_new_path() {
         std::fs::read(repo.join("assets/new.bin")).unwrap(),
         [0, 1, 2]
     );
+    assert_eq!(std::fs::read(repo.join("assets/empty.txt")).unwrap(), b"");
 }
 #[test]
 fn fs_upload_chunk_refuses_a_truncated_staging_file() {
@@ -1354,13 +1409,18 @@ fn fs_upload_startup_sweep_reserves_staging_names_for_internal_files() {
             }),
         );
         assert_eq!(begun["error_code"], "invalid_params", "{begun:?}");
-        let created = state.handle(req(
-            "fs.createDirectory",
-            json!({
-                "project_id": project_id, "parent": "", "name": name,
-            }),
-        ));
-        assert_eq!(created["error_code"], "invalid_params", "{created:?}");
+        for method in ["fs.createDirectory", "fs.createFile"] {
+            let created = state.handle(req(
+                method,
+                json!({
+                    "project_id": project_id, "parent": "", "name": name,
+                }),
+            ));
+            assert_eq!(
+                created["error_code"], "invalid_params",
+                "{method}: {created:?}"
+            );
+        }
     }
     assert!(!repo.join(name).exists());
     assert!(state.uploads.is_empty());

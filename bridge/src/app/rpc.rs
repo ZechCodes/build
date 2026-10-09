@@ -63,6 +63,7 @@ pub(in crate::app) const USER_ACTIVITY_VERBS: &[&str] = &[
     "entity.mute",
     "entity.seen",
     "fs.createDirectory",
+    "fs.createFile",
     "fs.mkdir",
     "fs.uploadAbort",
     "fs.uploadBegin",

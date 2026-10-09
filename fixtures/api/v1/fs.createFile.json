@@ -1,0 +1,33 @@
+{
+  "method": "fs.createFile",
+  "since": "3.16.0",
+  "params": {
+    "workspace_id": "ws-3f2a91c4",
+    "source_id": "source-1",
+    "parent": "assets",
+    "name": "README.md"
+  },
+  "result": {
+    "path": "assets/README.md"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "already_exists",
+    "busy",
+    "internal"
+  ],
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "parent": "",
+        "name": "notes.md"
+      },
+      "result": {
+        "path": "notes.md"
+      }
+    }
+  ]
+}

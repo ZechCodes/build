@@ -5288,6 +5288,11 @@ describe("sending to an agent that is already there", () => {
 });
 
 describe("the one status row", () => {
+  // The clock reads Date.now() against the turn's `since`; on a slow machine
+  // a second passes between writing the row and painting it. Its digits are
+  // what these cases read, so the clock stands still under them.
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] }));
+
   const checklistSurfaces = (state = "in_progress") => ({
     checklist: [{ id: "c1", subject: "Land the fold", state }],
   });

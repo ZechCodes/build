@@ -1,25 +1,30 @@
 use super::wire_actions::{merge_params, open};
 use super::*;
-use crate::reviews::actions::ActionSource;
+use crate::reviews::actions::{ActionSource, ActionStatus, StepKind, StepStatus};
 use crate::reviews::merge::MergeJob;
 use crate::reviews::model::ReviewMergeIntent;
 
 #[test]
 fn rpc_publication_retry_selects_its_exact_saved_vector_before_a_newer_matching_plan() {
-    publication_retry(false, false);
+    publication_retry(false, None);
 }
 
 #[test]
 fn rpc_identical_vector_retry_selects_pending_publication_before_a_completed_plan() {
-    publication_retry(true, false);
+    publication_retry(true, None);
 }
 
 #[test]
 fn rpc_settled_historical_plan_does_not_shadow_another_identical_pending_plan() {
-    publication_retry(true, true);
+    publication_retry(true, Some(StepStatus::Failed));
 }
 
-fn publication_retry(identical_vector: bool, another_pending_plan: bool) {
+#[test]
+fn rpc_settled_interrupted_push_does_not_shadow_another_identical_pending_plan() {
+    publication_retry(true, Some(StepStatus::Interrupted));
+}
+
+fn publication_retry(identical_vector: bool, another_pending_plan: Option<StepStatus>) {
     let home = tempfile::tempdir().unwrap();
     let (_repo_home, mut state, project) = tracked(home.path());
     let extra = init_repo_named(home.path(), "second-source");
@@ -68,8 +73,9 @@ fn publication_retry(identical_vector: bool, another_pending_plan: bool) {
         .unwrap();
     let original = partial["merge_intents"][0].clone();
     let mut pending = vec![original.clone()];
-    if another_pending_plan {
-        pending.push(admit_legacy_plan(&state, &original, "legacy-pending-plan"));
+    if let Some(status) = another_pending_plan {
+        let extra = admit_legacy_plan(&state, &original, "legacy-pending-plan");
+        pending.push(retain_publication_status(&state, extra, status));
     }
     git2::Repository::init_bare(&remote).unwrap();
     git_in(&directories[1].source_path, &["restore", "README.md"]);
@@ -128,6 +134,65 @@ fn assert_saved_publication(retried: &Value, original: &Value) {
         "the publication result must be linked to the original saved plan"
     );
     assert_eq!(selected["request"], original["request"]);
+    if original["state"] == "interrupted" {
+        let history = retried["review"]["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|action| {
+                original["action_ids"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&action["id"])
+                    && action["steps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|step| step["kind"] == "push")
+            })
+            .unwrap();
+        let push = history["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "push")
+            .unwrap();
+        assert_eq!(push["status"], "interrupted", "publication retry preserves the original interrupted Push row before the next intent retry");
+    }
+}
+
+fn retain_publication_status(state: &AppState, saved: Value, status: StepStatus) -> Value {
+    if status != StepStatus::Interrupted {
+        return saved;
+    }
+    let mut intent: ReviewMergeIntent = serde_json::from_value(saved).unwrap();
+    let store = state.store.as_ref().unwrap();
+    let review = store.load_review(&intent.request.task_id).unwrap().unwrap();
+    let mut action = review
+        .actions
+        .into_iter()
+        .find(|row| {
+            intent.action_ids.contains(&row.id)
+                && row.steps.iter().any(|step| step.kind == StepKind::Push)
+        })
+        .unwrap();
+    action.status = ActionStatus::Interrupted;
+    let push = action
+        .steps
+        .iter_mut()
+        .find(|step| step.kind == StepKind::Push)
+        .unwrap();
+    push.status = StepStatus::Interrupted;
+    store
+        .save_review_action(&intent.request.task_id, &action)
+        .unwrap();
+    intent.state = crate::reviews::model::ReviewMergeState::Interrupted;
+    serde_json::to_value(
+        store
+            .save_review_merge_intent(&intent, intent.version)
+            .unwrap(),
+    )
+    .unwrap()
 }
 
 fn admit_legacy_plan(state: &AppState, original: &Value, request_id: &str) -> Value {

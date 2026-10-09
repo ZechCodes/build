@@ -5,7 +5,7 @@ use crate::api::v1::reviews::{errors, ReviewMergeParams};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
 use crate::reviews::actions::{ActionStatus, StepKind, StepStatus};
-use crate::reviews::merge::progress::{publication_settled, uncertain_action};
+use crate::reviews::merge::progress::{publication_settled, unresolved_actions};
 use crate::reviews::merge::MergeJob;
 use crate::reviews::model::{
     ReviewMergeIntent, ReviewMergePush, ReviewMergeRequest, ReviewMergeSource, ReviewMergeState,
@@ -261,10 +261,7 @@ fn retained_plan_order(review: &Review, intent: &ReviewMergeIntent) -> (bool, u6
 fn pending_work(review: &Review, intent: &ReviewMergeIntent) -> bool {
     intent.state == ReviewMergeState::Running
         || !publication_settled(review, intent)
-        || review
-            .actions
-            .iter()
-            .any(|action| intent.action_ids.contains(&action.id) && uncertain_action(action))
+        || unresolved_actions(review, intent)
 }
 
 /// A fresh version may replace a failed plan only before any integration.

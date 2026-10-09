@@ -106,13 +106,17 @@ pub struct Opening(Arc<OpeningState>);
 struct OpeningState {
     is_open: AtomicBool,
     client_hint: OnceLock<uuid::Uuid>,
+    /// Process-wide opening order, so a newer session of one client is known.
+    ordinal: u64,
 }
 
 impl OpeningState {
     fn new() -> Arc<Self> {
+        static OPENED: AtomicU64 = AtomicU64::new(0);
         Arc::new(Self {
             is_open: AtomicBool::new(true),
             client_hint: OnceLock::new(),
+            ordinal: OPENED.fetch_add(1, Ordering::Relaxed),
         })
     }
 }
@@ -128,6 +132,15 @@ impl Opening {
             let _ = self.0.client_hint.set(hint);
         }
         self.0.client_hint.get().copied()
+    }
+
+    pub(crate) fn client_hint(&self) -> Option<uuid::Uuid> {
+        self.0.client_hint.get().copied()
+    }
+
+    /// Whether this opening began after `other`.
+    pub(crate) fn opened_after(&self, other: &Opening) -> bool {
+        self.0.ordinal > other.0.ordinal
     }
 
     /// Whether `other` is this same opening.

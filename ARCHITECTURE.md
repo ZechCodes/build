@@ -1398,6 +1398,14 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   not-self and DNS TTL checks; the cache never substitutes an answer. Explicit
   source-address probing is Linux-only; other hosts retain multicast discovery.
   Neither the hint nor the cached address enters logs, pushes or diagnostics.
+- **Superseded failed sessions**: `SessionPeers` closes a session's peer
+  whose ICE connection state is `failed` once a newer open session bound to
+  the same hint holds a peer (#373). It checks on every offer and whenever a
+  peer's ICE fails, so either order closes it at once instead of after the
+  20-second write stall. A peer that is connected, checking or disconnected is
+  never closed this way, since the hint is not an identity; sessions without
+  a hint are unaffected. Only the peer goes: the session stays open, and an
+  ICE restart from it negotiates a fresh peer like a first offer.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
   counts and discovery reasons without names, addresses or credentials. Actual
   direct-check snapshots on ICE restart or close report up to 64 tracked remote

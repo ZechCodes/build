@@ -21,8 +21,8 @@
 //! this module decides any of it.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -60,6 +60,8 @@ mod policy;
 mod remote;
 mod sweep;
 #[cfg(test)]
+mod superseded_tests;
+#[cfg(test)]
 mod sweep_integration_tests;
 
 pub use policy::{IceMode, IcePolicy, ICE_INTERFACES_ENV, ICE_POLICY_ENV, ICE_RELAY_MIN_WAIT_ENV};
@@ -83,10 +85,22 @@ pub enum RtcError {
     Ended(String),
 }
 
+/// What a peer calls when its ICE fails.
+pub type IceFailedHook = Arc<dyn Fn() + Send + Sync>;
+
 /// One live peer connection — one per E2EE session, always the answerer.
 #[async_trait]
 pub trait SessionPeer: Send + Sync {
     fn bind_client_hint(&self, _hint: Option<uuid::Uuid>) {}
+
+    /// Whether ICE has failed with no restart begun since: the peer carries
+    /// nothing until its client offers again.
+    fn ice_failed(&self) -> bool {
+        false
+    }
+
+    /// Run `hook` whenever ICE fails from here on.
+    fn on_ice_failed(&self, _hook: IceFailedHook) {}
 
     /// Answer the browser's offer.
     ///
@@ -148,6 +162,9 @@ pub struct SessionPeers {
     /// share a worker with a task that takes the app lock. `None` drives on
     /// whatever runtime the caller is in — the tests, which have one runtime.
     driver: Option<tokio::runtime::Handle>,
+    /// The hook every peer's ICE failure runs through holds this, never the
+    /// map itself, so a peer cannot keep its registry alive.
+    me: Weak<SessionPeers>,
 }
 
 /// What the map decided about a peer an offer just built.
@@ -172,10 +189,11 @@ impl SessionPeers {
         factory: Arc<dyn SessionPeerFactory>,
         driver: Option<tokio::runtime::Handle>,
     ) -> Arc<Self> {
-        Arc::new(SessionPeers {
+        Arc::new_cyclic(|me| SessionPeers {
             factory,
             peers: Mutex::new(HashMap::new()),
             driver,
+            me: me.clone(),
         })
     }
 
@@ -240,6 +258,8 @@ impl SessionPeers {
         let (peer, opened_by_this_offer) =
             self.riding_or_opened(&session_id, &opening, client_hint)?;
         peer.bind_client_hint(client_hint);
+        // A first offer is a newer session, and a later one may bind the hint.
+        self.close_superseded();
         match self.awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
             Ok(answer) => Ok(answer),
             Err(refused) => {
@@ -372,8 +392,40 @@ impl SessionPeers {
                     }
                     return Err(RtcError::Ended(session_id.to_string()));
                 }
+                let peers = self.me.clone();
+                opened.on_ice_failed(Arc::new(move || {
+                    if let Some(peers) = peers.upgrade() {
+                        peers.close_superseded();
+                    }
+                }));
                 Ok((opened, true))
             }
+        }
+    }
+
+    /// Close every peer whose ICE has failed while a newer open session of
+    /// the same paired client holds one (#373): a reloaded client's earlier
+    /// session would otherwise wait out the write stall. The hint is a bearer
+    /// value, not an identity, so it only ever picks among peers that have
+    /// already stopped carrying. Their sessions stay open: an ICE restart from
+    /// one negotiates a fresh peer, as a first offer would.
+    fn close_superseded(&self) {
+        let superseded: Vec<(String, Arc<dyn SessionPeer>)> = {
+            let mut peers = self.peers.lock().unwrap();
+            let ids: Vec<String> = peers
+                .iter()
+                .filter(|(_, (opening, peer))| {
+                    peer.ice_failed() && has_newer_session(opening, peers.values())
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.into_iter()
+                .filter_map(|id| peers.remove(&id).map(|(_, peer)| (id, peer)))
+                .collect()
+        };
+        for (session_id, peer) in superseded {
+            diagnostic(&session_id, "superseded_failed_peer_closed");
+            self.spawn_off(async move { peer.close().await });
         }
     }
 
@@ -412,6 +464,19 @@ impl SessionPeers {
     pub fn count(&self) -> usize {
         self.peers.lock().unwrap().len()
     }
+}
+
+/// Whether an open session of `opening`'s paired client began after it.
+fn has_newer_session<'a>(
+    opening: &Opening,
+    mut registered: impl Iterator<Item = &'a RegisteredPeer>,
+) -> bool {
+    let Some(hint) = opening.client_hint() else {
+        return false;
+    };
+    registered.any(|(other, _)| {
+        other.is_open() && other.client_hint() == Some(hint) && other.opened_after(opening)
+    })
 }
 
 /// A bridge with no peer transport built in. Every offer is refused, and a
@@ -582,6 +647,7 @@ impl SessionPeerFactory for WebrtcPeerFactory {
             check_pending_direct_pairs: self.check_pending_direct_pairs,
             host_candidate_sweep: self.host_candidate_sweep,
             negotiation: tokio::sync::Mutex::new(None),
+            ice: Arc::default(),
         }))
     }
 }
@@ -595,6 +661,25 @@ struct WebrtcPeer {
     check_pending_direct_pairs: bool,
     host_candidate_sweep: bool,
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
+    ice: Arc<IceHealth>,
+}
+
+/// Whether a peer's ICE has failed, as its agent last reported, and who to
+/// tell when it does.
+#[derive(Default)]
+struct IceHealth {
+    failed: AtomicBool,
+    on_failed: OnceLock<IceFailedHook>,
+}
+
+impl IceHealth {
+    fn observe(&self, state: RTCIceConnectionState) {
+        let failed = state == RTCIceConnectionState::Failed;
+        self.failed.store(failed, Ordering::SeqCst);
+        if let Some(hook) = self.on_failed.get().filter(|_| failed) {
+            hook();
+        }
+    }
 }
 
 /// One live peer connection, the channels carrying for it, and the one line it
@@ -621,6 +706,14 @@ impl SessionPeer for WebrtcPeer {
         if let Some(hint) = hint {
             self.remote.bind_client_hint(hint);
         }
+    }
+
+    fn ice_failed(&self) -> bool {
+        self.ice.failed.load(Ordering::SeqCst)
+    }
+
+    fn on_ice_failed(&self, hook: IceFailedHook) {
+        let _ = self.ice.on_failed.set(hook);
     }
 
     async fn answer(
@@ -743,6 +836,7 @@ impl WebrtcPeer {
             connected,
             gathered: Mutex::new(GatheredTypes::default()),
             sweeps,
+            ice: self.ice.clone(),
         });
         let udp_addrs = self.policy.gather_from()?;
         let mut engine = self.policy.setting_engine(MulticastDnsMode::Disabled);
@@ -894,6 +988,7 @@ struct PeerEvents {
     /// cleared when it completes.
     gathered: Mutex<GatheredTypes>,
     sweeps: mpsc::Sender<HostCandidateSweepEvent>,
+    ice: Arc<IceHealth>,
 }
 
 #[async_trait]
@@ -925,6 +1020,7 @@ impl PeerConnectionEventHandler for PeerEvents {
 
     async fn on_ice_connection_state_change(&self, state: RTCIceConnectionState) {
         diagnostic(&self.session_id, &format!("ice_state={state}"));
+        self.ice.observe(state);
     }
 
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
@@ -1603,6 +1699,8 @@ pub mod recording {
         gate: Option<Arc<AnswerGate>>,
         refuses_offers: bool,
         closing: Notify,
+        ice_failed: AtomicBool,
+        on_ice_failed: Mutex<Option<IceFailedHook>>,
     }
 
     impl RecordingPeer {
@@ -1616,6 +1714,20 @@ pub mod recording {
 
         pub fn is_closed(&self) -> bool {
             self.record.lock().unwrap().closed
+        }
+
+        /// What the peer's ICE agent reports when every pair has failed.
+        pub fn fail_ice(&self) {
+            self.ice_failed.store(true, Ordering::SeqCst);
+            let hook = self.on_ice_failed.lock().unwrap().clone();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+
+        /// An ICE restart that found a working pair again.
+        pub fn recover_ice(&self) {
+            self.ice_failed.store(false, Ordering::SeqCst);
         }
 
         /// Wait for this peer to be torn down, however far away the teardown
@@ -1639,6 +1751,14 @@ pub mod recording {
 
     #[async_trait]
     impl SessionPeer for RecordingPeer {
+        fn ice_failed(&self) -> bool {
+            self.ice_failed.load(Ordering::SeqCst)
+        }
+
+        fn on_ice_failed(&self, hook: IceFailedHook) {
+            *self.on_ice_failed.lock().unwrap() = Some(hook);
+        }
+
         async fn answer(
             &self,
             offer_sdp: &str,
@@ -1748,6 +1868,8 @@ pub mod recording {
                 gate: self.gate.lock().unwrap().clone(),
                 refuses_offers: self.refuse_offers.load(Ordering::SeqCst),
                 closing: Notify::new(),
+                ice_failed: AtomicBool::new(false),
+                on_ice_failed: Mutex::new(None),
             });
             self.opens.fetch_add(1, Ordering::SeqCst);
             self.opened
@@ -2106,6 +2228,7 @@ mod trickle_tests {
             check_pending_direct_pairs: true,
             host_candidate_sweep: true,
             negotiation: tokio::sync::Mutex::new(None),
+            ice: Arc::default(),
         };
         assert!(!outgoing.is_closed());
         peer.close().await;
@@ -2407,6 +2530,7 @@ mod ice_diagnostic_tests {
             check_pending_direct_pairs: true,
             negotiation: tokio::sync::Mutex::new(None),
             host_candidate_sweep: true,
+            ice: Arc::default(),
         };
         let signaling = SessionSender::detached("accepted-retry");
         let mut browser = RTCPeerConnectionBuilder::new().build().unwrap();

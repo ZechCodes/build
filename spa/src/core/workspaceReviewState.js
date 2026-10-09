@@ -82,15 +82,18 @@ function publishedRewriteSince(snapshots, baseline, binding) {
     .some((snapshot) => snapshot.publication?.directories.some((directory) => directory.directory_id === binding.directory_id && directory.rewritten));
 }
 
-// The bridge's exact count only answers for the baseline it was taken against.
-const countedSince = (sync, baseline) => (sync?.reviewed_snapshot_id === baseline.id ? sync : {});
+// The bridge's exact count only answers for the baseline and the displayed
+// snapshot it was taken against; a retarget can cache a newer snapshot beside
+// the older observation (#453).
+const countedSince = (sync, baseline, head) =>
+  (sync?.reviewed_snapshot_id === baseline.id && sync.snapshot_head === head ? sync : {});
 
 function sourceSinceReview(context, binding, sync) {
   const snapshots = context.held.review.snapshots;
   const baseline = context.reviewedSnapshot;
   const head = directoryHead(snapshots.at(-1), binding) || sync?.snapshot_head;
   if (!baseline) return formatReviewSinceNote({ head });
-  const counted = countedSince(sync, baseline);
+  const counted = countedSince(sync, baseline, head);
   const rewritten = Boolean(counted.rewritten_since_review) || publishedRewriteSince(snapshots, baseline, binding);
   return formatReviewSinceNote({ count: counted.commits_since_review, head, reviewedHead: directoryHead(baseline, binding), rewritten });
 }

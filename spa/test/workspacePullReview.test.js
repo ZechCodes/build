@@ -218,7 +218,8 @@ it("renders the bridge's exact count only when it was taken against the user's c
   const next = { ...opened.result.review.snapshots[0], id: "snapshot-2", number: 2,
     directories: opened.result.review.snapshots[0].directories.map((directory) => ({ ...directory, head: "4".repeat(40) })) };
   const review = { ...opened.result.review, version: 2, snapshots: [opened.result.review.snapshots[0], next] };
-  const counted = { ...pushed.result.sync[0], revision: 4, reviewed_snapshot_id: "snapshot-1", commits_since_review: 2 };
+  const counted = { ...pushed.result.sync[0], revision: 4, reviewed_snapshot_id: "snapshot-1", commits_since_review: 2,
+    snapshot_head: "4".repeat(40), received_head: "5".repeat(40) };
   await writeReviewReply(actionScope, { review, sync: [counted] }, 2);
   mount();
   await vi.waitFor(() => expect(document.querySelector("#entry").textContent).toContain("2 commits since your last review"));

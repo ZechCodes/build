@@ -155,7 +155,7 @@ Everything else is queued to the worker pool in
    arms (`ping`, `term.list`, `term.close`, `stream.*`).
 
 **The verb registry** is `bridge/src/api/v1/mod.rs`. Each family file (`board.rs`,
-`changes.rs`, `git.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
+`changes.rs`, `git.rs`, `harnesses.rs`, `push.rs`, `tasks.rs`, `lifecycle.rs`, `thread.rs`, `updates.rs`,
 `workspace.rs`) has a `methods()` table built with the `v1_method!` macro, which
 names the verb, its handler and its typed params and result. Handler signatures
 never take `serde_json::Value`; a test in that module enforces it. Slow git work
@@ -207,7 +207,8 @@ noted inside the window go out together when it closes. Every session gets
 greeting that omits `changes: "subscriptions"` is still accepted and gets the
 same subscriptions session: the legacy invalidation pushes went in 3.0.0. The
 events the bridge announces are `ANNOUNCED_EVENTS` in the same file
-(`changes`, `bridge.update_status`, `models.changed`). Terminal output
+(`changes`, `bridge.update_status`, `models.changed`, `rtc.diagnostics`,
+`harnesses.changed`). Terminal output
 (`term.output`, `term.reset`, `term.closed`) comes from `bridge/src/screen.rs`.
 Example pushes are in `fixtures/api/v1/events.json`.
 
@@ -259,7 +260,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.17.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.18.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -373,6 +374,9 @@ runtime that starts them.
   source row carried when the client opened it. If the source has since moved,
   the bridge refuses the call with `conflict` instead of reaching the new
   folder. Beside any other scope it is `invalid_params`.
+  3.18.0 adds the harness inventory (#434): `harnesses.list` and
+  `harnesses.refresh`, each announced by its verb name, and the
+  `harnesses.changed` push. See Harnesses and the agents' slice.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,
@@ -1101,7 +1105,8 @@ catalog seen through what its installed CLI said, and that is what
   models in the CLI's order; a session may start on any listed one. The curated
   list is the fallback when the CLI cannot list, or lists nothing Build could
   start.
-- Pi is not asked, and offers its catalog whole.
+- Pi is asked `pi --version` (with `PI_OFFLINE=1`, so its startup checks
+  nothing online) for its version alone, and offers its catalog whole.
 
 `Readings` holds each CLI's last usable answer. A failed or abandoned refresh
 keeps that answer without announcing a catalog change. Until a probe succeeds,
@@ -1128,7 +1133,7 @@ Stderr is
 drained concurrently, keeping a 4 KiB tail of the last nonempty line and
 logging at most 512 sanitized characters with a failure. Up to 50 ms of the
 same deadline is reserved for the final stderr drain. Probes run with
-`MISE_OFFLINE=1`, so a mise wrapper never starts an install that the deadline
+`MISE_OFFLINE=1` (and `PI_OFFLINE=1`), so a mise wrapper never starts an install that the deadline
 would cut off halfway (`probe/child.rs`; `planning/v2/Installed CLI Probe Security Checklist.md`). A
 changed answer is pushed as `models.changed` (`bridge/src/app/model_catalog.rs`).
 A spawn is refused on a model the CLI cannot run, before anything is written
@@ -1143,6 +1148,59 @@ CLI. A role (`role_models`) or the
 project-agent setting that names such a model is a default rather than a pick:
 the role passes to the next declared model, and the project agent starts on
 the harness's own default.
+
+**The harness inventory** (#434) is `bridge/src/harness/inventory/`, a daemon
+service with its own lock (never `AppState`'s). It keeps a revisioned snapshot
+of all five harnesses, each linked to a credential context it shares with the
+other carrier of its CLI (`Harness::auth`): `claude` (Claude Code TUI and
+headless), `codex` (TUI and app server) and `pi`. Each row carries three facts
+apart: installation (`installed` / `not_installed` / `unknown`), the installed
+CLI's version from the readings above, and the versions live sessions
+reported (`inventory/running.rs`: the ADK init line and the app server's
+`initialize` hold a `ReportedVersion` for the session's life; the TUIs report
+none, so theirs reads "not reported" rather than borrowing the installed one).
+Each context carries `method` (`oauth`, `long_lived_token`, `api_key`,
+`external`, `mixed`, `none`, `unknown`), `status` (`signed_in`,
+`not_signed_in`, `expired`, `invalid`, `refresh_pending`, `unknown`,
+`not_required`), `verification` (always `saved_configuration` once observed:
+nothing here is a provider check), the kinds of `evidence` it was read from,
+`health`, `checked_at_ms`, a `credential_generation` that rises when the
+credential changes, and `supported_login_methods` (empty until in-app sign-in
+lands). Pi's context lists each provider on its own.
+
+The adapters are passive (`inventory/adapters/`): Claude Code's runs
+`claude auth status` with fixed argv and reads only `loggedIn`, `authMethod`
+and `apiKeySource`, plus `expiresAt` and which tokens `.credentials.json`
+holds; it never runs the status command while any settings file (including
+managed policy) names a helper (`apiKeyHelper`, `awsAuthRefresh`, ...), and
+reads the environment by variable name only. Codex's reads `auth.json` and
+`config.toml` under `CODEX_HOME` and never runs Codex (`codex login status`
+prints part of an API key; an app server's account read could refresh).
+Pi's reads `auth.json` under `PI_CODING_AGENT_DIR` and its documented provider
+variables, and never resolves a key (a `!command` key reads as `external`).
+Probes run through `probe/child.rs` (3 s deadline, bounded output, group
+kill) with the device environment captured per sweep, less every
+`BRIDGE_*`/`BUILD_*` variable and agent marker, offline to mise and Pi, from
+the home directory; their output is never logged.
+
+The service sweeps every 15 s from daemon start with no client needed
+(`inventory::start` in `main.rs`): executables each sweep (installs, removals
+and retargeted links are seen at once, and so does `models.list`'s
+`installed`, no longer cached for the process's life), each context at most
+once a minute after success, backing off from a minute to ten after failures.
+A changed executable or credential file, or `harnesses.refresh`, checks again
+sooner, no more often than every 5 s. A failed check keeps the facts it could
+not replace with `health: stale`; an older check never overwrites a newer one.
+Each change raises the revision, is saved nonsecret to
+`harness-inventory.json` beside the store (restored stale on boot, the
+revision continuing), and wakes `harnesses.changed` (`{type, revision}`) for
+each greeted session (`bridge/src/app/harness_inventory.rs`). A check time
+moving alone is not news. `harnesses.list` answers the snapshot without
+waiting; `harnesses.refresh` answers `{request, revision}` at once, and the
+snapshot's `refresh.completed` reaches `request` when that observation is in.
+The SPA routes the push per device whether or not change subscriptions are
+armed (`spa/src/core/harnessInventoryEvents.js`). Controls and evidence:
+`planning/v2/Harness Authentication Security Checklist.md`.
 
 ### Conversation resets
 

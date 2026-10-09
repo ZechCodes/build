@@ -68,6 +68,7 @@ export const EVENT_TYPES = Object.freeze([
   "rtc.diagnostics",
   "bridge.update_status",
   "models.changed",
+  "harnesses.changed",
 ]);
 
 /** A refusal, whichever shape it arrived in. */

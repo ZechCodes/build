@@ -66,6 +66,7 @@ import { recordConnectionDiagnostic } from "./connectionDiagnostics.js";
 import { greetingVersion, PRE_ALPHA_API_VERSION, selectAdapter, SPA_API_RANGE } from "./bridgeApi/index.js";
 import { rememberBridgeUpdateStatus } from "./bridgeUpdates.js";
 import { modelsChangedOn } from "./modelCatalog.js";
+import { harnessesChangedOn } from "./harnessInventoryEvents.js";
 import { rememberNeedsYouRule } from "./needsYouRule.js";
 import { rememberBranchDelete } from "./branchDeleteSupport.js";
 import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js";
@@ -753,6 +754,7 @@ const DEVICE_EVENTS = new Map([
     void rememberBridgeUpdateStatus(deviceId, status);
   }],
   ["models.changed", (_payload, deviceId) => modelsChangedOn(deviceId)],
+  ["harnesses.changed", ({ revision }, deviceId) => harnessesChangedOn(deviceId, revision)],
 ]);
 
 /** A change event off one device's session. Ignored entirely while that device

@@ -30,7 +30,7 @@ const eventExamples = fixtures
 describe("the v1 adapter against fixtures/api/v1", () => {
   it("announces PR mutations and their shared feature while retaining Snapshot verbs", () => {
     const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
-    expect(greeting.result.api_version).toBe("3.17.0");
+    expect(greeting.result.api_version).toBe("3.18.0");
     expect(greeting.result.capabilities).toContain("tasks.review.pullRequests");
     expect(greeting.result.capabilities).not.toContain("tasks.pullRequests");
     for (const verb of ["open", "push", "update", "merge", "close", "reopen", "refresh"]) {

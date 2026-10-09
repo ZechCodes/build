@@ -103,7 +103,13 @@ fn resolve_plan(
         .stored()?
         .into_iter()
         .filter(|intent| matching_plan(intent, params))
-        .max_by_key(|intent| retained_plan_order(review, intent));
+        // Retry the exact saved vector before considering a confirmed refresh.
+        .max_by_key(|intent| {
+            (
+                matching_targets(intent, params),
+                retained_plan_order(review, intent),
+            )
+        });
     if let Some(intent) = existing {
         if params.expected_version != intent.request.expected_version {
             version(review, params.expected_version)?;
@@ -195,6 +201,15 @@ fn matching_directories(intent: &ReviewMergeIntent, params: &ReviewMergeParams) 
                 .iter()
                 .any(|selection| source.directory_id == selection.directory_id)
         })
+}
+
+fn matching_targets(intent: &ReviewMergeIntent, params: &ReviewMergeParams) -> bool {
+    intent.request.sources.iter().all(|source| {
+        params.sources.iter().any(|selection| {
+            source.directory_id == selection.directory_id
+                && source.expected_base_head == selection.expected_base_head
+        })
+    })
 }
 
 fn refuse_changed_obligations(

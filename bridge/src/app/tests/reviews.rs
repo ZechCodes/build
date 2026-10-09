@@ -6,6 +6,7 @@ use super::*;
 
 mod merge_contracts;
 mod merge_recovery;
+mod merge_selection;
 mod opening;
 mod pull_requests;
 #[path = "reviews/pull_requests/reopen_version.rs"]

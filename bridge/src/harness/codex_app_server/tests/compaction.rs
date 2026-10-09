@@ -340,3 +340,107 @@ fn a_message_choosing_the_applied_model_steers_into_a_turn_codex_started() {
         [SessionEffect::Request(PendingOperation::SteerTurn { turn_id, .. })] if turn_id == CODEX_TURN_ID
     ));
 }
+
+/// A follow-up sent into a turn Codex started after an unchanged compaction,
+/// in a session whose model (when `model` is `None`) and effort are left to
+/// Codex's defaults. Codex reports the default effort it chose as `medium`.
+/// From the #445 round 2 review.
+fn follow_up_into_a_codex_turn_on_defaults(model: Option<&str>) -> StateTransition {
+    let state = CodexSessionState::new(
+        PathBuf::from(WORKTREE_ROOT),
+        model.map(str::to_string),
+        None,
+        None,
+    );
+    let initializing = apply(state, SessionEvent::Start).state;
+    let opening = apply(initializing, initialize_response(&supported_user_agent())).state;
+    let waiting = apply(
+        opening,
+        correlated(
+            PendingOperation::StartThread {
+                cwd: WORKTREE_ROOT.to_string(),
+                model: model.map(str::to_string),
+            },
+            Ok(thread_opened(THREAD_ID, Some("medium"))),
+        ),
+    )
+    .state;
+    let compacting = apply(
+        waiting,
+        SessionEvent::SendChosenTurn(chosen_turn("/compact", model, None, 1)),
+    )
+    .state;
+    let answered = apply(compacting, compaction_answered()).state;
+    let started = apply(answered, SessionEvent::TurnStarted(TURN_ID.to_string())).state;
+    let completed = apply(started, turn_completed(TURN_ID, None)).state;
+    let adopted = apply(
+        completed,
+        SessionEvent::TurnStarted(CODEX_TURN_ID.to_string()),
+    )
+    .state;
+    apply(
+        adopted,
+        SessionEvent::SendChosenTurn(chosen_turn("more", model, None, 2)),
+    )
+}
+
+fn steered_into_the_codex_turn(sent: &StateTransition) -> bool {
+    matches!(
+        sent.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::SteerTurn { turn_id, .. })] if turn_id == CODEX_TURN_ID
+    )
+}
+
+#[test]
+fn a_follow_up_keeping_the_default_effort_steers_into_a_turn_codex_started() {
+    let sent = follow_up_into_a_codex_turn_on_defaults(Some(SELECTED_MODEL));
+    assert!(
+        steered_into_the_codex_turn(&sent),
+        "effects={:?}, queued={}",
+        sent.effects,
+        sent.state.queued_turn_count()
+    );
+}
+
+#[test]
+fn a_follow_up_keeping_the_default_model_and_effort_steers_into_a_turn_codex_started() {
+    let sent = follow_up_into_a_codex_turn_on_defaults(None);
+    assert!(
+        steered_into_the_codex_turn(&sent),
+        "effects={:?}, queued={}",
+        sent.effects,
+        sent.state.queued_turn_count()
+    );
+}
+
+#[test]
+fn a_turn_codex_starts_runs_on_the_choice_the_last_turn_start_applied() {
+    let other =
+        |input: &str, revision| chosen_turn(input, Some("gpt-other"), Some("low"), revision);
+    let starting = apply(
+        advance_to_waiting(),
+        SessionEvent::SendChosenTurn(other("go", 1)),
+    )
+    .state;
+    let working = apply(
+        starting,
+        correlated(
+            start_turn_with("go", Some("gpt-other"), Some("low")),
+            Ok(json!({"turn":{"id":EARLIER_TURN_ID}})),
+        ),
+    )
+    .state;
+    let waiting = apply(working, turn_completed(EARLIER_TURN_ID, None)).state;
+    let adopted = apply(
+        waiting,
+        SessionEvent::TurnStarted(CODEX_TURN_ID.to_string()),
+    )
+    .state;
+
+    let sent = apply(adopted, SessionEvent::SendChosenTurn(other("more", 2)));
+    assert!(
+        steered_into_the_codex_turn(&sent),
+        "effects={:?}",
+        sent.effects
+    );
+}

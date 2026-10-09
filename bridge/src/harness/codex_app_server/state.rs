@@ -69,6 +69,11 @@ pub struct CodexSessionState {
     active_model: Option<String>,
     active_effort: Option<String>,
     requested_choice: ModelChoice,
+    /// The last choice Codex was given and took, in a request's own terms
+    /// (`None` keeps Codex's default): what the session spawned with, then
+    /// each accepted `turn/start`'s. A compaction's choice never reaches
+    /// Codex, so it never lands here.
+    applied_choice: ModelChoice,
     queued_turns: VecDeque<AcceptedTurn>,
     queued_bytes: usize,
     last_completion: Option<TurnCompletion>,
@@ -160,6 +165,7 @@ impl CodexSessionState {
             selected_model,
             resume_id,
             phase: Phase::Starting,
+            applied_choice: requested_choice.clone(),
             thread_id: None,
             active_model: None,
             active_effort: None,
@@ -678,6 +684,7 @@ impl CodexSessionState {
         })?;
         let id = result.turn.id;
         ensure_optional_id(&observed, &id, "turn/start")?;
+        self.applied_choice = accepted_choice.clone();
         if let Some(model) = accepted_choice.model {
             self.active_model = Some(model);
         }
@@ -808,11 +815,7 @@ impl CodexSessionState {
     fn adopt_codex_turn(&mut self, id: String) -> Vec<SessionEffect> {
         let turn = AcceptedTurn {
             turn: Turn::new(String::new()),
-            applied_choice: ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: self.active_model.clone(),
-                effort: self.active_effort.clone(),
-            },
+            applied_choice: self.applied_choice.clone(),
         };
         self.enter_working(id, &turn, false)
     }

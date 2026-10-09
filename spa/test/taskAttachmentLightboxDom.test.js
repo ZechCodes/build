@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { columns, comment, event, task } from "./trackerWireFixture.js";
+import { untilDom } from "./untilCondition.js";
 
 vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {},
@@ -238,17 +239,19 @@ describe("the lightbox on a task", () => {
 });
 
 describe("attachment bytes and the cache", () => {
+  /** The thumbnail is drawn once its bytes are read and held; under load that
+   *  can take longer than a polling wait's one second. */
+  const thumbnailPainted = () => bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")?.startsWith("blob:");
+
   it("paints a revisit's thumbnails from the cache without asking the bridge", async () => {
     mount();
-    await vi.waitFor(() =>
-      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toMatch(/^blob:/));
+    await untilDom(thumbnailPainted);
     page.dispose();
     page = null;
 
     call = vi.fn(async (method) => (method === "tasks.get" ? answer() : new Promise(() => {})));
     mount();
-    await vi.waitFor(() =>
-      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toMatch(/^blob:/));
+    await untilDom(thumbnailPainted);
     expect(call.mock.calls.filter(([method]) => method === "tasks.attachment")).toHaveLength(0);
   });
 
@@ -262,8 +265,7 @@ describe("attachment bytes and the cache", () => {
       return put.call(this, value, key);
     });
     mount();
-    await vi.waitFor(() =>
-      expect(bodyList()?.querySelector("img.thread-attachment-image")?.getAttribute("src")).toMatch(/^blob:/));
+    await untilDom(thumbnailPainted);
     expect(bodyList().querySelector(".thread-attachment-figure.unavailable")).toBeNull();
     await openedOn(commentList().querySelectorAll("button.thread-attachment-preview")[1]);
     expect(lightbox().querySelector(".thread-lightbox-stage video").getAttribute("src")).toMatch(/^blob:/);

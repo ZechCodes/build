@@ -46,13 +46,42 @@ const unpushed = (review, intent) => intent.request.sources.some((source) =>
 const uncertain = (review, intent) => rowsFor(review, intent).some((row) => row.status === "running" ||
   row.steps?.some((step) => step.status === "running"));
 
-const sourceInterrupted = (review, intent, source) => sourceRows(review, intent, source).some((row) =>
-  row.status === "interrupted" || row.steps?.some((step) => step.status === "interrupted"));
-const sourceSettled = (review, intent, source) => integrated(review, intent, source) && published(review, intent, source);
+function mergeOriginForPush(review, intent, source, row, step) {
+  return successfulMerges(review, intent, source).find((merged) => merged.head === step.input_head && pushLinked(row, step, merged) &&
+    rowsFor(review, intent).some((origin) => origin.id === merged.actionId && origin.source_path === row.source_path));
+}
+
+const knownInterruptedSource = (row, intent) => row.snapshot_id === intent.request.snapshot_id &&
+  typeof row.source_path === "string" && row.source_path.length > 0;
+
+function settledInterruptedPush(review, intent, row, step) {
+  if (step.kind !== "push" || !fullHead(step.input_head) || !knownInterruptedSource(row, intent)) return false;
+  const source = intent.request.sources.find((candidate) => candidate.directory_id === row.directory_id);
+  if (!source?.push || step.remote !== source.push.remote || step.branch !== source.push.branch) return false;
+  const origin = mergeOriginForPush(review, intent, source, row, step);
+  if (!origin) return false;
+  const laterIds = intent.action_ids.slice(intent.action_ids.indexOf(row.id) + 1);
+  return sourceRows(review, intent, source).some((later) => laterIds.includes(later.id) && later.source_path === row.source_path &&
+    later.steps?.some((candidate) => pushMatches(later, candidate, origin, source.push)));
+}
+
+function unresolvedStep(review, intent, row, step, index) {
+  if (step.status === "interrupted") return !settledInterruptedPush(review, intent, row, step);
+  if (step.status === "succeeded") return !fullHead(step.result_head);
+  if (step.status === "pending") return !row.steps.slice(0, index).some((earlier) => earlier.status === "failed");
+  return !["failed", "skipped"].includes(step.status);
+}
+
+const unresolvedAction = (review, intent, row) => row.status === "running" || !row.steps?.length ||
+  row.steps.some((step, index) => unresolvedStep(review, intent, row, step, index));
+const interruptedAction = (row) => row.status === "interrupted" || row.steps?.some((step) => step.status === "interrupted");
 
 function interruptionPending(review, intent) {
-  return intent.request.sources.some((source) => (intent.state === "interrupted" || sourceInterrupted(review, intent, source)) &&
-    !sourceSettled(review, intent, source));
+  const rows = rowsFor(review, intent);
+  if (rows.length !== intent.action_ids?.length || rows.some((row) => unresolvedAction(review, intent, row))) return true;
+  // Interrupted history stays visible. A known failed source does not inherit
+  // another source's settled interruption; unexplained intent state stays held.
+  return intent.state === "interrupted" && !rows.some(interruptedAction);
 }
 
 const bindingsIntegrated = (review, intents) => (review.bindings || []).length > 0 && review.bindings.every((binding) =>

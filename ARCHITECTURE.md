@@ -904,7 +904,11 @@ retrying actor, so a browser can resume an agent's intent, including older
 actor-hashed request IDs. Among equally exact vectors, intents with unsettled
 publication or running or uncertain Git work rank before settled intents. A
 previously failed intent whose publication has settled cannot hide another
-retained hold. Running or interrupted work also keeps its recovery identity.
+retained hold. A historical Interrupted Push stops ranking as pending only
+after a later success in that intent matches its source, snapshot, input head,
+destination and original Merge linkage. Its interrupted history row remains;
+earlier or foreign results do not settle it. Running and other unresolved work
+keep their recovery identity.
 
 For a partial plan with known outcomes, explicit confirmation of the current
 version and target tips refreshes admission under the merge lease and receiving
@@ -937,6 +941,12 @@ its build output. These checks run during measurement and again before removal.
 Settling publication releases only that hold; workspace locks and ordinary
 activity, task and Git eligibility checks still apply. Project history deletion
 refuses running merges before releasing any review pins.
+The SPA evaluates those retained results from cache: a later intent-owned Push
+with matching source, snapshot, tip, destination and Merge linkage settles an
+Interrupted Push without erasing its history. Known failed sources from that
+intent do not inherit the settled interruption. Running or unknown Git results
+and missing action records still prevent Reclaim; cached workspace locks continue
+to control the enabled state after publication settles.
 
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's

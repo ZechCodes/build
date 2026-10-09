@@ -15,6 +15,8 @@ export function mountTaskReviewReclaim(host, options) {
   let error = "";
   let disposed = false;
   let readSerial = 0;
+  // Evaluate cached obligations, including later results that settle retained
+  // interruption rows. The historical intent label does not decide Reclaim.
   const available = () => Boolean(options.support?.pullRequests && workspace && settledMerge(record));
 
   function paint() {

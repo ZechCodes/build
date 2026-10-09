@@ -404,6 +404,55 @@ it("resolves retained failed Push rows with the newer successful saved Push with
   expect(settledMerge({ review: merged, merge_intents: [retained] })).toBe(true);
 });
 
+it("settles A/B publication holds after C merges while retaining B's Interrupted Push history", () => {
+  const partial = (name, pushStatus) => ({
+    intent: { ...intent(name === "b" ? "interrupted" : "failed"), request_id: name, action_ids: [`${name}-api`, `${name}-ui`] },
+    rows: [
+      { ...action("api", "succeeded", pushStatus), id: `${name}-api`, status: pushStatus === "interrupted" ? "interrupted" : "failed" },
+      { ...action("ui", "failed", "skipped"), id: `${name}-ui` },
+    ],
+  });
+  const a = partial("a", "failed");
+  const b = partial("b", "interrupted");
+  const c = { ...intent("succeeded"), request_id: "c", action_ids: ["c-api", "c-ui"] };
+  for (const plan of [a.intent, b.intent, c]) plan.request.sources.find((row) => row.directory_id === "api").head = mergedHead;
+  const merged = { ...review, pull_request: { ...review.pull_request, status: "merged" }, actions: [
+    ...a.rows, ...b.rows, ...["api", "ui"].map((id) => ({ ...action(id, "succeeded", "succeeded"), id: `c-${id}` })),
+  ] };
+  for (const row of merged.actions.filter((value) => value.directory_id === "api")) row.steps[0].input_head = mergedHead;
+  const next = { review: merged, merge_intents: [a.intent, b.intent, c] };
+  const settle = (partial) => {
+    const id = `${partial.intent.request_id}-retry`;
+    partial.intent.action_ids.push(id);
+    merged.actions.push({ id, directory_id: "api", snapshot_id: snapshot.id, source_path: "/sources/api", status: "succeeded", steps: [
+      { kind: "push", remote: "origin", branch: "main", status: "succeeded", input_head: mergedHead, result_head: mergedHead,
+        merge_action_id: `${partial.intent.request_id}-api` },
+    ] });
+  };
+  expect(settledMerge(next)).toBe(false);
+  settle(b);
+  expect(settledMerge(next)).toBe(false);
+  settle(a);
+  expect(settledMerge(next)).toBe(true);
+  expect(b.intent.state).toBe("interrupted");
+  expect(b.rows[0].steps[1].status).toBe("interrupted");
+});
+
+it.each(["foreign snapshot", "missing source path"])("keeps interrupted publication held when the original Push has a %s", (missing) => {
+  const retained = intent("interrupted");
+  const push = { kind: "push", remote: "origin", branch: "main", input_head: mergedHead, merge_action_id: "action-api" };
+  const interrupted = { id: "interrupted-api", directory_id: "api", snapshot_id: missing === "foreign snapshot" ? "other-snapshot" : snapshot.id,
+    source_path: "/sources/api", status: "interrupted", steps: [{ ...push, status: "interrupted" }] };
+  const later = { id: "retry-api", directory_id: "api", snapshot_id: snapshot.id, source_path: "/sources/api", status: "succeeded",
+    steps: [{ ...push, status: "succeeded", result_head: mergedHead }] };
+  const api = action("api");
+  if (missing === "missing source path") for (const row of [api, interrupted, later]) delete row.source_path;
+  retained.action_ids.push(interrupted.id, later.id);
+  const merged = { ...review, pull_request: { ...review.pull_request, status: "merged" },
+    actions: [api, action("ui", "succeeded", "succeeded"), interrupted, later] };
+  expect(settledMerge({ review: merged, merge_intents: [retained] })).toBe(false);
+});
+
 it("allows reclaim after a new successful merge despite a retained failure before integration", () => {
   const abandoned = { ...intent(), request_id: "old-failed", action_ids: ["failed-api", "failed-ui"] };
   const failed = (id) => ({ ...action(id, "failed"), id: `failed-${id}` });

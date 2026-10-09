@@ -47,3 +47,32 @@ export function untilCalled(mock, enough = 1) {
     });
   });
 }
+
+/** Resolves with `check`'s first truthy answer: now, or after whichever cache
+ *  write or eviction at or under `prefixAddress` makes it so. Takes the
+ *  module's own `subscribeCache`, since a case that resets modules holds a
+ *  cache of its own. */
+export function untilCache(subscribeCache, prefixAddress, check) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let checking = Promise.resolve();
+    let stop = () => {};
+    const recheck = () => {
+      checking = checking.then(async () => {
+        if (settled) return;
+        const answer = await check();
+        if (!answer || settled) return;
+        settled = true;
+        stop();
+        resolve(answer);
+      }).catch((error) => {
+        settled = true;
+        stop();
+        reject(error);
+      });
+    };
+    // Listening before the first look, so a write between the two is heard.
+    stop = subscribeCache(prefixAddress, recheck);
+    recheck();
+  });
+}

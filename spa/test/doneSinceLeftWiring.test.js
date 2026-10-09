@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { untilCache, untilDom } from "./untilCondition.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -21,7 +22,7 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { bridgeCapabilities, dispatchChangeEvent, greetBridge, resetChangeEvents } = await import("../src/core/changeEvents.js");
 const { mountTasksPane } = await import("../src/core/trackerTasksPane.js");
 const { readUserSession, userSessionAddress, writeUserSession } = await import("../src/core/userSessionCache.js");
-const { deleteCached } = await import("../src/core/localCache.js");
+const { deleteCached, subscribeCache } = await import("../src/core/localCache.js");
 const { tasksAddress, tasksRecord, writeTasksRecord } = await import("../src/core/trackerCache.js");
 
 const run = promisify(execFile);
@@ -200,8 +201,10 @@ it("falls back to the 24-hour Done once an older bridge answers the list", async
 
   // The 24-hour Done reads the cached timelines, and this bridge was asked for
   // none: its empty line says which Done is painted.
-  await vi.waitFor(() => expect(host.querySelector(".task-dashboard-empty")?.textContent)
-    .toBe("Nothing moved to Done in the last 24 hours."));
+  await untilDom(() => host.querySelector(".task-dashboard-empty")?.textContent === "Nothing moved to Done in the last 24 hours.");
+  // The empty line and the dropped session both follow this bridge's list
+  // answer, by separate writes: the line can be up before the session goes.
+  await untilCache(subscribeCache, userSessionAddress("dev-1"), async () => (await readUserSession("dev-1")) === null);
   expect(await readUserSession("dev-1")).toBe(null);
   expect(doneRows()).toEqual([]);
 });

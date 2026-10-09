@@ -250,7 +250,7 @@ export function mountTaskReviewMerge(host, options) {
   const preparedPlan = () => intentsOf(record).find((intent) => intent.request_id === draft.preparedRequestId && mayPrepareSnapshot(review, intent, snapshot.id));
   const submittedPlan = () => draft.submitted && intentsOf(record).find((intent) => intent.request_id === draft.submittedRequestId && mayPrepareSnapshot(review, intent, snapshot.id));
   const recoveryDraft = () => preparedPlan() || submittedPlan();
-  const submittedRequest = (held = draft) => ({ ...held.submitted, expected_version: review.version });
+  const submittedRequest = (held = draft, version = review.version) => ({ ...held.submitted, expected_version: version });
   const writer = watchReviewActionDraft(scope, "merge", (saved) => {
     if (disposed || busy) return;
     draft = draftForSnapshot(saved, snapshot.id);
@@ -272,11 +272,12 @@ export function mountTaskReviewMerge(host, options) {
       await writer.write(draft);
       return request;
     }
+    const intent = intentsOf(record).find((row) => row.request_id === requestId);
+    const confirmedReview = review;
     const historical = watchReviewActionDraft({ ...scope, snapshotId: request.snapshot_id }, "merge", () => {});
     try {
       const held = draftForSnapshot(await historical.ready, request.snapshot_id);
-      const intent = intentsOf(record).find((row) => row.request_id === requestId);
-      const selected = intent ? requestForIntent(intent, held) : request;
+      const selected = intent ? requestForIntent(intent, held, confirmedReview) : request;
       await historical.write(submittedDraft(held, selected, requestId));
       return selected;
     } finally { historical.dispose(); }
@@ -400,10 +401,10 @@ export function mountTaskReviewMerge(host, options) {
     });
     wireRecovery();
   }
-  function requestForIntent(intent, held = draft) {
-    const current = activeStatus(review) && review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id;
+  function requestForIntent(intent, held = draft, confirmedReview = review) {
+    const current = activeStatus(confirmedReview) && confirmedReview.pull_request.latest_published_snapshot_id === intent.request.snapshot_id;
     const matches = held.submitted?.snapshot_id === intent.request.snapshot_id && held.submittedRequestId === intent.request_id;
-    return current && matches ? submittedRequest(held) : retryRequest(review, intent);
+    return current && matches ? submittedRequest(held, confirmedReview.version) : retryRequest(confirmedReview, intent);
   }
   paint();
   return { ready, update(nextReview, nextRecord) { if (disposed) return; review = nextReview; record = nextRecord; paint(); },

@@ -179,6 +179,27 @@ it("loads an intent's own confirmed targets when retrying the latest plan from a
   expect((await readUiRecord(reviewActionDraftAddress(laterScope, "merge"))).value.submitted).toEqual({ ...confirmed, expected_version: 8 });
 });
 
+it.each(["an opinion", "a new snapshot"])("preserves the clicked retry version and targets if %s arrives while its own draft loads", async (change) => {
+  const next = laterRecord();
+  const latestIntent = { ...intent(), request_id: "merge-latest", request: { ...intent().request, snapshot_id: laterSnapshot.id,
+    sources: intent().request.sources.map((row) => ({ ...row, head: "6".repeat(40) })) } };
+  next.merge_intents = [latestIntent];
+  next.review.actions = next.review.actions.map((row) => ({ ...row, snapshot_id: laterSnapshot.id,
+    steps: row.steps.map((step) => step.kind === "merge" ? { ...step, input_head: "6".repeat(40) } : step) }));
+  const confirmed = { ...params, expected_version: 7, snapshot_id: laterSnapshot.id,
+    sources: params.sources.map((row) => ({ ...row, expected_base_head: "4".repeat(40) })) };
+  await writeUiRecord(reviewActionDraftAddress(laterScope, "merge"), { selected: {}, submitted: confirmed, submittedRequestId: latestIntent.request_id });
+  const repository = await mount(next);
+  const submitting = document.querySelector('[data-pr-merge-retry="merge-latest"]').onclick();
+  expect(repository.mutate).not.toHaveBeenCalled();
+  const updated = { ...next.review, version: 9, pull_request: { ...next.review.pull_request,
+    latest_published_snapshot_id: change === "a new snapshot" ? "snapshot-3" : laterSnapshot.id } };
+  panel.update(updated, { ...next, review: updated });
+  await submitting;
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...confirmed, expected_version: 8 });
+  expect((await readUiRecord(reviewActionDraftAddress(laterScope, "merge"))).value.submitted).toEqual({ ...confirmed, expected_version: 8 });
+});
+
 it("labels a partial merge with failed publication as Retry saved merge and sends every original source", async () => {
   const ui = action("ui", "failed", "skipped");
   const partial = { ...record, review: { ...review, version: 7, actions: [action("api"), ui] }, merge_intents: [intent()] };

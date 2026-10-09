@@ -919,7 +919,9 @@ those targets across reloads for the active latest plan; another explicit
 preparation permits new targets. Publication-only result retries use the intent's
 saved vector to address its original obligations.
 Each retry reads and saves the draft for the intent's own snapshot, preserving
-that snapshot's confirmed targets and choices. Retrying another snapshot never
+that snapshot's confirmed targets and choices. The clicked review version and
+plan remain fixed while the draft loads; a newer cached opinion or snapshot
+cannot silently advance the request's confirmation. Retrying another snapshot never
 changes the selected form's draft. The form accepts only submitted requests for
 its selected snapshot and ignores foreign submitted requests left by older
 clients; preparation also requires that the intent's snapshot is selected.

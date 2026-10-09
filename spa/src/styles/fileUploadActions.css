@@ -26,3 +26,8 @@
 .fupload-new { display:inline-flex; }
 .fupload-new .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto; min-width:150px; cursor:default; }
 .fupload-new .splitmenu .mi { font-weight:normal; white-space:nowrap; }
+/* A pressed row darkens with a filter (styles/interactions.css), and a filter
+   makes the row the containing block of the fixed menu inside it: the menu
+   would jump away from the finger mid-press. A press on the menu or its
+   button is not a press on the row. */
+body .ftree .frow.fdir:has(.fupload-new:active) { filter:none; box-shadow:none; }

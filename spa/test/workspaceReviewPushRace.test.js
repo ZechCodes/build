@@ -23,6 +23,7 @@ import { writeReviewReply } from "../src/core/taskReviewCache.js";
 import { openReviewPushForm } from "../src/core/workspaceReviewForm.js";
 import opened from "../../fixtures/api/v1/tasks.review.open.json";
 import pushed from "../../fixtures/api/v1/tasks.review.push.json";
+import { called, holds, painted } from "./waits.js";
 
 const scope = { deviceId: "push-race", projectId: "proj-1", workspaceId: "workspace-1", taskId: "task-1" };
 const address = reviewActionDraftAddress(scope, "push");
@@ -52,14 +53,14 @@ it.each(["during draft readback", "during request"])("preserves the peer's newer
   modal = await openReviewPushForm({ ...scope, callRpc }, opened.result.review, fact);
   if (timing === "during draft readback") race.beforeWriteReturns = async () => { await replaceWithPeerDraft(); };
   document.querySelector("[data-push-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   if (timing === "during request") await replaceWithPeerDraft();
   expect(callRpc.mock.calls[0]).toEqual(["tasks.review.push", { task_id: scope.taskId, expected_version: 1,
     sources: [{ directory_id: "dir-api", expected_head: fact.sync.working_head, expected_received_head: fact.sync.received_head }] }]);
   expect(document.querySelector("[data-push-review-pins]").textContent).toContain("Review version 1");
   expect(document.querySelector("[data-push-review-pins]").textContent).toContain(fact.sync.working_head);
   settle(pushed.result);
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
+  await painted(holds(() => expect(document.querySelector("[role=dialog]")).toBeNull()));
   expect((await readUiRecord(address)).value).toEqual(peerDraft);
   modal = await openReviewPushForm({ ...scope, callRpc }, opened.result.review, fact);
   expect(document.querySelector("[data-push-review-pins]").textContent).toContain("Review version 7");

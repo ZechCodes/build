@@ -25,7 +25,7 @@ async function activate(page, selector, hasTouch) {
   }
 }
 
-async function mountPullRequest(page, basePath) {
+async function mountPullRequest(page, basePath, { holdReads = true } = {}) {
   await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Build · PR review</header><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush"><div id="task-header"></div><div id="review"></div></div></main></div></div></div>', {
     basePath,
     styles: `@import url("${basePath}src/styles/tasks.css"); #shell{height:100vh;box-sizing:border-box} #view-body,#root,#tabbody{min-width:0} #task-header{padding:var(--pane-top) var(--pane-gutter) 0} #review{width:100%;box-sizing:border-box;padding:1rem}`,
@@ -42,7 +42,7 @@ async function mountPullRequest(page, basePath) {
     local: "src/core/localCache.js",
     taskRender: "src/core/trackerTaskRender.js",
   }, basePath);
-  await page.evaluate(async (answer) => {
+  await page.evaluate(async ({ answer, holdReads }) => {
     const { review, support, cache, local, taskRender } = window.__layoutModules;
     document.querySelector("#task-header").innerHTML = taskRender.taskHeadHtml(answer.task);
     const scope = { deviceId: "pr-layout-device", projectId: "pr-layout-project", taskId: "task-1" };
@@ -62,16 +62,20 @@ async function mountPullRequest(page, basePath) {
       health: "current", pending_commits: 0 }));
     const patch = "diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-before\n+Reviewed API change\n";
     const calls = [];
+    const rpcState = { holdReads, reply: { ...answer, review: saved, sync }, mergeRefusal: null };
     const callRpc = async (method, params) => {
       calls.push({ method, params });
-      // These reads remain outstanding: all lifecycle facts must paint from
+      // Default reads remain outstanding: lifecycle facts must paint from
       // the seeded or subsequently updated cache before any RPC resolves.
-      if (method === "tasks.review.get") return new Promise(() => {});
+      if (method === "tasks.review.get") return rpcState.holdReads ? new Promise(() => {}) : structuredClone(rpcState.reply);
       if (method === "tasks.review.diff") return {
         stat: { files_changed: 1, insertions: 1, deletions: 1 },
         files: [{ path: "changed.txt", status: "Modified", additions: 1, deletions: 1, content_key: `${params.snapshot_id}:change` }],
         files_truncated: false, patch: params.paths ? patch : null, truncated: false,
       };
+      if (method === "tasks.review.merge" && rpcState.mergeRefusal) {
+        throw Object.assign(new Error(rpcState.mergeRefusal.message), { code: rpcState.mergeRefusal.code });
+      }
       throw new Error(`Unexpected layout RPC ${method}`);
     };
     await support.rememberReviewSupport(scope.deviceId, { reviews: {
@@ -83,11 +87,39 @@ async function mountPullRequest(page, basePath) {
     const mounted = review.mountTaskReviewPage(document.querySelector("#review"), {
       ...scope, callRpc, task: () => answer.task, workspaces: () => [workspace],
     });
-    window.__pullRequestLayout = { mounted, scope, calls, workspaceAddress, workspace };
+    window.__pullRequestLayout = { mounted, scope, calls, rpcState, workspaceAddress, workspace };
     await mounted.ready;
-  }, opened.result);
+  }, { answer: opened.result, holdReads });
   await page.waitForSelector('[data-review-pr-status]');
   await page.waitForSelector('[data-review-path="changed.txt"]');
+}
+
+async function cachePartialMerge(page) {
+  await page.evaluate(async (answer) => {
+    const { cache, local } = window.__layoutModules;
+    const { scope, rpcState } = window.__pullRequestLayout;
+    const held = (await local.readCached(cache.reviewAddress(scope))).value;
+    const partial = structuredClone(answer);
+    const branches = { "dir-api": "release/api-fixed", "dir-ui": "release/ui-fixed" };
+    for (const source of partial.merge_intents[0].request.sources) source.push.branch = branches[source.directory_id];
+    for (const action of partial.review.actions) {
+      const push = action.steps.find((step) => step.kind === "push");
+      push.branch = branches[action.directory_id];
+      if (action.directory_id !== "dir-api") continue;
+      action.status = "failed";
+      push.status = "failed";
+      push.error = "Remote rejected the API publication.";
+    }
+    partial.review = { ...held.review, version: 7, actions: partial.review.actions };
+    partial.sync = held.sync.map((row) => ({ ...row, target_head: row.directory_id === "dir-api" ? "3".repeat(40) : "1".repeat(40) }));
+    await cache.writeReviewReply(scope, partial, 7);
+    // The explicit stale retry asks for the newest record. It has the same
+    // published snapshot and saved results, with newer receiving target heads.
+    rpcState.reply = { ...partial, review: { ...partial.review, version: 8 },
+      sync: partial.sync.map((row) => ({ ...row, target_head: row.directory_id === "dir-api" ? "4".repeat(40) : "5".repeat(40) })) };
+    rpcState.mergeRefusal = { code: "stale_version", message: "The review changed while retrying the saved merge." };
+  }, merged.examples[0].result);
+  await page.waitForSelector('[data-pr-merge-result="merge-review-1"]');
 }
 
 async function publishNewerSnapshot(page) {
@@ -226,4 +258,62 @@ for (const { label, width, hasTouch } of viewports) {
     }, { width, height: 900, hasTouch, plugins: [deviceShim] });
   }, 60_000);
 
+  it(`prepares a fresh partial-merge plan without dispatching Git on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      await mountPullRequest(page, basePath, { holdReads: false });
+      await cachePartialMerge(page);
+      const result = page.locator('[data-pr-merge-result="merge-review-1"]');
+      const retry = '[data-pr-merge-retry="merge-review-1"]';
+      const prepare = '[data-pr-merge-prepare="merge-review-1"]';
+      expect(await page.locator(retry).textContent()).toBe("Retry saved merge");
+      expect(await result.textContent()).toContain("Partially merged: 1 of 2 included sources integrated");
+      expect(await result.textContent()).toContain("push origin/release/api-fixed: failed");
+      expect(await result.textContent()).toContain("Merge conflicts in src/app.js");
+
+      await activate(page, retry, hasTouch);
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-error]')?.hidden === false);
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-prepare="merge-review-1"]')?.disabled === false);
+      expect(await page.locator(prepare).textContent()).toBe("Prepare a new merge plan");
+      expect(await page.evaluate(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge"))).toEqual([
+        { method: "tasks.review.merge", params: { task_id: "task-1", expected_version: 7, snapshot_id: "snapshot-1",
+          sources: [
+            { directory_id: "dir-api", expected_base_head: "1".repeat(40), push: { remote: "origin", branch: "release/api-fixed" } },
+            { directory_id: "dir-ui", expected_base_head: "1".repeat(40), push: { remote: "origin", branch: "release/ui-fixed" } },
+          ],
+        } },
+      ]);
+      expect(await page.evaluate(async () => {
+        const { cache, local } = window.__layoutModules;
+        return (await local.readCached(cache.reviewAddress(window.__pullRequestLayout.scope))).value.review.version;
+      })).toBe(8);
+
+      await activate(page, prepare, hasTouch);
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-sheet]')?.open === true);
+      await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
+      expect(await page.locator('[data-review-snapshot]').inputValue()).toBe("snapshot-1");
+      for (const [directory, branch, target] of [
+        ["dir-api", "release/api-fixed", "4".repeat(40)], ["dir-ui", "release/ui-fixed", "5".repeat(40)],
+      ]) {
+        expect(await page.locator(`[data-pr-merge-push="${directory}"]`).isChecked()).toBe(true);
+        expect(await page.locator(`[data-pr-merge-push="${directory}"]`).isDisabled()).toBe(true);
+        expect(await page.locator(`[data-pr-merge-remote="${directory}"]`).inputValue()).toBe("origin");
+        expect(await page.locator(`[data-pr-merge-remote="${directory}"]`).isDisabled()).toBe(true);
+        expect(await page.locator(`[data-pr-merge-branch="${directory}"]`).inputValue()).toBe(branch);
+        expect(await page.locator(`[data-pr-merge-branch="${directory}"]`).isDisabled()).toBe(true);
+        expect(await page.locator(`[data-pr-merge-source="${directory}"]`).textContent()).toContain(target);
+      }
+      expect(await result.textContent()).toContain("merge main: succeeded");
+      expect(await result.textContent()).toContain("Remote rejected the API publication.");
+      expect(await result.textContent()).toContain("Merge conflicts in src/app.js");
+      expect(await page.evaluate(() => window.__pullRequestLayout.calls.filter(({ method }) => method === "tasks.review.merge").length)).toBe(1);
+      expect(await page.locator('[data-pr-merge-sheet] > summary').evaluate((summary) => document.activeElement === summary)).toBe(true);
+      await assertNoPageOverflow(page);
+      await page.locator(".task-page-head").scrollIntoViewIfNeeded();
+      await captureLayout(page, `task-pr-prepared-recovery-${label}.png`);
+      expect(errors).toEqual([]);
+      await page.evaluate(() => window.__pullRequestLayout.mounted.dispose());
+    }, { width, height: 1100, hasTouch, plugins: [deviceShim] });
+  }, 60_000);
 }

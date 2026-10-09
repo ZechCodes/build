@@ -47,6 +47,7 @@ const { TASKS_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
 const { AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 const { wipeCache } = await import("../src/core/localCache.js");
+const { wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { writeRailWorkItem } = await import("./railCacheFixture.js");
 const { rememberAgentLineageSupport } = await import("../src/core/agentLineageSupport.js");
 
@@ -174,6 +175,10 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   await wipeCache();
+  // Which surface the reader left open is local UI state, which wipeCache does
+  // not reach: without this a case mounts with the last case's viewer open, and
+  // its press on the pill closes it instead of opening it.
+  await wipeUiRecords();
   resetAgentRailMemory();
   notifyError.mockClear();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -396,6 +401,18 @@ describe("the conversation header's menu", () => {
 });
 
 describe("the agent's goal and observed checklist", () => {
+  const checklistPill = () => {
+    const pill = panel().querySelector('[data-surface-kind="checklist"]');
+    if (!pill) throw new Error("the Tasks pill is not drawn yet");
+    return pill;
+  };
+  /** Presses the Tasks pill once it is drawn, from a viewer that is shut: a
+   *  press on an open one closes it. */
+  const openTasks = async () => {
+    const pill = await vi.waitFor(checklistPill);
+    expect(pill.getAttribute("aria-pressed")).toBe("false");
+    pill.click();
+  };
   const observed = () => ({
     goal: { objective: "Ship the release", state: "active" },
     checklist: [{ id: "one", subject: "Run verification", state: "in_progress" }],
@@ -428,8 +445,10 @@ describe("the agent's goal and observed checklist", () => {
   it("shows task observation metadata inside the Tasks viewer", async () => {
     payload = branchRow({ surfaces: observed() });
     await mount();
-    panel().querySelector('[data-surface-kind="checklist"]').click();
+    await openTasks();
     await vi.waitFor(() => expect(panel().querySelector(".surface-checklist-context")?.textContent).toContain("Run verification"));
+    // Open, not a closing frame: the press opened the viewer.
+    expect(checklistPill().getAttribute("aria-pressed")).toBe("true");
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("Run verification");
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("0/1");
   });
@@ -447,8 +466,10 @@ describe("the agent's goal and observed checklist", () => {
     payload = branchRow({ surfaces });
     await mount();
 
-    panel().querySelector('[data-surface-kind="checklist"]').click();
+    await openTasks();
     await vi.waitFor(() => expect(panel().querySelector(".surface-checklist-context")?.textContent).toContain("1 known completed"));
+    // Open, not a closing frame: the press opened the viewer.
+    expect(checklistPill().getAttribute("aria-pressed")).toBe("true");
     const context = panel().querySelector(".surface-checklist-context");
     expect(context.textContent).toContain("1 known completed · 3 omitted");
     expect(context.textContent).toContain("Last known");

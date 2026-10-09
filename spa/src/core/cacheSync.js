@@ -268,11 +268,13 @@ function dirsOf(paths) {
  */
 export async function syncDevice(deviceId) {
   if (!holdingLock) return false;
+  const session = sessionOf(deviceId);
+  const startedIn = lifetime;
   const running = passes.get(deviceId);
   if (running) {
     // The current pass may already have read a record changed by this ask.
     // Every ask during it shares one later pass, and waits for that answer.
-    if (running.session === sessionOf(deviceId)) {
+    if (running.session === session) {
       running.again = true;
       return running.done.then(() => running.next ?? false);
     }
@@ -284,6 +286,8 @@ export async function syncDevice(deviceId) {
     // have is the one being dropped.
     running.superseded = true;
     await running.done;
+    // A stopped lifetime or a replaced session abandons this waiting request.
+    if (!holdingLock || startedIn !== lifetime || sessionOf(deviceId) !== session) return false;
     if (passes.has(deviceId)) return false; // another ask got in first; it owns this turn
   }
   return startPass(deviceId);

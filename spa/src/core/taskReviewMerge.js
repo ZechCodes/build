@@ -172,8 +172,10 @@ function mayRetry(review, intent) {
 }
 
 const publicationRetry = (review, intent) => intent.request.sources.every((source) => integrated(review, intent, source)) && unpushed(review, intent);
-const mayPrepare = (review, intent) => activeStatus(review) && intent.state === "failed" &&
-  review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id && !uncertain(review, intent) &&
+const uncertainResults = (review, intent) => rowsFor(review, intent).some((row) =>
+  ["running", "interrupted"].includes(row.status) || row.steps?.some((step) => ["running", "interrupted"].includes(step.status)));
+const mayPrepare = (review, intent) => activeStatus(review) && ["failed", "interrupted"].includes(intent.state) &&
+  review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id && !uncertainResults(review, intent) &&
   intent.request.sources.some((source) => integrated(review, intent, source));
 
 function intentSummary(review, intent) {

@@ -122,9 +122,9 @@ it("labels a partial merge with failed publication as Retry saved merge and send
   expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...params, expected_version: 7 });
 });
 
-it("offers a separate current-target recovery plan after an opinion makes a partial merge retry stale", async () => {
+it.each(["failed", "interrupted"])("offers a separate current-target recovery plan when known %s results become stale after an opinion", async (state) => {
   const partial = { ...record, review: { ...review, actions: [action("api"), action("ui", "failed", "skipped")] },
-    merge_intents: [{ ...intent(), execution_version: 3 }] };
+    merge_intents: [{ ...intent(state), execution_version: 3 }] };
   const stale = new Error("PR version changed during merge; refresh the plan");
   const repository = await mount(partial, { mutate: vi.fn().mockRejectedValueOnce(stale).mockResolvedValue(undefined) });
   const newer = { ...partial, review: { ...partial.review, version: 7 },
@@ -208,6 +208,15 @@ it("does not offer a retry while saved Git work is still running", async () => {
   const repository = await mount({ ...record, review: { ...review, actions: [running] }, merge_intents: [intent("interrupted")] });
   expect(document.querySelector("[data-pr-merge-retry]")).toBeNull();
   expect(document.querySelector("[data-pr-merge-form]")).toBeNull();
+  expect(document.querySelector("[data-pr-merge-prepare]")).toBeNull();
+  expect(repository.mutate).not.toHaveBeenCalled();
+});
+
+it("keeps uncertain step results out of current-target recovery", async () => {
+  const unknown = action("ui", "failed", "skipped");
+  unknown.steps[0].status = "interrupted";
+  const repository = await mount({ ...record, review: { ...review, actions: [action("api"), unknown] }, merge_intents: [intent()] });
+  expect(document.querySelector("[data-pr-merge-prepare]")).toBeNull();
   expect(repository.mutate).not.toHaveBeenCalled();
 });
 

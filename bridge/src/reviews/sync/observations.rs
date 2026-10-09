@@ -16,6 +16,9 @@ pub(super) fn persist(
         .load_review_sync_observations(&review.task_id)
         .map_err(|e| e.to_string())?;
     let snapshot = latest(review)?;
+    let reviewed = store
+        .load_user_reviewed_snapshot(&review.task_id)
+        .map_err(|e| e.to_string())?;
     for (binding, tip) in review.bindings.iter().zip(received) {
         let saved = snapshot
             .directories
@@ -29,6 +32,9 @@ pub(super) fn persist(
             tip,
             capture_error,
         );
+        if let Some(reviewed) = &reviewed {
+            since_review(&mut observation, binding, reviewed);
+        }
         result.retry |= matches!(
             observation.health,
             ReviewSyncHealth::Unavailable | ReviewSyncHealth::Interrupted
@@ -96,6 +102,9 @@ fn observe(
         received_head,
         snapshot_head,
         pending_commits,
+        reviewed_snapshot_id: None,
+        commits_since_review: None,
+        rewritten_since_review: false,
         observed_at: String::new(),
         error,
     }
@@ -136,6 +145,46 @@ fn pending(
         .graph_ahead_behind(working, received)
         .ok()
         .map(|(ahead, _)| ahead as u64)
+}
+
+/// Counted in the receiving repository, where snapshot pins keep a rewritten
+/// reviewed head readable.
+fn since_review(
+    observation: &mut ReviewSyncObservation,
+    binding: &ReviewBranchBinding,
+    reviewed: &ReviewSnapshot,
+) {
+    observation.reviewed_snapshot_id = Some(reviewed.id.clone());
+    let reviewed_head = reviewed
+        .directories
+        .iter()
+        .find(|directory| directory.id == binding.directory_id)
+        .and_then(|directory| directory.head.as_deref())
+        .and_then(|head| git2::Oid::from_str(head).ok());
+    let head = observation
+        .received_head
+        .as_deref()
+        .and_then(|head| git2::Oid::from_str(head).ok());
+    let (Some(reviewed_head), Some(head)) = (reviewed_head, head) else {
+        return;
+    };
+    if reviewed_head == head {
+        observation.commits_since_review = Some(0);
+        return;
+    }
+    let Ok(repository) = git2::Repository::open_bare(&binding.receiving_repository) else {
+        return;
+    };
+    match repository.graph_descendant_of(head, reviewed_head) {
+        Ok(true) => {
+            observation.commits_since_review = repository
+                .graph_ahead_behind(head, reviewed_head)
+                .ok()
+                .map(|(ahead, _)| ahead as u64);
+        }
+        Ok(false) => observation.rewritten_since_review = true,
+        Err(_) => {}
+    }
 }
 
 fn unchanged(

@@ -22,6 +22,27 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// The snapshot the user last gave an opinion on: the baseline for
+    /// "commits since your last review". Agents' opinions are not the user's.
+    pub fn load_user_reviewed_snapshot(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<ReviewSnapshot>, StoreError> {
+        let raw: Option<(String, String)> = self
+            .connection()
+            .query_row(
+                "SELECT s.id, s.record FROM tracker_comments c JOIN review_snapshots s
+                 ON s.task_id = c.task_id AND s.id = json_extract(c.record, '$.opinion.snapshot_id')
+                 WHERE c.task_id = ?1 AND json_extract(c.record, '$.author.kind') = 'user'
+                 ORDER BY c.created_at DESC, c.id DESC LIMIT 1",
+                [task_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        raw.map(|(id, raw)| decode(&raw, "review_snapshots", &id))
+            .transpose()
+    }
+
     pub fn load_review_sync_candidate(&self, task_id: &str) -> Result<Option<String>, StoreError> {
         self.connection()
             .query_row(

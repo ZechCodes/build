@@ -215,6 +215,17 @@ pub struct ReviewSyncObservation {
     pub snapshot_head: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_commits: Option<u64>,
+    /// The snapshot the user last gave an opinion on, naming the baseline of
+    /// the two fields after it (#427). Absent until the user reviews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_snapshot_id: Option<String>,
+    /// Commits reachable from `received_head` and not from the reviewed
+    /// snapshot's head. Absent when history was rewritten or is unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits_since_review: Option<u64>,
+    /// The reviewed snapshot's head is no longer an ancestor of `received_head`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub rewritten_since_review: bool,
     pub observed_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

@@ -29,10 +29,13 @@ beforeEach(async () => {
   delete navigator.locks;
   contexts.clear(); watchers.length = 0;
   board = [];
+  // The opening pass's board read is held until the test lets it finish.
+  let finishOpeningRead;
+  const openingRead = new Promise((resolve) => { finishOpeningRead = resolve; });
   const context = {
     deviceId: "reset-device", session: {}, greeted: Promise.resolve(), cacheScope: { active: () => true }, active: () => true,
     rpc: async (method) => {
-      if (method === "board.list") { await new Promise((r) => setTimeout(r, 1500)); return { items: board }; }
+      if (method === "board.list") { await openingRead; return { items: board }; }
       if (method === "project.list") return { projects: [] };
       if (method === "workspace.list") return { workspaces: [] };
       if (method === "thread.page") return { thread_id: "thread:ag-1", items: [], has_more: false };
@@ -47,7 +50,9 @@ beforeEach(async () => {
   await vi.waitFor(() => expect(watchers.some((watcher) => watcher.id === "s-inbox")).toBe(true));
   // The opening pass is out once it has subscribed. A test's own ask made
   // while it is still reading would be folded into it, not read again.
-  await passesSettled(sync, "reset-device");
+  const settled = passesSettled(sync, "reset-device");
+  finishOpeningRead();
+  await settled;
   await cache.writeCached(address("thread", "ag-1"), { thread_id: "thread:ag-1", items: [], deliveredSequence: 0 });
 });
 

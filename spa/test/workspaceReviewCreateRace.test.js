@@ -21,6 +21,7 @@ import { reviewCreateDraftAddress } from "../src/core/taskReviewDrafts.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { openReviewCreateForm } from "../src/core/workspaceReviewForm.js";
 import opened from "../../fixtures/api/v1/tasks.review.open.json";
+import { called, holds, painted } from "./waits.js";
 
 const scope = { deviceId: "create-race", projectId: "proj-1", workspaceId: "workspace-1" };
 const address = reviewCreateDraftAddress(scope);
@@ -79,7 +80,7 @@ it("sends the confirmed opening when a peer replaces the draft during submission
     replaced = true; await replaceWithPeerDraft();
   };
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   expect(callRpc.mock.calls[0]).toEqual(["tasks.review.open", {
     workspace_id: scope.workspaceId, request_id: expect.any(String), title: "Confirmed review", description: "Confirmed description",
     reviewer: { kind: "user" }, bases: [{ directory_id: "dir-api", branch: "main" }], excluded_git_directory_ids: [],
@@ -87,17 +88,17 @@ it("sends the confirmed opening when a peer replaces the draft during submission
   expect(callRpc.mock.calls[0][1].request_id).not.toBe(peerRequest.request_id);
   expectConfirmedFields();
   settle(opened.result);
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
+  await painted(holds(() => expect(document.querySelector("[role=dialog]")).toBeNull()));
   expect((await readUiRecord(address)).value).toEqual(peerDraft);
 });
 
 it("keeps a newer peer draft when the confirmed opening reports failed reviewer dispatch", async () => {
   const { callRpc, settle } = await mountPendingOpening();
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   await replaceWithPeerDraft();
   settle({ ...opened.result, reviewer_dispatch: { state: "failed", error: "Reviewer unavailable" } });
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
+  await painted(holds(() => expect(document.querySelector("[role=dialog]")).toBeNull()));
   expect((await readUiRecord(address)).value).toEqual(peerDraft);
 });
 
@@ -105,11 +106,11 @@ it("freezes the confirmed caption and fields while its request is in flight", as
   const { callRpc, settle } = await mountPendingOpening();
   document.querySelector("[data-open-review-submit]").click();
   expectConfirmedFields();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   await replaceWithPeerDraft();
   expectConfirmedFields();
   settle(opened.result);
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
+  await painted(holds(() => expect(document.querySelector("[role=dialog]")).toBeNull()));
 });
 
 it("makes a definitively rejected opening editable and restores its durable fields on reopening", async () => {
@@ -122,10 +123,10 @@ it("makes a definitively rejected opening editable and restores its durable fiel
   const { callRpc, refuse } = await mountPendingOpening();
   type('[data-review-base="dir-api"]', "bad base");
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   refuse(Object.assign(new Error("branch must name a local Git branch"), { code: "invalid_params" }));
-  await vi.waitFor(() => expect(document.querySelector("[data-review-form-error]").textContent).toContain("branch must name"));
-  await vi.waitFor(() => expect(document.querySelector("[data-review-title]").disabled).toBe(false));
+  await painted(holds(() => expect(document.querySelector("[data-review-form-error]").textContent).toContain("branch must name")));
+  await painted(holds(() => expect(document.querySelector("[data-review-title]").disabled).toBe(false)));
   expect(document.querySelector("[data-review-description]").disabled).toBe(false);
   expect(document.querySelector("[data-assignee-select]").disabled).toBe(false);
   expect(document.querySelector('[data-review-base="dir-api"]').disabled).toBe(false);
@@ -147,7 +148,7 @@ it("makes a definitively rejected opening editable and restores its durable fiel
   expect(callRpc).toHaveBeenCalledOnce();
   type('[data-review-base="dir-api"]', "release");
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledTimes(2)));
   expect(callRpc.mock.calls[1][1].bases).toEqual([{ directory_id: "dir-api", branch: "release" }]);
 });
 
@@ -155,11 +156,11 @@ it.each(["during draft readback", "during request"])("preserves a peer's newer d
   const { callRpc, refuse } = await mountPendingOpening();
   if (timing === "during draft readback") race.beforeWriteReturns = async () => { await replaceWithPeerDraft(); };
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   if (timing === "during request") await replaceWithPeerDraft();
   refuse(Object.assign(new Error("Rejected opening"), { error_code: "invalid_params" }));
-  await vi.waitFor(() => expect(document.querySelector("[data-review-form-error]").textContent).toBe("Rejected opening"));
-  await vi.waitFor(() => expect(document.querySelector("[data-review-title]").disabled).toBe(false));
+  await painted(holds(() => expect(document.querySelector("[data-review-form-error]").textContent).toBe("Rejected opening")));
+  await painted(holds(() => expect(document.querySelector("[data-review-title]").disabled).toBe(false)));
   expect((await readUiRecord(address)).value).toEqual(peerDraft);
   expect(callRpc).toHaveBeenCalledOnce();
 });
@@ -167,9 +168,9 @@ it.each(["during draft readback", "during request"])("preserves a peer's newer d
 it("keeps an uncertain transport failure pinned without resubmitting on reopening", async () => {
   const { callRpc, refuse } = await mountPendingOpening();
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   refuse(Object.assign(new Error("Lost reply"), { uncertain: true }));
-  await vi.waitFor(() => expect(document.querySelector("[data-review-form-error]").textContent).toBe("Lost reply"));
+  await painted(holds(() => expect(document.querySelector("[data-review-form-error]").textContent).toBe("Lost reply")));
   expectConfirmedFields();
   expect((await readUiRecord(address)).value.submitted).toEqual(callRpc.mock.calls[0][1]);
   await modal.close();
@@ -184,7 +185,7 @@ it.each(["a".repeat(201), `${"é".repeat(100)}a`])("rejects a title over 200 UTF
   expect(document.querySelector("[data-review-title]").maxLength).toBe(200);
   type("[data-review-title]", title);
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(document.querySelector("[data-review-form-error]").textContent).toContain("200 bytes"));
+  await painted(holds(() => expect(document.querySelector("[data-review-form-error]").textContent).toContain("200 bytes")));
   expect(document.querySelector("[data-review-title]").disabled).toBe(false);
   expect(callRpc).not.toHaveBeenCalled();
   await modal.close();
@@ -199,10 +200,10 @@ it("accepts a title of exactly 200 UTF-8 bytes", async () => {
   const title = "é".repeat(100);
   type("[data-review-title]", `  ${title}  `);
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledOnce()));
   expect(callRpc.mock.calls[0][1].title).toBe(title);
   settle(opened.result);
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
+  await painted(holds(() => expect(document.querySelector("[role=dialog]")).toBeNull()));
 });
 
 it("unpins an older saved overlong opening after its definitive bridge rejection", async () => {
@@ -214,12 +215,12 @@ it("unpins an older saved overlong opening after its definitive bridge rejection
   expect(document.querySelector("[data-review-title]").disabled).toBe(true);
   expect(callRpc).not.toHaveBeenCalled();
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(document.querySelector("[data-review-title]").disabled).toBe(false));
+  await painted(holds(() => expect(document.querySelector("[data-review-title]").disabled).toBe(false)));
   expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.open", submitted);
   expect(document.querySelector("[data-review-form-error]").textContent).toContain("200 bytes");
   expect((await readUiRecord(address)).value.submitted).toBeUndefined();
   type("[data-review-title]", "Corrected review");
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(2));
+  await called(callRpc, holds(() => expect(callRpc).toHaveBeenCalledTimes(2)));
   expect(callRpc.mock.calls[1][1].title).toBe("Corrected review");
 });

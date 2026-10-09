@@ -125,7 +125,7 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     disposers.push(() => root.ownerDocument.querySelector("#pscancel")?.click());
   }
   if (name === "new project") {
-    disposers.push(m.newRepo.openNewRepo(() => {}, { devices: [device, { ...device, id: "desktop", name: "Desktop" }], defaultDeviceId: device.id, callRpcFor: () => callRpc }));
+    m.newRepo.openNewRepo(() => {}, { devices: [device, { ...device, id: "desktop", name: "Desktop" }], defaultDeviceId: device.id, callRpcFor: () => callRpc });
   }
   if (name === "workspace review") {
     await m.cache.writeCached(m.tracker.tasksAddress(device.id, project.id), { tasks: [{ id: "task-1", number: 367, title: "Style select menus" }], columns: [] });

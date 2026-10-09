@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
-let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, uiAddress, DEVICES_ADDRESS;
+let ApiError, openNewRepo, writeCached, readCached, greetBridge, githubReposAddress, startGithubRepos, heldGithubRepos, watchGithubRepos, uiAddress, DEVICES_ADDRESS;
 
 const REPOS = [
   { name_with_owner: "zech/build", description: "Agentic IDE", ssh_url: "git@github.com:zech/build.git", url: "https://github.com/zech/build", private: true, pushed_at: "2026-09-24T22:00:00Z" },
@@ -51,6 +51,13 @@ const key = (input, name) => {
 const options = () => [...document.querySelectorAll('[role="option"]')].map((option) => option.querySelector(".repo-picker-name").textContent);
 const listbox = () => document.querySelector('[role="listbox"]');
 const cacheList = (value) => writeCached(githubReposAddress("desk"), value);
+/** Settles once the machine's record, as the pickers hold it, passes `done`.
+ *  Watching after a picker has mounted, so that picker has painted it first. */
+const held = (done, deviceId = "desk") => new Promise((resolve) => {
+  const check = () => { if (done(heldGithubRepos(deviceId))) { stop(); resolve(); } };
+  const stop = watchGithubRepos(deviceId, check);
+  check();
+});
 
 beforeEach(async () => {
   vi.resetModules();
@@ -61,7 +68,7 @@ beforeEach(async () => {
   ({ writeCached, readCached, DEVICES_ADDRESS } = await import("../src/core/localCache.js"));
   ({ uiAddress } = await import("../src/core/localUiState.js"));
   ({ greetBridge } = await import("../src/core/changeEvents.js"));
-  ({ githubReposAddress, startGithubRepos } = await import("../src/core/githubRepos.js"));
+  ({ githubReposAddress, startGithubRepos, heldGithubRepos, watchGithubRepos } = await import("../src/core/githubRepos.js"));
   document.body.innerHTML = '<div id="scrim"><div id="sheet"></div></div>';
 });
 
@@ -219,8 +226,8 @@ it("a bridge that greets without the capability leaves a plain field even over a
   const call = deskCall();
   open(call);
   const input = addRemote();
-  // Past every cache read and write the opening started.
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // The opening drops the list a bridge without github.repos cannot search.
+  await held((record) => record?.repos === null);
   expect(input.hasAttribute("role")).toBe(false);
   type(input, "bot");
   expect(options()).toEqual([]);
@@ -409,8 +416,7 @@ describe("the account-wide sheet", () => {
       selectedDeviceId: "",
     });
     const call = deskCall();
-    openAccountWide(call, [DESK, LAP]);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await openAccountWide(call, [DESK, LAP]).whenDraftRestored;
     expect(document.querySelector("#nrdevice").value).toBe("");
     expect(document.querySelector("[data-source-value]")).toBeNull();
     expect(reposCalls(call)).toHaveLength(0);
@@ -420,9 +426,10 @@ describe("the account-wide sheet", () => {
     await vi.waitFor(() => expect(reposCalls(call)).toHaveLength(1));
     const input = document.querySelector("[data-source-value]");
     expect(input.value).toBe("bot"); // the draft's remote, painted with the form
-    await vi.waitFor(() => expect(input.getAttribute("role")).toBe("combobox"));
+    await held((record) => Array.isArray(record?.repos));
+    expect(input.getAttribute("role")).toBe("combobox");
     type(input, "bot");
-    await vi.waitFor(() => expect(options()).toEqual(["smarter-dev/bot"]));
+    expect(options()).toEqual(["smarter-dev/bot"]);
   });
 });
 

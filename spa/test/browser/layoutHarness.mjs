@@ -39,13 +39,37 @@ async function chromiumExecutable() {
 
 /** Run a real Chromium layout check against the SPA's production renderers and
  * styles. Each call owns its Vite server and browser, so failures also clean up. */
-export async function withLayoutPage(check, { width = 1180, height = 840, plugins = [], deviceScaleFactor = 1, hasTouch = false } = {}) {
+export async function withLayoutPage(check, options = {}) {
+  const session = await openLayoutSession(options);
+  try {
+    return await session.withPage(check, options);
+  } finally {
+    await session.close();
+  }
+}
+
+/** One Vite server and Chromium for several checks, each on its own page in
+ * its own browser context (so its own storage and module instances). The
+ * server keeps what it has transformed, so a file's later checks do not pay
+ * again for compiling the client graph; open it in `beforeAll`. */
+export async function openLayoutSession({ plugins = [] } = {}) {
   const chromiumPath = await chromiumExecutable();
   // Browser suites start Vite servers in parallel. Each optimizer must own its
   // cache or another server can replace dependency files mid-import.
   const cacheDir = await mkdtemp(join(tmpdir(), "build-layout-vite-"));
   let server;
   let browser;
+  const close = async () => {
+    try {
+      await browser?.close();
+    } finally {
+      try {
+        await server?.close();
+      } finally {
+        await rm(cacheDir, { recursive: true, force: true });
+      }
+    }
+  };
   try {
     server = await createServer({
       root: spaRoot, cacheDir, logLevel: "silent", plugins,
@@ -66,41 +90,41 @@ export async function withLayoutPage(check, { width = 1180, height = 840, plugin
       server: { host: "127.0.0.1", port: 0 },
     });
     await server.listen();
-    const port = server.httpServer.address().port;
-    const basePath = server.config.base;
     browser = await chromium.launch({
       executablePath: chromiumPath, headless: true, args: ["--no-sandbox"],
       env: { ...process.env, FONTCONFIG_FILE: pinnedFonts },
     });
+  } catch (error) {
+    await close();
+    throw error;
+  }
+  const port = server.httpServer.address().port;
+  const basePath = server.config.base;
+  async function withPage(check, { width = 1180, height = 840, deviceScaleFactor = 1, hasTouch = false } = {}) {
     const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor, hasTouch });
-    // Serve real Vite-transformed modules through the driver, without an HTTP
-    // proxy or retained APIResponse bodies. Host network notifications can
-    // cancel Chromium's loopback module graph even when the server is healthy.
-    await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
-      if (route.request().resourceType() !== "script") return route.continue();
-      let result;
-      try {
-        result = await server.environments.client.transformRequest(moduleRequestUrl(route.request().url(), basePath));
-      } catch (error) {
-        return route.fulfill({ status: 500, contentType: "text/plain", body: String(error) });
-      }
-      return route.fulfill({ status: result ? 200 : 404, contentType: "text/javascript", body: result?.code || "Module not found" });
-    });
-    // A CSS URL gives the page Vite's origin without booting the SPA. That lets
-    // a test mount just the production renderer it needs into a stable shell.
-    await page.goto(`http://127.0.0.1:${port}${basePath}src/styles.css`);
-    return await check({ page, basePath, cacheDir: server.config.cacheDir });
-  } finally {
     try {
-      await browser?.close();
+      // Serve real Vite-transformed modules through the driver, without an HTTP
+      // proxy or retained APIResponse bodies. Host network notifications can
+      // cancel Chromium's loopback module graph even when the server is healthy.
+      await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
+        if (route.request().resourceType() !== "script") return route.continue();
+        let result;
+        try {
+          result = await server.environments.client.transformRequest(moduleRequestUrl(route.request().url(), basePath));
+        } catch (error) {
+          return route.fulfill({ status: 500, contentType: "text/plain", body: String(error) });
+        }
+        return route.fulfill({ status: result ? 200 : 404, contentType: "text/javascript", body: result?.code || "Module not found" });
+      });
+      // A CSS URL gives the page Vite's origin without booting the SPA. That lets
+      // a test mount just the production renderer it needs into a stable shell.
+      await page.goto(`http://127.0.0.1:${port}${basePath}src/styles.css`);
+      return await check({ page, basePath, cacheDir: server.config.cacheDir });
     } finally {
-      try {
-        await server?.close();
-      } finally {
-        await rm(cacheDir, { recursive: true, force: true });
-      }
+      await page.context().close();
     }
   }
+  return { withPage, close };
 }
 
 async function replaceLayoutBody(page, markup, styles, basePath) {

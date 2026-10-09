@@ -7,6 +7,7 @@ import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { writeTasksRecord } from "../src/core/trackerCache.js";
 import { mountWorkspaceReviewEntry } from "../src/core/workspaceReviewEntry.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
+import { called, holds, painted } from "./waits.js";
 
 let entry;
 beforeEach(async () => { entry?.dispose(); await wipeCache(); document.body.innerHTML = '<div id="entry"></div>'; });
@@ -18,7 +19,7 @@ it("offers snapshot creation only when the cached bridge supports it", async () 
   expect(document.querySelector('[data-workspace-review]')).toBeNull();
   expect(callRpc).not.toHaveBeenCalled();
   await rememberReviewSupport(options.deviceId, { reviews: { get: true, snapshot: true } });
-  await vi.waitFor(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull()));
 });
 it("saves all directories on the chosen task using its current review version, then opens the task", async () => {
   await rememberReviewSupport(options.deviceId, { reviews: { get: true, snapshot: true } });
@@ -26,11 +27,11 @@ it("saves all directories on the chosen task using its current review version, t
   const callRpc = vi.fn(async () => fixture.result);
   const navigate = vi.fn();
   entry = mountWorkspaceReviewEntry(document.querySelector('#entry'), { ...options, callRpc, navigate });
-  await vi.waitFor(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull()));
   document.querySelector('[data-workspace-review]').click();
-  await vi.waitFor(() => expect(document.querySelector('[data-review-task]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-review-task]')).not.toBeNull()));
   document.querySelector('[data-save-workspace-review]').click();
-  await vi.waitFor(() => expect(navigate).toHaveBeenCalled());
+  await called(navigate, holds(() => expect(navigate).toHaveBeenCalled()));
   expect(callRpc).toHaveBeenCalledWith("tasks.review.snapshot", { task_id: "task-1", workspace_id: "ws-1", expected_version: 1 });
   expect(navigate).toHaveBeenCalledWith({ name: "trackerTask", projectId: "proj-1", deviceId: "entry-device", taskId: "task-1" });
 });
@@ -40,11 +41,11 @@ it("keeps the chosen task and shows a failed read without attempting a snapshot"
   await writeTasksRecord(options.deviceId, options.projectId, { tasks: [{ id: "task-1", number: 42, title: "Work" }] });
   const callRpc = vi.fn(async () => { throw new Error("Machine unavailable"); });
   entry = mountWorkspaceReviewEntry(document.querySelector('#entry'), { ...options, callRpc });
-  await vi.waitFor(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull()));
   document.querySelector('[data-workspace-review]').click();
-  await vi.waitFor(() => expect(document.querySelector('[data-review-task]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-review-task]')).not.toBeNull()));
   document.querySelector('[data-save-workspace-review]').click();
-  await vi.waitFor(() => expect(document.querySelector('[data-workspace-review-error]').textContent).toContain("Machine unavailable"));
+  await painted(holds(() => expect(document.querySelector('[data-workspace-review-error]').textContent).toContain("Machine unavailable")));
   expect(callRpc.mock.calls.map(([method]) => method)).toEqual(["tasks.review.get"]);
   expect(document.querySelector('[data-review-task]').value).toBe("task-1");
 });
@@ -54,7 +55,7 @@ it("opens the legacy picker again for a workspace with an attached snapshot revi
   await writeTasksRecord(options.deviceId, options.projectId, { tasks: [{ id: "task-1", number: 42, title: "Work" }] });
   await writeReviewRecord({ ...options, taskId: "task-1" }, { ...fixture.result.review, workspace_id: options.workspaceId }, 1);
   entry = mountWorkspaceReviewEntry(document.querySelector('#entry'), { ...options, callRpc: vi.fn() });
-  await vi.waitFor(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-workspace-review]')).not.toBeNull()));
   document.querySelector('[data-workspace-review]').click();
-  await vi.waitFor(() => expect(document.querySelector('[data-review-task]')).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector('[data-review-task]')).not.toBeNull()));
 });

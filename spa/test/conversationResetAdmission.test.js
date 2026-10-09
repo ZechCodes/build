@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { passesSettled } from "./waits.js";
 
 const App = { route: { name: "inbox" }, devices: [{ id: "reset-device" }] };
 const contexts = new Map();
@@ -20,7 +21,6 @@ let cache, sync, board;
 const address = (kind, sub = "") => ({ deviceId: "reset-device", entityId: "run-1", kind, sub });
 const agent = (threadId, revision, extra = {}) => ({ id: "ag-1", conversation_id: "ag-1", thread_id: threadId, thread_generation_revision: revision, ...extra });
 const row = (agents) => ({ kind: "branch", run_id: "run-1", project_id: "p1", worktree_id: "wt-1", branch: "build/reset", state: "building", agents });
-const nextTurn = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(async () => {
   vi.resetModules();
@@ -29,10 +29,13 @@ beforeEach(async () => {
   delete navigator.locks;
   contexts.clear(); watchers.length = 0;
   board = [];
+  // The opening pass's board read is held until the test lets it finish.
+  let finishOpeningRead;
+  const openingRead = new Promise((resolve) => { finishOpeningRead = resolve; });
   const context = {
     deviceId: "reset-device", session: {}, greeted: Promise.resolve(), cacheScope: { active: () => true }, active: () => true,
     rpc: async (method) => {
-      if (method === "board.list") return { items: board };
+      if (method === "board.list") { await openingRead; return { items: board }; }
       if (method === "project.list") return { projects: [] };
       if (method === "workspace.list") return { workspaces: [] };
       if (method === "thread.page") return { thread_id: "thread:ag-1", items: [], has_more: false };
@@ -45,7 +48,11 @@ beforeEach(async () => {
   expect((await import("../src/appState.js")).App).toBe(App);
   sync.startCacheSync();
   await vi.waitFor(() => expect(watchers.some((watcher) => watcher.id === "s-inbox")).toBe(true));
-  for (let i = 0; i < 10; i += 1) await nextTurn();
+  // The opening pass is out once it has subscribed. A test's own ask made
+  // while it is still reading would be folded into it, not read again.
+  const settled = passesSettled(sync, "reset-device");
+  finishOpeningRead();
+  await settled;
   await cache.writeCached(address("thread", "ag-1"), { thread_id: "thread:ag-1", items: [], deliveredSequence: 0 });
 });
 
@@ -62,8 +69,13 @@ async function remoteReset() {
 /** Pause the old candidate immediately before its database write, while a
  * separate client advances the shared thread generation. */
 function pauseAdmission(kind) {
-  let release;
-  const pause = (run) => new Promise((resolve, reject) => { release = () => run().then(resolve, reject); });
+  let release, reach, land;
+  const reached = new Promise((resolve) => { reach = resolve; });
+  const landed = new Promise((resolve) => { land = resolve; });
+  const pause = (run) => new Promise((resolve, reject) => {
+    release = () => { const writing = run(); writing.then(land, land); writing.then(resolve, reject); };
+    reach();
+  });
   for (const name of ["mergeCachedAtomically", "mergeCachedTogether", "mergeCachedRecordsTogether", "updateCachedFeed", "writeCached"]) {
     const original = cache[name];
     vi.spyOn(cache, name).mockImplementation((at, ...args) => {
@@ -73,7 +85,10 @@ function pauseAdmission(kind) {
     });
   }
   return {
-    waiting: () => typeof release === "function",
+    /** Settles when the candidate write is held, however long the sync takes to get there. */
+    reached,
+    /** Settles once the held write has run against the database. */
+    landed,
     resume: () => release(),
   };
 }
@@ -87,7 +102,7 @@ describe("conversation generation admission across clients", () => {
     board = [stale, sibling];
     const paused = pauseAdmission("feed");
     const reading = sync.syncDevice("reset-device");
-    await vi.waitFor(() => expect(paused.waiting()).toBe(true));
+    await paused.reached;
     await remoteReset(); paused.resume(); await reading;
     const feed = (await cache.readCached({ ...address("feed"), entityId: "" })).value;
     expect(JSON.stringify(feed)).not.toContain("old secret");
@@ -99,7 +114,7 @@ describe("conversation generation admission across clients", () => {
     board = [row([agent("thread:ag-1", 0)])];
     const paused = pauseAdmission("row");
     const reading = sync.syncDevice("reset-device");
-    await vi.waitFor(() => expect(paused.waiting()).toBe(true));
+    await paused.reached;
     await remoteReset(); paused.resume(); await reading;
     expect((await cache.readCached(address("row"))).value.agents[0].thread_id).toBe("thread:ag-1:fresh");
   });
@@ -107,18 +122,18 @@ describe("conversation generation admission across clients", () => {
   it("refuses an old pushed row when reset commits after reconciliation", async () => {
     const paused = pauseAdmission("row");
     pushed(row([agent("thread:ag-1", 0)]));
-    await vi.waitFor(() => expect(paused.waiting()).toBe(true));
+    await paused.reached;
     await remoteReset(); paused.resume();
-    for (let i = 0; i < 10; i += 1) await nextTurn();
+    await paused.landed;
     expect((await cache.readCached(address("row"))).value.agents[0].thread_id).toBe("thread:ag-1:fresh");
   });
 
   it("refuses an old surface snapshot when reset commits after its thread check", async () => {
     const paused = pauseAdmission("surfaces");
     pushed(row([agent("thread:ag-1", 0, { surface_session_generation: "old-session", surfaces: { goal: "old secret" } })]));
-    await vi.waitFor(() => expect(paused.waiting()).toBe(true));
+    await paused.reached;
     await remoteReset(); paused.resume();
-    for (let i = 0; i < 10; i += 1) await nextTurn();
+    await paused.landed;
     expect(await cache.readCached(address("surfaces", "ag-1"))).toBeUndefined();
   });
 
@@ -130,10 +145,9 @@ describe("conversation generation admission across clients", () => {
       project_id: "p1", project_session: session, last_sequence: 0,
     });
     const watcher = watchers.find((held) => held.id === "s-inbox");
-    watcher.onChanges([{ entity_id: "run-1", thread: [tip("thread:ag-1:fresh", 1, { session_started_ms: null, last_activity_ms: null })] }]);
-    await vi.waitFor(async () => expect((await cache.readCached(projects)).value[0].last_activity_ms).toBe(null));
-    watcher.onChanges([{ entity_id: "run-1", thread: [tip("thread:ag-1", 0, { session_started_ms: 100, last_activity_ms: 200 })] }]);
-    for (let i = 0; i < 10; i += 1) await nextTurn();
+    await watcher.onChanges([{ entity_id: "run-1", thread: [tip("thread:ag-1:fresh", 1, { session_started_ms: null, last_activity_ms: null })] }]);
+    expect((await cache.readCached(projects)).value[0].last_activity_ms).toBe(null);
+    await watcher.onChanges([{ entity_id: "run-1", thread: [tip("thread:ag-1", 0, { session_started_ms: 100, last_activity_ms: 200 })] }]);
     expect((await cache.readCached(projects)).value[0]).toMatchObject({ session_started_ms: null, last_activity_ms: null });
   });
 });

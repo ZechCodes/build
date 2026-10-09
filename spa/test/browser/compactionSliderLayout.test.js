@@ -1,7 +1,15 @@
-import { expect, it } from "vitest";
-import { captureLayout, withLayoutPage } from "./layoutHarness.mjs";
+import { afterAll, beforeAll, expect, it } from "vitest";
+import { captureLayout, openLayoutSession } from "./layoutHarness.mjs";
 import { openMenuOn, settled } from "./chatMenuSeed.mjs";
 import { compactionContinuity, observeCompactionMenu, uninterruptedMenu } from "./compactionMenuContinuity.mjs";
+
+// Ten checks on one server and browser: each still gets its own page and
+// context, but the client graph is compiled once rather than inside every
+// test's budget.
+let session;
+beforeAll(async () => { session = await openLayoutSession(); });
+afterAll(() => session?.close());
+const withLayoutPage = (check, options) => session.withPage(check, options);
 
 const SLIDER = '.rail-surface-menu [role="slider"]';
 const CARET = ".rail-surface-menu .caret";

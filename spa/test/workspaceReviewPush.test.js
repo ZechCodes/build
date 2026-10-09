@@ -2,7 +2,7 @@
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { wipeCache, writeCached } from "../src/core/localCache.js";
-import { readUiRecord, wipeUiRecords } from "../src/core/localUiStore.js";
+import { readUiRecord, subscribeUiRecords, wipeUiRecords } from "../src/core/localUiStore.js";
 import { reviewActionDraftAddress, watchReviewActionDraft } from "../src/core/taskReviewDrafts.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { writeReviewReply } from "../src/core/taskReviewCache.js";
@@ -11,6 +11,7 @@ import { workspaceScope } from "../src/core/workspaceModel.js";
 import { mountWorkspaceReviewEntry } from "../src/core/workspaceReviewEntry.js";
 import opened from "../../fixtures/api/v1/tasks.review.open.json";
 import pushed from "../../fixtures/api/v1/tasks.review.push.json";
+import { announced, called, holds, painted } from "./waits.js";
 
 const scope = { deviceId: "push-confirmation", projectId: "proj-1", workspaceId: "workspace-1" };
 const actionScope = { ...scope, taskId: "task-1" };
@@ -45,11 +46,12 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   document.querySelector("[data-review-form-cancel]")?.click();
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
+  await painted(holds(() => expect(document.querySelector("[role=dialog]")).toBeNull()));
   entry?.dispose();
   for (const writer of writers) writer.dispose();
 });
-const savedDraft = async () => (await readUiRecord(reviewActionDraftAddress(actionScope, "push")))?.value;
+const pushDraftAddress = reviewActionDraftAddress(actionScope, "push");
+const savedDraft = async () => (await readUiRecord(pushDraftAddress))?.value;
 async function writeDraft(draft) {
   const writer = watchReviewActionDraft(actionScope, "push", () => {});
   writers.push(writer);
@@ -59,7 +61,7 @@ async function writeDraft(draft) {
 }
 async function openPush(directoryId, callRpc) {
   entry = mountWorkspaceReviewEntry(document.querySelector("#entry"), { ...scope, callRpc });
-  await vi.waitFor(() => expect(document.querySelector(`[data-review-push="${directoryId}"]`)).not.toBeNull());
+  await painted(holds(() => expect(document.querySelector(`[data-review-push="${directoryId}"]`)).not.toBeNull()));
   expect(callRpc).not.toHaveBeenCalled();
   document.querySelector(`[data-review-push="${directoryId}"]`).click();
   await vi.waitFor(() => expect(document.querySelector("[data-push-review-submit]")?.onclick).toBeTypeOf("function"));
@@ -82,7 +84,7 @@ it("restores a saved API push when UI is clicked and confirms the saved source's
   expect(callRpc).not.toHaveBeenCalled();
 
   document.querySelector("[data-push-review-submit]").click();
-  await vi.waitFor(() => expect(pushCalls(callRpc)).toHaveLength(1));
+  await called(callRpc, holds(() => expect(pushCalls(callRpc)).toHaveLength(1)));
   expect(pushCalls(callRpc)[0]).toEqual(["tasks.review.push", { task_id: actionScope.taskId, ...draft }]);
 });
 
@@ -92,7 +94,7 @@ it("repaints confirmation pins from another draft writer before submitting the e
   expect(pins()).toContain("Review version 1");
   const updated = { expected_version: 8, sources: [source("dir-api", oid("8"), oid("7"))] };
   await writeDraft(updated);
-  await vi.waitFor(() => expect(pins()).toContain("Review version 8"));
+  await painted(holds(() => expect(pins()).toContain("Review version 8")));
   expect(pins()).toContain(oid("8"));
   expect(pins()).toContain(oid("7"));
   expect(pins()).not.toContain(oid("3"));
@@ -100,7 +102,7 @@ it("repaints confirmation pins from another draft writer before submitting the e
   expect(callRpc).not.toHaveBeenCalled();
 
   document.querySelector("[data-push-review-submit]").click();
-  await vi.waitFor(() => expect(pushCalls(callRpc)).toHaveLength(1));
+  await called(callRpc, holds(() => expect(pushCalls(callRpc)).toHaveLength(1)));
   expect(pushCalls(callRpc)[0]).toEqual(["tasks.review.push", { task_id: actionScope.taskId, ...updated }]);
 });
 
@@ -114,7 +116,7 @@ it("preserves a stale request until Use latest cached changes explicitly replace
   });
   await openPush("dir-api", callRpc);
   document.querySelector("[data-push-review-submit]").click();
-  await vi.waitFor(() => expect(document.querySelector("[data-review-form-error]").textContent).toContain("Review changed"));
+  await painted(holds(() => expect(document.querySelector("[data-review-form-error]").textContent).toContain("Review changed")));
   expect(callRpc.mock.calls.map(([method]) => method)).toEqual(["tasks.review.push", "tasks.review.get"]);
   expect(await savedDraft()).toEqual(initial);
   expect(pins()).toContain("Review version 1");
@@ -127,13 +129,13 @@ it("preserves a stale request until Use latest cached changes explicitly replace
   expect(reset.textContent).toBe("Use latest cached changes");
   reset.click();
   const latest = { expected_version: 3, sources: [source("dir-api", oid("6"), oid("5"))] };
-  await vi.waitFor(async () => expect(await savedDraft()).toEqual(latest));
-  expect(pins()).toContain("Review version 3");
+  await announced((heard) => subscribeUiRecords(pushDraftAddress, heard), holds(async () => expect(await savedDraft()).toEqual(latest)));
+  await painted(holds(() => expect(pins()).toContain("Review version 3")));
   expect(pins()).toContain(oid("6"));
   expect(pins()).toContain(oid("5"));
   expect(pushCalls(callRpc)).toHaveLength(1);
 
   document.querySelector("[data-push-review-submit]").click();
-  await vi.waitFor(() => expect(pushCalls(callRpc)).toHaveLength(2));
+  await called(callRpc, holds(() => expect(pushCalls(callRpc)).toHaveLength(2)));
   expect(pushCalls(callRpc)[1]).toEqual(["tasks.review.push", { task_id: actionScope.taskId, ...latest }]);
 });

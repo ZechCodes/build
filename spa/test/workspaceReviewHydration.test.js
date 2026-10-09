@@ -20,6 +20,7 @@ import { wipeUiRecords, writeUiRecord } from "../src/core/localUiStore.js";
 import { reviewCreateDraftAddress } from "../src/core/taskReviewDrafts.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { mountWorkspaceReviewEntry } from "../src/core/workspaceReviewEntry.js";
+import { called, painted } from "./waits.js";
 
 const scope = { deviceId: "hydrating-review", projectId: "proj-1", workspaceId: "workspace-1" };
 const deferred = () => {
@@ -88,7 +89,8 @@ it.each(["fresh", "saved editable"])("keeps a %s real-mounted form disabled unti
   expect(document.querySelector("[data-open-review-submit]").disabled).toBe(false);
   title.value = "New review"; title.dispatchEvent(new Event("input", { bubbles: true }));
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledOnce());
+  await called(callRpc);
+  expect(callRpc).toHaveBeenCalledOnce();
   expect(callRpc.mock.calls[0][1].title).toBe("New review");
 });
 
@@ -107,7 +109,8 @@ it("keeps restored submitted fields pinned and enables Retry only after its hand
   expect(document.querySelector("[data-open-review-submit]").textContent).toBe("Retry opening");
   expect(callRpc).not.toHaveBeenCalled();
   document.querySelector("[data-open-review-submit]").click();
-  await vi.waitFor(() => expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.open", request));
+  await called(callRpc);
+  expect(callRpc).toHaveBeenCalledExactlyOnceWith("tasks.review.open", request);
 });
 
 it("allows Cancel while the real draft readiness promise is pending", async () => {
@@ -119,7 +122,6 @@ it("allows Cancel while the real draft readiness promise is pending", async () =
   await opening;
   expect(title.disabled).toBe(true);
   expect(document.activeElement).not.toBe(title);
-  await vi.waitFor(() => expect(document.querySelector("[role=dialog]")).toBeNull());
-  expect(document.querySelector("[role=dialog]")).toBeNull();
+  await painted(() => !document.querySelector("[role=dialog]"));
   expect(callRpc).not.toHaveBeenCalled();
 });

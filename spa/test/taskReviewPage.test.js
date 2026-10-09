@@ -133,9 +133,15 @@ it("refreshes destinations after saving a snapshot whose mutation omits them", a
     ...next, destinations: [{ snapshot_id: "new-snapshot", directory_id: "dir-api", source_path: "/sources/api",
       branches: ["main"], remotes: [{ name: "origin", branches: ["main"] }], live_head: review.snapshots[0].directories[0].head }],
   } }));
-  page = mountTaskReviewPage(document.querySelector("#review"), { ...scope, callRpc, workspaces: () => [], task: () => ({ id: scope.taskId }) });
+  // The page tells the task once the save, its re-read and the move to the new snapshot are all done.
+  let saved;
+  const settled = new Promise((resolve) => { saved = resolve; });
+  page = mountTaskReviewPage(document.querySelector("#review"), {
+    ...scope, callRpc, workspaces: () => [], task: () => ({ id: scope.taskId }), onTaskChanged: () => saved(),
+  });
   await vi.waitFor(() => expect(document.querySelector('[data-review-save]')).not.toBeNull());
   document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
+  await settled;
   await vi.waitFor(() => expect(document.querySelector('[data-review-source="dir-api"]')).not.toBeNull());
   const methods = callRpc.mock.calls.map(([method]) => method);
   expect(methods.lastIndexOf("tasks.review.get")).toBeGreaterThan(methods.indexOf("tasks.review.snapshot"));

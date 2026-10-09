@@ -280,9 +280,18 @@ const SWEEP_INTERFACES_FRESH: Duration = Duration::from_millis(100);
 /// data-channel write queued behind it (#376), so it is read at most once per
 /// [`SWEEP_INTERFACES_FRESH`], outside the lock. Each send still reads the interface's index,
 /// and the mask it holds the source address under, live; see [`SweepSubnet::still_owned`].
+/// The rest of what a send checks against the list, which interfaces hold the source address
+/// and whether the destination is local, stands only while the kernel has reported no IPv4
+/// address change since the list was read.
 pub(super) struct SweepInterfaces {
     read: fn() -> std::io::Result<Vec<Interface>>,
     pub(super) live: LiveOwner,
+    #[cfg(target_os = "linux")]
+    pub(super) watch: fn() -> std::io::Result<std::os::fd::OwnedFd>,
+    #[cfg(target_os = "linux")]
+    watching: Option<std::os::fd::OwnedFd>,
+    /// Latched once a change is seen, since an overflow is reported only once.
+    changed: std::sync::atomic::AtomicBool,
     read_at: Option<Instant>,
     list: Option<Vec<Interface>>,
 }
@@ -292,6 +301,11 @@ impl SweepInterfaces {
         Self {
             read,
             live: live_owner,
+            #[cfg(target_os = "linux")]
+            watch: super::host_sweep::address_watch,
+            #[cfg(target_os = "linux")]
+            watching: None,
+            changed: std::sync::atomic::AtomicBool::new(false),
             read_at: None,
             list: None,
         }
@@ -299,9 +313,38 @@ impl SweepInterfaces {
 
     pub(super) fn refresh(&mut self, now: Instant) {
         if self.stale(now) {
+            // The watch is drained or opened before the read, so a change during the read
+            // counts against the new list rather than being lost.
+            #[cfg(target_os = "linux")]
+            match &self.watching {
+                Some(watching) => super::host_sweep::drain_address_watch(watching),
+                None => self.watching = (self.watch)().ok(),
+            }
+            *self.changed.get_mut() = false;
             self.list = (self.read)().ok();
             self.read_at = Some(now);
         }
+    }
+
+    /// Whether the kernel has reported no IPv4 address change since the list was read. Without
+    /// a watch nothing vouches for the list, so it never stands.
+    fn unchanged(&self) -> bool {
+        use std::sync::atomic::Ordering;
+
+        if self.changed.load(Ordering::Relaxed) {
+            return false;
+        }
+        #[cfg(target_os = "linux")]
+        let quiet = self
+            .watching
+            .as_ref()
+            .is_some_and(|watching| !super::host_sweep::address_changed(watching));
+        #[cfg(not(target_os = "linux"))]
+        let quiet = false;
+        if !quiet {
+            self.changed.store(true, Ordering::Relaxed);
+        }
+        quiet
     }
 
     /// Whether the list read is [`SWEEP_INTERFACES_FRESH`] old or more at `now`, or missing.
@@ -322,8 +365,9 @@ impl SweepInterfaces {
         subnet: &SweepSubnet,
         destination: std::net::Ipv4Addr,
     ) -> bool {
-        self.current(now)
-            .is_some_and(|interfaces| subnet.still_owned(interfaces, self.live, destination))
+        self.current(now).is_some_and(|interfaces| {
+            self.unchanged() && subnet.still_owned(interfaces, self.live, destination)
+        })
     }
 }
 

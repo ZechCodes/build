@@ -279,7 +279,7 @@ index b7c5c8d..4232db2 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..5b80699 100644
+index 8a0a53a..2c78696 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,9 @@
@@ -310,7 +310,7 @@ index 8a0a53a..5b80699 100644
  use rtc::shared::{FourTuple, TaggedBytesMut, TransportContext, TransportProtocol};
  use rtc::{rtcp, rtp};
  use std::collections::HashMap;
-@@ -253,6 +256,90 @@ fn is_link_local(ip: &IpAddr) -> bool {
+@@ -253,6 +256,134 @@ fn is_link_local(ip: &IpAddr) -> bool {
      }
  }
  
@@ -338,9 +338,18 @@ index 8a0a53a..5b80699 100644
 +/// data-channel write queued behind it (#376), so it is read at most once per
 +/// [`SWEEP_INTERFACES_FRESH`], outside the lock. Each send still reads the interface's index,
 +/// and the mask it holds the source address under, live; see [`SweepSubnet::still_owned`].
++/// The rest of what a send checks against the list, which interfaces hold the source address
++/// and whether the destination is local, stands only while the kernel has reported no IPv4
++/// address change since the list was read.
 +pub(super) struct SweepInterfaces {
 +    read: fn() -> std::io::Result<Vec<Interface>>,
 +    pub(super) live: LiveOwner,
++    #[cfg(target_os = "linux")]
++    pub(super) watch: fn() -> std::io::Result<std::os::fd::OwnedFd>,
++    #[cfg(target_os = "linux")]
++    watching: Option<std::os::fd::OwnedFd>,
++    /// Latched once a change is seen, since an overflow is reported only once.
++    changed: std::sync::atomic::AtomicBool,
 +    read_at: Option<Instant>,
 +    list: Option<Vec<Interface>>,
 +}
@@ -350,6 +359,11 @@ index 8a0a53a..5b80699 100644
 +        Self {
 +            read,
 +            live: live_owner,
++            #[cfg(target_os = "linux")]
++            watch: super::host_sweep::address_watch,
++            #[cfg(target_os = "linux")]
++            watching: None,
++            changed: std::sync::atomic::AtomicBool::new(false),
 +            read_at: None,
 +            list: None,
 +        }
@@ -357,9 +371,38 @@ index 8a0a53a..5b80699 100644
 +
 +    pub(super) fn refresh(&mut self, now: Instant) {
 +        if self.stale(now) {
++            // The watch is drained or opened before the read, so a change during the read
++            // counts against the new list rather than being lost.
++            #[cfg(target_os = "linux")]
++            match &self.watching {
++                Some(watching) => super::host_sweep::drain_address_watch(watching),
++                None => self.watching = (self.watch)().ok(),
++            }
++            *self.changed.get_mut() = false;
 +            self.list = (self.read)().ok();
 +            self.read_at = Some(now);
 +        }
++    }
++
++    /// Whether the kernel has reported no IPv4 address change since the list was read. Without
++    /// a watch nothing vouches for the list, so it never stands.
++    fn unchanged(&self) -> bool {
++        use std::sync::atomic::Ordering;
++
++        if self.changed.load(Ordering::Relaxed) {
++            return false;
++        }
++        #[cfg(target_os = "linux")]
++        let quiet = self
++            .watching
++            .as_ref()
++            .is_some_and(|watching| !super::host_sweep::address_changed(watching));
++        #[cfg(not(target_os = "linux"))]
++        let quiet = false;
++        if !quiet {
++            self.changed.store(true, Ordering::Relaxed);
++        }
++        quiet
 +    }
 +
 +    /// Whether the list read is [`SWEEP_INTERFACES_FRESH`] old or more at `now`, or missing.
@@ -380,8 +423,9 @@ index 8a0a53a..5b80699 100644
 +        subnet: &SweepSubnet,
 +        destination: std::net::Ipv4Addr,
 +    ) -> bool {
-+        self.current(now)
-+            .is_some_and(|interfaces| subnet.still_owned(interfaces, self.live, destination))
++        self.current(now).is_some_and(|interfaces| {
++            self.unchanged() && subnet.still_owned(interfaces, self.live, destination)
++        })
 +    }
 +}
 +
@@ -401,7 +445,7 @@ index 8a0a53a..5b80699 100644
  /// Unified inner message type for the peer connection driver
  #[derive(Debug)]
  pub(crate) enum PeerConnectionDriverEvent {
-@@ -267,6 +354,20 @@ pub(crate) enum PeerConnectionDriverEvent {
+@@ -267,6 +398,20 @@ pub(crate) enum PeerConnectionDriverEvent {
          ice_transport_policy: RTCIceTransportPolicy,
      },
      IceGathering,
@@ -422,7 +466,7 @@ index 8a0a53a..5b80699 100644
      Close,
  }
  
-@@ -283,6 +384,10 @@ where
+@@ -283,6 +428,10 @@ where
      tcp_transport: RTCTcpTransport,
      mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
      udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
@@ -433,7 +477,7 @@ index 8a0a53a..5b80699 100644
      /// Reused scratch buffer for concatenating a run of same-destination datagrams
      /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
      gso_scratch: Vec<u8>,
-@@ -391,6 +496,33 @@ where
+@@ -391,6 +540,33 @@ where
              ));
          }
  
@@ -467,7 +511,7 @@ index 8a0a53a..5b80699 100644
          self.tcp_transport = RTCTcpTransport::new(tcp_listeners);
  
          // Rebuilt, not updated: a gatherer's STUN clients and TURN allocations are keyed by
-@@ -446,6 +578,10 @@ where
+@@ -446,6 +622,10 @@ where
              ),
              mdns_socket: None,
              udp_sockets: HashMap::new(),
@@ -478,7 +522,7 @@ index 8a0a53a..5b80699 100644
              gso_scratch: Vec::new(),
              tcp_transport: RTCTcpTransport::new(HashMap::new()),
              ice_gathering_active: false,
-@@ -473,6 +609,7 @@ where
+@@ -473,6 +653,7 @@ where
      /// on its next re-check; the wake makes that immediate. Idempotent on the clean path.
      pub(crate) fn signal_stopped(&self) {
          self.inner.closing.store(true, Ordering::Release);
@@ -486,7 +530,7 @@ index 8a0a53a..5b80699 100644
          self.inner.data_channel_backpressure.notify_waiters();
      }
  
-@@ -588,6 +725,10 @@ where
+@@ -588,6 +769,10 @@ where
              // momentarily full channel), this check still guarantees the loop —
              // and thus a dedicated reactor thread — terminates instead of leaking.
              if self.inner.closing.load(Ordering::Acquire) {
@@ -497,7 +541,7 @@ index 8a0a53a..5b80699 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -595,6 +736,7 @@ where
+@@ -595,6 +780,7 @@ where
              }
  
              self.poll_pass().await?;
@@ -505,7 +549,7 @@ index 8a0a53a..5b80699 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +993,372 @@ where
+@@ -851,6 +1037,372 @@ where
          }
      }
  
@@ -878,7 +922,7 @@ index 8a0a53a..5b80699 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1791,55 @@ where
+@@ -1283,8 +1835,55 @@ where
          }
      }
  
@@ -935,7 +979,7 @@ index 8a0a53a..5b80699 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1952,10 @@ where
+@@ -1397,6 +1996,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -946,7 +990,7 @@ index 8a0a53a..5b80699 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2311,18 @@ where
+@@ -1752,11 +2355,18 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -971,10 +1015,10 @@ index 8a0a53a..5b80699 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..defb55e 100644
+index e69de29..cc78b31 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,1419 @@
+@@ -0,0 +1,1496 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -1281,6 +1325,83 @@ index e69de29..defb55e 100644
 +#[cfg(not(target_os = "linux"))]
 +pub(crate) fn live_owner(_: &str, _: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
 +    (0, None)
++}
++
++/// A socket the kernel writes to whenever an IPv4 address is added to or removed from any
++/// interface (`RTMGRP_IPV4_IFADDR`). Opened before an interface list is read, it tells a send
++/// whether the list still describes the host: which interfaces hold the source address, and
++/// whether the destination has become local, without reading the list again.
++#[cfg(target_os = "linux")]
++pub(crate) fn address_watch() -> std::io::Result<std::os::fd::OwnedFd> {
++    use std::os::fd::{FromRawFd, OwnedFd};
++
++    // SAFETY: plain socket creation; ownership of the descriptor moves into `OwnedFd` below.
++    let raw = unsafe {
++        libc::socket(
++            libc::AF_NETLINK,
++            libc::SOCK_RAW | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
++            libc::NETLINK_ROUTE,
++        )
++    };
++    if raw < 0 {
++        return Err(std::io::Error::last_os_error());
++    }
++    // SAFETY: `raw` is a fresh descriptor owned by nothing else.
++    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
++    // SAFETY: an all-zero sockaddr_nl is valid; the kernel assigns the port id.
++    let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
++    address.nl_family = libc::AF_NETLINK as libc::sa_family_t;
++    address.nl_groups = libc::RTMGRP_IPV4_IFADDR as u32;
++    // SAFETY: the address is a valid sockaddr_nl of the length passed.
++    let bound = unsafe {
++        libc::bind(
++            std::os::fd::AsRawFd::as_raw_fd(&socket),
++            (&address as *const libc::sockaddr_nl).cast(),
++            std::mem::size_of_val(&address) as libc::socklen_t,
++        )
++    };
++    if bound < 0 {
++        return Err(std::io::Error::last_os_error());
++    }
++    Ok(socket)
++}
++
++/// Whether the kernel has reported an address change since the watch was last drained. A
++/// notification lost to a full receive buffer reports as `ENOBUFS`, which counts as a change.
++#[cfg(target_os = "linux")]
++pub(crate) fn address_changed(watch: &std::os::fd::OwnedFd) -> bool {
++    let mut byte = [0u8; 1];
++    // SAFETY: a one-byte peek into a buffer of that length; nothing is consumed.
++    let peeked = unsafe {
++        libc::recv(
++            std::os::fd::AsRawFd::as_raw_fd(watch),
++            byte.as_mut_ptr().cast(),
++            byte.len(),
++            libc::MSG_PEEK | libc::MSG_DONTWAIT,
++        )
++    };
++    peeked >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock
++}
++
++/// Discards the notifications already queued, before the list they predate is replaced.
++#[cfg(target_os = "linux")]
++pub(crate) fn drain_address_watch(watch: &std::os::fd::OwnedFd) {
++    let mut buffer = [0u8; 8192];
++    // Bounded, so a storm of changes cannot hold the pass; what is left still reads as changed.
++    for _ in 0..256 {
++        // SAFETY: the buffer is valid for its length; the kernel truncates longer messages.
++        let read = unsafe {
++            libc::recv(
++                std::os::fd::AsRawFd::as_raw_fd(watch),
++                buffer.as_mut_ptr().cast(),
++                buffer.len(),
++                libc::MSG_DONTWAIT | libc::MSG_TRUNC,
++            )
++        };
++        if read < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOBUFS) {
++            return;
++        }
++    }
 +}
 +
 +fn private_ipv4(ip: Ipv4Addr) -> bool {
@@ -2396,10 +2517,10 @@ index e69de29..defb55e 100644
 +mod tests;
 diff --git b/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
 new file mode 100644
-index 0000000..cae9b5c
+index 0000000..5e9277b
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,1490 @@
+@@ -0,0 +1,1561 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -3890,12 +4011,83 @@ index 0000000..cae9b5c
 +        "ipv6-unsupported"
 +    );
 +}
++
++#[cfg(target_os = "linux")]
++#[test]
++#[ignore = "re-runs itself under `unshare -Urn`, in a private user and network namespace"]
++fn the_address_watch_hears_an_address_added_in_a_private_namespace() {
++    const INSIDE: &str = "BUILD_RTC_ADDRESS_WATCH_NAMESPACE";
++    if std::env::var_os(INSIDE).is_none() {
++        // The address is added inside a namespace the test owns; the host's network is untouched.
++        let status = std::process::Command::new("unshare")
++            .arg("-Urn")
++            .arg(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "peer_connection::host_sweep::tests::the_address_watch_hears_an_address_added_in_a_private_namespace",
++                "--ignored",
++                "--nocapture",
++            ])
++            .env(INSIDE, "1")
++            .status()
++            .expect("unshare runs");
++        assert!(status.success(), "the namespaced run failed: {status}");
++        return;
++    }
++    let watch = address_watch().unwrap();
++    assert!(!address_changed(&watch), "a fresh namespace is quiet");
++    set_loopback_address(Ipv4Addr::new(10, 72, 9, 1));
++    assert!(
++        address_changed(&watch),
++        "the kernel reports an address added to any interface"
++    );
++    assert!(
++        address_changed(&watch),
++        "peeking leaves the report for later sends"
++    );
++    drain_address_watch(&watch);
++    assert!(!address_changed(&watch), "a drained watch is quiet again");
++    println!("address_watch_namespace=ok");
++}
++
++#[cfg(target_os = "linux")]
++fn set_loopback_address(address: Ipv4Addr) {
++    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
++
++    // SAFETY: plain socket creation; ownership moves into `OwnedFd`.
++    let socket = unsafe {
++        OwnedFd::from_raw_fd(libc::socket(
++            libc::AF_INET,
++            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
++            0,
++        ))
++    };
++    // SAFETY: an all-zero ifreq is valid; the name and an AF_INET address are written whole.
++    let result = unsafe {
++        let mut ifreq: libc::ifreq = std::mem::zeroed();
++        for (slot, byte) in ifreq.ifr_name.iter_mut().zip(b"lo\0") {
++            *slot = *byte as libc::c_char;
++        }
++        (&raw mut ifreq.ifr_ifru.ifru_addr)
++            .cast::<libc::sockaddr_in>()
++            .write(libc::sockaddr_in {
++                sin_family: libc::AF_INET as libc::sa_family_t,
++                sin_port: 0,
++                sin_addr: libc::in_addr {
++                    s_addr: u32::from(address).to_be(),
++                },
++                sin_zero: [0; 8],
++            });
++        libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFADDR as _, &mut ifreq)
++    };
++    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
++}
 diff --git b/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 new file mode 100644
-index 0000000..05596e8
+index 0000000..a541be7
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,643 @@
 +use super::driver::{PeerConnectionDriver, PeerConnectionDriverEvent};
 +use super::tests::new_test_peer_connection;
 +use super::{PeerConnection, PeerConnectionImpl};
@@ -4403,6 +4595,140 @@ index 0000000..05596e8
 +        fresh,
 +        Some(started),
 +        "the next pass reads the list again and runs"
++    );
++}
++
++/// A stand-in kernel for the interface checks at send time: the address table a full read
++/// returns, the live index and mask lookup, and the notification socket the kernel writes to
++/// whenever an IPv4 address is added or removed. `the_address_watch_hears_an_address_added_in_a_private_namespace`
++/// pins that the real kernel writes one.
++#[cfg(target_os = "linux")]
++mod fake_kernel {
++    use rtc::shared::ifaces::{Interface, Kind};
++    use std::cell::RefCell;
++    use std::net::Ipv4Addr;
++    use std::os::fd::OwnedFd;
++    use std::os::unix::net::UnixDatagram;
++
++    thread_local! {
++        static TABLE: RefCell<Vec<Interface>> = const { RefCell::new(Vec::new()) };
++        static NOTIFY: RefCell<Option<UnixDatagram>> = const { RefCell::new(None) };
++    }
++
++    pub(super) fn interface(ip: &str, mask: &str, name: &str) -> Interface {
++        Interface {
++            name: name.into(),
++            kind: Kind::Ipv4,
++            addr: Some(format!("{ip}:0").parse().unwrap()),
++            mask: Some(format!("{mask}:0").parse().unwrap()),
++            hop: None,
++        }
++    }
++
++    pub(super) fn table() -> std::io::Result<Vec<Interface>> {
++        Ok(TABLE.with(|table| table.borrow().clone()))
++    }
++
++    pub(super) fn watch() -> std::io::Result<OwnedFd> {
++        let (ours, kernel) = UnixDatagram::pair()?;
++        NOTIFY.with(|notify| *notify.borrow_mut() = Some(kernel));
++        Ok(ours.into())
++    }
++
++    /// `wifi`, index 2, still holds every address under 255.255.255.0.
++    pub(super) fn live(_: &str, _: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
++        (2, Some(Ipv4Addr::new(255, 255, 255, 0)))
++    }
++
++    pub(super) fn add_address(interface: Interface) {
++        TABLE.with(|table| table.borrow_mut().push(interface));
++        NOTIFY.with(|notify| {
++            if let Some(notify) = notify.borrow().as_ref() {
++                notify.send(b"RTM_NEWADDR").unwrap();
++            }
++        });
++    }
++
++    pub(super) fn reset(interfaces: Vec<Interface>) {
++        TABLE.with(|table| *table.borrow_mut() = interfaces);
++        NOTIFY.with(|notify| *notify.borrow_mut() = None);
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn watched_wifi() -> (
++    super::driver::SweepInterfaces,
++    super::host_sweep::SweepSubnet,
++    std::time::Instant,
++) {
++    use super::driver::SweepInterfaces;
++    use super::host_sweep::SweepSubnet;
++
++    let wifi = fake_kernel::interface("192.168.2.1", "255.255.255.0", "wifi");
++    fake_kernel::reset(vec![wifi.clone()]);
++    let subnet =
++        SweepSubnet::for_socket("192.168.2.1:45000".parse().unwrap(), &[wifi], |_| 2).unwrap();
++    let mut interfaces = SweepInterfaces::reading(fake_kernel::table);
++    interfaces.live = fake_kernel::live;
++    interfaces.watch = fake_kernel::watch;
++    let now = std::time::Instant::now();
++    interfaces.refresh(now);
++    (interfaces, subnet, now)
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn a_source_address_another_interface_takes_after_the_read_stops_the_send() {
++    let (interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    assert!(interfaces.owns(now, &subnet, remote));
++    // The selected interface's index, address and mask are unchanged; only the list is not.
++    fake_kernel::add_address(fake_kernel::interface(
++        "192.168.2.1",
++        "255.255.255.0",
++        "bridge",
++    ));
++    assert!(
++        !interfaces.owns(now, &subnet, remote),
++        "a source address two interfaces now hold must not be sent from"
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn a_destination_that_became_a_local_address_after_the_read_stops_the_send() {
++    let (interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    assert!(interfaces.owns(now, &subnet, remote));
++    fake_kernel::add_address(fake_kernel::interface(
++        "192.168.2.2",
++        "255.255.255.255",
++        "docker0",
++    ));
++    assert!(
++        !interfaces.owns(now, &subnet, remote),
++        "a destination this host now holds must not be probed"
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn the_next_read_after_an_address_change_is_trusted_again() {
++    use std::time::Duration;
++
++    let (mut interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    fake_kernel::add_address(fake_kernel::interface(
++        "192.168.2.9",
++        "255.255.255.0",
++        "wifi",
++    ));
++    assert!(!interfaces.owns(now, &subnet, remote));
++    let later = now + Duration::from_millis(100);
++    interfaces.refresh(later);
++    assert!(
++        interfaces.owns(later, &subnet, remote),
++        "a list read after the change, with no change since, stands again"
 +    );
 +}
 diff --git a/webrtc/src/peer_connection/host_sweep_nat.rs b/webrtc/src/peer_connection/host_sweep_nat.rs

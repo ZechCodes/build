@@ -220,7 +220,8 @@ source IP must have one current owning interface, a contiguous actual IPv4 mask,
 and an RFC 1918 or link-local subnet of at most 1024 total addresses. Network,
 broadcast and every current local address are excluded. Before every send the
 interface's index, and the mask it holds the source address under, are read
-live; the other checks use an interface list at most 100 ms old (#376, below). Linux's Tokio socket adapter
+live; the other checks use an interface list at most 100 ms old that the
+kernel has reported no IPv4 address change since (#376, below). Linux's Tokio socket adapter
 uses IP_PKTINFO plus MSG_DONTROUTE and MSG_DONTWAIT on that same socket, so there
 is no gateway or source-port fallback. Other platforms and runtimes skip until
 an equivalent explicit-interface operation is supplied. A candidate port of
@@ -373,6 +374,21 @@ label's first one, and stops unless the address is still there with the
 subnet's mask. Two ioctls cost far less than the dump. `host_sweep_tests.rs`
 pins a mask narrowed or an address removed under an unchanged list, and reads
 loopback's real 127.0.0.1/8 entry.
+
+The list also answers which interfaces hold the source address and whether
+the destination has become local, and another interface can change either
+without touching the selected one. The sweep therefore keeps a netlink socket
+subscribed to `RTMGRP_IPV4_IFADDR`, drained just before each list read. A send
+peeks it, and any queued notification, or a lost one (`ENOBUFS`), means the
+list no longer stands: nothing is sent until the next read, with no full dump
+under the lock. Driver regressions pin a source address taken by a second
+interface, a destination that became local, and trust returning with the next
+read, against a stand-in kernel. The ignored
+`the_address_watch_hears_an_address_added_in_a_private_namespace` re-runs
+itself under `unshare -Urn` and adds an address there, so the real kernel's
+notification is checked without touching the host's network:
+
+    nice -n 10 cargo test --locked --manifest-path bridge/vendor/Cargo.toml -p webrtc --lib the_address_watch -- --ignored
 
 The list's 100 ms bound is checked again once the core lock is held: a wait
 for the lock can outlast it. A pass whose list is past the bound by then

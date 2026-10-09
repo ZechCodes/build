@@ -507,3 +507,137 @@ fn a_pass_that_waits_past_the_interface_bound_for_the_core_lock_does_not_run() {
         "the next pass reads the list again and runs"
     );
 }
+
+/// A stand-in kernel for the interface checks at send time: the address table a full read
+/// returns, the live index and mask lookup, and the notification socket the kernel writes to
+/// whenever an IPv4 address is added or removed. `the_address_watch_hears_an_address_added_in_a_private_namespace`
+/// pins that the real kernel writes one.
+#[cfg(target_os = "linux")]
+mod fake_kernel {
+    use rtc::shared::ifaces::{Interface, Kind};
+    use std::cell::RefCell;
+    use std::net::Ipv4Addr;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixDatagram;
+
+    thread_local! {
+        static TABLE: RefCell<Vec<Interface>> = const { RefCell::new(Vec::new()) };
+        static NOTIFY: RefCell<Option<UnixDatagram>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn interface(ip: &str, mask: &str, name: &str) -> Interface {
+        Interface {
+            name: name.into(),
+            kind: Kind::Ipv4,
+            addr: Some(format!("{ip}:0").parse().unwrap()),
+            mask: Some(format!("{mask}:0").parse().unwrap()),
+            hop: None,
+        }
+    }
+
+    pub(super) fn table() -> std::io::Result<Vec<Interface>> {
+        Ok(TABLE.with(|table| table.borrow().clone()))
+    }
+
+    pub(super) fn watch() -> std::io::Result<OwnedFd> {
+        let (ours, kernel) = UnixDatagram::pair()?;
+        NOTIFY.with(|notify| *notify.borrow_mut() = Some(kernel));
+        Ok(ours.into())
+    }
+
+    /// `wifi`, index 2, still holds every address under 255.255.255.0.
+    pub(super) fn live(_: &str, _: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
+        (2, Some(Ipv4Addr::new(255, 255, 255, 0)))
+    }
+
+    pub(super) fn add_address(interface: Interface) {
+        TABLE.with(|table| table.borrow_mut().push(interface));
+        NOTIFY.with(|notify| {
+            if let Some(notify) = notify.borrow().as_ref() {
+                notify.send(b"RTM_NEWADDR").unwrap();
+            }
+        });
+    }
+
+    pub(super) fn reset(interfaces: Vec<Interface>) {
+        TABLE.with(|table| *table.borrow_mut() = interfaces);
+        NOTIFY.with(|notify| *notify.borrow_mut() = None);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn watched_wifi() -> (
+    super::driver::SweepInterfaces,
+    super::host_sweep::SweepSubnet,
+    std::time::Instant,
+) {
+    use super::driver::SweepInterfaces;
+    use super::host_sweep::SweepSubnet;
+
+    let wifi = fake_kernel::interface("192.168.2.1", "255.255.255.0", "wifi");
+    fake_kernel::reset(vec![wifi.clone()]);
+    let subnet =
+        SweepSubnet::for_socket("192.168.2.1:45000".parse().unwrap(), &[wifi], |_| 2).unwrap();
+    let mut interfaces = SweepInterfaces::reading(fake_kernel::table);
+    interfaces.live = fake_kernel::live;
+    interfaces.watch = fake_kernel::watch;
+    let now = std::time::Instant::now();
+    interfaces.refresh(now);
+    (interfaces, subnet, now)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_source_address_another_interface_takes_after_the_read_stops_the_send() {
+    let (interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    // The selected interface's index, address and mask are unchanged; only the list is not.
+    fake_kernel::add_address(fake_kernel::interface(
+        "192.168.2.1",
+        "255.255.255.0",
+        "bridge",
+    ));
+    assert!(
+        !interfaces.owns(now, &subnet, remote),
+        "a source address two interfaces now hold must not be sent from"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_destination_that_became_a_local_address_after_the_read_stops_the_send() {
+    let (interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    fake_kernel::add_address(fake_kernel::interface(
+        "192.168.2.2",
+        "255.255.255.255",
+        "docker0",
+    ));
+    assert!(
+        !interfaces.owns(now, &subnet, remote),
+        "a destination this host now holds must not be probed"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_next_read_after_an_address_change_is_trusted_again() {
+    use std::time::Duration;
+
+    let (mut interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    fake_kernel::add_address(fake_kernel::interface(
+        "192.168.2.9",
+        "255.255.255.0",
+        "wifi",
+    ));
+    assert!(!interfaces.owns(now, &subnet, remote));
+    let later = now + Duration::from_millis(100);
+    interfaces.refresh(later);
+    assert!(
+        interfaces.owns(later, &subnet, remote),
+        "a list read after the change, with no change since, stands again"
+    );
+}

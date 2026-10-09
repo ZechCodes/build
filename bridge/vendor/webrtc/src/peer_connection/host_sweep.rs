@@ -306,6 +306,83 @@ pub(crate) fn live_owner(_: &str, _: Ipv4Addr) -> (u32, Option<Ipv4Addr>) {
     (0, None)
 }
 
+/// A socket the kernel writes to whenever an IPv4 address is added to or removed from any
+/// interface (`RTMGRP_IPV4_IFADDR`). Opened before an interface list is read, it tells a send
+/// whether the list still describes the host: which interfaces hold the source address, and
+/// whether the destination has become local, without reading the list again.
+#[cfg(target_os = "linux")]
+pub(crate) fn address_watch() -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, OwnedFd};
+
+    // SAFETY: plain socket creation; ownership of the descriptor moves into `OwnedFd` below.
+    let raw = unsafe {
+        libc::socket(
+            libc::AF_NETLINK,
+            libc::SOCK_RAW | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+            libc::NETLINK_ROUTE,
+        )
+    };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a fresh descriptor owned by nothing else.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+    // SAFETY: an all-zero sockaddr_nl is valid; the kernel assigns the port id.
+    let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+    address.nl_family = libc::AF_NETLINK as libc::sa_family_t;
+    address.nl_groups = libc::RTMGRP_IPV4_IFADDR as u32;
+    // SAFETY: the address is a valid sockaddr_nl of the length passed.
+    let bound = unsafe {
+        libc::bind(
+            std::os::fd::AsRawFd::as_raw_fd(&socket),
+            (&address as *const libc::sockaddr_nl).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    };
+    if bound < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(socket)
+}
+
+/// Whether the kernel has reported an address change since the watch was last drained. A
+/// notification lost to a full receive buffer reports as `ENOBUFS`, which counts as a change.
+#[cfg(target_os = "linux")]
+pub(crate) fn address_changed(watch: &std::os::fd::OwnedFd) -> bool {
+    let mut byte = [0u8; 1];
+    // SAFETY: a one-byte peek into a buffer of that length; nothing is consumed.
+    let peeked = unsafe {
+        libc::recv(
+            std::os::fd::AsRawFd::as_raw_fd(watch),
+            byte.as_mut_ptr().cast(),
+            byte.len(),
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    peeked >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock
+}
+
+/// Discards the notifications already queued, before the list they predate is replaced.
+#[cfg(target_os = "linux")]
+pub(crate) fn drain_address_watch(watch: &std::os::fd::OwnedFd) {
+    let mut buffer = [0u8; 8192];
+    // Bounded, so a storm of changes cannot hold the pass; what is left still reads as changed.
+    for _ in 0..256 {
+        // SAFETY: the buffer is valid for its length; the kernel truncates longer messages.
+        let read = unsafe {
+            libc::recv(
+                std::os::fd::AsRawFd::as_raw_fd(watch),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                libc::MSG_DONTWAIT | libc::MSG_TRUNC,
+            )
+        };
+        if read < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOBUFS) {
+            return;
+        }
+    }
+}
+
 fn private_ipv4(ip: Ipv4Addr) -> bool {
     ip.is_private() || ip.is_link_local()
 }

@@ -1488,3 +1488,74 @@ fn an_ipv6_host_is_skipped_as_ipv6_not_as_a_public_subnet() {
         "ipv6-unsupported"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "re-runs itself under `unshare -Urn`, in a private user and network namespace"]
+fn the_address_watch_hears_an_address_added_in_a_private_namespace() {
+    const INSIDE: &str = "BUILD_RTC_ADDRESS_WATCH_NAMESPACE";
+    if std::env::var_os(INSIDE).is_none() {
+        // The address is added inside a namespace the test owns; the host's network is untouched.
+        let status = std::process::Command::new("unshare")
+            .arg("-Urn")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "peer_connection::host_sweep::tests::the_address_watch_hears_an_address_added_in_a_private_namespace",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(INSIDE, "1")
+            .status()
+            .expect("unshare runs");
+        assert!(status.success(), "the namespaced run failed: {status}");
+        return;
+    }
+    let watch = address_watch().unwrap();
+    assert!(!address_changed(&watch), "a fresh namespace is quiet");
+    set_loopback_address(Ipv4Addr::new(10, 72, 9, 1));
+    assert!(
+        address_changed(&watch),
+        "the kernel reports an address added to any interface"
+    );
+    assert!(
+        address_changed(&watch),
+        "peeking leaves the report for later sends"
+    );
+    drain_address_watch(&watch);
+    assert!(!address_changed(&watch), "a drained watch is quiet again");
+    println!("address_watch_namespace=ok");
+}
+
+#[cfg(target_os = "linux")]
+fn set_loopback_address(address: Ipv4Addr) {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    // SAFETY: plain socket creation; ownership moves into `OwnedFd`.
+    let socket = unsafe {
+        OwnedFd::from_raw_fd(libc::socket(
+            libc::AF_INET,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            0,
+        ))
+    };
+    // SAFETY: an all-zero ifreq is valid; the name and an AF_INET address are written whole.
+    let result = unsafe {
+        let mut ifreq: libc::ifreq = std::mem::zeroed();
+        for (slot, byte) in ifreq.ifr_name.iter_mut().zip(b"lo\0") {
+            *slot = *byte as libc::c_char;
+        }
+        (&raw mut ifreq.ifr_ifru.ifru_addr)
+            .cast::<libc::sockaddr_in>()
+            .write(libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: 0,
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from(address).to_be(),
+                },
+                sin_zero: [0; 8],
+            });
+        libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFADDR as _, &mut ifreq)
+    };
+    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
+}

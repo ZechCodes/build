@@ -1,0 +1,14 @@
+/* One cached PR fact across the task header, list, board and inbox. Imported
+   by the shared renderer so inbox-only routes also size its raw SVG. */
+.task-review-summary {
+  display:inline-flex; align-items:center; gap:4px; flex:none;
+  font-family:var(--sans); font-size:11px; line-height:1.4; white-space:nowrap;
+  color:var(--ink2);
+}
+.task-review-icon { display:inline-flex; color:var(--accent); }
+.task-review-icon svg { display:block; width:13px; height:13px; }
+.task-review-summary[data-review-status="changes_requested"] .task-review-icon { color:var(--amber); }
+.task-review-summary[data-review-status="closed"] .task-review-icon { color:var(--dim); }
+.task-card-status { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.task-page-marks { flex-wrap:wrap; }
+.inbox-entry[data-key^="tracker_task:"] .inbox-facts { display:flex; align-items:center; flex-wrap:wrap; gap:6px; }

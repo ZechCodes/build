@@ -44,6 +44,7 @@ import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceS
 import { sessionTimes } from "./sessionSpans.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { statusDotHtml } from "./inboxStatusDot.js";
+import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -1006,6 +1007,8 @@ const rowStatusDotHtml = (entry) => statusDotHtml({
   unread: entry.unreadCount > 0,
 });
 
+const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReviewSummaryHtml(entry.reviewSummary) : "";
+
 /** One inbox row, in two lines: what this is, then what it weighs. The status
  * dot follows its actions at the right edge. `ui`: { activeKey,
  *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
@@ -1022,7 +1025,7 @@ export function inboxRowHtml(entry, ui = {}) {
   return `${rowOpenHtml(entry, ui)}
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span></div>
-      <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
+      <div class="inbox-facts">${rowReviewSummaryHtml(entry)}${esc(entry.facts || GETTING_STARTED)}</div>
       <span class="warn" data-done-error hidden></span>
     </div>
     <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
@@ -1079,7 +1082,7 @@ function quietRowHtml(entry, ui) {
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span></div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    ${entry.facts ? `<span class="inbox-facts inbox-facts-float">${esc(entry.facts)}</span>` : ""}
+    ${entry.facts ? `<span class="inbox-facts inbox-facts-float">${rowReviewSummaryHtml(entry)}${esc(entry.facts)}</span>` : ""}
     <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
   </div>`;
 }

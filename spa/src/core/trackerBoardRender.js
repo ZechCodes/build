@@ -23,9 +23,18 @@ import {
 } from "./trackerChips.js";
 import { columnNote } from "./trackerModel.js";
 import { taskBubbleHtml } from "./taskUnread.js";
+import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
 
 /** What the keyboard is told, once per board rather than once per card. */
 export const MOVE_HINT = "Use the left and right arrow keys to move this task between columns.";
+
+const cardStatusHtml = (task, columns, reading) => {
+  // The column says where the task stands; PR status stays a separate fact.
+  const withWhom = reviewerWords(task, reading);
+  const summary = taskReviewSummaryHtml(task.review_summary);
+  if (!withWhom && !summary) return "";
+  return `<div class="task-card-status">${withWhom ? statusChipHtml(columns, task.status, withWhom) : ""}${summary}</div>`;
+};
 
 /**
  * One card.
@@ -40,15 +49,13 @@ export const taskCardHtml = (task, { columns, href, unreadOf, ...context }) => {
   const reading = { ...context, identities: task.identities || {} };
   const assigneeHref = task.assignee && actorHref(task.assignee, reading);
   const assignButton = `<button class="task-assign" type="button" data-task-assign="${esc(task.id)}" aria-label="Assign #${esc(String(task.number ?? ""))}" title="Assign this task">${assigneeHref ? "Change" : assigneeHtml(task.assignee, reading)}</button>`;
-  // The column already says In review; the card says who it is with (#144).
-  const withWhom = reviewerWords(task, reading);
   return (
   `<li class="task-card" draggable="true" tabindex="0"
       data-task="${esc(task.id)}" data-status="${esc(task.status)}"
       aria-label="#${esc(String(task.number ?? ""))} ${esc(task.title)}">
     <div class="task-card-head">${stateMarkHtml(task)}${numberHtml(task)}${priorityChipHtml(task.priority)}${taskBubbleHtml(task, unreadOf)}</div>
     <a class="task-card-title" href="${esc(href(task))}">${esc(task.title)}</a>
-    ${withWhom ? `<div class="task-card-status">${statusChipHtml(columns, task.status, withWhom)}</div>` : ""}
+    ${cardStatusHtml(task, columns, reading)}
     ${task.labels?.length ? `<div class="task-card-labels">${labelsHtml(task.labels)}</div>` : ""}
     ${assigneeHref
       ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}">${assigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`

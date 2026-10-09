@@ -22,6 +22,7 @@ import { attachmentListHtml } from "./attachmentTiles.js";
 import { ICON_PAPERCLIP } from "./icons.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { commentReplyIndex, commentReplyHtml, commentRepliesHtml } from "./taskCommentReplies.js";
+import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
 
 /** The head: what the task is called, and the two facts that are independent
  *  of each other — is it still open, and where does it stand on the board.
@@ -32,6 +33,7 @@ export const taskHeadHtml = (task, { watch = null } = {}) => `<header class="tas
     <div class="task-page-marks">
       ${stateMarkHtml(task)}<span class="task-page-state">${esc(stateLabel(task.state))}</span>
       ${numberHtml(task)}
+      ${taskReviewSummaryHtml(task.review_summary)}
       ${ageHtml(task.updated_at)}
       ${watch ? watchButtonHtml(watch) : ""}
     </div>

@@ -332,3 +332,406 @@ fn delayed_old_clear_does_not_retire_the_new_generation() {
         );
     }));
 }
+
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+#[test]
+fn a_sweep_pass_reads_interfaces_while_the_core_lock_is_free() {
+    use super::driver::SweepInterfaces;
+    use rtc::shared::ifaces::Interface;
+    use std::cell::RefCell;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    // The pass's interface read parks here, as a slow netlink dump would, until released.
+    thread_local! {
+        static READ_GATE: RefCell<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
+            const { RefCell::new(None) };
+    }
+    fn parked_interfaces() -> std::io::Result<Vec<Interface>> {
+        READ_GATE.with(|gate| {
+            if let Some((entered, release)) = gate.borrow().as_ref() {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        });
+        Ok(Vec::new())
+    }
+
+    let runtime = default_runtime().unwrap();
+    let mut connection = None;
+    runtime.block_on(Box::pin(async {
+        connection = Some(new_test_peer_connection().await);
+    }));
+    let (mut inner, _events) = connection.unwrap();
+    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let driver_inner = Arc::clone(&inner);
+    let pass = std::thread::spawn(move || {
+        READ_GATE.with(|gate| *gate.borrow_mut() = Some((entered_tx, release_rx)));
+        let mut driver = PeerConnectionDriver::new(
+            driver_inner,
+            Vec::<SocketAddr>::new(),
+            Vec::<SocketAddr>::new(),
+            rtc::ice::mdns::MulticastDnsMode::Disabled,
+            Vec::new(),
+            RTCIceTransportPolicy::All,
+            false,
+        );
+        driver.sweep_interfaces = SweepInterfaces::reading(parked_interfaces);
+        driver
+            .host_sweep
+            .start(1, "ufrag".into(), 40000, Instant::now());
+        default_runtime()
+            .unwrap()
+            .block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
+    });
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("an active sweep pass must read the interface list");
+    let core_free = inner.core.try_lock().is_some();
+    release_tx.send(()).unwrap();
+    pass.join().unwrap();
+    assert!(
+        core_free,
+        "the core lock must stay free while the sweep reads system state"
+    );
+}
+
+#[test]
+fn sweep_passes_share_one_interface_read_until_it_is_stale() {
+    use super::driver::SweepInterfaces;
+    use rtc::shared::ifaces::Interface;
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static READS: Cell<usize> = const { Cell::new(0) };
+    }
+    fn counted_interfaces() -> std::io::Result<Vec<Interface>> {
+        READS.with(|reads| reads.set(reads.get() + 1));
+        Ok(Vec::new())
+    }
+
+    let mut interfaces = SweepInterfaces::reading(counted_interfaces);
+    let start = Instant::now();
+    interfaces.refresh(start);
+    interfaces.refresh(start + Duration::from_millis(99));
+    assert_eq!(
+        READS.with(Cell::get),
+        1,
+        "passes within 100 ms reuse the list"
+    );
+    interfaces.refresh(start + Duration::from_millis(100));
+    assert_eq!(READS.with(Cell::get), 2, "a 100 ms old list is read again");
+    let read_at = start + Duration::from_millis(100);
+    assert!(interfaces.current(read_at).is_some());
+    assert_eq!(
+        interfaces.usable_until(),
+        Some(read_at + Duration::from_millis(100)),
+        "real indications stop at the list's lapse, checked after their last wait"
+    );
+    assert!(
+        interfaces
+            .current(read_at + Duration::from_millis(100))
+            .is_none(),
+        "a list is not used once it is 100 ms old"
+    );
+}
+
+#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
+#[test]
+fn a_pass_that_waits_past_the_interface_bound_for_the_core_lock_does_not_run() {
+    use super::driver::SweepInterfaces;
+    use rtc::shared::ifaces::Interface;
+    use std::cell::RefCell;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static READ: RefCell<Option<mpsc::Sender<()>>> = const { RefCell::new(None) };
+    }
+    fn signalled_interfaces() -> std::io::Result<Vec<Interface>> {
+        READ.with(|read| {
+            if let Some(read) = read.borrow().as_ref() {
+                let _ = read.send(());
+            }
+        });
+        Ok(Vec::new())
+    }
+
+    let runtime = default_runtime().unwrap();
+    let mut connection = None;
+    runtime.block_on(Box::pin(async {
+        connection = Some(new_test_peer_connection().await);
+    }));
+    let (mut inner, _events) = connection.unwrap();
+    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
+    let mut core = None;
+    runtime.block_on(Box::pin(async {
+        core = Some(inner.core.lock().await);
+    }));
+    let (read_tx, read_rx) = mpsc::channel();
+    let driver_inner = Arc::clone(&inner);
+    let pass = std::thread::spawn(move || {
+        READ.with(|read| *read.borrow_mut() = Some(read_tx));
+        let mut driver = PeerConnectionDriver::new(
+            driver_inner,
+            Vec::<SocketAddr>::new(),
+            Vec::<SocketAddr>::new(),
+            rtc::ice::mdns::MulticastDnsMode::Disabled,
+            Vec::new(),
+            RTCIceTransportPolicy::All,
+            false,
+        );
+        driver.sweep_interfaces = SweepInterfaces::reading(signalled_interfaces);
+        let started = Instant::now();
+        driver.host_sweep.start(1, "ufrag".into(), 40000, started);
+        let runtime = default_runtime().unwrap();
+        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
+        let stale = driver.host_sweep.deadline();
+        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
+        (started, stale, driver.host_sweep.deadline())
+    });
+    read_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the pass must read the interface list before the lock");
+    std::thread::sleep(Duration::from_millis(150));
+    drop(core);
+    let (started, stale, fresh) = pass.join().unwrap();
+    // A pass that runs cancels this plan, whose credentials the core never had; an abandoned
+    // pass leaves it due at its start.
+    assert_eq!(
+        stale,
+        Some(started),
+        "a list older than 100 ms by the time the lock is held must not be used"
+    );
+    assert_ne!(
+        fresh,
+        Some(started),
+        "the next pass reads the list again and runs"
+    );
+}
+
+/// A stand-in kernel for the interface checks at send time: the address table a full read
+/// returns, the index lookup made with it, and the notification socket the kernel writes to
+/// whenever an IPv4 address is added or removed. `the_address_watch_hears_an_address_added_in_a_private_namespace`
+/// pins that the real kernel writes one.
+#[cfg(target_os = "linux")]
+mod fake_kernel {
+    use rtc::shared::ifaces::{Interface, Kind};
+    use std::cell::RefCell;
+    use std::net::Ipv4Addr;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixDatagram;
+
+    thread_local! {
+        static TABLE: RefCell<Vec<Interface>> = const { RefCell::new(Vec::new()) };
+        static NOTIFY: RefCell<Option<UnixDatagram>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn interface(ip: &str, mask: &str, name: &str) -> Interface {
+        Interface {
+            name: name.into(),
+            kind: Kind::Ipv4,
+            addr: Some(format!("{ip}:0").parse().unwrap()),
+            mask: Some(format!("{mask}:0").parse().unwrap()),
+            hop: None,
+        }
+    }
+
+    pub(super) fn table() -> std::io::Result<Vec<Interface>> {
+        Ok(TABLE.with(|table| table.borrow().clone()))
+    }
+
+    pub(super) fn watch() -> std::io::Result<OwnedFd> {
+        let (ours, kernel) = UnixDatagram::pair()?;
+        NOTIFY.with(|notify| *notify.borrow_mut() = Some(kernel));
+        Ok(ours.into())
+    }
+
+    /// Every interface is `wifi`'s index 2.
+    pub(super) fn index(_: &str) -> u32 {
+        2
+    }
+
+    pub(super) fn add_address(interface: Interface) {
+        TABLE.with(|table| table.borrow_mut().push(interface));
+        notify();
+    }
+
+    /// Sets the mask an address is held under, as `SIOCSIFNETMASK` does: the kernel removes
+    /// the address and adds it back, and reports both.
+    pub(super) fn set_mask(ip: Ipv4Addr, mask: &str) {
+        TABLE.with(|table| {
+            for interface in table.borrow_mut().iter_mut() {
+                if interface.addr.map(|addr| addr.ip()) == Some(ip.into()) {
+                    interface.mask = Some(format!("{mask}:0").parse().unwrap());
+                }
+            }
+        });
+        notify();
+    }
+
+    fn notify() {
+        NOTIFY.with(|notify| {
+            if let Some(notify) = notify.borrow().as_ref() {
+                notify.send(b"RTM_NEWADDR").unwrap();
+            }
+        });
+    }
+
+    pub(super) fn reset(interfaces: Vec<Interface>) {
+        TABLE.with(|table| *table.borrow_mut() = interfaces);
+        NOTIFY.with(|notify| *notify.borrow_mut() = None);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn watched_wifi() -> (
+    super::driver::SweepInterfaces,
+    super::host_sweep::SweepSubnet,
+    std::time::Instant,
+) {
+    use super::driver::SweepInterfaces;
+    use super::host_sweep::SweepSubnet;
+
+    let wifi = fake_kernel::interface("192.168.2.1", "255.255.255.0", "wifi");
+    fake_kernel::reset(vec![wifi.clone()]);
+    let subnet =
+        SweepSubnet::for_socket("192.168.2.1:45000".parse().unwrap(), &[wifi], |_| 2).unwrap();
+    let mut interfaces = SweepInterfaces::reading(fake_kernel::table);
+    interfaces.index = fake_kernel::index;
+    interfaces.watch = fake_kernel::watch;
+    let now = std::time::Instant::now();
+    interfaces.refresh(now);
+    (interfaces, subnet, now)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_source_address_another_interface_takes_after_the_read_stops_the_send() {
+    let (interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    // The selected interface's index, address and mask are unchanged; only the list is not.
+    fake_kernel::add_address(fake_kernel::interface(
+        "192.168.2.1",
+        "255.255.255.0",
+        "bridge",
+    ));
+    assert!(
+        !interfaces.owns(now, &subnet, remote),
+        "a source address two interfaces now hold must not be sent from"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_destination_that_became_a_local_address_after_the_read_stops_the_send() {
+    let (interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    fake_kernel::add_address(fake_kernel::interface(
+        "192.168.2.2",
+        "255.255.255.255",
+        "docker0",
+    ));
+    assert!(
+        !interfaces.owns(now, &subnet, remote),
+        "a destination this host now holds must not be probed"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_next_read_after_an_address_change_is_trusted_again() {
+    use std::time::Duration;
+
+    let (mut interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    fake_kernel::add_address(fake_kernel::interface(
+        "192.168.2.9",
+        "255.255.255.0",
+        "wifi",
+    ));
+    assert!(!interfaces.owns(now, &subnet, remote));
+    let later = now + Duration::from_millis(100);
+    interfaces.refresh(later);
+    assert!(
+        interfaces.owns(later, &subnet, remote),
+        "a list read after the change, with no change since, stands again"
+    );
+}
+
+#[test]
+fn a_real_indication_stops_when_the_interface_list_lapses_first() {
+    use super::driver::real_send_deadline;
+    use std::time::{Duration, Instant};
+
+    let now = Instant::now();
+    let neighbors = now + Duration::from_millis(80);
+    let window = now + Duration::from_secs(25);
+    let interfaces = now + Duration::from_millis(50);
+    assert_eq!(
+        real_send_deadline(Some(neighbors), window, Some(interfaces), now),
+        interfaces,
+        "the list lapsing before the neighbour snapshot ends the send there"
+    );
+    assert_eq!(
+        real_send_deadline(Some(neighbors), window, None, now),
+        now,
+        "with no list read, nothing may be sent"
+    );
+    assert_eq!(
+        real_send_deadline(Some(neighbors), window, Some(window), now),
+        neighbors
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_send_time_ownership_check_asks_the_kernel_for_nothing_but_the_watch() {
+    use std::cell::Cell;
+
+    // Sends check ownership under the core lock (and a scout's under its resources and budget
+    // too). An interface ioctl there waits on RTNL behind any netlink writer, so every lookup
+    // a check needs is made when the list is read, outside the lock.
+    thread_local! {
+        static LOOKUPS: Cell<usize> = const { Cell::new(0) };
+    }
+    fn counted(name: &str) -> u32 {
+        LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
+        fake_kernel::index(name)
+    }
+
+    let (mut interfaces, subnet, now) = watched_wifi();
+    interfaces.index = counted;
+    let later = now + std::time::Duration::from_millis(100);
+    interfaces.refresh(later);
+    assert_eq!(LOOKUPS.with(Cell::get), 1, "the read looks up the index");
+    LOOKUPS.with(|lookups| lookups.set(0));
+    let now = later;
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    assert!(interfaces.owns(now, &subnet, remote));
+    assert_eq!(
+        LOOKUPS.with(Cell::get),
+        0,
+        "an ownership check must not make an interface lookup"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_mask_narrowed_after_the_read_stops_the_send() {
+    let (interfaces, subnet, now) = watched_wifi();
+    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
+    assert!(interfaces.owns(now, &subnet, remote));
+    // The interface, its index and the source address are unchanged; only the mask is not.
+    fake_kernel::set_mask(std::net::Ipv4Addr::new(192, 168, 2, 1), "255.255.255.128");
+    assert!(
+        !interfaces.owns(now, &subnet, remote),
+        "a mask narrowed since the read must stop the send"
+    );
+}

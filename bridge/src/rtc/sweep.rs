@@ -79,6 +79,7 @@ fn known_reason(reason: &str) -> bool {
             | "no-host-socket"
             | "no-on-link-interface"
             | "non-private-subnet"
+            | "ipv6-unsupported"
             | "invalid-netmask"
             | "point-to-point"
             | "unsupported-platform"
@@ -95,6 +96,7 @@ fn known_reason(reason: &str) -> bool {
             | "ambiguous-interface"
             | "neighbor-pressure"
             | "neighbor-snapshot-unavailable"
+            | "neighbor-table-too-large"
             | "scout-socket-limit"
             | "nat-evidence-missing"
             | "nat-address-mismatch"
@@ -160,7 +162,12 @@ mod tests {
 
     #[test]
     fn scout_failures_keep_the_existing_fixed_reason_codes() {
-        for reason in ["window-expired", "unsupported-platform", "send-error"] {
+        for reason in [
+            "window-expired",
+            "unsupported-platform",
+            "send-error",
+            "ipv6-unsupported",
+        ] {
             let snapshot =
                 serde_json::to_value(Snapshot::from(event("stopped", Some(reason)))).unwrap();
             assert_eq!(snapshot["reason"], reason);
@@ -172,6 +179,7 @@ mod tests {
         for reason in [
             "neighbor-pressure",
             "neighbor-snapshot-unavailable",
+            "neighbor-table-too-large",
             "scout-socket-limit",
         ] {
             let snapshot =

@@ -280,13 +280,16 @@ impl Dump {
             .checked_add(data.len())
             .ok_or_else(invalid_dump)?;
         if self.bytes > MAX_BYTES {
-            return Err(invalid_dump());
+            return Err(oversized_dump());
         }
         let mut done = false;
         while !data.is_empty() {
             self.check_deadline()?;
             self.messages += 1;
-            if self.messages > MAX_MESSAGES || data.len() < HEADER_LEN {
+            if self.messages > MAX_MESSAGES {
+                return Err(oversized_dump());
+            }
+            if data.len() < HEADER_LEN {
                 return Err(invalid_dump());
             }
             let length = u32::from_ne_bytes(data[..4].try_into().unwrap()) as usize;
@@ -353,6 +356,8 @@ impl Dump {
             }
             return Ok(());
         }
+        // Hints take the same dynamic states as scout snapshots; PERMANENT and NOARP entries
+        // are configured rather than observed and are never prioritized.
         if owner <= 0
             || owner as u32 != interface_index
             || !matches!(
@@ -367,7 +372,7 @@ impl Dump {
                 return Ok(());
             }
             if self.addresses.len() == MAX_ADDRESSES {
-                return Err(invalid_dump());
+                return Err(oversized_dump());
             }
             self.seen.insert(address);
             self.addresses.push(address);
@@ -383,9 +388,12 @@ impl Dump {
             return Ok(());
         }
         if self.states.len() == MAX_ADDRESSES {
-            return Err(invalid_dump());
+            return Err(oversized_dump());
         }
         self.states.insert(address, state);
+        // Only kernel-resolved dynamic entries are probed. PERMANENT and NOARP neighbours are
+        // configured, not observed: their presence says nothing about a device answering now,
+        // so they never become real-indication destinations. They still count toward pressure.
         let target = match state {
             libc::NUD_REACHABLE | libc::NUD_STALE | libc::NUD_DELAY => &mut self.addresses,
             libc::NUD_INCOMPLETE => &mut self.incomplete,
@@ -452,6 +460,35 @@ fn advance(data: &[u8], length: usize) -> io::Result<&[u8]> {
         return Ok(&[]);
     }
     Err(invalid_dump())
+}
+
+/// A dump past the read caps: the table is larger than a bounded snapshot reads, which is
+/// a property of the host rather than a transient failure, so it is reported apart.
+#[derive(Debug)]
+struct OversizedDump;
+
+impl std::fmt::Display for OversizedDump {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("neighbor table larger than a bounded dump reads")
+    }
+}
+
+impl std::error::Error for OversizedDump {}
+
+fn oversized_dump() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, OversizedDump)
+}
+
+/// The fixed reason a failed snapshot pauses scouting with.
+pub(super) fn failure_reason(error: &io::Error) -> &'static str {
+    if error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<OversizedDump>())
+    {
+        "neighbor-table-too-large"
+    } else {
+        "neighbor-snapshot-unavailable"
+    }
 }
 
 fn invalid_dump() -> io::Error {
@@ -885,5 +922,70 @@ mod tests {
         );
         assert_eq!(data.len(), HEADER_LEN + 4);
         assert_eq!(data[HEADER_LEN..], [libc::AF_INET as u8, 0, 0, 0]);
+    }
+
+    #[test]
+    fn every_read_cap_reports_an_oversized_table_and_malformed_data_does_not() {
+        let mut messages = Dump::scout();
+        for _ in 0..MAX_MESSAGES {
+            messages
+                .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
+                .unwrap();
+        }
+        let error = messages
+            .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
+            .unwrap_err();
+        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
+
+        let mut bytes = Dump::scout();
+        let chunk = message(16, 0, SEQUENCE, &vec![0; 4096 - HEADER_LEN]);
+        for _ in 0..MAX_BYTES / chunk.len() {
+            bytes.consume(&chunk, OWNER).unwrap();
+        }
+        let error = bytes
+            .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
+            .unwrap_err();
+        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
+
+        let mut states = Dump::scout();
+        for value in 0..MAX_ADDRESSES {
+            states
+                .consume(
+                    &neighbor(2, OWNER, 2, Ipv4Addr::from(0x0a000001 + value as u32)),
+                    OWNER,
+                )
+                .unwrap();
+        }
+        let error = states
+            .consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
+            .unwrap_err();
+        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
+
+        let error = Dump::scout()
+            .consume(&message(1, 0, SEQUENCE, &[])[..8], OWNER)
+            .unwrap_err();
+        assert_eq!(failure_reason(&error), "neighbor-snapshot-unavailable");
+    }
+
+    #[test]
+    fn permanent_and_noarp_neighbors_are_never_usable_destinations() {
+        let mut dump = Dump::scout();
+        for (state, octet) in [
+            (libc::NUD_PERMANENT, 1),
+            (libc::NUD_NOARP, 2),
+            (libc::NUD_REACHABLE, 3),
+        ] {
+            dump.consume(
+                &neighbor(2, OWNER, state, Ipv4Addr::new(10, 1, 2, octet)),
+                OWNER,
+            )
+            .unwrap();
+        }
+        assert_eq!(dump.addresses, vec![Ipv4Addr::new(10, 1, 2, 3)]);
+        assert!(dump.incomplete.is_empty() && dump.failed.is_empty());
+        assert_eq!(
+            dump.netns_total, 3,
+            "they still count toward table pressure"
+        );
     }
 }

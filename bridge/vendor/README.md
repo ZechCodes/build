@@ -1,4 +1,4 @@
-# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375)
+# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376)
 
 The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
@@ -218,8 +218,9 @@ through normal ICE processing; the indication alone proves nothing.
 Only an accepted UDP host candidate's existing bound socket is used. Its exact
 source IP must have one current owning interface, a contiguous actual IPv4 mask,
 and an RFC 1918 or link-local subnet of at most 1024 total addresses. Network,
-broadcast and every current local address are excluded. Interface name, index,
-address and mask are rechecked before every send. Linux's Tokio socket adapter
+broadcast and every current local address are excluded. Every send checks
+these against an interface list, and the indexes read with it, at most 100 ms
+old that the kernel has reported no IPv4 address change since (#376, below). Linux's Tokio socket adapter
 uses IP_PKTINFO plus MSG_DONTROUTE and MSG_DONTWAIT on that same socket, so there
 is no gateway or source-port fallback. Other platforms and runtimes skip until
 an equivalent explicit-interface operation is supplied. A candidate port of
@@ -343,6 +344,109 @@ and clear races use real sans-I/O cores in `host_sweep_driver_tests.rs`. A Tokio
 UDP test pins the actual advertised source port and interface. The namespace
 fixture in `web/rtc-lan-upgrade/` proves the authenticated PRFLX upgrade and
 subnet-size skip with real Chromium and encrypted data channels.
+
+#376: a sweep pass held the core lock, which every data-channel write and
+ICE/SCTP pass also takes, through its netlink reads: the scouts' neighbour
+dumps (up to 5 ms every 20–100 ms), the preparation's neighbour snapshots (up
+to 5 ms) and a `getifaddrs` before every probe. The driver now does all of
+those reads first, then takes the core lock for the decisions and the
+nonblocking send. The interface list is read at most once per 100 ms, the
+same age bound as the neighbour snapshots that authorize a destination, and
+each pass reuses it. Preparation builds every sweep-capable socket's subnet
+outside the lock, only after a pass has found the NAT gate open, so a sweep
+waiting for NAT evidence does no preparation reads. A port that falls due
+after the reads, or at the pass that opens the gate, stays due and the next
+pass reads for it. The send path still validates generation, credentials and port
+under `HostSweepControl` and the core lock. Two driver regressions pin it:
+an interface read that parks while the test takes the core lock with
+`try_lock` (it fails with the reads moved back under the lock), and one
+interface read shared by passes inside 100 ms; a `host_sweep_tests.rs` case
+pins the NAT gate state the driver reads. Data-channel latency during a
+sweep was not measured.
+
+The cached list alone would miss any address change in the up-to-100 ms it
+stands, which the per-send `getifaddrs` caught: the source's address or mask
+changed, a second interface taking the source address, or the destination
+becoming local. The sweep therefore keeps a netlink socket subscribed to
+`RTMGRP_IPV4_IFADDR`, opened or drained just before each list read. A send
+peeks it, and any queued notification, or a lost one (`ENOBUFS`), means the
+list no longer stands: nothing is sent until the next read. A mask set with
+`SIOCSIFNETMASK` removes the address and adds it back, and a renamed
+interface re-announces its addresses under the new label, so both are
+reported; a private namespace showed each. Each interface's index is looked
+up with the list, after the watch is opened, so an interface recreated under
+the same name before the lookup is reported by its addresses' removal.
+
+A send asks the kernel nothing but that peek. An earlier revision read the
+source's index and mask live with `if_nametoindex`, `SIOCGIFADDR` and
+`SIOCGIFNETMASK` at each send, under the core lock and, for a scout, its
+resource and budget locks; `devinet_ioctl` takes RTNL, so a netlink writer
+could hold every data-channel write behind it. Driver regressions pin a
+source address taken by a second interface, a destination that became local,
+a mask narrowed after the read, trust returning with the next read, and an
+ownership check making no interface lookup, against a stand-in kernel. The ignored
+`the_address_watch_hears_an_address_added_in_a_private_namespace` re-runs
+itself under `unshare -Urn` and adds an address there, so the real kernel's
+notification is checked without touching the host's network:
+
+    nice -n 10 cargo test --locked --manifest-path bridge/vendor/Cargo.toml -p webrtc --lib the_address_watch -- --ignored
+
+A watch whose receive buffer overflows loses notifications. The kernel
+reports that once, as `ENOBUFS`, and the peek counts it as a change like any
+other, so nothing on the list stands until the next read. The ignored
+`an_overflowed_address_watch_reads_as_changed_until_drained` shrinks the
+watch's buffer in a private namespace, floods it with address changes, and
+pins the overflow read as a change and the drained watch read as quiet. It
+runs the same way, with `an_overflowed_address_watch` as the filter. An
+interface that goes down keeps its IPv4 addresses and reports nothing to the
+watch; neither `getifaddrs` nor the sweep ever checked it, and a send on it
+fails. Deleting an interface deletes its addresses, which the watch reports.
+
+The list's 100 ms bound is checked again once the core lock is held: a wait
+for the lock can outlast it. A pass whose list is past the bound by then
+does nothing and stays due, and the next wake reads the list afresh before
+taking the lock; every use of the list also checks its age at the pass's
+post-lock instant. A driver regression holds the core lock for 150 ms while
+a pass waits and pins that the pass leaves its plan untouched, then runs on
+the next wake.
+
+The post-lock instant is still earlier than the send, so the list's lapse,
+100 ms after its read, also travels to each emission and is checked after
+the last wait, beside the neighbour snapshot's age. A scout checks it at its
+send instant, after the scout mutexes, and only then runs the ownership
+check; a lapsed list holds that tick without dropping the neighbours. A real
+indication folds it into the deadline `send_real` checks after the budget
+lock, with the neighbour snapshot's lapse and the probe's window
+(`real_send_deadline`). `host_scout.rs` pins a scout held on a lapsed list,
+and a driver test pins the real-indication deadline taking the list's lapse
+when it comes first. A scout checks the window, the neighbour snapshot and
+the list again at one instant after the ownership check, with only
+bookkeeping before the send; `host_scout.rs` pins each lapsing during a slow
+check. A
+scout whose source is no longer owned releases its send's resource and
+budget locks before clearing the group, which takes the resource lock again;
+`host_scout.rs` pins both, the second with a 10 s deadlock bound. The
+per-send peek at the address watch runs under the core lock and cannot wait:
+the socket is nonblocking, the peek passes `MSG_DONTWAIT` and consumes
+nothing, and no netlink request or RTNL lock is involved.
+
+An IPv6 host candidate is skipped as `ipv6-unsupported` (it was reported as
+`non-private-subnet`): the sweep enumerates IPv4 subnets only. The bridge and
+the SPA's diagnostics both accept the new fixed code.
+
+A neighbour dump past its read caps (256 KiB, 4096 messages, 1024 states on
+the interface) no longer reads as a transient `neighbor-snapshot-unavailable`.
+The host's table is larger than a bounded snapshot reads, so scouting pauses
+with `neighbor-table-too-large` and logs a warning once per pause. Scouts and
+real indications still need a fresh snapshot, so scouting is not attempted
+without one. Equal `gc_thresh2` and `gc_thresh3` are a valid tuning and now
+admit scouts under the same pending cap and 75% occupancy ceiling; before,
+they refused every scout as `neighbor-pressure`.
+
+PERMANENT and NOARP neighbours are never real-indication destinations, nor
+prioritized: they are configured rather than observed, so they say nothing
+about a device answering now. They still count toward table pressure. The
+decision is documented where `host_neighbors.rs` classifies states.
 
 #383 recovery regressions cover direct-selected PRFLX followed by a native
 credential-changing restart onto relay: fresh sweep counters start at zero,

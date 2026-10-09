@@ -278,13 +278,16 @@ fn ambiguous_source_address_ownership_and_interface_replacement_are_skipped() {
     );
     let subnet = SweepSubnet::for_socket(local, &[wifi.clone()], |_| 2).unwrap();
     let remote = Ipv4Addr::new(192, 168, 2, 2);
-    assert!(subnet.still_owned(&[wifi.clone()], 2, remote));
-    assert!(!subnet.still_owned(&[wifi.clone()], 3, remote));
+    assert!(subnet.still_owned(&[wifi.clone()], |_| 2, remote));
+    assert!(
+        !subnet.still_owned(&[wifi.clone()], |_| 3, remote),
+        "an interface recreated under the name since the subnet was planned is not the same"
+    );
     let own_new = interface("192.168.2.2:0", "255.255.255.0:0", "wifi");
-    assert!(!subnet.still_owned(&[wifi.clone(), own_new], 2, remote));
+    assert!(!subnet.still_owned(&[wifi.clone(), own_new], |_| 2, remote));
     let changed_mask = interface("192.168.2.1:0", "255.255.255.128:0", "wifi");
-    assert!(!subnet.still_owned(&[changed_mask], 2, remote));
-    assert!(!subnet.still_owned(&[], 2, remote));
+    assert!(!subnet.still_owned(&[changed_mask], |_| 2, remote));
+    assert!(!subnet.still_owned(&[], |_| 2, remote));
 }
 
 #[test]
@@ -1419,4 +1422,161 @@ fn nat_transitions_publish_masked_and_restored_numeric_evidence_after_expiry() {
     assert_eq!(sweep.packets, 0);
     assert!(sweep.deadline().is_none());
     assert!(sweep.plans[&40000].subnets.is_none());
+}
+
+#[test]
+fn the_last_nat_gate_says_whether_a_pass_reads_for_preparation() {
+    let mut sweep = HostSweep::default();
+    let now = Instant::now();
+    assert!(!sweep.nat_open(), "no pass has opened the gate yet");
+    assert!(sweep.gate_nat(now, None));
+    assert!(sweep.nat_open());
+    assert!(!sweep.gate_nat(now, Some("nat-evidence-missing")));
+    assert!(!sweep.nat_open(), "a closed gate stops preparation reads");
+}
+
+#[test]
+fn an_ipv6_host_is_skipped_as_ipv6_not_as_a_public_subnet() {
+    let local = address("[fd00::1]:45000");
+    let iface = Interface {
+        name: "wifi".into(),
+        kind: Kind::Ipv6,
+        addr: Some(address("[fd00::1]:0")),
+        mask: Some(address("[ffff:ffff:ffff:ffff::]:0")),
+        hop: None,
+    };
+    assert_eq!(
+        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
+        "ipv6-unsupported"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "re-runs itself under `unshare -Urn`, in a private user and network namespace"]
+fn the_address_watch_hears_an_address_added_in_a_private_namespace() {
+    const INSIDE: &str = "BUILD_RTC_ADDRESS_WATCH_NAMESPACE";
+    if std::env::var_os(INSIDE).is_none() {
+        // The address is added inside a namespace the test owns; the host's network is untouched.
+        let status = std::process::Command::new("unshare")
+            .arg("-Urn")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "peer_connection::host_sweep::tests::the_address_watch_hears_an_address_added_in_a_private_namespace",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(INSIDE, "1")
+            .status()
+            .expect("unshare runs");
+        assert!(status.success(), "the namespaced run failed: {status}");
+        return;
+    }
+    let watch = address_watch().unwrap();
+    assert!(!address_changed(&watch), "a fresh namespace is quiet");
+    set_loopback_address(Ipv4Addr::new(10, 72, 9, 1));
+    assert!(
+        address_changed(&watch),
+        "the kernel reports an address added to any interface"
+    );
+    assert!(
+        address_changed(&watch),
+        "peeking leaves the report for later sends"
+    );
+    drain_address_watch(&watch);
+    assert!(!address_changed(&watch), "a drained watch is quiet again");
+    println!("address_watch_namespace=ok");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "re-runs itself under `unshare -Urn`, in a private user and network namespace"]
+fn an_overflowed_address_watch_reads_as_changed_until_drained() {
+    use std::os::fd::AsRawFd;
+
+    const INSIDE: &str = "BUILD_RTC_ADDRESS_WATCH_OVERFLOW_NAMESPACE";
+    if std::env::var_os(INSIDE).is_none() {
+        let status = std::process::Command::new("unshare")
+            .arg("-Urn")
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "peer_connection::host_sweep::tests::an_overflowed_address_watch_reads_as_changed_until_drained",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(INSIDE, "1")
+            .status()
+            .expect("unshare runs");
+        assert!(status.success(), "the namespaced run failed: {status}");
+        return;
+    }
+    let watch = address_watch().unwrap();
+    // The smallest receive buffer the kernel allows holds a few notifications at most.
+    let size: libc::c_int = 1;
+    // SAFETY: SO_RCVBUF reads one c_int of the length passed.
+    let set = unsafe {
+        libc::setsockopt(
+            watch.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&size as *const libc::c_int).cast(),
+            std::mem::size_of_val(&size) as libc::socklen_t,
+        )
+    };
+    assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
+    for host in 1..=64 {
+        set_loopback_address(Ipv4Addr::new(10, 72, 10, host));
+    }
+    // A lost notification is reported once, as ENOBUFS, before anything queued.
+    assert!(address_changed(&watch), "an overflowed watch reads as changed");
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ENOBUFS),
+        "the flood overflowed the watch, and the overflow itself counted as a change"
+    );
+    assert!(
+        address_changed(&watch),
+        "what was queued before the overflow still reads as changed"
+    );
+    drain_address_watch(&watch);
+    assert!(
+        !address_changed(&watch),
+        "a drained watch is quiet, so the list read next stands"
+    );
+    println!("address_watch_overflow=ok");
+}
+
+#[cfg(target_os = "linux")]
+fn set_loopback_address(address: Ipv4Addr) {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    // SAFETY: plain socket creation; ownership moves into `OwnedFd`.
+    let socket = unsafe {
+        OwnedFd::from_raw_fd(libc::socket(
+            libc::AF_INET,
+            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+            0,
+        ))
+    };
+    // SAFETY: an all-zero ifreq is valid; the name and an AF_INET address are written whole.
+    let result = unsafe {
+        let mut ifreq: libc::ifreq = std::mem::zeroed();
+        for (slot, byte) in ifreq.ifr_name.iter_mut().zip(b"lo\0") {
+            *slot = *byte as libc::c_char;
+        }
+        (&raw mut ifreq.ifr_ifru.ifru_addr)
+            .cast::<libc::sockaddr_in>()
+            .write(libc::sockaddr_in {
+                sin_family: libc::AF_INET as libc::sa_family_t,
+                sin_port: 0,
+                sin_addr: libc::in_addr {
+                    s_addr: u32::from(address).to_be(),
+                },
+                sin_zero: [0; 8],
+            });
+        libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFADDR as _, &mut ifreq)
+    };
+    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
 }

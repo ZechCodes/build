@@ -1,5 +1,5 @@
 //! Anonymous ARP discovery, kept separate from the advertised ICE socket.
-use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
+use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -70,7 +70,7 @@ impl Admission {
         self.observed_at
             .is_some_and(|at| now >= at && now.duration_since(at) < FRESH)
             && self.soft_threshold > 1
-            && self.threshold > self.soft_threshold
+            && self.threshold >= self.soft_threshold
             && self.pending() < MAX_PENDING.min(self.soft_threshold / 2)
             && self.total.saturating_add(self.reservations.len())
                 < self.threshold.saturating_mul(3) / 4
@@ -185,6 +185,8 @@ struct Group {
     subnet: SweepSubnet,
     cursor: usize,
     snapshot: Option<ScoutSnapshot>,
+    /// Why the last refresh left no snapshot, reported while scouting pauses for it.
+    unavailable: &'static str,
     refresh_at: Instant,
     early_until: Instant,
     resources: Arc<Mutex<ScoutResources>>,
@@ -229,6 +231,15 @@ impl Group {
             self.cursor += 1;
         }
         self.subnet.addresses.get(self.cursor).copied()
+    }
+    fn note_unavailable(&mut self, reason: &'static str) {
+        if reason != self.unavailable && reason == "neighbor-table-too-large" {
+            log::warn!(
+                "LAN sweep scouting paused on interface {}: the neighbor table is larger than a bounded snapshot reads",
+                self.subnet.interface_index
+            );
+        }
+        self.unavailable = reason;
     }
     fn permanent_failure(&mut self) {
         self.cursor += 1;
@@ -315,6 +326,7 @@ impl HostScouts {
                 subnet,
                 cursor,
                 snapshot: None,
+                unavailable: "neighbor-snapshot-unavailable",
                 refresh_at: now,
                 early_until: grace_until,
                 resources,
@@ -362,7 +374,16 @@ impl HostScouts {
                     FRESH
                 };
             group.usable.clear();
-            group.snapshot = scout_snapshot_until(group.subnet.interface_index, deadline).ok();
+            group.snapshot = match scout_snapshot_until(group.subnet.interface_index, deadline) {
+                Ok(snapshot) => {
+                    group.unavailable = "neighbor-snapshot-unavailable";
+                    Some(snapshot)
+                }
+                Err(error) => {
+                    group.note_unavailable(failure_reason(&error));
+                    None
+                }
+            };
             if let Some(snapshot) = &group.snapshot {
                 group.usable = snapshot
                     .usable
@@ -433,22 +454,19 @@ impl HostScouts {
         ufrag: &str,
         port: u16,
         expires: Instant,
+        interfaces_until: Instant,
+        owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Option<&'static str> {
         let Some(index) = self
             .groups
             .iter_mut()
             .position(|group| group.destination(now).is_some())
         else {
-            return self.changed_pause(
-                if self.groups.iter().any(|group| group.fresh(now).is_none()) {
-                    Some("neighbor-snapshot-unavailable")
-                } else {
-                    None
-                },
-            );
+            let stale = self.groups.iter().find(|group| group.fresh(now).is_none());
+            return self.changed_pause(stale.map(|group| group.unavailable));
         };
         let result = control.while_allowed(self.generation, ufrag, port, || {
-            self.send_group(index, now, expires)
+            self.send_group(index, now, expires, interfaces_until, owns)
         });
         self.update_pending();
         self.finish_attempt(result)
@@ -458,6 +476,8 @@ impl HostScouts {
         index: usize,
         now: Instant,
         expires: Instant,
+        interfaces_until: Instant,
+        owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
     ) -> Result<bool, &'static str> {
         let group = &mut self.groups[index];
         let destination = group
@@ -466,20 +486,6 @@ impl HostScouts {
         let IpAddr::V4(source) = group.subnet.local.ip() else {
             return Err("unsupported-platform");
         };
-        let valid = rtc::shared::ifaces::ifaces()
-            .ok()
-            .is_some_and(|interfaces| {
-                let Ok(name) = std::ffi::CString::new(group.subnet.interface_name.as_str()) else {
-                    return false;
-                };
-                // SAFETY: the name is terminated and only a read-only interface lookup occurs.
-                let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-                group.subnet.still_owned(&interfaces, index, destination)
-            });
-        if !valid {
-            group.clear();
-            return Err("no-on-link-interface");
-        }
         let resource_handle = Arc::clone(&group.resources);
         let mut resources = resource_handle.lock().map_err(|_| "send-error")?;
         let mut budget = process()
@@ -493,7 +499,33 @@ impl HostScouts {
             return Err("window-expired");
         }
         if group.fresh(send_at).is_none() {
-            return Err("neighbor-snapshot-unavailable");
+            return Err(group.unavailable);
+        }
+        // The interface list ages like the neighbour snapshot: both are checked at the send
+        // instant, after the waits above. A lapsed list holds this tick for the next read.
+        if send_at >= interfaces_until {
+            return Ok(false);
+        }
+        // The pass's interface list and indexes, read outside the core lock, standing while
+        // the kernel reports no address change.
+        if !owns(&group.subnet, destination) {
+            // `clear` takes the resources lock, so this send's guards go first.
+            drop(budget);
+            drop(resources);
+            group.clear();
+            return Err("no-on-link-interface");
+        }
+        // The window, the snapshot and the list must all still stand when the check ends.
+        // Only bookkeeping, with no wait, separates this instant from the send.
+        let send_at = Instant::now();
+        if send_at >= expires {
+            return Err("window-expired");
+        }
+        if group.fresh(send_at).is_none() {
+            return Err(group.unavailable);
+        }
+        if send_at >= interfaces_until {
+            return Ok(false);
         }
         if !budget.claim_tick(send_at) {
             return Ok(false);
@@ -597,6 +629,7 @@ mod tests {
             subnet,
             cursor: 0,
             snapshot: None,
+            unavailable: "neighbor-snapshot-unavailable",
             refresh_at: Instant::now(),
             early_until: Instant::now() + Duration::from_millis(250),
             resources: Arc::new(Mutex::new(ScoutResources::default())),
@@ -922,6 +955,211 @@ mod tests {
             assert!(budget.socket_permit());
         }
         assert!(!budget.socket_permit(), "socket bound is process-wide");
+    }
+    #[test]
+    fn equal_soft_and_hard_thresholds_still_admit_under_the_same_caps() {
+        let now = Instant::now();
+        let mut budget = Admission::default();
+        budget.observe(now, 0, 100, 1024, 1024);
+        assert!(
+            budget.admit(now),
+            "gc_thresh2 == gc_thresh3 is a valid tuning"
+        );
+        budget.observe(now + PACE, 0, 768, 1024, 1024);
+        assert!(
+            !budget.admit(now + PACE),
+            "the 75% occupancy ceiling still holds"
+        );
+    }
+    #[test]
+    fn a_neighbor_table_too_large_to_snapshot_pauses_scouts_with_its_own_reason() {
+        let now = Instant::now();
+        let mut scouts = HostScouts::default();
+        let mut group = test_group(test_subnet(&[]));
+        group.unavailable = "neighbor-table-too-large";
+        scouts.groups.push(group);
+        let control = HostSweepControl::default();
+        assert_eq!(
+            scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                now + FRESH,
+                now + FRESH,
+                |_, _| false
+            ),
+            Some("neighbor-table-too-large")
+        );
+    }
+    /// One scout group with a fresh, empty snapshot, ready to send to its first address.
+    fn sendable_scouts(now: Instant, interface_index: u32) -> (HostScouts, HostSweepControl) {
+        let mut subnet = test_subnet(&[]);
+        // An index no other test opens a scout window on.
+        subnet.interface_index = interface_index;
+        let mut group = test_group(subnet);
+        group.snapshot = Some(ScoutSnapshot {
+            observed_at: now,
+            usable: Vec::new(),
+            incomplete: Vec::new(),
+            failed: Vec::new(),
+            netns_total: 0,
+            incomplete_total: 0,
+            table_entries: 0,
+            gc_thresh2: 512,
+            gc_thresh3: 1024,
+        });
+        let mut scouts = HostScouts::default();
+        scouts.groups.push(group);
+        scouts.generation = 7;
+        let control = HostSweepControl::default();
+        assert!(control.start(7, "fixture", 40000));
+        (scouts, control)
+    }
+    #[test]
+    fn a_source_no_longer_owned_at_the_send_ends_the_scout_without_deadlock() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let now = Instant::now();
+            let (mut scouts, control) = sendable_scouts(now, 4243);
+            let reason = scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                now + FRESH,
+                now + FRESH,
+                |_, _| false,
+            );
+            done_tx
+                .send((reason, scouts.groups[0].snapshot.is_none()))
+                .unwrap();
+        });
+        let (reason, cleared) = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("clearing a group must not wait on the guards its send holds");
+        assert_eq!(reason, Some("no-on-link-interface"));
+        assert!(
+            cleared,
+            "the group forgets the neighbours of a source it lost"
+        );
+    }
+    #[test]
+    fn an_interface_list_that_lapses_during_the_ownership_check_holds_the_scout() {
+        let now = Instant::now();
+        let (mut scouts, control) = sendable_scouts(now, 4244);
+        let lapses = Instant::now() + Duration::from_millis(20);
+        // The live lookups take long enough that the list lapses while they run.
+        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
+            std::thread::sleep(Duration::from_millis(40));
+            true
+        };
+        assert_eq!(
+            scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                now + FRESH,
+                lapses,
+                slow_owns
+            ),
+            None
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent on a list that lapsed before the send"
+        );
+    }
+    #[test]
+    fn a_window_that_expires_during_the_ownership_check_ends_the_scout() {
+        let now = Instant::now();
+        let (mut scouts, control) = sendable_scouts(now, 4245);
+        let expires = Instant::now() + Duration::from_millis(20);
+        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
+            std::thread::sleep(Duration::from_millis(40));
+            true
+        };
+        assert_eq!(
+            scouts.send_one(
+                now,
+                &control,
+                "fixture",
+                40000,
+                expires,
+                now + FRESH,
+                slow_owns
+            ),
+            Some("window-expired")
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent once the probe's window has closed"
+        );
+    }
+    #[test]
+    fn a_neighbour_snapshot_that_lapses_during_the_ownership_check_ends_the_scout() {
+        let observed = Instant::now();
+        let (mut scouts, control) = sendable_scouts(observed, 4246);
+        let now = observed + FRESH - Duration::from_millis(20);
+        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
+            std::thread::sleep(Duration::from_millis(40));
+            true
+        };
+        std::thread::sleep(now.saturating_duration_since(Instant::now()));
+        scouts.send_one(
+            now,
+            &control,
+            "fixture",
+            40000,
+            now + FRESH,
+            now + FRESH,
+            slow_owns,
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent to a destination the snapshot no longer authorizes"
+        );
+    }
+    #[test]
+    fn an_interface_list_that_lapses_before_the_send_holds_the_scout() {
+        let now = Instant::now();
+        let mut subnet = test_subnet(&[]);
+        // An index no other test opens a scout window on.
+        subnet.interface_index = 4242;
+        let mut group = test_group(subnet);
+        group.snapshot = Some(ScoutSnapshot {
+            observed_at: now,
+            usable: Vec::new(),
+            incomplete: Vec::new(),
+            failed: Vec::new(),
+            netns_total: 0,
+            incomplete_total: 0,
+            table_entries: 0,
+            gc_thresh2: 512,
+            gc_thresh3: 1024,
+        });
+        let mut scouts = HostScouts::default();
+        scouts.groups.push(group);
+        scouts.generation = 7;
+        let control = HostSweepControl::default();
+        assert!(control.start(7, "fixture", 40000));
+        // The pass vouched for the list at `now`, but it lapses at `now`: the send instant,
+        // after the scout's waits, is past it however short those waits were.
+        assert_eq!(
+            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, now, |_, _| {
+                true
+            }),
+            None
+        );
+        assert_eq!(
+            scouts.counters.attempted, 0,
+            "nothing is sent on a lapsed list"
+        );
+        assert!(
+            scouts.groups[0].snapshot.is_some(),
+            "a lapsed list holds the scout without dropping its neighbours"
+        );
     }
 }
 

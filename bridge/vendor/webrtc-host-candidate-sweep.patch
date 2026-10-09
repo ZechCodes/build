@@ -279,18 +279,20 @@ index b7c5c8d..4232db2 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..eb5c497 100644
+index 8a0a53a..def16f0 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,9 @@
  //!
  //! Follows the rtc EventLoop pattern with async select
  
-+use super::host_sweep::{HostSweep, SweepCredentials, SweepSubnet, binding_indication};
++use super::host_sweep::{
++    HostSweep, SweepCredentials, SweepSubnet, binding_indication,
++};
  use super::transports::stun_gatherer::{
      RTCStunGatherEventIn, RTCStunGatherEventOut, RTCStunGatherer,
  };
-@@ -27,7 +28,7 @@ use futures::FutureExt; // For .fuse() in futures::select!
+@@ -27,7 +30,7 @@ use futures::FutureExt; // For .fuse() in futures::select!
  use futures::future::OptionFuture;
  use futures::stream::{FuturesUnordered, StreamExt};
  use log::{debug, error, trace, warn};
@@ -299,7 +301,16 @@ index 8a0a53a..eb5c497 100644
  use rtc::ice::mdns::MulticastDnsMode;
  use rtc::interceptor::{Interceptor, NoopInterceptor};
  use rtc::mdns::{MDNS_PORT, MulticastSocket};
-@@ -253,6 +254,20 @@ fn is_link_local(ip: &IpAddr) -> bool {
+@@ -40,7 +43,7 @@ use rtc::peer_connection::transport::RTCIceCandidateInit;
+ use rtc::rtp_transceiver::{RTCRtpReceiverId, RTCRtpSenderId};
+ use rtc::sansio::Protocol;
+ use rtc::shared::error::{Error, Result};
+-use rtc::shared::ifaces::ifaces;
++use rtc::shared::ifaces::{Interface, ifaces};
+ use rtc::shared::{FourTuple, TaggedBytesMut, TransportContext, TransportProtocol};
+ use rtc::{rtcp, rtp};
+ use std::collections::HashMap;
+@@ -253,6 +256,177 @@ fn is_link_local(ip: &IpAddr) -> bool {
      }
  }
  
@@ -317,10 +328,167 @@ index 8a0a53a..eb5c497 100644
 +    0
 +}
 +
++/// How long one interface list stands for the sweep: the age bound of the neighbour
++/// snapshots that authorize a destination, so neither read is older than the other.
++const SWEEP_INTERFACES_FRESH: Duration = Duration::from_millis(100);
++
++/// The interface list sweep passes validate against, read before the core lock is taken.
++///
++/// `getifaddrs` is a netlink dump. Read under the core lock on every probe, it held up every
++/// data-channel write queued behind it (#376), so it is read at most once per
++/// [`SWEEP_INTERFACES_FRESH`], outside the lock, with the index of each interface it names.
++/// What a send checks against them, the source interface's index, address and mask, which
++/// interfaces hold the source address and whether the destination is local, stands only while
++/// the kernel has reported no IPv4 address change since the list was read. That report is a
++/// nonblocking peek at a socket; a send asks the kernel nothing else, since an interface ioctl
++/// would wait on RTNL under the core lock. See [`SweepSubnet::still_owned`].
++pub(super) struct SweepInterfaces {
++    read: fn() -> std::io::Result<Vec<Interface>>,
++    pub(super) index: fn(&str) -> u32,
++    #[cfg(target_os = "linux")]
++    pub(super) watch: fn() -> std::io::Result<std::os::fd::OwnedFd>,
++    #[cfg(target_os = "linux")]
++    watching: Option<std::os::fd::OwnedFd>,
++    /// Latched once a change is seen, since an overflow is reported only once.
++    changed: std::sync::atomic::AtomicBool,
++    read_at: Option<Instant>,
++    list: Option<Vec<Interface>>,
++    indices: Vec<(String, u32)>,
++}
++
++impl SweepInterfaces {
++    pub(super) fn reading(read: fn() -> std::io::Result<Vec<Interface>>) -> Self {
++        Self {
++            read,
++            index: sweep_interface_index,
++            #[cfg(target_os = "linux")]
++            watch: super::host_sweep::address_watch,
++            #[cfg(target_os = "linux")]
++            watching: None,
++            changed: std::sync::atomic::AtomicBool::new(false),
++            read_at: None,
++            list: None,
++            indices: Vec::new(),
++        }
++    }
++
++    pub(super) fn refresh(&mut self, now: Instant) {
++        if self.stale(now) {
++            // The watch is drained or opened before the reads, so a change during them counts
++            // against the new list rather than being lost. An interface removed and recreated
++            // under the same name between the list and its index takes its addresses with it,
++            // which the watch reports.
++            #[cfg(target_os = "linux")]
++            match &self.watching {
++                Some(watching) => super::host_sweep::drain_address_watch(watching),
++                None => self.watching = (self.watch)().ok(),
++            }
++            *self.changed.get_mut() = false;
++            self.list = (self.read)().ok();
++            self.indices.clear();
++            for interface in self.list.iter().flatten() {
++                if !self.indices.iter().any(|(name, _)| *name == interface.name) {
++                    let index = (self.index)(&interface.name);
++                    self.indices.push((interface.name.clone(), index));
++                }
++            }
++            self.read_at = Some(now);
++        }
++    }
++
++    /// Whether the kernel has reported no IPv4 address change since the list was read. Without
++    /// a watch nothing vouches for the list, so it never stands.
++    fn unchanged(&self) -> bool {
++        use std::sync::atomic::Ordering;
++
++        if self.changed.load(Ordering::Relaxed) {
++            return false;
++        }
++        #[cfg(target_os = "linux")]
++        let quiet = self
++            .watching
++            .as_ref()
++            .is_some_and(|watching| !super::host_sweep::address_changed(watching));
++        #[cfg(not(target_os = "linux"))]
++        let quiet = false;
++        if !quiet {
++            self.changed.store(true, Ordering::Relaxed);
++        }
++        quiet
++    }
++
++    /// Whether the list read is [`SWEEP_INTERFACES_FRESH`] old or more at `now`, or missing.
++    pub(super) fn stale(&self, now: Instant) -> bool {
++        !self
++            .read_at
++            .is_some_and(|at| now >= at && now.duration_since(at) < SWEEP_INTERFACES_FRESH)
++    }
++
++    /// When the list lapses: a send at or after this instant may not use it.
++    pub(super) fn usable_until(&self) -> Option<Instant> {
++        self.read_at.map(|at| at + SWEEP_INTERFACES_FRESH)
++    }
++
++    /// The list, while it is still within its age bound at `now`.
++    pub(super) fn current(&self, now: Instant) -> Option<&[Interface]> {
++        (!self.stale(now)).then_some(self.list.as_deref()).flatten()
++    }
++
++    pub(super) fn owns(
++        &self,
++        now: Instant,
++        subnet: &SweepSubnet,
++        destination: std::net::Ipv4Addr,
++    ) -> bool {
++        self.current(now).is_some_and(|interfaces| {
++            self.unchanged()
++                && subnet.still_owned(
++                    interfaces,
++                    |name| {
++                        self.indices
++                            .iter()
++                            .find_map(|(read, index)| (read == name).then_some(*index))
++                            .unwrap_or(0)
++                    },
++                    destination,
++                )
++        })
++    }
++}
++
++impl Default for SweepInterfaces {
++    fn default() -> Self {
++        Self::reading(ifaces)
++    }
++}
++
++/// The last instant a real indication may leave: whichever lapses first of the neighbour
++/// snapshot that authorized the destination, the probe's window and the interface list
++/// ownership was checked against. `send_real` checks it after its last wait; a missing
++/// snapshot or list lapses at `now`.
++pub(super) fn real_send_deadline(
++    neighbors: Option<Instant>,
++    window: Instant,
++    interfaces: Option<Instant>,
++    now: Instant,
++) -> Instant {
++    neighbors
++        .unwrap_or(now)
++        .min(window)
++        .min(interfaces.unwrap_or(now))
++}
++
++/// Each sweep-capable host socket's subnet, or why it has none, built outside the core lock
++/// for a pass with a port due for preparation. `Err` holds the reason no socket has one.
++type PreparedSubnets = std::result::Result<
++    HashMap<SocketAddr, std::result::Result<SweepSubnet, &'static str>>,
++    &'static str,
++>;
++
  /// Unified inner message type for the peer connection driver
  #[derive(Debug)]
  pub(crate) enum PeerConnectionDriverEvent {
-@@ -267,6 +282,20 @@ pub(crate) enum PeerConnectionDriverEvent {
+@@ -267,6 +441,20 @@ pub(crate) enum PeerConnectionDriverEvent {
          ice_transport_policy: RTCIceTransportPolicy,
      },
      IceGathering,
@@ -341,17 +509,18 @@ index 8a0a53a..eb5c497 100644
      Close,
  }
  
-@@ -283,6 +312,9 @@ where
+@@ -283,6 +471,10 @@ where
      tcp_transport: RTCTcpTransport,
      mdns_socket: Option<Arc<dyn AsyncUdpSocket>>,
      udp_sockets: HashMap<SocketAddr, Arc<dyn AsyncUdpSocket>>,
 +    pub(super) host_sweep: HostSweep,
++    pub(super) sweep_interfaces: SweepInterfaces,
 +    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +    host_scouts: super::host_scout::HostScouts,
      /// Reused scratch buffer for concatenating a run of same-destination datagrams
      /// into one UDP GSO send (see [`flush_writes`](Self::flush_writes)).
      gso_scratch: Vec<u8>,
-@@ -391,6 +423,33 @@ where
+@@ -391,6 +583,33 @@ where
              ));
          }
  
@@ -385,17 +554,18 @@ index 8a0a53a..eb5c497 100644
          self.tcp_transport = RTCTcpTransport::new(tcp_listeners);
  
          // Rebuilt, not updated: a gatherer's STUN clients and TURN allocations are keyed by
-@@ -446,6 +505,9 @@ where
+@@ -446,6 +665,10 @@ where
              ),
              mdns_socket: None,
              udp_sockets: HashMap::new(),
 +            host_sweep: HostSweep::default(),
++            sweep_interfaces: SweepInterfaces::default(),
 +            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +            host_scouts: super::host_scout::HostScouts::default(),
              gso_scratch: Vec::new(),
              tcp_transport: RTCTcpTransport::new(HashMap::new()),
              ice_gathering_active: false,
-@@ -473,6 +535,7 @@ where
+@@ -473,6 +696,7 @@ where
      /// on its next re-check; the wake makes that immediate. Idempotent on the clean path.
      pub(crate) fn signal_stopped(&self) {
          self.inner.closing.store(true, Ordering::Release);
@@ -403,7 +573,7 @@ index 8a0a53a..eb5c497 100644
          self.inner.data_channel_backpressure.notify_waiters();
      }
  
-@@ -588,6 +651,10 @@ where
+@@ -588,6 +812,10 @@ where
              // momentarily full channel), this check still guarantees the loop —
              // and thus a dedicated reactor thread — terminates instead of leaking.
              if self.inner.closing.load(Ordering::Acquire) {
@@ -414,7 +584,7 @@ index 8a0a53a..eb5c497 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -595,6 +662,7 @@ where
+@@ -595,6 +823,7 @@ where
              }
  
              self.poll_pass().await?;
@@ -422,19 +592,28 @@ index 8a0a53a..eb5c497 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +919,321 @@ where
+@@ -851,6 +1080,374 @@ where
          }
      }
  
 +    /// One probe at most per wake; the scheduler shares one 200pps budget across all ports.
-+    /// The core lock covers validation and the nonblocking syscall, so restart and
-+    /// selection cannot change the socket's generation between the two.
-+    async fn poll_host_sweep(&mut self, now: Instant) {
++    /// The system reads come first, before the core lock (#376). The core lock then covers
++    /// validation and the nonblocking syscall, so restart and selection cannot change the
++    /// socket's generation between the two.
++    pub(super) async fn poll_host_sweep(&mut self, now: Instant) {
 +        if !self.inner.host_candidate_sweep {
 +            return;
 +        }
++        let prepared = self.read_sweep_state(now);
 +        let inner = Arc::clone(&self.inner);
 +        let core = inner.core.lock().await;
++        // The reads and the lock take time, and the scouts' snapshots must not postdate `now`.
++        let now = Instant::now();
++        if !self.host_sweep.is_empty() && self.sweep_interfaces.stale(now) {
++            // The wait for the lock outlasted the list's age bound, or a plan arrived after
++            // the reads. Leaving the pass undone keeps it due, so the next wake reads afresh.
++            return;
++        }
 +        if self.host_sweep.is_empty() {
 +            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +            if core
@@ -489,7 +668,7 @@ index 8a0a53a..eb5c497 100644
 +            &live_hosts,
 +        );
 +        if self.host_sweep.gate_nat(now, nat.reason()) {
-+            self.prepare_host_sweep_ports(now, &hosts);
++            self.prepare_host_sweep_ports(now, &hosts, prepared);
 +            #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +            self.poll_host_scouts(now, relay, &live_hosts);
 +        } else {
@@ -503,6 +682,20 @@ index 8a0a53a..eb5c497 100644
 +        self.host_sweep.defer_tick(now);
 +        drop(core);
 +        self.report_host_sweep().await;
++    }
++
++    /// Reads the system state a sweep pass decides from, without the core lock that every
++    /// data-channel write waits on: the interface list, the scouts' neighbour dumps and, when a
++    /// port is due for preparation, its subnets. Each read can take up to 5 ms.
++    fn read_sweep_state(&mut self, now: Instant) -> Option<PreparedSubnets> {
++        if self.host_sweep.is_empty() {
++            return None;
++        }
++        self.sweep_interfaces.refresh(now);
++        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++        self.host_scouts.refresh(now);
++        (self.host_sweep.nat_open() && !self.host_sweep.unprepared_ports(now).is_empty())
++            .then(|| self.read_sweep_subnets(now))
 +    }
 +
 +    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
@@ -519,8 +712,6 @@ index 8a0a53a..eb5c497 100644
 +            self.host_sweep.initial_grace_until().unwrap_or(now),
 +            now,
 +        );
-+        self.host_scouts.refresh(now);
-+        let now = Instant::now();
 +        let scouts = &self.host_scouts;
 +        self.host_sweep.settle_discovery(
 +            now,
@@ -534,7 +725,7 @@ index 8a0a53a..eb5c497 100644
 +            |subnet, ip| scouts.usable(subnet, ip, now),
 +            |subnet, ip| scouts.early_usable(subnet, ip, now),
 +        ) {
-+            self.send_host_probe(probe);
++            self.send_host_probe(now, probe);
 +        } else if self.host_sweep.combined_attempts() < 32768
 +            && self.host_sweep.scouts_allowed(now, false)
 +            && let Some((port, expires)) = self.host_sweep.active_port(now)
@@ -544,6 +735,8 @@ index 8a0a53a..eb5c497 100644
 +                self.host_sweep.remote_ufrag(),
 +                port,
 +                expires,
++                self.sweep_interfaces.usable_until().unwrap_or(now),
++                |subnet, destination| self.sweep_interfaces.owns(now, subnet, destination),
 +            )
 +        {
 +            self.host_sweep.note_progress(reason);
@@ -601,7 +794,12 @@ index 8a0a53a..eb5c497 100644
 +        relay
 +    }
 +
-+    fn prepare_host_sweep_ports(&mut self, now: Instant, hosts: &[SocketAddr]) {
++    fn prepare_host_sweep_ports(
++        &mut self,
++        now: Instant,
++        hosts: &[SocketAddr],
++        prepared: Option<PreparedSubnets>,
++    ) {
 +        let ports = self.host_sweep.unprepared_ports(now);
 +        if ports.is_empty() {
 +            return;
@@ -612,9 +810,12 @@ index 8a0a53a..eb5c497 100644
 +            }
 +            return;
 +        }
-+        // Enumerate and prioritize once per poll, sharing the authorized address
-+        // arrays across due ports. Neighbor queries share one absolute budget.
-+        let (subnets, reasons) = self.sweep_subnets(hosts);
++        // Nothing was read for a port that fell due after this pass's reads, or that waited at
++        // the NAT gate it just passed. It stays due, so the next pass reads for it at once.
++        let Some(prepared) = prepared else {
++            return;
++        };
++        let (subnets, reasons) = self.sweep_subnets(hosts, prepared);
 +        for port in ports {
 +            if subnets.is_empty() {
 +                self.host_sweep
@@ -634,17 +835,50 @@ index 8a0a53a..eb5c497 100644
 +        }
 +    }
 +
-+    fn sweep_subnets(&self, hosts: &[SocketAddr]) -> (Vec<SweepSubnet>, Vec<&'static str>) {
++    /// Enumerate and prioritize once per pass, sharing the authorized address arrays across
++    /// due ports. Neighbor queries share one absolute budget.
++    fn read_sweep_subnets(&self, now: Instant) -> PreparedSubnets {
 +        if !cfg!(all(target_os = "linux", feature = "runtime-tokio")) {
-+            return (Vec::new(), vec!["unsupported-platform"]);
++            return Err("unsupported-platform");
 +        }
-+        let Ok(interfaces) = ifaces() else {
-+            return (Vec::new(), vec!["no-on-link-interface"]);
++        let interfaces = self
++            .sweep_interfaces
++            .current(now)
++            .ok_or("no-on-link-interface")?;
++        #[cfg(target_os = "linux")]
++        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
++        Ok(self
++            .udp_sockets
++            .iter()
++            .filter(|(_, socket)| socket.supports_host_candidate_sweep())
++            .map(|(local, _)| {
++                let subnet = SweepSubnet::for_socket(*local, interfaces, sweep_interface_index);
++                #[cfg(target_os = "linux")]
++                let subnet = subnet.map(|mut subnet| {
++                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
++                        subnet.interface_index,
++                        neighbor_deadline,
++                    ) {
++                        subnet.prioritize(&neighbors);
++                    }
++                    subnet
++                });
++                (*local, subnet)
++            })
++            .collect())
++    }
++
++    fn sweep_subnets(
++        &self,
++        hosts: &[SocketAddr],
++        prepared: PreparedSubnets,
++    ) -> (Vec<SweepSubnet>, Vec<&'static str>) {
++        let prepared = match prepared {
++            Ok(prepared) => prepared,
++            Err(reason) => return (Vec::new(), vec![reason]),
 +        };
 +        let mut subnets = Vec::new();
 +        let mut reasons = Vec::new();
-+        #[cfg(target_os = "linux")]
-+        let neighbor_deadline = Instant::now() + Duration::from_millis(5);
 +        for local in hosts {
 +            let Some(socket) = self.udp_sockets.get(local) else {
 +                reasons.push("no-host-socket");
@@ -654,18 +888,10 @@ index 8a0a53a..eb5c497 100644
 +                reasons.push("unsupported-platform");
 +                continue;
 +            }
-+            match SweepSubnet::for_socket(*local, &interfaces, sweep_interface_index) {
-+                Ok(mut subnet) => {
-+                    #[cfg(target_os = "linux")]
-+                    if let Ok(neighbors) = super::host_neighbors::snapshot_until(
-+                        subnet.interface_index,
-+                        neighbor_deadline,
-+                    ) {
-+                        subnet.prioritize(&neighbors);
-+                    }
-+                    subnets.push(subnet);
-+                }
-+                Err(reason) => reasons.push(reason),
++            match prepared.get(local).cloned() {
++                Some(Ok(subnet)) => subnets.push(subnet),
++                Some(Err(reason)) => reasons.push(reason),
++                None => reasons.push("no-host-socket"),
 +            }
 +        }
 +        reasons.sort_unstable();
@@ -673,17 +899,13 @@ index 8a0a53a..eb5c497 100644
 +        (subnets, reasons)
 +    }
 +
-+    fn send_host_probe(&mut self, probe: super::host_sweep::SweepProbe) {
-+        // Re-enumerate before each emission: a route is no longer safe after its
++    fn send_host_probe(&mut self, now: Instant, probe: super::host_sweep::SweepProbe) {
++        // Recheck before each emission: a route is no longer safe after its
 +        // interface/address/mask disappears or changes. No routing fallback is allowed.
-+        let valid = ifaces().ok().is_some_and(|interfaces| {
-+            probe.subnet.still_owned(
-+                &interfaces,
-+                sweep_interface_index(&probe.subnet.interface_name),
-+                probe.destination,
-+            )
-+        });
-+        if !valid {
++        if !self
++            .sweep_interfaces
++            .owns(now, &probe.subnet, probe.destination)
++        {
 +            self.host_sweep.skip(probe.port, "no-on-link-interface");
 +            return;
 +        }
@@ -698,11 +920,12 @@ index 8a0a53a..eb5c497 100644
 +        };
 +        let destination = std::net::SocketAddrV4::new(probe.destination, probe.port);
 +        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
-+        let expires = self
-+            .host_scouts
-+            .usable_until(&probe.subnet)
-+            .unwrap_or_else(Instant::now)
-+            .min(probe.expires);
++        let expires = real_send_deadline(
++            self.host_scouts.usable_until(&probe.subnet),
++            probe.expires,
++            self.sweep_interfaces.usable_until(),
++            Instant::now(),
++        );
 +        let result = self.inner.host_sweep_control.while_allowed(
 +            self.host_sweep.generation(),
 +            self.host_sweep.remote_ufrag(),
@@ -744,7 +967,7 @@ index 8a0a53a..eb5c497 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1666,55 @@ where
+@@ -1283,8 +1880,55 @@ where
          }
      }
  
@@ -801,7 +1024,7 @@ index 8a0a53a..eb5c497 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1827,10 @@ where
+@@ -1397,6 +2041,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -812,7 +1035,7 @@ index 8a0a53a..eb5c497 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2186,18 @@ where
+@@ -1752,11 +2400,18 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -837,10 +1060,10 @@ index 8a0a53a..eb5c497 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..e70eae2 100644
+index e69de29..1e13107 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,1324 @@
+@@ -0,0 +1,1427 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -970,8 +1193,9 @@ index e69de29..e70eae2 100644
 +        interface_index: u32,
 +        local_addresses: &[IpAddr],
 +    ) -> Result<Self, &'static str> {
++        // The sweep enumerates an IPv4 subnet; an IPv6 /64 cannot be enumerated at all.
 +        let IpAddr::V4(ip) = local.ip() else {
-+            return Err("non-private-subnet");
++            return Err("ipv6-unsupported");
 +        };
 +        if interface_index == 0 || interface.addr.map(|addr| addr.ip()) != Some(local.ip()) {
 +            return Err("no-on-link-interface");
@@ -1037,8 +1261,18 @@ index e69de29..e70eae2 100644
 +        Self::from_interface(local, owner, index(&owner.name), &local_addresses)
 +    }
 +
-+    pub fn still_owned(&self, interfaces: &[Interface], index: u32, destination: Ipv4Addr) -> bool {
-+        if index != self.interface_index
++    /// Whether a send may still leave this subnet's source for `destination`. `interfaces` is
++    /// the pass's list, which may be up to 100 ms old, and `index` the index each of its names
++    /// had when it was read. Both are read outside the core lock; the caller vouches that the
++    /// kernel has reported no IPv4 address change since, so that an address or mask changed
++    /// under the same index, which the list cannot show, never reaches this check.
++    pub fn still_owned(
++        &self,
++        interfaces: &[Interface],
++        index: impl Fn(&str) -> u32,
++        destination: Ipv4Addr,
++    ) -> bool {
++        if index(&self.interface_name) != self.interface_index
 +            || interfaces.iter().any(|interface| {
 +                interface.addr.map(|addr| addr.ip()) == Some(IpAddr::V4(destination))
 +            })
@@ -1059,6 +1293,90 @@ index e69de29..e70eae2 100644
 +                && interface.mask.map(|mask| mask.ip()) == Some(IpAddr::V4(self.mask.into()))
 +                && !matches!(interface.hop, Some(NextHop::Destination(_)))
 +        })
++    }
++}
++
++/// A socket the kernel writes to whenever an IPv4 address is added to or removed from any
++/// interface (`RTMGRP_IPV4_IFADDR`). Opened before an interface list is read, it tells a send
++/// whether the list still describes the host, without reading it again: whether the source
++/// address is still held by that interface alone under the same mask, and whether the
++/// destination has become local. A mask set by ioctl replaces the address, and a renamed
++/// interface re-announces its addresses, so both are reported too.
++#[cfg(target_os = "linux")]
++pub(crate) fn address_watch() -> std::io::Result<std::os::fd::OwnedFd> {
++    use std::os::fd::{FromRawFd, OwnedFd};
++
++    // SAFETY: plain socket creation; ownership of the descriptor moves into `OwnedFd` below.
++    let raw = unsafe {
++        libc::socket(
++            libc::AF_NETLINK,
++            libc::SOCK_RAW | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
++            libc::NETLINK_ROUTE,
++        )
++    };
++    if raw < 0 {
++        return Err(std::io::Error::last_os_error());
++    }
++    // SAFETY: `raw` is a fresh descriptor owned by nothing else.
++    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
++    // SAFETY: an all-zero sockaddr_nl is valid; the kernel assigns the port id.
++    let mut address: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
++    address.nl_family = libc::AF_NETLINK as libc::sa_family_t;
++    address.nl_groups = libc::RTMGRP_IPV4_IFADDR as u32;
++    // SAFETY: the address is a valid sockaddr_nl of the length passed.
++    let bound = unsafe {
++        libc::bind(
++            std::os::fd::AsRawFd::as_raw_fd(&socket),
++            (&address as *const libc::sockaddr_nl).cast(),
++            std::mem::size_of_val(&address) as libc::socklen_t,
++        )
++    };
++    if bound < 0 {
++        return Err(std::io::Error::last_os_error());
++    }
++    Ok(socket)
++}
++
++/// Whether the kernel has reported an address change since the watch was last drained. A
++/// notification lost to a full receive buffer reports as `ENOBUFS`, which counts as a change.
++///
++/// Sends call this under the core lock, so it must never wait. The socket is opened
++/// `SOCK_NONBLOCK` and the peek also passes `MSG_DONTWAIT`, so an empty queue returns
++/// `EAGAIN` at once. A one-byte `MSG_PEEK` copies one byte and consumes nothing; it does no
++/// netlink request and takes no RTNL lock, unlike the dumps it replaces.
++#[cfg(target_os = "linux")]
++pub(crate) fn address_changed(watch: &std::os::fd::OwnedFd) -> bool {
++    let mut byte = [0u8; 1];
++    // SAFETY: a one-byte peek into a buffer of that length; nothing is consumed.
++    let peeked = unsafe {
++        libc::recv(
++            std::os::fd::AsRawFd::as_raw_fd(watch),
++            byte.as_mut_ptr().cast(),
++            byte.len(),
++            libc::MSG_PEEK | libc::MSG_DONTWAIT,
++        )
++    };
++    peeked >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock
++}
++
++/// Discards the notifications already queued, before the list they predate is replaced.
++#[cfg(target_os = "linux")]
++pub(crate) fn drain_address_watch(watch: &std::os::fd::OwnedFd) {
++    let mut buffer = [0u8; 8192];
++    // Bounded, so a storm of changes cannot hold the pass; what is left still reads as changed.
++    for _ in 0..256 {
++        // SAFETY: the buffer is valid for its length; the kernel truncates longer messages.
++        let read = unsafe {
++            libc::recv(
++                std::os::fd::AsRawFd::as_raw_fd(watch),
++                buffer.as_mut_ptr().cast(),
++                buffer.len(),
++                libc::MSG_DONTWAIT | libc::MSG_TRUNC,
++            )
++        };
++        if read < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOBUFS) {
++            return;
++        }
 +    }
 +}
 +
@@ -1367,6 +1685,7 @@ index e69de29..e70eae2 100644
 +    events: VecDeque<HostCandidateSweepEvent>,
 +    relay: bool,
 +    nat_wait_reason: Option<&'static str>,
++    nat_open: bool,
 +    early_admitted: std::collections::HashSet<(u32, Ipv4Addr)>,
 +    early_probed: std::collections::HashSet<(u32, Ipv4Addr)>,
 +    early_probed_count: u32,
@@ -1825,6 +2144,7 @@ index e69de29..e70eae2 100644
 +            .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
 +    }
 +    pub fn gate_nat(&mut self, now: Instant, reason: Option<&'static str>) -> bool {
++        self.nat_open = reason.is_none();
 +        if let Some(reason) = reason {
 +            self.mask_nat_eligibility(now, reason);
 +            false
@@ -1832,6 +2152,12 @@ index e69de29..e70eae2 100644
 +            self.restore_nat_eligibility();
 +            true
 +        }
++    }
++
++    /// Whether the last pass's NAT gate let it prepare and scout. The driver reads for
++    /// preparation outside the core lock only then, so a pass held at the gate reads nothing.
++    pub fn nat_open(&self) -> bool {
++        self.nat_open
 +    }
 +
 +    fn restore_nat_eligibility(&mut self) {
@@ -2167,10 +2493,10 @@ index e69de29..e70eae2 100644
 +mod tests;
 diff --git b/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
 new file mode 100644
-index 0000000..b8ff065
+index 0000000..2c70be9
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,1422 @@
+@@ -0,0 +1,1582 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -2451,13 +2777,16 @@ index 0000000..b8ff065
 +    );
 +    let subnet = SweepSubnet::for_socket(local, &[wifi.clone()], |_| 2).unwrap();
 +    let remote = Ipv4Addr::new(192, 168, 2, 2);
-+    assert!(subnet.still_owned(&[wifi.clone()], 2, remote));
-+    assert!(!subnet.still_owned(&[wifi.clone()], 3, remote));
++    assert!(subnet.still_owned(&[wifi.clone()], |_| 2, remote));
++    assert!(
++        !subnet.still_owned(&[wifi.clone()], |_| 3, remote),
++        "an interface recreated under the name since the subnet was planned is not the same"
++    );
 +    let own_new = interface("192.168.2.2:0", "255.255.255.0:0", "wifi");
-+    assert!(!subnet.still_owned(&[wifi.clone(), own_new], 2, remote));
++    assert!(!subnet.still_owned(&[wifi.clone(), own_new], |_| 2, remote));
 +    let changed_mask = interface("192.168.2.1:0", "255.255.255.128:0", "wifi");
-+    assert!(!subnet.still_owned(&[changed_mask], 2, remote));
-+    assert!(!subnet.still_owned(&[], 2, remote));
++    assert!(!subnet.still_owned(&[changed_mask], |_| 2, remote));
++    assert!(!subnet.still_owned(&[], |_| 2, remote));
 +}
 +
 +#[test]
@@ -3593,12 +3922,169 @@ index 0000000..b8ff065
 +    assert!(sweep.deadline().is_none());
 +    assert!(sweep.plans[&40000].subnets.is_none());
 +}
++
++#[test]
++fn the_last_nat_gate_says_whether_a_pass_reads_for_preparation() {
++    let mut sweep = HostSweep::default();
++    let now = Instant::now();
++    assert!(!sweep.nat_open(), "no pass has opened the gate yet");
++    assert!(sweep.gate_nat(now, None));
++    assert!(sweep.nat_open());
++    assert!(!sweep.gate_nat(now, Some("nat-evidence-missing")));
++    assert!(!sweep.nat_open(), "a closed gate stops preparation reads");
++}
++
++#[test]
++fn an_ipv6_host_is_skipped_as_ipv6_not_as_a_public_subnet() {
++    let local = address("[fd00::1]:45000");
++    let iface = Interface {
++        name: "wifi".into(),
++        kind: Kind::Ipv6,
++        addr: Some(address("[fd00::1]:0")),
++        mask: Some(address("[ffff:ffff:ffff:ffff::]:0")),
++        hop: None,
++    };
++    assert_eq!(
++        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
++        "ipv6-unsupported"
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++#[ignore = "re-runs itself under `unshare -Urn`, in a private user and network namespace"]
++fn the_address_watch_hears_an_address_added_in_a_private_namespace() {
++    const INSIDE: &str = "BUILD_RTC_ADDRESS_WATCH_NAMESPACE";
++    if std::env::var_os(INSIDE).is_none() {
++        // The address is added inside a namespace the test owns; the host's network is untouched.
++        let status = std::process::Command::new("unshare")
++            .arg("-Urn")
++            .arg(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "peer_connection::host_sweep::tests::the_address_watch_hears_an_address_added_in_a_private_namespace",
++                "--ignored",
++                "--nocapture",
++            ])
++            .env(INSIDE, "1")
++            .status()
++            .expect("unshare runs");
++        assert!(status.success(), "the namespaced run failed: {status}");
++        return;
++    }
++    let watch = address_watch().unwrap();
++    assert!(!address_changed(&watch), "a fresh namespace is quiet");
++    set_loopback_address(Ipv4Addr::new(10, 72, 9, 1));
++    assert!(
++        address_changed(&watch),
++        "the kernel reports an address added to any interface"
++    );
++    assert!(
++        address_changed(&watch),
++        "peeking leaves the report for later sends"
++    );
++    drain_address_watch(&watch);
++    assert!(!address_changed(&watch), "a drained watch is quiet again");
++    println!("address_watch_namespace=ok");
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++#[ignore = "re-runs itself under `unshare -Urn`, in a private user and network namespace"]
++fn an_overflowed_address_watch_reads_as_changed_until_drained() {
++    use std::os::fd::AsRawFd;
++
++    const INSIDE: &str = "BUILD_RTC_ADDRESS_WATCH_OVERFLOW_NAMESPACE";
++    if std::env::var_os(INSIDE).is_none() {
++        let status = std::process::Command::new("unshare")
++            .arg("-Urn")
++            .arg(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "peer_connection::host_sweep::tests::an_overflowed_address_watch_reads_as_changed_until_drained",
++                "--ignored",
++                "--nocapture",
++            ])
++            .env(INSIDE, "1")
++            .status()
++            .expect("unshare runs");
++        assert!(status.success(), "the namespaced run failed: {status}");
++        return;
++    }
++    let watch = address_watch().unwrap();
++    // The smallest receive buffer the kernel allows holds a few notifications at most.
++    let size: libc::c_int = 1;
++    // SAFETY: SO_RCVBUF reads one c_int of the length passed.
++    let set = unsafe {
++        libc::setsockopt(
++            watch.as_raw_fd(),
++            libc::SOL_SOCKET,
++            libc::SO_RCVBUF,
++            (&size as *const libc::c_int).cast(),
++            std::mem::size_of_val(&size) as libc::socklen_t,
++        )
++    };
++    assert_eq!(set, 0, "{}", std::io::Error::last_os_error());
++    for host in 1..=64 {
++        set_loopback_address(Ipv4Addr::new(10, 72, 10, host));
++    }
++    // A lost notification is reported once, as ENOBUFS, before anything queued.
++    assert!(address_changed(&watch), "an overflowed watch reads as changed");
++    assert_eq!(
++        std::io::Error::last_os_error().raw_os_error(),
++        Some(libc::ENOBUFS),
++        "the flood overflowed the watch, and the overflow itself counted as a change"
++    );
++    assert!(
++        address_changed(&watch),
++        "what was queued before the overflow still reads as changed"
++    );
++    drain_address_watch(&watch);
++    assert!(
++        !address_changed(&watch),
++        "a drained watch is quiet, so the list read next stands"
++    );
++    println!("address_watch_overflow=ok");
++}
++
++#[cfg(target_os = "linux")]
++fn set_loopback_address(address: Ipv4Addr) {
++    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
++
++    // SAFETY: plain socket creation; ownership moves into `OwnedFd`.
++    let socket = unsafe {
++        OwnedFd::from_raw_fd(libc::socket(
++            libc::AF_INET,
++            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
++            0,
++        ))
++    };
++    // SAFETY: an all-zero ifreq is valid; the name and an AF_INET address are written whole.
++    let result = unsafe {
++        let mut ifreq: libc::ifreq = std::mem::zeroed();
++        for (slot, byte) in ifreq.ifr_name.iter_mut().zip(b"lo\0") {
++            *slot = *byte as libc::c_char;
++        }
++        (&raw mut ifreq.ifr_ifru.ifru_addr)
++            .cast::<libc::sockaddr_in>()
++            .write(libc::sockaddr_in {
++                sin_family: libc::AF_INET as libc::sa_family_t,
++                sin_port: 0,
++                sin_addr: libc::in_addr {
++                    s_addr: u32::from(address).to_be(),
++                },
++                sin_zero: [0; 8],
++            });
++        libc::ioctl(socket.as_raw_fd(), libc::SIOCSIFADDR as _, &mut ifreq)
++    };
++    assert_eq!(result, 0, "{}", std::io::Error::last_os_error());
++}
 diff --git b/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 new file mode 100644
-index 0000000..addb427
+index 0000000..afebf2c
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
-@@ -0,0 +1,334 @@
+@@ -0,0 +1,737 @@
 +use super::driver::{PeerConnectionDriver, PeerConnectionDriverEvent};
 +use super::tests::new_test_peer_connection;
 +use super::{PeerConnection, PeerConnectionImpl};
@@ -3933,6 +4419,409 @@ index 0000000..addb427
 +        );
 +    }));
 +}
++
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++#[test]
++fn a_sweep_pass_reads_interfaces_while_the_core_lock_is_free() {
++    use super::driver::SweepInterfaces;
++    use rtc::shared::ifaces::Interface;
++    use std::cell::RefCell;
++    use std::sync::mpsc;
++    use std::time::{Duration, Instant};
++
++    // The pass's interface read parks here, as a slow netlink dump would, until released.
++    thread_local! {
++        static READ_GATE: RefCell<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> =
++            const { RefCell::new(None) };
++    }
++    fn parked_interfaces() -> std::io::Result<Vec<Interface>> {
++        READ_GATE.with(|gate| {
++            if let Some((entered, release)) = gate.borrow().as_ref() {
++                entered.send(()).unwrap();
++                release.recv_timeout(Duration::from_secs(10)).unwrap();
++            }
++        });
++        Ok(Vec::new())
++    }
++
++    let runtime = default_runtime().unwrap();
++    let mut connection = None;
++    runtime.block_on(Box::pin(async {
++        connection = Some(new_test_peer_connection().await);
++    }));
++    let (mut inner, _events) = connection.unwrap();
++    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
++    let (entered_tx, entered_rx) = mpsc::channel();
++    let (release_tx, release_rx) = mpsc::channel();
++    let driver_inner = Arc::clone(&inner);
++    let pass = std::thread::spawn(move || {
++        READ_GATE.with(|gate| *gate.borrow_mut() = Some((entered_tx, release_rx)));
++        let mut driver = PeerConnectionDriver::new(
++            driver_inner,
++            Vec::<SocketAddr>::new(),
++            Vec::<SocketAddr>::new(),
++            rtc::ice::mdns::MulticastDnsMode::Disabled,
++            Vec::new(),
++            RTCIceTransportPolicy::All,
++            false,
++        );
++        driver.sweep_interfaces = SweepInterfaces::reading(parked_interfaces);
++        driver
++            .host_sweep
++            .start(1, "ufrag".into(), 40000, Instant::now());
++        default_runtime()
++            .unwrap()
++            .block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
++    });
++    entered_rx
++        .recv_timeout(Duration::from_secs(10))
++        .expect("an active sweep pass must read the interface list");
++    let core_free = inner.core.try_lock().is_some();
++    release_tx.send(()).unwrap();
++    pass.join().unwrap();
++    assert!(
++        core_free,
++        "the core lock must stay free while the sweep reads system state"
++    );
++}
++
++#[test]
++fn sweep_passes_share_one_interface_read_until_it_is_stale() {
++    use super::driver::SweepInterfaces;
++    use rtc::shared::ifaces::Interface;
++    use std::cell::Cell;
++    use std::time::{Duration, Instant};
++
++    thread_local! {
++        static READS: Cell<usize> = const { Cell::new(0) };
++    }
++    fn counted_interfaces() -> std::io::Result<Vec<Interface>> {
++        READS.with(|reads| reads.set(reads.get() + 1));
++        Ok(Vec::new())
++    }
++
++    let mut interfaces = SweepInterfaces::reading(counted_interfaces);
++    let start = Instant::now();
++    interfaces.refresh(start);
++    interfaces.refresh(start + Duration::from_millis(99));
++    assert_eq!(
++        READS.with(Cell::get),
++        1,
++        "passes within 100 ms reuse the list"
++    );
++    interfaces.refresh(start + Duration::from_millis(100));
++    assert_eq!(READS.with(Cell::get), 2, "a 100 ms old list is read again");
++    let read_at = start + Duration::from_millis(100);
++    assert!(interfaces.current(read_at).is_some());
++    assert_eq!(
++        interfaces.usable_until(),
++        Some(read_at + Duration::from_millis(100)),
++        "real indications stop at the list's lapse, checked after their last wait"
++    );
++    assert!(
++        interfaces
++            .current(read_at + Duration::from_millis(100))
++            .is_none(),
++        "a list is not used once it is 100 ms old"
++    );
++}
++
++#[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
++#[test]
++fn a_pass_that_waits_past_the_interface_bound_for_the_core_lock_does_not_run() {
++    use super::driver::SweepInterfaces;
++    use rtc::shared::ifaces::Interface;
++    use std::cell::RefCell;
++    use std::sync::mpsc;
++    use std::time::{Duration, Instant};
++
++    thread_local! {
++        static READ: RefCell<Option<mpsc::Sender<()>>> = const { RefCell::new(None) };
++    }
++    fn signalled_interfaces() -> std::io::Result<Vec<Interface>> {
++        READ.with(|read| {
++            if let Some(read) = read.borrow().as_ref() {
++                let _ = read.send(());
++            }
++        });
++        Ok(Vec::new())
++    }
++
++    let runtime = default_runtime().unwrap();
++    let mut connection = None;
++    runtime.block_on(Box::pin(async {
++        connection = Some(new_test_peer_connection().await);
++    }));
++    let (mut inner, _events) = connection.unwrap();
++    Arc::get_mut(&mut inner).unwrap().host_candidate_sweep = true;
++    let mut core = None;
++    runtime.block_on(Box::pin(async {
++        core = Some(inner.core.lock().await);
++    }));
++    let (read_tx, read_rx) = mpsc::channel();
++    let driver_inner = Arc::clone(&inner);
++    let pass = std::thread::spawn(move || {
++        READ.with(|read| *read.borrow_mut() = Some(read_tx));
++        let mut driver = PeerConnectionDriver::new(
++            driver_inner,
++            Vec::<SocketAddr>::new(),
++            Vec::<SocketAddr>::new(),
++            rtc::ice::mdns::MulticastDnsMode::Disabled,
++            Vec::new(),
++            RTCIceTransportPolicy::All,
++            false,
++        );
++        driver.sweep_interfaces = SweepInterfaces::reading(signalled_interfaces);
++        let started = Instant::now();
++        driver.host_sweep.start(1, "ufrag".into(), 40000, started);
++        let runtime = default_runtime().unwrap();
++        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
++        let stale = driver.host_sweep.deadline();
++        runtime.block_on(Box::pin(driver.poll_host_sweep(Instant::now())));
++        (started, stale, driver.host_sweep.deadline())
++    });
++    read_rx
++        .recv_timeout(Duration::from_secs(10))
++        .expect("the pass must read the interface list before the lock");
++    std::thread::sleep(Duration::from_millis(150));
++    drop(core);
++    let (started, stale, fresh) = pass.join().unwrap();
++    // A pass that runs cancels this plan, whose credentials the core never had; an abandoned
++    // pass leaves it due at its start.
++    assert_eq!(
++        stale,
++        Some(started),
++        "a list older than 100 ms by the time the lock is held must not be used"
++    );
++    assert_ne!(
++        fresh,
++        Some(started),
++        "the next pass reads the list again and runs"
++    );
++}
++
++/// A stand-in kernel for the interface checks at send time: the address table a full read
++/// returns, the index lookup made with it, and the notification socket the kernel writes to
++/// whenever an IPv4 address is added or removed. `the_address_watch_hears_an_address_added_in_a_private_namespace`
++/// pins that the real kernel writes one.
++#[cfg(target_os = "linux")]
++mod fake_kernel {
++    use rtc::shared::ifaces::{Interface, Kind};
++    use std::cell::RefCell;
++    use std::net::Ipv4Addr;
++    use std::os::fd::OwnedFd;
++    use std::os::unix::net::UnixDatagram;
++
++    thread_local! {
++        static TABLE: RefCell<Vec<Interface>> = const { RefCell::new(Vec::new()) };
++        static NOTIFY: RefCell<Option<UnixDatagram>> = const { RefCell::new(None) };
++    }
++
++    pub(super) fn interface(ip: &str, mask: &str, name: &str) -> Interface {
++        Interface {
++            name: name.into(),
++            kind: Kind::Ipv4,
++            addr: Some(format!("{ip}:0").parse().unwrap()),
++            mask: Some(format!("{mask}:0").parse().unwrap()),
++            hop: None,
++        }
++    }
++
++    pub(super) fn table() -> std::io::Result<Vec<Interface>> {
++        Ok(TABLE.with(|table| table.borrow().clone()))
++    }
++
++    pub(super) fn watch() -> std::io::Result<OwnedFd> {
++        let (ours, kernel) = UnixDatagram::pair()?;
++        NOTIFY.with(|notify| *notify.borrow_mut() = Some(kernel));
++        Ok(ours.into())
++    }
++
++    /// Every interface is `wifi`'s index 2.
++    pub(super) fn index(_: &str) -> u32 {
++        2
++    }
++
++    pub(super) fn add_address(interface: Interface) {
++        TABLE.with(|table| table.borrow_mut().push(interface));
++        notify();
++    }
++
++    /// Sets the mask an address is held under, as `SIOCSIFNETMASK` does: the kernel removes
++    /// the address and adds it back, and reports both.
++    pub(super) fn set_mask(ip: Ipv4Addr, mask: &str) {
++        TABLE.with(|table| {
++            for interface in table.borrow_mut().iter_mut() {
++                if interface.addr.map(|addr| addr.ip()) == Some(ip.into()) {
++                    interface.mask = Some(format!("{mask}:0").parse().unwrap());
++                }
++            }
++        });
++        notify();
++    }
++
++    fn notify() {
++        NOTIFY.with(|notify| {
++            if let Some(notify) = notify.borrow().as_ref() {
++                notify.send(b"RTM_NEWADDR").unwrap();
++            }
++        });
++    }
++
++    pub(super) fn reset(interfaces: Vec<Interface>) {
++        TABLE.with(|table| *table.borrow_mut() = interfaces);
++        NOTIFY.with(|notify| *notify.borrow_mut() = None);
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn watched_wifi() -> (
++    super::driver::SweepInterfaces,
++    super::host_sweep::SweepSubnet,
++    std::time::Instant,
++) {
++    use super::driver::SweepInterfaces;
++    use super::host_sweep::SweepSubnet;
++
++    let wifi = fake_kernel::interface("192.168.2.1", "255.255.255.0", "wifi");
++    fake_kernel::reset(vec![wifi.clone()]);
++    let subnet =
++        SweepSubnet::for_socket("192.168.2.1:45000".parse().unwrap(), &[wifi], |_| 2).unwrap();
++    let mut interfaces = SweepInterfaces::reading(fake_kernel::table);
++    interfaces.index = fake_kernel::index;
++    interfaces.watch = fake_kernel::watch;
++    let now = std::time::Instant::now();
++    interfaces.refresh(now);
++    (interfaces, subnet, now)
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn a_source_address_another_interface_takes_after_the_read_stops_the_send() {
++    let (interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    assert!(interfaces.owns(now, &subnet, remote));
++    // The selected interface's index, address and mask are unchanged; only the list is not.
++    fake_kernel::add_address(fake_kernel::interface(
++        "192.168.2.1",
++        "255.255.255.0",
++        "bridge",
++    ));
++    assert!(
++        !interfaces.owns(now, &subnet, remote),
++        "a source address two interfaces now hold must not be sent from"
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn a_destination_that_became_a_local_address_after_the_read_stops_the_send() {
++    let (interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    assert!(interfaces.owns(now, &subnet, remote));
++    fake_kernel::add_address(fake_kernel::interface(
++        "192.168.2.2",
++        "255.255.255.255",
++        "docker0",
++    ));
++    assert!(
++        !interfaces.owns(now, &subnet, remote),
++        "a destination this host now holds must not be probed"
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn the_next_read_after_an_address_change_is_trusted_again() {
++    use std::time::Duration;
++
++    let (mut interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    fake_kernel::add_address(fake_kernel::interface(
++        "192.168.2.9",
++        "255.255.255.0",
++        "wifi",
++    ));
++    assert!(!interfaces.owns(now, &subnet, remote));
++    let later = now + Duration::from_millis(100);
++    interfaces.refresh(later);
++    assert!(
++        interfaces.owns(later, &subnet, remote),
++        "a list read after the change, with no change since, stands again"
++    );
++}
++
++#[test]
++fn a_real_indication_stops_when_the_interface_list_lapses_first() {
++    use super::driver::real_send_deadline;
++    use std::time::{Duration, Instant};
++
++    let now = Instant::now();
++    let neighbors = now + Duration::from_millis(80);
++    let window = now + Duration::from_secs(25);
++    let interfaces = now + Duration::from_millis(50);
++    assert_eq!(
++        real_send_deadline(Some(neighbors), window, Some(interfaces), now),
++        interfaces,
++        "the list lapsing before the neighbour snapshot ends the send there"
++    );
++    assert_eq!(
++        real_send_deadline(Some(neighbors), window, None, now),
++        now,
++        "with no list read, nothing may be sent"
++    );
++    assert_eq!(
++        real_send_deadline(Some(neighbors), window, Some(window), now),
++        neighbors
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn a_send_time_ownership_check_asks_the_kernel_for_nothing_but_the_watch() {
++    use std::cell::Cell;
++
++    // Sends check ownership under the core lock (and a scout's under its resources and budget
++    // too). An interface ioctl there waits on RTNL behind any netlink writer, so every lookup
++    // a check needs is made when the list is read, outside the lock.
++    thread_local! {
++        static LOOKUPS: Cell<usize> = const { Cell::new(0) };
++    }
++    fn counted(name: &str) -> u32 {
++        LOOKUPS.with(|lookups| lookups.set(lookups.get() + 1));
++        fake_kernel::index(name)
++    }
++
++    let (mut interfaces, subnet, now) = watched_wifi();
++    interfaces.index = counted;
++    let later = now + std::time::Duration::from_millis(100);
++    interfaces.refresh(later);
++    assert_eq!(LOOKUPS.with(Cell::get), 1, "the read looks up the index");
++    LOOKUPS.with(|lookups| lookups.set(0));
++    let now = later;
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    assert!(interfaces.owns(now, &subnet, remote));
++    assert!(interfaces.owns(now, &subnet, remote));
++    assert_eq!(
++        LOOKUPS.with(Cell::get),
++        0,
++        "an ownership check must not make an interface lookup"
++    );
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++fn a_mask_narrowed_after_the_read_stops_the_send() {
++    let (interfaces, subnet, now) = watched_wifi();
++    let remote = std::net::Ipv4Addr::new(192, 168, 2, 2);
++    assert!(interfaces.owns(now, &subnet, remote));
++    // The interface, its index and the source address are unchanged; only the mask is not.
++    fake_kernel::set_mask(std::net::Ipv4Addr::new(192, 168, 2, 1), "255.255.255.128");
++    assert!(
++        !interfaces.owns(now, &subnet, remote),
++        "a mask narrowed since the read must stop the send"
++    );
++}
 diff --git a/webrtc/src/peer_connection/host_sweep_nat.rs b/webrtc/src/peer_connection/host_sweep_nat.rs
 index e69de29..94bcefa 100644
 --- a/webrtc/src/peer_connection/host_sweep_nat.rs
@@ -4081,10 +4970,10 @@ index e69de29..94bcefa 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_neighbors.rs b/webrtc/src/peer_connection/host_neighbors.rs
-index e69de29..e4e93ec 100644
+index e69de29..131cfb0 100644
 --- a/webrtc/src/peer_connection/host_neighbors.rs
 +++ b/webrtc/src/peer_connection/host_neighbors.rs
-@@ -0,0 +1,889 @@
+@@ -0,0 +1,991 @@
 +//! Read-only, bounded neighbor hints; callers retain subnet authorization.
 +
 +use std::collections::{HashMap, HashSet};
@@ -4367,13 +5256,16 @@ index e69de29..e4e93ec 100644
 +            .checked_add(data.len())
 +            .ok_or_else(invalid_dump)?;
 +        if self.bytes > MAX_BYTES {
-+            return Err(invalid_dump());
++            return Err(oversized_dump());
 +        }
 +        let mut done = false;
 +        while !data.is_empty() {
 +            self.check_deadline()?;
 +            self.messages += 1;
-+            if self.messages > MAX_MESSAGES || data.len() < HEADER_LEN {
++            if self.messages > MAX_MESSAGES {
++                return Err(oversized_dump());
++            }
++            if data.len() < HEADER_LEN {
 +                return Err(invalid_dump());
 +            }
 +            let length = u32::from_ne_bytes(data[..4].try_into().unwrap()) as usize;
@@ -4440,6 +5332,8 @@ index e69de29..e4e93ec 100644
 +            }
 +            return Ok(());
 +        }
++        // Hints take the same dynamic states as scout snapshots; PERMANENT and NOARP entries
++        // are configured rather than observed and are never prioritized.
 +        if owner <= 0
 +            || owner as u32 != interface_index
 +            || !matches!(
@@ -4454,7 +5348,7 @@ index e69de29..e4e93ec 100644
 +                return Ok(());
 +            }
 +            if self.addresses.len() == MAX_ADDRESSES {
-+                return Err(invalid_dump());
++                return Err(oversized_dump());
 +            }
 +            self.seen.insert(address);
 +            self.addresses.push(address);
@@ -4470,9 +5364,12 @@ index e69de29..e4e93ec 100644
 +            return Ok(());
 +        }
 +        if self.states.len() == MAX_ADDRESSES {
-+            return Err(invalid_dump());
++            return Err(oversized_dump());
 +        }
 +        self.states.insert(address, state);
++        // Only kernel-resolved dynamic entries are probed. PERMANENT and NOARP neighbours are
++        // configured, not observed: their presence says nothing about a device answering now,
++        // so they never become real-indication destinations. They still count toward pressure.
 +        let target = match state {
 +            libc::NUD_REACHABLE | libc::NUD_STALE | libc::NUD_DELAY => &mut self.addresses,
 +            libc::NUD_INCOMPLETE => &mut self.incomplete,
@@ -4539,6 +5436,35 @@ index e69de29..e4e93ec 100644
 +        return Ok(&[]);
 +    }
 +    Err(invalid_dump())
++}
++
++/// A dump past the read caps: the table is larger than a bounded snapshot reads, which is
++/// a property of the host rather than a transient failure, so it is reported apart.
++#[derive(Debug)]
++struct OversizedDump;
++
++impl std::fmt::Display for OversizedDump {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("neighbor table larger than a bounded dump reads")
++    }
++}
++
++impl std::error::Error for OversizedDump {}
++
++fn oversized_dump() -> io::Error {
++    io::Error::new(io::ErrorKind::InvalidData, OversizedDump)
++}
++
++/// The fixed reason a failed snapshot pauses scouting with.
++pub(super) fn failure_reason(error: &io::Error) -> &'static str {
++    if error
++        .get_ref()
++        .is_some_and(|inner| inner.is::<OversizedDump>())
++    {
++        "neighbor-table-too-large"
++    } else {
++        "neighbor-snapshot-unavailable"
++    }
 +}
 +
 +fn invalid_dump() -> io::Error {
@@ -4973,6 +5899,71 @@ index e69de29..e4e93ec 100644
 +        assert_eq!(data.len(), HEADER_LEN + 4);
 +        assert_eq!(data[HEADER_LEN..], [libc::AF_INET as u8, 0, 0, 0]);
 +    }
++
++    #[test]
++    fn every_read_cap_reports_an_oversized_table_and_malformed_data_does_not() {
++        let mut messages = Dump::scout();
++        for _ in 0..MAX_MESSAGES {
++            messages
++                .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++                .unwrap();
++        }
++        let error = messages
++            .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
++
++        let mut bytes = Dump::scout();
++        let chunk = message(16, 0, SEQUENCE, &vec![0; 4096 - HEADER_LEN]);
++        for _ in 0..MAX_BYTES / chunk.len() {
++            bytes.consume(&chunk, OWNER).unwrap();
++        }
++        let error = bytes
++            .consume(&message(1, 0, SEQUENCE, &[]), OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
++
++        let mut states = Dump::scout();
++        for value in 0..MAX_ADDRESSES {
++            states
++                .consume(
++                    &neighbor(2, OWNER, 2, Ipv4Addr::from(0x0a000001 + value as u32)),
++                    OWNER,
++                )
++                .unwrap();
++        }
++        let error = states
++            .consume(&neighbor(2, OWNER, 2, Ipv4Addr::new(10, 1, 0, 1)), OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-table-too-large");
++
++        let error = Dump::scout()
++            .consume(&message(1, 0, SEQUENCE, &[])[..8], OWNER)
++            .unwrap_err();
++        assert_eq!(failure_reason(&error), "neighbor-snapshot-unavailable");
++    }
++
++    #[test]
++    fn permanent_and_noarp_neighbors_are_never_usable_destinations() {
++        let mut dump = Dump::scout();
++        for (state, octet) in [
++            (libc::NUD_PERMANENT, 1),
++            (libc::NUD_NOARP, 2),
++            (libc::NUD_REACHABLE, 3),
++        ] {
++            dump.consume(
++                &neighbor(2, OWNER, state, Ipv4Addr::new(10, 1, 2, octet)),
++                OWNER,
++            )
++            .unwrap();
++        }
++        assert_eq!(dump.addresses, vec![Ipv4Addr::new(10, 1, 2, 3)]);
++        assert!(dump.incomplete.is_empty() && dump.failed.is_empty());
++        assert_eq!(
++            dump.netns_total, 3,
++            "they still count toward table pressure"
++        );
++    }
 +}
 diff --git a/webrtc/src/peer_connection/host_neighbor_table.rs b/webrtc/src/peer_connection/host_neighbor_table.rs
 index e69de29..b1598dd 100644
@@ -5227,12 +6218,12 @@ index e69de29..b1598dd 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_scout.rs b/webrtc/src/peer_connection/host_scout.rs
-index e69de29..75d6704 100644
+index e69de29..85ad6f0 100644
 --- a/webrtc/src/peer_connection/host_scout.rs
 +++ b/webrtc/src/peer_connection/host_scout.rs
-@@ -0,0 +1,930 @@
+@@ -0,0 +1,1168 @@
 +//! Anonymous ARP discovery, kept separate from the advertised ICE socket.
-+use super::host_neighbors::{ScoutSnapshot, scout_snapshot_until};
++use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 +use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
 +use std::collections::{HashMap, HashSet};
 +use std::io;
@@ -5303,7 +6294,7 @@ index e69de29..75d6704 100644
 +        self.observed_at
 +            .is_some_and(|at| now >= at && now.duration_since(at) < FRESH)
 +            && self.soft_threshold > 1
-+            && self.threshold > self.soft_threshold
++            && self.threshold >= self.soft_threshold
 +            && self.pending() < MAX_PENDING.min(self.soft_threshold / 2)
 +            && self.total.saturating_add(self.reservations.len())
 +                < self.threshold.saturating_mul(3) / 4
@@ -5418,6 +6409,8 @@ index e69de29..75d6704 100644
 +    subnet: SweepSubnet,
 +    cursor: usize,
 +    snapshot: Option<ScoutSnapshot>,
++    /// Why the last refresh left no snapshot, reported while scouting pauses for it.
++    unavailable: &'static str,
 +    refresh_at: Instant,
 +    early_until: Instant,
 +    resources: Arc<Mutex<ScoutResources>>,
@@ -5462,6 +6455,15 @@ index e69de29..75d6704 100644
 +            self.cursor += 1;
 +        }
 +        self.subnet.addresses.get(self.cursor).copied()
++    }
++    fn note_unavailable(&mut self, reason: &'static str) {
++        if reason != self.unavailable && reason == "neighbor-table-too-large" {
++            log::warn!(
++                "LAN sweep scouting paused on interface {}: the neighbor table is larger than a bounded snapshot reads",
++                self.subnet.interface_index
++            );
++        }
++        self.unavailable = reason;
 +    }
 +    fn permanent_failure(&mut self) {
 +        self.cursor += 1;
@@ -5548,6 +6550,7 @@ index e69de29..75d6704 100644
 +                subnet,
 +                cursor,
 +                snapshot: None,
++                unavailable: "neighbor-snapshot-unavailable",
 +                refresh_at: now,
 +                early_until: grace_until,
 +                resources,
@@ -5595,7 +6598,16 @@ index e69de29..75d6704 100644
 +                    FRESH
 +                };
 +            group.usable.clear();
-+            group.snapshot = scout_snapshot_until(group.subnet.interface_index, deadline).ok();
++            group.snapshot = match scout_snapshot_until(group.subnet.interface_index, deadline) {
++                Ok(snapshot) => {
++                    group.unavailable = "neighbor-snapshot-unavailable";
++                    Some(snapshot)
++                }
++                Err(error) => {
++                    group.note_unavailable(failure_reason(&error));
++                    None
++                }
++            };
 +            if let Some(snapshot) = &group.snapshot {
 +                group.usable = snapshot
 +                    .usable
@@ -5666,22 +6678,19 @@ index e69de29..75d6704 100644
 +        ufrag: &str,
 +        port: u16,
 +        expires: Instant,
++        interfaces_until: Instant,
++        owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
 +    ) -> Option<&'static str> {
 +        let Some(index) = self
 +            .groups
 +            .iter_mut()
 +            .position(|group| group.destination(now).is_some())
 +        else {
-+            return self.changed_pause(
-+                if self.groups.iter().any(|group| group.fresh(now).is_none()) {
-+                    Some("neighbor-snapshot-unavailable")
-+                } else {
-+                    None
-+                },
-+            );
++            let stale = self.groups.iter().find(|group| group.fresh(now).is_none());
++            return self.changed_pause(stale.map(|group| group.unavailable));
 +        };
 +        let result = control.while_allowed(self.generation, ufrag, port, || {
-+            self.send_group(index, now, expires)
++            self.send_group(index, now, expires, interfaces_until, owns)
 +        });
 +        self.update_pending();
 +        self.finish_attempt(result)
@@ -5691,6 +6700,8 @@ index e69de29..75d6704 100644
 +        index: usize,
 +        now: Instant,
 +        expires: Instant,
++        interfaces_until: Instant,
++        owns: impl Fn(&SweepSubnet, Ipv4Addr) -> bool,
 +    ) -> Result<bool, &'static str> {
 +        let group = &mut self.groups[index];
 +        let destination = group
@@ -5699,20 +6710,6 @@ index e69de29..75d6704 100644
 +        let IpAddr::V4(source) = group.subnet.local.ip() else {
 +            return Err("unsupported-platform");
 +        };
-+        let valid = rtc::shared::ifaces::ifaces()
-+            .ok()
-+            .is_some_and(|interfaces| {
-+                let Ok(name) = std::ffi::CString::new(group.subnet.interface_name.as_str()) else {
-+                    return false;
-+                };
-+                // SAFETY: the name is terminated and only a read-only interface lookup occurs.
-+                let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-+                group.subnet.still_owned(&interfaces, index, destination)
-+            });
-+        if !valid {
-+            group.clear();
-+            return Err("no-on-link-interface");
-+        }
 +        let resource_handle = Arc::clone(&group.resources);
 +        let mut resources = resource_handle.lock().map_err(|_| "send-error")?;
 +        let mut budget = process()
@@ -5726,7 +6723,33 @@ index e69de29..75d6704 100644
 +            return Err("window-expired");
 +        }
 +        if group.fresh(send_at).is_none() {
-+            return Err("neighbor-snapshot-unavailable");
++            return Err(group.unavailable);
++        }
++        // The interface list ages like the neighbour snapshot: both are checked at the send
++        // instant, after the waits above. A lapsed list holds this tick for the next read.
++        if send_at >= interfaces_until {
++            return Ok(false);
++        }
++        // The pass's interface list and indexes, read outside the core lock, standing while
++        // the kernel reports no address change.
++        if !owns(&group.subnet, destination) {
++            // `clear` takes the resources lock, so this send's guards go first.
++            drop(budget);
++            drop(resources);
++            group.clear();
++            return Err("no-on-link-interface");
++        }
++        // The window, the snapshot and the list must all still stand when the check ends.
++        // Only bookkeeping, with no wait, separates this instant from the send.
++        let send_at = Instant::now();
++        if send_at >= expires {
++            return Err("window-expired");
++        }
++        if group.fresh(send_at).is_none() {
++            return Err(group.unavailable);
++        }
++        if send_at >= interfaces_until {
++            return Ok(false);
 +        }
 +        if !budget.claim_tick(send_at) {
 +            return Ok(false);
@@ -5830,6 +6853,7 @@ index e69de29..75d6704 100644
 +            subnet,
 +            cursor: 0,
 +            snapshot: None,
++            unavailable: "neighbor-snapshot-unavailable",
 +            refresh_at: Instant::now(),
 +            early_until: Instant::now() + Duration::from_millis(250),
 +            resources: Arc::new(Mutex::new(ScoutResources::default())),
@@ -6156,13 +7180,218 @@ index e69de29..75d6704 100644
 +        }
 +        assert!(!budget.socket_permit(), "socket bound is process-wide");
 +    }
++    #[test]
++    fn equal_soft_and_hard_thresholds_still_admit_under_the_same_caps() {
++        let now = Instant::now();
++        let mut budget = Admission::default();
++        budget.observe(now, 0, 100, 1024, 1024);
++        assert!(
++            budget.admit(now),
++            "gc_thresh2 == gc_thresh3 is a valid tuning"
++        );
++        budget.observe(now + PACE, 0, 768, 1024, 1024);
++        assert!(
++            !budget.admit(now + PACE),
++            "the 75% occupancy ceiling still holds"
++        );
++    }
++    #[test]
++    fn a_neighbor_table_too_large_to_snapshot_pauses_scouts_with_its_own_reason() {
++        let now = Instant::now();
++        let mut scouts = HostScouts::default();
++        let mut group = test_group(test_subnet(&[]));
++        group.unavailable = "neighbor-table-too-large";
++        scouts.groups.push(group);
++        let control = HostSweepControl::default();
++        assert_eq!(
++            scouts.send_one(
++                now,
++                &control,
++                "fixture",
++                40000,
++                now + FRESH,
++                now + FRESH,
++                |_, _| false
++            ),
++            Some("neighbor-table-too-large")
++        );
++    }
++    /// One scout group with a fresh, empty snapshot, ready to send to its first address.
++    fn sendable_scouts(now: Instant, interface_index: u32) -> (HostScouts, HostSweepControl) {
++        let mut subnet = test_subnet(&[]);
++        // An index no other test opens a scout window on.
++        subnet.interface_index = interface_index;
++        let mut group = test_group(subnet);
++        group.snapshot = Some(ScoutSnapshot {
++            observed_at: now,
++            usable: Vec::new(),
++            incomplete: Vec::new(),
++            failed: Vec::new(),
++            netns_total: 0,
++            incomplete_total: 0,
++            table_entries: 0,
++            gc_thresh2: 512,
++            gc_thresh3: 1024,
++        });
++        let mut scouts = HostScouts::default();
++        scouts.groups.push(group);
++        scouts.generation = 7;
++        let control = HostSweepControl::default();
++        assert!(control.start(7, "fixture", 40000));
++        (scouts, control)
++    }
++    #[test]
++    fn a_source_no_longer_owned_at_the_send_ends_the_scout_without_deadlock() {
++        let (done_tx, done_rx) = std::sync::mpsc::channel();
++        std::thread::spawn(move || {
++            let now = Instant::now();
++            let (mut scouts, control) = sendable_scouts(now, 4243);
++            let reason = scouts.send_one(
++                now,
++                &control,
++                "fixture",
++                40000,
++                now + FRESH,
++                now + FRESH,
++                |_, _| false,
++            );
++            done_tx
++                .send((reason, scouts.groups[0].snapshot.is_none()))
++                .unwrap();
++        });
++        let (reason, cleared) = done_rx
++            .recv_timeout(Duration::from_secs(10))
++            .expect("clearing a group must not wait on the guards its send holds");
++        assert_eq!(reason, Some("no-on-link-interface"));
++        assert!(
++            cleared,
++            "the group forgets the neighbours of a source it lost"
++        );
++    }
++    #[test]
++    fn an_interface_list_that_lapses_during_the_ownership_check_holds_the_scout() {
++        let now = Instant::now();
++        let (mut scouts, control) = sendable_scouts(now, 4244);
++        let lapses = Instant::now() + Duration::from_millis(20);
++        // The live lookups take long enough that the list lapses while they run.
++        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
++            std::thread::sleep(Duration::from_millis(40));
++            true
++        };
++        assert_eq!(
++            scouts.send_one(
++                now,
++                &control,
++                "fixture",
++                40000,
++                now + FRESH,
++                lapses,
++                slow_owns
++            ),
++            None
++        );
++        assert_eq!(
++            scouts.counters.attempted, 0,
++            "nothing is sent on a list that lapsed before the send"
++        );
++    }
++    #[test]
++    fn a_window_that_expires_during_the_ownership_check_ends_the_scout() {
++        let now = Instant::now();
++        let (mut scouts, control) = sendable_scouts(now, 4245);
++        let expires = Instant::now() + Duration::from_millis(20);
++        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
++            std::thread::sleep(Duration::from_millis(40));
++            true
++        };
++        assert_eq!(
++            scouts.send_one(
++                now,
++                &control,
++                "fixture",
++                40000,
++                expires,
++                now + FRESH,
++                slow_owns
++            ),
++            Some("window-expired")
++        );
++        assert_eq!(
++            scouts.counters.attempted, 0,
++            "nothing is sent once the probe's window has closed"
++        );
++    }
++    #[test]
++    fn a_neighbour_snapshot_that_lapses_during_the_ownership_check_ends_the_scout() {
++        let observed = Instant::now();
++        let (mut scouts, control) = sendable_scouts(observed, 4246);
++        let now = observed + FRESH - Duration::from_millis(20);
++        let slow_owns = |_: &SweepSubnet, _: Ipv4Addr| {
++            std::thread::sleep(Duration::from_millis(40));
++            true
++        };
++        std::thread::sleep(now.saturating_duration_since(Instant::now()));
++        scouts.send_one(
++            now,
++            &control,
++            "fixture",
++            40000,
++            now + FRESH,
++            now + FRESH,
++            slow_owns,
++        );
++        assert_eq!(
++            scouts.counters.attempted, 0,
++            "nothing is sent to a destination the snapshot no longer authorizes"
++        );
++    }
++    #[test]
++    fn an_interface_list_that_lapses_before_the_send_holds_the_scout() {
++        let now = Instant::now();
++        let mut subnet = test_subnet(&[]);
++        // An index no other test opens a scout window on.
++        subnet.interface_index = 4242;
++        let mut group = test_group(subnet);
++        group.snapshot = Some(ScoutSnapshot {
++            observed_at: now,
++            usable: Vec::new(),
++            incomplete: Vec::new(),
++            failed: Vec::new(),
++            netns_total: 0,
++            incomplete_total: 0,
++            table_entries: 0,
++            gc_thresh2: 512,
++            gc_thresh3: 1024,
++        });
++        let mut scouts = HostScouts::default();
++        scouts.groups.push(group);
++        scouts.generation = 7;
++        let control = HostSweepControl::default();
++        assert!(control.start(7, "fixture", 40000));
++        // The pass vouched for the list at `now`, but it lapses at `now`: the send instant,
++        // after the scout's waits, is past it however short those waits were.
++        assert_eq!(
++            scouts.send_one(now, &control, "fixture", 40000, now + FRESH, now, |_, _| {
++                true
++            }),
++            None
++        );
++        assert_eq!(
++            scouts.counters.attempted, 0,
++            "nothing is sent on a lapsed list"
++        );
++        assert!(
++            scouts.groups[0].snapshot.is_some(),
++            "a lapsed list holds the scout without dropping its neighbours"
++        );
++    }
 +}
 +
 +#[cfg(test)]
 +#[path = "host_scout_socket_tests.rs"]
 +mod socket_tests;
 diff --git a/webrtc/src/peer_connection/host_scout_socket_tests.rs b/webrtc/src/peer_connection/host_scout_socket_tests.rs
-index e69de29..a79392f 100644
+index e69de29..3e5a6fa 100644
 --- a/webrtc/src/peer_connection/host_scout_socket_tests.rs
 +++ b/webrtc/src/peer_connection/host_scout_socket_tests.rs
 @@ -0,0 +1,225 @@
@@ -6363,7 +7592,7 @@ index e69de29..a79392f 100644
 +        while started.elapsed() < Duration::from_secs(2) {
 +            let now = Instant::now();
 +            scouts.refresh(now);
-+            scouts.send_one(now, &control, "fixture", 40000, expires);
++            scouts.send_one(now, &control, "fixture", 40000, expires, now + Duration::from_millis(100), |subnet, destination| subnet.still_owned(&interfaces, |_| subnet.interface_index, destination));
 +            pressure.observe(&scouts, &bound);
 +            if iteration % 20 == 0 { pressure.writes_now(&*socket, target); }
 +            iteration += 1;

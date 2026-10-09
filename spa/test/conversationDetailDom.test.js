@@ -7,6 +7,7 @@
 // remembered for that conversation alone.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { untilDom } from "./untilCondition.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -195,10 +196,20 @@ const mountRelayRail = async () => {
   await mountProjectRail();
 };
 
+/** What a narrower level has taken off the timeline once it is redrawn. The
+ *  menu's tick and the timeline are painted by separate steps of one choice
+ *  (the tick after the menu has shut, the timeline from the saved level's
+ *  readback), so a choice is made when both say so. Widening to All takes
+ *  nothing off; a case widening waits for what it expects back. */
+const TAKEN_OFF = {
+  messages: (kinds) => kinds.activity === 0,
+  agent: (kinds) => kinds.activity === 0 && kinds.arrived === 0 && kinds.sent === 0,
+  all: () => true,
+};
 const choose = async (level) => {
   menuCaret().click();
   menuItem(`detail:${level}`).click();
-  await vi.waitFor(() => expect(markedLevel()).toBe(`detail:${level}`));
+  await untilDom(() => markedLevel() === `detail:${level}` && TAKEN_OFF[level](rowKinds()));
 };
 const detailAddress = (entityId, conversationId) => uiAddress({
   deviceId: DEVICE_ID, entityId, view: "thread", kind: "filter", sub: conversationId,
@@ -298,6 +309,7 @@ describe("what each level draws", () => {
     await choose("agent");
 
     await choose("all");
+    await untilDom(() => rowKinds().activity === 1 && rowKinds().arrived === 1);
 
     expect(rowKinds()).toEqual({ user: 1, agent: 1, arrived: 1, sent: 1, activity: 1 });
   });
@@ -351,6 +363,7 @@ describe("a timeline the level emptied", () => {
     await mountRelayRail();
 
     await choose("all");
+    await untilDom(() => !timeline().textContent.includes("Nothing at this level"));
 
     expect(timeline().textContent).not.toContain("Nothing at this level");
     expect(rowKinds()).toEqual({ user: 0, agent: 0, arrived: 1, sent: 0, activity: 1 });

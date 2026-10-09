@@ -26,9 +26,9 @@ async function activate(page, selector, hasTouch) {
 }
 
 async function mountPullRequest(page, basePath) {
-  await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Build · PR review</header><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush"><div id="review"></div></div></main></div></div></div>', {
+  await mountLayout(page, '<div id="shell"><div id="view"><header id="toolbar">Build · PR review</header><div id="view-body"><main id="root" class="surface"><div id="tabbody" class="flush"><div id="task-header"></div><div id="review"></div></div></main></div></div></div>', {
     basePath,
-    styles: '#shell{height:100vh;box-sizing:border-box} #view-body,#root,#tabbody{min-width:0} #review{width:100%;box-sizing:border-box;padding:1rem}',
+    styles: `@import url("${basePath}src/styles/tasks.css"); #shell{height:100vh;box-sizing:border-box} #view-body,#root,#tabbody{min-width:0} #task-header{padding:var(--pane-top) var(--pane-gutter) 0} #review{width:100%;box-sizing:border-box;padding:1rem}`,
   });
   await page.evaluate(() => {
     document.head.prepend(Object.assign(document.createElement("meta"), {
@@ -40,9 +40,11 @@ async function mountPullRequest(page, basePath) {
     support: "src/core/taskReviewSupport.js",
     cache: "src/core/taskReviewCache.js",
     local: "src/core/localCache.js",
+    taskRender: "src/core/trackerTaskRender.js",
   }, basePath);
   await page.evaluate(async (answer) => {
-    const { review, support, cache, local } = window.__layoutModules;
+    const { review, support, cache, local, taskRender } = window.__layoutModules;
+    document.querySelector("#task-header").innerHTML = taskRender.taskHeadHtml(answer.task);
     const scope = { deviceId: "pr-layout-device", projectId: "pr-layout-project", taskId: "task-1" };
     const saved = structuredClone(answer.review);
     const snapshot = saved.snapshots[0];
@@ -119,6 +121,8 @@ for (const { label, width, hasTouch } of viewports) {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await mountPullRequest(page, basePath);
+      expect(await page.locator(".task-page-title").count()).toBe(1);
+      expect(await page.locator(".task-page-title").textContent()).toBe(opened.result.task.title);
       expect(await page.locator('[data-review-pr-status]').textContent()).toContain("Open");
       expect(await page.locator('[data-review-save], [data-review-complete], [data-review-act]').count()).toBe(0);
 
@@ -131,7 +135,7 @@ for (const { label, width, hasTouch } of viewports) {
       await page.waitForFunction(() => document.querySelector('[data-pr-merge-submit]')?.disabled === false);
       expect(await page.locator('[data-pr-merge-submit]').isEnabled()).toBe(true);
       await assertNoPageOverflow(page);
-      await page.locator('[data-review-pr-status]').scrollIntoViewIfNeeded();
+      await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-open-${label}.png`);
 
       await activate(page, '[data-review-path="changed.txt"] [data-review-expand]', hasTouch);
@@ -162,7 +166,7 @@ for (const { label, width, hasTouch } of viewports) {
         body: "Keep this feedback attached to the snapshot I reviewed." });
       expect(await page.locator('[data-pr-merge-submit]').isDisabled()).toBe(true);
       await assertNoPageOverflow(page);
-      await page.locator('[data-review-pr-status]').scrollIntoViewIfNeeded();
+      await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-newer-snapshot-${label}.png`);
 
       const closeSummary = page.locator("details").filter({ has: page.locator('[data-review-close]') }).locator(":scope > summary");
@@ -176,7 +180,7 @@ for (const { label, width, hasTouch } of viewports) {
       await activate(page, '[data-review-advanced] > summary', hasTouch);
       expect(await page.locator('[data-review-repair]').isVisible()).toBe(true);
       await assertNoPageOverflow(page);
-      await page.locator('[data-review-pr-status]').scrollIntoViewIfNeeded();
+      await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-closed-${label}.png`);
 
       await page.evaluate(async (answer) => {
@@ -213,7 +217,7 @@ for (const { label, width, hasTouch } of viewports) {
       await page.waitForFunction(() => document.querySelector('[data-review-reclaim]')?.disabled === true);
       expect(await reclaim.getAttribute("title")).toBe("Unlock the workspace to delete it");
       await assertNoPageOverflow(page);
-      await page.locator('[data-review-pr-status]').scrollIntoViewIfNeeded();
+      await page.locator(".task-page-head").scrollIntoViewIfNeeded();
       await captureLayout(page, `task-pr-merged-locked-${label}.png`);
       expect(errors).toEqual([]);
       expect(await page.evaluate(() => window.__pullRequestLayout.calls.every(({ method }) =>

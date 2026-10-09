@@ -828,18 +828,16 @@ describe("a pass racing the wire", () => {
     // Same device, session and live entity. The old answer must land or have
     // a replacement reader; cancelling it alone strands the cached body.
     // The replacement read and its write take as long as they take: wait for
-    // the new pass to ask, then for the body itself, not for the wire to go
-    // quiet. (Unless it answers early, the replacement is held too, so the
-    // pass cannot finish before the old answer does.)
+    // the new pass to ask for the file, then for the body itself, not for the
+    // wire to go quiet. Unless it answers early, the replacement is held too,
+    // so both reads are out when the old answer is let go.
     const renewed = () => announced((heard) => cache.subscribeCache(address, heard),
       async () => (await cache.readCached(address))?.value.file.content_b64 === "bmV3");
     sync.startCacheSync();
-    await called(bridge.call, () => calls("board.list").length >= 2);
+    await called(bridge.call, () => calls("fs.read").length >= 2);
     expect(calls("board.list")).toHaveLength(2);
-    if (answersEarly) {
-      await renewed();
-      expect(calls("fs.read")).toHaveLength(2);
-    }
+    expect(calls("fs.read")).toHaveLength(2);
+    if (answersEarly) await renewed();
     answerFile();
     await renewed();
 

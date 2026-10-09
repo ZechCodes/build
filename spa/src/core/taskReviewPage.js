@@ -10,9 +10,14 @@ import { mountTaskReviewChanges } from "./taskReviewChanges.js";
 import { mountTaskReviewFiles } from "./taskReviewFiles.js";
 import { mountTaskReviewFeedback, openTaskReviewer } from "./taskReviewFeedback.js";
 import { wireDirectoryTabs } from "./workspaceDirectoryTabs.js";
+import { refreshFeed } from "./taskFeed.js";
 
-const FRAME = '<div data-review-head></div><div data-review-controls></div><div data-review-git-actions></div><p data-review-error class="warn" role="status" hidden></p><div data-review-directories></div><div data-review-content></div><div data-review-feedback-host></div>';
+const FRAME = '<div data-review-head></div><p data-review-newer-snapshot class="warn" role="status" hidden></p><div data-review-controls></div><div data-review-git-actions></div><p data-review-error class="warn" role="status" hidden></p><div data-review-directories></div><div data-review-content></div><div data-review-feedback-host></div>';
 const setHtml = (node, html) => { if (node.__reviewHtml !== html) { node.innerHTML = html; node.__reviewHtml = html; } };
+const visibleRecord = (record) => {
+  const { read_order, sync_read_orders, ...visible } = record || {};
+  return visible;
+};
 
 /** One task's saved review. All server records arrive through cache reads;
  * drafts and selection live separately and survive a metadata refresh. */
@@ -25,6 +30,7 @@ export function mountTaskReviewPage(host, options) {
   let selection = {};
   let disposed = false;
   let readSerial = 0;
+  let cachePaint = Promise.resolve();
   let notice = "";
   let pane = null;
   let paneKey = "";
@@ -39,6 +45,8 @@ export function mountTaskReviewPage(host, options) {
   host.innerHTML = FRAME;
   const node = (part) => host.querySelector(`[data-review-${part}]`);
   const review = () => record?.review || null;
+  const isPr = () => review()?.mode === "pull_request";
+  const controlState = () => isPr() ? "" : review()?.state;
   const snapshot = () => reviewSnapshot(review(), selection.snapshotId);
   const directory = () => reviewDirectory(snapshot(), selection.directoryId);
   const workspaces = () => options.workspaces?.() || [];
@@ -62,12 +70,13 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintControls(saved) {
-    const key = JSON.stringify([saved?.id, support.snapshot, support.complete, review()?.state, review()?.mode]);
-    if (controlsKey === key) return controls?.update(review(), workspaces());
+    const key = JSON.stringify([saved?.id, support, controlState(), review()?.mode]);
+    if (controlsKey === key) return controls?.update(review(), isPr() ? record : workspaces());
     controlsKey = key;
     controls?.dispose();
     controls = mountTaskReviewControls(node("controls"), {
-      ...scope, snapshot: saved, review: review(), repository, support, workspaces: workspaces(), keepReadingPlace: options.keepReadingPlace,
+      ...scope, snapshot: saved, review: review(), record, repository, support, callRpc, workspaces: workspaces(), keepReadingPlace: options.keepReadingPlace,
+      onReclaimed: () => refreshFeed(deviceId),
       onTaskChanged: options.onTaskChanged,
       onSaved: async (verb) => {
         if (verb !== "snapshot") return;
@@ -79,25 +88,26 @@ export function mountTaskReviewPage(host, options) {
   }
 
   function paintFeedback(saved) {
-    const key = support.comments && saved ? saved.id : "";
+    const allowOpinion = !isPr() || support.pullRequests;
+    const key = support.comments && saved ? JSON.stringify([saved.id, allowOpinion]) : "";
     if (key === feedbackKey) return feedback?.update();
     feedbackKey = key;
     feedback?.dispose();
     feedback = null;
     node("feedback-host").innerHTML = "";
-    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace,
-      feed: options.feed, projectKey: options.projectKey });
+    if (key) feedback = mountTaskReviewFeedback(node("feedback-host"), { ...scope, snapshot: saved, callRpc, onSent: async () => { await repository.refresh(); await options.onTaskChanged?.(); }, keepReadingPlace: options.keepReadingPlace,
+      feed: options.feed, projectKey: options.projectKey, allowOpinion, latestSnapshotId: () => review()?.pull_request?.latest_published_snapshot_id });
   }
 
   function paintGitActions(saved) {
-    const key = saved ? JSON.stringify([saved.id, support.act, support.complete, review()?.state]) : "";
-    if (gitActionsKey === key) return gitActions?.update(review());
+    const key = saved ? JSON.stringify([saved.id, support, controlState(), review()?.mode]) : "";
+    if (gitActionsKey === key) return gitActions?.update(review(), record);
     gitActionsKey = key;
     gitActions?.dispose();
     gitActions = null;
     node("git-actions").innerHTML = "";
     if (saved) gitActions = mountTaskReviewActions(node("git-actions"), {
-      ...scope, snapshot: saved, review: review(), repository, support, onTaskChanged: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace,
+      ...scope, snapshot: saved, review: review(), record, repository, support, onTaskChanged: options.onTaskChanged, keepReadingPlace: options.keepReadingPlace,
     });
   }
 
@@ -158,6 +168,7 @@ export function mountTaskReviewPage(host, options) {
     if (dir) selection.directoryId = dir.id;
     const view = selection.view || defaultReviewView(dir);
     paintHead(saved);
+    paintNewerSnapshot(saved);
     paintControls(saved);
     paintGitActions(saved);
     paintFeedback(saved);
@@ -168,18 +179,36 @@ export function mountTaskReviewPage(host, options) {
     error.hidden = !error.textContent;
   }
 
+  function paintNewerSnapshot(saved) {
+    const newer = node("newer-snapshot");
+    const latest = review()?.pull_request?.latest_published_snapshot_id;
+    newer.hidden = !latest || !saved || saved.id === latest;
+    const message = "A newer snapshot arrived while you were reviewing. Review the latest snapshot before merging.";
+    if (newer.textContent !== message) newer.textContent = message;
+  }
+
   async function hydrate() {
     const serial = ++readSerial;
     const [cached, capabilities] = await Promise.all([readCached(reviewAddress(scope)), readReviewSupport(deviceId)]);
     if (disposed || serial !== readSerial) return;
-    record = cached?.value || null;
-    support = reviewSupportFor(record?.review, capabilities);
-    paint();
+    const nextRecord = cached?.value || null;
+    const nextSupport = reviewSupportFor(nextRecord?.review, capabilities);
+    const changed = JSON.stringify([visibleRecord(record), support]) !== JSON.stringify([visibleRecord(nextRecord), nextSupport]);
+    record = nextRecord;
+    support = nextSupport;
+    if (changed) paint();
   }
-  const unwatchRecord = subscribeCache(reviewAddress(scope), () => void hydrate());
-  const unwatchSupport = subscribeCache(reviewSupportAddress(deviceId), () => { void hydrate().then(() => repository.refresh()); });
-  void Promise.all([hydrate(), state.ready]).then(() => repository.refresh());
+  const readForPaint = () => { cachePaint = hydrate(); return cachePaint; };
+  const unwatchRecord = subscribeCache(reviewAddress(scope), () => void readForPaint());
+  const unwatchSupport = subscribeCache(reviewSupportAddress(deviceId), () => { void readForPaint().then(() => repository.refresh()); });
+  const ready = Promise.all([readForPaint(), state.ready]).then(async () => {
+    paint();
+    await Promise.all([controls?.ready, feedback?.ready, gitActions?.ready]);
+    void repository.refresh();
+  });
   return {
+    ready,
+    whenPainted: () => cachePaint,
     feedMoved: paint,
     refresh() { void repository.refresh(); void pane?.refresh(); },
     async openAnchor(anchor) {

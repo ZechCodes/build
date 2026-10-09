@@ -32,7 +32,7 @@ const commentParams = (taskId, snapshotId, draft) => ({
 /** One review's composer. A new mount reads its task/snapshot draft from build-ui. */
 export function mountTaskReviewFeedback(host, {
   deviceId, projectId, taskId, snapshot, callRpc, onSent = null, keepReadingPlace = (paint) => paint(),
-  feed = null, projectKey = "",
+  feed = null, projectKey = "", allowOpinion = true, latestSnapshotId = () => null,
 }) {
   const snapshotId = snapshotIdOf(snapshot);
   let draft = emptyDraft();
@@ -48,12 +48,13 @@ export function mountTaskReviewFeedback(host, {
     <textarea id="task-review-feedback-body" rows="3" ${fieldTraits("prose")} placeholder="Comment on this review"></textarea>
     <div class="row task-review-feedback-row">
       <label class="create-label" for="task-review-feedback-opinion">Opinion</label>
-      <select id="task-review-feedback-opinion" data-review-opinion>
+      <select id="task-review-feedback-opinion" data-review-opinion${allowOpinion ? "" : " disabled"}>
         <option value="">Comment only</option><option value="approve">Approve</option>
         <option value="request_changes">Request changes</option>
       </select>
       <button class="btn primary" type="submit" disabled>Comment</button>
     </div>
+    <p class="sub" data-review-opinion-target hidden></p>
   </form>`;
   const form = host.querySelector("[data-review-feedback]");
   const field = form.querySelector("textarea");
@@ -75,6 +76,10 @@ export function mountTaskReviewFeedback(host, {
     const parts = [draft.anchor && anchorLabel(draft.anchor), draft.replyTo && replyLabel()].filter(Boolean);
     target.textContent = parts.join(" · ");
     target.hidden = !parts.length;
+    const opinionTarget = form.querySelector('[data-review-opinion-target]');
+    const historical = latestSnapshotId() && latestSnapshotId() !== snapshotId;
+    opinionTarget.hidden = !historical;
+    opinionTarget.textContent = historical ? "Opinions on this earlier snapshot do not change the current review status." : "";
     button.disabled = sending || !hasBody(draft);
     button.textContent = sending ? "sending…" : "Comment";
   });
@@ -89,7 +94,7 @@ export function mountTaskReviewFeedback(host, {
     paint(draft);
   };
   const stopReplyCache = subscribeCache(taskAddress(deviceId, projectId, taskId), () => void hydrateReply());
-  void hydrateReply();
+  const replyReady = hydrateReply();
   const edit = (changes) => {
     draftRevision += 1;
     draft = { ...draft, ...changes };
@@ -114,7 +119,7 @@ export function mountTaskReviewFeedback(host, {
     try {
       await saved.flush();
       const captured = await readUiRecord(address).catch(() => null);
-      await callRpc("tasks.comment", commentParams(taskId, snapshotId, sent));
+      await callRpc("tasks.comment", commentParams(taskId, snapshotId, allowOpinion ? sent : { ...sent, verdict: "" }));
       await clearSentDraft(sent, sentRevision, captured);
       if (!disposed) await onSent?.();
     } catch (error) {
@@ -125,6 +130,7 @@ export function mountTaskReviewFeedback(host, {
     }
   };
   return {
+    ready: Promise.all([saved.ready, replyReady]),
     update() { paint(draft); },
     comment(anchor = null, replyTo = null) {
       if (disposed) return;

@@ -13,3 +13,8 @@
 .task-review-note, .task-review-limit, .task-review-error { padding: 10px; }
 .task-review-error { color: var(--danger, #c33); }
 .task-review-limit { color: var(--ink2); }
+@media (max-width: 600px) {
+  .task-review-file-head { flex-wrap: wrap; }
+  .task-review-file-head [data-review-expand] { flex-basis: 100%; }
+  .task-review-file-head button { min-height: 36px; }
+}

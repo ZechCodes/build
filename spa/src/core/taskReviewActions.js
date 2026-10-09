@@ -4,6 +4,7 @@ import { esc } from "./text.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { reviewFailure } from "./taskReviewCache.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { mountTaskReviewMerge } from "./taskReviewMerge.js";
 
 const actionRows = (review, snapshot) => (review?.actions || []).filter((row) => row.snapshot_id === snapshot.id);
 const destinations = (review, snapshot) => (review?.destinations || []).filter((row) => row.snapshot_id === snapshot.id);
@@ -171,6 +172,7 @@ function retryHasResult(review, snapshot, pendingRetry) {
 }
 
 export function mountTaskReviewActions(host, options) {
+  if (options.review?.mode === "pull_request") return mountTaskReviewMerge(host, options);
   const { deviceId, projectId, taskId, snapshot, repository, support, onTaskChanged, keepReadingPlace = (paint) => paint() } = options;
   let review = options.review;
   let draft = { selected: {}, intent: null };

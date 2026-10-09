@@ -5,6 +5,7 @@ import { uiAddress, watchUiState } from "./localUiState.js";
 import { reviewFailure } from "./taskReviewCache.js";
 import { reviewSupportFor } from "./taskReviewSupport.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { mountTaskReviewLifecycle } from "./taskReviewLifecycle.js";
 
 const workspaceId = (workspace) => workspace.workspace_id || workspace.id;
 const optionsHtml = (workspaces, selected) => {
@@ -22,16 +23,6 @@ const savedBaseOverrides = (snapshot) => Object.fromEntries((snapshot?.directori
   .filter((directory) => directory.base?.kind === "override")
   .map((directory) => [directory.id, directory.base.name || directory.base.oid]));
 
-function mountReadOnlyReview(host, review, keepReadingPlace) {
-  const paint = (current) => keepReadingPlace(() => {
-    const status = (current?.pull_request?.status || "open").replaceAll("_", " ");
-    const label = status.charAt(0).toUpperCase() + status.slice(1);
-    host.innerHTML = `<p class="sub" data-review-read-only role="status">Pull request: ${esc(label)} · Read-only</p>`;
-  });
-  paint(review);
-  return { update: paint, dispose() {} };
-}
-
 function controlsHtml(review, snapshot, support) {
   return `<div class="task-review-actions">
     ${support.snapshot ? `<details data-review-snapshot-form><summary>${review ? "Update review" : "Create review"}</summary>
@@ -48,7 +39,7 @@ function controlsHtml(review, snapshot, support) {
 export function mountTaskReviewControls(host, options) {
   const { deviceId, projectId, taskId, snapshot, repository, onSaved, onTaskChanged, keepReadingPlace = (paint) => paint() } = options;
   let review = options.review;
-  if (review?.mode === "pull_request") return mountReadOnlyReview(host, review, keepReadingPlace);
+  if (review?.mode === "pull_request") return mountTaskReviewLifecycle(host, options);
   const support = reviewSupportFor(review, options.support);
   let workspaces = options.workspaces;
   let draft = { workspace: review?.workspace_id || "", bases: savedBaseOverrides(snapshot), description: "" };

@@ -1166,6 +1166,22 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `add_workspace_agent`, …) and the tracker (`get_task`, `comment_task`,
 `move_task`, `label_task`, …).
 
+**Tracking.** A task's `trackers` are the agents told about each change to it
+(`bridge/src/app/tracker/notices.rs`; never the agent that made the change).
+`create_task` tracks by default, assignment tracks the assignee, and every
+other write tracks with `track: true` (`also_track` in
+`bridge/src/app/tracker/tools.rs`). Tracking ends with the work (#444): the
+store write that takes a task from live to Done or closed
+(`Task::end_tracking_on_finish`, called from `save_activity_in_tx` and
+`complete_review_in_tx`) removes every tracker and records one `untracked`
+event each, by Build, with `by: "finished"`. The notice for that move or close still
+reaches them, read from those events. Reopening restores nobody, and `track`
+on the write that finished the task is ignored. An agent that tracks a finished
+task explicitly afterwards keeps its tracker. `untrack_task` is for dropping a
+live task early. At boot `Store::end_tracking_on_finished_tasks` clears, once,
+the trackers left on tasks that finished before this rule. The user's watch
+(`watched`, the inbox) is a separate field and does not change on Done.
+
 ### Relay and direct connection
 
 - **Relay client**: `bridge/src/relay.rs` holds a `wss` connection to

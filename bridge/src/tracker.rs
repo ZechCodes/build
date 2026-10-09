@@ -39,6 +39,10 @@ pub const MAX_LINKS_PER_KIND: usize = 20;
 /// unbounded write and an unbounded number of agents woken by one edit.
 pub const MAX_TRACKERS: usize = 50;
 
+/// The `by` an `untracked` event carries when the task finishing took the
+/// tracker off (#444), rather than the agent asking.
+pub const FINISHED_UNTRACK: &str = "finished";
+
 /// A fresh id: the ULID rule every other Build id uses, under this record's
 /// own prefix, and **monotonic within this process**.
 ///
@@ -402,6 +406,40 @@ impl Task {
         let before = self.trackers.len();
         self.trackers.retain(|tracking| tracking != agent_id);
         self.trackers.len() != before
+    }
+
+    /// Tracking ends with the work (#444): a write that takes this task from
+    /// live (`before`) to Done or closed takes every tracker off it, and
+    /// answers one `untracked` event each, by Build and `by: "finished"`, for
+    /// the write to carry. The notice that write delivers still reaches them:
+    /// it reads who to tell from these events as well as from what is left.
+    ///
+    /// A transition rather than a state, so an agent that tracks a finished
+    /// task on purpose afterwards keeps following it.
+    pub fn end_tracking_on_finish(&mut self, before: &Task, now: &str) -> Vec<TaskEvent> {
+        if before.is_finished() || !self.is_finished() {
+            return Vec::new();
+        }
+        self.end_tracking(now)
+    }
+
+    /// Take every tracker off, answering the `untracked` events that say so.
+    ///
+    /// Build is the actor: nobody asked for it, and a timeline that said the
+    /// user who moved the card had untracked an agent would be wrong.
+    pub fn end_tracking(&mut self, now: &str) -> Vec<TaskEvent> {
+        std::mem::take(&mut self.trackers)
+            .into_iter()
+            .map(|agent_id| {
+                TaskEvent::new(
+                    &self.id,
+                    Actor::Build,
+                    TaskEventKind::Untracked,
+                    serde_json::json!({ "agent_id": agent_id, "by": FINISHED_UNTRACK }),
+                    now,
+                )
+            })
+            .collect()
     }
 
     /// Start or stop the user watching. Answers whether anything changed, so

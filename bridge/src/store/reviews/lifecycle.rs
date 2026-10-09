@@ -138,7 +138,8 @@ pub(in crate::store) fn save_activity_in_tx(
     expected_review_version: Option<u64>,
     now: &str,
 ) -> Result<(Task, Vec<TaskEvent>), StoreError> {
-    let task = preserve_unmoved_lifecycle(tx, task, events)?;
+    let before = require_task(tx, &task.id)?;
+    let task = preserve_unmoved_lifecycle(&before, task, events);
     let header = load_header(tx, &task.id)?;
     if let Some(header) = &header {
         if let Some(expected) = expected_review_version {
@@ -177,35 +178,31 @@ pub(in crate::store) fn save_activity_in_tx(
         }
     }
     let mut saved = task.clone();
-    let additional = apply_opinions(tx, &mut saved, comments, header, now)?;
+    let mut additional = apply_opinions(tx, &mut saved, comments, header, now)?;
+    additional.extend(saved.end_tracking_on_finish(&before, now));
     write_tracker_task(tx, &saved)?;
     append_activity(tx, comments, events)?;
     append_activity(tx, &[], &additional)?;
     Ok((saved, additional))
 }
 
-fn preserve_unmoved_lifecycle(
-    tx: &Transaction,
-    task: &Task,
-    events: &[TaskEvent],
-) -> Result<Task, StoreError> {
-    let current = require_task(tx, &task.id)?;
+fn preserve_unmoved_lifecycle(current: &Task, task: &Task, events: &[TaskEvent]) -> Task {
     let mut saved = task.clone();
     if !events
         .iter()
         .any(|event| event.kind == TaskEventKind::Moved)
     {
-        saved.status = current.status;
-        saved.done_at = current.done_at;
+        saved.status = current.status.clone();
+        saved.done_at = current.done_at.clone();
     }
     if !events
         .iter()
         .any(|event| matches!(event.kind, TaskEventKind::Closed | TaskEventKind::Reopened))
     {
         saved.state = current.state;
-        saved.closed_at = current.closed_at;
+        saved.closed_at = current.closed_at.clone();
     }
-    Ok(saved)
+    saved
 }
 
 fn should_complete(header: &ReviewHeader, events: &[TaskEvent]) -> bool {

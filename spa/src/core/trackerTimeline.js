@@ -137,6 +137,14 @@ const reclaimedSentence = (payload) => {
   return `reclaimed ${workspaceNamed(payload)}${size}`;
 };
 
+/** An agent stopped tracking, or Build stopped it because the task finished
+ *  (#444): then Build is the actor, and the sentence names who stopped hearing. */
+const untrackedSentence = (payload, _columns, reading) => {
+  if (payload.by !== "finished") return "stopped tracking this";
+  const agent = actorName({ kind: "agent", agent_id: payload.agent_id }, reading) || "an agent";
+  return `stopped ${agent} tracking this when it was finished`;
+};
+
 const SENTENCES = Object.freeze({
   created: () => "filed this",
   assigned: (payload, _columns, reading) => `assigned this to ${actorName(payload.assignee, reading) || "nobody"}`,
@@ -154,6 +162,7 @@ const SENTENCES = Object.freeze({
   workspace_pruned: (payload) =>
     `dropped ${humanBytes(payload.pruned_bytes)} of build output from ${workspaceNamed(payload)}`,
   workspace_reclaimed: reclaimedSentence,
+  untracked: untrackedSentence,
 });
 
 /**

@@ -181,7 +181,7 @@ impl AppState {
         answered: Result<Value, String>,
     ) -> Result<Value, String> {
         let mut answered = answered?;
-        if !wants_tracking(action) {
+        if !wants_tracking(action) || finished_by(action, &answered["task"]) {
             return Ok(answered);
         }
         let Some(task_id) = answered["task"]["id"].as_str().map(str::to_string) else {
@@ -673,6 +673,20 @@ fn wants_tracking(action: &BridgeAction) -> bool {
         | BridgeAction::TrackerLinkTask { track, .. } => track.unwrap_or(false),
         _ => false,
     }
+}
+
+/// Whether this write left the task finished, by being the move, the close or
+/// the filing that put it there. Tracking ends with the work (#444), so `track`
+/// on such a write is not honoured: following starts again only on a task
+/// somebody acts on later.
+fn finished_by(action: &BridgeAction, task: &Value) -> bool {
+    let finishing = matches!(
+        action,
+        BridgeAction::TrackerCreateTask { .. }
+            | BridgeAction::TrackerMoveTask { .. }
+            | BridgeAction::TrackerCloseTask { .. }
+    );
+    finishing && (task["state"] == "closed" || task["status"] == crate::tracker::DONE_STATUS)
 }
 
 fn is_a_task_tool(action: &BridgeAction) -> bool {

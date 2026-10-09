@@ -1063,7 +1063,7 @@ impl DoneServer {
                         "attachments": attachments.clone(),
                         "track": {
                             "type": "boolean",
-                            "description": "Follow this task: every later change to it arrives as a message here. Defaults to TRUE — a task you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else."
+                            "description": "Follow this task: every later change to it arrives as a message here. Defaults to TRUE — a task you filed is one you almost always want to hear about. Pass false for one you are filing for somebody else. Following ends on its own when the task reaches Done or is closed: you hear that last change and nothing after it, and a task filed straight into Done is not followed."
                         },
                         "notify_user": {
                             "type": "boolean",
@@ -1210,7 +1210,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "track_task",
-                "description": "Start hearing about a task. Every later change to it — a move, a comment, an assignment, an edit — arrives as a message in your conversation, and starts your turn if you are idle. Use it on a task you depend on or are collaborating around; you are tracked automatically on anything assigned to you. Your own changes are never echoed back to you.",
+                "description": "Start hearing about a task. Every later change to it — a move, a comment, an assignment, an edit — arrives as a message in your conversation, and starts your turn if you are idle. Use it on a task you depend on or are collaborating around; you are tracked automatically on anything assigned to you. Your own changes are never echoed back to you. Tracking ends on its own when the task reaches Done or is closed: you hear that move or close, then nothing more, and reopening it does not bring you back. Track it again if you still want to hear about it after that.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "task_id": task_id.clone() },
@@ -1219,7 +1219,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "untrack_task",
-                "description": "Stop hearing about a task. Being unassigned does not do this on its own — handing work on is often exactly when you still want to know how it went — so say so when you no longer do.",
+                "description": "Stop hearing about a task before it is finished. A task that reaches Done or is closed drops its trackers on its own, so this is for a live task you no longer need. Being unassigned does not do it — handing work on is often exactly when you still want to know how it went — so say so when you no longer do.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "task_id": task_id.clone() },

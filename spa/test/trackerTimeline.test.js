@@ -169,6 +169,15 @@ describe("what an event says", () => {
       .toBe("reclaimed workspace quiet");
   });
 
+  // Tracking ends with the work (#444): Build takes the trackers off a task
+  // that reaches Done or is closed, and the row names who stopped hearing.
+  it("says whose tracking ended when the task finished", () => {
+    expect(sentenceOf("untracked", { agent_id: "agent-7", by: "finished" }, {
+      agentLabels: { "agent-7": "wire-facade · Agent 1" },
+    })).toBe("stopped wire-facade · Agent 1 tracking this when it was finished");
+    expect(sentenceOf("untracked", { agent_id: "agent-7" })).toBe("stopped tracking this");
+  });
+
   // A later minor adding a kind leaves a reader with a row they can recognize.
   it("says an unknown kind's own name rather than nothing", () => {
     expect(sentenceOf("pinned", {})).toBe("pinned");

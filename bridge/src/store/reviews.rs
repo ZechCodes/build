@@ -224,7 +224,7 @@ fn complete_review_in_tx(
     write: CompletionWrite<'_>,
 ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
     let task_id = &write.task.id;
-    require_task(tx, task_id)?;
+    let before = require_task(tx, task_id)?;
     let mut header = load_header(tx, task_id)?.ok_or_else(|| StoreError::ReviewNotFound {
         task_id: task_id.clone(),
     })?;
@@ -257,6 +257,7 @@ fn complete_review_in_tx(
         task.done_at = Some(write.now.into());
     }
     task.updated_at = write.now.into();
+    let untracked = task.end_tracking_on_finish(&before, write.now);
     let moved_event = moved.then(|| {
         TaskEvent::new(
             task_id,
@@ -280,10 +281,9 @@ fn complete_review_in_tx(
     write_header(tx, &header)?;
     write_tracker_task(tx, &task)?;
     append_activity(tx, write.comments, write.events)?;
-    let mut events = Vec::with_capacity(2);
-    if let Some(moved_event) = moved_event {
-        events.push(moved_event);
-    }
+    let mut events = Vec::with_capacity(2 + untracked.len());
+    events.extend(moved_event);
+    events.extend(untracked);
     events.push(event);
     append_activity(tx, &[], &events)?;
     Ok((

@@ -25,7 +25,7 @@ use super::TaskWrite;
 use crate::app::runtime::agents::endpoints::AddressedAgent;
 use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
 use crate::thread::{TaskEnvelope, TaskNotice};
-use crate::tracker::{Actor, Task, TaskEventKind};
+use crate::tracker::{Actor, Task, TaskEventKind, FINISHED_UNTRACK};
 
 impl AppState {
     /// A service accepting new work under the app lock addresses the current
@@ -45,7 +45,7 @@ impl AppState {
 
     /// Tell everyone watching, except whoever did it.
     pub(in crate::app) fn notify_trackers(&mut self, write: &TaskWrite) {
-        let told = write.task.trackers_to_notify(&write.actor);
+        let told = trackers_to_tell(write);
         if told.is_empty() {
             return;
         }
@@ -219,6 +219,28 @@ impl AppState {
 /// the work and has to read it. A tracker is being told something moved; it
 /// has the task already, and thirty notices each carrying a body is thirty
 /// copies of a thing that has not changed.
+/// Everyone watching, and everyone this write's finishing took off the list
+/// (#444): the move to Done or the close is the last thing a tracker hears,
+/// so it is told even though it is no longer tracking by the time it is.
+/// Never the actor, either way.
+fn trackers_to_tell(write: &TaskWrite) -> Vec<String> {
+    let mut told = write.task.trackers_to_notify(&write.actor);
+    let acted = write.actor.agent_id();
+    let finished = write.events.iter().filter_map(|event| {
+        let payload = &event.payload;
+        (event.kind == TaskEventKind::Untracked
+            && payload.get("by").and_then(serde_json::Value::as_str) == Some(FINISHED_UNTRACK))
+        .then(|| payload.get("agent_id").and_then(serde_json::Value::as_str))
+        .flatten()
+    });
+    for agent_id in finished {
+        if Some(agent_id) != acted && !told.iter().any(|told| told == agent_id) {
+            told.push(agent_id.to_string());
+        }
+    }
+    told
+}
+
 fn notice_envelope(task: &Task) -> TaskEnvelope {
     TaskEnvelope {
         task_id: task.id.clone(),

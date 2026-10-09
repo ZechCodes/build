@@ -311,6 +311,13 @@ export async function syncRestoredDevice(deviceId, session) {
   return syncDevice(deviceId);
 }
 
+/** The pass running on a device right now, as the promise it settles with
+ *  (true when it got all the way through), or null when none is out. Read-only:
+ *  waiting on it starts nothing and holds nothing up. */
+export function passInFlight(deviceId) {
+  return passes.get(deviceId)?.done ?? null;
+}
+
 /** The session this device is on right now, which is what a pass belongs to. */
 const sessionOf = (deviceId) => contextFor(deviceId)?.session ?? null;
 

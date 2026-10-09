@@ -68,12 +68,16 @@ const DELETING_ADAPTER = { capabilities: { branches: { finishDelete: true } } };
 /** One pass of the sync layer, with the feed reading what it wrote. What
  *  `refreshFeed` did when the feed read the wire itself: the board, the two
  *  lists and a row per work item, on disk and delivered. */
-async function readTheBoard() {
-  const { startCacheSync } = await import("../src/core/cacheSync.js");
+async function readTheBoard(deviceId = "dev-1") {
+  const { passInFlight, startCacheSync } = await import("../src/core/cacheSync.js");
   const { startFeed } = await import("../src/core/taskFeed.js");
   startCacheSync();
+  // The pass starts with the sync layer. Until it ends, a refresh asked of the
+  // same session is folded into it and reads nothing new (#426).
+  const pass = passInFlight(deviceId);
+  expect(pass, "starting the sync layer starts a pass").not.toBeNull();
   await startFeed();
-  for (let index = 0; index < 20; index += 1) await flush();
+  await pass;
 }
 
 async function stopReaders() {

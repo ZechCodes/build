@@ -1131,7 +1131,9 @@ impl NegotiatedPath {
     }
 
     /// The device's own candidate type: `host`, `srflx`, `prflx`, `relay`, or
-    /// `unknown`.
+    /// `unknown`. Read only by [`testing`]; the daemon's log line formats the
+    /// field itself.
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn local(&self) -> &str {
         &self.local
     }

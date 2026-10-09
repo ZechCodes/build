@@ -1667,8 +1667,11 @@ In practice:
   their promises settle with its result. The current pass finishes before the
   follow-up starts. Stopping sync or replacing the session discards queued
   work and prevents the old pass from sending remaining reads; replies already
-  in flight stay fenced from writing. Tabs share the Web Lock `build.cacheSync`,
-  and the holder syncs for all of them. It holds three change subscriptions per device: `s-inbox`
+  in flight stay fenced from writing. Coordinated diff reads replace inactive
+  pending loaders so a restarted pass or foreground reader cannot share a
+  stopped pass's cancelled answer. Tabs share the Web Lock `build.cacheSync`,
+  and the holder syncs for all of them. It holds three change subscriptions
+  per device: `s-inbox`
   (realtime), `s-background` (git, files and shells on a 30 s cooldown) and
   `s-active` (the routed workspace, realtime).
 - **Reconnect catch-up.** The bridge starts a subscription empty and records a

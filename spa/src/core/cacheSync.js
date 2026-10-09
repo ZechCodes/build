@@ -1127,6 +1127,7 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
   const diff = await coordinatedRead({
     key,
     priority,
+    active: context.active,
     load: (envelope) => callWhileActive(context, method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;

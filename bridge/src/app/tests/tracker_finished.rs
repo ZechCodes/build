@@ -31,7 +31,10 @@ fn untracked(state: &mut AppState, task_id: &str) -> Vec<(String, String)> {
         .map(|entry| {
             (
                 entry["payload"]["agent_id"].as_str().unwrap().to_string(),
-                entry["payload"]["by"].as_str().unwrap_or_default().to_string(),
+                entry["payload"]["by"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
             )
         })
         .collect()
@@ -276,8 +279,16 @@ fn tracking_a_finished_task_on_purpose_still_follows_it() {
     assert_eq!(tracking["task"]["trackers"], json!([agent.1]));
 
     comment_as_user(&mut state, &id, "still here");
-    assert_eq!(trackers(&mut state, &id), json!([agent.1]), "a later write keeps it");
-    assert_eq!(notices(&mut state, &agent).len(), 1, "and it hears the comment");
+    assert_eq!(
+        trackers(&mut state, &id),
+        json!([agent.1]),
+        "a later write keeps it"
+    );
+    assert_eq!(
+        notices(&mut state, &agent).len(),
+        1,
+        "and it hears the comment"
+    );
 }
 
 #[test]
@@ -343,10 +354,18 @@ fn trackers_left_on_finished_tasks_are_dropped_once() {
     stale.status = crate::tracker::DONE_STATUS.into();
     stale.done_at = Some(stale.updated_at.clone());
     store.save_tracker_task_activity(&stale, &[], &[]).unwrap();
-    assert_eq!(trackers(&mut state, &done), json!([watcher.1]), "the old shape");
+    assert_eq!(
+        trackers(&mut state, &done),
+        json!([watcher.1]),
+        "the old shape"
+    );
 
     // The boot that opened this store already ran the pass, over nothing.
-    assert_eq!(store.end_tracking_on_finished_tasks().unwrap(), 0, "already run");
+    assert_eq!(
+        store.end_tracking_on_finished_tasks().unwrap(),
+        0,
+        "already run"
+    );
     store.forget_ended_tracking();
     assert_eq!(store.end_tracking_on_finished_tasks().unwrap(), 1);
 

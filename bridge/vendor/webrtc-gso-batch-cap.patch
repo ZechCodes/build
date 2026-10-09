@@ -1,8 +1,8 @@
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index eb5c497..d15440f 100644
+index def16f0..c244d26 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
-@@ -14,8 +14,8 @@ use crate::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
+@@ -16,8 +16,8 @@ use crate::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
  use crate::peer_connection::PeerConnectionRef;
  use crate::peer_connection::transports::tcp_transport::RTCTcpTransport;
  use crate::peer_connection::transports::{
@@ -13,7 +13,7 @@ index eb5c497..d15440f 100644
  };
  use crate::rtp_transceiver::rtp_receiver::RtpReceiverImpl;
  use crate::rtp_transceiver::{RtpReceiver, RtpTransceiverImpl};
-@@ -1983,7 +1983,7 @@ where
+@@ -2197,7 +2197,7 @@ where
      /// extended while the next datagram has the same 4-tuple and is exactly
      /// `segment_size` bytes (a shorter datagram can only be the run's final segment,
      /// a larger one starts a fresh run), capped by the socket's GSO segment limit and
@@ -22,7 +22,7 @@ index eb5c497..d15440f 100644
      /// TURN-relayed, or datagrams for an unknown socket — falls back to the
      /// per-packet [`handle_write`](Self::handle_write) path unchanged.
      async fn flush_writes(&mut self, mut writes: Vec<TaggedBytesMut>) {
-@@ -2036,6 +2036,7 @@ where
+@@ -2250,6 +2250,7 @@ where
              // Grow the GSO run [i, end) while the 4-tuple matches and the size rule holds.
              let mut end = i + 1;
              if max_seg > 1 {
@@ -30,7 +30,7 @@ index eb5c497..d15440f 100644
                  let mut total = seg;
                  while (end - i) < max_seg && end < n {
                      let w_tp = writes[end].transport;
-@@ -2051,7 +2052,7 @@ where
+@@ -2265,7 +2266,7 @@ where
                      }
                      let wl = writes[end].message.len();
                      // A larger datagram cannot be a GSO segment — it starts the next run.
@@ -39,7 +39,7 @@ index eb5c497..d15440f 100644
                          break;
                      }
                      total += wl;
-@@ -3362,4 +3363,181 @@ mod tests {
+@@ -3576,4 +3577,181 @@ mod tests {
              panic!("the bridge's answer never reached the far end; it read {received:?}");
          }
      }
@@ -222,7 +222,7 @@ index eb5c497..d15440f 100644
 +    }
  }
 diff --git a/webrtc/src/peer_connection/host_scout_socket_tests.rs b/webrtc/src/peer_connection/host_scout_socket_tests.rs
-index a79392f..e19804d 100644
+index 3e5a6fa..41d7315 100644
 --- a/webrtc/src/peer_connection/host_scout_socket_tests.rs
 +++ b/webrtc/src/peer_connection/host_scout_socket_tests.rs
 @@ -108,7 +108,7 @@ impl Pressure {

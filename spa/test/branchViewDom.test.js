@@ -31,6 +31,21 @@ const confirmScrim = () =>
     return scrim;
   });
 
+/** The first node matching `selector`, once the page has one: resolves on the
+ *  mutation that adds it, however long the work behind it takes (#426). */
+const nodeAppears = (selector) =>
+  new Promise((done) => {
+    const present = document.querySelector(selector);
+    if (present) return done(present);
+    const observer = new MutationObserver(() => {
+      const node = document.querySelector(selector);
+      if (!node) return;
+      observer.disconnect();
+      done(node);
+    });
+    observer.observe(document, { childList: true, subtree: true });
+  });
+
 /** What the cache says a machine's bridge does to the branch on Done (#87):
  *  every machine in this file deletes it unless a case says otherwise. */
 async function cacheBranchDelete(deviceId, deletes) {
@@ -221,6 +236,8 @@ describe("the branch surface", () => {
       if (method === "board.list") return { items: initialized ? [{ ...row, branch: "main", primary: true, worktree_id: null }] : [] };
       if (method === "project.list") return { projects: [{ project_id: "p1", name: "notes", is_git: initialized, base_branch: "main" }] };
       if (method === "project.init_git") {
+        // A loaded machine: the answer lands well after a few dozen ticks.
+        await new Promise((done) => setTimeout(done, 100));
         initialized = true;
         return { project_id: "p1", name: "notes", is_git: true, base_branch: "main" };
       }
@@ -231,16 +248,14 @@ describe("the branch surface", () => {
     });
     await readTheBoard();
     await openBranch();
-    await flush();
-    expect(document.querySelector("#init-git")).toBeTruthy();
+    const initialize = await nodeAppears("#init-git");
     expect(bridge.call.mock.calls.some(([method]) => method.startsWith("git."))).toBe(false);
 
-    document.querySelector("#init-git").click();
+    initialize.click();
     // The pass the initialization asks for is what tells the surface the
     // project is a repository now, so the remount waits on the cache.
-    for (let index = 0; index < 20; index += 1) await flush();
+    await nodeAppears("#tabbody .gitpane");
     expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
-    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
     await stopReaders();
   });
 

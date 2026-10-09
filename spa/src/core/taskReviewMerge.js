@@ -19,16 +19,26 @@ const rowsFor = (review, intent) => (review?.actions || []).filter((row) => inte
 const sourceRows = (review, intent, source) => rowsFor(review, intent).filter((row) =>
   row.directory_id === source.directory_id && row.snapshot_id === intent.request.snapshot_id);
 
-function integrated(review, intent, source) {
-  return sourceRows(review, intent, source).some((row) => row.steps?.some((step) =>
-    step.kind === "merge" && step.status === "succeeded" && Boolean(step.result_head) &&
-    step.input_head === source.head && step.branch === shortBranch(source.base_branch_ref)));
+const mergeStepMatches = (step, source) => step.kind === "merge" && step.status === "succeeded" &&
+  fullHead(step.result_head) && step.input_head === source.head && step.branch === shortBranch(source.base_branch_ref);
+const successfulMerges = (review, intent, source) => sourceRows(review, intent, source).flatMap((row) =>
+  (row.steps || []).filter((step) => mergeStepMatches(step, source)).map((step) => ({ actionId: row.id, head: step.result_head })));
+const integrated = (review, intent, source) => successfulMerges(review, intent, source).length > 0;
+
+function pushLinked(row, step, merged) {
+  if (step.merge_action_id) return step.merge_action_id === merged.actionId;
+  return row.id === merged.actionId;
 }
+
+const pushMatches = (row, step, merged, push) => step.kind === "push" && step.status === "succeeded" &&
+  step.remote === push.remote && step.branch === push.branch && step.input_head === merged.head &&
+  step.result_head === merged.head && pushLinked(row, step, merged);
 
 function published(review, intent, source) {
   if (!source.push) return true;
-  return sourceRows(review, intent, source).some((row) => row.steps?.some((step) => step.kind === "push" &&
-    step.status === "succeeded" && step.remote === source.push.remote && step.branch === source.push.branch));
+  const merges = successfulMerges(review, intent, source);
+  return sourceRows(review, intent, source).some((row) => row.steps?.some((step) =>
+    merges.some((merged) => pushMatches(row, step, merged, source.push))));
 }
 
 const unpushed = (review, intent) => intent.request.sources.some((source) =>
@@ -36,14 +46,25 @@ const unpushed = (review, intent) => intent.request.sources.some((source) =>
 const uncertain = (review, intent) => rowsFor(review, intent).some((row) => row.status === "running" ||
   row.steps?.some((step) => step.status === "running"));
 
-/** Reclaim stays unavailable until every saved plan is durably settled.
- * Failed historical steps are retained, and their newer successes settle them. */
+const sourceInterrupted = (review, intent, source) => sourceRows(review, intent, source).some((row) =>
+  row.status === "interrupted" || row.steps?.some((step) => step.status === "interrupted"));
+const sourceSettled = (review, intent, source) => integrated(review, intent, source) && published(review, intent, source);
+
+function interruptionPending(review, intent) {
+  return intent.request.sources.some((source) => (intent.state === "interrupted" || sourceInterrupted(review, intent, source)) &&
+    !sourceSettled(review, intent, source));
+}
+
+const bindingsIntegrated = (review, intents) => (review.bindings || []).length > 0 && review.bindings.every((binding) =>
+  intents.some((intent) => intent.request.sources.some((source) => source.directory_id === binding.directory_id && integrated(review, intent, source))));
+
+/** The merged PR is authoritative. An old failure before integration does not
+ * hold reclaim; running, uncertain work and unpublished saved results do. */
 export function settledMerge(record) {
   const review = record?.review;
   const intents = intentsOf(record);
-  return review?.pull_request?.status === "merged" && intents.length > 0 && intents.every((intent) =>
-    intent.state === "succeeded" && !uncertain(review, intent) && intent.request.sources.every((source) =>
-      integrated(review, intent, source) && published(review, intent, source)));
+  return review?.pull_request?.status === "merged" && bindingsIntegrated(review, intents) && intents.every((intent) =>
+    intent.state !== "running" && !uncertain(review, intent) && !interruptionPending(review, intent) && !unpushed(review, intent));
 }
 
 const wireSource = (source) => ({ directory_id: source.directory_id, expected_base_head: source.expected_base_head,

@@ -27,7 +27,8 @@ const intent = (state = "failed") => ({ request_id: "merge-1", state, request: {
 const action = (id, mergeStatus = "succeeded", pushStatus = "failed") => ({ id: `action-${id}`, directory_id: id, snapshot_id: snapshot.id,
   source_name: id, source_path: `/sources/${id}`, status: pushStatus === "succeeded" ? "succeeded" : "failed", steps: [
     { kind: "merge", branch: "main", status: mergeStatus, input_head: savedHead, result_head: mergeStatus === "succeeded" ? mergedHead : undefined },
-    { kind: "push", branch: "main", remote: "origin", status: pushStatus, input_head: mergedHead, error: pushStatus === "failed" ? "Publication refused" : undefined },
+    { kind: "push", branch: "main", remote: "origin", status: pushStatus, input_head: mergedHead,
+      result_head: pushStatus === "succeeded" ? mergedHead : undefined, error: pushStatus === "failed" ? "Publication refused" : undefined },
   ] });
 let panel;
 const mount = async (next = record, repository = { mutate: vi.fn() }, support = { pullRequests: true, merge: true }) => {
@@ -167,14 +168,13 @@ it("does not offer a retry while saved Git work is still running", async () => {
   expect(repository.mutate).not.toHaveBeenCalled();
 });
 
-it("requires a durable settled intent and all publication results before exposing reclaim", () => {
+it("requires durable integration and settled publication with no running or unresolved interrupted work before reclaim", () => {
   const merged = { ...review, pull_request: { ...review.pull_request, status: "merged" }, actions: [
     action("api", "succeeded", "succeeded"), action("ui", "succeeded", "succeeded"),
   ] };
   expect(settledMerge({ review: merged, merge_intents: [intent("succeeded")] })).toBe(true);
-  for (const state of ["running", "failed", "interrupted"]) {
-    expect(settledMerge({ review: merged, merge_intents: [intent(state)] })).toBe(false);
-  }
+  expect(settledMerge({ review: merged, merge_intents: [intent("running")] })).toBe(false);
+  expect(settledMerge({ review: merged, merge_intents: [intent("failed")] })).toBe(true);
   expect(settledMerge({ review: merged, merge_intents: [] })).toBe(false);
   expect(settledMerge({ review, merge_intents: [intent("succeeded")] })).toBe(false);
   expect(settledMerge({ review: { ...merged, actions: [action("api"), action("ui")] }, merge_intents: [intent("succeeded")] })).toBe(false);
@@ -184,9 +184,43 @@ it("resolves retained failed Push rows with the newer successful saved Push with
   const retained = intent("succeeded");
   retained.action_ids.push("retry-api", "retry-ui");
   const retry = (id) => ({ id: `retry-${id}`, directory_id: id, snapshot_id: snapshot.id, status: "succeeded", steps: [
-    { kind: "push", remote: "origin", branch: "main", status: "succeeded", input_head: mergedHead, result_head: mergedHead },
+    { kind: "push", remote: "origin", branch: "main", status: "succeeded", input_head: mergedHead, result_head: mergedHead,
+      merge_action_id: `action-${id}` },
   ] });
   const merged = { ...review, pull_request: { ...review.pull_request, status: "merged" },
     actions: [action("api"), action("ui"), retry("api"), retry("ui")] };
   expect(settledMerge({ review: merged, merge_intents: [retained] })).toBe(true);
+});
+
+it("allows reclaim after a new successful merge despite a retained failure before integration", () => {
+  const abandoned = { ...intent(), request_id: "old-failed", action_ids: ["failed-api", "failed-ui"] };
+  const failed = (id) => ({ ...action(id, "failed"), id: `failed-${id}` });
+  const merged = { ...review, pull_request: { ...review.pull_request, status: "merged" }, actions: [
+    failed("api"), failed("ui"), action("api", "succeeded", "succeeded"), action("ui", "succeeded", "succeeded"),
+  ] };
+  expect(settledMerge({ review: merged, merge_intents: [abandoned, intent("succeeded")] })).toBe(true);
+  expect(settledMerge({ review: merged, merge_intents: [{ ...abandoned, state: "running" }, intent("succeeded")] })).toBe(false);
+  expect(settledMerge({ review: merged, merge_intents: [{ ...abandoned, state: "interrupted" }, intent("succeeded")] })).toBe(false);
+  const uncertain = { ...failed("api"), status: "interrupted", steps: [{ kind: "merge", branch: "main", status: "interrupted" }] };
+  expect(settledMerge({ review: { ...merged, actions: [uncertain, ...merged.actions.slice(1)] },
+    merge_intents: [abandoned, intent("succeeded")] })).toBe(false);
+});
+
+it("rejects unrelated successful Push rows with wrong merge identity or merged result heads", () => {
+  const retained = intent("succeeded");
+  retained.action_ids.push("retry-api");
+  const api = action("api");
+  const ui = action("ui", "succeeded", "succeeded");
+  const merged = { ...review, pull_request: { ...review.pull_request, status: "merged" } };
+  const push = { kind: "push", remote: "origin", branch: "main", status: "succeeded", input_head: mergedHead,
+    result_head: mergedHead, merge_action_id: "action-api" };
+  for (const overrides of [
+    { merge_action_id: "unrelated-merge" }, { merge_action_id: undefined },
+    { input_head: oldHead }, { result_head: oldHead }, { result_head: undefined },
+  ]) {
+    const retry = { id: "retry-api", directory_id: "api", snapshot_id: snapshot.id, status: "succeeded", steps: [{ ...push, ...overrides }] };
+    expect(settledMerge({ review: { ...merged, actions: [api, ui, retry] }, merge_intents: [retained] })).toBe(false);
+  }
+  const retry = { id: "retry-api", directory_id: "api", snapshot_id: snapshot.id, status: "succeeded", steps: [push] };
+  expect(settledMerge({ review: { ...merged, actions: [api, ui, retry] }, merge_intents: [retained] })).toBe(true);
 });

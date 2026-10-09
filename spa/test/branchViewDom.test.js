@@ -72,8 +72,8 @@ async function readTheBoard(deviceId = "dev-1") {
   const { passInFlight, startCacheSync } = await import("../src/core/cacheSync.js");
   const { startFeed } = await import("../src/core/taskFeed.js");
   startCacheSync();
-  // The pass starts with the sync layer. Until it ends, a refresh asked of the
-  // same session is folded into it and reads nothing new (#426).
+  // Capture the pass started by the sync layer before mounting the feed, so
+  // the test waits for its cache writes to finish (#426).
   const pass = passInFlight(deviceId);
   expect(pass, "starting the sync layer starts a pass").not.toBeNull();
   await startFeed();
@@ -248,6 +248,10 @@ describe("the branch surface", () => {
     const asked = new Promise((done) => (initAsked = done));
     let answerInit;
     const answered = new Promise((done) => (answerInit = done));
+    let taskReadAsked;
+    const readingTasks = new Promise((resolve) => { taskReadAsked = resolve; });
+    let answerTasks;
+    const tasks = new Promise((resolve) => { answerTasks = resolve; });
     App.route = { name: "branch", deviceId: "dev-1", projectId: "p1", branch: "main", tab: "changes" };
     bridge.call = vi.fn(async (method) => {
       if (method === "board.list") return { items: initialized ? [{ ...row, branch: "main", primary: true, worktree_id: null }] : [] };
@@ -258,26 +262,42 @@ describe("the branch surface", () => {
         initialized = true;
         return { project_id: "p1", name: "notes", is_git: true, base_branch: "main" };
       }
+      if (method === "tasks.list" && !initialized) {
+        taskReadAsked();
+        await tasks;
+        return { tasks: [] };
+      }
       if (method === "branch.get") return { ...row, branch: "main", primary: true, worktree_id: null };
       if (method === "git.status") return { files: [], head: "abc", status_key: "clean" };
       if (method === "git.log") return { commits: [] };
       return {};
     });
-    await readTheBoard();
+    const sync = await import("../src/core/cacheSync.js");
+    const { startFeed } = await import("../src/core/taskFeed.js");
+    sync.startCacheSync();
+    await startFeed();
     await openBranch();
     const initialize = await nodeAppears("#init-git");
+    await readingTasks;
     expect(bridge.call.mock.calls.some(([method]) => method.startsWith("git."))).toBe(false);
-
+    const refresh = vi.spyOn(sync, "syncDevice");
     initialize.click();
     await asked;
     expect(bridge.call).toHaveBeenCalledWith("project.init_git", { project_id: "p1" });
     expect(document.querySelector("#tabbody .gitpane")).toBeNull();
-
     answerInit();
-    // The pass the initialization asks for is what tells the surface the
-    // project is a repository now, so the remount waits on the cache.
+    try {
+      await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith("dev-1"));
+      expect(bridge.call.mock.calls.filter(([method]) => method === "project.list")).toHaveLength(1);
+    } finally {
+      refresh.mockRestore();
+      answerTasks();
+    }
+    // The first pass has already read is_git: false. Initialization's refresh
+    // must queue a new pass, which writes the cache and remounts the pane.
     await nodeAppears("#tabbody .gitpane");
     expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    expect(bridge.call.mock.calls.filter(([method]) => method === "project.list")).toHaveLength(2);
     await stopReaders();
   });
 

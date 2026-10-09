@@ -56,6 +56,7 @@ vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")
 vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];
+const subscriptionHeldListeners = new Set();
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
@@ -63,7 +64,10 @@ vi.mock("../src/core/changeEvents.js", () => ({
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
-  onSubscriptionHeld: () => () => {},
+  onSubscriptionHeld: (fn) => {
+    subscriptionHeldListeners.add(fn);
+    return () => subscriptionHeldListeners.delete(fn);
+  },
   watchChanges: (registration) => {
     const watcher = { ...registration, disposed: false };
     registeredWatchers.push(watcher);
@@ -154,6 +158,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   delete globalThis.navigator?.locks;
   registeredWatchers = [];
+  subscriptionHeldListeners.clear();
   stateListeners.clear();
   contexts.clear();
   board = [];
@@ -989,6 +994,228 @@ describe("when a pass runs", () => {
   });
 });
 
+describe("a refresh requested during a pass", () => {
+  /** Hold exactly one read, and signal when it is on the wire. The pass's own
+   *  promise drains its IndexedDB work after this read is released. */
+  const holdNextRead = (method, reply = ANSWERS[method]) => {
+    let release;
+    let started;
+    const reading = new Promise((resolve) => { started = resolve; });
+    script[method] = (params) => {
+      delete script[method];
+      const result = reply(params);
+      const held = new Promise((resolve) => { release = () => resolve(result); });
+      started();
+      return held;
+    };
+    return { reading, release: () => release() };
+  };
+
+  it("reads a mutation made after project.list in one non-overlapping follow-up", async () => {
+    let gitEnabled = false;
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", name: "build", git_enabled: gitEnabled }] });
+    await boot([branchItem()]);
+    const before = bridge.call.mock.calls.length;
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    expect((await read("", "projects")).value[0].git_enabled).toBe(false);
+
+    // project.init_git can complete while a later read of this pass is out.
+    // The pass has already observed the old project, so a refresh must read
+    // project.list again after it finishes.
+    gitEnabled = true;
+    const refreshed = sync.syncDevice("dev-1");
+    expect(calls("board.list")).toHaveLength(2);
+    held.release();
+    await Promise.all([first, refreshed]);
+
+    expect((await read("", "projects")).value[0].git_enabled).toBe(true);
+    expect(calls("board.list")).toHaveLength(3);
+    const order = bridge.call.mock.calls.slice(before).map(([method]) => method);
+    const followUp = order.lastIndexOf("board.list");
+    expect(order.indexOf("tasks.list")).toBeLessThan(followUp);
+    expect(order.filter((method) => method === "tasks.list")).toHaveLength(2);
+  });
+
+  it("coalesces three same-session refreshes into one follow-up", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+
+    const refreshes = Array.from({ length: 3 }, () => sync.syncDevice("dev-1"));
+    expect(calls("board.list")).toHaveLength(2);
+    held.release();
+    expect(await Promise.all([first, ...refreshes])).toEqual([true, true, true, true]);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(3);
+  });
+
+  it("runs the queued follow-up after the current board read fails", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("board.list", () => null);
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+
+    let refreshSettled = false;
+    const refreshed = sync.syncDevice("dev-1").then((result) => {
+      refreshSettled = true;
+      return result;
+    });
+    const followUp = holdNextRead("git.status");
+    held.release();
+    expect(await first).toBe(false);
+    await followUp.reading;
+    expect(refreshSettled).toBe(false);
+    expect(calls("board.list")).toHaveLength(3);
+
+    followUp.release();
+    expect(await refreshed).toBe(true);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(2);
+  });
+
+  it("coalesces asks during the follow-up and waits for the third pass's result", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const refreshed = sync.syncDevice("dev-1");
+    const followUp = holdNextRead("git.status");
+    held.release();
+    expect(await first).toBe(true);
+    await followUp.reading;
+
+    const settled = [];
+    const refreshes = Array.from({ length: 3 }, (_, index) =>
+      sync.syncDevice("dev-1").then((result) => {
+        settled.push(index);
+        return result;
+      }));
+    // A distinct false result proves these asks wait for the pass they
+    // requested, rather than returning the successful follow-up's answer.
+    const third = holdNextRead("board.list", () => null);
+    expect(calls("board.list")).toHaveLength(3);
+    followUp.release();
+    expect(await refreshed).toBe(true);
+    await third.reading;
+    expect(settled).toEqual([]);
+    expect(calls("board.list")).toHaveLength(4);
+
+    third.release();
+    expect(await Promise.all(refreshes)).toEqual([false, false, false]);
+    expect(calls("board.list")).toHaveLength(4);
+    expect(calls("git.status")).toHaveLength(3);
+  });
+
+  it("coalesces late subscription coverage with an explicit refresh", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+
+    const refreshed = sync.syncDevice("dev-1");
+    for (const listener of subscriptionHeldListeners) {
+      listener("dev-1", "s-inbox");
+      listener("dev-1", "s-background");
+    }
+    const followUp = holdNextRead("git.status");
+    held.release();
+    await followUp.reading;
+    expect(calls("board.list")).toHaveLength(3);
+    followUp.release();
+    expect(await Promise.all([first, refreshed])).toEqual([true, true]);
+    expect(sync.passInFlight("dev-1")).toBeNull();
+    expect(calls("board.list")).toHaveLength(3);
+  });
+
+  it("discards the queued refresh and sends no remaining reads after stop", async () => {
+    await boot([branchItem({ agents: [{ id: "ag-1" }] })]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const refreshed = sync.syncDevice("dev-1");
+    const beforeStop = bridge.call.mock.calls.length;
+
+    sync.stopCacheSync();
+    held.release();
+    expect(await Promise.all([first, refreshed])).toEqual([false, false]);
+    expect(bridge.call.mock.calls.slice(beforeStop)).toEqual([]);
+    expect(calls("board.list")).toHaveLength(2);
+  });
+
+  it("reads a fresh diff after stop/start while the old same-session read waits for idle", async () => {
+    await boot([branchItem()]);
+    await cache.deleteCached([{ deviceId: "dev-1", entityId: "run-1", kind: "diff" }]);
+    const before = calls("run.diff").length;
+    const idle = [];
+    let queuedIdle;
+    const waitingForIdle = new Promise((resolve) => { queuedIdle = resolve; });
+    globalThis.requestIdleCallback = (callback) => {
+      idle.push(callback);
+      queuedIdle();
+    };
+
+    const requests = await import("../src/core/readRequests.js");
+    const coordinatedRead = requests.coordinatedRead;
+    let coordinatedDiffs = 0;
+    let restartedDiff;
+    const restartReachedDiff = new Promise((resolve) => { restartedDiff = resolve; });
+    const reader = vi.spyOn(requests, "coordinatedRead").mockImplementation((request) => {
+      const pending = coordinatedRead(request);
+      if (request.key.includes("run.diff")) {
+        coordinatedDiffs += 1;
+        if (coordinatedDiffs === 2) restartedDiff();
+      }
+      return pending;
+    });
+
+    try {
+      const first = sync.syncDevice("dev-1");
+      await waitingForIdle;
+      expect(calls("run.diff")).toHaveLength(before);
+      sync.stopCacheSync();
+
+      // Start the lifetime before putting its device back, so this explicit
+      // pass owns the restart and gives the test a promise for all its writes.
+      const context = contexts.get("dev-1");
+      contexts.delete("dev-1");
+      sync.startCacheSync();
+      contexts.set("dev-1", context);
+      script["run.diff"] = () => ({ diff_key: "after-restart", files: [{ path: "fresh.js" }] });
+      const restarted = sync.syncDevice("dev-1");
+      await restartReachedDiff;
+      expect(calls("run.diff")).toHaveLength(before);
+
+      for (const callback of idle.splice(0)) callback();
+      expect(await Promise.all([first, restarted])).toEqual([false, true]);
+      expect(calls("run.diff").slice(before)).toHaveLength(1);
+      expect((await read("run-1", "diff"))?.value).toMatchObject({
+        diff_key: "after-restart", files: [{ path: "fresh.js" }],
+      });
+    } finally {
+      reader.mockRestore();
+    }
+  });
+
+  it("discards the old session's queued refresh when its replacement asks", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const refreshed = sync.syncDevice("dev-1");
+
+    contexts.get("dev-1").session = { device: "dev-1", again: true };
+    const replacement = sync.syncDevice("dev-1");
+    expect(calls("board.list")).toHaveLength(2);
+    held.release();
+    expect(await Promise.all([first, refreshed, replacement])).toEqual([false, false, true]);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(3);
+  });
+});
+
 // One machine, two sessions: the pass out belongs to the session that started
 // it, and a reconnect is a different machine's answer — possibly a different
 // bridge. The reader's whole app is behind this, because the subscriptions are
@@ -1044,20 +1271,6 @@ describe("a pass that is still out when the next session lands", () => {
     // past the lists belongs to the session that is actually on the wire.
     expect(calls("board.list")).toHaveLength(2);
     expect(calls("git.status")).toHaveLength(1);
-  });
-
-  it("is one pass, not two, when the same session asks again", async () => {
-    const release = stallTheBoard();
-    board = [branchItem()];
-    sync.startCacheSync();
-    await settle();
-
-    document.dispatchEvent(new Event("visibilitychange"));
-    await settle();
-    expect(calls("board.list")).toHaveLength(1);
-
-    release();
-    await settle();
   });
 
   it("starts a restored session's baseline when its old board read never answers", async () => {

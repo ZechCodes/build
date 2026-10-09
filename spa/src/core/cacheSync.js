@@ -281,6 +281,13 @@ export async function syncDevice(deviceId) {
   return startPass(deviceId);
 }
 
+/** Settles once no pass is out on this device. For tests: a pass is a chain
+ *  of reads and writes with no other end a caller can watch, and an ask made
+ *  while one is out on the same session is folded into it. */
+export async function passSettled(deviceId) {
+  while (passes.has(deviceId)) await passes.get(deviceId).done;
+}
+
 /** A recovered path can re-greet the bridge without replacing its session.
  * Its earlier pass may have read the old process, so stand it down and give
  * its writes a bounded chance to drain before reading the recovered bridge.

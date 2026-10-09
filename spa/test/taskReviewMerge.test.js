@@ -31,9 +31,9 @@ const action = (id, mergeStatus = "succeeded", pushStatus = "failed") => ({ id: 
       result_head: pushStatus === "succeeded" ? mergedHead : undefined, error: pushStatus === "failed" ? "Publication refused" : undefined },
   ] });
 let panel;
-const mount = async (next = record, repository = { mutate: vi.fn() }, support = { pullRequests: true, merge: true }) => {
+const mount = async (next = record, repository = { mutate: vi.fn() }, support = { pullRequests: true, merge: true }, selectedSnapshot = snapshot) => {
   document.body.innerHTML = '<div id="merge"></div>';
-  panel = mountTaskReviewMerge(document.querySelector("#merge"), { ...scope, snapshot, review: next.review, record: next, support, repository });
+  panel = mountTaskReviewMerge(document.querySelector("#merge"), { ...scope, snapshot: selectedSnapshot, review: next.review, record: next, support, repository });
   await panel.ready;
   return repository;
 };
@@ -44,6 +44,14 @@ const change = (kind, id, value) => {
   control.dispatchEvent(new Event(kind === "branch" ? "input" : "change"));
 };
 const submit = () => document.querySelector("[data-pr-merge-form]").onsubmit({ preventDefault() {} });
+const laterSnapshot = { ...snapshot, id: "snapshot-2", number: 2,
+  directories: snapshot.directories.map((row) => row.status === "git" ? { ...row, head: "6".repeat(40) } : row) };
+const laterScope = { ...scope, snapshotId: laterSnapshot.id };
+const laterRecord = () => ({ ...record, review: { ...review, version: 8, snapshots: [snapshot, laterSnapshot],
+  pull_request: { ...review.pull_request, latest_published_snapshot_id: laterSnapshot.id },
+  destinations: [...review.destinations, ...review.destinations.map((row) => ({ ...row, snapshot_id: laterSnapshot.id }))],
+  actions: [action("api"), action("ui", "failed", "skipped")] },
+  sync: record.sync.map((row) => ({ ...row, target_head: "4".repeat(40), received_head: "6".repeat(40) })), merge_intents: [intent()] });
 beforeEach(async () => { panel?.dispose(); await wipeUiRecords(); });
 afterEach(() => panel?.dispose());
 
@@ -111,6 +119,64 @@ it("retries retained publication with original sources and the newest version, e
   expect(document.querySelector("[data-pr-merge-retry]").textContent).toBe("Retry publication");
   await document.querySelector("[data-pr-merge-retry]").onclick();
   expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...params, expected_version: 12 });
+});
+
+it.each([false, true])("keeps a historical result retry in its own draft without changing the selected snapshot (saved choices: %s)", async (withChoices) => {
+  const currentDraft = { selected: withChoices ? { api: { push: true, remote: "origin", branch: "release/latest" } } : {}, submitted: null };
+  const historyDraft = { selected: { api: { push: true, remote: "origin", branch: "release/history" } }, submitted: null };
+  if (withChoices) await writeUiRecord(reviewActionDraftAddress(laterScope, "merge"), currentDraft);
+  await writeUiRecord(reviewActionDraftAddress(scope, "merge"), historyDraft);
+  const next = laterRecord();
+  const repository = await mount(next, { mutate: vi.fn() }, undefined, laterSnapshot);
+  await document.querySelector('[data-pr-merge-retry="merge-1"]').onclick();
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...params, expected_version: 8 });
+  const current = await readUiRecord(reviewActionDraftAddress(laterScope, "merge"));
+  expect(current?.value).toEqual(withChoices ? currentDraft : undefined);
+  const historical = (await readUiRecord(reviewActionDraftAddress(scope, "merge"))).value;
+  expect(historical.selected).toEqual(historyDraft.selected);
+  expect(historical.submitted).toEqual({ ...params, expected_version: 8 });
+  panel.dispose();
+  await mount(next, repository, undefined, laterSnapshot);
+  expect(repository.mutate).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Merge PR");
+  await submit();
+  expect(repository.mutate.mock.calls[1]).toEqual(["merge", { expected_version: 8, snapshot_id: laterSnapshot.id,
+    sources: ["api", "ui"].map((id) => ({ directory_id: id, expected_base_head: "4".repeat(40),
+      ...(withChoices && id === "api" ? { push: { remote: "origin", branch: "release/latest" } } : {}) })) }]);
+});
+
+it("ignores a foreign submitted snapshot when restoring the selected snapshot's form", async () => {
+  await writeUiRecord(reviewActionDraftAddress(laterScope, "merge"), { selected: { api: { push: true, branch: "release/latest" } },
+    submitted: params, preparedRequestId: "merge-1", submittedRequestId: "merge-1" });
+  const repository = await mount(laterRecord(), { mutate: vi.fn() }, undefined, laterSnapshot);
+  expect(repository.mutate).not.toHaveBeenCalled();
+  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Merge PR");
+  expect(field("push", "api").matches(":disabled")).toBe(false);
+  expect(field("branch", "api").value).toBe("release/latest");
+  await submit();
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { expected_version: 8, snapshot_id: laterSnapshot.id,
+    sources: [{ directory_id: "api", expected_base_head: "4".repeat(40), push: { remote: "origin", branch: "release/latest" } },
+      { directory_id: "ui", expected_base_head: "4".repeat(40) }] });
+});
+
+it("loads an intent's own confirmed targets when retrying the latest plan from another selected snapshot", async () => {
+  const next = laterRecord();
+  const latestIntent = { ...intent(), request_id: "merge-latest", request: { ...intent().request, snapshot_id: laterSnapshot.id,
+    sources: intent().request.sources.map((row) => ({ ...row, head: "6".repeat(40) })) } };
+  next.merge_intents = [latestIntent];
+  next.review.actions = next.review.actions.map((row) => ({ ...row, snapshot_id: laterSnapshot.id,
+    steps: row.steps.map((step) => step.kind === "merge" ? { ...step, input_head: "6".repeat(40) } : step) }));
+  const currentDraft = { selected: { api: { push: true, branch: "release/history" } }, submitted: null };
+  const confirmed = { ...params, expected_version: 7, snapshot_id: laterSnapshot.id,
+    sources: params.sources.map((row) => ({ ...row, expected_base_head: "4".repeat(40) })) };
+  await writeUiRecord(reviewActionDraftAddress(scope, "merge"), currentDraft);
+  await writeUiRecord(reviewActionDraftAddress(laterScope, "merge"), { selected: {}, submitted: confirmed, submittedRequestId: latestIntent.request_id });
+  const repository = await mount(next);
+  expect(document.querySelector('[data-pr-merge-prepare="merge-latest"]')).toBeNull();
+  await document.querySelector('[data-pr-merge-retry="merge-latest"]').onclick();
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...confirmed, expected_version: 8 });
+  expect((await readUiRecord(reviewActionDraftAddress(scope, "merge"))).value).toEqual(currentDraft);
+  expect((await readUiRecord(reviewActionDraftAddress(laterScope, "merge"))).value.submitted).toEqual({ ...confirmed, expected_version: 8 });
 });
 
 it("labels a partial merge with failed publication as Retry saved merge and sends every original source", async () => {

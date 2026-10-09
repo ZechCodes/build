@@ -901,8 +901,10 @@ vector, including target preconditions, snapshot and Push destinations. Only
 when no exact match exists does it match refreshed targets for the same snapshot,
 included directories and Push destinations. Selection is independent of the
 retrying actor, so a browser can resume an agent's intent, including older
-actor-hashed request IDs. Running or interrupted work also keeps its recovery
-identity.
+actor-hashed request IDs. Among equally exact vectors, intents with unsettled
+publication or running or uncertain Git work rank before settled intents. A
+previously failed intent whose publication has settled cannot hide another
+retained hold. Running or interrupted work also keeps its recovery identity.
 
 For a partial plan with known outcomes, explicit confirmation of the current
 version and target tips refreshes admission under the merge lease and receiving
@@ -916,6 +918,11 @@ mode and durably saves the confirmed targets. Both saved retry controls retain
 those targets across reloads for the active latest plan; another explicit
 preparation permits new targets. Publication-only result retries use the intent's
 saved vector to address its original obligations.
+Each retry reads and saves the draft for the intent's own snapshot, preserving
+that snapshot's confirmed targets and choices. Retrying another snapshot never
+changes the selected form's draft. The form accepts only submitted requests for
+its selected snapshot and ignores foreign submitted requests left by older
+clients; preparation also requires that the intent's snapshot is selected.
 Historical plans retain their publication-only recovery path without admitting
 a new merge. If a failed plan integrated no source and has no uncertain Git work,
 the caller can still confirm

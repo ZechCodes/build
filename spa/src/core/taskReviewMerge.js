@@ -177,6 +177,7 @@ const uncertainResults = (review, intent) => rowsFor(review, intent).some((row) 
 const mayPrepare = (review, intent) => activeStatus(review) && ["failed", "interrupted"].includes(intent.state) &&
   review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id && !uncertainResults(review, intent) &&
   intent.request.sources.some((source) => integrated(review, intent, source));
+const mayPrepareSnapshot = (review, intent, snapshotId) => intent.request.snapshot_id === snapshotId && mayPrepare(review, intent);
 
 function intentSummary(review, intent) {
   const sources = intent.request.sources;
@@ -199,11 +200,11 @@ function resultStepHtml(step) {
     ${step.error ? ` · ${esc(step.error)}` : ""}${step.warning ? ` · ${esc(step.warning)}` : ""}</li>`;
 }
 
-function intentHtml(review, intent, support, busy) {
+function intentHtml(review, intent, support, busy, snapshotId) {
   const rows = rowsFor(review, intent).map((row) => `<li><strong>${esc(row.source_name || row.directory_id)}: ${esc(row.status)}</strong>
     <p>${esc(row.source_path)}</p><ul>${(row.steps || []).map(resultStepHtml).join("")}</ul></li>`).join("");
   const retry = support.merge && mayRetry(review, intent);
-  const prepare = support.merge && mayPrepare(review, intent);
+  const prepare = support.merge && mayPrepareSnapshot(review, intent, snapshotId);
   return `<section class="pr-merge-result" data-pr-merge-result="${esc(intent.request_id)}" data-pr-merge-status="${esc(intent.state)}">
     <h3>${esc(intentSummary(review, intent))}</h3><p>Snapshot: ${esc(intent.request.snapshot_id)}</p>
     ${intent.state === "interrupted" ? '<p class="warn">Interrupted: inspect the saved Git results before retrying.</p>' : ""}
@@ -214,6 +215,14 @@ function intentHtml(review, intent, support, busy) {
 }
 
 const freshDraft = () => ({ selected: {}, submitted: null });
+function draftForSnapshot(saved, snapshotId) {
+  if (!saved) return freshDraft();
+  if (!saved.submitted || saved.submitted.snapshot_id === snapshotId) return saved;
+  const held = { ...saved, submitted: null };
+  delete held.preparedRequestId;
+  delete held.submittedRequestId;
+  return held;
+}
 const recoveryPlan = (review, record, snapshot) => intentsOf(record).find((intent) =>
   intent.request.snapshot_id === snapshot.id && (intent.state === "interrupted" || uncertain(review, intent) ||
     intent.request.sources.some((source) => integrated(review, intent, source))));
@@ -238,34 +247,50 @@ export function mountTaskReviewMerge(host, options) {
   let error = "";
   const scope = { deviceId, projectId, taskId, snapshotId: snapshot.id };
   const support = () => reviewSupportFor(review, options.support);
-  const preparedPlan = () => intentsOf(record).find((intent) => intent.request_id === draft.preparedRequestId && mayPrepare(review, intent));
-  const submittedPlan = () => draft.submitted && intentsOf(record).find((intent) => intent.request_id === draft.submittedRequestId && mayPrepare(review, intent));
+  const preparedPlan = () => intentsOf(record).find((intent) => intent.request_id === draft.preparedRequestId && mayPrepareSnapshot(review, intent, snapshot.id));
+  const submittedPlan = () => draft.submitted && intentsOf(record).find((intent) => intent.request_id === draft.submittedRequestId && mayPrepareSnapshot(review, intent, snapshot.id));
   const recoveryDraft = () => preparedPlan() || submittedPlan();
-  const submittedRequest = () => ({ ...draft.submitted, expected_version: review.version });
+  const submittedRequest = (held = draft) => ({ ...held.submitted, expected_version: review.version });
   const writer = watchReviewActionDraft(scope, "merge", (saved) => {
     if (disposed || busy) return;
-    draft = saved || freshDraft();
+    draft = draftForSnapshot(saved, snapshot.id);
     paint();
   });
   const ready = writer.ready.then(() => { hydrating = false; paint(); });
 
-  function submittedDraft(request, requestId) {
-    const saved = { ...draft, submitted: structuredClone(request),
-      submittedRequestId: requestId || draft.preparedRequestId || draft.submittedRequestId };
+  function submittedDraft(held, request, requestId) {
+    const saved = { ...held, submitted: structuredClone(request),
+      submittedRequestId: requestId || held.preparedRequestId || held.submittedRequestId };
     delete saved.preparedRequestId;
     return saved;
+  }
+
+  async function persistSubmission(request, requestId) {
+    if (request.snapshot_id === snapshot.id) {
+      draft = submittedDraft(draft, request, requestId);
+      paint();
+      await writer.write(draft);
+      return request;
+    }
+    const historical = watchReviewActionDraft({ ...scope, snapshotId: request.snapshot_id }, "merge", () => {});
+    try {
+      const held = draftForSnapshot(await historical.ready, request.snapshot_id);
+      const intent = intentsOf(record).find((row) => row.request_id === requestId);
+      const selected = intent ? requestForIntent(intent, held) : request;
+      await historical.write(submittedDraft(held, selected, requestId));
+      return selected;
+    } finally { historical.dispose(); }
   }
 
   async function submit(request, requestId) {
     if (disposed || busy || hydrating || !support().merge) return;
     busy = true; error = "";
-    draft = submittedDraft(request, requestId);
     paint();
     try {
-      await writer.write(draft);
+      const submitted = await persistSubmission(request, requestId);
       if (disposed) return;
       // The shared repository commits the result. A cache read drives update.
-      await repository.mutate("merge", request);
+      await repository.mutate("merge", submitted);
       if (!disposed) await options.onTaskChanged?.();
     } catch (failure) {
       if (!disposed) error = reviewFailure(failure);
@@ -285,7 +310,7 @@ export function mountTaskReviewMerge(host, options) {
   function formRequest() {
     const prepared = preparedPlan();
     if (prepared) return refreshedRequest(review, record, prepared);
-    return draft.submitted ? submittedRequest() : selectedRequest(review, record, snapshot, draft);
+    return draft.submitted?.snapshot_id === snapshot.id ? submittedRequest() : selectedRequest(review, record, snapshot, draft);
   }
 
   function wireChoices() {
@@ -331,7 +356,7 @@ export function mountTaskReviewMerge(host, options) {
     host.querySelectorAll("[data-pr-merge-prepare]").forEach((button) => {
       button.onclick = async () => {
         const intent = intentsOf(record).find((row) => row.request_id === button.dataset.prMergePrepare);
-        if (disposed || busy || hydrating || !intent || !mayPrepare(review, intent)) return;
+        if (disposed || busy || hydrating || !intent || !mayPrepareSnapshot(review, intent, snapshot.id)) return;
         draft = { ...draft, submitted: retryRequest(review, intent), preparedRequestId: intent.request_id };
         delete draft.submittedRequestId;
         error = "";
@@ -349,7 +374,7 @@ export function mountTaskReviewMerge(host, options) {
     const wasOpen = host.querySelector("[data-pr-merge-sheet]")?.open;
     const heldFocus = focusState(host);
     keepReadingPlace(() => {
-      host.innerHTML = `${formHtml()}${intentsOf(record).map((intent) => intentHtml(review, intent, support(), busy)).join("")}
+      host.innerHTML = `${formHtml()}${intentsOf(record).map((intent) => intentHtml(review, intent, support(), busy, snapshot.id)).join("")}
         <p class="warn" data-pr-merge-error role="alert"${error ? "" : " hidden"}>${esc(error)}</p>`;
       const sheet = host.querySelector("[data-pr-merge-sheet]");
       if (sheet) sheet.open = Boolean(wasOpen);
@@ -375,9 +400,10 @@ export function mountTaskReviewMerge(host, options) {
     });
     wireRecovery();
   }
-  function requestForIntent(intent) {
+  function requestForIntent(intent, held = draft) {
     const current = activeStatus(review) && review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id;
-    return current && draft.submitted && draft.submittedRequestId === intent.request_id ? submittedRequest() : retryRequest(review, intent);
+    const matches = held.submitted?.snapshot_id === intent.request.snapshot_id && held.submittedRequestId === intent.request_id;
+    return current && matches ? submittedRequest(held) : retryRequest(review, intent);
   }
   paint();
   return { ready, update(nextReview, nextRecord) { if (disposed) return; review = nextReview; record = nextRecord; paint(); },

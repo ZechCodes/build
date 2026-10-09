@@ -9,6 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { untilDom } from "./untilCondition.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -499,6 +500,9 @@ describe("a rail mounted on the agent a URL named", () => {
     owner = OWNER;
 
     await mountWorkspaceRail({ openAgentId: "pa-1" });
+    // Standing on the project's side and drawing the workspace's own strip are
+    // separate cache reads, which land in either order: wait for both.
+    await untilDom(() => headWho() === "Sort the workspaces" && agentBubble("wa-1"));
 
     expect(headWho()).toBe("Sort the workspaces");
     expect(projectBubble().classList.contains("active")).toBe(true);

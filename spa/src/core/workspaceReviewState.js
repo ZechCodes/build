@@ -69,7 +69,7 @@ function lastReviewedSnapshot(review, timeline) {
 }
 
 export function formatReviewSinceNote({ count, head, reviewedHead, rewritten = false }) {
-  if (Number.isInteger(count)) return `${count} commit${count === 1 ? "" : "s"} since your last review`;
+  if (Number.isInteger(count)) return count ? `${count} commit${count === 1 ? "" : "s"} since your last review` : "";
   if (!reviewedHead) return "";
   if (rewritten) return "History rewritten since your last review";
   return head && head !== reviewedHead ? "Changed since your last review" : "";
@@ -80,9 +80,11 @@ function sourceSinceReview(context, binding, sync) {
   const baseline = context.reviewedSnapshot;
   const reviewedHead = baseline?.directories.find((directory) => directory.id === binding.directory_id)?.head;
   const head = snapshots.at(-1)?.directories.find((directory) => directory.id === binding.directory_id)?.head || sync?.snapshot_head;
-  const rewritten = baseline && snapshots.filter((snapshot) => snapshot.number > baseline.number)
-    .some((snapshot) => snapshot.publication?.directories.some((directory) => directory.directory_id === binding.directory_id && directory.rewritten));
-  return formatReviewSinceNote({ count: sync?.commits_since_review, head, reviewedHead, rewritten });
+  // The bridge's exact count only answers for the baseline it was taken against.
+  const counted = Boolean(baseline) && sync?.reviewed_snapshot_id === baseline.id;
+  const rewritten = (counted && sync.rewritten_since_review) || (baseline && snapshots.filter((snapshot) => snapshot.number > baseline.number)
+    .some((snapshot) => snapshot.publication?.directories.some((directory) => directory.directory_id === binding.directory_id && directory.rewritten)));
+  return formatReviewSinceNote({ count: counted ? sync.commits_since_review : undefined, head, reviewedHead, rewritten });
 }
 
 const rewrittenText = "Review history was rewritten or diverged";

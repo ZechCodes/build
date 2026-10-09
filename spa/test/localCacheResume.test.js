@@ -30,6 +30,16 @@ const cacheEvents = () =>
   diagnostics.connectionDiagnosticHistory().filter((entry) => entry.connection === cache.CACHE_DIAGNOSTIC);
 const eventNames = () => cacheEvents().map((entry) => entry.event);
 
+/** Settles on the line the cache logs as it starts its rest, before it even
+ *  sets the timer that ends the rest: a case continuing on it stands inside
+ *  the rest, ahead of any timer, however slow the machine is. A poll for the
+ *  state can land after a 40 ms rest is already over. */
+const startsResting = () => new Promise((started) => {
+  vi.mocked(console.info).mockImplementation((line) => {
+    if (String(line).endsWith(": cache-resting")) started();
+  });
+});
+
 const connectionLost = () => new DOMException("Connection to Indexed Database server lost. Refresh the page to try again", "UnknownError");
 
 /** An open request that fails the way WebKit's does: asynchronously, through
@@ -138,13 +148,15 @@ describe("a connection lost across a resume", () => {
       return originalTransaction.apply(this, args);
     });
     const open = failOpens(FAST_RECOVERY.reopenDelaysMs.length + 2);
+    const resting = startsResting();
     let answered = false;
     const read = cache.readCached(address).then((record) => {
       answered = true;
       return record;
     });
 
-    await vi.waitFor(() => expect(cache.cacheHealth().state).toBe("resting"));
+    await resting;
+    expect(cache.cacheHealth().state).toBe("resting");
     expect(answered).toBe(false);
     // Another reader asking during the rest waits with the first.
     const second = cache.readCached(address);
@@ -194,8 +206,10 @@ describe("a connection lost across a resume", () => {
       return originalTransaction.apply(this, args);
     });
     failOpens(FAST_RECOVERY.reopenDelaysMs.length);
+    const resting = startsResting();
     const write = cache.writeCached(address, { head: "during" });
-    await vi.waitFor(() => expect(cache.cacheHealth().state).toBe("resting"));
+    await resting;
+    expect(cache.cacheHealth().state).toBe("resting");
     expect(heard).toEqual([]);
 
     await write;

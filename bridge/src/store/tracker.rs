@@ -208,6 +208,15 @@ impl Store {
         })
     }
 
+    /// Test-only: forget that the boot pass ran, so a test can stage the
+    /// shape it found and run it again.
+    #[cfg(test)]
+    pub fn forget_ended_tracking(&self) {
+        self.connection()
+            .execute("DELETE FROM meta WHERE key = ?1", [ENDED_TRACKING_KEY])
+            .expect("the marker is cleared");
+    }
+
     /// Migrate read-time identity and completion metadata without overwriting
     /// concurrent task lifecycle writes.
     pub fn backfill_tracker_task(&self, task: &Task) -> Result<Task, StoreError> {

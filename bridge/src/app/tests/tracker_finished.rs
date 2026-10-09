@@ -345,6 +345,9 @@ fn trackers_left_on_finished_tasks_are_dropped_once() {
     store.save_tracker_task_activity(&stale, &[], &[]).unwrap();
     assert_eq!(trackers(&mut state, &done), json!([watcher.1]), "the old shape");
 
+    // The boot that opened this store already ran the pass, over nothing.
+    assert_eq!(store.end_tracking_on_finished_tasks().unwrap(), 0, "already run");
+    store.forget_ended_tracking();
     assert_eq!(store.end_tracking_on_finished_tasks().unwrap(), 1);
 
     assert_eq!(trackers(&mut state, &done), json!([]));

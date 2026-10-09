@@ -202,7 +202,39 @@ fn preserve_unmoved_lifecycle(current: &Task, task: &Task, events: &[TaskEvent])
         saved.state = current.state;
         saved.closed_at = current.closed_at.clone();
     }
+    saved.trackers = reconciled_trackers(current, events);
     saved
+}
+
+/// Who tracks the task after this write: whoever does now, plus or minus the
+/// tracking changes the write itself records.
+///
+/// Never the list the caller read. That list can predate a write that ended
+/// tracking (#444) — an off-lock PR merge finishing the task in between — and
+/// writing it back would put those trackers back with no `tracked` event to
+/// say so.
+fn reconciled_trackers(current: &Task, events: &[TaskEvent]) -> Vec<String> {
+    let mut task = current.clone();
+    for event in events {
+        let Some(agent_id) = event
+            .payload
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        match event.kind {
+            // Past the cap, the write that asked was already refused.
+            TaskEventKind::Tracked => {
+                let _ = task.track(agent_id);
+            }
+            TaskEventKind::Untracked => {
+                task.untrack(agent_id);
+            }
+            _ => {}
+        }
+    }
+    task.trackers
 }
 
 fn should_complete(header: &ReviewHeader, events: &[TaskEvent]) -> bool {

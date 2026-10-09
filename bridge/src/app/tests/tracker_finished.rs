@@ -384,3 +384,171 @@ fn trackers_left_on_finished_tasks_are_dropped_once() {
     assert_eq!(store.end_tracking_on_finished_tasks().unwrap(), 0, "once");
     assert_eq!(trackers(&mut state, &done), json!([watcher.1]));
 }
+
+/// A write built from a task read before it finished (an off-lock PR merge
+/// can finish it in between) must not bring the trackers that finishing took
+/// off back with it (#456).
+#[test]
+fn a_stale_write_after_finishing_does_not_restore_its_trackers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (watcher, id) = watched_task(&mut state, &project_id);
+    let store = state.tracker_store().unwrap().clone();
+    let mut stale = store.load_tracker_task(&id).unwrap().unwrap();
+    let moved = state.handle(req(
+        "tasks.update",
+        json!({"task_id": id, "status": "done"}),
+    ));
+    assert_eq!(moved["ok"], true);
+    assert_eq!(trackers(&mut state, &id), json!([]));
+
+    stale.labels.push("later".to_string());
+    let now = crate::store::now_rfc3339();
+    let labelled = crate::tracker::TaskEvent::new(
+        &id,
+        Actor::User,
+        crate::tracker::TaskEventKind::Labelled,
+        json!({"added": ["later"], "removed": []}),
+        &now,
+    );
+    let (saved, _) = store
+        .save_review_task_activity(&stale, &[], &[labelled], &Actor::User, None, &now)
+        .unwrap();
+    assert_eq!(saved.status, "done");
+    assert!(saved.trackers.is_empty(), "restored: {:?}", saved.trackers);
+    assert_eq!(trackers(&mut state, &id), json!([]));
+    assert_eq!(
+        saved.labels,
+        vec!["later".to_string()],
+        "the edit still lands"
+    );
+
+    // A stale write that tracks on purpose still adds that one.
+    let mut tracking = stale.clone();
+    tracking.track("agent-later").unwrap();
+    let tracked = crate::tracker::TaskEvent::new(
+        &id,
+        Actor::User,
+        crate::tracker::TaskEventKind::Tracked,
+        json!({"agent_id": "agent-later"}),
+        &now,
+    );
+    let (saved, _) = store
+        .save_review_task_activity(&tracking, &[], &[tracked], &Actor::User, None, &now)
+        .unwrap();
+    assert_eq!(saved.trackers, vec!["agent-later".to_string()]);
+    assert!(!saved.is_tracked_by(&watcher.1));
+}
+
+/// One update that relabels a task and moves it to Done tells its trackers
+/// it moved to Done, since that is the last thing they will hear (#456).
+#[test]
+fn a_combined_edit_and_done_tells_trackers_it_moved_to_done() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (watcher, id) = watched_task(&mut state, &project_id);
+    let moved = state.handle(req(
+        "tasks.update",
+        json!({"task_id": id, "labels": ["finished"], "status": "done"}),
+    ));
+    assert_eq!(moved["ok"], true, "{moved:?}");
+    assert_eq!(trackers(&mut state, &id), json!([]));
+    let told = notices(&mut state, &watcher);
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0]["task_notice"]["action"], "moved", "{told:?}");
+    assert_eq!(told[0]["task_notice"]["to"], "done");
+}
+
+/// The boot pass is bookkeeping: a watched finished task the user cleared
+/// stays cleared, and its inbox row keeps its place (#456).
+#[test]
+fn the_boot_pass_leaves_cleared_inbox_rows_alone() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (_watcher, id) = watched_task(&mut state, &project_id);
+    let latest = read(&mut state, &id)["timeline"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let store = state.tracker_store().unwrap().clone();
+    let mut stale = store.load_tracker_task(&id).unwrap().unwrap();
+    stale.status = crate::tracker::DONE_STATUS.into();
+    stale.done_at = Some(stale.updated_at.clone());
+    stale.dismissed_through = Some(latest);
+    store.save_tracker_task_activity(&stale, &[], &[]).unwrap();
+    let row = |state: &mut AppState| {
+        state
+            .watched_task_rows()
+            .into_iter()
+            .find(|row| row["task_id"] == id)
+            .unwrap()
+    };
+    let before = row(&mut state);
+    assert_eq!(before["done_until_next"], true);
+
+    store.forget_ended_tracking();
+    assert_eq!(store.end_tracking_on_finished_tasks().unwrap(), 1);
+    let after = row(&mut state);
+    assert_eq!(after["done_until_next"], true, "reopened: {after}");
+    assert_eq!(after["anchor"], before["anchor"]);
+    assert_eq!(after["last_event"], before["last_event"]);
+}
+
+/// A watched task moved to Done reads as that move in the inbox, not as the
+/// tracking Build ended behind it.
+#[test]
+fn a_watched_task_moved_to_done_reads_as_the_move() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (_watcher, id) = watched_task(&mut state, &project_id);
+    assert_eq!(
+        state.handle(req("tasks.watch", json!({"task_id": id})))["ok"],
+        true
+    );
+    let moved = state.handle(req(
+        "tasks.update",
+        json!({"task_id": id, "status": "done"}),
+    ));
+    assert_eq!(moved["ok"], true);
+    let row = state
+        .watched_task_rows()
+        .into_iter()
+        .find(|row| row["task_id"] == id)
+        .unwrap();
+    assert_ne!(row["last_event"]["text"], "Updated", "{row}");
+    assert_eq!(row["last_event"]["actor"], "you", "{row}");
+}
+
+/// Done twice, and closed then Done, end nothing an agent tracked on purpose
+/// after the task first finished.
+#[test]
+fn finishing_a_finished_task_again_keeps_tracking_asked_for_since() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let (watcher, id) = watched_task(&mut state, &project_id);
+    assert_eq!(
+        state.handle(req("tasks.close", json!({"task_id": id})))["ok"],
+        true
+    );
+    set_task_tracking(&mut state, &id, &watcher.1, true);
+    for _ in 0..2 {
+        assert_eq!(
+            state.handle(req(
+                "tasks.update",
+                json!({"task_id": id, "status": "done"})
+            ))["ok"],
+            true
+        );
+        assert_eq!(trackers(&mut state, &id), json!([watcher.1]));
+    }
+    assert_eq!(untracked(&mut state, &id).len(), 1);
+}

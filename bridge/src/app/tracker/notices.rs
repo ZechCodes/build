@@ -25,7 +25,7 @@ use super::TaskWrite;
 use crate::app::runtime::agents::endpoints::AddressedAgent;
 use crate::app::{AppState, PendingAgentTurn, TurnText, NEW_THREAD_MESSAGES_PROMPT};
 use crate::thread::{TaskEnvelope, TaskNotice};
-use crate::tracker::{Actor, Task, TaskEventKind, FINISHED_UNTRACK};
+use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind, FINISHED_UNTRACK};
 
 impl AppState {
     /// A service accepting new work under the app lock addresses the current
@@ -226,19 +226,30 @@ impl AppState {
 fn trackers_to_tell(write: &TaskWrite) -> Vec<String> {
     let mut told = write.task.trackers_to_notify(&write.actor);
     let acted = write.actor.agent_id();
-    let finished = write.events.iter().filter_map(|event| {
-        let payload = &event.payload;
-        (event.kind == TaskEventKind::Untracked
-            && payload.get("by").and_then(serde_json::Value::as_str) == Some(FINISHED_UNTRACK))
-        .then(|| payload.get("agent_id").and_then(serde_json::Value::as_str))
-        .flatten()
-    });
-    for agent_id in finished {
+    for agent_id in write.events.iter().filter_map(finished_untrack) {
         if Some(agent_id) != acted && !told.iter().any(|told| told == agent_id) {
             told.push(agent_id.to_string());
         }
     }
     told
+}
+
+/// The agent an event took off the task because it finished, if it is one.
+fn finished_untrack(event: &TaskEvent) -> Option<&str> {
+    let payload = &event.payload;
+    (event.kind == TaskEventKind::Untracked
+        && payload.get("by").and_then(serde_json::Value::as_str) == Some(FINISHED_UNTRACK))
+    .then(|| payload.get("agent_id").and_then(serde_json::Value::as_str))
+    .flatten()
+}
+
+/// Whether an event is the one that finished the task: a move to Done, or a
+/// close.
+fn finishes(event: &TaskEvent) -> bool {
+    event.kind == TaskEventKind::Closed
+        || (event.kind == TaskEventKind::Moved
+            && event.payload.get("to").and_then(serde_json::Value::as_str)
+                == Some(crate::tracker::DONE_STATUS))
 }
 
 fn notice_envelope(task: &Task) -> TaskEnvelope {
@@ -271,19 +282,13 @@ fn notice_of(write: &TaskWrite, actor_name: Option<String>) -> Option<TaskNotice
         assignee: None,
         assignee_identity: None,
     };
-    if let Some(comment) = write.comments.first() {
-        return Some(TaskNotice {
-            comment_id: Some(comment.id.clone()),
-            ..plain("commented")
-        });
-    }
     let named = |payload: &serde_json::Value, key: &str| {
         payload
             .get(key)
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
-    write.events.iter().find_map(|event| match event.kind {
+    let news = |event: &TaskEvent| match event.kind {
         TaskEventKind::Created => Some(plain("created")),
         TaskEventKind::Moved => Some(TaskNotice {
             from: named(&event.payload, "from"),
@@ -318,7 +323,25 @@ fn notice_of(write: &TaskWrite, actor_name: Option<String>) -> Option<TaskNotice
         | TaskEventKind::WorkspacePruned
         | TaskEventKind::WorkspaceReclaimed => None,
         TaskEventKind::ReviewCompleted => Some(plain("completed the review")),
-    })
+    };
+    // A write that ended tracking is the last thing its former trackers
+    // hear, so it says the task finished — whatever else changed with it.
+    if write
+        .events
+        .iter()
+        .any(|event| finished_untrack(event).is_some())
+    {
+        if let Some(notice) = write.events.iter().filter(|e| finishes(e)).find_map(news) {
+            return Some(notice);
+        }
+    }
+    if let Some(comment) = write.comments.first() {
+        return Some(TaskNotice {
+            comment_id: Some(comment.id.clone()),
+            ..plain("commented")
+        });
+    }
+    write.events.iter().find_map(news)
 }
 
 /// One timeline entry as a notice, for a reader looking at a row rather than

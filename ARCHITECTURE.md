@@ -1175,7 +1175,13 @@ store write that takes a task from live to Done or closed
 (`Task::end_tracking_on_finish`, called from `save_activity_in_tx` and
 `complete_review_in_tx`) removes every tracker and records one `untracked`
 event each, by Build, with `by: "finished"`. The notice for that move or close still
-reaches them, read from those events. Reopening restores nobody, and `track`
+reaches them, read from those events, and it names the move or close even when
+the same write changed other things. Writes never put back a tracker list they
+read earlier: `save_activity_in_tx` takes the stored trackers and applies only
+the write's own `tracked`/`untracked` events, so a stale write after an off-lock
+finish restores nobody. The inbox skips these `untracked` events when it picks a
+row's last event and checks dismissal (`bridge/src/app/tracker/inbox.rs`).
+Reopening restores nobody, and `track`
 on the write that finished the task is ignored. An agent that tracks a finished
 task explicitly afterwards keeps its tracker. `untrack_task` is for dropping a
 live task early. At boot `Store::end_tracking_on_finished_tasks` clears, once,

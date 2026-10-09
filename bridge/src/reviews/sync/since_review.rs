@@ -174,8 +174,9 @@ mod tests {
         );
         let old = commit(&path, "old");
         git_in(&path, &["commit", "--amend", "-m", "rewritten"]);
+        // Two commits prove this rewrite; one cannot, whatever their timestamps.
         assert_eq!(
-            since_review(&repo, head(&path), old, 2),
+            since_review(&repo, head(&path), old, 1),
             None,
             "an exhausted budget is not proof of a rewrite"
         );

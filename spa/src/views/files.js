@@ -34,7 +34,7 @@
 
 import { esc, pickAFileText } from "../core/text.js";
 import { directoryCacheId, syncWalksCheckout } from "../core/directoryScope.js";
-import { deleteCached, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
+import { deleteCached, deleteCachedIfUnwritten, readCached, recordWriteOf, subscribeCache } from "../core/localCache.js";
 import { FILE_RECORD_KIND, cacheFileBody, filePageReader, filePagesReadable } from "../core/cacheLifetime.js";
 import {
   mountPagedFile,
@@ -843,14 +843,22 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
   /** A file the New menu just made: its path may still hold the body of a
    *  file deleted there before, and an ignored path sends no push to replace
    *  it. Read it into the cache first, so an open tab of that path repaints
-   *  through its watch and a new one opens on the new body. */
+   *  through its watch and a new one opens on the new body. A body written
+   *  while the read was out (a save, a push) is newer, and stays. */
   const openCreated = async (key) => {
     const address = fileAddress(key);
+    const before = await heldRecord(address);
+    const written = recordWriteOf(before);
     try {
       const file = await callRpc("fs.read", { ...scopeOf(key), path: pathOf(key) });
-      if (address) await cacheFileBody({ deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file, readPage: storePageReader(key, file) });
+      if (address) {
+        await cacheFileBody({
+          deviceId: address.deviceId, entityId: address.entityId, path: address.sub, file,
+          readPage: storePageReader(key, file), still: recordStill(address, written), written,
+        });
+      }
     } catch {
-      if (address) await deleteCached([address]);
+      if (address) await deleteCachedIfUnwritten([{ address, record: before }]);
     }
     if (!disposed) openFromTree(key);
   };

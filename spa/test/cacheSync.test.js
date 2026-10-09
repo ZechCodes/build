@@ -1222,6 +1222,80 @@ describe("a refresh requested during a pass", () => {
 // the last step of a pass: a device whose pass never finishes hears nothing
 // pushed and reads nothing until something else asks.
 describe("a pass that is still out when the next session lands", () => {
+  /** Hold one board answer, with a signal that the first pass reached it. */
+  const holdCurrentPass = async () => {
+    let boardAsked;
+    const reading = new Promise((resolve) => { boardAsked = resolve; });
+    let release;
+    const held = new Promise((resolve) => { release = () => resolve({ items: [] }); });
+    script["board.list"] = () => {
+      delete script["board.list"];
+      boardAsked();
+      return held;
+    };
+    sync.startCacheSync();
+    const first = sync.passInFlight("dev-1");
+    expect(first).not.toBeNull();
+    await reading;
+    return { first, release };
+  };
+
+  it("does not start a waiting replacement session after sync stops", async () => {
+    const held = await holdCurrentPass();
+    const replacementRpc = vi.fn(async (method, params) => answer(method, params));
+    registerDevice("dev-1", replacementRpc);
+    const replacement = sync.syncDevice("dev-1");
+
+    sync.stopCacheSync();
+    const beforeRelease = bridge.call.mock.calls.slice();
+    held.release();
+    const results = await Promise.all([held.first, replacement]);
+
+    expect(replacementRpc).not.toHaveBeenCalled();
+    expect(bridge.call.mock.calls).toEqual(beforeRelease);
+    expect(results).toEqual([false, false]);
+    expect(sync.passInFlight("dev-1")).toBeNull();
+  });
+
+  it("does not move a waiting replacement request onto a later session", async () => {
+    const held = await holdCurrentPass();
+    const replacementRpc = vi.fn(async (method, params) => answer(method, params));
+    registerDevice("dev-1", replacementRpc);
+    const replacement = sync.syncDevice("dev-1");
+    const currentRpc = vi.fn(async (method, params) => answer(method, params));
+    registerDevice("dev-1", currentRpc);
+
+    held.release();
+    const results = await Promise.all([held.first, replacement]);
+
+    expect(replacementRpc).not.toHaveBeenCalled();
+    expect(currentRpc).not.toHaveBeenCalled();
+    expect(results).toEqual([false, false]);
+    expect(sync.passInFlight("dev-1")).toBeNull();
+    expect(await sync.syncDevice("dev-1")).toBe(true);
+    expect(currentRpc.mock.calls.filter(([method]) => method === "board.list")).toHaveLength(1);
+  });
+
+  it("keeps a waiting replacement canceled after sync restarts", async () => {
+    const held = await holdCurrentPass();
+    const replacementRpc = vi.fn(async (method, params) => answer(method, params));
+    registerDevice("dev-1", replacementRpc);
+    const replacement = sync.syncDevice("dev-1");
+
+    sync.stopCacheSync();
+    sync.startCacheSync();
+    const restarted = sync.passInFlight("dev-1");
+    expect(restarted).not.toBeNull();
+    expect(await restarted).toBe(true);
+    const beforeRelease = replacementRpc.mock.calls.slice();
+    held.release();
+    const results = await Promise.all([held.first, replacement]);
+
+    expect(replacementRpc.mock.calls).toEqual(beforeRelease);
+    expect(results).toEqual([false, false]);
+    expect(sync.passInFlight("dev-1")).toBeNull();
+  });
+
   /** A pass that has reached the board and is waiting on a bridge that has
    *  stopped answering — a radio that went away mid-read. */
   const stallTheBoard = () => {

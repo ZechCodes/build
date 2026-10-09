@@ -524,6 +524,7 @@ pub(crate) struct HostSweep {
     events: VecDeque<HostCandidateSweepEvent>,
     relay: bool,
     nat_wait_reason: Option<&'static str>,
+    nat_open: bool,
     early_admitted: std::collections::HashSet<(u32, Ipv4Addr)>,
     early_probed: std::collections::HashSet<(u32, Ipv4Addr)>,
     early_probed_count: u32,
@@ -982,6 +983,7 @@ impl HostSweep {
             .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
     }
     pub fn gate_nat(&mut self, now: Instant, reason: Option<&'static str>) -> bool {
+        self.nat_open = reason.is_none();
         if let Some(reason) = reason {
             self.mask_nat_eligibility(now, reason);
             false
@@ -989,6 +991,12 @@ impl HostSweep {
             self.restore_nat_eligibility();
             true
         }
+    }
+
+    /// Whether the last pass's NAT gate let it prepare and scout. The driver reads for
+    /// preparation outside the core lock only then, so a pass held at the gate reads nothing.
+    pub fn nat_open(&self) -> bool {
+        self.nat_open
     }
 
     fn restore_nat_eligibility(&mut self) {

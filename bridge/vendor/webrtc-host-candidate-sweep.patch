@@ -279,7 +279,7 @@ index b7c5c8d..4232db2 100644
          });
  
 diff --git a/webrtc/src/peer_connection/driver.rs b/webrtc/src/peer_connection/driver.rs
-index 8a0a53a..42ddc99 100644
+index 8a0a53a..0810569 100644
 --- a/webrtc/src/peer_connection/driver.rs
 +++ b/webrtc/src/peer_connection/driver.rs
 @@ -2,6 +2,7 @@
@@ -486,7 +486,7 @@ index 8a0a53a..42ddc99 100644
  
              // Wake senders blocked in `DataChannel::writable()`: the poll_* passes above
              // applied any SCTP buffer releases (acked/abandoned bytes) to the per-channel
-@@ -851,6 +974,368 @@ where
+@@ -851,6 +974,371 @@ where
          }
      }
  
@@ -583,7 +583,8 @@ index 8a0a53a..42ddc99 100644
 +        self.sweep_interfaces.refresh(now);
 +        #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
 +        self.host_scouts.refresh(now);
-+        (!self.host_sweep.unprepared_ports(now).is_empty()).then(|| self.read_sweep_subnets())
++        (self.host_sweep.nat_open() && !self.host_sweep.unprepared_ports(now).is_empty())
++            .then(|| self.read_sweep_subnets())
 +    }
 +
 +    #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
@@ -691,13 +692,15 @@ index 8a0a53a..42ddc99 100644
 +        if ports.is_empty() {
 +            return;
 +        }
-+        // Wait while gathering has produced no host yet, or for the next pass's reads when the
-+        // port fell due after this pass read.
-+        let Some(prepared) = prepared.filter(|_| !hosts.is_empty() || !self.ice_gathering_active)
-+        else {
++        if hosts.is_empty() && self.ice_gathering_active {
 +            for port in ports {
 +                self.host_sweep.defer_preparation(port, now);
 +            }
++            return;
++        }
++        // Nothing was read for a port that fell due after this pass's reads, or that waited at
++        // the NAT gate it just passed. It stays due, so the next pass reads for it at once.
++        let Some(prepared) = prepared else {
 +            return;
 +        };
 +        let (subnets, reasons) = self.sweep_subnets(hosts, prepared);
@@ -855,7 +858,7 @@ index 8a0a53a..42ddc99 100644
      async fn handle_write(&mut self, msg: TaggedBytesMut) -> Result<usize> {
          if msg.transport.transport_protocol == TransportProtocol::TCP {
              self.tcp_transport.write(&msg).await
-@@ -1283,8 +1768,55 @@ where
+@@ -1283,8 +1771,55 @@ where
          }
      }
  
@@ -912,7 +915,7 @@ index 8a0a53a..42ddc99 100644
              PeerConnectionDriverEvent::SenderRtp(sender_id, packet) => {
                  let mut core = self.inner.core.lock().await;
                  if let Some(mut sender) = core.rtp_sender(sender_id) {
-@@ -1397,6 +1929,10 @@ where
+@@ -1397,6 +1932,10 @@ where
                  self.tcp_transport.register_stream(four_tuple, stream);
              }
              PeerConnectionDriverEvent::Close => {
@@ -923,7 +926,7 @@ index 8a0a53a..42ddc99 100644
                  if let Err(err) = self.turn_relayer.close() {
                      error!("Failed to close turn_relayer: {}", err);
                  }
-@@ -1752,11 +2288,18 @@ where
+@@ -1752,11 +2291,18 @@ where
          let stun_timeout = self.stun_gatherer.poll_timeout();
          let turn_timeout = self.turn_relayer.poll_timeout();
  
@@ -948,10 +951,10 @@ index 8a0a53a..42ddc99 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..e70eae2 100644
+index e69de29..0593e36 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,1324 @@
+@@ -0,0 +1,1332 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -1478,6 +1481,7 @@ index e69de29..e70eae2 100644
 +    events: VecDeque<HostCandidateSweepEvent>,
 +    relay: bool,
 +    nat_wait_reason: Option<&'static str>,
++    nat_open: bool,
 +    early_admitted: std::collections::HashSet<(u32, Ipv4Addr)>,
 +    early_probed: std::collections::HashSet<(u32, Ipv4Addr)>,
 +    early_probed_count: u32,
@@ -1936,6 +1940,7 @@ index e69de29..e70eae2 100644
 +            .push_back(self.event("skipped", Some(reason), false, 0, 0, false));
 +    }
 +    pub fn gate_nat(&mut self, now: Instant, reason: Option<&'static str>) -> bool {
++        self.nat_open = reason.is_none();
 +        if let Some(reason) = reason {
 +            self.mask_nat_eligibility(now, reason);
 +            false
@@ -1943,6 +1948,12 @@ index e69de29..e70eae2 100644
 +            self.restore_nat_eligibility();
 +            true
 +        }
++    }
++
++    /// Whether the last pass's NAT gate let it prepare and scout. The driver reads for
++    /// preparation outside the core lock only then, so a pass held at the gate reads nothing.
++    pub fn nat_open(&self) -> bool {
++        self.nat_open
 +    }
 +
 +    fn restore_nat_eligibility(&mut self) {
@@ -2278,10 +2289,10 @@ index e69de29..e70eae2 100644
 +mod tests;
 diff --git b/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
 new file mode 100644
-index 0000000..b8ff065
+index 0000000..5ddb337
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,1422 @@
+@@ -0,0 +1,1433 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -3703,6 +3714,17 @@ index 0000000..b8ff065
 +    assert_eq!(sweep.packets, 0);
 +    assert!(sweep.deadline().is_none());
 +    assert!(sweep.plans[&40000].subnets.is_none());
++}
++
++#[test]
++fn the_last_nat_gate_says_whether_a_pass_reads_for_preparation() {
++    let mut sweep = HostSweep::default();
++    let now = Instant::now();
++    assert!(!sweep.nat_open(), "no pass has opened the gate yet");
++    assert!(sweep.gate_nat(now, None));
++    assert!(sweep.nat_open());
++    assert!(!sweep.gate_nat(now, Some("nat-evidence-missing")));
++    assert!(!sweep.nat_open(), "a closed gate stops preparation reads");
 +}
 diff --git b/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 new file mode 100644

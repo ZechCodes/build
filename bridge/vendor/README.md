@@ -353,12 +353,15 @@ those reads first, then takes the core lock for the decisions and the
 nonblocking send. The interface list is read at most once per 100 ms, the
 same age bound as the neighbour snapshots that authorize a destination, and
 each pass reuses it. Preparation builds every sweep-capable socket's subnet
-outside the lock; a port that falls due after the reads is deferred to the
-next pass. The send path still validates generation, credentials and port
+outside the lock, only after a pass has found the NAT gate open, so a sweep
+waiting for NAT evidence does no preparation reads. A port that falls due
+after the reads, or at the pass that opens the gate, stays due and the next
+pass reads for it. The send path still validates generation, credentials and port
 under `HostSweepControl` and the core lock. Two driver regressions pin it:
 an interface read that parks while the test takes the core lock with
 `try_lock` (it fails with the reads moved back under the lock), and one
-interface read shared by passes inside 100 ms. Data-channel latency during a
+interface read shared by passes inside 100 ms; a `host_sweep_tests.rs` case
+pins the NAT gate state the driver reads. Data-channel latency during a
 sweep was not measured.
 
 #383 recovery regressions cover direct-selected PRFLX followed by a native

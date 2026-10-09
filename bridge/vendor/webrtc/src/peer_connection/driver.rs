@@ -1067,7 +1067,8 @@ where
         self.sweep_interfaces.refresh(now);
         #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
         self.host_scouts.refresh(now);
-        (!self.host_sweep.unprepared_ports(now).is_empty()).then(|| self.read_sweep_subnets())
+        (self.host_sweep.nat_open() && !self.host_sweep.unprepared_ports(now).is_empty())
+            .then(|| self.read_sweep_subnets())
     }
 
     #[cfg(all(target_os = "linux", feature = "runtime-tokio"))]
@@ -1175,13 +1176,15 @@ where
         if ports.is_empty() {
             return;
         }
-        // Wait while gathering has produced no host yet, or for the next pass's reads when the
-        // port fell due after this pass read.
-        let Some(prepared) = prepared.filter(|_| !hosts.is_empty() || !self.ice_gathering_active)
-        else {
+        if hosts.is_empty() && self.ice_gathering_active {
             for port in ports {
                 self.host_sweep.defer_preparation(port, now);
             }
+            return;
+        }
+        // Nothing was read for a port that fell due after this pass's reads, or that waited at
+        // the NAT gate it just passed. It stays due, so the next pass reads for it at once.
+        let Some(prepared) = prepared else {
             return;
         };
         let (subnets, reasons) = self.sweep_subnets(hosts, prepared);

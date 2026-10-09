@@ -1420,3 +1420,14 @@ fn nat_transitions_publish_masked_and_restored_numeric_evidence_after_expiry() {
     assert!(sweep.deadline().is_none());
     assert!(sweep.plans[&40000].subnets.is_none());
 }
+
+#[test]
+fn the_last_nat_gate_says_whether_a_pass_reads_for_preparation() {
+    let mut sweep = HostSweep::default();
+    let now = Instant::now();
+    assert!(!sweep.nat_open(), "no pass has opened the gate yet");
+    assert!(sweep.gate_nat(now, None));
+    assert!(sweep.nat_open());
+    assert!(!sweep.gate_nat(now, Some("nat-evidence-missing")));
+    assert!(!sweep.nat_open(), "a closed gate stops preparation reads");
+}

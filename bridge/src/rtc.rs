@@ -37,6 +37,7 @@ use webrtc::peer_connection::{
 };
 
 use rtc::ice::mdns::MulticastDnsMode;
+use rtc::peer_connection::transport::RTCIceTransportState;
 
 use crate::carrier::{self, CarrierHandle, FrameIntake, Opening, OutboundEnvelope, SessionSender};
 use crate::transport_ledger::{TransportEvent, TransportLedger, TransportPath};
@@ -720,38 +721,86 @@ struct WebrtcPeer {
     ice: Arc<IceHealth>,
 }
 
-/// Whether a peer's ICE has failed, as its agent last reported, and who to
-/// tell when it does.
+/// What a peer's ICE agent has reported, and who to tell when it fails.
+///
+/// The reports only prompt a look: whether the peer has failed is read from the
+/// native core under the negotiation lock ([`IceHealth::failed_now`]). The
+/// driver drains the core's events under the core lock and delivers each batch
+/// afterwards, one batch at a time, so a delivered state can be older than the
+/// core's. The core's own state is updated as it is drained, which leaves one
+/// case it cannot tell apart: a failure drained before a restart while the
+/// restart's `checking` event is still queued behind it.
 #[derive(Default)]
 struct IceHealth {
-    failed: AtomicBool,
-    /// An ICE restart was accepted and its generation has not reported yet.
-    /// The driver delivers events it drained earlier, so until the restart's
-    /// own checking event arrives a failure is the old generation's. The agent
-    /// queues that event whenever a restart leaves a failed state, behind
-    /// every event before it.
-    restarting: AtomicBool,
+    reports: Mutex<IceReports>,
     /// Closed as superseded: no later offer may answer through this peer.
     retired: AtomicBool,
     on_failed: OnceLock<IceFailedHook>,
 }
 
+#[derive(Default)]
+struct IceReports {
+    last: Option<RTCIceConnectionState>,
+    /// `checking` events delivered so far.
+    checkings: u64,
+    /// A restart was accepted while the core still showed a failure drained
+    /// before it. That failure is the old generation's until a `checking`
+    /// beyond this count is delivered: the agent leaves `failed` only through
+    /// a restart, which queues `checking` behind every earlier event.
+    stale_through: Option<u64>,
+}
+
+impl IceReports {
+    fn stale(&self) -> bool {
+        self.stale_through
+            .is_some_and(|checkings| self.checkings <= checkings)
+    }
+}
+
 impl IceHealth {
     fn observe(&self, state: RTCIceConnectionState) {
-        if state == RTCIceConnectionState::Checking {
-            self.restarting.store(false, Ordering::SeqCst);
-        }
-        self.failed
-            .store(state == RTCIceConnectionState::Failed, Ordering::SeqCst);
-        if let Some(hook) = self.on_failed.get().filter(|_| self.is_failed()) {
+        let failed = {
+            let mut reports = self.reports.lock().unwrap();
+            if state == RTCIceConnectionState::Checking {
+                reports.checkings += 1;
+            }
+            reports.last = Some(state);
+            state == RTCIceConnectionState::Failed && !reports.stale()
+        };
+        if let Some(hook) = self.on_failed.get().filter(|_| failed) {
             hook();
         }
     }
 
-    /// Failed in the current ICE generation.
-    fn is_failed(&self) -> bool {
-        self.failed.load(Ordering::SeqCst) && !self.restarting.load(Ordering::SeqCst)
+    /// The last delivered state is a current failure: worth a look.
+    fn reported_failed(&self) -> bool {
+        let reports = self.reports.lock().unwrap();
+        reports.last == Some(RTCIceConnectionState::Failed) && !reports.stale()
     }
+
+    fn checkings(&self) -> u64 {
+        self.reports.lock().unwrap().checkings
+    }
+
+    /// Record an accepted restart, given the `checking` events delivered before
+    /// the core's state was read after it. Read in that order, a `checking`
+    /// delivered later was drained after that read, so it is the restart's.
+    fn accept_restart(&self, checkings: u64, native: Option<RTCIceTransportState>) {
+        if native == Some(RTCIceTransportState::Failed) {
+            let mut reports = self.reports.lock().unwrap();
+            reports.stale_through = reports.stale_through.max(Some(checkings));
+        }
+    }
+
+    /// Failed in the current generation, by the core's own state.
+    fn failed_now(&self, native: Option<RTCIceTransportState>) -> bool {
+        native == Some(RTCIceTransportState::Failed) && !self.reports.lock().unwrap().stale()
+    }
+}
+
+/// The ICE state the native core has drained, as its statistics record it.
+fn native_ice_state(stats: &RTCStatsReport) -> Option<RTCIceTransportState> {
+    stats.transport().map(|transport| transport.ice_state)
 }
 
 /// One live peer connection, the channels carrying for it, and the one line it
@@ -781,7 +830,7 @@ impl SessionPeer for WebrtcPeer {
     }
 
     fn ice_failed(&self) -> bool {
-        self.ice.is_failed()
+        self.ice.reported_failed()
     }
 
     fn on_ice_failed(&self, hook: IceFailedHook) {
@@ -790,7 +839,16 @@ impl SessionPeer for WebrtcPeer {
 
     async fn close_if_ice_failed(&self, unregister: Box<dyn FnOnce() + Send>) -> bool {
         let mut negotiation = self.negotiation.lock().await;
-        if !self.ice_failed() || self.ice.retired.swap(true, Ordering::SeqCst) {
+        let native = match negotiation.as_ref() {
+            Some(open) => native_ice_state(
+                &open
+                    .connection
+                    .get_stats(std::time::Instant::now(), StatsSelector::None)
+                    .await,
+            ),
+            None => None,
+        };
+        if !self.ice.failed_now(native) || self.ice.retired.swap(true, Ordering::SeqCst) {
             return false;
         }
         unregister();
@@ -844,16 +902,13 @@ impl SessionPeer for WebrtcPeer {
             .remote
             .begin_with_stats(&allowed_offer, Some(&previous_stats))
             .await;
+        connection.set_remote_description(offer).await?;
         if restarting {
-            // Before the agent restarts, so no failure of the old generation
-            // delivered from here on can take this peer.
-            self.ice.restarting.store(true, Ordering::SeqCst);
-        }
-        if let Err(refused) = connection.set_remote_description(offer).await {
-            if restarting {
-                self.ice.restarting.store(false, Ordering::SeqCst);
-            }
-            return Err(refused.into());
+            let delivered = self.ice.checkings();
+            let stats = connection
+                .get_stats(std::time::Instant::now(), StatsSelector::None)
+                .await;
+            self.ice.accept_restart(delivered, native_ice_state(&stats));
         }
         self.remote.accept_offer(&allowed_offer).await;
         if restarting {

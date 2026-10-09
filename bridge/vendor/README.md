@@ -388,7 +388,9 @@ and `host_scout_socket_tests.rs` use the IPv4 cap in place of their
 `gso_batches::{a_65508_byte_ipv4_batch_is_sent, a_65508_byte_batch_to_an_ipv4_mapped_peer_is_sent, a_65532_byte_ipv6_batch_is_sent}`,
 flush the batch through a real loopback socket and count the datagrams that
 arrive: none did before the change. On Linux they require loopback GSO; elsewhere
-they skip, as they do where the host cannot bind IPv6 or dual-stack loopback.
+they skip, as they do where the host cannot bind IPv6 loopback. The mapped-peer
+test runs on Linux only: it clears `IPV6_V6ONLY` before binding `[::]:0`, so the
+host's `net.ipv6.bindv6only` default cannot make the socket IPv6-only.
 
 ## Tests
 

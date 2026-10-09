@@ -85,12 +85,15 @@ const menuHtml = (rowsHtml, name, note = "") => {
  *  `mountSplitMenu` keeps the second half true. */
 const POPUP_ATTRIBUTES = ' aria-haspopup="menu" aria-expanded="false"';
 
-function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = true, note = "" } = {}) {
+function menuOpenerHtml(label, { title, icon, iconHtml, arrow }) {
   const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
-  const opener = icon
-    ? `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}</button>`
-    : `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
-  return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
+  if (icon || iconHtml) return `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${iconHtml || esc(label)}</button>`;
+  return `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
+}
+
+function menuButtonHtml(label, rowsHtml, { title = "", icon = false, iconHtml = "", arrow = true, note = "" } = {}) {
+  const opener = menuOpenerHtml(label, { title, icon, iconHtml, arrow });
+  return `<div class="splitbtn${icon || iconHtml ? " splitbtn-icon" : ""}">
     ${opener}
     ${menuHtml(rowsHtml, title, note)}
   </div>`;
@@ -100,7 +103,8 @@ function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = tru
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
  *  button to press it with. Wire it with `mountSplitMenu`. `shape.note` puts
- *  a line of text under the rows (`menuNoteHtml`). */
+ *  a line of text under the rows (`menuNoteHtml`); `shape.iconHtml` is trusted
+ *  icon markup (an SVG from core/icons.js) drawn in place of the label. */
 export function menuButtonMarkup(label, options, shape = {}) {
   return menuButtonHtml(label, menuItemsHtml(options), shape);
 }

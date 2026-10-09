@@ -162,11 +162,12 @@ never take `serde_json::Value`; a test in that module enforces it. Slow git work
 is deferred and runs with the lock released.
 
 The scoped file mutations in `api/v1/git.rs` are individually announced
-capabilities, added in wire 3.13.0 (#391):
+capabilities, added in wire 3.13.0 (#391) and 3.16.0 (`fs.createFile`, #433):
 
 | Verb | Params beyond scope | Result |
 | --- | --- | --- |
 | `fs.createDirectory` | `parent`, `name` | `path` |
+| `fs.createFile` | `parent`, `name` | `path` |
 | `fs.uploadBegin` | `parent`, `name`, `size`, optional `replace` | `upload_id`, `path`, `chunk_bytes` |
 | `fs.uploadChunk` | `upload_id`, `offset`, `content_b64` (no scope) | `received` |
 | `fs.uploadFinish` | `upload_id` (no scope) | `path`, `size` |
@@ -258,7 +259,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.15.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.16.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -363,6 +364,9 @@ runtime that starts them.
   announced by its verb name; `tasks.review.pullRequests` separately announces PR
   mode, lifecycle, summaries and sync observations. Legacy Snapshot review
   verbs retain their contracts and individual capabilities. See Task reviews.
+  3.16.0 adds `fs.createFile` (#433), announced by its verb name: one empty
+  regular file in a resolved file scope, with `fs.createDirectory`'s fence and
+  `already_exists` refusal. `fs.write` still only replaces a file it has read.
   3.11.0 adds `conversation.reset` (#358) and thread generations on conversation
   digests and responses. Generation-aware requests refuse a cleared thread;
   the reset capability gates the menu, its generation-aware cache handling,

@@ -146,18 +146,19 @@ fn every_fixture_verb_has_an_advertised_capability() {
 }
 
 #[test]
-fn scoped_uploads_and_directory_creation_have_separate_typed_contracts() {
+fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
     let advertised = capabilities(false);
-    for method in [
-        "fs.createDirectory",
-        "fs.uploadBegin",
-        "fs.uploadChunk",
-        "fs.uploadFinish",
-        "fs.uploadAbort",
+    for (method, since) in [
+        ("fs.createDirectory", "3.13.0"),
+        ("fs.createFile", "3.16.0"),
+        ("fs.uploadBegin", "3.13.0"),
+        ("fs.uploadChunk", "3.13.0"),
+        ("fs.uploadFinish", "3.13.0"),
+        ("fs.uploadAbort", "3.13.0"),
     ] {
         assert!(advertised.contains(&method), "{method}: not announced");
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
-        assert_eq!(fixture["since"], "3.13.0");
+        assert_eq!(fixture["since"], since);
         let (_, handler) = v1::methods()
             .iter()
             .find(|(name, _)| *name == method)
@@ -199,7 +200,7 @@ fn scoped_uploads_and_directory_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.15.0");
+    assert_eq!(API_VERSION, "3.16.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -323,7 +324,7 @@ fn review_snapshots_and_selected_git_actions_have_separate_capabilities() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.15.0");
+    assert_eq!(API_VERSION, "3.16.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [

@@ -184,6 +184,23 @@ impl AppState {
         })
     }
 
+    /// Create one empty file beside `fs.createDirectory`, under the same
+    /// scope, fence and refusal of an existing name. `fs.write` only replaces
+    /// a file it has read, so a new file starts here.
+    pub(crate) fn fs_create_file(
+        &mut self,
+        params: FsCreateDirectoryParams,
+    ) -> Result<FsCreateDirectoryResult, ApiError> {
+        let (scope, root) = self.file_mutation_scope(&params.scope)?;
+        let destination =
+            crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
+        destination.create_file()?;
+        self.finish_file_mutation(&scope)?;
+        Ok(FsCreateDirectoryResult {
+            path: destination.path().into(),
+        })
+    }
+
     fn file_mutation_scope(
         &mut self,
         params: &ScopeParams,

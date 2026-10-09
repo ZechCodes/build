@@ -1016,6 +1016,10 @@ fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
             json!({"workspace_id": ws, "source_id": source_id, "parent": "", "name": "new-dir"}),
         ),
         (
+            "fs.createFile",
+            json!({"workspace_id": ws, "source_id": source_id, "parent": "", "name": "new-file"}),
+        ),
+        (
             "fs.uploadBegin",
             json!({"workspace_id": ws, "source_id": source_id, "parent": "", "name": "another.bin", "size": 0}),
         ),
@@ -1030,6 +1034,7 @@ fn fs_upload_verbs_and_directory_creation_refuse_a_reserved_workspace() {
         assert_eq!(response["error_code"], "busy", "{method}: {response:?}");
     }
     assert!(!checkout.join("new-dir").exists());
+    assert!(!checkout.join("new-file").exists());
     assert!(!checkout.join("another.bin").exists());
     let aborted = scoped_call("fs.uploadAbort", json!({"upload_id": id}));
     assert_eq!(aborted["ok"], true, "{aborted:?}");

@@ -13,18 +13,22 @@ beforeEach(async () => { capabilities = { fs: {} }; await wipeCache(); });
 const context = () => ({ deviceId: "d", rpc: vi.fn(async () => ({})), whenGreeted: async (dispatch) => ({ sent: dispatch() }) });
 it("derives flags independently from the announced verbs", () => {
   expect(capabilitiesOf({ api_version: "3.13.0", capabilities: ["fs.uploadBegin"] }).fs).toMatchObject({ uploads: true, createDirectory: false });
-  expect(capabilitiesOf({ api_version: "3.13.0", capabilities: ["fs.createDirectory"] }).fs).toMatchObject({ uploads: false, createDirectory: true });
+  expect(capabilitiesOf({ api_version: "3.13.0", capabilities: ["fs.createDirectory"] }).fs).toMatchObject({ uploads: false, createDirectory: true, createFile: false });
+  expect(capabilitiesOf({ api_version: "3.16.0", capabilities: ["fs.createFile"] }).fs).toMatchObject({ uploads: false, createDirectory: false, createFile: true });
+  expect(capabilitiesOf({ api_version: "3.16.0", capabilities: ["fs.write", "fs.createDirectory"] }).fs.createFile).toBe(false);
 });
 it("remembers support for cold mounts and older greetings", async () => {
-  expect(await readFileUploadSupport("d")).toEqual({ uploads: false, createDirectory: false });
+  expect(await readFileUploadSupport("d")).toEqual({ uploads: false, createDirectory: false, createFile: false });
   await rememberFileUploadSupport("d", { fs: { uploads: true, createDirectory: true } });
-  expect(await readFileUploadSupport("d")).toEqual({ uploads: true, createDirectory: true });
+  expect(await readFileUploadSupport("d")).toEqual({ uploads: true, createDirectory: true, createFile: false });
+  await rememberFileUploadSupport("d", { fs: { uploads: true, createDirectory: true, createFile: true } });
+  expect(await readFileUploadSupport("d")).toEqual({ uploads: true, createDirectory: true, createFile: true });
   await rememberFileUploadSupport("d", { fs: {} });
-  expect(await readFileUploadSupport("d")).toEqual({ uploads: false, createDirectory: false });
+  expect(await readFileUploadSupport("d")).toEqual({ uploads: false, createDirectory: false, createFile: false });
 });
 it("refuses older bridges before beginning writes", async () => {
   const machine = context();
-  for (const method of ["fs.uploadBegin", "fs.createDirectory"]) await expect(fileUploadRpc(machine)(method, { parent: "", name: "file" })).rejects.toThrow("Update the bridge");
+  for (const method of ["fs.uploadBegin", "fs.createDirectory", "fs.createFile"]) await expect(fileUploadRpc(machine)(method, { parent: "", name: "file" })).rejects.toThrow("Update the bridge");
   expect(machine.rpc).not.toHaveBeenCalled();
 });
 it("waits for greeting and preserves selectors and options", async () => {

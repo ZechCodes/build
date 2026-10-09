@@ -32,10 +32,17 @@ export async function seedFiles({ theme }) {
     ? `# ${path}\n\nEverything an agent working in this repository needs to follow.\n\n## Read first\n\nRead ARCHITECTURE.md before changing spa/ or bridge/.\n`
     : `// ${path}\nimport { renderFilesTab } from "./views/files.js";\n\nexport function boot() {\n  return renderFilesTab(document.body, {});\n}\n`;
   const encode = (text) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+  const created = new Set();
   const callRpc = async (method, params) => {
     if (method === "fs.tree") return { path: params.path, entries: tree[params.path] || [] };
+    if (method === "fs.createFile") {
+      const path = params.parent ? `${params.parent}/${params.name}` : params.name;
+      (tree[params.parent] ||= []).push(file(params.name, 0));
+      created.add(path);
+      return { path };
+    }
     if (method === "fs.read") {
-      const text = body(params.path);
+      const text = created.has(params.path) ? "" : body(params.path);
       const mime = params.path.endsWith(".md") ? "text/markdown" : "text/plain";
       return { path: params.path, mime, size: text.length, truncated: false, editable: true, encoding: "utf-8", revision: "r1", content_b64: encode(text) };
     }
@@ -46,13 +53,14 @@ export async function seedFiles({ theme }) {
   });
 }
 
-export async function mountFilesExplorer(page, basePath, { theme = "dark" } = {}) {
+export async function mountFilesExplorer(page, basePath, { theme = "dark", beforeSeed = async () => {} } = {}) {
   await mountLayout(page, SHELL_HTML, { basePath, styles: SHELL_STYLES });
   // A phone lays out at its own width only with the app's viewport tag.
   await page.evaluate(() => {
     const viewport = Object.assign(document.createElement("meta"), { name: "viewport", content: "width=device-width, initial-scale=1" });
     document.head.prepend(viewport);
   });
+  await beforeSeed();
   await loadBrowserModules(page, { files: "src/views/files.js", scope: "src/core/cacheScope.js" }, basePath);
   await page.evaluate(seedFiles, { theme });
   await page.waitForSelector('.frow[data-path="spa"]', { state: "attached" });

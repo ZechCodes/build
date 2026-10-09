@@ -55,6 +55,32 @@ impl Destination {
             .map_err(|error| ApiError::internal(format!("cannot sync directory: {error}")))
     }
 
+    /// Publish one empty regular file; an entry already at the name, of any
+    /// kind, is refused rather than truncated or followed.
+    pub(crate) fn create_file(&self) -> Result<(), ApiError> {
+        // SAFETY: the directory is owned and the plain relative name is a live C string.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let fd = unsafe {
+            libc::openat(
+                self.directory.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                0o644,
+            )
+        };
+        if fd < 0 {
+            return Err(entry_error("cannot create file"));
+        }
+        // SAFETY: openat returned a new owned descriptor.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        let file = unsafe { File::from_raw_fd(fd) };
+        file.sync_all()
+            .map_err(|error| ApiError::internal(format!("cannot sync file: {error}")))?;
+        self.directory
+            .sync_all()
+            .map_err(|error| ApiError::internal(format!("cannot sync directory: {error}")))
+    }
+
     fn check_target(&self, replace: bool) -> Result<(), ApiError> {
         let Some(metadata) = stat_at(&self.directory, &self.name)? else {
             return Ok(());

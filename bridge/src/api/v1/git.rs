@@ -71,6 +71,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             FsCreateDirectoryResult
         ),
         v1_method!(
+            "fs.createFile",
+            fs_create_file,
+            FsCreateDirectoryParams,
+            FsCreateDirectoryResult
+        ),
+        v1_method!(
             "fs.uploadBegin",
             fs_upload_begin,
             FsUploadBeginParams,
@@ -312,7 +318,8 @@ pub struct FsWriteParams {
     pub content_b64: String,
 }
 
-/// Create one directory inside the same resolved file scope as `fs.tree`.
+/// Create one directory (`fs.createDirectory`) or one empty file
+/// (`fs.createFile`) inside the same resolved file scope as `fs.tree`.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsCreateDirectoryParams {
     #[serde(flatten)]
@@ -1075,6 +1082,13 @@ fn fs_create_directory(
     params: FsCreateDirectoryParams,
 ) -> Result<FsCreateDirectoryResult, ApiError> {
     app.fs_create_directory(params)
+}
+
+fn fs_create_file(
+    app: &mut AppState,
+    params: FsCreateDirectoryParams,
+) -> Result<FsCreateDirectoryResult, ApiError> {
+    app.fs_create_file(params)
 }
 
 fn fs_upload_begin(

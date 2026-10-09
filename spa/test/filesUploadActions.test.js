@@ -83,7 +83,7 @@ describe("cached directory actions", () => {
     input = host.querySelector(".fupload-folder input");
     input.value = "drafts";
     key(input, "Enter");
-    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/drafts"));
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/drafts", "folder"));
     expect(callRpc).toHaveBeenCalledWith("fs.createDirectory", { workspace_id: "w", source_id: "code", parent: "docs", name: "drafts" });
     expect(treeKey).not.toHaveBeenCalled();
     expect(host.querySelector(".fupload-folder")).toBeNull();
@@ -99,7 +99,7 @@ describe("cached directory actions", () => {
     expect(input.disabled).toBe(false);
     input.value = "next";
     key(input, "Enter");
-    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/next"));
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/next", "folder"));
   });
   it("reports successful folder creation even if the view was disposed while awaiting it", async () => {
     mount();
@@ -110,7 +110,7 @@ describe("cached directory actions", () => {
     key(input, "Enter");
     actions.dispose();
     resolve({ path: "docs/drafts" });
-    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/drafts"));
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/drafts", "folder"));
   });
 });
 
@@ -303,4 +303,119 @@ it.each(["", ".", "..", "bad/name", "bad\\name", "bad\0name"])("rejects invalid 
   key(input, "Enter");
   expect(callRpc).not.toHaveBeenCalled();
   expect(host.querySelector('[role="alert"]').textContent).toContain("folder name");
+});
+
+describe("the New menu", () => {
+  const all = { uploads: true, createDirectory: true, createFile: true };
+  const opener = (path) => row(path).querySelector(".fupload-new .caret");
+  const menu = (path) => row(path).querySelector(".fupload-new .splitmenu");
+  const item = (path, kind) => menu(path).querySelector(`[data-action="${kind}"]`);
+  const labels = (path) => [...menu(path).querySelectorAll(".mi .mt")].map((label) => label.textContent);
+
+  it("keeps the folder icon in the button's place and lists New file then New folder", () => {
+    mount(all);
+    expect(button("docs", "folder")).toBeNull();
+    const caret = opener("docs");
+    expect(caret.querySelector("svg")).not.toBeNull();
+    expect(caret.getAttribute("aria-haspopup")).toBe("menu");
+    expect(caret.getAttribute("aria-label")).toBe("New file or folder");
+    expect(caret.closest(".fupload-directory-actions").lastElementChild.contains(caret)).toBe(true);
+    expect(labels("docs")).toEqual(["New file", "New folder"]);
+    expect(menu("docs").hidden).toBe(true);
+  });
+  it("draws no menu for an older bridge and only New folder for one without fs.createFile", () => {
+    mount({ uploads: false, createDirectory: false, createFile: false });
+    expect(host.querySelector(".fupload-new, [data-upload-action]")).toBeNull();
+    actions.setCapabilities({ uploads: false, createDirectory: true, createFile: false });
+    expect(host.querySelector(".fupload-new")).toBeNull();
+    expect(button("docs", "folder").getAttribute("aria-label")).toBe("New folder");
+    actions.setCapabilities({ uploads: false, createDirectory: false, createFile: true });
+    expect(labels("docs")).toEqual(["New file"]);
+  });
+  it("opens on click without toggling the row, and closes on Escape and an outside press", () => {
+    mount(all);
+    const treeClick = vi.fn();
+    const treeKey = vi.fn();
+    host.querySelector(".ftree-list").addEventListener("click", treeClick);
+    host.querySelector(".ftree-list").addEventListener("keydown", treeKey);
+    key(opener("docs"), "Enter");
+    opener("docs").click();
+    expect(opener("docs").getAttribute("aria-expanded")).toBe("true");
+    key(opener("docs"), "ArrowDown");
+    expect(document.activeElement).toBe(item("docs", "file"));
+    key(item("docs", "file"), "Escape");
+    expect(opener("docs").getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(opener("docs"));
+    opener("docs").click();
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+    expect(opener("docs").getAttribute("aria-expanded")).toBe("false");
+    expect(treeClick).not.toHaveBeenCalled();
+    expect(treeKey).not.toHaveBeenCalled();
+  });
+  it("New folder opens today's folder draft", async () => {
+    mount(all);
+    opener("docs").click();
+    item("docs", "folder").click();
+    const input = host.querySelector(".fupload-folder input");
+    expect(input.getAttribute("aria-label")).toBe("New folder name");
+    expect(input.placeholder).toBe("Folder name");
+    expect(document.activeElement).toBe(input);
+    input.value = "drafts";
+    key(input, "Enter");
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/drafts", "folder"));
+    expect(callRpc).toHaveBeenCalledWith("fs.createDirectory", { workspace_id: "w", source_id: "code", parent: "docs", name: "drafts" });
+  });
+  it("New file focuses a file draft and creates the file with Enter", async () => {
+    mount(all);
+    const treeClick = vi.fn();
+    const treeKey = vi.fn();
+    host.querySelector(".ftree-list").addEventListener("click", treeClick);
+    host.querySelector(".ftree-list").addEventListener("keydown", treeKey);
+    opener("docs").click();
+    item("docs", "file").click();
+    const input = host.querySelector(".fupload-folder input");
+    expect(input.getAttribute("aria-label")).toBe("New file name");
+    expect(input.placeholder).toBe("File name");
+    expect(document.activeElement).toBe(input);
+    expect(row("docs").nextElementSibling).toBe(input.parentElement);
+    input.value = "notes.md";
+    key(input, "Enter");
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/notes.md", "file"));
+    expect(callRpc).toHaveBeenCalledWith("fs.createFile", { workspace_id: "w", source_id: "code", parent: "docs", name: "notes.md" });
+    expect(host.querySelector(".fupload-folder")).toBeNull();
+    expect(treeClick).not.toHaveBeenCalled();
+    expect(treeKey).not.toHaveBeenCalled();
+  });
+  it("refuses a taken file name inline with Already exists and accepts the next", async () => {
+    mount(all);
+    callRpc.mockRejectedValueOnce(Object.assign(new Error("docs/notes.md already exists"), { code: "already_exists" }));
+    opener("docs").click();
+    item("docs", "file").click();
+    const input = host.querySelector(".fupload-folder input");
+    input.value = "notes.md";
+    key(input, "Enter");
+    await vi.waitFor(() => expect(host.querySelector('[role="alert"]').textContent).toBe("Already exists"));
+    expect(input.disabled).toBe(false);
+    expect(document.activeElement).toBe(input);
+    input.value = "notes-2.md";
+    key(input, "Enter");
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(root, "docs", "docs/notes-2.md", "file"));
+  });
+  it("rejects an invalid file name locally", () => {
+    mount(all);
+    opener("docs").click();
+    item("docs", "file").click();
+    const input = host.querySelector(".fupload-folder input");
+    input.value = "a/b";
+    key(input, "Enter");
+    expect(callRpc).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="alert"]').textContent).toBe("Enter a file name without slashes.");
+  });
+  it("closes a file draft when the bridge stops offering files", () => {
+    mount(all);
+    opener("docs").click();
+    item("docs", "file").click();
+    actions.setCapabilities({ uploads: true, createDirectory: true, createFile: false });
+    expect(host.querySelector(".fupload-folder")).toBeNull();
+  });
 });

@@ -858,6 +858,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     treeEl, viewerEl: body.querySelector("#fpreview"), roots: checkout.roots,
     keyOf: checkout.keyOf, tree, callRpc, deviceId: filesDeviceId(cacheScope),
     listingAddress: (root, parent) => rootAddress(root, "tree", parent),
+    onOpen: openFromTree,
   });
 
   if (openKey) void tree.reveal(openKey);

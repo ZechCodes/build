@@ -1,18 +1,32 @@
 import { esc } from "./text.js";
-import { uploadNameValid } from "./fileUploadsModel.js";
+import { NEW_ENTRIES, newEntryError, newEntryKinds, uploadNameValid } from "./fileUploadsModel.js";
 import { parentPath } from "./fileTreeModel.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { notifyError } from "./notify.js";
 import { ICON_UPLOAD, ICON_FOLDER_PLUS } from "./icons.js";
 import { mountLongPress } from "./longPress.js";
+import { closeSplitMenusWithin, menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
 import "../styles/fileUploadActions.css";
 
 const actionButton = (action, title, mark) => `<button type="button" class="iconbtn" data-upload-action="${action}" aria-label="${title}" title="${title}">${mark}</button>`;
-const actionsHtml = (support) => `<span class="fupload-directory-actions">${support.uploads ? actionButton("upload", "Upload files", ICON_UPLOAD) : ""}${support.createDirectory ? actionButton("folder", "New folder", ICON_FOLDER_PLUS) : ""}</span>`;
+// A bridge that can create files makes New a menu; one that can only create
+// folders keeps the single New folder button it has always had.
+const newHtml = (support) => {
+  const kinds = newEntryKinds(support);
+  if (!support.createFile) return kinds.length ? actionButton("folder", NEW_ENTRIES.folder.label, ICON_FOLDER_PLUS) : "";
+  const items = kinds.map((kind) => ({ id: kind, label: NEW_ENTRIES[kind].label }));
+  return `<span class="fupload-new">${menuButtonMarkup("", items, { title: "New file or folder", iconHtml: ICON_FOLDER_PLUS })}</span>`;
+};
+const actionsHtml = (support) => `<span class="fupload-directory-actions">${support.uploads ? actionButton("upload", "Upload files", ICON_UPLOAD) : ""}${newHtml(support)}</span>`;
+const offersActions = (support) => support.uploads || newEntryKinds(support).length > 0;
 const fileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes("Files");
 const rootIdOf = (row) => row.closest("[data-root]")?.dataset.root ?? row.dataset.rootHead;
 const directoryRows = (host) => [...host.querySelectorAll('[data-kind="dir"], [data-root-head], [data-upload-root]')];
-const interactive = (event) => event.target.closest?.("[data-upload-action], .fupload-folder, .fupload-input");
+const interactive = (event) => event.target.closest?.("[data-upload-action], .fupload-new, .fupload-folder, .fupload-input");
+// The New menu answers its own clicks and keys (core/splitButton.js); the
+// host's capture handlers must let them reach it.
+const inNewMenu = (event) => event.target.closest?.(".fupload-new");
+const keepFromTree = (event) => event.stopPropagation();
 const actionRow = (event) => {
   const row = event.target.closest?.(".frow");
   return row?.querySelector(".fupload-directory-actions") ? row : null;
@@ -102,49 +116,58 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     draft.field.disabled = false;
     draft.field.focus();
   };
-  const createFolder = async () => {
+  const createEntry = async () => {
     const current = draft;
+    const entry = NEW_ENTRIES[current.kind];
     const name = current.field.value;
-    if (!uploadNameValid(name)) return showDraftError("Enter a folder name without slashes.");
+    if (!uploadNameValid(name)) return showDraftError(entry.invalid);
     current.field.disabled = true;
     current.error.textContent = "";
     const { root, parent } = current.target;
     const scope = { ...root.scope };
     try {
-      const result = await callRpc("fs.createDirectory", { ...scope, parent, name });
+      const result = await callRpc(entry.method, { ...scope, parent, name });
       if (!disposed && draft === current) closeDraft();
-      onCreated({ ...root, scope }, parent, result.path);
+      onCreated({ ...root, scope }, parent, result.path, current.kind);
     } catch (error) {
-      if (!disposed && draft === current) showDraftError(error.message || "Could not create folder.");
+      if (!disposed && draft === current) showDraftError(newEntryError(current.kind, error));
     }
   };
-  const newFolder = (target) => {
+  const newEntry = (target, kind) => {
     closeDraft();
+    const entry = NEW_ENTRIES[kind];
     const element = document.createElement("div");
     element.className = "fupload-folder";
     element.style.setProperty("--depth", Number(target.row.style.getPropertyValue("--depth") || 0) + 1);
-    element.innerHTML = `<input class="mini" type="text" aria-label="New folder name" placeholder="Folder name" ${fieldTraits("identifier", "done")}><span class="fupload-folder-error" role="alert"></span>`;
+    element.innerHTML = `<input class="mini" type="text" aria-label="${entry.field}" placeholder="${entry.placeholder}" ${fieldTraits("identifier", "done")}><span class="fupload-folder-error" role="alert"></span>`;
     target.row.after(element);
-    draft = { target, element, field: element.querySelector("input"), error: element.querySelector("span") };
+    draft = { kind, target, element, field: element.querySelector("input"), error: element.querySelector("span") };
     draft.field.focus();
   };
+  const mountNewMenu = (row) => {
+    const container = row.querySelector(".fupload-new");
+    if (!container) return;
+    container.addEventListener("click", keepFromTree);
+    container.addEventListener("keydown", keepFromTree);
+    mountSplitMenu(container, { onChoose: (kind) => { if (NEW_ENTRIES[kind]) newEntry(targetOfRow(row), kind); } });
+  };
   const onClick = (event) => {
-    if (!interactive(event)) return;
+    if (!interactive(event) || inNewMenu(event)) return;
     event.stopPropagation();
     const button = event.target.closest("[data-upload-action]");
     if (!button) return;
     const target = targetOfRow(button.closest(".frow"));
-    if (button.dataset.uploadAction === "folder") return newFolder(target);
+    if (button.dataset.uploadAction === "folder") return newEntry(target, "folder");
     selectedTarget = target;
     input.value = "";
     input.click();
   };
   const onKeyDown = (event) => {
-    if (!interactive(event)) return;
+    if (!interactive(event) || inNewMenu(event)) return;
     event.stopPropagation();
     if (!event.target.closest(".fupload-folder")) return;
     if (event.key === "Escape") { event.preventDefault(); closeDraft(); }
-    if (event.key === "Enter") { event.preventDefault(); if (!draft.field.disabled) void createFolder(); }
+    if (event.key === "Enter") { event.preventDefault(); if (!draft.field.disabled) void createEntry(); }
   };
   const onChange = () => {
     if (selectedTarget && input.files.length) uploads.enqueue({ ...uploadTarget(selectedTarget), files: Array.from(input.files) });
@@ -166,8 +189,12 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
     // SVG serialization expands self-closing paths; comparing outerHTML to
     // the raw icon would continually replace buttons in the mutation observer.
     if (held && decoratedMarkup.get(row) === markup) return;
+    if (held) closeSplitMenusWithin(held);
     held?.remove();
-    if (support.uploads || support.createDirectory) row.insertAdjacentHTML("beforeend", markup);
+    if (offersActions(support)) {
+      row.insertAdjacentHTML("beforeend", markup);
+      mountNewMenu(row);
+    }
     decoratedMarkup.set(row, markup);
   };
   const restoreDraft = () => {
@@ -177,7 +204,7 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   };
   const decorate = () => {
     if (disposed) return;
-    if (support.uploads || support.createDirectory) ensureRoot();
+    if (offersActions(support)) ensureRoot();
     const markup = actionsHtml(support);
     directoryRows(host).forEach((row) => decorateRow(row, markup));
     // A cache listing can repaint while a name is being typed. Keep that field
@@ -201,10 +228,11 @@ export function mountFilesUploadActions(host, { roots, capabilities, uploads, ca
   host.addEventListener("drop", onDrop);
   input.addEventListener("change", onChange);
   return {
-    setCapabilities(next) { support = next; longPress.clear(); clearDrop(); if (!support.createDirectory) closeDraft(); decorate(); },
+    setCapabilities(next) { support = next; longPress.clear(); clearDrop(); if (draft && !newEntryKinds(support).includes(draft.kind)) closeDraft(); decorate(); },
     dispose() {
       disposed = true;
       observer.disconnect();
+      closeSplitMenusWithin(host);
       longPress.dispose();
       clearDrop(); closeDraft(); input.remove();
       host.removeEventListener("click", onClick, true);

@@ -1,13 +1,13 @@
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 
 export const fileUploadSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "file-upload-support" });
-const supportOf = (fs) => ({ uploads: fs?.uploads === true, createDirectory: fs?.createDirectory === true });
+const supportOf = (fs) => ({ uploads: fs?.uploads === true, createDirectory: fs?.createDirectory === true, createFile: fs?.createFile === true });
 
 export function rememberFileUploadSupport(deviceId, capabilities) {
   if (!deviceId) return Promise.resolve(false);
   const support = supportOf(capabilities?.fs);
   return mergeCachedAtomically(fileUploadSupportAddress(deviceId), (held) =>
-    held?.uploads === support.uploads && held?.createDirectory === support.createDirectory ? null : support);
+    Object.entries(support).every(([flag, value]) => held?.[flag] === value) ? null : support);
 }
 
 export async function readFileUploadSupport(deviceId) {

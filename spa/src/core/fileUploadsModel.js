@@ -10,6 +10,20 @@ export function uploadInputError(name, size) {
 export const UPLOAD_RETENTION_MS = 30 * 60 * 1000;
 export const joinUploadPath = (parent, name) => parent ? `${parent.replace(/\/$/, "")}/${name}` : name;
 export const uploadErrorCode = (error) => error?.code || error?.error?.code || null;
+
+/** The inline drafts a directory row's New action opens, in menu order. */
+export const NEW_ENTRIES = Object.freeze({
+  file: Object.freeze({ label: "New file", field: "New file name", placeholder: "File name", method: "fs.createFile", capability: "createFile", invalid: "Enter a file name without slashes.", failed: "Could not create file." }),
+  folder: Object.freeze({ label: "New folder", field: "New folder name", placeholder: "Folder name", method: "fs.createDirectory", capability: "createDirectory", invalid: "Enter a folder name without slashes.", failed: "Could not create folder." }),
+});
+
+/** What the New action offers this bridge: a kind per announced verb. */
+export const newEntryKinds = (support) => Object.keys(NEW_ENTRIES).filter((kind) => support?.[NEW_ENTRIES[kind].capability] === true);
+
+/** The line under a refused draft. A file name already taken says so plainly;
+ *  a folder keeps the bridge's own sentence, as it always has. */
+export const newEntryError = (kind, error) =>
+  kind === "file" && uploadErrorCode(error) === "already_exists" ? "Already exists" : error?.message || NEW_ENTRIES[kind].failed;
 export const uploadMetadata = (item, canRetry = false) => {
   const { file: _file, callRpc: _callRpc, onFinished: _onFinished, uploadId: _uploadId, cancelled: _cancelled, replace: _replace, aborting: _aborting, ...metadata } = item;
   return { ...metadata, scope: { ...metadata.scope }, canRetry };

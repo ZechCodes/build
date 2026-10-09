@@ -6,7 +6,8 @@
   .frow:has(.fupload-directory-actions) { -webkit-touch-callout:none; user-select:none; }
 }
 .frow.fupload-revealed .fupload-directory-actions, .frow:has(:focus-visible) .fupload-directory-actions,
-.frow:focus-visible .fupload-directory-actions { opacity:1; pointer-events:auto; }
+.frow:focus-visible .fupload-directory-actions,
+.frow:has(.fupload-new [aria-expanded="true"]) .fupload-directory-actions { opacity:1; pointer-events:auto; }
 .fupload-directory-actions .iconbtn { width:22px; height:22px; padding:0; font-size:15px; color:var(--accent); }
 .fupload-directory-actions .iconbtn svg { display:block; width:14px; height:14px; margin:auto; }
 .frow:has(.fupload-directory-actions) { position:relative; min-height:30px; box-sizing:border-box; }
@@ -19,3 +20,9 @@
 .fupload-folder { padding:5px 13px 5px calc(var(--pane-gutter) + var(--depth, 0) * 14px); }
 .fupload-folder input { width:100%; min-width:0; box-sizing:border-box; }
 .fupload-folder-error { display:block; color:var(--ink2); font-size:12px; margin-top:3px; overflow-wrap:anywhere; }
+/* The New menu: the folder-plus button opens New file / New folder. Lifted to
+   the viewport by core/splitButton.js inside the scrolling tree; these are its
+   resting place and size otherwise. */
+.fupload-new { display:inline-flex; }
+.fupload-new .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto; min-width:150px; cursor:default; }
+.fupload-new .splitmenu .mi { font-weight:normal; white-space:nowrap; }

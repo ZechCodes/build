@@ -46,7 +46,7 @@ function menuItemsHtml(options) {
   return options
     .map(
       (o) =>
-        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"${roleAttributes(o)} tabindex="-1"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
+        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"${roleAttributes(o)} tabindex="-1"><span class="mt">${esc(o.menuLabel ?? o.label)}</span>${o.description ? `<span class="md">${esc(o.description)}</span>` : ""}</div>`,
     )
     .join("");
 }
@@ -85,10 +85,10 @@ const menuHtml = (rowsHtml, name, note = "") => {
  *  `mountSplitMenu` keeps the second half true. */
 const POPUP_ATTRIBUTES = ' aria-haspopup="menu" aria-expanded="false"';
 
-function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = true, note = "" } = {}) {
+function menuButtonHtml(label, rowsHtml, { title = "", icon = false, iconHtml = "", arrow = true, note = "" } = {}) {
   const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
-  const opener = icon
-    ? `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}</button>`
+  const opener = icon || iconHtml
+    ? `<button type="button" class="iconbtn caret"${titled}${POPUP_ATTRIBUTES}>${iconHtml || esc(label)}</button>`
     : `<button type="button" class="btn mini caret"${titled}${POPUP_ATTRIBUTES}>${esc(label)}${arrow ? ' <span class="disclosure-caret" aria-hidden="true">▾</span>' : ""}</button>`;
   return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
     ${opener}
@@ -100,7 +100,8 @@ function menuButtonHtml(label, rowsHtml, { title = "", icon = false, arrow = tru
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
  *  button to press it with. Wire it with `mountSplitMenu`. `shape.note` puts
- *  a line of text under the rows (`menuNoteHtml`). */
+ *  a line of text under the rows (`menuNoteHtml`); `shape.iconHtml` is trusted
+ *  icon markup (an SVG from core/icons.js) drawn in place of the label. */
 export function menuButtonMarkup(label, options, shape = {}) {
   return menuButtonHtml(label, menuItemsHtml(options), shape);
 }

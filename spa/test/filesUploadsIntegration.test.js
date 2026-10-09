@@ -36,6 +36,8 @@ const fakeRpc = () => {
   const callRpc = vi.fn(async (method, params) => {
     if (method === "fs.tree") return { path: params.path, entries: [...(listings[params.path] || [])] };
     if (method === "fs.createDirectory") { listings[params.parent].push({ name: params.name, kind: "dir" }); return { path: `${params.parent}/${params.name}` }; }
+    if (method === "fs.createFile") { listings[params.parent].push({ name: params.name, kind: "file", size: 0 }); return { path: `${params.parent}/${params.name}` }; }
+    if (method === "fs.read") return { path: params.path, size: 0, truncated: false, mime: "text/plain", content_b64: "", editable: true, encoding: "utf-8", revision: "e3b0c442" };
     if (method === "fs.uploadBegin") { file = params; return { upload_id: "u", path: `${params.parent}/${params.name}`, chunk_bytes: 2 }; }
     if (method === "fs.uploadChunk") return { received: params.offset + atob(params.content_b64).length };
     if (method === "fs.uploadFinish") { listings[file.parent].push({ name: file.name, kind: "file", size: file.size }); return { path: `${file.parent}/${file.name}`, size: file.size }; }
@@ -67,6 +69,21 @@ for (const source of sources) {
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(host.querySelector('[data-path="ignored/drafts"]')).toBeTruthy());
     expect(rpc.mock.calls.filter(([method, params]) => method === "fs.tree" && params.path === "ignored").length).toBeGreaterThan(reads);
+  });
+}
+for (const source of sources) {
+  it(`creates a file from the New menu in a ${source.label}, then selects and opens it`, async () => {
+    await rememberFileUploadSupport(device, { fs: { uploads: true, createDirectory: true, createFile: true } });
+    const rpc = fakeRpc();
+    const { host } = mount(source, rpc);
+    await vi.waitFor(() => expect(host.querySelector('[data-path="ignored"] .fupload-new .caret')).toBeTruthy());
+    host.querySelector('[data-path="ignored"] .fupload-new .caret').click();
+    host.querySelector('[data-path="ignored"] .fupload-new [data-action="file"]').click();
+    const input = host.querySelector('.fupload-folder input[aria-label="New file name"]'); input.value = "notes.md";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(host.querySelector('[data-path="ignored/notes.md"]')?.getAttribute("aria-current")).toBe("true"));
+    expect(rpc).toHaveBeenCalledWith("fs.createFile", { ...source.scope, parent: "ignored", name: "notes.md" });
+    expect(rpc.mock.calls.some(([method, params]) => method === "fs.read" && params.path === "ignored/notes.md")).toBe(true);
   });
 }
 it("keeps an upload and completion refresh through a Files remount", async () => {

@@ -10,7 +10,7 @@ import { mountFilesUploadActions } from "./filesUploadActions.js";
 const sameScope = (left, right) => Object.keys(left).length === Object.keys(right).length
   && Object.entries(left).every(([key, value]) => right[key] === value);
 
-export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRpc, deviceId, listingAddress }) {
+export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRpc, deviceId, listingAddress, onOpen = () => {} }) {
   let disposed = false;
   const refreshed = new Set();
   const observedActive = new Set();
@@ -23,17 +23,19 @@ export function mountFilesUploads({ treeEl, viewerEl, roots, keyOf, tree, callRp
     const address = listingAddress(root, parent);
     if (address) await deleteCached([address]);
   };
-  const refresh = async (root, parent, path) => {
+  const refresh = async (root, parent, path, kind = "folder") => {
     await invalidate(root, parent);
     if (disposed) return;
     const current = roots.find((candidate) => candidate.id === root.id && sameScope(candidate.scope, root.scope));
     if (!current) return;
     await tree.reveal(keyOf(current, path));
-    if (!disposed) tree.relist([parent], root.id);
+    if (disposed) return;
+    tree.relist([parent], root.id);
+    if (kind === "file") onOpen(keyOf(current, path));
   };
   const actions = mountFilesUploadActions(treeEl, {
-    roots, capabilities: { uploads: false, createDirectory: false }, uploads, callRpc: rpc,
-    onCreated: (root, parent, path) => void refresh(root, parent, path),
+    roots, capabilities: { uploads: false, createDirectory: false, createFile: false }, uploads, callRpc: rpc,
+    onCreated: (root, parent, path, kind) => void refresh(root, parent, path, kind),
     onFinished: ({ rootId, scope, parent }) => invalidate({ id: rootId, scope }, parent),
   });
   const readSupport = async () => {

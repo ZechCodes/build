@@ -86,7 +86,7 @@ export { SPA_API_RANGE };
  *  a greeting, and about a bridge nobody here speaks to. */
 const NO_CAPABILITIES = Object.freeze({
   changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]) }),
-  fs: Object.freeze({ projectSources: false, uploads: false, createDirectory: false }),
+  fs: Object.freeze({ projectSources: false, uploads: false, createDirectory: false, createFile: false }),
   requests: Object.freeze({ priority: false }),
   rtc: Object.freeze({ clientLanCache: false }),
   errors: Object.freeze({ codes: false }),

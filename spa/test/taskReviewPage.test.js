@@ -9,6 +9,7 @@ import { mountTaskReviewPage } from "../src/core/taskReviewPage.js";
 import { writeTaskRecord } from "../src/core/trackerCache.js";
 import fixture from "../../fixtures/api/v1/tasks.review.get.json";
 import prFixture from "../../fixtures/api/v1/tasks.review.open.json";
+import { painted } from "./waits.js";
 
 const panes = vi.hoisted(() => ({ changes: vi.fn(), files: vi.fn() }));
 vi.mock("../src/core/taskReviewChanges.js", () => ({ mountTaskReviewChanges: (host, options) => {
@@ -139,10 +140,10 @@ it("refreshes destinations after saving a snapshot whose mutation omits them", a
   page = mountTaskReviewPage(document.querySelector("#review"), {
     ...scope, callRpc, workspaces: () => [], task: () => ({ id: scope.taskId }), onTaskChanged: () => saved(),
   });
-  await vi.waitFor(() => expect(document.querySelector('[data-review-save]')).not.toBeNull());
+  await painted(() => document.querySelector('[data-review-save]'));
   document.querySelector('[data-review-save]').dispatchEvent(new Event("submit", { cancelable: true }));
   await settled;
-  await vi.waitFor(() => expect(document.querySelector('[data-review-source="dir-api"]')).not.toBeNull());
+  await painted(() => document.querySelector('[data-review-source="dir-api"]'));
   const methods = callRpc.mock.calls.map(([method]) => method);
   expect(methods.lastIndexOf("tasks.review.get")).toBeGreaterThan(methods.indexOf("tasks.review.snapshot"));
 });

@@ -1,0 +1,10 @@
+[data-pr-merge-sheet] summary { cursor: pointer; color: var(--accent); padding: 8px 0; }
+[data-pr-merge-form], .pr-merge-fields { display: grid; gap: 12px; min-width: 0; }
+.pr-merge-fields { margin: 0; padding: 0; border: 0; }
+[data-pr-merge-form] input:not([type="checkbox"]), [data-pr-merge-form] select { width: 100%; box-sizing: border-box; min-width: 0; }
+.pr-merge-result { margin: 16px 0; padding: 12px 16px; border-left: 3px solid var(--green); background: var(--panel2); overflow-wrap: anywhere; }
+.pr-merge-result h3 { margin: 0 0 8px; font-size: 15px; }
+.pr-merge-result p { margin: 8px 0; }
+.pr-merge-result ul { padding-left: 20px; }
+.pr-merge-result[data-pr-merge-status="failed"], .pr-merge-result[data-pr-merge-status="interrupted"] { border-color: var(--amber); }
+.pr-merge-result[data-pr-merge-status="failed"] h3, .pr-merge-result[data-pr-merge-status="interrupted"] h3 { color: var(--amber); }

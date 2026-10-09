@@ -5573,10 +5573,10 @@ index e69de29..b1598dd 100644
 +    }
 +}
 diff --git a/webrtc/src/peer_connection/host_scout.rs b/webrtc/src/peer_connection/host_scout.rs
-index e69de29..91e8479 100644
+index e69de29..1191384 100644
 --- a/webrtc/src/peer_connection/host_scout.rs
 +++ b/webrtc/src/peer_connection/host_scout.rs
-@@ -0,0 +1,973 @@
+@@ -0,0 +1,977 @@
 +//! Anonymous ARP discovery, kept separate from the advertised ICE socket.
 +use super::host_neighbors::{ScoutSnapshot, failure_reason, scout_snapshot_until};
 +use super::host_sweep::{HostSweepControl, SweepCredentials, SweepScoutCounters, SweepSubnet};
@@ -6550,6 +6550,10 @@ index e69de29..91e8479 100644
 +        );
 +    }
 +}
++
++#[cfg(test)]
++#[path = "host_scout_socket_tests.rs"]
++mod socket_tests;
 diff --git a/webrtc/src/peer_connection/host_scout_socket_tests.rs b/webrtc/src/peer_connection/host_scout_socket_tests.rs
 index e69de29..588c25c 100644
 --- a/webrtc/src/peer_connection/host_scout_socket_tests.rs

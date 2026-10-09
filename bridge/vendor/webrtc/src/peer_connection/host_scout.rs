@@ -971,3 +971,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "host_scout_socket_tests.rs"]
+mod socket_tests;

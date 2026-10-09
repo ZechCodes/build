@@ -997,13 +997,13 @@ describe("when a pass runs", () => {
 describe("a refresh requested during a pass", () => {
   /** Hold exactly one read, and signal when it is on the wire. The pass's own
    *  promise drains its IndexedDB work after this read is released. */
-  const holdNextRead = (method) => {
+  const holdNextRead = (method, reply = ANSWERS[method]) => {
     let release;
     let started;
     const reading = new Promise((resolve) => { started = resolve; });
     script[method] = (params) => {
       delete script[method];
-      const result = ANSWERS[method](params);
+      const result = reply(params);
       const held = new Promise((resolve) => { release = () => resolve(result); });
       started();
       return held;
@@ -1049,6 +1049,63 @@ describe("a refresh requested during a pass", () => {
     held.release();
     expect(await Promise.all([first, ...refreshes])).toEqual([true, true, true, true]);
     expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(3);
+  });
+
+  it("runs the queued follow-up after the current board read fails", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("board.list", () => null);
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+
+    let refreshSettled = false;
+    const refreshed = sync.syncDevice("dev-1").then((result) => {
+      refreshSettled = true;
+      return result;
+    });
+    const followUp = holdNextRead("git.status");
+    held.release();
+    expect(await first).toBe(false);
+    await followUp.reading;
+    expect(refreshSettled).toBe(false);
+    expect(calls("board.list")).toHaveLength(3);
+
+    followUp.release();
+    expect(await refreshed).toBe(true);
+    expect(calls("board.list")).toHaveLength(3);
+    expect(calls("git.status")).toHaveLength(2);
+  });
+
+  it("coalesces asks during the follow-up and waits for the third pass's result", async () => {
+    await boot([branchItem()]);
+    const held = holdNextRead("git.status");
+    const first = sync.syncDevice("dev-1");
+    await held.reading;
+    const refreshed = sync.syncDevice("dev-1");
+    const followUp = holdNextRead("git.status");
+    held.release();
+    expect(await first).toBe(true);
+    await followUp.reading;
+
+    const settled = [];
+    const refreshes = Array.from({ length: 3 }, (_, index) =>
+      sync.syncDevice("dev-1").then((result) => {
+        settled.push(index);
+        return result;
+      }));
+    // A distinct false result proves these asks wait for the pass they
+    // requested, rather than returning the successful follow-up's answer.
+    const third = holdNextRead("board.list", () => null);
+    expect(calls("board.list")).toHaveLength(3);
+    followUp.release();
+    expect(await refreshed).toBe(true);
+    await third.reading;
+    expect(settled).toEqual([]);
+    expect(calls("board.list")).toHaveLength(4);
+
+    third.release();
+    expect(await Promise.all(refreshes)).toEqual([false, false, false]);
+    expect(calls("board.list")).toHaveLength(4);
     expect(calls("git.status")).toHaveLength(3);
   });
 

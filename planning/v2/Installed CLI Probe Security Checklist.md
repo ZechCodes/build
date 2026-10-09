@@ -1,7 +1,7 @@
 # Installed CLI probe security checklist
 
 **Status:** 100/100 (11/11 controls verified)
-**Verified:** 2026-09-28; controls 5 and 11 re-verified 2026-10-09 (#434)
+**Verified:** 2026-09-28; controls 5 and 11 re-verified 2026-10-09 (#434, #466)
 **Scope:** the spawn paths and trust boundary added by #203 in
 `bridge/src/harness/installed/`. The bridge now starts the agent CLIs on its
 own, outside any agent session, to learn what they run: `claude --version`
@@ -28,7 +28,7 @@ with `cargo test installed` from `bridge/`.
 | 8 | A model the installed CLI cannot run is refused before anything is written or started, with a plain sentence, on both Claude carriers and against codex's full (hidden-included) list, by the gate on every spawn (`AgentSpawnPlan::probe_and_scaffold`) reading the `AppState`'s readings; the refused message is settled as failed, not uncertain; defaults (roles, project agent) fall back rather than fail | 10/10 | `app::installed_models::a_refused_model_never_spawns_and_says_why` (`agent.add` and a delivery respawn; fails with the spawn gate, the `agent.add` check, or the certain settlement removed, each alone), `installed::tests::a_model_newer_than_the_installed_claude_code_is_refused_on_both_carriers`, `installed::tests::a_model_codex_does_not_list_is_refused`, `offer::tests::a_listing_cli_starts_hidden_models_and_refuses_unlisted_ones`, `app::installed_models::a_role_passes_over_a_model_the_installed_cli_cannot_run`, `app::installed_models::a_project_agent_set_to_an_unrunnable_model_starts_on_the_harness_default` |
 | 9 | The `models.changed` push carries nothing but its type, goes only to greeted sessions, and ends with the session | 10/10 | `app::installed_models::a_greeted_session_hears_when_an_installed_cli_changes` (fails with the subscription removed), `tests/api_contract.rs` `every_event_example_is_what_the_bridge_serialises`, `rpc.rs` close frame calls `unsubscribe_models_changed` |
 | 10 | Tests need no installed CLI, account or network (every probe test runs fake scripts; the unit-test readings never probe), and the scanners are clean | 10/10 | `installed::tests::the_unit_test_readings_refuse_nothing`, `semgrep --config auto` over the changed files (0 blocking findings), `gitleaks git --log-opts=main..HEAD` (0 leaks) |
-| 11 | A probe never installs a CLI or reaches out at startup: it runs with `MISE_OFFLINE=1` and, for Pi (`pi --version` since #434), `PI_OFFLINE=1`, so a mise wrapper runs what is installed or fails at once, rather than starting a download the 3 s deadline would kill halfway | 10/10 | `a_probe_tells_mise_to_stay_offline` (fails without it), `a_probe_tells_pi_to_stay_offline`; checked by hand with mise 2026.9.9 and the `~/.local/bin` wrappers (`mise use -g claude`, then exec), in an empty mise home (`MISE_DATA_DIR`, `MISE_CONFIG_DIR`, `MISE_CACHE_DIR`, `MISE_STATE_DIR` set to a scratch directory): online and killed at 3 s, the wrapper left `claude 2.1.284 (missing)` with a 17 MB partial download (the next plain run finished it, so mise recovers); offline, the wrapper and `the_installed_clis_answer` read nothing and installed nothing; with the real mise home, offline reads `2.1.280` and `0.155.1` as before |
+| 11 | A probe never installs a CLI: it runs with `MISE_OFFLINE=1`, so a mise wrapper runs what is installed or fails at once, rather than starting a download the 3 s deadline would kill halfway. Every probe also sets `PI_OFFLINE=1`, which Pi 0.86.1 documents as turning off its startup update check, package update check and install telemetry for `pi --version` (since #434). This is not a claim that a version flag makes no other startup request: the probes are otherwise as online as the CLI they run | 10/10 | `a_probe_tells_mise_to_stay_offline` (fails without it), `a_probe_tells_pi_to_stay_offline`; checked by hand with mise 2026.9.9 and the `~/.local/bin` wrappers (`mise use -g claude`, then exec), in an empty mise home (`MISE_DATA_DIR`, `MISE_CONFIG_DIR`, `MISE_CACHE_DIR`, `MISE_STATE_DIR` set to a scratch directory): online and killed at 3 s, the wrapper left `claude 2.1.284 (missing)` with a 17 MB partial download (the next plain run finished it, so mise recovers); offline, the wrapper and `the_installed_clis_answer` read nothing and installed nothing; with the real mise home, offline reads `2.1.280` and `0.155.1` as before |
 
 **Total: 100/100.**
 
@@ -49,6 +49,6 @@ with `cargo test installed` from `bridge/`.
 - **`min_cli` values are curated, not probed.** Each cites the Claude Code
   changelog entry it comes from. A wrong value can hide a model the CLI runs,
   or offer one it does not; it cannot run anything the user did not pick.
-- **The harness inventory reuses this probe child** for `claude auth status`
-  (#434). Its controls beyond these, the credential reads and helper gating,
-  are in `Harness Authentication Security Checklist.md`.
+- **The harness inventory runs no probe of its own** (#434, revised after
+  #466): it reads saved metadata only, and takes installed versions from these
+  readings. Its controls are in `Harness Authentication Security Checklist.md`.

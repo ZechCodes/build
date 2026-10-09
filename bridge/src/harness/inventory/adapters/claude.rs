@@ -1,14 +1,13 @@
 //! Claude Code's credential context, shared by its TUI and its headless
 //! carrier.
 //!
-//! `claude auth status` (JSON by default) is read through an allowlist —
-//! `loggedIn`, `authMethod`, `apiKeySource` — and the rest of its answer
-//! (email, organisation, config paths) is dropped unread. It is run only
-//! where no settings file names a helper command: the inspected 2.1.284
-//! status path resolves an API key through `apiKeyHelper` when one is set,
-//! which would run it. Its token sources are synchronous reads of saved
-//! credentials, with no refresh. The OAuth expiry comes from the saved
-//! credentials file, read for `expiresAt` and the presence of each token.
+//! Metadata only: Claude Code is never run to observe it. Its `auth status`
+//! goes through the root pre-action hook, which in 2.1.284 schedules an
+//! OAuth refresh and can run `policyHelper`s before any auth-specific guard
+//! (#466). So the method and status come from the saved credentials file —
+//! `expiresAt` and which tokens it holds, never their values — and from the
+//! settings and environment a session reads, by name: an `apiKeyHelper` in
+//! any settings source, a cloud provider switch, a token or key variable.
 
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -16,9 +15,6 @@ use std::time::SystemTime;
 use serde::Deserialize;
 
 use super::{oauth_status, read_json, summarise, AuthAdapter, ObservationFailed, Present};
-use crate::harness::installed::executable::Executable;
-use crate::harness::installed::probe::child::ProbeChild;
-use crate::harness::installed::probe::PROBE_DEADLINE;
 use crate::harness::inventory::environment::DeviceEnvironment;
 use crate::harness::inventory::model::{AuthFacts, AuthMethod, AuthStatus, Evidence};
 
@@ -26,37 +22,14 @@ pub struct ClaudeAuth;
 
 pub static CLAUDE_AUTH: ClaudeAuth = ClaudeAuth;
 
-/// Settings that name a command Claude Code runs to get or refresh a
-/// credential. Any of them keeps the status command from running at all.
+/// What one settings file says about how a session authenticates.
 #[derive(Debug, Default, Deserialize)]
 struct Settings {
     #[serde(default, rename = "apiKeyHelper")]
     api_key_helper: Present,
-    #[serde(default, rename = "awsAuthRefresh")]
-    aws_auth_refresh: Present,
-    #[serde(default, rename = "awsCredentialExport")]
-    aws_credential_export: Present,
-    #[serde(default, rename = "gcpAuthRefresh")]
-    gcp_auth_refresh: Present,
-    #[serde(default, rename = "otelHeadersHelper")]
-    otel_headers_helper: Present,
     /// Variables the settings set for every session, by name.
     #[serde(default)]
     env: std::collections::BTreeMap<String, Present>,
-}
-
-impl Settings {
-    fn names_a_helper(&self) -> bool {
-        [
-            self.api_key_helper,
-            self.aws_auth_refresh,
-            self.aws_credential_export,
-            self.gcp_auth_refresh,
-            self.otel_headers_helper,
-        ]
-        .iter()
-        .any(|helper| helper.0)
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -75,35 +48,24 @@ struct OauthCredentials {
     expires_at: Option<u64>,
 }
 
-/// The allowlisted part of `claude auth status`.
-#[derive(Debug, Deserialize)]
-struct StatusAnswer {
-    #[serde(rename = "loggedIn")]
-    logged_in: bool,
-    #[serde(rename = "authMethod")]
-    auth_method: String,
-    #[serde(default, rename = "apiKeySource")]
-    api_key_source: Option<String>,
-}
-
-/// What the device's settings and environment say before the CLI is asked.
+/// Everything saved that a session would authenticate with.
 struct Saved {
     settings: Vec<Settings>,
     oauth: Option<OauthCredentials>,
 }
 
 impl Saved {
-    fn read(environment: &DeviceEnvironment) -> Self {
-        let config = config_dir(environment);
-        Saved {
-            settings: settings_paths(environment)
-                .iter()
-                .filter_map(|path| read_json(path))
-                .collect(),
-            oauth: read_json::<CredentialsFile>(&config.join(".credentials.json"))
-                .and_then(|file| file.oauth)
-                .filter(|oauth| oauth.access.0 || oauth.refresh.0),
+    /// Every source read, or the first that could not be: a settings file
+    /// Build cannot read could name anything.
+    fn read(environment: &DeviceEnvironment) -> Result<Self, ObservationFailed> {
+        let mut settings = Vec::new();
+        for path in settings_paths(environment)? {
+            settings.extend(read_json::<Settings>(&path)?);
         }
+        let oauth = read_json::<CredentialsFile>(&credentials_path(environment))?
+            .and_then(|file| file.oauth)
+            .filter(|oauth| oauth.access.0 || oauth.refresh.0);
+        Ok(Saved { settings, oauth })
     }
 
     /// Where `name` is set for a session: the environment, or a settings
@@ -118,10 +80,10 @@ impl Saved {
             .then_some(Evidence::Settings)
     }
 
-    fn oauth_status(&self, now: SystemTime) -> Option<AuthStatus> {
-        self.oauth
-            .as_ref()
-            .map(|oauth| oauth_status(oauth.expires_at, oauth.refresh.0, now))
+    fn names_a_key_helper(&self) -> bool {
+        self.settings
+            .iter()
+            .any(|settings| settings.api_key_helper.0)
     }
 }
 
@@ -136,15 +98,53 @@ fn config_dir(environment: &DeviceEnvironment) -> PathBuf {
     environment.dir_or_home("CLAUDE_CONFIG_DIR", ".claude")
 }
 
-fn settings_paths(environment: &DeviceEnvironment) -> Vec<PathBuf> {
+fn credentials_path(environment: &DeviceEnvironment) -> PathBuf {
+    config_dir(environment).join(".credentials.json")
+}
+
+/// Every settings file a session started in the home directory reads: the
+/// user's (in the config directory), the home directory's own project and
+/// local `.claude` settings (the same files unless `CLAUDE_CONFIG_DIR` moves
+/// the user's), and managed policy with its sorted drop-ins.
+fn settings_paths(environment: &DeviceEnvironment) -> Result<Vec<PathBuf>, ObservationFailed> {
     let config = config_dir(environment);
-    [
+    let project = environment.home().join(".claude");
+    let mut paths = vec![
         config.join("settings.json"),
         config.join("settings.local.json"),
-    ]
-    .into_iter()
-    .chain(environment.claude_managed_settings().iter().cloned())
-    .collect()
+        config.join("cowork_settings.json"),
+        project.join("settings.json"),
+        project.join("settings.local.json"),
+    ];
+    let managed = environment.claude_managed_root();
+    paths.push(managed.join("managed-settings.json"));
+    paths.extend(drop_ins(&managed.join("managed-settings.d"))?);
+    let mut seen = std::collections::BTreeSet::new();
+    paths.retain(|path| seen.insert(path.clone()));
+    Ok(paths)
+}
+
+/// The `*.json` files of a drop-in directory, in name order.
+fn drop_ins(directory: &std::path::Path) -> Result<Vec<PathBuf>, ObservationFailed> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => {
+            return Err(ObservationFailed(
+                "a managed settings directory could not be read",
+            ))
+        }
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .collect();
+    paths.sort();
+    Ok(paths)
 }
 
 impl AuthAdapter for ClaudeAuth {
@@ -153,102 +153,41 @@ impl AuthAdapter for ClaudeAuth {
     }
 
     fn watched(&self, environment: &DeviceEnvironment) -> Vec<PathBuf> {
-        let config = config_dir(environment);
-        let mut watched = settings_paths(environment);
-        watched.push(config.join(".credentials.json"));
-        watched.push(environment.home().join(".claude.json"));
+        let mut watched = settings_paths(environment).unwrap_or_default();
+        watched.push(environment.claude_managed_root().join("managed-settings.d"));
+        watched.push(credentials_path(environment));
         watched
     }
 
     fn observe(
         &self,
         environment: &DeviceEnvironment,
-        executable: Option<&Executable>,
         now: SystemTime,
     ) -> Result<AuthFacts, ObservationFailed> {
-        let saved = Saved::read(environment);
-        if saved.settings.iter().any(Settings::names_a_helper) {
-            // Not run: its answer could cost a helper command.
+        let saved = Saved::read(environment)?;
+        if saved.names_a_key_helper() {
+            // A helper command supplies the key; Build never runs it.
             return Ok(AuthFacts::saved(
                 AuthMethod::External,
                 AuthStatus::Unknown,
                 vec![Evidence::Settings],
             ));
         }
-        match executable {
-            Some(executable) => {
-                let answer = ask_status(environment, executable)?;
-                Ok(from_status(&answer, &saved, now))
-            }
-            None => Ok(from_saved(environment, &saved, now)),
+        if let Some(evidence) = EXTERNAL_PROVIDERS
+            .iter()
+            .find_map(|name| saved.sets(environment, name))
+        {
+            return Ok(AuthFacts::saved(
+                AuthMethod::External,
+                AuthStatus::Unknown,
+                vec![evidence],
+            ));
         }
+        Ok(from_saved(environment, &saved, now))
     }
 }
 
-fn ask_status(
-    environment: &DeviceEnvironment,
-    executable: &Executable,
-) -> Result<StatusAnswer, ObservationFailed> {
-    let mut command = environment.probe_command(executable.path(), &["auth", "status"]);
-    command
-        .env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-        .env("DISABLE_AUTOUPDATER", "1");
-    let mut child = ProbeChild::spawn(command, PROBE_DEADLINE)
-        .map_err(|_| ObservationFailed("claude auth status did not start"))?;
-    let mut said = String::new();
-    while let Some(line) = child
-        .next_line()
-        .map_err(|_| ObservationFailed("claude auth status did not answer in time"))?
-    {
-        said.push_str(&line);
-        said.push('\n');
-    }
-    // Signed out exits 1 with the same JSON; either is an answer.
-    child
-        .succeeded()
-        .map_err(|_| ObservationFailed("claude auth status did not exit in time"))?;
-    serde_json::from_str(&said)
-        .map_err(|_| ObservationFailed("claude auth status answered in words Build cannot read"))
-}
-
-fn from_status(answer: &StatusAnswer, saved: &Saved, now: SystemTime) -> AuthFacts {
-    let mut evidence = vec![Evidence::CliStatus];
-    let (method, status) = match answer.auth_method.as_str() {
-        "claude.ai" => {
-            if saved.oauth.is_some() {
-                evidence.push(Evidence::CredentialsFile);
-            }
-            let method = if answer.api_key_source.as_deref() == Some("ANTHROPIC_API_KEY") {
-                AuthMethod::Mixed
-            } else {
-                AuthMethod::Oauth
-            };
-            (
-                method,
-                saved.oauth_status(now).unwrap_or(AuthStatus::SignedIn),
-            )
-        }
-        "oauth_token" => (AuthMethod::LongLivedToken, AuthStatus::SignedIn),
-        "api_key" => (AuthMethod::ApiKey, AuthStatus::SignedIn),
-        "api_key_helper" | "third_party" => (AuthMethod::External, AuthStatus::SignedIn),
-        "none" => (AuthMethod::None, AuthStatus::NotSignedIn),
-        _ => (AuthMethod::Unknown, AuthStatus::Unknown),
-    };
-    let status = match (answer.logged_in, status) {
-        (false, AuthStatus::SignedIn) => AuthStatus::NotSignedIn,
-        (_, status) => status,
-    };
-    AuthFacts::saved(method, status, evidence)
-}
-
-/// No CLI to ask: what the saved credentials and the environment say.
 fn from_saved(environment: &DeviceEnvironment, saved: &Saved, now: SystemTime) -> AuthFacts {
-    if let Some(evidence) = EXTERNAL_PROVIDERS
-        .iter()
-        .find_map(|name| saved.sets(environment, name))
-    {
-        return AuthFacts::saved(AuthMethod::External, AuthStatus::Unknown, vec![evidence]);
-    }
     let mut parts = Vec::new();
     let mut evidence = Vec::new();
     let mut note = |method, status, source| {
@@ -266,8 +205,18 @@ fn from_saved(environment: &DeviceEnvironment, saved: &Saved, now: SystemTime) -
     if let Some(source) = saved.sets(environment, "ANTHROPIC_API_KEY") {
         note(AuthMethod::ApiKey, AuthStatus::SignedIn, source);
     }
-    if let Some(status) = saved.oauth_status(now) {
+    if let Some(oauth) = &saved.oauth {
+        let status = oauth_status(oauth.expires_at, oauth.refresh.0, now);
         note(AuthMethod::Oauth, status, Evidence::CredentialsFile);
+    }
+    if parts.is_empty() {
+        // Nothing saved: the absence is itself read from the credentials file.
+        evidence.push(Evidence::CredentialsFile);
+        if cfg!(target_os = "macos") {
+            // There Claude Code keeps its sign-in in the Keychain, which no
+            // file shows.
+            return AuthFacts::saved(AuthMethod::Unknown, AuthStatus::Unknown, evidence);
+        }
     }
     let (method, status) = summarise(&parts);
     AuthFacts::saved(method, status, evidence)

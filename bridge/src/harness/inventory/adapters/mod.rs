@@ -1,10 +1,16 @@
 //! Passive authentication adapters, one per credential context.
 //!
-//! Passive means: no sign-in, no token refresh, no inference, and no helper
-//! command a CLI is configured to run. Each adapter reads saved metadata —
-//! which credentials a file holds and when they expire, never their values —
-//! and, where the CLI's own status command can be shown not to refresh or
-//! run helpers, that command's allowlisted answer.
+//! Passive means: no sign-in, no token refresh, no inference, no helper
+//! command, and no CLI run at all. None of the three CLIs has a status path
+//! that can be shown passive through its startup (#466: Claude Code 2.1.284's
+//! `auth status` runs the root pre-action hook, which can refresh OAuth and
+//! run policy helpers), so each adapter reads only saved metadata: which
+//! credentials a file holds and when they expire, never their values, and
+//! which variables are set, by name.
+//!
+//! A metadata file that is missing says "nothing saved here". One that is
+//! there but cannot be read — not a regular file, too large, unreadable,
+//! malformed — fails the observation, so what was seen before stands, stale.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -14,7 +20,6 @@ use serde::{Deserialize, Deserializer};
 
 use super::environment::DeviceEnvironment;
 use super::model::{AuthFacts, AuthMethod, AuthStatus};
-use crate::harness::installed::executable::Executable;
 
 mod claude;
 mod codex;
@@ -37,12 +42,10 @@ pub trait AuthAdapter: Send + Sync {
     /// The files whose change means the context should be looked at again.
     fn watched(&self, environment: &DeviceEnvironment) -> Vec<PathBuf>;
 
-    /// What is saved for this context now. `executable` is the CLI a spawn
-    /// would run, where one is installed.
+    /// What is saved for this context now.
     fn observe(
         &self,
         environment: &DeviceEnvironment,
-        executable: Option<&Executable>,
         now: SystemTime,
     ) -> Result<AuthFacts, ObservationFailed>;
 }
@@ -61,17 +64,54 @@ impl<'de> Deserialize<'de> for Present {
 }
 
 /// The most of a metadata file any adapter reads. Credentials and settings
-/// files are a few KiB; a larger one is not read at all.
+/// files are a few KiB; a larger one fails the observation unread.
 const MAX_METADATA_BYTES: u64 = 1024 * 1024;
 
-/// `path` parsed as `T`, or `None` where it is absent, oversized or not `T`.
-pub(super) fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > MAX_METADATA_BYTES {
-        return None;
+/// The bytes of `path`, `None` where nothing is there, or why it cannot be
+/// read. Opened without blocking and without following a FIFO's wait: a
+/// non-regular file (a FIFO, a device, a directory) is refused by the
+/// descriptor's own type, and the read is bounded.
+pub(super) fn read_metadata(path: &Path) -> Result<Option<Vec<u8>>, ObservationFailed> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
     }
-    let bytes = std::fs::read(path).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(ObservationFailed("a metadata file could not be opened")),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|_| ObservationFailed("a metadata file could not be examined"))?;
+    if !metadata.is_file() {
+        return Err(ObservationFailed("a metadata file is not a regular file"));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_METADATA_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ObservationFailed("a metadata file could not be read"))?;
+    if bytes.len() as u64 > MAX_METADATA_BYTES {
+        return Err(ObservationFailed("a metadata file is too large"));
+    }
+    Ok(Some(bytes))
+}
+
+/// `path` parsed as `T`: `None` where it is missing, a failure where it is
+/// there and is not `T`.
+pub(super) fn read_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<T>, ObservationFailed> {
+    let Some(bytes) = read_metadata(path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| ObservationFailed("a metadata file is malformed"))
 }
 
 /// Whether an OAuth credential that expires at `expires_at_ms` is still

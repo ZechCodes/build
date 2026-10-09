@@ -36,7 +36,7 @@ enum Unread {
     Failed(std::io::Error),
 }
 
-pub(crate) struct ProbeChild {
+pub(super) struct ProbeChild {
     child: Child,
     lines: Receiver<Result<String, Unread>>,
     stderr: Stderr,
@@ -65,10 +65,8 @@ impl ProbeChild {
         ProbeChild::spawn(command(binary, args, talks), deadline)
     }
 
-    /// A prepared probe command, cut off at `deadline`: what the harness
-    /// inventory runs, with the environment it observed rather than this
-    /// process's. Its stdio is the caller's to set.
-    pub(crate) fn spawn(mut command: Command, deadline: Duration) -> std::io::Result<Self> {
+    /// A prepared probe command, cut off at `deadline`.
+    fn spawn(mut command: Command, deadline: Duration) -> std::io::Result<Self> {
         let hard_expiry = Instant::now() + deadline;
         let diagnostic_reserve = MAX_STDERR_WAIT.min(deadline / 10);
         let mut child = command.spawn()?;
@@ -93,7 +91,7 @@ impl ProbeChild {
 
     /// The next line it said, `None` once it has said everything, or why it
     /// cannot be read: the deadline passed, or it said too much.
-    pub(crate) fn next_line(&mut self) -> std::io::Result<Option<String>> {
+    pub(super) fn next_line(&mut self) -> std::io::Result<Option<String>> {
         let left = self.expiry.saturating_duration_since(Instant::now());
         match self.lines.recv_timeout(left) {
             Ok(Ok(line)) => Ok(Some(line)),
@@ -110,7 +108,7 @@ impl ProbeChild {
     }
 
     /// Whether it exited successfully, waiting no longer than the deadline.
-    pub(crate) fn succeeded(&mut self) -> std::io::Result<bool> {
+    pub(super) fn succeeded(&mut self) -> std::io::Result<bool> {
         loop {
             if let Some(status) = self.child.try_wait()? {
                 return Ok(status.success());
@@ -188,7 +186,7 @@ pub(super) fn command(binary: &str, args: &[&str], talks: bool) -> Command {
 
 /// What every probe child is started with: offline to mise (above), and to
 /// Pi, whose startup otherwise checks for updates and reports installs.
-pub(crate) const OFFLINE_SWITCHES: [(&str, &str); 2] = [("MISE_OFFLINE", "1"), ("PI_OFFLINE", "1")];
+const OFFLINE_SWITCHES: [(&str, &str); 2] = [("MISE_OFFLINE", "1"), ("PI_OFFLINE", "1")];
 
 /// Whether a variable of this process is kept from every probe child: a
 /// parent agent's session markers, the daemon's identity, and anything else

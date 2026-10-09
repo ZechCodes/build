@@ -1168,27 +1168,29 @@ nothing here is a provider check), the kinds of `evidence` it was read from,
 credential changes, and `supported_login_methods` (empty until in-app sign-in
 lands). Pi's context lists each provider on its own.
 
-The adapters are passive (`inventory/adapters/`): Claude Code's runs
-`claude auth status` with fixed argv and reads only `loggedIn`, `authMethod`
-and `apiKeySource`, plus `expiresAt` and which tokens `.credentials.json`
-holds; it never runs the status command while any settings file (including
-managed policy) names a helper (`apiKeyHelper`, `awsAuthRefresh`, ...), and
-reads the environment by variable name only. Codex's reads `auth.json` and
-`config.toml` under `CODEX_HOME` and never runs Codex (`codex login status`
-prints part of an API key; an app server's account read could refresh).
-Pi's reads `auth.json` under `PI_CODING_AGENT_DIR` and its documented provider
-variables, and never resolves a key (a `!command` key reads as `external`).
-Probes run through `probe/child.rs` (3 s deadline, bounded output, group
-kill) with the device environment captured per sweep, less every
-`BRIDGE_*`/`BUILD_*` variable and agent marker, offline to mise and Pi, from
-the home directory; their output is never logged.
+The adapters are passive and metadata-only (`inventory/adapters/`): the
+inventory runs no CLI. Claude Code's `auth status` is not passive through its
+startup (2.1.284's root pre-action hook can refresh OAuth and run policy
+helpers, #466), Codex's `login status` prints part of an API key and its app
+server's account read could refresh, and Pi has no status verb. Claude
+Code's adapter reads `expiresAt` and which tokens `.credentials.json` holds
+(under `CLAUDE_CONFIG_DIR`), an `apiKeyHelper` in any settings source a
+session started in the home directory reads (user, the home's own project
+and local `.claude` settings, managed policy and its `managed-settings.d/`
+drop-ins), and token, key and cloud-provider variables by name. Codex's reads
+`auth.json` and `config.toml` (parsed as TOML) under `CODEX_HOME`. Pi's reads
+`auth.json` under `PI_CODING_AGENT_DIR` and its documented provider variables,
+and never resolves a key (a `!command` key reads as `external`). Every file is
+opened without blocking, refused unless regular, and read up to 1 MiB; a
+missing file means nothing is saved, and one that is there but unreadable or
+malformed fails the observation, so the prior facts stand, stale.
 
 The service sweeps every 15 s from daemon start with no client needed
 (`inventory::start` in `main.rs`): executables each sweep (installs, removals
 and retargeted links are seen at once, and so does `models.list`'s
 `installed`, no longer cached for the process's life), each context at most
 once a minute after success, backing off from a minute to ten after failures.
-A changed executable or credential file, or `harnesses.refresh`, checks again
+A changed executable, credential or settings file, or `harnesses.refresh`, checks again
 sooner, no more often than every 5 s. A failed check keeps the facts it could
 not replace with `health: stale`; an older check never overwrites a newer one.
 Each change raises the revision, is saved nonsecret to

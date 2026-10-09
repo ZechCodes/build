@@ -174,9 +174,9 @@ pub enum AuthStatus {
     NotRequired,
 }
 
-/// How far a status was checked. Every passive observation reads saved
-/// configuration; none asks the provider, so "signed in" here never means a
-/// current network check.
+/// How far a status was checked. Every observation reads saved metadata
+/// only; none runs a CLI or asks the provider, so "signed in" here never
+/// means a current network check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verification {
@@ -188,8 +188,6 @@ pub enum Verification {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Evidence {
-    /// The CLI's own status command, read through an allowlist.
-    CliStatus,
     /// The CLI's saved credentials file: expiry and which credentials it
     /// holds, never their values.
     CredentialsFile,

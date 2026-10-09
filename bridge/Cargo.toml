@@ -38,6 +38,8 @@ uuid = { version = "1", features = ["v4"] }
 httpdate = "1"
 time = { version = "0.3", features = ["formatting", "parsing"] }
 semver = "1"
+# Codex's config.toml, for its credential store setting (#434).
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 # The process crypto provider for every rustls user above (the wss relay
 # socket, reqwest, webrtc's DTLS). Two providers are unified into this build —

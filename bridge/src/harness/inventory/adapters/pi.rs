@@ -16,7 +16,6 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer};
 
 use super::{oauth_status, read_json, summarise, AuthAdapter, ObservationFailed, Present};
-use crate::harness::installed::executable::Executable;
 use crate::harness::inventory::environment::DeviceEnvironment;
 use crate::harness::inventory::model::{
     AuthFacts, AuthMethod, AuthStatus, Evidence, ProviderAuth, Verification,
@@ -188,11 +187,10 @@ impl AuthAdapter for PiAuth {
     fn observe(
         &self,
         environment: &DeviceEnvironment,
-        _executable: Option<&Executable>,
         now: SystemTime,
     ) -> Result<AuthFacts, ObservationFailed> {
         let saved: BTreeMap<String, Credential> =
-            read_json(&agent_dir(environment).join("auth.json")).unwrap_or_default();
+            read_json(&agent_dir(environment).join("auth.json"))?.unwrap_or_default();
         let mut providers: BTreeMap<&str, ProviderAuth> = saved
             .iter()
             .filter(|(id, _)| is_provider_id(id))

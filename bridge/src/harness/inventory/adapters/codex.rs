@@ -12,8 +12,7 @@ use std::time::SystemTime;
 
 use serde::Deserialize;
 
-use super::{read_json, AuthAdapter, ObservationFailed, Present};
-use crate::harness::installed::executable::Executable;
+use super::{read_json, read_metadata, AuthAdapter, ObservationFailed, Present};
 use crate::harness::inventory::environment::DeviceEnvironment;
 use crate::harness::inventory::model::{AuthFacts, AuthMethod, AuthStatus, Evidence};
 
@@ -77,11 +76,10 @@ impl AuthAdapter for CodexAuth {
     fn observe(
         &self,
         environment: &DeviceEnvironment,
-        _executable: Option<&Executable>,
         _now: SystemTime,
     ) -> Result<AuthFacts, ObservationFailed> {
         let home = codex_home(environment);
-        if let Some(file) = read_json::<AuthFile>(&home.join("auth.json")) {
+        if let Some(file) = read_json::<AuthFile>(&home.join("auth.json"))? {
             return Ok(from_file(&file));
         }
         if environment.has("CODEX_API_KEY") {
@@ -91,7 +89,7 @@ impl AuthAdapter for CodexAuth {
                 vec![Evidence::Environment],
             ));
         }
-        if stores_in_keyring(&home.join("config.toml")) {
+        if stores_in_keyring(&home.join("config.toml"))? {
             return Ok(AuthFacts::saved(
                 AuthMethod::Unknown,
                 AuthStatus::Unknown,
@@ -125,22 +123,26 @@ fn from_file(file: &AuthFile) -> AuthFacts {
     AuthFacts::saved(method, status, vec![Evidence::CredentialsFile])
 }
 
+/// The one setting of `config.toml` read: where Codex keeps credentials.
+#[derive(Debug, Default, Deserialize)]
+struct Config {
+    #[serde(default)]
+    cli_auth_credentials_store: Option<String>,
+}
+
 /// Whether `config.toml` keeps credentials in the OS keyring, where no file
-/// says anything: its top-level `cli_auth_credentials_store`.
-fn stores_in_keyring(config: &Path) -> bool {
-    let Ok(metadata) = std::fs::metadata(config) else {
-        return false;
+/// says anything: its top-level `cli_auth_credentials_store`, parsed as the
+/// TOML it is.
+fn stores_in_keyring(config: &Path) -> Result<bool, ObservationFailed> {
+    let Some(bytes) = read_metadata(config)? else {
+        return Ok(false);
     };
-    if metadata.len() > 1024 * 1024 {
-        return false;
-    }
-    let Ok(text) = std::fs::read_to_string(config) else {
-        return false;
-    };
-    text.lines()
-        .map(str::trim)
-        .take_while(|line| !line.starts_with('['))
-        .filter_map(|line| line.split_once('='))
-        .filter(|(key, _)| key.trim() == "cli_auth_credentials_store")
-        .any(|(_, value)| matches!(value.trim().trim_matches('"'), "keyring" | "auto"))
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| ObservationFailed("config.toml is not UTF-8"))?;
+    let config: Config =
+        toml::from_str(text).map_err(|_| ObservationFailed("config.toml is malformed"))?;
+    Ok(matches!(
+        config.cli_auth_credentials_store.as_deref(),
+        Some("keyring" | "auto")
+    ))
 }

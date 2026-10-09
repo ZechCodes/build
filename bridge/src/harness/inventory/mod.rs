@@ -10,7 +10,8 @@
 //! Each sweep looks for every harness's executable (a few `stat`s), takes the
 //! installed version from the CLI readings (`harness::installed`, on their own
 //! ten-minute schedule), and observes each credential context through its
-//! passive adapter ([`adapters`]) at most once per [`AUTH_CHECK_INTERVAL`],
+//! passive, metadata-only adapter ([`adapters`]; no CLI is run) at most once
+//! per [`AUTH_CHECK_INTERVAL`],
 //! backing off after failures. An executable or credential file that
 //! changes, or an explicit `harnesses.refresh`, checks again sooner, no more
 //! often than every [`FORCED_CHECK_FLOOR`]. A failed check keeps the facts it
@@ -493,6 +494,17 @@ impl Inventory {
         self.wake.notify_all();
     }
 
+    /// How many checks of context `id` have run.
+    #[cfg(test)]
+    fn checks_of(&self, id: &str) -> u64 {
+        let state = self.lock();
+        state
+            .contexts
+            .iter()
+            .find(|context| context.adapter.context() == id)
+            .map_or(0, |context| context.claimed)
+    }
+
     /// Wakes with the revision each time it rises.
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
@@ -537,14 +549,10 @@ impl Inventory {
         let now = (self.sources.now)();
         let adapter = self.lock().contexts[index].adapter;
         let fingerprint = fingerprints(&adapter.watched(environment));
-        let (generation, executable) = {
-            let mut state = self.lock();
-            let Some(generation) = state.contexts[index].claim(&fingerprint, now) else {
-                return false;
-            };
-            (generation, state.executable_for(index))
+        let Some(generation) = self.lock().contexts[index].claim(&fingerprint, now) else {
+            return false;
         };
-        let outcome = adapter.observe(environment, executable.as_ref(), (self.sources.wall)());
+        let outcome = adapter.observe(environment, (self.sources.wall)());
         let wall = (self.sources.wall)();
         self.lock().contexts[index].record(generation, outcome, fingerprint, now, wall)
     }
@@ -640,14 +648,6 @@ impl State {
             checked_at_ms: Some(wall),
         };
         before != (installed, Health::Fresh, harness.installed_version.clone())
-    }
-
-    /// The executable a context's CLI runs as: its first installed harness's.
-    fn executable_for(&self, context: usize) -> Option<Executable> {
-        self.harnesses
-            .iter()
-            .filter(|harness| harness.context == context)
-            .find_map(|harness| harness.executable.clone())
     }
 }
 

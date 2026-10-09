@@ -116,7 +116,6 @@
         "status": "refresh_pending",
         "verification": "saved_configuration",
         "evidence": [
-          "cli_status",
           "credentials_file"
         ],
         "health": "fresh",

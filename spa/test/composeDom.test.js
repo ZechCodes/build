@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { sessionAnswering } from "./deviceSessionFixture.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilCalled, untilHeard } from "./untilCondition.js";
+import { announced, called } from "./waits.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -705,13 +705,13 @@ describe("an account with more than one device", () => {
     $("#compose-send").click();
     // Sent and watched, not just held: a routed record adopted before the send
     // lands is written over by the send's own record.
-    await untilHeard(subscribePendingCaptures, () => pendingCaptureRows().some((row) => row.capture_id === "capture-1"));
+    await announced((heard) => subscribePendingCaptures(heard), () => pendingCaptureRows().some((row) => row.capture_id === "capture-1"));
     expect(pendingCaptureRows()).toHaveLength(1);
     await adoptCaptureRecord(captureRecord({ state: "routed", routing: { project_id: "p1", kind: "task" } }));
     expect(pendingCaptureRows()[0].project).toBe("relaydb");
     // The send ends on its feed refresh. Left running past the case, a step
     // after teardown fails into hold(), which writes to a storage the file's
     // environment no longer has.
-    await untilCalled(refreshFeed, refreshes + 1);
+    await called(refreshFeed, () => refreshFeed.mock.calls.length >= refreshes + 1);
   });
 });

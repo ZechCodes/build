@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -231,7 +231,7 @@ describe("the saved aggregate diff", () => {
     plug.mount(host);
     // The stack is drawn from the record, so the second file's hunk on screen
     // is the record written.
-    await untilDom(() => host.textContent.includes("second file line"), host);
+    await painted(() => host.textContent.includes("second file line"), host);
     expect(await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).toBeDefined();
 
     const record = (await readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" })).value;

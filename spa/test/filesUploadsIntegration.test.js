@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 vi.mock("../src/core/fileUploadRpc.js", () => ({ fileUploadRpc: (_context, callRpc) => callRpc }));
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -171,7 +171,7 @@ it("keeps an upload and completion refresh through a Files remount", async () =>
   const engine = uploadsFor(device); engines.push(engine);
   // The press is on the ignored folder's row, which the listing draws after
   // the root's own upload action: wait for that row's action.
-  await untilDom(() => first.host.querySelector('[data-path="ignored"] [data-upload-action="upload"]'), first.host);
+  await painted(() => first.host.querySelector('[data-path="ignored"] [data-upload-action="upload"]'), first.host);
   chooseFiles(first.host);
   await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
   first.view.dispose(); first.host.remove();

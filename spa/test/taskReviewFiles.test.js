@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -71,7 +71,7 @@ describe("task review Files", () => {
     const second = mount(other, callRpc);
     await first.view.open("same.txt");
     await second.view.open("same.txt");
-    await untilDom(() => first.host.textContent.includes("dir-live") && second.host.textContent.includes("dir-other"));
+    await painted(() => first.host.textContent.includes("dir-live") && second.host.textContent.includes("dir-other"));
     expect(first.host.textContent).toContain("dir-live");
     expect(second.host.textContent).toContain("dir-other");
     expect(callRpc.mock.calls.filter(([method]) => method.startsWith("fs.")).map(([, params]) => params.source_id)).toEqual(expect.arrayContaining(["dir-live", "dir-other"]));

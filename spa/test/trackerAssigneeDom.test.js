@@ -12,7 +12,7 @@ import { openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
 import { attachmentsWentNowhere, composedTaskParams, openTaskComposer } from "../src/core/taskComposer.js";
 import { labelsFromText } from "../src/core/trackerModel.js";
 import { task } from "./trackerWireFixture.js";
-import { untilCalled, untilDom } from "./untilCondition.js";
+import { called, painted } from "./waits.js";
 
 const PROJECT_KEY = "dev-1|proj-1";
 
@@ -360,12 +360,12 @@ describe("the inline task composer", () => {
       document.querySelector(field).dispatchEvent(
         new KeyboardEvent("keydown", { key: "Enter", [modifier]: true, bubbles: true, cancelable: true }),
       );
-      await untilCalled(call);
+      await called(call);
       expect(call.mock.calls[0][0]).toBe("tasks.create");
       // Filed, the composer clears its draft and shuts. The next round opens
       // only once this one has, so its draft writes cannot land in the next.
       const filedSlot = slot;
-      await untilDom(() => filedSlot.innerHTML === "");
+      await painted(() => filedSlot.innerHTML === "");
       handle = null;
     }
   });

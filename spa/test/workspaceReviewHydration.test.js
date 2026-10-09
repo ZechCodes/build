@@ -56,7 +56,8 @@ afterEach(async () => {
 async function beginOpening() {
   const callRpc = vi.fn(async () => { throw new Error("Unavailable"); });
   entry = mountWorkspaceReviewEntry(document.querySelector("#entry"), { ...scope, callRpc });
-  await vi.waitFor(() => expect(document.querySelector("[data-workspace-review]")?.onclick).toBeTypeOf("function"));
+  // The entry wires its press in the same turn it draws the button.
+  await painted(() => typeof document.querySelector("[data-workspace-review]")?.onclick === "function");
   opening = document.querySelector("[data-workspace-review]").onclick();
   await hydration.started.promise;
   return callRpc;

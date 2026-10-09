@@ -7,7 +7,7 @@ import { sessionAnswering } from "./deviceSessionFixture.js";
 import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 // The rail paints from the cache, so this suite gives the modules a database
 // before anything imports them.
@@ -410,7 +410,7 @@ describe("the agent's goal and observed checklist", () => {
   /** Presses the Tasks pill once it is drawn, from a viewer that is shut: a
    *  press on an open one closes it. */
   const openTasks = async () => {
-    const pill = await untilDom(() => panel().querySelector('[data-surface-kind="checklist"]'));
+    const pill = await painted(() => panel().querySelector('[data-surface-kind="checklist"]'));
     expect(pill.getAttribute("aria-pressed")).toBe("false");
     pill.click();
   };
@@ -447,7 +447,7 @@ describe("the agent's goal and observed checklist", () => {
     payload = branchRow({ surfaces: observed() });
     await mount();
     await openTasks();
-    await untilDom(() => panel().querySelector(".surface-checklist-context")?.textContent.includes("Run verification"));
+    await painted(() => panel().querySelector(".surface-checklist-context")?.textContent.includes("Run verification"));
     // Open, not a closing frame: the press opened the viewer.
     expect(checklistPill().getAttribute("aria-pressed")).toBe("true");
     expect(panel().querySelector(".surface-checklist-context").textContent).toContain("Run verification");
@@ -468,7 +468,7 @@ describe("the agent's goal and observed checklist", () => {
     await mount();
 
     await openTasks();
-    await untilDom(() => panel().querySelector(".surface-checklist-context")?.textContent.includes("1 known completed"));
+    await painted(() => panel().querySelector(".surface-checklist-context")?.textContent.includes("1 known completed"));
     // Open, not a closing frame: the press opened the viewer.
     expect(checklistPill().getAttribute("aria-pressed")).toBe("true");
     const context = panel().querySelector(".surface-checklist-context");
@@ -731,10 +731,10 @@ describe("a Build agent on the rail's own branch", () => {
   /** Presses the Agents pill once the lineage read draws it, from a panel
    *  that is shut, and waits for the one Build agent's row. */
   const openAgents = async () => {
-    const pill = await untilDom(() => panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`));
+    const pill = await painted(() => panel().querySelector(`[data-surface-kind="${AGENT_ENTRY_KIND}"]`));
     expect(pill.getAttribute("aria-pressed")).toBe("false");
     pill.click();
-    await untilDom(() => buildAgentRows().length === 1);
+    await painted(() => buildAgentRows().length === 1);
     expect(buildAgentRows()).toHaveLength(1);
   };
 
@@ -774,7 +774,7 @@ describe("a Build agent on the rail's own branch", () => {
     await mount();
     await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
     await openAgents();
-    await untilDom(() => buildAgentRows()[0].querySelector(".surface-row-model")?.title === "GPT-6 Astra");
+    await painted(() => buildAgentRows()[0].querySelector(".surface-row-model")?.title === "GPT-6 Astra");
     expect(buildAgentRows()[0].querySelector(".surface-row-model").textContent).toBe("6 Astra");
   });
 });

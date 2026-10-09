@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { passesSettled } from "./waits.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -189,7 +190,7 @@ describe("the order a pass reads in", () => {
     board = items;
     App.route = route;
     sync.startCacheSync();
-    await sync.passSettledFor("dev-1");
+    await passesSettled(sync, "dev-1");
   };
 
   it("reads the three lists before it reads any workspace", async () => {

@@ -30,7 +30,7 @@ import { reviewAddress, writeReviewReply } from "../src/core/taskReviewCache.js"
 import { mountWorkspaceReviewEntry } from "../src/core/workspaceReviewEntry.js";
 import opened from "../../fixtures/api/v1/tasks.review.open.json";
 import pushed from "../../fixtures/api/v1/tasks.review.push.json";
-import { untilCalled, untilDom } from "./untilCondition.js";
+import { called, painted } from "./waits.js";
 
 const scope = { deviceId: "pull-device", projectId: "proj-1", workspaceId: "workspace-1" };
 const workspaceAddress = { deviceId: scope.deviceId, entityId: "", kind: "workspaces" };
@@ -49,19 +49,19 @@ afterEach(() => entry?.dispose());
 const enable = (extra = {}) => rememberReviewSupport(scope.deviceId, { reviews: { get: true, snapshot: true, pullRequests: true, open: true, push: true, ...extra } });
 const mount = (callRpc = vi.fn()) => { entry = mountWorkspaceReviewEntry(document.querySelector("#entry"), { ...scope, callRpc }); return callRpc; };
 const openForm = async () => {
-  await untilDom(() => document.querySelector("[data-workspace-review]"));
+  await painted(() => document.querySelector("[data-workspace-review]"));
   document.querySelector("[data-workspace-review]").click();
   // The form wires its submit, then lifts the hydration freeze in the same turn.
-  await untilDom(() => typeof document.querySelector("[data-review-create-form]")?.onsubmit === "function");
+  await painted(() => typeof document.querySelector("[data-review-create-form]")?.onsubmit === "function");
 };
 const type = (selector, value) => { const field = document.querySelector(selector); field.value = value; field.dispatchEvent(new Event("input", { bubbles: true })); };
 
 it("requires the exact Open capability and PR feature, with no render RPC", async () => {
   await enable({ pullRequests: false }); const rpc = mount();
-  await untilDom(() => document.querySelector("[data-workspace-review]"));
+  await painted(() => document.querySelector("[data-workspace-review]"));
   expect(document.querySelector("#entry").textContent).not.toContain("Open review");
   await enable();
-  await untilDom(() => document.querySelector("#entry")?.textContent.includes("Open review"));
+  await painted(() => document.querySelector("#entry")?.textContent.includes("Open review"));
   expect(rpc).not.toHaveBeenCalled();
 });
 
@@ -70,10 +70,10 @@ it("keeps pure-folder workspaces on the legacy snapshot form on PR-capable bridg
   await writeCached(workspaceAddress, [{ ...workspace, directories: [workspace.directories[1]] }]);
   await writeTasksRecord(scope.deviceId, scope.projectId, { tasks: [{ id: "legacy-task", number: 8, title: "Review live files" }] });
   const rpc = mount();
-  await untilDom(() => document.querySelector("[data-workspace-review]"));
+  await painted(() => document.querySelector("[data-workspace-review]"));
   expect(document.querySelector("[data-workspace-review]").textContent).toBe("Create snapshot review");
   document.querySelector("[data-workspace-review]").click();
-  await untilDom(() => document.querySelector("[data-review-task]"));
+  await painted(() => document.querySelector("[data-review-task]"));
   expect(rpc).not.toHaveBeenCalled();
 });
 
@@ -87,9 +87,9 @@ it("previews committed sources and restores the exact submitted opening after fa
   expect(document.querySelector("[role=dialog]").textContent).toContain("Only committed changes are included.");
   expect(document.querySelector("[role=dialog]").textContent).toContain("Live");
   document.querySelector("[data-open-review-submit]").click();
-  await untilCalled(rpc);
+  await called(rpc);
   expect(rpc).toHaveBeenCalledOnce();
-  await untilDom(() => document.querySelector("[role=alert]")?.textContent.includes("Unavailable"));
+  await painted(() => document.querySelector("[role=alert]")?.textContent.includes("Unavailable"));
   const request = rpc.mock.calls[0][1];
   expect(request).toMatchObject({ workspace_id: scope.workspaceId, title: "Add CSV export", description: "Review the exports", bases: [{ directory_id: "dir-api", branch: "main" }] });
   const draft = (await readUiRecord(reviewCreateDraftAddress(scope))).value;
@@ -99,7 +99,7 @@ it("previews committed sources and restores the exact submitted opening after fa
   expect(document.querySelector("[data-review-title]").value).toBe("Add CSV export");
   expect(rpc).toHaveBeenCalledOnce();
   document.querySelector("[data-open-review-submit]").click();
-  await untilCalled(rpc, 2);
+  await called(rpc, () => rpc.mock.calls.length >= 2);
   expect(rpc).toHaveBeenCalledTimes(2);
   expect(rpc.mock.calls[1][1]).toEqual(request);
 });
@@ -129,16 +129,16 @@ it("shows cached pending commits and publishes the pinned source to its bound de
   const pending = { ...pushed.result.sync[0], revision: 4, pending_commits: 1, working_head: "3".repeat(40), health: "pending" };
   await writeReviewReply({ ...scope, taskId: "task-1" }, { ...opened.result, sync: [pending] }, 1);
   const rpc = mount(vi.fn(async () => pushed.result));
-  await untilDom(() => document.querySelector("[data-review-link]"));
+  await painted(() => document.querySelector("[data-review-link]"));
   expect(document.querySelector("#entry").textContent).toContain("1 commit not pushed to review");
   document.querySelector('[data-review-push="dir-api"]').click();
   // The Push form draws first and paints its pins once its draft is read; the
   // press is wired in that same turn.
-  await untilDom(() => typeof document.querySelector("[data-push-review-submit]")?.onclick === "function");
+  await painted(() => typeof document.querySelector("[data-push-review-submit]")?.onclick === "function");
   expect(document.querySelector("[role=dialog]").textContent).toContain("build-review-api");
   expect(document.querySelector("[role=dialog]").textContent).toContain("refs/heads/review/1-api");
   document.querySelector("[data-push-review-submit]").click();
-  await untilCalled(rpc);
+  await called(rpc);
   expect(rpc).toHaveBeenCalledOnce();
   expect(rpc).toHaveBeenCalledWith("tasks.review.push", { task_id: "task-1", expected_version: 1, sources: [{ directory_id: "dir-api", expected_head: pending.working_head, expected_received_head: pending.received_head }] });
   expect((await readCached(reviewAddress({ ...scope, taskId: "task-1" })))).toBeDefined();
@@ -150,7 +150,7 @@ it("pins the newest cached heads when a commit amendment leaves the pending labe
   const actionScope = { ...scope, taskId: "task-1" };
   await writeReviewReply(actionScope, { ...opened.result, sync: [pending] }, 1);
   mount(vi.fn(async () => { throw new Error("Unavailable"); }));
-  await untilDom(() => document.querySelector('[data-review-push="dir-api"]'));
+  await painted(() => document.querySelector('[data-review-push="dir-api"]'));
   const previousRead = observation.contextRead;
   await writeReviewReply(actionScope, { review: { ...opened.result.review, version: 2 }, sync: [{ ...pending, revision: 5, working_head: "4".repeat(40) }] }, 2);
   expect(observation.contextRead).not.toBe(previousRead);
@@ -159,7 +159,7 @@ it("pins the newest cached heads when a commit amendment leaves the pending labe
   document.querySelector('[data-review-push="dir-api"]').click();
   // The Push form draws first and paints its pins once its draft is read; the
   // press is wired in that same turn.
-  await untilDom(() => typeof document.querySelector("[data-push-review-submit]")?.onclick === "function");
+  await painted(() => typeof document.querySelector("[data-push-review-submit]")?.onclick === "function");
   expect(document.querySelector("[data-push-review-pins]").textContent).toContain("Review version 2");
   expect(document.querySelector("[data-push-review-pins]").textContent).toContain("4".repeat(40));
 });
@@ -168,11 +168,11 @@ it("links the bound PR while on another branch and switches without publishing u
   await enable(); await writeCached(workspaceAddress, [{ ...workspace, directories: [{ ...workspace.directories[0], branch: "other-work" }] }]);
   await writeReviewReply({ ...scope, taskId: "task-1" }, { ...opened.result, sync: pushed.result.sync }, 1);
   const rpc = mount(vi.fn(async () => ({})));
-  await untilDom(() => document.querySelector("[data-review-switch]"));
+  await painted(() => document.querySelector("[data-review-switch]"));
   expect(document.querySelector("[data-review-link]")).not.toBeNull();
   expect(document.querySelector('[data-review-push="dir-api"]')).toBeNull();
   document.querySelector("[data-review-switch]").click();
-  await untilCalled(rpc);
+  await called(rpc);
   expect(rpc).toHaveBeenCalledOnce();
   expect(rpc.mock.calls[0]).toEqual(["git.checkout_ref", { workspace_id: "workspace-1", source_id: "source-api", full_ref: "refs/heads/review/1-api" }]);
 });
@@ -183,7 +183,7 @@ it("offers switching back for a cached detached checkout without offering Push",
   const entityId = directoryCacheId(workspaceScope(scope.workspaceId, "source-api", workspace));
   await writeCached({ deviceId: scope.deviceId, entityId, kind: "refs" }, { current: { kind: "detached", commit: "3".repeat(40) } });
   mount();
-  await untilDom(() => document.querySelector("[data-review-switch]"));
+  await painted(() => document.querySelector("[data-review-switch]"));
   expect(document.querySelector('[data-review-push="dir-api"]')).toBeNull();
 });
 
@@ -192,7 +192,7 @@ it("suppresses publication when a newer cached workspace summary closes the PR",
   await writeReviewReply({ ...scope, taskId: "task-1" }, { ...opened.result, sync: pushed.result.sync }, 1);
   await writeCached(workspaceAddress, [{ ...workspace, active_review: { task_id: "task-1", workspace_id: scope.workspaceId, version: 2, status: "closed" } }]);
   mount();
-  await untilDom(() => document.querySelector("[data-review-link]"));
+  await painted(() => document.querySelector("[data-review-link]"));
   expect(document.querySelector(".workspace-review-badge").textContent).toBe("Closed");
   expect(document.querySelector("[data-review-push]")).toBeNull();
 });
@@ -205,16 +205,16 @@ it("renders changed and rewritten notes against the user's cached reviewed snaps
   ]));
   await writeReviewReply(actionScope, { ...opened.result, sync: pushed.result.sync }, 1);
   mount();
-  await untilDom(() => document.querySelector("[data-review-link]"));
+  await painted(() => document.querySelector("[data-review-link]"));
   expect(document.querySelector("#entry").textContent).not.toContain("since your last review");
   const next = { ...opened.result.review.snapshots[0], id: "snapshot-2", number: 2,
     directories: opened.result.review.snapshots[0].directories.map((directory) => ({ ...directory, head: "4".repeat(40) })) };
   const review = { ...opened.result.review, version: 2, snapshots: [opened.result.review.snapshots[0], next] };
   await writeReviewReply(actionScope, { review }, 2);
-  await untilDom(() => document.querySelector("#entry")?.textContent.includes("Changed since your last review"));
+  await painted(() => document.querySelector("#entry")?.textContent.includes("Changed since your last review"));
   await writeReviewReply(actionScope, { review: { ...review, version: 3, snapshots: [review.snapshots[0], { ...next,
     publication: { reason: "received", directories: [{ directory_id: "dir-api", rewritten: true }] } }] } }, 3);
-  await untilDom(() => document.querySelector("#entry")?.textContent.includes("History rewritten since your last review"));
+  await painted(() => document.querySelector("#entry")?.textContent.includes("History rewritten since your last review"));
 });
 
 it("retains a submitted opening for explicit recovery after its PR arrives in the cache", async () => {
@@ -222,18 +222,18 @@ it("retains a submitted opening for explicit recovery after its PR arrives in th
   const rpc = mount(vi.fn(async () => { throw new Error("Lost reply"); }));
   await openForm(); type("[data-review-title]", "Retry review");
   document.querySelector("[data-open-review-submit]").click();
-  await untilCalled(rpc);
+  await called(rpc);
   expect(rpc).toHaveBeenCalledOnce();
-  await untilDom(() => document.querySelector("[role=alert]")?.textContent.includes("Lost reply"));
+  await painted(() => document.querySelector("[role=alert]")?.textContent.includes("Lost reply"));
   await entry.dispose(); document.body.innerHTML = '<div id="entry"></div>';
   await writeReviewReply({ ...scope, taskId: "task-1" }, opened.result, 1); mount(rpc);
-  await untilDom(() => document.querySelector("[data-workspace-review]")?.textContent.includes("Resume opening"));
+  await painted(() => document.querySelector("[data-workspace-review]")?.textContent.includes("Resume opening"));
   expect(document.querySelector("[data-review-link]")).not.toBeNull();
   expect(rpc).toHaveBeenCalledOnce();
   await openForm();
   expect(document.querySelector("[data-review-title]").value).toBe("Retry review");
   document.querySelector("[data-review-form-cancel]").click();
   await enable({ open: false });
-  await untilDom(() => document.querySelector("[data-workspace-review]") === null);
+  await painted(() => document.querySelector("[data-workspace-review]") === null);
   expect(document.querySelector("[data-workspace-review]")).toBeNull();
 });

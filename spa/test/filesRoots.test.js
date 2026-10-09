@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -252,7 +252,7 @@ describe("a file over one record in a root", () => {
     host.querySelector(".fpmore").click();
     // The second page is drawn from its record, so its lines on screen are the
     // page written.
-    await untilDom(() => host.textContent.includes("line 2000 "), host);
+    await painted(() => host.textContent.includes("line 2000 "), host);
     expect((await readBodyPages(head, "v1")).pages).toHaveLength(2);
     expect(ranged().at(-1)).toEqual({ workspace_id: "ws-1", source_id: "assets", path: "big.log", range: { offset: first.end, bytes: BODY_PAGE_BYTES } });
   });

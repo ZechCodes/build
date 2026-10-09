@@ -28,7 +28,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -331,7 +331,7 @@ it("finishes the retirement with an agent's conversation on screen", async () =>
   const standing = await standWithFirstReadHeld();
   // The agent is drawn from the cached row, a read of its own after the rail
   // stands: wait for it rather than for a count of turns.
-  const railSays = (text) => untilDom(() => document.querySelector("#agent-rail")?.textContent.includes(text));
+  const railSays = (text) => painted(() => document.querySelector("#agent-rail")?.textContent.includes(text));
   await railSays("Existing agent");
   expect(document.querySelector("#agent-rail").textContent).toContain("Existing agent");
 

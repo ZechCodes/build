@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 import { columns, comment, event, task } from "./trackerWireFixture.js";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {},
@@ -245,13 +245,13 @@ describe("attachment bytes and the cache", () => {
 
   it("paints a revisit's thumbnails from the cache without asking the bridge", async () => {
     mount();
-    await untilDom(thumbnailPainted);
+    await painted(thumbnailPainted);
     page.dispose();
     page = null;
 
     call = vi.fn(async (method) => (method === "tasks.get" ? answer() : new Promise(() => {})));
     mount();
-    await untilDom(thumbnailPainted);
+    await painted(thumbnailPainted);
     expect(call.mock.calls.filter(([method]) => method === "tasks.attachment")).toHaveLength(0);
   });
 
@@ -265,7 +265,7 @@ describe("attachment bytes and the cache", () => {
       return put.call(this, value, key);
     });
     mount();
-    await untilDom(thumbnailPainted);
+    await painted(thumbnailPainted);
     expect(bodyList().querySelector(".thread-attachment-figure.unavailable")).toBeNull();
     await openedOn(commentList().querySelectorAll("button.thread-attachment-preview")[1]);
     expect(lightbox().querySelector(".thread-lightbox-stage video").getAttribute("src")).toMatch(/^blob:/);

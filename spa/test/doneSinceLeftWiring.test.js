@@ -14,7 +14,7 @@ import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilCache, untilDom } from "./untilCondition.js";
+import { announced, painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -201,10 +201,10 @@ it("falls back to the 24-hour Done once an older bridge answers the list", async
 
   // The 24-hour Done reads the cached timelines, and this bridge was asked for
   // none: its empty line says which Done is painted.
-  await untilDom(() => host.querySelector(".task-dashboard-empty")?.textContent === "Nothing moved to Done in the last 24 hours.");
+  await painted(() => host.querySelector(".task-dashboard-empty")?.textContent === "Nothing moved to Done in the last 24 hours.");
   // The empty line and the dropped session both follow this bridge's list
   // answer, by separate writes: the line can be up before the session goes.
-  await untilCache(subscribeCache, userSessionAddress("dev-1"), async () => (await readUserSession("dev-1")) === null);
+  await announced((heard) => subscribeCache(userSessionAddress("dev-1"), heard), async () => (await readUserSession("dev-1")) === null);
   expect(await readUserSession("dev-1")).toBe(null);
   expect(doneRows()).toEqual([]);
 });

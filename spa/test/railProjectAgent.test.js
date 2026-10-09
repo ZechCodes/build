@@ -9,7 +9,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -430,7 +430,7 @@ describe("swapping with the panel unpinned", () => {
     projectBubble().click();
     // The press mints the project's conversation and stands the panel on it,
     // across reads of the board: wait for the panel on it.
-    await untilDom(() => panelIsOpen() && headWho() === "Sort the workspaces");
+    await painted(() => panelIsOpen() && headWho() === "Sort the workspaces");
 
     expect(panelIsOpen()).toBe(true);
     expect(headWho()).toBe("Sort the workspaces");
@@ -504,7 +504,7 @@ describe("a rail mounted on the agent a URL named", () => {
     await mountWorkspaceRail({ openAgentId: "pa-1" });
     // Standing on the project's side and drawing the workspace's own strip are
     // separate cache reads, which land in either order: wait for both.
-    await untilDom(() => headWho() === "Sort the workspaces" && agentBubble("wa-1"));
+    await painted(() => headWho() === "Sort the workspaces" && agentBubble("wa-1"));
 
     expect(headWho()).toBe("Sort the workspaces");
     expect(projectBubble().classList.contains("active")).toBe(true);
@@ -536,7 +536,7 @@ describe("the project conversation's chip", () => {
   it("names the project and goes to its page", async () => {
     await mountWorkspaceRail();
     projectBubble().click();
-    await untilDom(() => chip()?.textContent === "build");
+    await painted(() => chip()?.textContent === "build");
 
     expect(chip().textContent).toBe("build");
     // A real link: the browser's own gestures open the project in a tab of its

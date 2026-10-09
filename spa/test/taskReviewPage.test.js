@@ -36,7 +36,7 @@ async function mount(saved = review, cachedSupport = support) {
     ...scope, callRpc: vi.fn(() => new Promise(() => {})),
     workspaces: () => [], task: () => ({ id: scope.taskId }), onTaskChanged: vi.fn(),
   });
-  await vi.waitFor(() => expect(document.querySelector('[data-review-snapshot]')).not.toBeNull());
+  await painted(() => document.querySelector('[data-review-snapshot]'));
 }
 
 it("routes cached PRs to read-only controls and suppresses legacy git actions", async () => {
@@ -50,7 +50,7 @@ it("routes cached PRs to read-only controls and suppresses legacy git actions", 
 
   await writeReviewRecord(scope, { ...prFixture.result.review, version: 2,
     pull_request: { ...prFixture.result.review.pull_request, status: "approved" } }, 2);
-  await vi.waitFor(() => expect(document.querySelector('[data-review-read-only]').textContent).toContain("Approved"));
+  await painted(() => document.querySelector('[data-review-read-only]')?.textContent.includes("Approved"));
   expect(document.querySelector('[data-review-act]')).toBeNull();
 });
 
@@ -81,7 +81,7 @@ it("defaults non-Git directories to Files and says the files are live", async ()
   expect(document.querySelector("#review").textContent).toContain("Not a Git repository");
   expect(document.querySelector("#review").textContent).toContain("Live files — not saved with this review");
   document.querySelector('[data-review-view="changes"]').click();
-  await vi.waitFor(() => expect(document.querySelector('[data-review-open-files]')).not.toBeNull());
+  await painted(() => document.querySelector('[data-review-open-files]'));
 });
 
 it("keeps old snapshot anchors and reports unavailable context after history replacement", async () => {
@@ -115,9 +115,9 @@ it("uses the timeline's cached roster names in a reply draft and updates them wh
   page = mountTaskReviewPage(document.querySelector("#review"), {
     ...scope, projectKey, feed: () => feed, callRpc, task: () => ({ id: scope.taskId }),
   });
-  await vi.waitFor(() => expect(document.querySelector('[data-review-feedback]')).not.toBeNull());
+  await painted(() => document.querySelector('[data-review-feedback]'));
   await page.reply({ ...parent, id: parent.id });
-  await vi.waitFor(() => expect(document.querySelector('[data-review-target]').textContent).toBe("Replying to Workspace · Ada · Parent excerpt"));
+  await painted(() => document.querySelector('[data-review-target]')?.textContent === "Replying to Workspace · Ada · Parent excerpt");
   const field = document.querySelector('#task-review-feedback-body');
   feed.items[0].agents[0].name = "Grace";
   page.feedMoved();

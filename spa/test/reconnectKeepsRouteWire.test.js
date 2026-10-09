@@ -23,7 +23,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { untilDom } from "./untilCondition.js";
+import { painted } from "./waits.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -225,7 +225,7 @@ async function reloadOntoRoute() {
   app.initRouter();
   devices.initDevicePicker();
   const booted = gate.boot();
-  await untilDom(workspaceRow);
+  await painted(workspaceRow);
   expect(wire.sessions).toHaveLength(0);
   return { land, booted };
 }

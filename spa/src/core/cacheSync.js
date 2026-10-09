@@ -289,13 +289,6 @@ export async function syncDevice(deviceId) {
   return startPass(deviceId);
 }
 
-/** The pass out on this device, once it has finished — at once when none is.
- *  For a caller that reads what a pass did (the order it asked in) and must
- *  not read it halfway. */
-export async function passSettledFor(deviceId) {
-  await passes.get(deviceId)?.done;
-}
-
 /** A recovered path can re-greet the bridge without replacing its session.
  * Its earlier pass may have read the old process, so stand it down and give
  * its writes a bounded chance to drain before reading the recovered bridge.

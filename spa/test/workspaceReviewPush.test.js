@@ -64,7 +64,8 @@ async function openPush(directoryId, callRpc) {
   await painted(holds(() => expect(document.querySelector(`[data-review-push="${directoryId}"]`)).not.toBeNull()));
   expect(callRpc).not.toHaveBeenCalled();
   document.querySelector(`[data-review-push="${directoryId}"]`).click();
-  await vi.waitFor(() => expect(document.querySelector("[data-push-review-submit]")?.onclick).toBeTypeOf("function"));
+  // The form wires Push in the same turn it paints its pins.
+  await painted(() => typeof document.querySelector("[data-push-review-submit]")?.onclick === "function");
 }
 const pins = () => document.querySelector("[data-push-review-pins]").textContent;
 const dialog = () => document.querySelector("[role=dialog]").textContent;

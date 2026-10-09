@@ -14,8 +14,8 @@ use crate::media_stream::track_remote::{TrackRemote, TrackRemoteEvent};
 use crate::peer_connection::PeerConnectionRef;
 use crate::peer_connection::transports::tcp_transport::RTCTcpTransport;
 use crate::peer_connection::transports::{
-    MAX_GSO_BATCH_BYTES, MAX_GSO_SEGMENTS, MIN_GSO_RUN, SocketRecvResult, UDP_RECV_BUF_LEN,
-    gro_recv_buf_len, is_retryable_socket_recv_error,
+    MAX_GSO_SEGMENTS, MIN_GSO_RUN, SocketRecvResult, UDP_RECV_BUF_LEN, gro_recv_buf_len,
+    is_retryable_socket_recv_error, max_gso_batch_bytes,
 };
 use crate::rtp_transceiver::rtp_receiver::RtpReceiverImpl;
 use crate::rtp_transceiver::{RtpReceiver, RtpTransceiverImpl};
@@ -1983,7 +1983,7 @@ where
     /// extended while the next datagram has the same 4-tuple and is exactly
     /// `segment_size` bytes (a shorter datagram can only be the run's final segment,
     /// a larger one starts a fresh run), capped by the socket's GSO segment limit and
-    /// [`MAX_GSO_BATCH_BYTES`]. Everything the GSO path can't own — TCP, mDNS,
+    /// [`max_gso_batch_bytes`] for the peer. Everything the GSO path can't own — TCP, mDNS,
     /// TURN-relayed, or datagrams for an unknown socket — falls back to the
     /// per-packet [`handle_write`](Self::handle_write) path unchanged.
     async fn flush_writes(&mut self, mut writes: Vec<TaggedBytesMut>) {
@@ -2036,6 +2036,7 @@ where
             // Grow the GSO run [i, end) while the 4-tuple matches and the size rule holds.
             let mut end = i + 1;
             if max_seg > 1 {
+                let max_bytes = max_gso_batch_bytes(tp.peer_addr);
                 let mut total = seg;
                 while (end - i) < max_seg && end < n {
                     let w_tp = writes[end].transport;
@@ -2051,7 +2052,7 @@ where
                     }
                     let wl = writes[end].message.len();
                     // A larger datagram cannot be a GSO segment — it starts the next run.
-                    if wl == 0 || wl > seg || total + wl > MAX_GSO_BATCH_BYTES {
+                    if wl == 0 || wl > seg || total + wl > max_bytes {
                         break;
                     }
                     total += wl;
@@ -3360,6 +3361,136 @@ mod tests {
                 "the bridge never delivered the far end's first message"
             );
             panic!("the bridge's answer never reached the far end; it read {received:?}");
+        }
+    }
+
+    /// A GSO batch must fit one UDP datagram of the peer's IP family, or the kernel refuses the
+    /// whole `sendmsg` with EMSGSIZE and every segment in it is lost.
+    mod gso_batches {
+        use super::*;
+        use crate::peer_connection::new_test_peer_connection;
+        use crate::runtime::default_runtime;
+        use std::net::UdpSocket;
+
+        /// Flushes `count` equal `segment`-byte datagrams from a socket bound to `local` to a
+        /// receiver bound to `far` and returns how many arrive, or `None` where the host
+        /// cannot bind those addresses or has no GSO to batch with.
+        fn delivered(
+            local: &str,
+            far: &str,
+            peer: impl Fn(u16) -> SocketAddr,
+            count: usize,
+            segment: usize,
+        ) -> Option<usize> {
+            let rt = default_runtime().unwrap();
+            let runtime = rt.clone();
+            let (Ok(socket), Ok(receiver)) = (UdpSocket::bind(local), UdpSocket::bind(far)) else {
+                return None;
+            };
+            let peer = peer(receiver.local_addr().unwrap().port());
+            receiver
+                .set_read_timeout(Some(Duration::from_millis(200)))
+                .unwrap();
+            let mut arrived = None;
+            rt.block_on(Box::pin(async {
+                let (inner, _rx) = new_test_peer_connection().await;
+                let mut driver = PeerConnectionDriver::new(
+                    inner,
+                    Vec::<SocketAddr>::new(),
+                    Vec::new(),
+                    MulticastDnsMode::Disabled,
+                    Vec::new(),
+                    RTCIceTransportPolicy::All,
+                    false,
+                );
+                let local = socket.local_addr().unwrap();
+                let socket = runtime.wrap_udp_socket(socket).unwrap();
+                if socket.max_gso_segments() < count {
+                    // Linux offers 64-segment GSO on loopback; elsewhere there is no batch.
+                    assert!(
+                        !cfg!(target_os = "linux"),
+                        "UDP GSO unavailable on loopback"
+                    );
+                    return;
+                }
+                driver.udp_sockets.insert(local, socket);
+                let writes = (0..count)
+                    .map(|_| TaggedBytesMut {
+                        now: Instant::now(),
+                        transport: TransportContext {
+                            local_addr: local,
+                            peer_addr: peer,
+                            ecn: None,
+                            transport_protocol: TransportProtocol::UDP,
+                        },
+                        message: BytesMut::from(&vec![7u8; segment][..]),
+                    })
+                    .collect();
+                driver.flush_writes(writes).await;
+
+                let mut buf = [0u8; 2048];
+                let mut received = 0;
+                while let Ok(n) = receiver.recv(&mut buf) {
+                    assert_eq!(n, segment);
+                    received += 1;
+                }
+                arrived = Some(received);
+            }));
+            arrived
+        }
+
+        #[test]
+        fn a_65508_byte_ipv4_batch_is_sent() {
+            // 53 × 1236 = 65508: one byte over IPv4's 65507-byte UDP payload ceiling.
+            let Some(arrived) = delivered(
+                "127.0.0.1:0",
+                "127.0.0.1:0",
+                |port| SocketAddr::from(([127, 0, 0, 1], port)),
+                53,
+                1236,
+            ) else {
+                return eprintln!("skipped: no UDP GSO on this host");
+            };
+            assert_eq!(
+                arrived, 53,
+                "every datagram of the 65508-byte batch arrives"
+            );
+        }
+
+        #[test]
+        fn a_65508_byte_batch_to_an_ipv4_mapped_peer_is_sent() {
+            // A dual-stack socket sends to a v4-mapped peer as IPv4, under IPv4's ceiling.
+            let Some(arrived) = delivered(
+                "[::]:0",
+                "127.0.0.1:0",
+                |port| SocketAddr::new("::ffff:127.0.0.1".parse().unwrap(), port),
+                53,
+                1236,
+            ) else {
+                return eprintln!("skipped: no dual-stack socket or UDP GSO on this host");
+            };
+            assert_eq!(
+                arrived, 53,
+                "every datagram of the 65508-byte batch arrives"
+            );
+        }
+
+        #[test]
+        fn a_65532_byte_ipv6_batch_is_sent() {
+            // 43 × 1524 = 65532: over IPv6's 65527-byte UDP payload ceiling.
+            let Some(arrived) = delivered(
+                "[::1]:0",
+                "[::1]:0",
+                |port| SocketAddr::new("::1".parse().unwrap(), port),
+                43,
+                1524,
+            ) else {
+                return eprintln!("skipped: no IPv6 loopback or UDP GSO on this host");
+            };
+            assert_eq!(
+                arrived, 43,
+                "every datagram of the 65532-byte batch arrives"
+            );
         }
     }
 }

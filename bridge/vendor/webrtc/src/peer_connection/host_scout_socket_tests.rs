@@ -108,7 +108,7 @@ impl Pressure {
             ready,
             "scout pressure must not park an ordinary advertised-socket write"
         );
-        let maximum = vec![0u8; crate::peer_connection::transports::MAX_GSO_BATCH_BYTES.min(65507)];
+        let maximum = vec![0u8; crate::peer_connection::transports::MAX_GSO_BATCH_BYTES_V4];
         let transmit = Transmit {
             destination: target,
             ecn: Some(EcnCodepoint::Ect0),

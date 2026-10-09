@@ -75,16 +75,24 @@ export function formatReviewSinceNote({ count, head, reviewedHead, rewritten = f
   return head && head !== reviewedHead ? "Changed since your last review" : "";
 }
 
+const directoryHead = (snapshot, binding) => snapshot?.directories.find((directory) => directory.id === binding.directory_id)?.head;
+
+function publishedRewriteSince(snapshots, baseline, binding) {
+  return snapshots.filter((snapshot) => snapshot.number > baseline.number)
+    .some((snapshot) => snapshot.publication?.directories.some((directory) => directory.directory_id === binding.directory_id && directory.rewritten));
+}
+
+// The bridge's exact count only answers for the baseline it was taken against.
+const countedSince = (sync, baseline) => (sync?.reviewed_snapshot_id === baseline.id ? sync : {});
+
 function sourceSinceReview(context, binding, sync) {
   const snapshots = context.held.review.snapshots;
   const baseline = context.reviewedSnapshot;
-  const reviewedHead = baseline?.directories.find((directory) => directory.id === binding.directory_id)?.head;
-  const head = snapshots.at(-1)?.directories.find((directory) => directory.id === binding.directory_id)?.head || sync?.snapshot_head;
-  // The bridge's exact count only answers for the baseline it was taken against.
-  const counted = Boolean(baseline) && sync?.reviewed_snapshot_id === baseline.id;
-  const rewritten = (counted && sync.rewritten_since_review) || (baseline && snapshots.filter((snapshot) => snapshot.number > baseline.number)
-    .some((snapshot) => snapshot.publication?.directories.some((directory) => directory.directory_id === binding.directory_id && directory.rewritten)));
-  return formatReviewSinceNote({ count: counted ? sync.commits_since_review : undefined, head, reviewedHead, rewritten });
+  const head = directoryHead(snapshots.at(-1), binding) || sync?.snapshot_head;
+  if (!baseline) return formatReviewSinceNote({ head });
+  const counted = countedSince(sync, baseline);
+  const rewritten = Boolean(counted.rewritten_since_review) || publishedRewriteSince(snapshots, baseline, binding);
+  return formatReviewSinceNote({ count: counted.commits_since_review, head, reviewedHead: directoryHead(baseline, binding), rewritten });
 }
 
 const rewrittenText = "Review history was rewritten or diverged";

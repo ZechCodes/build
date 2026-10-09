@@ -41,14 +41,24 @@ fn no_user_review_leaves_the_count_absent() {
     let f = Fixture::new();
     f.commit("first.txt");
     f.push();
-    review_latest(&f, Actor::Agent { agent_id: "agent-1".into() }, "2026-10-09T00:00:01Z");
+    review_latest(
+        &f,
+        Actor::Agent {
+            agent_id: "agent-1".into(),
+        },
+        "2026-10-09T00:00:01Z",
+    );
     f.sync();
     let observation = f.observation();
     assert_eq!(observation.reviewed_snapshot_id, None);
     assert_eq!(observation.commits_since_review, None);
     assert!(!observation.rewritten_since_review);
     let wire = serde_json::to_value(&observation).unwrap();
-    for field in ["reviewed_snapshot_id", "commits_since_review", "rewritten_since_review"] {
+    for field in [
+        "reviewed_snapshot_id",
+        "commits_since_review",
+        "rewritten_since_review",
+    ] {
         assert!(wire.get(field).is_none(), "{field} stays off the wire");
     }
 }
@@ -62,17 +72,29 @@ fn reviewing_the_latest_snapshot_counts_none_then_pushes_count_some() {
     let reviewed = review_latest(&f, Actor::User, "2026-10-09T00:00:01Z");
     assert!(f.sync().persisted, "a new baseline is a new observation");
     let observation = f.observation();
-    assert_eq!(observation.reviewed_snapshot_id.as_deref(), Some(reviewed.as_str()));
+    assert_eq!(
+        observation.reviewed_snapshot_id.as_deref(),
+        Some(reviewed.as_str())
+    );
     assert_eq!(observation.commits_since_review, Some(0));
     f.commit("second.txt");
     f.commit("third.txt");
     f.push();
     f.sync();
     let observation = f.observation();
-    assert_eq!(observation.reviewed_snapshot_id.as_deref(), Some(reviewed.as_str()));
+    assert_eq!(
+        observation.reviewed_snapshot_id.as_deref(),
+        Some(reviewed.as_str())
+    );
     assert_eq!(observation.commits_since_review, Some(2));
     assert!(!observation.rewritten_since_review);
-    review_latest(&f, Actor::Agent { agent_id: "agent-1".into() }, "2026-10-09T00:00:02Z");
+    review_latest(
+        &f,
+        Actor::Agent {
+            agent_id: "agent-1".into(),
+        },
+        "2026-10-09T00:00:02Z",
+    );
     f.sync();
     assert_eq!(
         f.observation().reviewed_snapshot_id.as_deref(),
@@ -101,7 +123,10 @@ fn rewritten_history_flags_the_rewrite_without_a_count() {
     f.sync();
     let observation = f.observation();
     assert_eq!(f.review().snapshots.len(), 3);
-    assert_eq!(observation.reviewed_snapshot_id.as_deref(), Some(reviewed.as_str()));
+    assert_eq!(
+        observation.reviewed_snapshot_id.as_deref(),
+        Some(reviewed.as_str())
+    );
     assert_eq!(observation.commits_since_review, None);
     assert!(observation.rewritten_since_review);
 }

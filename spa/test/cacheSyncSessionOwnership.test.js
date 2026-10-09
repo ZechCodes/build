@@ -218,4 +218,3 @@ it("review 464: same-session restart preserves completed automatic-sync ownershi
   expect(bridge.call.mock.calls).toEqual(before);
   expect(unexpected).toBeNull();
 });
-

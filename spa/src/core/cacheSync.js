@@ -1899,8 +1899,9 @@ function considerDevices() {
  *  hearing only what changed after it and never reading what it missed.
  *  Unmarked, the next thing the device announces asks again. */
 async function syncSessionOnce(deviceId, session) {
+  const startedIn = lifetime;
   if (await syncDevice(deviceId)) return;
-  if (syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
+  if (startedIn === lifetime && syncedSessions.get(deviceId) === session) syncedSessions.delete(deviceId);
 }
 
 /** Coming back to the tab: everything the subscriptions could not say while it

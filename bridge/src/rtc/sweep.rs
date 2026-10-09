@@ -79,6 +79,7 @@ fn known_reason(reason: &str) -> bool {
             | "no-host-socket"
             | "no-on-link-interface"
             | "non-private-subnet"
+            | "ipv6-unsupported"
             | "invalid-netmask"
             | "point-to-point"
             | "unsupported-platform"
@@ -160,7 +161,12 @@ mod tests {
 
     #[test]
     fn scout_failures_keep_the_existing_fixed_reason_codes() {
-        for reason in ["window-expired", "unsupported-platform", "send-error"] {
+        for reason in [
+            "window-expired",
+            "unsupported-platform",
+            "send-error",
+            "ipv6-unsupported",
+        ] {
             let snapshot =
                 serde_json::to_value(Snapshot::from(event("stopped", Some(reason)))).unwrap();
             assert_eq!(snapshot["reason"], reason);

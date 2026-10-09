@@ -951,10 +951,10 @@ index 8a0a53a..0810569 100644
  
      async fn handle_timeout(&mut self, now: Instant) -> Result<()> {
 diff --git a/webrtc/src/peer_connection/host_sweep.rs b/webrtc/src/peer_connection/host_sweep.rs
-index e69de29..0593e36 100644
+index e69de29..003a349 100644
 --- a/webrtc/src/peer_connection/host_sweep.rs
 +++ b/webrtc/src/peer_connection/host_sweep.rs
-@@ -0,0 +1,1332 @@
+@@ -0,0 +1,1333 @@
 +//! Bounded, credential-free conntrack probes on an advertised host socket.
 +
 +use rtc::shared::ifaces::{Interface, NextHop};
@@ -1084,8 +1084,9 @@ index e69de29..0593e36 100644
 +        interface_index: u32,
 +        local_addresses: &[IpAddr],
 +    ) -> Result<Self, &'static str> {
++        // The sweep enumerates an IPv4 subnet; an IPv6 /64 cannot be enumerated at all.
 +        let IpAddr::V4(ip) = local.ip() else {
-+            return Err("non-private-subnet");
++            return Err("ipv6-unsupported");
 +        };
 +        if interface_index == 0 || interface.addr.map(|addr| addr.ip()) != Some(local.ip()) {
 +            return Err("no-on-link-interface");
@@ -2289,10 +2290,10 @@ index e69de29..0593e36 100644
 +mod tests;
 diff --git b/webrtc/src/peer_connection/host_sweep_tests.rs b/webrtc/src/peer_connection/host_sweep_tests.rs
 new file mode 100644
-index 0000000..5ddb337
+index 0000000..50b4972
 --- /dev/null
 +++ b/webrtc/src/peer_connection/host_sweep_tests.rs
-@@ -0,0 +1,1433 @@
+@@ -0,0 +1,1449 @@
 +use super::*;
 +use rtc::shared::ifaces::Kind;
 +
@@ -3725,6 +3726,22 @@ index 0000000..5ddb337
 +    assert!(sweep.nat_open());
 +    assert!(!sweep.gate_nat(now, Some("nat-evidence-missing")));
 +    assert!(!sweep.nat_open(), "a closed gate stops preparation reads");
++}
++
++#[test]
++fn an_ipv6_host_is_skipped_as_ipv6_not_as_a_public_subnet() {
++    let local = address("[fd00::1]:45000");
++    let iface = Interface {
++        name: "wifi".into(),
++        kind: Kind::Ipv6,
++        addr: Some(address("[fd00::1]:0")),
++        mask: Some(address("[ffff:ffff:ffff:ffff::]:0")),
++        hop: None,
++    };
++    assert_eq!(
++        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
++        "ipv6-unsupported"
++    );
 +}
 diff --git b/webrtc/src/peer_connection/host_sweep_driver_tests.rs b/webrtc/src/peer_connection/host_sweep_driver_tests.rs
 new file mode 100644

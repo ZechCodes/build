@@ -364,6 +364,10 @@ interface read shared by passes inside 100 ms; a `host_sweep_tests.rs` case
 pins the NAT gate state the driver reads. Data-channel latency during a
 sweep was not measured.
 
+An IPv6 host candidate is skipped as `ipv6-unsupported` (it was reported as
+`non-private-subnet`): the sweep enumerates IPv4 subnets only. The bridge and
+the SPA's diagnostics both accept the new fixed code.
+
 #383 recovery regressions cover direct-selected PRFLX followed by a native
 credential-changing restart onto relay: fresh sweep counters start at zero,
 old tuple evidence is retired, and the recovery candidate port can follow a

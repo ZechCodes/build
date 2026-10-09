@@ -127,8 +127,9 @@ impl SweepSubnet {
         interface_index: u32,
         local_addresses: &[IpAddr],
     ) -> Result<Self, &'static str> {
+        // The sweep enumerates an IPv4 subnet; an IPv6 /64 cannot be enumerated at all.
         let IpAddr::V4(ip) = local.ip() else {
-            return Err("non-private-subnet");
+            return Err("ipv6-unsupported");
         };
         if interface_index == 0 || interface.addr.map(|addr| addr.ip()) != Some(local.ip()) {
             return Err("no-on-link-interface");

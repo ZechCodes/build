@@ -1431,3 +1431,19 @@ fn the_last_nat_gate_says_whether_a_pass_reads_for_preparation() {
     assert!(!sweep.gate_nat(now, Some("nat-evidence-missing")));
     assert!(!sweep.nat_open(), "a closed gate stops preparation reads");
 }
+
+#[test]
+fn an_ipv6_host_is_skipped_as_ipv6_not_as_a_public_subnet() {
+    let local = address("[fd00::1]:45000");
+    let iface = Interface {
+        name: "wifi".into(),
+        kind: Kind::Ipv6,
+        addr: Some(address("[fd00::1]:0")),
+        mask: Some(address("[ffff:ffff:ffff:ffff::]:0")),
+        hop: None,
+    };
+    assert_eq!(
+        SweepSubnet::from_interface(local, &iface, 2, &[]).unwrap_err(),
+        "ipv6-unsupported"
+    );
+}

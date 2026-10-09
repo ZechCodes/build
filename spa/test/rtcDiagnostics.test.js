@@ -123,6 +123,11 @@ describe("candidate diagnostic privacy", () => {
       .toEqual({ ...baseSweep, reason: "ambiguous-interface" });
   });
 
+  it("preserves the ipv6-unsupported fixed skip code", () => {
+    expect(candidateDiagnostic({ reason: "mdns-pending", event: "host-sweep", sweep: { ...baseSweep, reason: "ipv6-unsupported" } }).sweep)
+      .toEqual({ ...baseSweep, reason: "ipv6-unsupported" });
+  });
+
   it.each(["neighbor-pressure", "neighbor-snapshot-unavailable", "scout-socket-limit"])("preserves the fixed scout pause reason %s without changing eligibility", (reason) => {
     expect(candidateDiagnostic({
       reason: "mdns-pending", event: "host-sweep", generation: 2,

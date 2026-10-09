@@ -11,7 +11,7 @@ const DISCOVERY_REASONS = new Set([
 const COUNTERS = new Set(["host_mdns", "host_ip", "srflx", "relay", "mdns_pending", "mdns_resolved", "mdns_unresolved"]);
 const SWEEP_STATUSES = new Set(["started", "progress", "stopped", "skipped"]);
 const SWEEP_REASONS = new Set([
-  "subnet-too-large", "no-host-socket", "no-on-link-interface", "non-private-subnet", "invalid-netmask", "point-to-point",
+  "subnet-too-large", "no-host-socket", "no-on-link-interface", "non-private-subnet", "ipv6-unsupported", "invalid-netmask", "point-to-point",
   "unsupported-platform", "port-limit", "packet-limit", "window-expired", "resolved", "direct-selected", "generation-changed", "closed", "send-error",
   "no-usable-addresses", "completed", "ambiguous-interface",
   "neighbor-pressure", "neighbor-snapshot-unavailable", "scout-socket-limit",

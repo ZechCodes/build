@@ -108,8 +108,51 @@ it("retries retained publication with original sources and the newest version, e
     actions: [action("api"), action("ui")] };
   const next = { ...record, review: merged, sync: record.sync.map((row) => ({ ...row, target_head: mergedHead })), merge_intents: [intent()] };
   const repository = await mount(next);
+  expect(document.querySelector("[data-pr-merge-retry]").textContent).toBe("Retry publication");
   await document.querySelector("[data-pr-merge-retry]").onclick();
   expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...params, expected_version: 12 });
+});
+
+it("labels a partial merge with failed publication as Retry saved merge and sends every original source", async () => {
+  const ui = action("ui", "failed", "skipped");
+  const partial = { ...record, review: { ...review, version: 7, actions: [action("api"), ui] }, merge_intents: [intent()] };
+  const repository = await mount(partial);
+  expect(document.querySelector("[data-pr-merge-retry]").textContent).toBe("Retry saved merge");
+  await document.querySelector("[data-pr-merge-retry]").onclick();
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { ...params, expected_version: 7 });
+});
+
+it("offers a separate current-target recovery plan after an opinion makes a partial merge retry stale", async () => {
+  const partial = { ...record, review: { ...review, actions: [action("api"), action("ui", "failed", "skipped")] },
+    merge_intents: [{ ...intent(), execution_version: 3 }] };
+  const stale = new Error("PR version changed during merge; refresh the plan");
+  const repository = await mount(partial, { mutate: vi.fn().mockRejectedValueOnce(stale).mockResolvedValue(undefined) });
+  const newer = { ...partial, review: { ...partial.review, version: 7 },
+    sync: partial.sync.map((row) => ({ ...row, target_head: row.directory_id === "api" ? mergedHead : oldHead })) };
+  panel.update(newer.review, newer);
+  await document.querySelector("[data-pr-merge-retry]").onclick();
+  expect(document.querySelector("[data-pr-merge-error]").textContent).toContain(stale.message);
+  const prepare = document.querySelector('[data-pr-merge-prepare="merge-1"]');
+  expect(prepare?.textContent).toBe("Prepare a new merge plan");
+  await prepare.onclick();
+  expect(repository.mutate).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("[data-pr-merge-form]")).not.toBeNull();
+  expect(field("push", "api").checked).toBe(true);
+  expect(field("push", "ui").checked).toBe(true);
+  expect(field("branch", "api").value).toBe("main");
+  expect(field("push", "api").matches(":disabled")).toBe(true);
+  expect(document.body.textContent).toContain("Current target:");
+  panel.dispose();
+  await mount(newer, repository);
+  expect(document.querySelector("[data-pr-merge-form]")).not.toBeNull();
+  expect(repository.mutate).toHaveBeenCalledTimes(1);
+  await submit();
+  expect(repository.mutate.mock.calls).toEqual([
+    ["merge", { ...params, expected_version: 7 }],
+    ["merge", { expected_version: 7, snapshot_id: snapshot.id,
+      sources: [{ ...source("api"), expected_base_head: mergedHead }, source("ui")] }],
+  ]);
+  expect(document.querySelector('[data-pr-merge-result="merge-1"]').textContent).toContain("Publication refused");
 });
 
 it("highlights a partial merge and interruption without submitting after hydration or reconnect", async () => {

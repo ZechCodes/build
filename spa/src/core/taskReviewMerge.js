@@ -71,6 +71,9 @@ const wireSource = (source) => ({ directory_id: source.directory_id, expected_ba
   ...(source.push ? { push: { remote: source.push.remote, branch: source.push.branch } } : {}) });
 const retryRequest = (review, intent) => ({ expected_version: review.version, snapshot_id: intent.request.snapshot_id,
   sources: intent.request.sources.map(wireSource) });
+const refreshedRequest = (review, record, intent) => ({ ...retryRequest(review, intent),
+  sources: intent.request.sources.map((source) => ({ ...wireSource(source),
+    expected_base_head: record.sync.find((row) => row.directory_id === source.directory_id).target_head })) });
 const destinationFor = (review, snapshot, id) => review.destinations?.find((row) => row.snapshot_id === snapshot.id && row.directory_id === id);
 const externalRemotes = (destination, binding) => (destination?.remotes || []).filter((remote) => remote.name !== binding.remote_name);
 function choiceFor(draft, destination, binding) {
@@ -168,6 +171,11 @@ function mayRetry(review, intent) {
   return activeStatus(review) && review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id;
 }
 
+const publicationRetry = (review, intent) => intent.request.sources.every((source) => integrated(review, intent, source)) && unpushed(review, intent);
+const mayPrepare = (review, intent) => activeStatus(review) && intent.state === "failed" &&
+  review.pull_request.latest_published_snapshot_id === intent.request.snapshot_id && !uncertain(review, intent) &&
+  intent.request.sources.some((source) => integrated(review, intent, source));
+
 function intentSummary(review, intent) {
   const sources = intent.request.sources;
   const count = sources.filter((source) => integrated(review, intent, source)).length;
@@ -193,11 +201,13 @@ function intentHtml(review, intent, support, busy) {
   const rows = rowsFor(review, intent).map((row) => `<li><strong>${esc(row.source_name || row.directory_id)}: ${esc(row.status)}</strong>
     <p>${esc(row.source_path)}</p><ul>${(row.steps || []).map(resultStepHtml).join("")}</ul></li>`).join("");
   const retry = support.merge && mayRetry(review, intent);
+  const prepare = support.merge && mayPrepare(review, intent);
   return `<section class="pr-merge-result" data-pr-merge-result="${esc(intent.request_id)}" data-pr-merge-status="${esc(intent.state)}">
     <h3>${esc(intentSummary(review, intent))}</h3><p>Snapshot: ${esc(intent.request.snapshot_id)}</p>
     ${intent.state === "interrupted" ? '<p class="warn">Interrupted: inspect the saved Git results before retrying.</p>' : ""}
     ${intent.error ? `<p class="warn">${esc(intent.error)}</p>` : ""}<ul>${rows}</ul>
-    ${retry ? `<button class="btn" type="button" data-pr-merge-retry="${esc(intent.request_id)}"${busy ? " disabled" : ""}>${unpushed(review, intent) ? "Retry publication" : "Retry saved merge"}</button>` : ""}
+    ${retry ? `<button class="btn" type="button" data-pr-merge-retry="${esc(intent.request_id)}"${busy ? " disabled" : ""}>${publicationRetry(review, intent) ? "Retry publication" : "Retry saved merge"}</button>` : ""}
+    ${prepare ? `<button class="btn" type="button" data-pr-merge-prepare="${esc(intent.request_id)}"${busy ? " disabled" : ""}>Prepare a new merge plan</button>` : ""}
   </section>`;
 }
 
@@ -226,6 +236,7 @@ export function mountTaskReviewMerge(host, options) {
   let error = "";
   const scope = { deviceId, projectId, taskId, snapshotId: snapshot.id };
   const support = () => reviewSupportFor(review, options.support);
+  const preparedPlan = () => intentsOf(record).find((intent) => intent.request_id === draft.preparedRequestId && mayPrepare(review, intent));
   const writer = watchReviewActionDraft(scope, "merge", (saved) => {
     if (disposed || busy) return;
     draft = saved || freshDraft();
@@ -253,10 +264,16 @@ export function mountTaskReviewMerge(host, options) {
     event.preventDefault();
     const blocked = mergeBlock(review, record, snapshot);
     if (blocked) { error = blocked; paint(); return; }
-    const request = draft.submitted ? { ...draft.submitted, expected_version: review.version } : selectedRequest(review, record, snapshot, draft);
+    const request = formRequest();
     const invalid = pushError(review, snapshot, request);
     if (invalid) { error = invalid; paint(); return; }
     await submit(request);
+  }
+
+  function formRequest() {
+    const prepared = preparedPlan();
+    if (prepared) return refreshedRequest(review, record, prepared);
+    return draft.submitted ? { ...draft.submitted, expected_version: review.version } : selectedRequest(review, record, snapshot, draft);
   }
 
   function wireChoices() {
@@ -275,22 +292,43 @@ export function mountTaskReviewMerge(host, options) {
 
   function formHtml() {
     if (!support().merge || !activeStatus(review)) return "";
-    if (recoveryPlan(review, record, snapshot)) return '<p class="sub">This snapshot has retained Git results. Continue with its saved merge below.</p>';
+    if (recoveryPlan(review, record, snapshot) && !preparedPlan()) return '<p class="sub">This snapshot has retained Git results. Review its saved merge below or prepare a new merge plan.</p>';
     const blocked = mergeBlock(review, record, snapshot);
     return mergeFormHtml(blocked);
   }
 
   function mergeFormHtml(blocked) {
     const locked = busy || hydrating;
+    const prepared = preparedPlan();
     return `<details data-pr-merge-sheet><summary>Merge PR</summary><form data-pr-merge-form>
       <p>Merge every included Git source into its configured base. Only the selected published heads are included.</p>
       <fieldset class="pr-merge-fields"${disabled(locked || draft.submitted)}>
         ${review.bindings.map((binding) => sourceHtml(review, record, snapshot, draft, binding)).join("")}</fieldset>
       ${warningHtml(blocked)}
-      ${draft.submitted ? '<p class="sub">This saved merge keeps its original heads and Push destinations. Retry is explicit.</p>' : ""}
+      ${prepared ? '<p class="sub">Recorded successful merges and requested Push destinations are retained. Confirm the current targets to resume unfinished work.</p>' : savedPlanHtml()}
       <button class="btn primary" data-pr-merge-submit type="submit"${disabled(locked || blocked)}>${busy ? "Merging…" : draft.submitted ? "Retry saved merge" : "Merge PR"}</button>
-      ${draft.submitted ? `<button class="btn" type="button" data-pr-merge-new${disabled(locked)}>Prepare a new merge plan</button>` : ""}
+      ${draft.submitted && !prepared ? `<button class="btn" type="button" data-pr-merge-new${disabled(locked)}>Prepare a new merge plan</button>` : ""}
     </form></details>`;
+  }
+
+  function savedPlanHtml() {
+    return draft.submitted ? '<p class="sub">This saved merge keeps its original heads and Push destinations. Retry is explicit.</p>' : "";
+  }
+
+  function wireRecovery() {
+    host.querySelectorAll("[data-pr-merge-prepare]").forEach((button) => {
+      button.onclick = async () => {
+        const intent = intentsOf(record).find((row) => row.request_id === button.dataset.prMergePrepare);
+        if (disposed || busy || hydrating || !intent || !mayPrepare(review, intent)) return;
+        draft = { ...draft, submitted: retryRequest(review, intent), preparedRequestId: intent.request_id };
+        error = "";
+        await writer.write(draft);
+        if (disposed) return;
+        paint();
+        const sheet = host.querySelector("[data-pr-merge-sheet]");
+        if (sheet) { sheet.open = true; sheet.scrollIntoView?.({ block: "nearest" }); sheet.querySelector("summary").focus({ preventScroll: true }); }
+      };
+    });
   }
 
   function paint() {
@@ -320,6 +358,7 @@ export function mountTaskReviewMerge(host, options) {
         if (intent && mayRetry(review, intent)) return submit(retryRequest(review, intent));
       };
     });
+    wireRecovery();
   }
   paint();
   return { ready, update(nextReview, nextRecord) { if (disposed) return; review = nextReview; record = nextRecord; paint(); },

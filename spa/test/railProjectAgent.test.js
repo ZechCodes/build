@@ -428,7 +428,9 @@ describe("swapping with the panel unpinned", () => {
     expect(panelIsOpen()).toBe(false);
 
     projectBubble().click();
-    await flush();
+    // The press mints the project's conversation and stands the panel on it,
+    // across reads of the board: wait for the panel on it.
+    await untilDom(() => panelIsOpen() && headWho() === "Sort the workspaces");
 
     expect(panelIsOpen()).toBe(true);
     expect(headWho()).toBe("Sort the workspaces");
@@ -534,7 +536,7 @@ describe("the project conversation's chip", () => {
   it("names the project and goes to its page", async () => {
     await mountWorkspaceRail();
     projectBubble().click();
-    await flush();
+    await untilDom(() => chip()?.textContent === "build");
 
     expect(chip().textContent).toBe("build");
     // A real link: the browser's own gestures open the project in a tab of its

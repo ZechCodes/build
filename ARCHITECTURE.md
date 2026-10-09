@@ -896,10 +896,13 @@ replays Git; it finalizes recorded complete integration or preserves incomplete
 or uncertain work for explicit retry, excluding live merge workers.
 
 Explicit merge retries keep the saved completed or partially integrated plan
-and its recorded results. RPC selection matches the snapshot, included directories
-and Push destinations independently of the retrying actor, so a browser can
-resume an agent's intent, including older actor-hashed request IDs. Running or
-interrupted work also keeps its recovery identity.
+and its recorded results. RPC selection first matches the exact saved source
+vector, including target preconditions, snapshot and Push destinations. Only
+when no exact match exists does it match refreshed targets for the same snapshot,
+included directories and Push destinations. Selection is independent of the
+retrying actor, so a browser can resume an agent's intent, including older
+actor-hashed request IDs. Running or interrupted work also keeps its recovery
+identity.
 
 For a partial plan with known outcomes, explicit confirmation of the current
 version and target tips refreshes admission under the merge lease and receiving
@@ -908,9 +911,12 @@ the request ID, original actor, saved heads, source identities, Push destination
 and action results remain. Successful sources must remain integrated, and Git
 fences each remaining merge against its confirmed tip. Running or uncertain work
 cannot be refreshed. The SPA offers a separate preparation step with fixed Push
-choices; preparing the form never dispatches Git. Historical plans retain their
-publication-only recovery path without admitting a new merge. If a failed plan
-integrated no source and has no uncertain Git work, the caller can still confirm
+choices; preparing the form never dispatches Git. Submission consumes prepared
+mode and durably saves the confirmed targets. Both saved retry controls retain
+those targets across reloads; another explicit preparation permits new targets.
+Historical plans retain their publication-only recovery path without admitting
+a new merge. If a failed plan integrated no source and has no uncertain Git work,
+the caller can still confirm
 the current review version to admit a fresh plan after the review changes.
 
 Reclaim holds a workspace while a durable merge is running or publication of a

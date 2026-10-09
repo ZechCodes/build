@@ -155,6 +155,54 @@ it.each(["failed", "interrupted"])("offers a separate current-target recovery pl
   expect(document.querySelector('[data-pr-merge-result="merge-1"]').textContent).toContain("Publication refused");
 });
 
+it("reuses confirmed targets after a prepared submission fails and reloads until another explicit Prepare", async () => {
+  const partial = { ...record, review: { ...review, version: 7, actions: [action("api"), action("ui", "failed", "skipped")] },
+    sync: record.sync.map((row) => ({ ...row, target_head: row.directory_id === "api" ? mergedHead : oldHead })),
+    merge_intents: [intent()] };
+  const stale = Object.assign(new Error("Review changed; inspect the current targets."), { code: "stale_version" });
+  const repository = await mount(partial, { mutate: vi.fn().mockRejectedValue(stale) });
+  await document.querySelector('[data-pr-merge-prepare="merge-1"]').onclick();
+  await submit();
+  const confirmed = { ...params, expected_version: 7, sources: [{ ...source("api"), expected_base_head: mergedHead }, source("ui")] };
+  expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", confirmed);
+  const saved = (await readUiRecord(reviewActionDraftAddress(scope, "merge"))).value;
+  expect(saved.submitted).toEqual(confirmed);
+
+  const movedHead = "4".repeat(40);
+  const reloaded = { ...partial, review: { ...partial.review, version: 8 },
+    sync: partial.sync.map((row) => ({ ...row, target_head: movedHead })) };
+  panel.dispose();
+  await mount(reloaded, repository);
+  expect(repository.mutate).toHaveBeenCalledTimes(1);
+  expect(document.querySelector("[data-pr-merge-submit]").textContent).toBe("Retry saved merge");
+  await submit();
+  expect(repository.mutate.mock.calls[1]).toEqual(["merge", { ...confirmed, expected_version: 8 }]);
+  expect(saved).not.toHaveProperty("preparedRequestId");
+  await document.querySelector('[data-pr-merge-retry="merge-1"]').onclick();
+  expect(repository.mutate.mock.calls[2]).toEqual(["merge", { ...confirmed, expected_version: 8 }]);
+
+  await document.querySelector('[data-pr-merge-prepare="merge-1"]').onclick();
+  expect(repository.mutate).toHaveBeenCalledTimes(3);
+  await submit();
+  expect(repository.mutate.mock.calls[3]).toEqual(["merge", { ...params, expected_version: 8,
+    sources: params.sources.map((row) => ({ ...row, expected_base_head: movedHead })) }]);
+});
+
+it("keeps submitted targets tied to the selected retained intent when switching retries", async () => {
+  const another = { ...intent(), request_id: "merge-2", request: { ...intent().request,
+    sources: intent().request.sources.map((row) => ({ ...row, expected_base_head: "4".repeat(40) })) } };
+  const partial = { ...record, review: { ...review, version: 7, actions: [action("api"), action("ui", "failed", "skipped")] },
+    sync: record.sync.map((row) => ({ ...row, target_head: mergedHead })), merge_intents: [intent(), another] };
+  const repository = await mount(partial, { mutate: vi.fn().mockRejectedValue(new Error("Review changed")) });
+  await document.querySelector('[data-pr-merge-prepare="merge-1"]').onclick();
+  await submit();
+  await document.querySelector('[data-pr-merge-retry="merge-2"]').onclick();
+  expect(repository.mutate.mock.calls[1]).toEqual(["merge", { ...params, expected_version: 7,
+    sources: params.sources.map((row) => ({ ...row, expected_base_head: "4".repeat(40) })) }]);
+  await document.querySelector('[data-pr-merge-retry="merge-1"]').onclick();
+  expect(repository.mutate.mock.calls[2]).toEqual(["merge", { ...params, expected_version: 7 }]);
+});
+
 it("highlights a partial merge and interruption without submitting after hydration or reconnect", async () => {
   await writeUiRecord(reviewActionDraftAddress(scope, "merge"), { selected: {}, submitted: params });
   const partial = { ...record, review: { ...review, actions: [action("api", "succeeded", "succeeded"), action("ui", "failed")] }, merge_intents: [intent("interrupted")] };
@@ -190,7 +238,8 @@ it("does not offer publication retry once cached later Push successes settle the
 });
 
 it("allows an explicit fresh plan after stale admission without replaying the old preconditions", async () => {
-  await writeUiRecord(reviewActionDraftAddress(scope, "merge"), { selected: {}, submitted: params });
+  await writeUiRecord(reviewActionDraftAddress(scope, "merge"), { selected: {}, submitted: params,
+    submittedRequestId: "failed-before-integration", preparedRequestId: "unavailable-intent" });
   const next = { ...record, review: { ...review, version: 7 }, sync: record.sync.map((row) => ({ ...row, target_head: mergedHead })) };
   const repository = await mount(next);
   expect(repository.mutate).not.toHaveBeenCalled();
@@ -198,6 +247,9 @@ it("allows an explicit fresh plan after stale admission without replaying the ol
   expect(document.body.textContent).toContain(`Saved expected target: ${oldHead}`);
   expect(document.body.textContent).toContain(`Current target: ${mergedHead}`);
   await document.querySelector("[data-pr-merge-new]").onclick();
+  const saved = (await readUiRecord(reviewActionDraftAddress(scope, "merge"))).value;
+  expect(saved).not.toHaveProperty("submittedRequestId");
+  expect(saved).not.toHaveProperty("preparedRequestId");
   await submit();
   expect(repository.mutate).toHaveBeenCalledExactlyOnceWith("merge", { expected_version: 7, snapshot_id: snapshot.id,
     sources: ["api", "ui"].map((id) => ({ directory_id: id, expected_base_head: mergedHead })) });

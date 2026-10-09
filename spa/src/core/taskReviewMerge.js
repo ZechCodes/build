@@ -239,6 +239,9 @@ export function mountTaskReviewMerge(host, options) {
   const scope = { deviceId, projectId, taskId, snapshotId: snapshot.id };
   const support = () => reviewSupportFor(review, options.support);
   const preparedPlan = () => intentsOf(record).find((intent) => intent.request_id === draft.preparedRequestId && mayPrepare(review, intent));
+  const submittedPlan = () => draft.submitted && intentsOf(record).find((intent) => intent.request_id === draft.submittedRequestId && mayPrepare(review, intent));
+  const recoveryDraft = () => preparedPlan() || submittedPlan();
+  const submittedRequest = () => ({ ...draft.submitted, expected_version: review.version });
   const writer = watchReviewActionDraft(scope, "merge", (saved) => {
     if (disposed || busy) return;
     draft = saved || freshDraft();
@@ -246,10 +249,17 @@ export function mountTaskReviewMerge(host, options) {
   });
   const ready = writer.ready.then(() => { hydrating = false; paint(); });
 
-  async function submit(request) {
+  function submittedDraft(request, requestId) {
+    const saved = { ...draft, submitted: structuredClone(request),
+      submittedRequestId: requestId || draft.preparedRequestId || draft.submittedRequestId };
+    delete saved.preparedRequestId;
+    return saved;
+  }
+
+  async function submit(request, requestId) {
     if (disposed || busy || hydrating || !support().merge) return;
     busy = true; error = "";
-    draft = { ...draft, submitted: structuredClone(request) };
+    draft = submittedDraft(request, requestId);
     paint();
     try {
       await writer.write(draft);
@@ -275,7 +285,7 @@ export function mountTaskReviewMerge(host, options) {
   function formRequest() {
     const prepared = preparedPlan();
     if (prepared) return refreshedRequest(review, record, prepared);
-    return draft.submitted ? { ...draft.submitted, expected_version: review.version } : selectedRequest(review, record, snapshot, draft);
+    return draft.submitted ? submittedRequest() : selectedRequest(review, record, snapshot, draft);
   }
 
   function wireChoices() {
@@ -294,7 +304,7 @@ export function mountTaskReviewMerge(host, options) {
 
   function formHtml() {
     if (!support().merge || !activeStatus(review)) return "";
-    if (recoveryPlan(review, record, snapshot) && !preparedPlan()) return '<p class="sub">This snapshot has retained Git results. Review its saved merge below or prepare a new merge plan.</p>';
+    if (recoveryPlan(review, record, snapshot) && !recoveryDraft()) return '<p class="sub">This snapshot has retained Git results. Review its saved merge below or prepare a new merge plan.</p>';
     const blocked = mergeBlock(review, record, snapshot);
     return mergeFormHtml(blocked);
   }
@@ -309,7 +319,7 @@ export function mountTaskReviewMerge(host, options) {
       ${warningHtml(blocked)}
       ${prepared ? '<p class="sub">Recorded successful merges and requested Push destinations are retained. Confirm the current targets to resume unfinished work.</p>' : savedPlanHtml()}
       <button class="btn primary" data-pr-merge-submit type="submit"${disabled(locked || blocked)}>${busy ? "Merging…" : draft.submitted ? "Retry saved merge" : "Merge PR"}</button>
-      ${draft.submitted && !prepared ? `<button class="btn" type="button" data-pr-merge-new${disabled(locked)}>Prepare a new merge plan</button>` : ""}
+      ${draft.submitted && !recoveryDraft() ? `<button class="btn" type="button" data-pr-merge-new${disabled(locked)}>Prepare a new merge plan</button>` : ""}
     </form></details>`;
   }
 
@@ -323,6 +333,7 @@ export function mountTaskReviewMerge(host, options) {
         const intent = intentsOf(record).find((row) => row.request_id === button.dataset.prMergePrepare);
         if (disposed || busy || hydrating || !intent || !mayPrepare(review, intent)) return;
         draft = { ...draft, submitted: retryRequest(review, intent), preparedRequestId: intent.request_id };
+        delete draft.submittedRequestId;
         error = "";
         await writer.write(draft);
         if (disposed) return;
@@ -350,6 +361,8 @@ export function mountTaskReviewMerge(host, options) {
     if (fresh) fresh.onclick = async () => {
       if (busy || hydrating || recoveryPlan(review, record, snapshot)) return;
       draft = { ...draft, submitted: null };
+      delete draft.preparedRequestId;
+      delete draft.submittedRequestId;
       error = "";
       await writer.write(draft);
       paint();
@@ -357,10 +370,13 @@ export function mountTaskReviewMerge(host, options) {
     host.querySelectorAll("[data-pr-merge-retry]").forEach((button) => {
       button.onclick = () => {
         const intent = intentsOf(record).find((row) => row.request_id === button.dataset.prMergeRetry);
-        if (intent && mayRetry(review, intent)) return submit(retryRequest(review, intent));
+        if (intent && mayRetry(review, intent)) return submit(requestForIntent(intent), intent.request_id);
       };
     });
     wireRecovery();
+  }
+  function requestForIntent(intent) {
+    return draft.submitted && draft.submittedRequestId === intent.request_id ? submittedRequest() : retryRequest(review, intent);
   }
   paint();
   return { ready, update(nextReview, nextRecord) { if (disposed) return; review = nextReview; record = nextRecord; paint(); },

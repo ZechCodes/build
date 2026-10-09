@@ -134,9 +134,7 @@ mod tests {
                 "probe pressure must not park an ordinary same-port ICE-sized send"
             );
             let ordinary_elapsed = ordinary_started.elapsed();
-            // IPv4's aggregate UDP payload ceiling is lower than the generic
-            // production batching bound; do not turn a size error into a pressure result.
-            let maximum = vec![0u8; crate::peer_connection::transports::MAX_GSO_BATCH_BYTES.min(65507)];
+            let maximum = vec![0u8; crate::peer_connection::transports::MAX_GSO_BATCH_BYTES_V4];
             let transmit = Transmit {
                 destination: target.into(),
                 ecn: Some(crate::runtime::EcnCodepoint::Ect0),

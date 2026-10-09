@@ -1,11 +1,11 @@
-# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374)
+# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375)
 
 The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
 
 | crate | upstream | crates.io checksum | patch |
 | --- | --- | --- | --- |
-| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch`, `webrtc-host-candidate-sweep.patch` |
+| `webrtc/` | [webrtc 0.20.4](https://crates.io/crates/webrtc/0.20.4) (github.com/webrtc-rs/webrtc) | `3daa8f2f6366331ae3275a6c02a855c6fb3faa1d16960498d7daaf61c96e76bd` | `webrtc-driver-drain.patch`, then `webrtc-negotiated-first-message-test.patch`, `webrtc-late-direct-tests.patch`, `webrtc-host-candidate-sweep.patch`, `webrtc-gso-batch-cap.patch` |
 | `rtc/` | [rtc 0.20.4](https://crates.io/crates/rtc/0.20.4) (github.com/webrtc-rs/rtc) | `c9005c36795ad076abd36db3ea9ae0275a60395944647d58c1f2bc3e118dddba` | `rtc-dtls-client-hello.patch`, `rtc-negotiated-first-message.patch`, `rtc-late-direct-stats.patch`, `rtc-host-candidate-sweep.patch` |
 | `rtc-ice/` | [rtc-ice 0.20.4](https://crates.io/crates/rtc-ice/0.20.4) (github.com/webrtc-rs/rtc) | `2c06eeabd250a7693e1e8b28222b78c4a81a7c6ca7fe3cb99bbdff2f6c0ff0ab` | `rtc-ice-late-direct-checks.patch`, then `rtc-ice-host-candidate-sweep.patch` |
 
@@ -352,8 +352,7 @@ fresh probe. The native test exchanges ICE, DTLS and SCTP between two cores.
 The ignored Linux real-socket regression uses a disposable /22 namespace with
 unanswered neighbors. It requires an ordinary ICE-sized send and a 65507-byte
 GSO batch to poll immediately ready on the same bound port after probe pressure.
-65507 is the IPv4 UDP payload ceiling; the larger generic batching cap produces
-an immediate size error rather than socket pressure. The test requires actual
+65507 is the IPv4 UDP payload ceiling, the driver's IPv4 batch cap since #375. The test requires actual
 GSO support and reports numeric queue/buffer occupancy and send timings. From
 the repo root, build the unit-test ELF, then pass its printed path to the runner:
 
@@ -369,6 +368,29 @@ The runner creates private user/network namespaces and veth interfaces, starts
 only a private UDP receiver, and never starts a production bridge or changes the
 host firewall. Removing the probe headroom gate from an isolated source copy
 makes the ordinary send poll pending, providing the red control.
+
+#375: the driver capped one UDP GSO batch at 65535 bytes, but the kernel refuses
+a batch whose total is over the largest UDP payload of the peer's IP family:
+65507 for IPv4 (65535 less the 20-byte IP and 8-byte UDP headers) and 65527 for
+IPv6 (the payload length less the UDP header). It refuses the whole `sendmsg`
+with EMSGSIZE, so every segment in it was lost, and SCTP had to retransmit. A
+run of equal segments totalling 65508 to 65535 bytes to an IPv4 peer, such as
+53 × 1236 or 63 × 1040, hit it; the usual 54 × 1200 = 64800 did not.
+
+`webrtc-gso-batch-cap.patch` applies after all the patches above. In
+`peer_connection/transports/mod.rs`, `max_gso_batch_bytes(peer)` returns 65507
+for an IPv4 peer, including an IPv4-mapped IPv6 one, which a dual-stack socket
+reaches over IPv4, and 65527 for any other IPv6 peer. `flush_writes` in
+`peer_connection/driver.rs` caps each run with it; a segment that would cross
+the cap starts the next run. The #374 socket-pressure tests in `host_egress.rs`
+and `host_scout_socket_tests.rs` use the IPv4 cap in place of their
+`.min(65507)` workaround. Three driver tests,
+`gso_batches::{a_65508_byte_ipv4_batch_is_sent, a_65508_byte_batch_to_an_ipv4_mapped_peer_is_sent, a_65532_byte_ipv6_batch_is_sent}`,
+flush the batch through a real loopback socket and count the datagrams that
+arrive: none did before the change. On Linux they require loopback GSO; elsewhere
+they skip, as they do where the host cannot bind IPv6 loopback. The mapped-peer
+test runs on Linux only: it clears `IPV6_V6ONLY` before binding `[::]:0`, so the
+host's `net.ipv6.bindv6only` default cannot make the socket IPv6-only.
 
 ## Tests
 
@@ -412,7 +434,8 @@ From the repo root, with the crates in the local registry (a `cargo fetch` in
     for p in webrtc-driver-drain webrtc-negotiated-first-message-test \
         rtc-dtls-client-hello rtc-negotiated-first-message \
         rtc-ice-late-direct-checks rtc-late-direct-stats webrtc-late-direct-tests \
-        rtc-ice-host-candidate-sweep rtc-host-candidate-sweep webrtc-host-candidate-sweep; do
+        rtc-ice-host-candidate-sweep rtc-host-candidate-sweep webrtc-host-candidate-sweep \
+        webrtc-gso-batch-cap; do
       (cd $V && patch -p1 < "$OLDPWD/bridge/vendor/$p.patch")
     done
     diff -r -x target $V/webrtc bridge/vendor/webrtc
@@ -469,3 +492,8 @@ webrtc dependency. Regenerate each patch from its pre-conntrack tree rather than
 pristine source, using the same `a/<crate>/` and `b/<crate>/` paths above. A full
 registry reconstruction, including all three conntrack patches, must match all three final
 vendored trees exactly.
+
+`webrtc-gso-batch-cap.patch` (#375) is layered the same way, against the webrtc
+tree after `webrtc-host-candidate-sweep.patch`. It touches
+`src/peer_connection/{driver.rs,transports/mod.rs,host_scout_socket_tests.rs}` and
+`src/runtime/host_egress.rs`.

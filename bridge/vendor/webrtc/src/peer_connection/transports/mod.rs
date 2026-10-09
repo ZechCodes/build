@@ -1,6 +1,6 @@
 use rtc::shared::FourTuple;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 pub(crate) mod stun_gatherer;
 pub(crate) mod tcp_transport;
@@ -17,10 +17,25 @@ pub(crate) const MAX_GRO_SEGMENTS: usize = 64;
 /// `UDP_SEGMENT` at 64 segments per `sendmsg`; a socket may report fewer.
 pub(crate) const MAX_GSO_SEGMENTS: usize = 64;
 
-/// Upper bound on the total bytes of one UDP GSO batch. Kept at the single-datagram
-/// UDP payload limit (65535) so a batch never trips the kernel's aggregate-size
-/// checks and disables GSO — at ~1.25 KB datagrams this still coalesces ~50 per call.
-pub(crate) const MAX_GSO_BATCH_BYTES: usize = 65535;
+/// Upper bound on the total bytes of one UDP GSO batch to an IPv4 peer: the largest
+/// IPv4 UDP payload, 65535 less the 20-byte IP and 8-byte UDP headers. The kernel
+/// refuses a larger batch whole with EMSGSIZE. At ~1.25 KB datagrams this still
+/// coalesces ~50 per call.
+pub(crate) const MAX_GSO_BATCH_BYTES_V4: usize = 65507;
+
+/// Upper bound on the total bytes of one UDP GSO batch to an IPv6 peer: the largest
+/// IPv6 UDP payload, 65535 less the 8-byte UDP header (the payload length excludes
+/// the IPv6 header).
+pub(crate) const MAX_GSO_BATCH_BYTES_V6: usize = 65527;
+
+/// Upper bound on the total bytes of one UDP GSO batch to `peer`. An IPv4-mapped
+/// IPv6 peer is reached over IPv4, so it takes the IPv4 bound.
+pub(crate) fn max_gso_batch_bytes(peer: SocketAddr) -> usize {
+    match peer.ip().to_canonical() {
+        IpAddr::V4(_) => MAX_GSO_BATCH_BYTES_V4,
+        IpAddr::V6(_) => MAX_GSO_BATCH_BYTES_V6,
+    }
+}
 
 /// Minimum datagrams in a run before it is worth a single GSO `sendmsg` instead of
 /// individual `send_to`s. GSO trades N cheap `sendto` syscalls for one heavier

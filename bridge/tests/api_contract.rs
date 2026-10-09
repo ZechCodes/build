@@ -1170,7 +1170,7 @@ fn project_source_paths_are_announced_on_every_scoped_file_verb() {
         "fs.uploadBegin",
     ] {
         let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
-        assert_eq!(fixture["project_source_path"]["since"], "3.15.0");
+        assert_eq!(fixture["project_source_path"]["since"], "3.16.0");
         assert_eq!(
             fixture["project_source_path"]["capability"],
             "fs.projectSourcePath"

@@ -40,7 +40,7 @@
     }
   ],
   "project_source_path": {
-    "since": "3.15.0",
+    "since": "3.16.0",
     "capability": "fs.projectSourcePath",
     "params": [
       "source_path"

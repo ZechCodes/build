@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { comment, task as wireTask, taskDetail } from "./trackerWireFixture.js";
+import { comment, event, task as wireTask, taskDetail } from "./trackerWireFixture.js";
 
 const NOW = Date.parse("2026-09-24T12:00:00Z");
 const task = (over = {}) => wireTask({ created_at: "2026-09-24T00:00:00Z", updated_at: "2026-09-24T01:00:00Z", ...over });
@@ -104,19 +104,55 @@ describe("one inbox row order (#481)", () => {
     status: "ready", created_at: date(hours), session_started_ms: now - hours * 3600_000,
     last_activity_ms: now - 3600_000 });
   const activeKeys = () => [...document.querySelectorAll("#inbox-list > .inbox-entry")].map((row) => row.dataset.key);
+  const unreadTimeline = (one) => [
+    comment({ id: "tc-01", task_id: one.id, author: { kind: "agent", agent_id: "a1" }, created_at: date(2.5) }),
+    event({ id: "te-02", task_id: one.id, kind: "watched", at: date(2) }),
+    ...["tc-03", "tc-04"].map((id) => comment({ id, task_id: one.id,
+      author: { kind: "agent", agent_id: "a1" }, created_at: date(1) })),
+  ];
+
+  it.each(["list then detail", "detail then list"])("keeps the same unread row after %s (#492)", async (order) => {
+    const mine = task({ id: "task-order", watched: true, assignee: { kind: "user" },
+      created_at: date(3), updated_at: date(1), read_through: "te-00", watch_started_after: "te-02", unread_count: 2 });
+    await boot({ greet: false, tasks: [] });
+    const writeList = () => modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([mine], []));
+    const writeDetail = () => modules.tracker.writeTaskRecord(DEVICE, PROJECT, mine.id, taskDetail(mine, unreadTimeline(mine)));
+    if (order === "list then detail") {
+      await writeList();
+      await vi.waitFor(() => expect(rowFor(mine.id)?.querySelector(".inbox-status-unread")).toBeTruthy(), WAIT);
+      expect(rowFor(mine.id).querySelector(".inbox-facts").textContent).toBe("Assigned to you");
+      await writeDetail();
+    } else {
+      await writeDetail();
+      expect(rowFor(mine.id)).toBe(null);
+      await writeList();
+    }
+    const { taskUnreadCount } = await import("../src/core/taskUnread.js");
+    expect(taskUnreadCount(mine, await modules.tracker.readTaskRecord(DEVICE, PROJECT, mine.id))).toBe(2);
+    // The comment reason proves that the detail repaint, rather than only
+    // the list's first paint, is the row whose unread dot we are checking.
+    await vi.waitFor(() => expect(rowFor(mine.id)?.querySelector(".inbox-facts")?.textContent)
+      .toBe("New comment · Assigned to you"), WAIT);
+    expect(activeKeys()).toEqual(["tracker_task:task-order", `project-agent:${DEVICE}|${PROJECT}`]);
+    expect(rowFor(mine.id).querySelector(".inbox-status-unread")).not.toBe(null);
+    expect(call).not.toHaveBeenCalled();
+  });
 
   it("interleaves captures, workspaces, assigned tasks, and project agents from cache", async () => {
-    const mine = task({ id: "task-mixed", watched: true, assignee: { kind: "user" }, created_at: date(3), updated_at: date(1), unread_count: 2 });
+    const mine = task({ id: "task-mixed", watched: true, assignee: { kind: "user" }, created_at: date(3), updated_at: date(1),
+      read_through: "te-00", watch_started_after: "te-02", unread_count: 2 });
     const workspaces = [workspace("older", 4), workspace("newer", 1)];
     const capture = { kind: "capture", capture_id: "capture-middle", title: "Capture", state: "captured", created_at: date(2) };
     const projectRun = { kind: "branch", run_id: "run-project", project_id: PROJECT, deviceId: DEVICE, projectKey: project.projectKey,
       anchor: date(2.5), last_activity: date(1), agents: [{ id: "project-agent", watched: true, working: false, unread_count: 1 }] };
-    await boot({ greet: false, tasks: [mine], workspaces, feedItems: [capture, projectRun], projectEntityId: "run-project", agentRows: [projectRun] });
+    await boot({ greet: false, tasks: [mine], timelines: { [mine.id]: unreadTimeline(mine) },
+      workspaces, feedItems: [capture, projectRun], projectEntityId: "run-project", agentRows: [projectRun] });
     await vi.waitFor(() => expect(activeKeys()).toEqual([
       `workspace:${DEVICE}|older`, "tracker_task:task-mixed", `project-agent:${DEVICE}|${PROJECT}`,
       "capture:capture-middle", `workspace:${DEVICE}|newer`,
     ]), WAIT);
-    expect(rowFor(mine.id).querySelector(".inbox-facts").textContent).toBe("Assigned to you");
+    await vi.waitFor(() => expect(rowFor(mine.id).querySelector(".inbox-facts").textContent)
+      .toBe("New comment · Assigned to you"), WAIT);
     expect(rowFor(mine.id).querySelector(".inbox-status-unread")).not.toBe(null);
     expect(call).not.toHaveBeenCalled();
   });

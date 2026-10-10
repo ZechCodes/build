@@ -316,6 +316,10 @@ pub struct TaskView {
     /// watches says nothing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub watched: bool,
+    /// Timeline floor of the current watch, separate from the read cursor.
+    /// Since wire 3.19.0 (`unread.watchScoped`); absent for an origin watch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_started_after: Option<String>,
     /// The last event on this task the user has read. `null` when they have
     /// read none of it, which is how a task arrives.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,7 +328,8 @@ pub struct TaskView {
     /// one. `null` unless they have dismissed it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed_through: Option<String>,
-    /// How many timeline entries after `read_through` are not the user's own
+    /// How many timeline entries after both `read_through` and the current
+    /// watch baseline are not the user's own
     /// (1.29.0). `tasks.list` and `tasks.get` carry it on a watched task:
     /// a task nobody watches never shows a count, so it carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]

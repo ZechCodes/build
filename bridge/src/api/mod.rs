@@ -51,7 +51,8 @@ use std::collections::BTreeSet;
 /// 3.17.0 adds `source_path` on project source file scopes (#360).
 /// 3.18.0 adds the harness inventory: `harnesses.list`, `harnesses.refresh`
 /// and the `harnesses.changed` push (#434).
-pub const API_VERSION: &str = "3.18.0";
+/// 3.19.0 scopes unread to watched conversations and news after watch start (#474).
+pub const API_VERSION: &str = "3.19.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -80,7 +81,8 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// Cross-verb wire features whose availability cannot be expressed by a
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
-    "agents.createdBy", // Since 3.1.0: created_by on an agent's digest (#216).
+    "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
+    "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).
     "agents.names",
     "board.conversationSessions", // Since 1.28.0: a conversation row's own session_started_ms/last_activity_ms.
     "board.usageLimits",

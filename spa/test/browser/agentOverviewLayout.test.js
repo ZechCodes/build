@@ -258,7 +258,8 @@ it("keeps the heading's pill, dot and + on one gap and in one column", async () 
       const { stampWorkspace } = window.__layoutModules.merge;
       const { writeTasksRecord } = window.__layoutModules.tracker;
       const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
-      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
+      // The pill belongs to watched news; opt this layout fixture's reviewer in.
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord, watching: ["pr-reviewer"] });
       localStorage.setItem("build.rail.expanded", "1");
       window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
     });
@@ -323,7 +324,8 @@ it("opens Add from a press on the working dot as from the + itself, and the dot 
       const { stampWorkspace } = window.__layoutModules.merge;
       const { writeTasksRecord } = window.__layoutModules.tracker;
       const { writeAgentsOverviewFixture, overviewRailContext } = window.__layoutModules.fixture;
-      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord });
+      // Keep an unread pill to check its inert press beside the working dot.
+      await writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord, watching: ["pr-reviewer"] });
       localStorage.setItem("build.rail.expanded", "1");
       window.__layoutRail = mountAgentRail(document.querySelector("#agent-rail"), overviewRailContext());
     });

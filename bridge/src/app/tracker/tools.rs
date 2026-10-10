@@ -34,6 +34,10 @@ impl AppState {
             Ok(scope) => scope,
             Err(refusal) => return is_a_task_tool(action).then_some(Err(refusal)),
         };
+        let watch_baseline = match self.watch_baseline_for_action(&scope, action) {
+            Ok(baseline) => baseline,
+            Err(refusal) => return Some(Err(refusal)),
+        };
         let answered = match action {
             BridgeAction::TrackerListTasks {
                 state,
@@ -160,7 +164,7 @@ impl AppState {
             _ => return None,
         };
         let answered = self.also_track(&scope, action, answered);
-        Some(self.also_watch(&scope, action, answered))
+        Some(self.also_watch(&scope, action, answered, watch_baseline.as_deref()))
     }
 
     /// Honour `track` on a write that carried it (spec: Tasks → Tracking).
@@ -209,6 +213,7 @@ impl AppState {
         scope: &TaskScope,
         action: &BridgeAction,
         answered: Result<Value, String>,
+        baseline: Option<&str>,
     ) -> Result<Value, String> {
         let mut answered = answered?;
         if !wants_the_user_told(action) {
@@ -220,11 +225,42 @@ impl AppState {
         let Ok((project_id, task)) = self.tracker_task(&task_id) else {
             return Ok(answered);
         };
-        match self.set_watching(&project_id, task, true, scope.actor.clone()) {
+        match self.set_watching_after(&project_id, task, true, scope.actor.clone(), baseline) {
             Ok(watched) => answered["task"] = watched["task"].clone(),
             Err(why) => eprintln!("show {task_id} to the user alongside the write: {why}"),
         }
         Ok(answered)
+    }
+
+    /// Capture the actual timeline cursor before a notifying write lands.
+    /// This is under the same app lock as the write and its resulting watch.
+    fn watch_baseline_for_action(
+        &mut self,
+        scope: &TaskScope,
+        action: &BridgeAction,
+    ) -> Result<Option<String>, String> {
+        if !wants_the_user_told(action) {
+            return Ok(None);
+        }
+        let task_id = match action {
+            BridgeAction::TrackerCommentTask { task_id, .. }
+            | BridgeAction::TrackerReviewCommentTask { task_id, .. }
+            | BridgeAction::TrackerAssignTask { task_id, .. } => task_id,
+            _ => return Ok(None),
+        };
+        let task = self.task_of_this_agents_project(scope, task_id)?;
+        if task.watched {
+            return Ok(None);
+        }
+        let timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(task_id)
+            .stored()?;
+        Ok(timeline
+            .iter()
+            .map(super::inbox::entry_id)
+            .max_by_key(|id| super::inbox::when(id))
+            .map(str::to_string))
     }
 
     /// Which project's tasks this agent reaches, and whose name goes on what

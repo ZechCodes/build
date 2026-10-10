@@ -8,7 +8,14 @@ protocol versions; see
 
 ## [0.2.13] - Unreleased
 
-Wire 3.18.0.
+Wire 3.19.0.
+
+### Fixed
+
+- Unread counters include only watched conversations and task news since the
+  current watch began. Watch baselines survive restart; rewatching excludes
+  earlier history. Cached SPA badges also suppress unwatched agents on older
+  bridges (#474).
 
 ### Added
 

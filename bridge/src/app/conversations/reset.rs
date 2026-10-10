@@ -565,6 +565,7 @@ impl AppState {
 }
 
 fn reset_process_fields(agent: &mut Agent) {
+    agent.watch_started_after = 0;
     agent.state = AgentLifecycle::Idle;
     agent.resume_session_id = None;
     agent.topic = None;

@@ -7,6 +7,7 @@ import { fuzzyRank } from "./fuzzy.js";
 import { deviceTags, projectNameOf } from "./inboxProjects.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
+import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
  *  only — the daemon is still the one that decides. */
@@ -20,13 +21,9 @@ export function branchNamePreview(name) {
   return slug ? `build/${slug}` : "";
 }
 
-/** What one feed row is owed on the badge. The bridge sends the flag and the
- *  count off the same fact, so a row flagged with no count still weighs one. */
-function unreadOf(item) {
-  const count = Number(item && item.unread_count) || 0;
-  if (count > 0) return count;
-  return item && item.unread ? 1 : 0;
-}
+/** Watched roster counts win over an older aggregate. A legacy unread flag
+ *  without a count still weighs one when no roster or watch refusal is present. */
+const unreadOf = (item) => conversationSummaryUnreadCount(item, true);
 
 /** The project selector's menu: every machine's projects, the scoped one
  *  marked, filtered by name (subsequence matching, core/fuzzy.js). Projects

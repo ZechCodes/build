@@ -143,12 +143,36 @@ fn ended_tracking(entry: &TimelineEntry) -> bool {
 /// a list of things asking for their attention. The inbox row says it as
 /// `unread`, and `tasks.list` as each watched task's `unread_count` (#104).
 pub(in crate::app) fn unread_since_mark(task: &Task, timeline: &[TimelineEntry]) -> usize {
+    if !task.watched {
+        return 0;
+    }
+    let baseline = watch_started_after(task, timeline);
     timeline
         .iter()
         .filter(|entry| after(task.read_through.as_deref(), entry_id(entry)))
+        .filter(|entry| after(baseline, entry_id(entry)))
         .filter(|entry| !matches!(entry_actor(entry), crate::tracker::Actor::User))
         .filter(|entry| counts_as_unread(entry))
         .count()
+}
+
+/// Records saved before the watch cursor existed still carry the watch's
+/// timeline event. A task watched from creation has neither and starts at the
+/// origin; an automatic watch's stored cursor can precede its asking comment.
+fn watch_started_after<'a>(task: &'a Task, timeline: &'a [TimelineEntry]) -> Option<&'a str> {
+    task.watch_started_after.as_deref().or_else(|| {
+        timeline
+            .iter()
+            .filter_map(|entry| match entry {
+                TimelineEntry::Event(event)
+                    if event.kind == crate::tracker::TaskEventKind::Watched =>
+                {
+                    Some(event.id.as_str())
+                }
+                _ => None,
+            })
+            .max_by_key(|id| when(id))
+    })
 }
 
 /// Whether a timeline entry is news to the user (#183): something said, a
@@ -208,7 +232,7 @@ pub(in crate::app) fn when(id: &str) -> &str {
     id.split_once('-').map_or(id, |(_, ulid)| ulid)
 }
 
-fn entry_id(entry: &TimelineEntry) -> &str {
+pub(super) fn entry_id(entry: &TimelineEntry) -> &str {
     match entry {
         TimelineEntry::Comment(comment) => &comment.id,
         TimelineEntry::Event(event) => &event.id,

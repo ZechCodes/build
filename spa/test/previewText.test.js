@@ -112,7 +112,8 @@ describe("overviewState", () => {
 });
 
 describe("overviewHtml workspace summary", () => {
-  const entry = (id, state) => ({ agent: { id, name: id, watched: true }, state: { ...state, id },
+  const entry = (id, state) => ({ agent: { id, name: id, watched: true,
+    unread_count: state.unread_count, unread_reason: state.unread_reason }, state: { ...state, id },
     source: { slot: "current" }, workspaceId: "ws-1", section: "workspace", sectionName: "Workspace one" });
   const summary = (rows) => overviewHtml(rows, { showProjectAgents: false, scope: { kind: "project" },
     workspaces: [{ workspaceId: "ws-1", name: "Workspace one" }], tasks: [] })
@@ -132,6 +133,7 @@ describe("overviewHtml workspace summary", () => {
     const rows = overviewRows([entry("quiet", { unread_count: 1, unread_reason: "agent_message" })], [{ items: [] }]);
     expect(summary(rows)).not.toContain("rail-overview-live");
     expect(summary(rows)).toContain('class="rail-overview-idle" title="Nothing working" role="img" aria-label="Nothing working"');
+    expect(summary(rows)).toContain('title="1 unread">1<');
     expect(summary(rows).indexOf('title="1 unread"')).toBeLessThan(summary(rows).indexOf("rail-overview-idle"));
   });
 

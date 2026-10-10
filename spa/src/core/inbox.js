@@ -38,6 +38,7 @@ import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { freshestRosters, runningAgentCount, watchedAgentsRunning, watchedUnreadCount } from "./inboxRoster.js";
+import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { agentIsRunning } from "./agentRunning.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
@@ -113,7 +114,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     title: workspaceDisplayName(workspace),
     entityId,
     state: entryState(activity),
-    unreadCount: activity.unread_count || 0,
+    unreadCount: conversationSummaryUnreadCount(activity),
     reason: unreadReasonText(activity.unread_reason, "branch"),
     muted: !!activity.muted,
     dismissed: !!activity.dismissed,
@@ -182,6 +183,7 @@ function withRosterTallies(entry, agents, taskUnread) {
   const runningCount = runningAgentCount(agents);
   const agentIds = agents.map((agent) => agent.id).filter(Boolean);
   const taskUnreadCount = taskUnread.heldBy(entry.projectKey, agentIds);
+  const unreadCount = watchedUnreadCount(agents) + taskUnreadCount;
   return {
     ...entry,
     runningCount,
@@ -190,8 +192,8 @@ function withRosterTallies(entry, agents, taskUnread) {
     // dot and running count still describe every agent working in it.
     watchedWorking: watchedAgentsRunning(agents),
     agentIds,
-    unreadCount: watchedUnreadCount(agents) + taskUnreadCount,
-    state: entryState({ unread: taskUnreadCount > 0 || entry.state === "unread", working: runningCount > 0 }),
+    unreadCount,
+    state: entryState({ unread: unreadCount > 0, working: runningCount > 0 }),
     facts: `${entry.facts} · ${runningCount} running`,
   };
 }
@@ -650,7 +652,7 @@ function toEntry(item) {
     // input: an unread row can also have an agent actively working on it.
     working: agentIsRunning(item),
     reason: state === "unread" ? unreadReasonText(item.unread_reason, item.kind) : "",
-    unreadCount: item.unread_count || 0,
+    unreadCount: conversationSummaryUnreadCount(item),
     muted: !!item.muted,
     // The bridge's own word for "the user cleared this and no user or agent has
     // spoken since". The row remains accessible in Recent until a message

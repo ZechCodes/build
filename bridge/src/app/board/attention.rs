@@ -553,11 +553,7 @@ impl AppState {
             let agent_thread = self
                 .agent_conversation(entity_id, Some(&agent.id))
                 .unwrap_or_else(|_| thread.unwrap_or(&agent.thread));
-            let unread = self.unread_including_history(
-                &agent_thread.agent.id,
-                agent_thread,
-                self.read_cursor(entity_id, &agent.id),
-            );
+            let unread = self.agent_unread(entity_id, agent, agent_thread);
             summary.count += unread.count;
             summary.reason = unread.reason.or(summary.reason);
         }
@@ -574,13 +570,14 @@ impl AppState {
         agent: &crate::agent::Agent,
         thread: &crate::thread::Thread,
     ) -> crate::thread::UnreadSummary {
-        if self.is_muted(entity_id) {
+        if !agent.watched || self.is_muted(entity_id) {
             return crate::thread::UnreadSummary::default();
         }
         self.unread_including_history(
             &thread.agent.id,
             thread,
-            self.read_cursor(entity_id, &agent.id),
+            self.read_cursor(entity_id, &agent.id)
+                .max(agent.watch_started_after),
         )
     }
 

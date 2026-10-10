@@ -22,6 +22,7 @@ import { providerLabel } from "./modelPicker.js";
 import { humanAge } from "./text.js";
 import { isStartupEvent, startupEventTitle } from "./threadEvents.js";
 import { agentIsRunning } from "./agentRunning.js";
+import { conversationIsWatched, conversationUnreadCount, rosterUnreadCount } from "./conversationUnread.js";
 
 // One naming table for the whole client (core/modelPicker.js): the new-agent
 // cards, the Account select and the rail's bubbles all say the same word for
@@ -158,7 +159,7 @@ export const isFailedReason = (reason) => FAILED_REASONS.has(reason);
 /** Whether an agent's unread says what it is doing now. A failure always does;
  *  any other reason is from before the run in flight, so working outranks it —
  *  an agent that finished and was handed more is working, not finished (#201). */
-const unreadIsNews = (agent) => !!agent.unread_count && (!agent.working || isFailedReason(agent.unread_reason));
+const unreadIsNews = (agent) => conversationUnreadCount(agent) > 0 && (!agent.working || isFailedReason(agent.unread_reason));
 
 /** The one thing this agent's bubble is waiting on, or "" when it waits on
  *  nothing: a failure, then work in flight, then the unread it left. */
@@ -221,7 +222,7 @@ export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) |
 /** What the project's bubble is waiting on, in the same order an agent's is
  *  (`bubbleNews`): a failure, then work in flight, then the unread left. */
 function projectAgentNews(agents) {
-  const unread = agents.reduce((total, agent) => total + (agent.unread_count || 0), 0);
+  const unread = rosterUnreadCount(agents);
   const asking = agents.find(unreadIsNews);
   if (asking) return unreadReasonText(asking.unread_reason, "agent") || `${unread} unread`;
   return agents.some(agentIsRunning) ? "working" : "";
@@ -254,7 +255,7 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
     title: unwatched ? `${title} · ${UNWATCHED_TIP}` : title,
     unwatched,
     active,
-    unread: agents.reduce((total, agent) => total + (agent.unread_count || 0), 0),
+    unread: rosterUnreadCount(agents),
     working: agents.some(agentIsRunning),
   };
 }
@@ -328,7 +329,7 @@ export const projectAgentOnTheStrip = ({ agents = [], active = false } = {}) => 
 
 /** Whether the reader watches this agent. A bridge that says nothing about
  *  watching leaves `watched` unset, and every agent of it counts as watched. */
-export const agentIsWatched = (agent) => agent?.watched !== false;
+export const agentIsWatched = conversationIsWatched;
 
 /** Whether an agent has a bubble on the strip (#105): the ones the reader
  *  watches, and an unwatched one only while its conversation is the one open.
@@ -365,7 +366,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
     title: agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
     unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
-    unread: agent.unread_count || 0,
+    unread: conversationUnreadCount(agent),
     working: agentIsRunning(agent),
     live: agentSessionIsLive(agent),
     starting: agent.state === AGENT_STARTING,

@@ -103,13 +103,11 @@ impl TaskWrite {
         payload: Value,
         now: &str,
     ) {
-        self.events.push(TaskEvent::new(
-            &self.task.id,
-            actor.clone(),
-            kind,
-            payload,
-            now,
-        ));
+        let event = TaskEvent::new(&self.task.id, actor.clone(), kind, payload, now);
+        if kind == TaskEventKind::Watched && self.task.watch_started_after.is_none() {
+            self.task.watch_started_after = Some(event.id.clone());
+        }
+        self.events.push(event);
     }
 }
 

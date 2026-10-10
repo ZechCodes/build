@@ -82,6 +82,19 @@ impl AppState {
         watching: bool,
         actor: Actor,
     ) -> Result<Value, String> {
+        self.set_watching_after(project_id, task, watching, actor, None)
+    }
+
+    /// Automatic watches may start before the write that asked for attention,
+    /// so that write's news is counted while its preceding history is not.
+    pub(super) fn set_watching_after(
+        &mut self,
+        project_id: &str,
+        task: Task,
+        watching: bool,
+        actor: Actor,
+        baseline: Option<&str>,
+    ) -> Result<Value, String> {
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(actor.clone(), task);
         if !write.task.set_watched(watching) {
@@ -89,6 +102,7 @@ impl AppState {
                 "task": self.task_json_with_live_identities(project_id, &write.task),
             }));
         }
+        write.task.watch_started_after = baseline.map(str::to_string);
         let kind = if watching {
             TaskEventKind::Watched
         } else {

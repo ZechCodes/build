@@ -244,6 +244,7 @@ mod tracker_list_reads;
 mod tracker_tools;
 mod tracker_tracking;
 mod tracker_unread_kinds;
+mod tracker_watch_baselines;
 mod tracker_watching;
 mod updates;
 mod usage_limits;
@@ -256,3 +257,5 @@ mod workspace_reclaim_final_budget;
 mod workspace_reclaim_races;
 mod workspace_sizes;
 mod workspaces;
+
+mod conversation_watch_baselines;

@@ -22,15 +22,17 @@
 import { isFinished } from "./trackerAgentTasks.js";
 import { changedSince } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
-import { taskUnreadReading, latestTaskMark } from "./trackerUnread.js";
+import { taskUnreadReading, latestTaskMark, taskWatchBaseline } from "./trackerUnread.js";
 
 const listedCount = (task) => (Number.isSafeInteger(task?.unread_count) ? task.unread_count : null);
 
-/** #99's count over a cached timeline, from the newer of the two read marks. */
+/** #99's count after both the watch baseline and the newest cached read mark. */
 function timelineUnread(task, detail) {
   if (!Array.isArray(detail?.timeline)) return 0;
-  const mark = latestTaskMark(detail.task?.read_through, task?.read_through);
-  return taskUnreadReading(timelineRows(detail.timeline), mark).unreadCount;
+  const rows = timelineRows(detail.timeline);
+  const readMark = latestTaskMark(detail.task?.read_through, task?.read_through);
+  const mark = latestTaskMark(readMark, taskWatchBaseline(rows, task, detail.task));
+  return taskUnreadReading(rows, mark).unreadCount;
 }
 
 /** How much of one task is unread: `task` as the cached list holds it,

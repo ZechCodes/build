@@ -1,3 +1,5 @@
+import { watchTimeUpdates } from "./timeUpdates.js";
+
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -34,18 +36,5 @@ export function refreshEditedTimes(root, now = Date.now()) {
 }
 
 export function watchEditedTimes(root, intervalMs = 30_000) {
-  refreshEditedTimes(root);
-  let timer = setInterval(() => refreshEditedTimes(root), intervalMs);
-  return {
-    setVisible(visible) {
-      if (!visible && timer) {
-        clearInterval(timer);
-        timer = null;
-      } else if (visible && !timer) {
-        refreshEditedTimes(root);
-        timer = setInterval(() => refreshEditedTimes(root), intervalMs);
-      }
-    },
-    dispose: () => clearInterval(timer),
-  };
+  return watchTimeUpdates(() => refreshEditedTimes(root), intervalMs);
 }

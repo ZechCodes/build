@@ -593,7 +593,9 @@ describe("live conversation timestamps", () => {
     const selectedText = row.querySelector(".thread-body p").firstChild;
     const range = document.createRange();
     range.selectNodeContents(selectedText);
+    window.getSelection().removeAllRanges();
     window.getSelection().addRange(range);
+    expect(window.getSelection().toString()).toBe("the retry is fixed");
     body.scrollTop = 120;
     const scrollWrites = vi.spyOn(body, "scrollTop", "set");
     const observer = new MutationObserver(() => {});

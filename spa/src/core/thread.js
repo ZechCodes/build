@@ -88,7 +88,16 @@ function timeHtml(createdAt) {
   if (!createdAt) return "";
   const label = formatRelativeDate(createdAt);
   if (!label) return "";
-  return `<time datetime="${esc(createdAt)}">${esc(label)}</time>`;
+  return `<time data-thread-time datetime="${esc(createdAt)}">${esc(label)}</time>`;
+}
+
+/** Advance the rendered dates without repainting the conversation or its rows. */
+export function refreshThreadTimes(root, now = Date.now()) {
+  for (const element of root.querySelectorAll("time[data-thread-time]")) {
+    const label = formatRelativeDate(element.getAttribute("datetime"), now);
+    // timeHtml owns these nodes and gives each one a single text child.
+    if (element.textContent !== label) element.firstChild.nodeValue = label;
+  }
 }
 
 // A conversation is held as a WINDOW over it: the newest items, widened

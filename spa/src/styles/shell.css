@@ -408,7 +408,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   --inbox-status-room:12px; /* the dot's slot stays reserved when read and idle */
   --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-control-width) + var(--inbox-status-room)); }
 .inbox-entry:has(.inbox-actions > .inbox-more) { --inbox-control-width:var(--inbox-menu-width); }
-.inbox-entry:has(.inbox-watch) { --inbox-control-width:calc(32px + 4px + var(--inbox-menu-width)); }
+.inbox-entry:has(.inbox-actions > .inbox-watch) { --inbox-control-width:calc(32px + 4px + var(--inbox-menu-width)); }
 .inbox-entry:has(.inbox-workspace-done) {
   --inbox-control-width:var(--inbox-done-width); }
 .inbox-entry:has([data-capture-retry]) { --inbox-control-width:56px; }
@@ -456,7 +456,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
 }
 @media (pointer:coarse) {
-  .inbox-entry:has(.inbox-watch) { --inbox-control-width:calc(44px + 4px + var(--inbox-menu-width)); min-height:52px; }
+  .inbox-entry:has(.inbox-actions > .inbox-watch) { --inbox-control-width:calc(44px + 4px + var(--inbox-menu-width)); min-height:52px; }
   .inbox-actions > .inbox-watch { width:44px; height:44px; padding:12px; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather

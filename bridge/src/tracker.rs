@@ -333,6 +333,12 @@ pub struct Task {
     /// another agent must not put a row in front of the user.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub watched: bool,
+    /// The timeline entry before this watch's unread news starts. Kept apart
+    /// from the read cursor: starting a watch does not claim history was read.
+    /// Tasks watched from creation have no lower bound. Older records recover
+    /// their latest watch event from the persisted timeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_started_after: Option<String>,
     /// The last event the user has read on this task, as an event id.
     ///
     /// Ids are time-ordered, so "after the mark" is a string comparison and
@@ -449,6 +455,7 @@ impl Task {
             return false;
         }
         self.watched = watching;
+        self.watch_started_after = None;
         true
     }
 
@@ -489,6 +496,7 @@ impl Task {
             identities: std::collections::BTreeMap::new(),
             attachments: Vec::new(),
             watched: false,
+            watch_started_after: None,
             read_through: None,
             dismissed_through: None,
             created_by,

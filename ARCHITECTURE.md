@@ -1566,6 +1566,44 @@ the trackers left on tasks that finished before this rule. The user's watch
   not-self and DNS TTL checks; the cache never substitutes an answer. Explicit
   source-address probing is Linux-only; other hosts retain multicast discovery.
   Neither the hint nor the cached address enters logs, pushes or diagnostics.
+- **Superseded failed sessions**: `SessionPeers` closes a session's peer
+  whose ICE connection state is `failed` once a newer open session presenting
+  the same hint holds a peer (#373). It checks on every offer and whenever a
+  peer's ICE fails, so a reload closes the old peer at once in either order
+  instead of after the 20-second write stall. State callbacks only prompt a
+  look; they never decide. The peer decides under its negotiation lock, the
+  one every offer holds, in two reads. First it checks that the driver has
+  delivered every have-remote-offer signaling event the connection's core has
+  queued; `answer()` counts them under the same lock, one each time the core
+  leaves stable. Then it takes one statistics snapshot and closes only if the
+  ICE state the core recorded as it drained is `failed`. That failure belongs
+  to the current ICE generation. Every native ICE restart happens inside
+  `set_remote_description`, after the call has queued its have-remote-offer
+  event, so a delivered offer means the core has drained since its latest
+  restart. The agent leaves `failed` only through a restart, which queues
+  `checking` behind the failure, and the core records ICE states in the order
+  it drains them. A drain after the restart therefore leaves the record at
+  `checking` or later, so a `failed` record cannot predate it. The lock keeps
+  any restart out between the two reads. A failure recorded after the latest
+  restart always prompts a look once its events are delivered: the `failed`
+  event prompts it, and so does the restart's offer if it is delivered after
+  the failure. So an idle peer that really fails is closed, including after a
+  restart that leaves the agent checking and queues no `checking` event. An
+  offer the core refuses after leaving stable is counted too, because it may
+  already have restarted ICE (an empty password restarts it and is then
+  refused). The vendored wrapper sends its driver no wake for a refused
+  description and a failed core has no timer, so `answer()` wakes the driver
+  itself by reapplying the configuration; the refused offer's event is then
+  delivered and prompts the look like any other.
+  An offer never closes the peer it is answering through; an offer whose peer
+  was closed mid-answer answers through a fresh registered peer. Only the peer
+  goes: the session stays open, and its next offer negotiates a fresh peer.
+  Sessions without a hint are unaffected. The hint correlates sessions as a
+  bearer value; it is not authenticated client isolation. Any session that
+  presents a hint, including another paired client that has learned it, can
+  get a failed peer of an older session with that hint closed. It cannot close
+  a peer whose native core has not recorded an ICE failure since its latest
+  restart.
 - **Candidate diagnostics**: `rtc.diagnostics` reports remote candidate type
   counts and discovery reasons without names, addresses or credentials. Actual
   direct-check snapshots on ICE restart or close report up to 64 tracked remote

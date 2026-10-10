@@ -31,6 +31,8 @@ async fn sweep_callbacks_queue_in_order_without_waiting_for_remote_discovery() {
         connected,
         gathered: Mutex::new(GatheredTypes::default()),
         sweeps,
+        ice: Arc::default(),
+        offers: Arc::default(),
     };
     for (ordinal, status) in ["started", "progress", "stopped"].into_iter().enumerate() {
         let ordinal = u32::try_from(ordinal).unwrap();

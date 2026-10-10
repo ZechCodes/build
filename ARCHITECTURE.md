@@ -1420,8 +1420,13 @@ The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
   restart always prompts a look once its events are delivered: the `failed`
   event prompts it, and so does the restart's offer if it is delivered after
   the failure. So an idle peer that really fails is closed, including after a
-  restart that leaves the agent checking and queues no `checking` event. A
-  refused offer protects nothing it did not restart.
+  restart that leaves the agent checking and queues no `checking` event. An
+  offer the core refuses after leaving stable is counted too, because it may
+  already have restarted ICE (an empty password restarts it and is then
+  refused). The vendored wrapper sends its driver no wake for a refused
+  description and a failed core has no timer, so `answer()` wakes the driver
+  itself by reapplying the configuration; the refused offer's event is then
+  delivered and prompts the look like any other.
   An offer never closes the peer it is answering through; an offer whose peer
   was closed mid-answer answers through a fresh registered peer. Only the peer
   goes: the session stays open, and its next offer negotiates a fresh peer.

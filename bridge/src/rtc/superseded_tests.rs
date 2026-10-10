@@ -566,6 +566,13 @@ impl NativeCore {
         self.core.handle_timeout(self.clock).unwrap();
     }
 
+    /// Whether the core has no timer that would wake its driver.
+    fn idle(&mut self) -> bool {
+        use rtc::sansio::Protocol;
+
+        self.core.poll_timeout().is_none()
+    }
+
     fn state(&mut self) -> Option<RTCIceTransportState> {
         native_ice_state(&self.core.get_stats(self.clock, StatsSelector::None))
     }
@@ -583,6 +590,13 @@ struct CorePeer {
     fail_after_restart: AtomicBool,
     failure_pending: AtomicBool,
     deferred: Mutex<Drained>,
+    /// Driver wakes the async wrapper would have sent and the driver has not
+    /// yet handled: one per configuration, local description and applied
+    /// remote description, none for a refused one.
+    wakes: AtomicU64,
+    /// Let the driver handle every wake sent so far before the next remote
+    /// description, the way it can while `answer()` awaits its reads.
+    idle_before_offer: AtomicBool,
 }
 
 impl CorePeer {
@@ -594,7 +608,21 @@ impl CorePeer {
             fail_after_restart: AtomicBool::new(false),
             failure_pending: AtomicBool::new(false),
             deferred: Mutex::default(),
+            wakes: AtomicU64::new(0),
+            idle_before_offer: AtomicBool::new(false),
         })
+    }
+
+    /// One driver turn, if anything woke it: drain the core and deliver.
+    async fn drive(&self) -> Option<Vec<RTCIceConnectionState>> {
+        if self.wakes.swap(0, Ordering::SeqCst) == 0 {
+            return None;
+        }
+        Some(self.deliver().await)
+    }
+
+    fn wake(&self) {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
     }
 
     async fn deliver(&self) -> Vec<RTCIceConnectionState> {
@@ -643,12 +671,13 @@ impl PeerConnection for CorePeer {
         &self,
         description: RTCSessionDescription,
     ) -> webrtc::error::Result<()> {
-        Ok(self
-            .native
+        self.native
             .lock()
             .unwrap()
             .core
-            .set_local_description(description)?)
+            .set_local_description(description)?;
+        self.wake();
+        Ok(())
     }
 
     async fn local_description(&self) -> Option<RTCSessionDescription> {
@@ -671,6 +700,10 @@ impl PeerConnection for CorePeer {
         &self,
         description: RTCSessionDescription,
     ) -> webrtc::error::Result<()> {
+        if self.idle_before_offer.swap(false, Ordering::SeqCst) {
+            let idle = self.drive().await;
+            assert!(idle.is_none_or(|states| states.is_empty()));
+        }
         let applied = self
             .native
             .lock()
@@ -680,7 +713,9 @@ impl PeerConnection for CorePeer {
         if self.fail_after_restart.swap(false, Ordering::SeqCst) {
             self.failure_pending.store(true, Ordering::SeqCst);
         }
-        Ok(applied?)
+        applied?;
+        self.wake();
+        Ok(())
     }
 
     async fn remote_description(&self) -> Option<RTCSessionDescription> {
@@ -724,12 +759,13 @@ impl PeerConnection for CorePeer {
         &self,
         configuration: RTCConfiguration,
     ) -> webrtc::error::Result<()> {
-        Ok(self
-            .native
+        self.native
             .lock()
             .unwrap()
             .core
-            .set_configuration(configuration)?)
+            .set_configuration(configuration)?;
+        self.wake();
+        Ok(())
     }
 
     async fn create_data_channel(
@@ -1007,4 +1043,91 @@ async fn a_restart_offer_delivered_after_its_failure_prompts_the_close() {
     drained.deliver_offers(&connection.events).await;
     settled().await;
     assert_eq!(*looks.lock().unwrap(), [KEPT, RETIRED]);
+}
+
+/// An offer refused after the core left stable, with no ICE restart: its
+/// have-remote-offer is queued, so the close waits for it.
+fn refused_before_media(offer: &str) -> &str {
+    &offer[..offer.find("m=").unwrap()]
+}
+
+/// Review #455 round 5, P2: an offer refused before its media section queues
+/// a have-remote-offer and restarts nothing. The close waits for that event,
+/// so the refusal must wake the driver to deliver it; a failed core has no
+/// timer of its own to wake it.
+#[tokio::test]
+async fn r5_refused_offer_wakes_the_driver_of_an_idle_failed_peer() {
+    let native = failed_native().await;
+    let initial = native.offer.clone();
+    let (peer, connection) = native_peer("r5-refused-idle", native).await;
+    connection.deliver().await;
+    peer.ice.observe(RTCIceConnectionState::Failed);
+    assert!(connection.with_native(NativeCore::idle));
+    connection.idle_before_offer.store(true, Ordering::SeqCst);
+
+    let refused = peer
+        .answer(
+            refused_before_media(&initial),
+            &[],
+            session("r5-refused-idle"),
+        )
+        .await;
+    assert!(matches!(refused, Err(RtcError::Refused(_))), "{refused:?}");
+    assert_eq!(
+        connection.with_native(NativeCore::state),
+        Some(RTCIceTransportState::Failed),
+        "the refused offer restarted nothing"
+    );
+    assert!(connection.with_native(NativeCore::idle));
+    assert_eq!(
+        try_close(&peer, &connection).await,
+        KEPT,
+        "not yet delivered"
+    );
+
+    let driven = connection.drive().await;
+    assert_eq!(driven, Some(Vec::new()), "the refusal woke the driver");
+    assert_eq!(try_close(&peer, &connection).await, RETIRED);
+}
+
+/// Review #455 round 5: an empty password restarts native ICE before the
+/// credentials are refused, so the refused offer still protects the new
+/// generation's checking from the old failure.
+#[tokio::test]
+async fn r5_refusal_after_native_restart_must_still_protect_checking() {
+    use super::ice_diagnostic_tests::with_ice_credentials;
+
+    let native = failed_native().await;
+    let partial = with_ice_credentials(&native.offer, "partial", "");
+    let (peer, connection) = native_peer("r5-partial-restart", native).await;
+    let local_ufrag = |native: &mut NativeCore| {
+        let stats = native.core.get_stats(native.clock, StatsSelector::None);
+        stats
+            .transport()
+            .unwrap()
+            .ice_local_username_fragment
+            .clone()
+    };
+    let before = connection.with_native(local_ufrag);
+
+    let refused = peer
+        .answer(&partial, &[], session("r5-partial-restart"))
+        .await;
+    assert!(matches!(refused, Err(RtcError::Refused(_))), "{refused:?}");
+    assert_ne!(
+        connection.with_native(local_ufrag),
+        before,
+        "the native agent restarted"
+    );
+    assert_eq!(
+        connection.with_native(NativeCore::state),
+        Some(RTCIceTransportState::Failed)
+    );
+    assert_eq!(try_close(&peer, &connection).await, KEPT);
+
+    assert_eq!(
+        connection.drive().await,
+        Some(vec![RTCIceConnectionState::Checking])
+    );
+    assert_eq!(try_close(&peer, &connection).await, KEPT);
 }

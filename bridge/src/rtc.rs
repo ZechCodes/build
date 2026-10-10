@@ -857,11 +857,13 @@ impl SessionPeer for WebrtcPeer {
         self.signaling.hold(signaling);
         let connection = match negotiation.as_ref() {
             Some(open) => {
-                open.connection.set_configuration(configuration).await?;
+                open.connection
+                    .set_configuration(configuration.clone())
+                    .await?;
                 open.connection.clone()
             }
             None => {
-                let opened = self.connect(configuration).await?;
+                let opened = self.connect(configuration.clone()).await?;
                 let connection = opened.connection.clone();
                 *negotiation = Some(opened);
                 connection
@@ -884,6 +886,14 @@ impl SessionPeer for WebrtcPeer {
             // whether or not the rest of the offer applied.
             if let Some(open) = negotiation.as_mut() {
                 open.offers_queued += 1;
+            }
+            if applied.is_err() {
+                // A refused description does not wake the driver, and a failed
+                // core has no timer that would, so the close waiting on this
+                // event would wait for unrelated activity or the driver's
+                // day-long fallback. Any driver event makes it drain; the
+                // configuration is the one just applied.
+                let _ = connection.set_configuration(configuration).await;
             }
         }
         applied?;

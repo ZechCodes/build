@@ -12,11 +12,11 @@ export const rosterUnreadCount = (agents = []) => agents.reduce(
   (total, agent) => total + conversationUnreadCount(agent), 0,
 );
 
-/** A roster is the authority when present; an older summary stands in when
- *  the bridge carries no roster. A bare unread flag may count as one for menus. */
+/** A populated roster is the authority; an older summary stands in when
+ *  the bridge carries no agents. A bare unread flag may count as one for menus. */
 export function conversationSummaryUnreadCount(row, flagFallback = false) {
   if (!conversationIsWatched(row)) return 0;
-  if (Array.isArray(row?.agents)) return rosterUnreadCount(row.agents);
+  if (Array.isArray(row?.agents) && row.agents.length) return rosterUnreadCount(row.agents);
   const count = conversationUnreadCount(row);
   return count || (flagFallback && row?.unread ? 1 : 0);
 }

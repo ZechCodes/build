@@ -5,7 +5,7 @@ import { overviewRows, overviewSnippet, overviewState } from "../src/core/agentO
 import { projectMenuModel } from "../src/core/toolbarModel.js";
 import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
 import { agentsUnreadCount, watchedUnreadCount } from "../src/core/inboxRoster.js";
-import { watchedWorkspaceEntries } from "../src/core/inbox.js";
+import { inboxEntries, workspaceEntries, watchedWorkspaceEntries } from "../src/core/inbox.js";
 
 const project = { id: "project-1", projectKey: "device/project-1", deviceId: "device", name: "Build", entity_id: "project-run" };
 const watched = { id: "watched", watched: true, unread_count: 2 };
@@ -56,6 +56,17 @@ describe("watched conversation unread (#474)", () => {
     expect(projectMenuModel({ projects: [project], items: [row({ agents: undefined, watched: false, unread_count: 0 })] })[0].unreadCount).toBe(0);
     expect(projectAgentEntries([project], [summary])[0].ownUnreadCount).toBe(0);
     expect(projectMenuModel({ projects: [project], items: [row({ agents: undefined, unread_count: 0 })] })[0].unreadCount).toBe(1);
+  });
+
+  it("zeroes legacy summary counts in workspace and conversation rows", () => {
+    const summary = row({ agents: undefined, watched: false });
+    const workspace = { id: "workspace-1", workspaceKey: "device/workspace-1", project_id: project.id,
+      projectKey: project.projectKey, entity_id: project.entity_id };
+    expect(workspaceEntries([workspace], [project], [summary])[0].unreadCount).toBe(0);
+    expect(inboxEntries({ items: [summary] }).entries[0].unreadCount).toBe(0);
+    const legacySummary = row({ agents: undefined });
+    expect(workspaceEntries([workspace], [project], [legacySummary])[0].unreadCount).toBe(12);
+    expect(inboxEntries({ items: [legacySummary] }).entries[0].unreadCount).toBe(12);
   });
 
   it("does not retain a workspace unread status from an unwatched cached summary", () => {

@@ -71,8 +71,8 @@ describe("the agents overview (#186)", () => {
   });
 
   it("orders workspaces by what needs the reader, then what is working, then the quiet, then the empty", async () => {
-    expect(sectionNames()).toEqual(["Project agents", "skrift-review", "skrift-fixes", "issue-implementation-audit", "relay-soak"]);
-    expect(sections().map((section) => section.dataset.rank)).toEqual(["1", "3", "3", "1", "0"]);
+    expect(sectionNames()).toEqual(["Project agents", "skrift-fixes", "issue-implementation-audit", "skrift-review", "relay-soak"]);
+    expect(sections().map((section) => section.dataset.rank)).toEqual(["1", "3", "1", "1", "0"]);
     // Within a workspace the same order: the failed start before the working agent.
     expect(rowIds(sectionNamed("skrift-fixes"))).toEqual(["fix-reviewer", "fixer"]);
     expect(rowIds(sectionNamed("skrift-review"))).toEqual(["critical-review", "pr-reviewer"]);
@@ -88,8 +88,8 @@ describe("the agents overview (#186)", () => {
     expect(shown("fixer")).toEqual({ model: "Opus 5", state: "working", word: "Working" });
     expect(shown("fix-reviewer")).toEqual({ model: "6 Sol", state: "error", word: "Failed to start" });
     expect(row("fix-reviewer").querySelector(".rail-overview-state").title).toContain("not a model id");
-    expect(shown("pr-reviewer")).toEqual({ model: "6 Sol", state: "waiting", word: "Unread" });
-    expect(shown("critical-review")).toEqual({ model: "6 Astra", state: "waiting", word: "Blocked" });
+    expect(shown("pr-reviewer")).toEqual({ model: "6 Sol", state: "idle", word: "Idle" });
+    expect(shown("critical-review")).toEqual({ model: "6 Astra", state: "idle", word: "Idle" });
     // The row wears the short name (#257); its title names the model whole.
     expect(row("critical-review").querySelector(".rail-overview-model").title).toBe("gpt-6-astra · xhigh");
     expect(row("critical-review").querySelector(".rail-overview-model").classList.contains("rail-overview-model-raw")).toBe(false);
@@ -98,7 +98,8 @@ describe("the agents overview (#186)", () => {
     const summary = (name) => sectionNamed(name).querySelector(".rail-overview-sum");
     expect(summary("skrift-fixes").querySelector(".rail-overview-live")).toBeTruthy();
     expect(summary("skrift-fixes").querySelector(".rail-overview-need.is-error").textContent).toBe("!");
-    expect(summary("skrift-review").querySelector(".rail-overview-need").textContent).toBe("3");
+    // Cached unread from conversations nobody watches contributes no attention.
+    expect(summary("skrift-review").querySelector(".rail-overview-need")).toBeNull();
     expect(summary("skrift-review").querySelector(".rail-overview-live")).toBeNull();
     // #192: the working dot is always there, idle and saying so when nothing works.
     const dot = (name) => summary(name).querySelector(".rail-overview-live, .rail-overview-idle");

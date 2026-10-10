@@ -15,6 +15,15 @@ export function latestTaskMark(left, right) {
   return later !== null && compare(later, earlier) > 0 ? right : left;
 }
 
+/** The watch's lower bound from either cached task. Legacy records without
+ *  that field use the latest Watched event, or the timeline origin. */
+export function taskWatchBaseline(rows, task, detailTask) {
+  const persisted = latestTaskMark(task?.watch_started_after, detailTask?.watch_started_after);
+  if (persisted) return persisted;
+  return (rows || []).filter((row) => row.type === "event" && row.kind === "watched")
+    .reduce((mark, row) => latestTaskMark(mark, row.key), null);
+}
+
 /** The events that are news to the user (#183): a change to who holds the
  *  task or where it stands, or an agent-created task that asks the user to
  *  read it. Comments count too; other bookkeeping does not. The bridge's

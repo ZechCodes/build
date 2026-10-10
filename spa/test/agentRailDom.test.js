@@ -25,6 +25,7 @@ let chatRepository = null;
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
+const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
@@ -256,6 +257,10 @@ const pushRow = async (row = payload) => {
 
 beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
+  // A standing panel has a viewport; jsdom otherwise measures it as hidden.
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true, get() { return this.id === "rail-body" ? 300 : 0; },
+  });
   HTMLElement.prototype.scrollTo = vi.fn();
   localStorage.clear();
   resetAgentRailMemory();
@@ -297,6 +302,8 @@ afterEach(async () => {
   chatRepository = null;
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  if (originalClientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+  else delete HTMLElement.prototype.clientHeight;
   // Posting queues record merges without awaiting disk. Let this fixture's
   // writes finish before the next one clears the shared IndexedDB; otherwise
   // an old write can land after that clear and look like a duplicate message.
@@ -565,7 +572,7 @@ describe("the unpinned panel's popover", () => {
 
   it("does not report reading from the retained panel while it is collapsed", async () => {
     payload = branchRow({
-      agents: [agent({ unread_count: 2 })],
+      agents: [agent({ unread_count: 2, read_through_sequence: 0 })],
       run: { run_id: "run-3", thread: { items: [
         { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
         { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
@@ -580,7 +587,7 @@ describe("the unpinned panel's popover", () => {
     markSeen.mockClear();
 
     payload = branchRow({
-      agents: [agent({ unread_count: 3 })],
+      agents: [agent({ unread_count: 3, read_through_sequence: 0 })],
       run: { run_id: "run-3", thread: { items: [
         { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
         { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
@@ -3035,7 +3042,7 @@ describe("the conversation panel", () => {
 
   it("tells the daemon how far down an agent's conversation it has read", async () => {
     payload = branchRow({
-      agents: [agent({ unread_count: 2, unread_reason: "done" })],
+      agents: [agent({ unread_count: 2, unread_reason: "done", read_through_sequence: 0 })],
       run: {
         run_id: "run-3",
         thread: {
@@ -3365,7 +3372,7 @@ describe("reading back past the top of a paged conversation", () => {
   // where that window starts and the daemon keeps the badge up for a message
   // waiting below it.
   it("reports how much of the conversation it holds when it reports it read", async () => {
-    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: 97 })]);
     await mount();
 
     expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined, "dev-1");
@@ -3375,7 +3382,7 @@ describe("reading back past the top of a paged conversation", () => {
     // A report the daemon dropped for history it could not vouch for is worth
     // making again once that history has landed, so a window reaching further
     // back is news even when the reader got no further down.
-    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: 97 })]);
     await mount();
     markSeen.mockClear();
 

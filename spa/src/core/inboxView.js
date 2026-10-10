@@ -121,7 +121,7 @@ const writeFolds = () => foldRecord?.write({ entries: [...folds] });
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
 const workspacesBeingFinished = new Set();
-// The watched tasks that need the user (#125), followed through the cache
+// The watched unfinished tasks, followed through the cache
 // while the rail is mounted.
 let watchedTasks = null;
 // Tasks the user stopped watching from their row, by row key: null while the
@@ -209,7 +209,7 @@ export function setInboxView(next) {
 /** Every row the rail paints, on either face. The captures first: they are
  *  the account's unfinished business and belong to no project, so they stand
  *  above the workspace rows on the flat face and above the blocks on the
- *  other. The watched tasks asking for the user come next, and sit in their
+ *  other. Watched unfinished tasks come next, and sit in their
  *  project's block on the projects face. */
 function railRows() {
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });

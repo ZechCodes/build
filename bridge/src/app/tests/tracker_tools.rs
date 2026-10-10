@@ -144,6 +144,11 @@ fn mcp_create_task_can_ask_the_user_on_its_created_event() {
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
     let who = coding_agent(&mut state, &project_id, "ask here");
+    let settings = state.handle(req(
+        "settings.set",
+        json!({ "watch_agent_filed_tasks": false }),
+    ));
+    assert_eq!(settings["ok"], true, "{settings:?}");
     let frame = json!({
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "create_task", "arguments": {
@@ -159,6 +164,7 @@ fn mcp_create_task_can_ask_the_user_on_its_created_event() {
     let task_id = filed["task"]["id"].as_str().unwrap();
     assert_eq!(filed["task"]["watched"], true);
     let fetched = state.handle(req("tasks.get", json!({ "task_id": task_id })));
+    assert_eq!(fetched["result"]["task"]["watched"], true);
     let created = &fetched["result"]["timeline"][0];
     assert_eq!(created["type"], "event");
     assert_eq!(created["kind"], "created");
@@ -392,7 +398,7 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": { "name": "comment_task", "arguments": {
             "task_id": task_id, "body": "Which option should I use?",
-            "mention_user": true
+            "mention_user": true, "notify_user": false
         }}
     });
     let parsed = DoneServer::new(&who.1).handle_message(&frame.to_string());
@@ -417,6 +423,7 @@ fn mcp_comment_mention_round_trips_through_the_bridge() {
         },
     )
     .unwrap();
+    assert_eq!(timeline["task"]["watched"], true);
     assert_eq!(
         timeline["timeline"]
             .as_array()

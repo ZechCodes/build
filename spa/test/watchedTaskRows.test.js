@@ -1,8 +1,8 @@
-// Watched tasks as inbox rows (#125): a row only while the task needs the
-// user, saying why, and gone the moment the reason is.
+// Watched unfinished tasks remain in Inbox, with attention ahead of quiet rows.
 import { describe, expect, it } from "vitest";
 import { watchedTaskEntries } from "../src/core/watchedTaskRows.js";
 import { TRACKER_TASK, activeEntryKey, inboxRowHtml } from "../src/core/inbox.js";
+import { workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 import { comment, event, task, taskDetail } from "./trackerWireFixture.js";
 
 const project = { id: "p1", deviceId: "dev-1", projectKey: "dev-1|p1", name: "Build" };
@@ -19,21 +19,21 @@ describe("which watched tasks are rows", () => {
     expect(rows([review, mine, asked], details).map((row) => row.taskId)).toEqual(["i-review", "i-mine", "i-asked"]);
   });
 
-  it("lists nothing that is only watched, not watched at all, Done, or closed", () => {
+  it("keeps quiet watched tasks but excludes unwatched, Done, and closed tasks", () => {
     expect(rows([
       watched({ id: "i-quiet" }),
       task({ id: "i-unwatched", status: "in_review" }),
       watched({ id: "i-done", status: "done", assignee: { kind: "user" } }),
       watched({ id: "i-closed", state: "closed", status: "in_review" }),
-    ])).toEqual([]);
+    ]).map((row) => row.taskId)).toEqual(["i-quiet"]);
   });
 
-  it("drops the row once the comment is read", () => {
+  it("keeps the row quiet once the comment is read", () => {
     const asked = watched({ id: "i-asked", read_through: "te-01" });
     const timeline = [comment({ id: "tc-02", author: { kind: "agent", agent_id: "a1" } })];
     expect(rows([asked], new Map([[asked.id, taskDetail(asked, timeline)]]))).toHaveLength(1);
     const read = { ...asked, read_through: "tc-02" };
-    expect(rows([read], new Map([[asked.id, taskDetail(read, timeline)]]))).toEqual([]);
+    expect(rows([read], new Map([[asked.id, taskDetail(read, timeline)]]))[0]).toMatchObject({ facts: "", unreadCount: 0, quiet: true });
   });
 });
 
@@ -41,11 +41,11 @@ describe("which watched tasks are rows by the narrow rule (#144)", () => {
   const agent = { kind: "agent", agent_id: "a1" };
   const narrow = (tasks, details) => watchedTaskEntries([{ ...source(tasks, details), askedOnly: true }]);
 
-  it("leaves out one only in review, and one with only the agents' own comments", () => {
+  it("keeps tasks without a narrow-rule attention reason", () => {
     const review = watched({ id: "i-review", number: 1, status: "in_review", assignee: agent });
     const chatter = watched({ id: "i-chatter", number: 2, read_through: "te-01" });
     const details = new Map([[chatter.id, taskDetail(chatter, [comment({ id: "tc-02", author: agent })])]]);
-    expect(narrow([review, chatter], details)).toEqual([]);
+    expect(narrow([review, chatter], details).map((row) => [row.taskId, row.facts])).toEqual([["i-chatter", ""], ["i-review", ""]]);
   });
 
   it("lists one assigned to the user and one an agent asked, counting all unread news", () => {
@@ -124,6 +124,34 @@ describe("what a row says", () => {
     const [row] = rows([watched({ id: "i-9", number: 9, status: "in_review" })]);
     expect(activeEntryKey({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "i-9" }, [row])).toBe(row.key);
     expect(activeEntryKey({ name: "trackerTask", deviceId: "dev-2", projectId: "p1", taskId: "i-9" }, [row])).toBe(null);
+  });
+
+  it("paints a quiet watched row without placeholder attention text and offers an eye", () => {
+    const [row] = rows([watched({ id: "i-quiet", number: 10 })]);
+    const html = inboxRowHtml(row);
+    expect(html).toContain("inbox-quiet");
+    expect(html).not.toContain("Getting started");
+    expect(html).not.toContain('class="inbox-facts"');
+    expect(html).toContain('class="iconbtn inbox-watch watching"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain(`aria-label="Stop watching ${row.name}"`);
+    expect(html).toContain(`data-unwatch="${row.key}"`);
+  });
+
+  it("puts attention and unread news before quiet tasks, preserving age within each group", () => {
+    const quiet = watched({ id: "i-quiet", updated_at: "2026-09-23T09:00:00Z" });
+    const review = watched({ id: "i-review", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
+    const news = watched({ id: "i-news", updated_at: "2026-09-23T10:00:00Z" });
+    const detail = taskDetail(news, [event({ id: "te-02", kind: "moved", actor: { kind: "agent", agent_id: "a1" } })]);
+    expect(rows([quiet, review, news], new Map([[news.id, detail]])).map((row) => row.taskId)).toEqual(["i-news", "i-review", "i-quiet"]);
+  });
+
+  it("keeps attention before quiet tasks on the projects face", () => {
+    const quiet = watched({ id: "i-quiet", updated_at: "2026-09-23T09:00:00Z" });
+    const review = watched({ id: "i-review", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
+    const listed = rows([quiet, review]);
+    const { blocks } = workspaceProjectBlocks(listed, [project], [], new Set(), Date.parse("2026-09-23T12:00:00Z"));
+    expect(blocks[0].entries.map((row) => row.taskId)).toEqual(["i-review", "i-quiet"]);
   });
 
   it("sorts oldest change first, the inbox's own order", () => {

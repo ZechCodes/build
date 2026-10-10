@@ -129,7 +129,7 @@ describe("watched task dots from cached agents", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("folds a project's running watched task into its head even while the task has no Needs-you row", async () => {
+  it("folds a project's quiet running watched task into its head", async () => {
     const quietTask = { ...assigned, status: "in_progress" };
     const mine = task({ id: "task-mine", watched: true, assignee: { kind: "user" } });
     await boot({ greet: false, tasks: [quietTask, mine], rule: { tasks: { commentUserNotifies: true } },
@@ -139,7 +139,7 @@ describe("watched task dots from cached agents", () => {
     const head = () => document.querySelector(".inbox-project-head");
     await vi.waitFor(() => expect(head()).not.toBe(null), WAIT);
     await vi.waitFor(() => expect(rowFor(mine.id)).not.toBe(null), WAIT);
-    expect(rowFor(quietTask.id)).toBe(null);
+    expect(rowFor(quietTask.id)?.classList.contains("inbox-quiet")).toBe(true);
     expect(head().querySelector(".inbox-status-dot")).toBe(null);
     head().querySelector("[data-project-fold]").click();
     await vi.waitFor(() => expect(head().querySelector(".inbox-status-running")).not.toBe(null), WAIT);
@@ -152,7 +152,7 @@ describe("watched task dots from cached agents", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("resolves legacy project-agent tasks from the project's owner roster, including hidden task work", async () => {
+  it("resolves legacy project-agent tasks from the project's owner roster, including quiet task work", async () => {
     const legacy = { ...assigned, assignee: { kind: "project_agent" } };
     const row = (agents) => ({ ...agentRow(agents), run_id: "run-project" });
     const land = (agents) => modules.cache.writeCached({ deviceId: DEVICE, entityId: "run-project", kind: "row" }, row(agents));
@@ -178,15 +178,13 @@ describe("watched task dots from cached agents", () => {
     const head = () => document.querySelector(".inbox-project-head");
     head().querySelector("[data-project-fold]").click();
     await vi.waitFor(() => expect(head().querySelector(".inbox-status-running")).not.toBe(null), WAIT);
-    expect(rowFor(legacy.id)).toBe(null);
+    expect(rowFor(legacy.id)?.classList.contains("inbox-quiet")).toBe(true);
     expect(call).not.toHaveBeenCalled();
   });
 });
 
 const unwatch = async () => {
-  rowFor(review.id).querySelector("[data-menu]").click();
-  await vi.waitFor(() => expect(rowFor(review.id).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
-  rowFor(review.id).querySelector("[data-unwatch]").click();
+  rowFor(review.id).querySelector(".inbox-watch[data-unwatch]").click();
 };
 
 describe("a watched task's inbox row", () => {
@@ -267,8 +265,8 @@ describe("a watched task's inbox row before any machine answers (#144)", () => {
 
   it("paints what the cache says needs the user, by the cached rule, with no greeting", async () => {
     await vi.waitFor(() => expect(rowFor(mine.id)?.querySelector(".inbox-facts")?.textContent).toBe("Assigned to you"), WAIT);
-    // In review between agents is not the user's business by the cached rule.
-    expect(rowFor(review.id)).toBe(null);
+    // In review between agents remains watched, with no reason by the cached rule.
+    expect(rowFor(review.id)?.classList.contains("inbox-quiet")).toBe(true);
     expect(call).not.toHaveBeenCalled();
     expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
   });
@@ -286,7 +284,7 @@ describe("a mentioned creation on a cold reload", () => {
     rule: { tasks: { commentUserNotifies: true } } }));
   afterEach(() => pane?.dispose());
 
-  it("paints Needs you and the inbox from cache, then drops both when the read mark passes creation", async () => {
+  it("paints Needs you and Inbox from cache, then keeps a quiet row after reading creation", async () => {
     const host = document.body.appendChild(document.createElement("div"));
     pane = modules.tasksPane.mountTasksPane(host, {
       projectId: PROJECT, projectName: "Build", deviceId: DEVICE, projectKey: project.projectKey,
@@ -302,7 +300,7 @@ describe("a mentioned creation on a cold reload", () => {
     const read = { ...asked, read_through: created.id, updated_at: "2026-09-24T01:01:00Z" };
     await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([read], []));
     await modules.tracker.writeTaskRecord(DEVICE, PROJECT, read.id, taskDetail(read, [created]));
-    await vi.waitFor(() => expect(rowFor(asked.id)).toBe(null), WAIT);
+    await vi.waitFor(() => expect(rowFor(asked.id)?.classList.contains("inbox-quiet")).toBe(true), WAIT);
     await vi.waitFor(() => expect(needsYou()).toEqual([]), WAIT);
     expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
   });
@@ -339,9 +337,8 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
       .map((row) => row.dataset.task);
   };
   const pressStopWatching = async () => {
-    rowFor(asked.id).querySelector("[data-menu]").click();
-    await vi.waitFor(() => expect(rowFor(asked.id).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
-    rowFor(asked.id).querySelector("[data-unwatch]").click();
+    await vi.waitFor(() => expect(rowFor(asked.id)?.querySelector(".inbox-watch[data-unwatch]")).toBeTruthy(), WAIT);
+    rowFor(asked.id).querySelector(".inbox-watch[data-unwatch]").click();
   };
   const heldList = async () => (await modules.cache.readCached(modules.tracker.tasksAddress(DEVICE, PROJECT))).value;
 

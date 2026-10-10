@@ -21,7 +21,7 @@ beforeEach(() => {
   indexRowsByEntity([]);
 });
 
-it("confirms a stored read cursor, including the partial window and thread generation", async () => {
+it("returns acceptance for a read report including its partial window and thread generation", async () => {
   call.mockResolvedValue({ ok: true });
   await expect(markSeen("run-1", "agent-1", 11, 12, "thread-1")).resolves.toBe(true);
   expect(call).toHaveBeenCalledWith("entity.seen", {
@@ -30,14 +30,14 @@ it("confirms a stored read cursor, including the partial window and thread gener
   });
 });
 
-it("leaves a failed read eligible for retry instead of confirming it", async () => {
+it("returns false when a read report fails so it stays eligible for retry", async () => {
   call.mockRejectedValue(new Error("temporarily unavailable"));
   await expect(markSeen("run-1", "agent-1", 11, 12)).resolves.toBe(false);
   expect(call).toHaveBeenCalledTimes(1);
 });
 
 it("refreshes the read owner's cached roster even when an older bridge pushes no row", async () => {
-  const row = { run_id: "run-1", kind: "project", agents: [{ id: "agent-1", unread_count: 2 }] };
+  const row = { run_id: "run-1", kind: "project", deviceId: "dev-2", agents: [{ id: "agent-1", unread_count: 2 }] };
   const updated = { ...row, agents: [{ id: "agent-1", unread_count: 0, read_through_sequence: 12 }] };
   indexRowsByEntity([{ ...row, deviceId: "dev-2" }]);
   capture.mockResolvedValue({ value: row, written: "before-pull" });
@@ -51,7 +51,7 @@ it("refreshes the read owner's cached roster even when an older bridge pushes no
   expect(replace(null)).toBeNull();
 });
 
-it("keeps a confirmed cursor confirmed when the roster refresh fails", async () => {
+it("keeps an accepted read report accepted when the roster refresh fails", async () => {
   capture.mockResolvedValue({ value: { run_id: "run-1" }, written: "before-pull" });
   call.mockResolvedValueOnce({ ok: true }).mockRejectedValueOnce(new Error("read failed"));
   await expect(markSeen("run-1", "agent-1", 11, 12)).resolves.toBe(true);
@@ -71,4 +71,31 @@ it("does not overwrite a roster from another thread generation", async () => {
   await markSeen("run-1", "agent-1", 11, 12);
   const [, , replace] = merge.mock.calls[0];
   expect(replace(before)).toBeNull();
+});
+
+it("merges the wire read fields while keeping row and agent detail", async () => {
+  const row = {
+    run_id: "run-1", kind: "branch", deviceId: "dev-1", can_finish: true, muted: false,
+    needs_attention: true, unread: true, unread_count: 2, unread_reason: "agent_message",
+    attention: { resume_at: "earlier", interacted: true, seen: false, anchor: "saved" },
+    agents: [{
+      id: "agent-1", watched: false, unread_count: 2, unread_reason: "agent_message", read_through_sequence: 10,
+      working: true, surfaces: { goal: { text: "Review" } },
+    }],
+  };
+  const listed = {
+    ...row, can_finish: false, muted: true, state: "idle",
+    needs_attention: false, unread: false, unread_count: 0, unread_reason: null,
+    attention: { ...row.attention, seen: true },
+    agents: [{ id: "agent-1", watched: true, unread_count: 0, unread_reason: null, read_through_sequence: 12, working: false }],
+  };
+  capture.mockResolvedValue({ value: row, written: "before-pull" });
+  call.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ items: [], runs: [listed] });
+  await markSeen("run-1", "agent-1", 1, 12, "thread-1", "dev-1");
+  const [, , replace] = merge.mock.calls[0];
+  expect(replace(row)).toEqual({
+    ...row, needs_attention: false, unread: false, unread_count: 0, unread_reason: null,
+    attention: { ...row.attention, seen: true },
+    agents: [{ ...row.agents[0], unread_count: 0, unread_reason: null, read_through_sequence: 12 }],
+  });
 });

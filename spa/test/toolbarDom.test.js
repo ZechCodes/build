@@ -303,7 +303,7 @@ describe("the workspace toolbar", () => {
   it("keeps the legacy project selector functional and opens it projects-first", async () => {
     const projects = await openJump("project");
     expect(projects.dataset.list).toBe("projects");
-    expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
+    expect(labels("[data-project]")).toEqual(["mascot", "relaydb"]);
   });
 
   it("lists the workspaces of the machine the route names, and asks no machine for them", async () => {
@@ -322,7 +322,7 @@ describe("the workspace toolbar", () => {
 
     workspaces.querySelector("[data-projects]").click();
     await waitMenuList("projects");
-    expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
+    expect(labels("[data-project]")).toEqual(["mascot", "relaydb"]);
     menu().querySelector('[data-project="dev-1/p1"]').click();
     await waitMenuList("workspaces");
     await flush();
@@ -461,7 +461,7 @@ describe("the project menu", () => {
 
   it("lists projects and only projects, and shuts on Escape", async () => {
     const popup = await openJump("project");
-    expect(labels("[data-project]")).toEqual(["relaydb", "mascot"]);
+    expect(labels("[data-project]")).toEqual(["mascot", "relaydb"]);
     expect(popup.querySelectorAll("[data-work]").length).toBe(0);
     expect(popup.querySelectorAll("[data-create]").length).toBe(0);
 
@@ -686,7 +686,7 @@ describe("the unread counters on the project menu", () => {
 
   it("counts each project by the unread of the work inside it", async () => {
     await openJump("project");
-    expect(badges("[data-project]")).toEqual(["5", "4"]);
+    expect(badges("[data-project]")).toEqual(["4", "5"]);
   });
 
   it("wears no counter anywhere once everything has been read", async () => {
@@ -717,9 +717,9 @@ describe("an account with more than one device", () => {
     const popup = await openJump("project");
 
     expect([...popup.querySelectorAll("[data-project]")].map((row) => row.dataset.project)).toEqual([
-      "dev-1/p1",
       "dev-1/p2",
       "dev-2/p1",
+      "dev-1/p1",
     ]);
     expect(popup.querySelector('[data-project="dev-1/p1"] .mt').textContent).toBe("relaydb workshop");
     expect(popup.querySelector('[data-project="dev-2/p1"] .mt').textContent).toBe("relaydb laptop");

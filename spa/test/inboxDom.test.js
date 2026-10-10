@@ -363,6 +363,10 @@ describe("a workspace's Done", () => {
 
 describe("the projects face", () => {
   it("lists aged projects alphabetically without a top-level Recent while preserving workspace Recent", async () => {
+    const { writeUiRecord, readUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const recentAddress = uiAddress({ view: "inbox", kind: "fold", sub: "recent" });
+    await writeUiRecord(recentAddress, { entries: [["projects", true], ["inbox", false], ["dev-1/project-2", false]] });
     const hour = 60 * 60 * 1000;
     const now = Date.now();
     const session = (time) => ({ session_started_ms: time, last_activity_ms: time });
@@ -386,6 +390,7 @@ describe("the projects face", () => {
     expect(alpha.querySelector(":scope > .inbox-recent")).not.toBeNull();
     alpha.querySelector('[data-recent-toggle="dev-1/project-2"]').click();
     await vi.waitFor(() => expect(alpha.querySelector('[data-key="workspace:dev-1/quiet"]')).not.toBeNull());
+    expect((await readUiRecord(recentAddress)).value.entries.map(([key]) => key)).not.toContain("projects");
     feed(work, [projects[0], { ...projects[1], name: "Zzz" }]);
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
     expect(blocks()[1]).toBe(alpha);

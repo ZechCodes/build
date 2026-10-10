@@ -337,9 +337,8 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
       .map((row) => row.dataset.task);
   };
   const pressStopWatching = async () => {
-    rowFor(asked.id).querySelector("[data-menu]").click();
-    await vi.waitFor(() => expect(rowFor(asked.id).querySelector("[data-unwatch]")).not.toBe(null), WAIT);
-    rowFor(asked.id).querySelector("[data-unwatch]").click();
+    await vi.waitFor(() => expect(rowFor(asked.id)?.querySelector(".inbox-watch[data-unwatch]")).toBeTruthy(), WAIT);
+    rowFor(asked.id).querySelector(".inbox-watch[data-unwatch]").click();
   };
   const heldList = async () => (await modules.cache.readCached(modules.tracker.tasksAddress(DEVICE, PROJECT))).value;
 

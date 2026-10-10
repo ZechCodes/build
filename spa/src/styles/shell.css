@@ -42,6 +42,8 @@
    what they stand off each other. */
 #shell {
   --region-gap:10px;
+  --global-controls-left:calc(var(--region-gap) + env(safe-area-inset-left, 0px));
+  --inbox-popover-left:calc(12px + env(safe-area-inset-left, 0px));
   flex:1 1 auto; /* the body is a viewport-locked flex column; the shell is the row that takes all of it */
   display:grid;
   grid-template-columns:var(--inbox-space) minmax(0, 1fr);
@@ -75,12 +77,12 @@ body.inbox-collapsed { --inbox-space:0px; }
 /* Inside the shell's band of page, on the toolbar's own row: the toolbar
    starts one --region-gap in from the frame, and so does the toggle over it. */
 #global-controls { position:absolute; z-index:48;
-  top:var(--region-gap, 10px); left:calc(var(--region-gap, 10px) + env(safe-area-inset-left, 0px));
+  top:var(--region-gap, 10px); left:var(--global-controls-left);
   height:var(--toolbar-h); display:flex; align-items:center;
   padding:0 calc((var(--dir-rail) - var(--inbox-toggle)) / 2); pointer-events:none; }
 /* A standing directory rail owns this column's centre, including on devices
    with a left safe-area inset. The toolbar keeps its own safe-area clearance. */
-body.inbox-collapsed #shell:has(#dir-rail:not(:empty)) #global-controls { left:var(--region-gap); }
+body.inbox-collapsed #shell:has(#dir-rail:not(:empty)) { --global-controls-left:var(--region-gap); }
 #global-controls > * { pointer-events:auto; }
 
 /* ---- inbox rail (left) ---- */
@@ -106,7 +108,7 @@ body.inbox-collapsed #shell:has(#dir-rail:not(:empty)) #global-controls { left:v
 }
 body.inbox-collapsed #inbox-rail { position:absolute; z-index:46;
   top:var(--global-head);
-  left:calc(12px + env(safe-area-inset-left, 0px)); bottom:auto;
+  left:var(--inbox-popover-left); bottom:auto;
   width:min(var(--inbox-rail), calc(100vw - 24px - env(safe-area-inset-left, 0px)));
   height:auto; max-height:calc(100dvh - var(--global-head) - 12px - env(safe-area-inset-bottom, 0px)); margin:0;
   border:1px solid var(--line3, var(--line)); border-radius:10px;
@@ -119,7 +121,11 @@ body.inbox-transitioning #inbox-rail { opacity:1; visibility:visible; transform:
   pointer-events:auto; transition-delay:0s; }
 body.inbox-collapsed.inbox-popover-open #inbox-rail::before,
 body.inbox-collapsed.inbox-peek #inbox-rail::before { content:""; position:absolute;
-  left:8px; top:-6px; width:10px; height:10px; transform:rotate(45deg);
+  /* The toggle's padding and half-width sum to half --dir-rail. The card's
+     grid column starts after the shell padding; its border adds another 1px.
+     Centre the caret's full border box on the toggle, including safe-area. */
+  left:calc(var(--global-controls-left) + var(--dir-rail) / 2 - var(--region-gap) - var(--inbox-popover-left) - 1px);
+  top:-6px; width:10px; height:10px; transform:translateX(-50%) rotate(45deg);
   border-left:1px solid var(--line3, var(--line)); border-top:1px solid var(--line3, var(--line));
   background:var(--shell-chrome); }
 /* Docked, this is the left end of the view toolbar: one height, one fill and no

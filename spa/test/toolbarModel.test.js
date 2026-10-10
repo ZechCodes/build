@@ -115,15 +115,24 @@ describe("what the toolbar says you are standing in", () => {
 describe("the project selector's menu", () => {
   const items = [branchRow(), taskRow(), branchRow({ project_id: "p2", projectKey: "dev-1/p2", branch: "build/spike", resume_at: ago(10) })];
 
+  it("uses the projects face's alphabetical, device-tag and project-key order", () => {
+    const projects = [on("dev-1", { id: "p9", name: "Build" }), on("dev-1", { id: "p1", name: "Build" }),
+      on("dev-2", { id: "p3", name: "Build" }), on("dev-1", { id: "p2", name: "alpha" })];
+    expect(projectMenuModel({ projects, devices }).map((project) => project.key))
+      .toEqual(["dev-1/p2", "dev-2/p3", "dev-1/p1", "dev-1/p9"]);
+    expect(projectMenuModel({ projects, devices, query: "build" }).map((project) => project.key))
+      .toEqual(["dev-2/p3", "dev-1/p1", "dev-1/p9"]);
+  });
+
   // The rail lists every machine's projects; so does this menu, and the scoped
   // one is named by the pair (device, project) — nothing else names one.
   it("the project menu lists every device's projects and marks the scoped one by projectKey", () => {
     const merged = [...projects, on("dev-2", { id: "p1", name: "relaydb" })];
     const menu = projectMenuModel({ projects: merged, devices, projectKey: "dev-2/p1" });
     expect(menu.map((project) => [project.key, project.current])).toEqual([
-      ["dev-1/p1", false],
       ["dev-1/p2", false],
       ["dev-2/p1", true],
+      ["dev-1/p1", false],
     ]);
   });
 
@@ -143,14 +152,14 @@ describe("the project selector's menu", () => {
     const merged = [...projects, on("dev-2", { id: "p1", name: "relaydb" })];
     const rows = [branchRow({ unread: true, unread_count: 2 }), branchRow({ deviceId: "dev-2", projectKey: "dev-2/p1", unread: true, unread_count: 5 })];
     expect(projectMenuModel({ projects: merged, items: rows, devices, projectKey: "dev-1/p1" }).map((project) => project.unreadCount)).toEqual([
-      2, 0, 5,
+      0, 5, 2,
     ]);
   });
 
   it("carries the projects, and marks the one the toolbar is scoped to", () => {
     expect(projectMenuModel({ projects, projectKey: "dev-1/p1" }).map((project) => [project.name, project.current])).toEqual([
-      ["relaydb", true],
       ["mascot", false],
+      ["relaydb", true],
     ]);
   });
 
@@ -198,8 +207,8 @@ describe("the unread each menu counts", () => {
       branchRow({ project_id: "p2", projectKey: "dev-1/p2", branch: "build/spike", unread: true, unread_count: 4 }),
     ];
     expect(projectMenuModel({ projects, items, projectKey: "dev-1/p1" }).map((project) => [project.name, project.unreadCount])).toEqual([
-      ["relaydb", 5],
       ["mascot", 4],
+      ["relaydb", 5],
     ]);
   });
 
@@ -212,14 +221,14 @@ describe("the unread each menu counts", () => {
 
   it("counts an unread row the bridge sent no count for as one", () => {
     const items = [branchRow({ unread: true, unread_count: 0 }), taskRow({ unread: true })];
-    expect(projectMenuModel({ projects, items, projectKey: "dev-1/p1" })[0].unreadCount).toBe(2);
+    expect(projectMenuModel({ projects, items, projectKey: "dev-1/p1" }).find((project) => project.key === "dev-1/p1").unreadCount).toBe(2);
   });
 
   it("counts a capture waiting on its project, which is where it will land", () => {
-    expect(projectMenuModel({ projects, items: [captureRow()], projectKey: "dev-1/p1" })[0].unreadCount).toBe(1);
+    expect(projectMenuModel({ projects, items: [captureRow()], projectKey: "dev-1/p1" }).find((project) => project.key === "dev-1/p1").unreadCount).toBe(1);
     // A capture the router has not placed yet belongs to no project, so it is
     // counted against none of them.
-    expect(projectMenuModel({ projects, items: [captureRow({ project_id: "", projectKey: null })], projectKey: "dev-1/p1" })[0].unreadCount).toBe(0);
+    expect(projectMenuModel({ projects, items: [captureRow({ project_id: "", projectKey: null })], projectKey: "dev-1/p1" }).find((project) => project.key === "dev-1/p1").unreadCount).toBe(0);
   });
 
 });

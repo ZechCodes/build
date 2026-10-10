@@ -362,22 +362,39 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
-  it("orders live projects by their bridge summaries and folds aged projects into Recent", async () => {
+  it("lists aged projects alphabetically without a top-level Recent while preserving workspace Recent", async () => {
     const hour = 60 * 60 * 1000;
     const now = Date.now();
     const session = (time) => ({ session_started_ms: time, last_activity_ms: time });
-    feed([
+    const work = [
       workspace(session(now - 2 * hour)),
-      workspace({ id: "workspace-2", project_id: "project-2", ...session(now - 26 * hour) }),
-    ], [
+      workspace({ id: "quiet", project_id: "project-2", ...session(now - 30 * 24 * hour) }),
+      workspace({ id: "live", project_id: "project-2", ...session(now - hour) }),
+    ];
+    const projects = [
       project("project-1", "Zulu", "dev-1", session(now - 2 * hour)),
-      project("project-2", "Alpha", "dev-1", session(now - 26 * hour)),
-    ]);
+      project("project-2", "Alpha", "dev-1", session(now - 30 * 24 * hour)),
+    ];
+    feed(work, projects);
+    expect(document.querySelector("#inbox-list > .inbox-recent")).not.toBeNull();
     setInboxView("projects");
-    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1"]);
-    expect(document.querySelector('[data-recent-toggle="projects"]')).not.toBeNull();
-    document.querySelector('[data-recent-toggle="projects"]').click();
-    await vi.waitFor(() => expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]));
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-2", "dev-1/project-1"]);
+    expect(document.querySelector("#inbox-list > .inbox-recent")).toBeNull();
+    expect(document.querySelector('[data-recent-toggle="projects"]')).toBeNull();
+    const alpha = blocks()[0];
+    const live = alpha.querySelector('[data-key="workspace:dev-1/live"]');
+    expect(alpha.querySelector(":scope > .inbox-recent")).not.toBeNull();
+    alpha.querySelector('[data-recent-toggle="dev-1/project-2"]').click();
+    await vi.waitFor(() => expect(alpha.querySelector('[data-key="workspace:dev-1/quiet"]')).not.toBeNull());
+    feed(work, [projects[0], { ...projects[1], name: "Zzz" }]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
+    expect(blocks()[1]).toBe(alpha);
+    expect(alpha.querySelector('[data-key="workspace:dev-1/live"]')).toBe(live);
+    setInboxView("inbox");
+    expect(document.querySelector('[data-recent-toggle="inbox"]')).not.toBeNull();
+    setInboxView("projects");
+    expect(document.querySelector("#inbox-list > .inbox-recent")).toBeNull();
+    await vi.waitFor(() => expect(document.querySelector('[data-recent-toggle="dev-1/project-2"]').getAttribute("aria-expanded")).toBe("true"));
   });
 
   it("restores a project fold from cache and repaints an external fold write", async () => {

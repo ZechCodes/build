@@ -61,8 +61,8 @@ function railRows(tasks) {
 }
 
 const blocksOf = (rows) => {
-  const { blocks, recentBlocks } = workspaceProjectBlocks(rows, feed.projects, [], null, NOW);
-  return new Map([...blocks, ...recentBlocks].map((block) => [block.name, block]));
+  const { blocks } = workspaceProjectBlocks(rows, feed.projects, [], null, NOW);
+  return new Map(blocks.map((block) => [block.name, block]));
 };
 
 const headUnread = (block, folded) => {
@@ -162,15 +162,15 @@ describe("finished tasks", () => {
 });
 
 describe("the top badge", () => {
-  it("is the sum of every project head, Recent blocks too", () => {
+  it("is the sum of every project head, including aged projects", () => {
     const rows = railRows([needsYou, unheld, done, held]);
     const heads = [...blocksOf(rows).values()].map((block) => block.unreadCount);
     expect(heads).toEqual([8, 2]);
     expect(projectsUnreadCount(rows, feed.projects)).toBe(10);
 
     const aged = feed.projects.map((project) => ({ ...project, session_started_ms: 0, last_activity_ms: 0 }));
-    const { recentBlocks } = workspaceProjectBlocks(rows, aged, [], null, NOW);
-    expect(recentBlocks.length).toBe(2);
+    const { blocks } = workspaceProjectBlocks(rows, aged, [], null, NOW);
+    expect(blocks.length).toBe(2);
     expect(projectsUnreadCount(rows, aged)).toBe(10);
   });
 });

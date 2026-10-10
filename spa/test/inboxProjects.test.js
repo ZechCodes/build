@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import { deviceTagHtml, deviceTags, projectHeadHtml, projectsUnreadCount, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
+import { projectMenuModel } from "../src/core/toolbarModel.js";
 
 const devices = [
   { id: "dev-1", name: "workshop" },
@@ -79,6 +80,20 @@ describe("workspace project blocks", () => {
     const offline = workspaceProjectBlocks([], projects, devices, new Set(["dev-1"]));
     expect(offline.blocks.filter((block) => block.name === "Build").map((block) => block.projectKey))
       .toEqual(["dev-2/p9", "dev-1/p1", "dev-1/p2"]);
+  });
+
+  it("keeps duplicate project names in the same face and toolbar order across connection changes", () => {
+    const projects = [on("dev-1", { id: "p1", name: "Build" }), on("dev-2", { id: "p1", name: "Build" })];
+    const cachedDevices = [{ id: "dev-1", name: "Beta" }, { id: "dev-2", name: "Alpha" }];
+    const expected = ["dev-2/p1", "dev-1/p1"];
+    for (const offlineDeviceIds of [new Set(), new Set(["dev-2"]), new Set(["dev-1"]), new Set(["dev-1", "dev-2"]), new Set()]) {
+      const menu = projectMenuModel({ projects, devices: cachedDevices });
+      const { blocks } = workspaceProjectBlocks([], projects, cachedDevices, offlineDeviceIds);
+      const alpha = blocks.find((block) => block.deviceId === "dev-2");
+      expect(deviceTagHtml(alpha)).toContain(offlineDeviceIds.has("dev-2") ? "Offline" : "Alpha");
+      expect(menu.map((project) => project.key)).toEqual(expected);
+      expect(blocks.map((block) => block.projectKey)).toEqual(expected);
+    }
   });
 
   // A workspace and a project each belong to one machine, so both are grouped

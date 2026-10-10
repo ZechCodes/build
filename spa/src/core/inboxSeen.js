@@ -13,6 +13,7 @@ import { cachedWriteOf, captureCachedRecord, mergeCachedIfUnwritten } from "./lo
 
 // The row holding each entity the feed named, minted with every snapshot.
 let rowsByEntity = new Map();
+const rosterRefreshes = new Map();
 
 /**
  * Tell the bridge this entry has been read. No agent id means the whole entry —
@@ -45,7 +46,7 @@ export async function markSeen(entityId, agentId, readFromSequence = null, readT
     return false;
   }
   // The mark is confirmed even if this compatibility read cannot finish.
-  await refreshReadRoster(call, seenDeviceId(row), entityId).catch(() => null);
+  await queueRosterRefresh(call, seenDeviceId(row), entityId).catch(() => null);
   return true;
 }
 
@@ -58,6 +59,18 @@ const seenParams = (entityId, agentId, floor, read, threadId) => ({
   ...(typeof floor === "number" ? { read_from_sequence: floor } : {}),
   ...(typeof read === "number" ? { read_through_sequence: read } : {}),
 });
+
+// Each pull takes its cache fence after the prior pull has written. Otherwise
+// the older fallback write can make the newer read lose its own write fence.
+function queueRosterRefresh(call, deviceId, entityId) {
+  const key = JSON.stringify([deviceId, entityId]);
+  const previous = rosterRefreshes.get(key) || Promise.resolve();
+  const refresh = previous.catch(() => null).then(() => refreshReadRoster(call, deviceId, entityId));
+  rosterRefreshes.set(key, refresh);
+  return refresh.finally(() => {
+    if (rosterRefreshes.get(key) === refresh) rosterRefreshes.delete(key);
+  });
+}
 
 const rosterIdentity = (row) => JSON.stringify((row.agents || []).map((agent) =>
   [agent.id, agent.conversation_id, agent.thread_id]));

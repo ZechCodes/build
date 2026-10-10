@@ -1886,8 +1886,8 @@ In practice:
   drive retries. `entity.seen` emits the owner's updated `state` row after
   storing the cursor. For older bridges, `inboxSeen.js` follows a successful
   mark with `board.list` when that owner has a cached row, including owners in
-  `runs` outside inbox `items`. It replaces only an unchanged row with the same
-  roster generation; cache announcements redraw badges. Passive clients on
+  `runs` outside inbox `items`. It serializes refreshes per owner and replaces only an unchanged row with
+  the same roster generation; cache announcements redraw badges. Passive clients on
   other devices need the bridge's state push.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.

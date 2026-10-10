@@ -55,3 +55,18 @@ it("does not synthesize a confirmed viewport from a tail report and an earlier h
   await reporter.report(12, 1, send);
   expect(send).toHaveBeenCalledTimes(3);
 });
+
+it("caps refusal backoff at thirty seconds without scheduling a retry loop", async () => {
+  let now = 0;
+  const reporter = createChatReadReporter(() => now);
+  const send = vi.fn().mockResolvedValue(false);
+  for (const delay of [1000, 2000, 4000, 8000, 16000, 30000, 30000]) {
+    const before = send.mock.calls.length;
+    await reporter.report(12, 1, send);
+    expect(send).toHaveBeenCalledTimes(before + 1);
+    now += delay - 1;
+    await reporter.report(12, 1, send);
+    expect(send).toHaveBeenCalledTimes(before + 1);
+    now += 1;
+  }
+});

@@ -7,18 +7,21 @@ export function hasReadProgress(agent, read) {
 // One conversation's read reports. Failed attempts are not confirmations;
 // scroll/paint/return events may retry them after a capped refusal backoff.
 export function createChatReadReporter(now = () => Date.now()) {
-  let confirmedRead = 0;
-  let confirmedFloor = Infinity;
+  const confirmed = new Set();
   let retryAt = 0;
   let retryDelay = 1000;
   const pending = new Set();
   const floorOf = (floor) => typeof floor === "number" ? floor : Infinity;
-  const isNews = (read, floor) => read > confirmedRead || floorOf(floor) < confirmedFloor;
   const covers = (report, read, floor) => report.read >= read && floorOf(report.floor) <= floorOf(floor);
+  const isNews = (read, floor) => ![...confirmed].some((report) => covers(report, read, floor));
 
   const confirm = (read, floor) => {
-    confirmedRead = Math.max(confirmedRead, read);
-    confirmedFloor = Math.min(confirmedFloor, floorOf(floor));
+    // A tail and a separate history report do not prove the gap between them
+    // was read. Retain actual pairs, dropping only pairs this one covers.
+    for (const report of confirmed) {
+      if (covers({ read, floor }, report.read, report.floor)) confirmed.delete(report);
+    }
+    if (isNews(read, floor)) confirmed.add({ read, floor });
     retryAt = 0;
     retryDelay = 1000;
   };

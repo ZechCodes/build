@@ -79,8 +79,8 @@ function projectBlock(feed, projectKey) {
   const workspaces = feed?.workspaces || [];
   const projects = feed?.projects || [];
   const entries = workspaceEntries(workspaces, projects, feed?.items || []);
-  const { blocks, recentBlocks } = workspaceProjectBlocks(entries, projects);
-  return [...blocks, ...recentBlocks].find((candidate) => candidate.projectKey === projectKey) || null;
+  const { blocks } = workspaceProjectBlocks(entries, projects);
+  return blocks.find((candidate) => candidate.projectKey === projectKey) || null;
 }
 
 /** The block's rows, each read beside the workspace record it came from. */

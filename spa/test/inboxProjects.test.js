@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import { deviceTagHtml, deviceTags, projectHeadHtml, projectsUnreadCount, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
+import { projectMenuModel } from "../src/core/toolbarModel.js";
 
 const devices = [
   { id: "dev-1", name: "workshop" },
@@ -30,7 +31,7 @@ const entry = (id, projectId, project, unreadCount = 0, over = {}) => ({
 });
 
 describe("workspace project blocks", () => {
-  it("orders blocks by bridge project summaries, then rows within each project", () => {
+  it("orders blocks alphabetically while rows keep their session order", () => {
     const hour = 60 * 60 * 1000;
     const session = (start, last = start) => ({ session_started_ms: start * hour, last_activity_ms: last * hour });
     const projects = [
@@ -43,40 +44,56 @@ describe("workspace project blocks", () => {
       entry("other", "p2", "Alpha", 0, { anchorMs: 25 * hour, lastActivityMs: 25 * hour }),
     ];
     const { blocks } = workspaceProjectBlocks(rows, projects, [], null, 30 * hour);
-    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1", "dev-1/p2"]);
-    expect(blocks[0].entries.map((row) => row.workspaceId)).toEqual(["early", "late"]);
-    expect(blocks[0].anchorMs).toBe(10 * hour);
+    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p2", "dev-1/p1"]);
+    expect(blocks[1].entries.map((row) => row.workspaceId)).toEqual(["early", "late"]);
   });
 
-  it("puts an aged project block in Recent while a fresh project agent keeps another live", () => {
-    const hour = 60 * 60 * 1000;
-    const session = (time) => ({ session_started_ms: time * hour, last_activity_ms: time * hour });
+  it("keeps a month-old project in its alphabetical place without a project Recent partition", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const now = 40 * day;
     const projects = [
-      { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Fresh", ...session(40) },
-      { id: "p2", projectKey: "dev-1/p2", deviceId: "dev-1", name: "Old", ...session(20) },
+      on("dev-1", { id: "fresh", name: "Zulu", session_started_ms: now, last_activity_ms: now }),
+      on("dev-1", { id: "old", name: "Alpha", session_started_ms: now - 30 * day, last_activity_ms: now - 30 * day }),
     ];
-    const rows = [
-      entry("old-in-fresh", "p1", "Fresh", 0, { anchorMs: 10 * hour, lastActivityMs: 10 * hour }),
-      entry("old", "p2", "Old", 0, { anchorMs: 20 * hour, lastActivityMs: 20 * hour }),
-    ];
-    const { blocks, recentBlocks } = workspaceProjectBlocks(rows, projects, [], null, 50 * hour);
-    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1"]);
-    expect(blocks[0].recent.map((row) => row.workspaceId)).toEqual(["old-in-fresh"]);
-    expect(recentBlocks.map((block) => block.projectKey)).toEqual(["dev-1/p2"]);
+    const rows = [entry("quiet", "old", "Alpha", 3, { lastActivityMs: now - 30 * day })];
+    const result = workspaceProjectBlocks(rows, projects, devices, null, now);
+    expect(result.blocks.map((block) => block.projectKey)).toEqual(["dev-1/old", "dev-1/fresh"]);
+    expect(result).not.toHaveProperty("recentBlocks");
+    expect(result.blocks[0]).not.toHaveProperty("isRecent");
+    expect(result.blocks[0].recent.map((row) => row.workspaceId)).toEqual(["quiet"]);
+    expect(projectsUnreadCount(rows, projects)).toBe(3);
   });
 
-  it("uses finished-workspace activity in the bridge project summary", () => {
-    const recent = 200;
-    const project = { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Done work",
-      session_started_ms: recent, last_activity_ms: recent };
-    // The bridge counted a finished workspace, which no longer has an inbox
-    // row. The project summary alone keeps its block in the active section.
-    const visibleRows = [];
-    const { blocks, recentBlocks } = workspaceProjectBlocks(visibleRows, [project], [], null, recent + 24 * 60 * 60 * 1000);
-    expect(blocks[0].anchorMs).toBe(recent);
-    expect(recentBlocks).toEqual([]);
-    const aged = workspaceProjectBlocks(visibleRows, [project], [], null, recent + 24 * 60 * 60 * 1000 + 1);
-    expect(aged.recentBlocks[0].anchorMs).toBe(recent);
+  it("sorts names case-insensitively with locale collation, then device tags and project keys", () => {
+    const projects = [
+      on("dev-1", { id: "zulu", name: "Zulu", session_started_ms: 1 }),
+      on("dev-1", { id: "eclair", name: "éclair" }),
+      on("dev-1", { id: "p2", name: "Build" }),
+      on("dev-1", { id: "p1", name: "Build" }),
+      on("dev-2", { id: "p9", name: "Build" }),
+      on("dev-1", { id: "alpha", name: "alpha", session_started_ms: 100 }),
+    ];
+    const { blocks } = workspaceProjectBlocks([], projects, devices);
+    expect(blocks.map((block) => block.projectKey)).toEqual([
+      "dev-1/alpha", "dev-2/p9", "dev-1/p1", "dev-1/p2", "dev-1/eclair", "dev-1/zulu",
+    ]);
+    const offline = workspaceProjectBlocks([], projects, devices, new Set(["dev-1"]));
+    expect(offline.blocks.filter((block) => block.name === "Build").map((block) => block.projectKey))
+      .toEqual(["dev-2/p9", "dev-1/p1", "dev-1/p2"]);
+  });
+
+  it("keeps duplicate project names in the same face and toolbar order across connection changes", () => {
+    const projects = [on("dev-1", { id: "p1", name: "Build" }), on("dev-2", { id: "p1", name: "Build" })];
+    const cachedDevices = [{ id: "dev-1", name: "Beta" }, { id: "dev-2", name: "Alpha" }];
+    const expected = ["dev-2/p1", "dev-1/p1"];
+    for (const offlineDeviceIds of [new Set(), new Set(["dev-2"]), new Set(["dev-1"]), new Set(["dev-1", "dev-2"]), new Set()]) {
+      const menu = projectMenuModel({ projects, devices: cachedDevices });
+      const { blocks } = workspaceProjectBlocks([], projects, cachedDevices, offlineDeviceIds);
+      const alpha = blocks.find((block) => block.deviceId === "dev-2");
+      expect(deviceTagHtml(alpha)).toContain(offlineDeviceIds.has("dev-2") ? "Offline" : "Alpha");
+      expect(menu.map((project) => project.key)).toEqual(expected);
+      expect(blocks.map((block) => block.projectKey)).toEqual(expected);
+    }
   });
 
   // A workspace and a project each belong to one machine, so both are grouped

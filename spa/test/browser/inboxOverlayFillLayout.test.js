@@ -64,8 +64,7 @@ function expectedToken(context, state) {
   if (context.projectPage && state.hover) return "--line2";
   if (state.active) return "--accent-soft";
   if (state.hover) return "--row-hover";
-  if (context.activeProject) return "--accent-soft";
-  return context.grouped ? "--panel2" : "--panel";
+  return "--panel";
 }
 
 it("samples final row and overlay fills while their colour transitions are pending", async () => {

@@ -118,9 +118,10 @@ export function modelWord(agent) {
 
 export function overviewRows(entries, threads) {
   return entries.map(({ agent, state: executionState = agent, source }, index) => {
-    // Execution metadata can lag a watch change; the roster owns the watch
-    // displayed on this same row.
-    const state = { ...executionState, watched: agent.watched };
+    // The roster owns the displayed watch and its scoped unread news;
+    // an execution alias supplies the current working and model metadata.
+    const state = { ...executionState, watched: agent.watched,
+      unread_count: agent.unread_count, unread_reason: agent.unread_reason };
     const standing = overviewState(state);
     return {
       id: agent.id,

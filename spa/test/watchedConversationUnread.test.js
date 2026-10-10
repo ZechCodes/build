@@ -44,6 +44,26 @@ describe("watched conversation unread (#474)", () => {
     expect(overviewSnippet(unwatched, thread)).toBe("Latest words");
   });
 
+  it.each(["run_failed", "blocked"])("keeps a rewatched roster quiet over an alias's stale %s news", (reason) => {
+    const roster = { id: "task-agent", watched: true, unread_count: 0, read_through_sequence: 0 };
+    const execution = { id: "implementation-agent", watched: true, unread_count: 400,
+      unread_reason: reason, read_through_sequence: 0 };
+    const [entry] = overviewRows([{ agent: roster, state: { ...roster, ...execution }, source: "current" }], [null]);
+    expect(entry).toMatchObject({ id: "task-agent", watching: true, unread: false, unreadCount: 0,
+      state: "idle", stateWord: "Idle", stateDetail: "" });
+  });
+
+  it.each([false, true])("keeps roster unread news and execution metadata when the alias is working=%s", (working) => {
+    const roster = { id: "task-agent", watched: true, unread_count: 2, unread_reason: "agent_message",
+      read_through_sequence: 0, active_model: "claude-opus-5" };
+    const execution = { id: "implementation-agent", watched: true, unread_count: 400, unread_reason: "run_failed",
+      read_through_sequence: 0, working, provider: "codex", active_model: "gpt-6-astra", effort: "xhigh" };
+    const [entry] = overviewRows([{ agent: roster, state: { ...roster, ...execution }, source: "current" }], [null]);
+    expect(entry).toMatchObject({ id: "task-agent", watching: true, unread: true, unreadCount: 2,
+      working, model: "6 Astra", modelName: "gpt-6-astra", effort: "xhigh",
+      state: working ? "working" : "waiting", stateWord: working ? "Working" : "Unread" });
+  });
+
   it("uses the roster's watched total in project menus and project heads", () => {
     expect(projectMenuModel({ projects: [project], items: [row()] })[0].unreadCount).toBe(3);
     const [entry] = projectAgentEntries([project], [row()], [], () => 4);

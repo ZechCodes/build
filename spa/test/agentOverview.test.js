@@ -206,9 +206,11 @@ describe("expanded agent overview", () => {
 
   it("reads a task agent's transcript through its cached execution context", async () => {
     const taskAddress = { deviceId: "dev-overview", entityId: "task-1", kind: "task", sub: "get" };
-    const taskRow = { task_id: "task-1", agents: [agent("task-agent", { name: "Task agent", working: true })],
+    const taskRow = { task_id: "task-1", agents: [agent("task-agent", { name: "Task agent", working: true,
+      unread_count: 1, unread_reason: "agent_message" })],
       execution_context: { entity_id: "run-implementation", agent_id: "worker-1", conversation_id: "conversation-1",
-        agent: agent("worker-1", { working: false, unread_count: 1, read_through_sequence: 6 }) } };
+        agent: agent("worker-1", { working: false, unread_count: 400, unread_reason: "run_failed",
+          read_through_sequence: 6 }) } };
     await cache.writeCached(taskAddress, taskRow);
     await cache.writeCached({ deviceId: "dev-overview", entityId: "run-implementation", kind: "thread", sub: "conversation-1" },
       { items: [message(7, "agent", "Implementation ready")] });
@@ -220,14 +222,17 @@ describe("expanded agent overview", () => {
     reader.open();
     await settle();
     expect(paints.at(-1)).toMatchObject([{ id: "task-agent", name: "Task agent",
-      snippet: "Implementation ready", working: false, unread: true }]);
+      snippet: "Implementation ready", working: false, unread: true, unreadCount: 1, stateWord: "Unread" }]);
 
-    await cache.writeCached(taskAddress, { ...taskRow, execution_context: { ...taskRow.execution_context,
-      agent: agent("worker-1", { working: true, unread_count: 0 }) } });
+    await cache.writeCached(taskAddress, { ...taskRow,
+      agents: [agent("task-agent", { name: "Task agent", working: true, unread_count: 0 })],
+      execution_context: { ...taskRow.execution_context,
+        agent: agent("worker-1", { working: true, unread_count: 400, unread_reason: "run_failed" }) } });
     await cache.writeCached({ deviceId: "dev-overview", entityId: "run-implementation", kind: "thread", sub: "conversation-1" },
       { items: [activity(8, "Applying changes")] });
     await settle();
-    expect(paints.at(-1)).toMatchObject([{ snippet: "Applying changes", working: true, unread: false }]);
+    expect(paints.at(-1)).toMatchObject([{ snippet: "Applying changes", working: true, unread: false,
+      unreadCount: 0, stateWord: "Working" }]);
     reader.close();
   });
 

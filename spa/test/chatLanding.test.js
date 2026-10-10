@@ -99,4 +99,27 @@ describe("the opening landing's bounded read wait", () => {
     expect(paint(landing, body, { target: 12 }).opening).toBe(false);
     landing.dispose();
   });
+
+  it.each(["pointerdown", "touchstart", "wheel", "keydown"])(
+    "%s resumes reporting when reader input produces no scroll", (type) => {
+      vi.useFakeTimers();
+      const resumed = vi.fn();
+      const landing = createChatLanding(resumed);
+      const body = document.createElement("div");
+      const first = paint(landing, body, { waitingForHistory: true });
+      first.onLand(false);
+      first.onLand(true);
+      const event = type === "keydown"
+        ? new KeyboardEvent(type, { key: "ArrowUp" })
+        : new Event(type);
+      body.dispatchEvent(event);
+      expect(body.scrollTop).toBe(0);
+      expect(first.canLand()).toBe(false);
+      expect(landing.waiting()).toBe(false);
+      expect(resumed).toHaveBeenCalledExactlyOnceWith(body);
+      vi.advanceTimersByTime(CHAT_LANDING_READ_WAIT_MS);
+      expect(resumed).toHaveBeenCalledTimes(1);
+      landing.dispose();
+    },
+  );
 });

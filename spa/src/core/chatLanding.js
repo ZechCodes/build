@@ -29,6 +29,7 @@ export function createChatLanding(resumeReporting, repaint = () => {}) {
   const input = (event) => {
     if (event.type === "keydown" && !SCROLL_KEYS.has(event.key)) return;
     abandon();
+    resumeReporting(body);
   };
   const moved = () => expectedTop !== null && Math.abs(body.scrollTop - expectedTop) >= 1;
   const scroll = () => {

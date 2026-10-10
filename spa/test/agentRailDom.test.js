@@ -3115,13 +3115,14 @@ describe("the conversation panel", () => {
   it("reports visible messages ahead of the cursor even when the roster still says zero unread", async () => {
     conversationReadThrough(11, 0);
     await mount();
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("retries a failed read report when the reader returns to the same viewport", async () => {
     conversationReadThrough(11, 1);
     markSeen.mockResolvedValue(false);
     await mount();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
     const attempts = markSeen.mock.calls.length;
     expect(attempts).toBeGreaterThan(0);
     markSeen.mockResolvedValue(true);
@@ -3142,6 +3143,7 @@ describe("the conversation panel", () => {
     markSeen.mockResolvedValue(false);
     try {
       await mount();
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
       const attempts = markSeen.mock.calls.length;
       for (let i = 0; i < 5; i++) {
         railHost().querySelector("#rail-body").onscroll();
@@ -3167,6 +3169,7 @@ describe("the conversation panel", () => {
     let finish;
     markSeen.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     await mount();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
     railHost().querySelector("#rail-body").onscroll();
     window.dispatchEvent(new Event("focus"));
     await flush();

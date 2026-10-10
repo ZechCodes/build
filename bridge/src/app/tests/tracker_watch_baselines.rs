@@ -1,7 +1,7 @@
 //! Watches count news from the current watch, including the news that asked
 //! the user to watch, without restoring an earlier watch's unread history.
 
-use super::project_agent::{added_project, rooted, workspace};
+use super::project_agent::{rooted, workspace};
 use super::tracker::{filed, tracked};
 use super::*;
 use crate::mcp::BridgeAction;
@@ -92,7 +92,13 @@ fn explicit_task_watch_excludes_history_and_rewatch_resets_persisted_baseline() 
     let mut restored = rooted(tmp.path())
         .with_task_store(tmp.path().join("store"))
         .unwrap();
-    let project = added_project(&mut restored, &path);
+    let project = restored
+        .projects
+        .iter()
+        .find(|p| p.repo_path == path)
+        .unwrap()
+        .id
+        .clone();
     assert_eq!(task(&mut restored, id)["watch_started_after"], baseline);
     assert_count(&mut restored, &project, id, 1);
     restored.handle(req("tasks.unwatch", json!({"task_id": id})));

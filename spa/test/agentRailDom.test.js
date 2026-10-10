@@ -264,6 +264,7 @@ beforeEach(async () => {
   await wipeCache();
   await wipeUiRecords();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.stubGlobal("requestAnimationFrame", (callback) => setTimeout(() => callback(performance.now()), 0));
   calls = [];
   payload = branchRow();
   painters.length = 0;
@@ -295,6 +296,7 @@ afterEach(async () => {
   chatRepository?.dispose();
   chatRepository = null;
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   // Posting queues record merges without awaiting disk. Let this fixture's
   // writes finish before the next one clears the shared IndexedDB; otherwise
   // an old write can land after that clear and look like a duplicate message.
@@ -6574,6 +6576,7 @@ describe("a conversation opened by a notification's link", () => {
     const body = (element) => element.id === "rail-body";
     geometry = [
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+        if (this.id === "rail-body") return { top: 0, bottom: 300 };
         const offset = this.matches(".thread-unread-line") ? 800 : 0;
         return { top: offset - (this.closest("#rail-body")?.scrollTop || 0), bottom: 0 };
       }),
@@ -6645,7 +6648,10 @@ describe("every chat opening lands before reporting read (#472)", () => {
   })), has_more: false });
   const unreadAgent = (over = {}) => agent({ read_through_sequence: 11, unread_count: 3, ...over });
   let geometry;
+  let frames;
   beforeEach(() => {
+    frames = [];
+    vi.stubGlobal("requestAnimationFrame", (callback) => { frames.push(callback); return frames.length; });
     geometry = [
       vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 2020 : 0; }),
       vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 300 : 0; }),
@@ -6654,15 +6660,21 @@ describe("every chat opening lands before reporting read (#472)", () => {
         if (!body || this === body) return { top: 0, bottom: 300 };
         const line = this.closest(".thread-unread-line");
         const sequence = Number(this.closest("[data-sequence]")?.dataset.sequence);
-        const offset = line ? 800 : (sequence - 10) * 400 + (sequence >= 12 ? 20 : 0);
+        const unreadSequence = Number(body.querySelector(".thread-unread-line")?.nextElementSibling?.dataset.sequence || Infinity);
+        const offset = line ? (unreadSequence - 10) * 400 : (sequence - 10) * 400 + (sequence >= unreadSequence ? 20 : 0);
         return { top: offset - body.scrollTop, bottom: offset + (line ? 20 : 400) - body.scrollTop };
       }),
     ];
   });
-  afterEach(() => geometry.forEach((spy) => spy.mockRestore()));
+  afterEach(() => {
+    geometry.forEach((spy) => spy.mockRestore());
+    vi.unstubAllGlobals();
+  });
 
   const expectLandedAndReported = async () => {
     await vi.waitFor(() => expect(scroller()?.scrollTop).toBe(788));
+    expect(markSeen).not.toHaveBeenCalled();
+    while (frames.length) frames.shift()();
     await vi.waitFor(() => expect(markSeen).toHaveBeenCalled());
     expect(markSeen.mock.calls.at(-1)[3]).toBe(11);
     expect(markSeen.mock.calls.every((call) => call[3] <= 11)).toBe(true);
@@ -6692,11 +6704,13 @@ describe("every chat opening lands before reporting read (#472)", () => {
   it("lands a workspace switch after its transcript arrives, then reports", async () => {
     await mount();
     rail.dispose();
-    payload = { kind: "workspace", workspace_id: "ws-next", entity_id: "run-next", project_id: "p1", agents: [unreadAgent()] };
+    payload = { kind: "workspace", workspace_id: "ws-next", entity_id: "run-next", project_id: "p1", agents: [unreadAgent({ id: "ag-next" })] };
     await writeRailBoard({ workspaces: [{ id: "ws-next", project_id: "p1", entity_id: "run-next" }], items: [payload] });
-    await mount({ kind: "workspace", workspaceId: "ws-next", openAgentId: "ag-1" });
+    await mount({ kind: "workspace", workspaceId: "ws-next", openAgentId: "ag-next" });
     markSeen.mockClear();
-    await writeRailThread("run-next", "ag-1", transcript());
+    await writeRailThread("run-next", "ag-next", transcript());
+    await vi.waitFor(() => expect(scroller()?.textContent).toContain("message 14"));
+    await vi.waitFor(() => expect(scroller()?.querySelector(".thread-unread-line")).toBeTruthy());
     await expectLandedAndReported();
   });
 
@@ -6714,6 +6728,35 @@ describe("every chat opening lands before reporting read (#472)", () => {
     expect(markSeen).not.toHaveBeenCalled();
     await pushRow(branchRow({ agents: [unreadAgent()] }));
     await expectLandedAndReported();
+  });
+
+
+  it("releases the read wait after 5 seconds against a roster without cursors", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    while (frames.length) frames.shift()();
+    expect(markSeen).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(14);
+  });
+
+  it("loads back from a partial unread window and moves the line to its actual first unread message", async () => {
+    payload = branchRow({ agents: [agent({ read_through_sequence: 10, unread_count: 4 })] });
+    const partial = { ...transcript(), items: transcript().items.slice(2), has_more: true };
+    await writeRailThread("run-3", "ag-1", partial);
+    const original = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { items: transcript().items.slice(0, 2), has_more: false };
+    });
+    await mount();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-unread-line").nextElementSibling.dataset.sequence).toBe("11"));
+    while (frames.length) frames.shift()();
+    expect(scroller().scrollTop).toBe(388);
+    expect(markSeen).toHaveBeenCalled();
   });
 
   it("preserves a reader's scroll when the divider arrives late", async () => {
@@ -6738,6 +6781,7 @@ describe("every chat opening lands before reporting read (#472)", () => {
     document.dispatchEvent(new Event("visibilitychange"));
     hidden.mockReturnValue(false);
     document.dispatchEvent(new Event("visibilitychange"));
+    markSeen.mockClear();
     await expectLandedAndReported();
     hidden.mockRestore();
   });

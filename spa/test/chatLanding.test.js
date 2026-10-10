@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CHAT_LANDING_READ_WAIT_MS, createChatLanding } from "../src/core/chatLanding.js";
 
 afterEach(() => vi.useRealTimers());
-const paint = (landing, body, extra = {}) => landing.prepare(body, { hasItems: true, target: null, waitingForHistory: false, ...extra });
+const paint = (landing, body, extra = {}) => {
+  Object.defineProperty(body, "clientHeight", { configurable: true, value: 300 });
+  return landing.prepare(body, { hasItems: true, target: null, waitingForHistory: false, ...extra });
+};
 
 describe("the opening landing's bounded read wait", () => {
   it("releases reports after five seconds even when the cursor/history never arrives", () => {
@@ -34,6 +37,42 @@ describe("the opening landing's bounded read wait", () => {
     const late = paint(landing, body, { target: 12 });
     expect(late.opening).toBe(true);
     expect(landing.waiting()).toBe(false);
+    landing.dispose();
+  });
+
+  it("keeps a settled visit closed when New expires or a new unread burst arrives", () => {
+    const landing = createChatLanding(() => {});
+    const body = document.createElement("div");
+    const first = paint(landing, body, { target: 12 });
+    first.onLand(false); first.onLand(true);
+    expect(landing.active()).toBe(false);
+    expect(paint(landing, body, { target: null }).opening).toBe(false);
+    expect(paint(landing, body, { target: 19 }).opening).toBe(false);
+    landing.dispose();
+  });
+
+  it("settles the same provisional anchor when an activity-only history page completes coverage", () => {
+    const landing = createChatLanding(() => {});
+    const body = document.createElement("div");
+    const first = paint(landing, body, { target: 12, waitingForHistory: true });
+    first.onLand(false); first.onLand(true);
+    const final = paint(landing, body, { target: 12, waitingForHistory: false });
+    expect(final.opening).toBe(true);
+    final.onLand(false); final.onLand(true);
+    expect(landing.active()).toBe(false);
+    landing.dispose();
+  });
+
+  it("does not mistake programmatic history anchoring for reader motion", () => {
+    const landing = createChatLanding(() => {});
+    const body = document.createElement("div");
+    const first = paint(landing, body, { target: 12, waitingForHistory: true });
+    first.onLand(false); first.onLand(true);
+    body.scrollTop = 100;
+    landing.painted();
+    body.dispatchEvent(new Event("scroll"));
+    expect(landing.active()).toBe(true);
+    expect(paint(landing, body, { target: 11 }).opening).toBe(true);
     landing.dispose();
   });
 

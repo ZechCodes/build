@@ -2229,12 +2229,10 @@ export function writeThreadKeepingComposer(container, html) {
 /// Repaint a conversation without moving anything the reader is holding onto:
 /// their place in the timeline (core/paintKeepingPlace.js) and their place
 /// inside every open activity run (core/activityRunScroll.js).
-export function paintThreadKeepingPlace(scroller, paint, { olderItemsPrepended = false, landOnLatest = false } = {}) {
+export function paintThreadKeepingPlace(scroller, paint, { olderItemsPrepended = false, opening = null, canLand, onLand } = {}) {
   paintKeepingPlace(scroller, () => paintRunsShowingLatest(scroller, paint), {
-    opening: (element) => !element.querySelector(".review-thread"),
-    // Opened by a link (a notification's, mostly), the conversation lands on
-    // its latest message rather than on the unread line.
-    policy: followConversation({ olderItemsPrepended, unreadSelector: landOnLatest ? null : UNREAD_LINE_SELECTOR }),
+    opening: (element) => opening ?? !element.querySelector(".review-thread"),
+    policy: followConversation({ olderItemsPrepended, unreadSelector: UNREAD_LINE_SELECTOR, canLand, onLand }),
   });
 }
 

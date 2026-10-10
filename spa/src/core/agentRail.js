@@ -29,6 +29,7 @@
 import { setAttr, setData } from "../dom.js";
 import { AGENT_CAPABILITIES, AGENT_ROLES, modelForRole } from "./agentRoles.js";
 import { wireReaderMotion } from "./paintKeepingPlace.js";
+import { createChatLanding } from "./chatLanding.js";
 import { chatOverlaysPage, panelDocksByDefault } from "./railLayout.js";
 import { App, go } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
@@ -791,13 +792,10 @@ export function mountAgentRail(host, context) {
   // overview opened on the project's side is the overview a fresh mount of
   // this page comes back to.
   const pageKey = createAgentRailContext(context).key;
-  const stand = (standing, alongside, { panelOpen = null, selectedKind = null, landOnLatest = false } = {}) => {
+  const stand = (standing, alongside, { panelOpen = null, selectedKind = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
       ...standing,
-      // Only a stand a link asked for lands on the latest message; a press
-      // that swaps sides opens the way a press does.
-      landOnLatest,
       // The rail can stand on the project's conversation while the route is
       // still a workspace. Overview breadth belongs to the page, not the
       // conversation selected on its strip.
@@ -819,10 +817,10 @@ export function mountAgentRail(host, context) {
     named: (name) => {
       workspaceName = name || workspaceName;
     },
-    toProject: (entityId, openAgentId = null, { landOnLatest = false } = {}) => {
+    toProject: (entityId, openAgentId = null) => {
       known = { ...known, entityId };
       stand(projectSide(openAgentId), workItemContext(context, known),
-        { panelOpen: true, selectedKind: "agent", landOnLatest });
+        { panelOpen: true, selectedKind: "agent" });
     },
     toWorkItem: (openAgentId, { adding = false } = {}) => {
       stand(workItemContext(context, known, { openAgentId, addingAgent: adding }), projectSide(),
@@ -834,7 +832,7 @@ export function mountAgentRail(host, context) {
   // from every workspace in the project — and the side that finds it in its own
   // half of the strip is the side that stands the rail there.
   stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
-    addingAgent: context.addingAgent === true }), projectSide(), { landOnLatest: context.landOnLatest === true });
+    addingAgent: context.addingAgent === true }), projectSide());
   return {
     collapse() {
       live?.collapse();
@@ -1058,9 +1056,6 @@ function mountRailOnContext(host, context, swap) {
   let mintingProjectAgent = false;
   // The agent a URL named and this side has not accounted for yet.
   let wantedAgentId = context.openAgentId || null;
-  // A link opened this rail: its first paint of the conversation lands on the
-  // latest message (core/thread.js `paintThreadKeepingPlace`).
-  let landOnLatest = context.landOnLatest === true;
   let alongside = context.alongside && createAgentRailContext(context.alongside);
   let alongsideEntity = railEntity(seedPayload(context.alongside), alongsideKind(context));
   // Docked beside the work, or a card on the strip. The pin is the reader's
@@ -1146,7 +1141,9 @@ function mountRailOnContext(host, context, swap) {
   let unreadFrom = null; // where the unread line stands in that conversation
   const unreadMarkers = new Map();
   let unreadMarker = null;
+  const chatLanding = createChatLanding((body) => reportAfterLanding(body), () => paintChat());
   const leaveUnreadMarker = () => {
+    chatLanding.reset();
     unreadMarker?.leave();
     unreadFrom = null;
   };
@@ -1217,6 +1214,11 @@ function mountRailOnContext(host, context, swap) {
     const controller = controllerForAgent(agentOf(selectedId));
     const wantedThreadCache = controller?.history.threadCache || transientThreadCache;
     if (conversationCache && threadCache === wantedThreadCache) return conversationCache;
+    // Roster hydration can replace the transient reader with the canonical
+    // history at the same address. Its subscription must follow that reader.
+    unwatchThread?.();
+    unwatchThread = null;
+    watchedThreadKey = null;
     threadCache = wantedThreadCache;
     threadAgentId = null;
     paintedChat = null;
@@ -1811,7 +1813,7 @@ function mountRailOnContext(host, context, swap) {
     const wanted = wantedAgentId;
     wantedAgentId = null;
     if (agentOf(wanted) || !alongsideEntity.agents.some((agent) => agent.id === wanted)) return;
-    swap.toProject(projectOwner, wanted, { landOnLatest: context.landOnLatest === true });
+    swap.toProject(projectOwner, wanted);
   };
 
   /// The project's own page, on the machine this rail is mounted on.
@@ -2567,9 +2569,15 @@ function mountRailOnContext(host, context, swap) {
     loadingOlderItems = true;
     const page = await fetchOlderPage(request);
     loadingOlderItems = false;
-    if (!page || !standing() || request.asked !== selectedId) return;
+    if (!standing()) return;
+    if (request.asked !== selectedId) {
+      paintChat();
+      return;
+    }
+    if (!page) return;
     // The record is what the page went into; this is the paint that keeps the
     // reader's place as the history arrives above them.
+    if (chatLanding.active()) unreadMarker?.leave();
     olderItemsAwaitingPaint = true;
     // The page is above the floor of what is drawn, so it is shown as the next
     // entries would have been from the cache.
@@ -2802,17 +2810,27 @@ function mountRailOnContext(host, context, swap) {
   /// Everything else the panel shows — the composer, the pills, the read report
   /// — is about the agent rather than about what it said, so a skipped timeline
   /// never skips those.
+  const prepareChatLanding = (body, thread) => {
+    // A partial history window only offers a provisional unread anchor. Move
+    // it back as pages arrive until the cached window covers the read cursor.
+    const waitingForHistory = openingNeedsHistory(thread);
+    if (waitingForHistory && chatLanding.active()) unreadMarker?.leave();
+    unreadFrom = unreadLineFor(thread);
+    return chatLanding.prepare(body, {
+      hasItems: threadItems(thread).length > 0,
+      target: unreadFrom,
+      waitingForHistory,
+    });
+  };
+
   const paintTimeline = (body, thread, olderItemsPrepended) => {
     const agentLabel = providerLabel((agentOf(selectedId) || {}).provider);
     // Whose conversation this is, settled first: a switch drops everything the
     // panel remembers about the last one, including the line about to be ruled.
     const runs = conversationRuns();
-    // Keep the visit marker stable as daemon read cursors catch up.
-    unreadFrom = unreadLineFor(thread);
-    // Every open is a first paint: whatever the reader showed last time, the
-    // panel opens on the newest entries, so the animation never carries more.
-    const opening = !body.querySelector(".thread-items");
-    if (opening) timelineSlice.reset();
+    const landing = prepareChatLanding(body, thread);
+    const opening = landing.opening;
+    if (!body.querySelector(".thread-items")) timelineSlice.reset();
     const fingerprint = chatFingerprintOf(thread, agentLabel);
     if (fingerprint === paintedChat && !opening) return;
     paintedDigests = digestsOf(thread);
@@ -2850,8 +2868,8 @@ function mountRailOnContext(host, context, swap) {
       paintThreadKeepingPlace(body, () => {
         paintThreadEntries(body, built);
         wireTimeline(body);
-      }, { olderItemsPrepended, landOnLatest });
-      if (body.querySelector(".review-thread")) landOnLatest = false;
+      }, { olderItemsPrepended, ...landing });
+      chatLanding.painted();
       syncUserMessageTicks(body);
     });
   };
@@ -2887,12 +2905,33 @@ function mountRailOnContext(host, context, swap) {
       if (!panelVisible) return;
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) showEarlierEntries();
       scheduleUserMessageTickSync(body);
-      reportRead(body);
+      reportAfterLanding(body);
     };
     syncComposer();
     syncSurfaces();
     syncUserMessageTicks(body);
-    reportRead(body);
+    reportAfterLanding(body);
+    loadOpeningHistory();
+  };
+
+  const reportAfterLanding = (body) => {
+    if (!chatLanding.waiting()) reportRead(body);
+  };
+
+  const loadOpeningHistory = () => {
+    if (chatLanding.active() && openingNeedsOlderPage()) void readOlderItems();
+  };
+
+  // These questions use the held record, never transport/connection state.
+  const openingNeedsOlderPage = () => {
+    const agent = agentInFocus();
+    const cursor = agent?.read_through_sequence;
+    return !!agent?.unread_count && Number.isFinite(cursor) && threadCache.hasOlderItems()
+      && threadCache.windowFloorSequence() > cursor + 1;
+  };
+  const openingNeedsHistory = (thread) => {
+    const agent = agentInFocus();
+    return !thread || (!!agent?.unread_count && !Number.isFinite(agent.read_through_sequence)) || openingNeedsOlderPage();
   };
 
   /// The reader pressing a folded run, settled: the fold has flipped, and
@@ -4132,6 +4171,7 @@ function mountRailOnContext(host, context, swap) {
     if (!listening) return;
     listening = false;
     overview.close();
+    chatLanding.dispose();
     activityRuns?.dispose();
     activityRuns = null;
     for (const record of detailRecords.values()) record.dispose();

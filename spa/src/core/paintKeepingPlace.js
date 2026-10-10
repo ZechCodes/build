@@ -198,7 +198,22 @@ function restoreReadingAnchor(scroller, held) {
 /// window. Everything they were reading has moved down by the height of what
 /// arrived, so keeping their scrollTop would keep the pixel and lose the
 /// message, jumping them a page further back on every load.
-export function followConversation({ olderItemsPrepended = false, unreadSelector = null } = {}) {
+const keepPrependedHistory = (prepended, held) => prepended && !held.opening;
+
+function landConversation(scroller, landing, canLand, onLand) {
+  if (!canLand()) return;
+  writeScrollTop(scroller, landing(scroller));
+  const landedTop = scroller.scrollTop;
+  const hasFrame = typeof requestAnimationFrame === "function";
+  onLand(!hasFrame);
+  if (hasFrame) requestAnimationFrame(() => {
+    if (!canLand() || readerIsMoving(scroller) || Math.abs(scroller.scrollTop - landedTop) >= 1) return;
+    writeScrollTop(scroller, landing(scroller));
+    onLand(true);
+  });
+}
+
+export function followConversation({ olderItemsPrepended = false, unreadSelector = null, canLand = () => true, onLand = () => {} } = {}) {
   /// The scrollTop that puts the top of the unread line at the top of the
   /// viewport, or the end of the conversation when there is no line to land on.
   /// Never past the end: a line in the last screenful cannot reach the top, and
@@ -220,7 +235,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
     }),
     restore: (scroller, held, changed) => {
       if (!held.opening && !changed) return;
-      if (olderItemsPrepended) {
+      if (keepPrependedHistory(olderItemsPrepended, held)) {
         writeScrollTop(scroller, held.scrollTop + (scroller.scrollHeight - held.scrollHeight));
         return;
       }
@@ -231,11 +246,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
         else writeScrollTop(scroller, held.scrollTop);
         return;
       }
-      const land = () => {
-        writeScrollTop(scroller, landing(scroller));
-      };
-      land();
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(land);
+      landConversation(scroller, landing, canLand, onLand);
     },
   };
 }

@@ -766,6 +766,8 @@ impl AppState {
             through: params.get("read_through_sequence").and_then(Value::as_u64),
         };
         self.see_attention(&entity_id, agent_id.as_deref(), report);
+        self.changes
+            .note_kind(&entity_id, crate::changes::Kind::State);
         Ok(json!({ "ok": true }))
     }
 

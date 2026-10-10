@@ -301,11 +301,17 @@ fn review_comment_metadata_round_trips_and_rejects_foreign_context() {
 }
 
 #[test]
-fn mcp_review_comment_uses_the_same_metadata_writer() {
+fn mcp_review_comment_mention_watches_the_task_and_uses_the_same_metadata_writer() {
     let tmp = tempfile::tempdir().unwrap();
     let (_repo, mut state, project) = tracked(tmp.path());
     let workspace_id = workspace(&mut state, &project, "agent comments");
     let task = filed(&mut state, &project, "Ask for review");
+    let unwatched = review_call(
+        &mut state,
+        "tasks.unwatch",
+        json!({ "task_id": task["id"] }),
+    );
+    assert_ne!(unwatched["task"]["watched"], true);
     let (owner, agent) = project_agent(&mut state, &project);
     let saved = review_call(
         &mut state,
@@ -315,18 +321,38 @@ fn mcp_review_comment_uses_the_same_metadata_writer() {
         }),
     );
     let snapshot = &saved["review"]["snapshots"][0];
+    let before = review_call(&mut state, "tasks.get", json!({ "task_id": task["id"] }));
+    assert_ne!(before["task"]["watched"], true);
     let frame = json!({"jsonrpc":"2.0", "id": 1, "method":"tools/call",
     "params": {"name":"comment_task", "arguments": {
         "task_id": task["id"], "body": "Approved",
+        "mention_user": true, "notify_user": false,
         "opinion": {"snapshot_id": snapshot["id"], "verdict":"approve"}
     }}});
     let action = crate::mcp::DoneServer::new(&agent)
         .handle_message(&frame.to_string())
         .action
         .unwrap();
+    assert!(matches!(
+        action,
+        crate::mcp::BridgeAction::TrackerReviewCommentTask {
+            mention_user: Some(true),
+            notify_user: Some(false),
+            ..
+        }
+    ));
     let result = state.agent_action(&owner, &agent, action).unwrap();
     assert_eq!(result["comment"]["opinion"]["verdict"], "approve");
     assert_eq!(result["comment"]["author"]["agent_id"], agent);
+    assert_eq!(result["comment"]["mentions_user"], true);
+    assert_eq!(result["task"]["watched"], true);
+    let fetched = review_call(&mut state, "tasks.get", json!({ "task_id": task["id"] }));
+    assert_eq!(fetched["task"]["watched"], true);
+    assert!(fetched["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| { entry["id"] == result["comment"]["id"] && entry["mentions_user"] == true }));
 }
 
 #[test]

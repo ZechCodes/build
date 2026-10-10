@@ -2107,7 +2107,7 @@ function mountRailOnContext(host, context, swap) {
   const activeBubble = () => host.querySelector(`${STRIP_BUTTONS}.active`);
 
   const syncThreadTimeVisibility = () =>
-    threadTimeWatcher?.setVisible(panelVisible && shownPanelMode() === "chat");
+    threadTimeWatcher?.setVisible(panelVisible && selectedKind !== "overview" && shownPanelMode() === "chat");
 
   const syncPopover = () => {
     syncThreadTimeVisibility();

@@ -11,6 +11,7 @@ for (const { label, width, height, hasTouch } of [
 ]) {
   it(`paints every unfinished watched task from cache in byAnchor order with a visible eye on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
+      await page.clock.setFixedTime(new Date("2026-10-12T12:00:00Z"));
       await mountWatchedTaskInbox(page, basePath);
       for (const view of ["projects", "inbox"]) {
         await page.evaluate((view) => window.__layoutModules.inbox.setInboxView(view), view);

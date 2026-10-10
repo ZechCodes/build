@@ -8,7 +8,6 @@
 import { entityIdOf } from "./entityId.js";
 import { verbCall } from "./inboxDevices.js";
 import { homeContext } from "./deviceContexts.js";
-import { stampRow } from "./feedMerge.js";
 import { cachedWriteOf, captureCachedRecord, mergeCachedIfUnwritten } from "./localCache.js";
 
 // The row holding each entity the feed named, minted with every snapshot.
@@ -30,7 +29,8 @@ const rosterRefreshes = new Map();
  * hold, which is what opening a whole entry means.
  *
  * A chat passes its device explicitly so a cold inbox cannot route its read
- * through another machine. Returns true only after the bridge confirms it.
+ * through another machine. Returns true after the bridge accepts the report;
+ * the cached roster tells callers whether its read cursor actually advanced.
  *
  * This is also the hook for a self-initiated ending: merge and abandon are
  * attention-class events, so a merge the user triggered from this client would
@@ -45,7 +45,7 @@ export async function markSeen(entityId, agentId, readFromSequence = null, readT
   } catch {
     return false;
   }
-  // The mark is confirmed even if this compatibility read cannot finish.
+  // The report was accepted even if this compatibility read cannot finish.
   await queueRosterRefresh(call, seenDeviceId(row), entityId).catch(() => null);
   return true;
 }
@@ -75,6 +75,28 @@ function queueRosterRefresh(call, deviceId, entityId) {
 const rosterIdentity = (row) => JSON.stringify((row.agents || []).map((agent) =>
   [agent.id, agent.conversation_id, agent.thread_id]));
 
+const ROW_READ_FIELDS = ["needs_attention", "unread", "unread_count", "unread_reason", "attention"];
+const AGENT_READ_FIELDS = ["unread_count", "unread_reason", "read_through_sequence"];
+
+function mergeReadFields(held, incoming, fields) {
+  const next = { ...held };
+  for (const field of fields) {
+    if (Object.hasOwn(incoming, field)) next[field] = incoming[field];
+  }
+  return next;
+}
+
+/** `runs` can carry List digests, so only read-related fields can replace
+ *  a pushed Detail row. Leave an identical value unwritten and unannounced. */
+function mergeReadRoster(held, incoming) {
+  if (!held || rosterIdentity(held) !== rosterIdentity(incoming)) return null;
+  const next = mergeReadFields(held, incoming, ROW_READ_FIELDS);
+  if (Array.isArray(held.agents)) {
+    next.agents = held.agents.map((agent, index) => mergeReadFields(agent, incoming.agents[index], AGENT_READ_FIELDS));
+  }
+  return JSON.stringify(next) === JSON.stringify(held) ? null : next;
+}
+
 /** Older bridges emit only a board revision after a read. Refresh the exact
  *  cached roster the badges use, including owners absent from inbox items.
  *  An intervening cache write or generation change always wins. */
@@ -87,8 +109,7 @@ async function refreshReadRoster(call, deviceId, entityId) {
   const rows = [...(board.items || []), ...(board.runs || []), ...(board.plans || []), ...(board.external_worktrees || [])];
   const row = rows.find((candidate) => entityIdOf(candidate) === entityId);
   if (!row) return;
-  await mergeCachedIfUnwritten(address, cachedWriteOf(before), (held) =>
-    held && rosterIdentity(held) === rosterIdentity(row) ? { ...held, ...stampRow(row, deviceId) } : null);
+  await mergeCachedIfUnwritten(address, cachedWriteOf(before), (held) => mergeReadRoster(held, row));
 }
 
 /** The row holding an entity, off the index the last snapshot minted. A caller

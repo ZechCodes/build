@@ -664,6 +664,41 @@ describe("live conversation timestamps", () => {
     expect(messageTime()).toBe(time);
   });
 
+  it("pauses timestamp scans while the Agents overview is open", async () => {
+    await mountWorkspaceRail();
+    host().querySelector('[data-bubble="overview"]').click();
+    await flush();
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(host().querySelector("time[data-thread-time]")).toBeNull();
+    const scans = vi.spyOn(host(), "querySelectorAll");
+
+    vi.advanceTimersByTime(30_000);
+
+    expect(scans).not.toHaveBeenCalledWith("time[data-thread-time]");
+  });
+
+  it("refreshes immediately and resumes the clock when returning from Agents overview", async () => {
+    await mountWorkspaceRail();
+    host().querySelector('[data-bubble="overview"]').click();
+    await flush();
+    vi.advanceTimersByTime(2 * 60_000);
+    const scans = vi.spyOn(host(), "querySelectorAll");
+
+    host().querySelector('[data-agent="wa-1"]').click();
+    await flush();
+
+    const time = messageTime();
+    expect(time.textContent).toBe("2 minutes ago");
+    expect(scans).toHaveBeenCalledWith("time[data-thread-time]");
+    scans.mockClear();
+
+    vi.advanceTimersByTime(60_000);
+
+    expect(scans).toHaveBeenCalledWith("time[data-thread-time]");
+    expect(time.textContent).toBe("3 minutes ago");
+    expect(messageTime()).toBe(time);
+  });
+
   it("stops its timer and foreground listeners when the rail is disposed", async () => {
     const timersBeforeMount = vi.getTimerCount();
     await mountWorkspaceRail();

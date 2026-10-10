@@ -14,9 +14,14 @@ for (const { label, width, height, hasTouch } of [
   { label: "phone", width: 390, height: 844, hasTouch: true },
 ]) {
   await withLayoutPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await mountProjectsFace(page, basePath);
     for (const theme of ["light", "dark"]) {
       await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+      await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => {
+        if (animation instanceof CSSTransition) animation.finish();
+        return animation instanceof CSSTransition ? animation.finished : Promise.resolve();
+      })));
       const blocks = await inspectProjectsFace(page);
       evidence[`${label}-${theme}`] = blocks;
       if (phase === "after") {

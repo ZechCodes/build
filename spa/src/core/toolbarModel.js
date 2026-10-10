@@ -4,7 +4,7 @@
 // own page. core/toolbar.js renders and wires it.
 
 import { fuzzyRank } from "./fuzzy.js";
-import { deviceTags, projectNameOf } from "./inboxProjects.js";
+import { byProjectName, deviceTags, projectNameOf } from "./inboxProjects.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
 
@@ -51,7 +51,7 @@ export function projectMenuModel({ projects = [], items = [], devices = [], proj
     ...tags.get(project.projectKey),
     current: project.projectKey === projectKey,
     unreadCount: items.reduce((total, item) => total + (item.projectKey === project.projectKey ? unreadOf(item) : 0), 0),
-  }));
+  })).sort(byProjectName);
   return fuzzyRank(entries, query, (entry) => entry.name);
 }
 

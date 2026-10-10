@@ -2200,6 +2200,12 @@ summarizes watched activity, including tasks without a Needs you reason; an
 expanded head uses only its project conversation's own unread and activity.
 The head offers Hide and New workspace directly.
 
+The Projects face lists every project in one flat alphabetical list, using
+case-insensitive locale collation with device-tag and project-key tie breakers.
+Project blocks have transparent backgrounds; only the active head has an accent
+tint. Workspace rows keep their order and per-block Recent partition. The
+ungrouped Inbox face keeps its own Recent disclosure.
+
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
 `spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`. Every watched
 open task outside Done stays visible, even after its attention is read. Rows

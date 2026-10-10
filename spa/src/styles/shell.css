@@ -305,9 +305,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    so the inbox's text column stands on the same left edge as the commit and
    file rails beside it — a rail that indents differently reads as a third
    margin rather than as the same list at a narrower width. */
-/* Rows own their current fill; the project supplies only the resting tone.
+/* Rows own their current fill; their resting tone is the rail's background.
    Both right-edge overlays inherit this value, including on keyboard focus. */
-.inbox-entry { --inbox-row-fill:var(--inbox-project-fill, var(--panel));
+.inbox-entry { --inbox-row-fill:var(--panel);
   background:var(--inbox-row-fill); align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
 .inbox-entry:hover { --inbox-row-fill:var(--row-hover); background:var(--inbox-row-fill); }
 .inbox-entry.active { --inbox-row-fill:var(--accent-soft); background:var(--inbox-row-fill); }
@@ -487,27 +487,14 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* Empty, it leaves the list's flow: a 0px child still costs the list a gap,
    which landed as 4px of nothing above the first band. */
 .inbox-unsorted:empty { display:none; }
-/* The blocks are bands of the rail, not cards in it: each one bleeds back
-   through the list's side padding to the rail's own edges, so a block has no
-   right edge to read as a border, and the standing block's accent bar sits on
-   the rail's leading edge the way the commit rail's does. The band's inset
-   pays the padding it swallowed plus the boxed block's old 5px, so the
-   chevron, the + and the rows keep the column they stood in. The bands
-   separate by the gap between them, never by a line. The standing block is
-   its fill alone: the accent bar belongs to the standing ROW inside it, and a
-   second bar on the band drew the same mark twice. */
+/* Project heads and rows sit on the rail with spacing between blocks. Keep
+   their existing bleed and insets so controls and rows retain their columns.
+   Only the active head and individual selected rows carry an accent fill. */
 .inbox-projects { display:flex; flex-direction:column; gap:8px; }
-.inbox-project { --inbox-project-fill:var(--panel2);
-  position:relative; border:0; border-radius:0; background:var(--inbox-project-fill);
+.inbox-project { position:relative; border:0; border-radius:0; background:transparent; box-shadow:none;
   --inbox-band-bleed:calc(10px + env(safe-area-inset-left, 0px));
   margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
-  padding:5px var(--inbox-row-bleed-right) 6px calc(var(--inbox-band-bleed) + 5px);
-  transition:background-color .12s ease, box-shadow .12s ease; }
-.inbox-project.active { --inbox-project-fill:var(--accent-soft); }
-/* A block with nothing live is a band like the rest — a bare head between two
-   filled bands read as a gap in the list, not as a project. Its rows are the
-   quiet ones and its fold has nothing to open (below). */
-.inbox-project.inbox-flat { border:0; box-shadow:none; }
+  padding:5px var(--inbox-row-bleed-right) 6px calc(var(--inbox-band-bleed) + 5px); }
 /* Keep the final dot's slot even when it is absent, so the name and hover
    controls keep their width as activity changes. The head uses the rows' bleed
    and pays it back in padding. Its vertical fill takes 4px from the space on
@@ -517,7 +504,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   padding:5px calc(14px + var(--inbox-row-bleed-right)) 5px var(--inbox-row-bleed-left); }
 .inbox-project-head:hover { background:var(--row-hover); }
 /* Selected rows keep their accent fill on hover; their project head does too. */
-.inbox-project.active > .inbox-project-head:hover { background:var(--accent-soft); }
+.inbox-project.active > .inbox-project-head { background:var(--accent-soft); }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
 .inbox-project-hide svg { width:16px; height:16px; display:block; }
 /* The fold and Recent caret center 12px into the band. */

@@ -13,11 +13,10 @@
 // A block folds shut by its chevron and stays that way until it is opened
 // again; one with no workspace in it is flat, and its chevron has nothing to
 // fold.
-// Blocks use the bridge's project session summary, oldest anchor first. The
-// summary includes finished workspaces and the project's own conversation.
-// More than a day without a message moves a block
-// into the projects face's Recent section; workspaces inside keep their own
-// session order and Recent partition.
+// Every project stays in one alphabetical list, however long it has been
+// quiet. Names use case-insensitive locale order, then the device tag and
+// project key break ties. Workspaces inside keep their own session order and
+// Recent partition.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -25,14 +24,12 @@ import { esc } from "./text.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS } from "./icons.js";
 import {
   PROJECT_AGENT,
-  RECENT_AFTER_MS,
   TRACKER_TASK,
   byInboxAttentionThenAnchor,
   clashingNames,
   dimDeviceHtml,
   workspaceIsRecent,
 } from "./inbox.js";
-import { sessionTimes } from "./sessionSpans.js";
 import { statusDotHtml } from "./inboxStatusDot.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
@@ -83,7 +80,6 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
   // The project agent's entry is the block's head, not one of its rows (#103).
   const agentEntry = rows.find((entry) => entry.kind === PROJECT_AGENT) || null;
   const grouped = rows.filter((entry) => entry.kind !== PROJECT_AGENT).sort(byInboxAttentionThenAnchor);
-  const { anchorMs, lastActivityMs } = sessionTimes(project, nowMs);
   const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
   const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
   return {
@@ -96,9 +92,6 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
     isGit: project.is_git !== false,
     entries,
     recent,
-    anchorMs,
-    lastActivityMs,
-    isRecent: lastActivityMs !== null && nowMs - lastActivityMs > RECENT_AFTER_MS,
     flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     agentEntry,
@@ -111,10 +104,10 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
 }
 
 /** The inbox's top badge (#183): every project's numeric unread total,
- *  including Recent blocks and rows, independent of which heads are folded. */
+ *  including quiet workspace rows, independent of which heads are folded. */
 export function projectsUnreadCount(entries = [], projects = []) {
-  const { blocks, recentBlocks } = workspaceProjectBlocks(entries, projects);
-  return [...blocks, ...recentBlocks].reduce((total, block) => total + block.unreadCount, 0);
+  const { blocks } = workspaceProjectBlocks(entries, projects);
+  return blocks.reduce((total, block) => total + block.unreadCount, 0);
 }
 
 /** Group the landing rail's workspace rows by the project they are in. A
@@ -133,16 +126,10 @@ export function workspaceProjectBlocks(entries = [], projects = [], devices = []
       nowMs,
       runningTaskProjectKeys,
     ),
-  ).sort((left, right) =>
-    (left.anchorMs === null) - (right.anchorMs === null)
-      || (left.anchorMs === null ? 0 : left.anchorMs - right.anchorMs)
-      || left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
-      || left.projectKey.localeCompare(right.projectKey),
-  );
+  ).sort(byProjectName);
   return {
     unsorted: entries.filter((entry) => !entry.projectKey),
-    blocks: blocks.filter((block) => !block.isRecent),
-    recentBlocks: blocks.filter((block) => block.isRecent),
+    blocks,
   };
 }
 
@@ -189,11 +176,21 @@ export function deviceTags(projects, devices = [], offlineDeviceIds = null) {
  *  laptop holds it stops being the useful fact the moment none of them can
  *  answer: what the reader needs to know is why nothing in the block is
  *  moving, and "Offline" is that in one word. */
+const deviceTagOf = (project) => {
+  if (project?.offline) return OFFLINE_TAG;
+  return project?.clash ? project.deviceName || "" : "";
+};
+
 export function deviceTagHtml(project) {
-  if (!project) return "";
-  if (project.offline) return dimDeviceHtml(OFFLINE_TAG);
-  if (!project.clash) return "";
-  return dimDeviceHtml(project.deviceName);
+  return dimDeviceHtml(deviceTagOf(project));
+}
+
+/** The rail and toolbar list projects in the same order: names and displayed
+ *  device tags use locale collation; account-wide keys settle remaining ties. */
+export function byProjectName(left, right) {
+  return left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
+    || deviceTagOf(left).localeCompare(deviceTagOf(right), undefined, { sensitivity: "base" })
+    || (left.projectKey || left.key).localeCompare(right.projectKey || right.key);
 }
 
 /**

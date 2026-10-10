@@ -623,14 +623,14 @@ describe("an account with more than one device", () => {
     twoDevices();
     setInboxView("projects");
     const hides = () => [...document.querySelectorAll(".inbox-project-head .inbox-project-hide")];
-    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-1/project-1", "dev-2/project-1"]);
+    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
 
     setContextOffline("dev-2", { offline: true });
-    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-1/project-1", "dev-2/project-1"]);
+    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
     expect(hides().every((item) => !item.disabled)).toBe(true);
 
     setContextOffline("dev-2", { offline: false });
-    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-1/project-1", "dev-2/project-1"]);
+    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
   });
 
   // Hide drops the project from the cache — which, on a machine that has gone,

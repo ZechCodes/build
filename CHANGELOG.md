@@ -43,6 +43,9 @@ Wire 3.18.0.
 
 ### Changed
 
+- Keep every project visible alphabetically on the Projects face, removing the
+  project-level Recent fold and filled block backgrounds while preserving
+  workspace Recent and unread counts (#480).
 - Show every watched task that is neither Done nor closed in the inbox,
   including quiet rows, with attention rows first. Mentions watch the task for
   the user, and each task row has an eye to unwatch it on desktop and phone

@@ -4,7 +4,7 @@
 // badge the rail publishes counts all watched news — open or folded, on either
 // face — independently of the status dots (#380). The report's shape is two
 // projects, a Needs-you row with nothing unread, a watched task nobody holds
-// with no row, a Done
+// with a quiet row, a Done
 // task a 1.29 bridge still counts, a workspace in Recent and a folded block.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -55,7 +55,7 @@ async function seed({ buildUnread = 1, buildWorking = false, oldWorking = false 
     // #159: in review, everything read — a Needs-you row with no unread.
     task({ id: "i-159", number: 159, title: "Review me", watched: true, status: "in_review", unread_count: 0,
       updated_at: new Date(now - 120_000).toISOString() }),
-    // #113: watched, nobody's, 2 unread, and no row.
+    // #113: watched, nobody's, 2 unread, and a quiet row (#475).
     task({ id: "i-113", number: 113, title: "Milestones", watched: true, status: "ready", unread_count: 2 }),
     // #50: Done; a 1.29 bridge sends its unread anyway.
     task({ id: "i-50", number: 50, title: "Finished", watched: true, status: "done", unread_count: 803 }),
@@ -128,7 +128,7 @@ describe("the inbox's top badge", () => {
     await vi.waitFor(() => expect(published).toBe(BUILD + SMARTER), WAIT);
     expectHeadStatus("build", { unread: true });
     expectHeadStatus("smarter", { unread: true });
-    expect(row("tracker_task:i-113")).toBe(null);
+    expect(row("tracker_task:i-113")?.classList.contains("inbox-quiet")).toBe(true);
     expect(row(`workspace:${DEVICE}/old-work`)?.closest(".inbox-recent")).not.toBe(null);
     expect(published).toBe(BUILD + SMARTER);
   });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // #125, end to end: an agent's real MCP tools/call changes a watched task,
 // the bridge pushes it on the inbox subscription, and the rail shows the row
-// while the task needs the user and drops it when it does not.
+// throughout its watched unfinished lifetime, quiet when no reason needs the user.
 //
 // The wire is a Rust AppState run (bridge/src/app/tests/tracker_inbox_wire.rs,
 // `watched_task_inbox_wire_probe`): the MCP stdio server takes the tool call,
@@ -120,14 +120,13 @@ afterAll(() => {
 const detailReads = (taskId) =>
   asked.filter((one) => one.method === "tasks.get" && one.params.task_id === taskId).length;
 
-/** Reach a step that should draw no row, and hold that until the task's own
- *  record has been read again: a row the new timeline would add is added by
- *  then, so its absence means something. */
+/** Reach a step with no attention reason after the task timeline is re-read. */
 async function reachQuietly(step, taskId) {
   const before = detailReads(taskId);
   await reach(step);
   await vi.waitFor(() => expect(detailReads(taskId)).toBeGreaterThan(before), WAIT);
-  expect(rowsNamed(taskId)).toHaveLength(0);
+  expect(rowsNamed(taskId)).toHaveLength(1);
+  expect(rowFor(taskId).classList.contains("inbox-quiet")).toBe(true);
 }
 
 describe("a watched task in the inbox, over the real wire", () => {
@@ -135,15 +134,15 @@ describe("a watched task in the inbox, over the real wire", () => {
     expect(wire.greeting.capabilities).toContain("tasks.commentUserNotifies");
   });
 
-  it("stays out while agents move it to In review, appears once it is assigned to the user, leaves at Done", async () => {
+  it("stays quiet while agents move it to In review, names user assignment, leaves at Done", async () => {
     const { task_id: taskId, steps: [filed, inReview, assigned, done] } = wire.review;
     // Filed and watched, in Backlog: nothing for the user yet.
     expect(filed.list.tasks.find((one) => one.id === taskId)).toMatchObject({ watched: true, status: "backlog" });
-    expect(rowFor(taskId)).toBe(null);
+    await expect.poll(() => rowFor(taskId)?.classList.contains("inbox-quiet"), WAIT).toBe(true);
 
     // In review between agents is not the user's (#144).
     await reach(inReview);
-    expect(rowsNamed(taskId)).toHaveLength(0);
+    await expect.poll(() => rowFor(taskId)?.classList.contains("inbox-quiet"), WAIT).toBe(true);
 
     await reach(assigned);
     await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Assigned to you");
@@ -154,9 +153,9 @@ describe("a watched task in the inbox, over the real wire", () => {
     await expect.poll(() => rowsNamed(taskId).length, WAIT).toBe(0);
   });
 
-  it("stays out for agents' own comments, appears when an agent asks the user, and leaves once it is read", async () => {
+  it("keeps agents' own comments quiet, names an ask, and stays quiet once read", async () => {
     const { task_id: taskId, steps: [, chatter, commented, read] } = wire.comment;
-    expect(rowFor(taskId)).toBe(null);
+    await expect.poll(() => rowFor(taskId)?.classList.contains("inbox-quiet"), WAIT).toBe(true);
 
     await reachQuietly(chatter, taskId);
 
@@ -167,10 +166,11 @@ describe("a watched task in the inbox, over the real wire", () => {
     expect(rowFor(taskId).querySelector(".inbox-unread")).toBe(null);
 
     await reach(read);
-    await expect.poll(() => rowsNamed(taskId).length, WAIT).toBe(0);
+    await expect.poll(() => rowFor(taskId)?.classList.contains("inbox-quiet"), WAIT).toBe(true);
+    await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-status-unread"), WAIT).toBe(null);
   });
 
-  it("shows a mentioned task on creation, then removes it after its created event is read", async () => {
+  it("shows a mentioned task on creation, then keeps it quiet after reading", async () => {
     const { task_id: taskId, steps: [created, read] } = wire.created_ask;
     expect(rowFor(taskId)).toBe(null);
     await reach(created);
@@ -179,6 +179,7 @@ describe("a watched task in the inbox, over the real wire", () => {
     expect(rowFor(taskId).querySelectorAll(".inbox-status-unread")).toHaveLength(1);
     expect(rowFor(taskId).querySelector(".inbox-unread")).toBe(null);
     await reach(read);
-    await expect.poll(() => rowsNamed(taskId).length, WAIT).toBe(0);
+    await expect.poll(() => rowFor(taskId)?.classList.contains("inbox-quiet"), WAIT).toBe(true);
+    await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-status-unread"), WAIT).toBe(null);
   });
 });

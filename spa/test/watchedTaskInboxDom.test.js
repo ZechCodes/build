@@ -129,7 +129,7 @@ describe("watched task dots from cached agents", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("folds a project's running watched task into its head even while the task has no Needs-you row", async () => {
+  it("folds a project's quiet running watched task into its head", async () => {
     const quietTask = { ...assigned, status: "in_progress" };
     const mine = task({ id: "task-mine", watched: true, assignee: { kind: "user" } });
     await boot({ greet: false, tasks: [quietTask, mine], rule: { tasks: { commentUserNotifies: true } },
@@ -152,7 +152,7 @@ describe("watched task dots from cached agents", () => {
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("resolves legacy project-agent tasks from the project's owner roster, including hidden task work", async () => {
+  it("resolves legacy project-agent tasks from the project's owner roster, including quiet task work", async () => {
     const legacy = { ...assigned, assignee: { kind: "project_agent" } };
     const row = (agents) => ({ ...agentRow(agents), run_id: "run-project" });
     const land = (agents) => modules.cache.writeCached({ deviceId: DEVICE, entityId: "run-project", kind: "row" }, row(agents));
@@ -265,7 +265,7 @@ describe("a watched task's inbox row before any machine answers (#144)", () => {
 
   it("paints what the cache says needs the user, by the cached rule, with no greeting", async () => {
     await vi.waitFor(() => expect(rowFor(mine.id)?.querySelector(".inbox-facts")?.textContent).toBe("Assigned to you"), WAIT);
-    // In review between agents is not the user's business by the cached rule.
+    // In review between agents remains watched, with no reason by the cached rule.
     expect(rowFor(review.id)?.classList.contains("inbox-quiet")).toBe(true);
     expect(call).not.toHaveBeenCalled();
     expect(modules.deviceContexts.contextFor(DEVICE)).toBe(null);
@@ -284,7 +284,7 @@ describe("a mentioned creation on a cold reload", () => {
     rule: { tasks: { commentUserNotifies: true } } }));
   afterEach(() => pane?.dispose());
 
-  it("paints Needs you and the inbox from cache, then drops both when the read mark passes creation", async () => {
+  it("paints Needs you and Inbox from cache, then keeps a quiet row after reading creation", async () => {
     const host = document.body.appendChild(document.createElement("div"));
     pane = modules.tasksPane.mountTasksPane(host, {
       projectId: PROJECT, projectName: "Build", deviceId: DEVICE, projectKey: project.projectKey,

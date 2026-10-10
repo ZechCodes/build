@@ -25,17 +25,22 @@ export async function mountWatchedTaskInbox(page, basePath, { unread = false } =
       selectedDeviceId: deviceId, deviceFilter: null });
     const project = { id: projectId, project_id: projectId, name: "Build", deviceId, projectKey: `${deviceId}/${projectId}`,
       entity_id: "watched-project-run" };
+    // Keep fixture activity recent relative to the page's clock.
+    const now = Date.now();
+    const minutesAgo = (count) => new Date(now - count * 60_000).toISOString();
     const makeTask = (id, number, title, over = {}) => ({
       id, number, title, project_id: projectId, state: "open", status: "in_progress", watched: true,
       body: "", labels: [], priority: "none", assignee: null, trackers: [], read_through: null,
       links: { workspace_ids: [], branches: [], commits: [], conversation_ids: [], parent_task_id: null },
-      created_by: { kind: "user" }, created_at: "2026-10-10T10:00:00Z", updated_at: "2026-10-10T10:00:00Z",
+      created_by: { kind: "user" }, created_at: minutesAgo(9), updated_at: minutesAgo(9),
       ...over,
     });
     const tasks = [
       makeTask(quietId, 475, "Quiet task"),
-      makeTask(askId, 476, "Your next choice", { assignee: { kind: "user" }, updated_at: "2026-10-10T10:03:00Z" }),
-      makeTask("review-watched-task", 477, "Agent review", { status: "in_review" }),
+      makeTask(askId, 476, "Your next choice", { assignee: { kind: "user" },
+        created_at: minutesAgo(6), updated_at: minutesAgo(6) }),
+      makeTask("review-watched-task", 477, "Agent review", { status: "in_review",
+        created_at: minutesAgo(3), updated_at: minutesAgo(3) }),
       makeTask("done-watched-task", 478, "Completed inbox work", { status: "done" }),
       makeTask("closed-watched-task", 479, "Closed inbox work", { state: "closed" }),
       makeTask("unwatched-task", 480, "Unwatched inbox work", { watched: false }),
@@ -51,7 +56,7 @@ export async function mountWatchedTaskInbox(page, basePath, { unread = false } =
     for (const task of tasks) {
       const timeline = unread && task.id === quietId ? [{ type: "comment", id: "tc-0001", task_id: quietId,
         author: { kind: "agent", id: "watched-project-agent" }, body: "A task update", refs: [],
-        mentions_user: false, notifies_user: false, created_at: "2026-10-10T10:00:00Z" }] : [];
+        mentions_user: false, notifies_user: false, created_at: task.created_at }] : [];
       await tracker.writeTaskRecord(deviceId, projectId, task.id, tracker.taskRecord(task, timeline));
     }
     await rule.rememberNeedsYouRule(deviceId, { tasks: { commentUserNotifies: true } });

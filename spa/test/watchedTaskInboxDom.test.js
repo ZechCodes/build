@@ -9,7 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { comment, task, taskDetail } from "./trackerWireFixture.js";
+import { comment, task as wireTask, taskDetail } from "./trackerWireFixture.js";
+
+const NOW = Date.parse("2026-09-24T12:00:00Z");
+const task = (over = {}) => wireTask({ created_at: "2026-09-24T00:00:00Z", updated_at: "2026-09-24T01:00:00Z", ...over });
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const DEVICE = "watch-device";
@@ -39,7 +46,7 @@ const call = vi.fn((method, params) => {
 
 /** A reload: the feed and the task records are already on disk. `greet`
  *  lands a session before the rail mounts; without it no machine answers. */
-async function boot({ greet = true, tasks = [review], rule = null, hello = GREETING, timelines = {}, agentRows = [], namesMakers = false, projectEntityId = null } = {}) {
+async function boot({ greet = true, tasks = [review], rule = null, hello = GREETING, timelines = {}, agentRows = [], namesMakers = false, projectEntityId = null, workspaces = [], feedItems = [] } = {}) {
   vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
@@ -62,9 +69,9 @@ async function boot({ greet = true, tasks = [review], rule = null, hello = GREET
   };
   const address = (kind) => ({ deviceId: DEVICE, entityId: "", kind });
   const listedProject = { ...project, entity_id: projectEntityId };
-  await modules.cache.writeCached(address("feed"), { items: [], runs: [], projects: [listedProject], workspaces: [] });
+  await modules.cache.writeCached(address("feed"), { items: feedItems, runs: agentRows, projects: [listedProject], workspaces });
   await modules.cache.writeCached(address("projects"), [listedProject]);
-  await modules.cache.writeCached(address("workspaces"), []);
+  await modules.cache.writeCached(address("workspaces"), workspaces);
   await modules.cache.writeCached(address("agent-lineage-support"), { namesMakers });
   for (const row of agentRows) await modules.cache.writeCached({ deviceId: DEVICE, entityId: row.run_id, kind: "row" }, row);
   await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord(tasks, []));
@@ -86,6 +93,48 @@ afterEach(() => {
   modules.inboxView.unmountInboxList();
   modules.taskFeed.stopFeed();
   modules.deviceContexts.resetDeviceContexts();
+  vi.useRealTimers();
+});
+
+describe("one inbox row order (#481)", () => {
+  const now = Date.parse("2026-09-24T12:00:00Z");
+  const date = (hours) => new Date(now - hours * 3600_000).toISOString();
+  const workspace = (id, hours) => ({ id, project_id: PROJECT, name: id, managed: true, watched: true,
+    deviceId: DEVICE, projectKey: project.projectKey, workspaceKey: `${DEVICE}|${id}`,
+    status: "ready", created_at: date(hours), session_started_ms: now - hours * 3600_000,
+    last_activity_ms: now - 3600_000 });
+  const activeKeys = () => [...document.querySelectorAll("#inbox-list > .inbox-entry")].map((row) => row.dataset.key);
+
+  it("interleaves captures, workspaces, assigned tasks, and project agents from cache", async () => {
+    const mine = task({ id: "task-mixed", watched: true, assignee: { kind: "user" }, created_at: date(3), updated_at: date(1), unread_count: 2 });
+    const workspaces = [workspace("older", 4), workspace("newer", 1)];
+    const capture = { kind: "capture", capture_id: "capture-middle", title: "Capture", state: "captured", created_at: date(2) };
+    const projectRun = { kind: "branch", run_id: "run-project", project_id: PROJECT, deviceId: DEVICE, projectKey: project.projectKey,
+      anchor: date(2.5), last_activity: date(1), agents: [{ id: "project-agent", watched: true, working: false, unread_count: 1 }] };
+    await boot({ greet: false, tasks: [mine], workspaces, feedItems: [capture, projectRun], projectEntityId: "run-project", agentRows: [projectRun] });
+    await vi.waitFor(() => expect(activeKeys()).toEqual([
+      `workspace:${DEVICE}|older`, "tracker_task:task-mixed", `project-agent:${DEVICE}|${PROJECT}`,
+      "capture:capture-middle", `workspace:${DEVICE}|newer`,
+    ]), WAIT);
+    expect(rowFor(mine.id).querySelector(".inbox-facts").textContent).toBe("Assigned to you");
+    expect(rowFor(mine.id).querySelector(".inbox-status-unread")).not.toBe(null);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("puts old quiet and assigned tasks behind the same Recent disclosure, then restores them on activity", async () => {
+    const old = task({ id: "task-old", watched: true, created_at: date(72), updated_at: date(25) });
+    const mine = { ...old, id: "task-assigned", assignee: { kind: "user" }, unread_count: 2 };
+    await boot({ greet: false, tasks: [old, mine], workspaces: [workspace("current", 1)] });
+    await vi.waitFor(() => expect(document.querySelector("[data-recent-toggle] .inbox-recent-count")?.textContent).toBe("2"), WAIT);
+    expect(rowFor(old.id)).toBe(null);
+    expect(rowFor(mine.id)).toBe(null);
+    document.querySelector("[data-recent-toggle]").click();
+    await vi.waitFor(() => expect(rowFor(old.id)?.closest(".inbox-recent")).toBeTruthy(), WAIT);
+    await vi.waitFor(() => expect(rowFor(mine.id)?.closest(".inbox-recent")).toBeTruthy(), WAIT);
+    await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([{ ...old, updated_at: date(0) }, mine], []));
+    await vi.waitFor(() => expect(activeKeys()[0]).toBe("tracker_task:task-old"), WAIT);
+    expect(call).not.toHaveBeenCalled();
+  });
 });
 
 describe("watched task dots from cached agents", () => {

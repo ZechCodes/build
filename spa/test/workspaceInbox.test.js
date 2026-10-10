@@ -49,7 +49,7 @@ describe("workspace inbox rows", () => {
     const [entry] = entriesOf([{ id: "quiet", project_id: "project-1",
       session_started_ms: 100, last_activity_ms: 200 }]);
     expect(workspaceIsRecent(entry, 200 + day - 1)).toBe(false);
-    expect(workspaceIsRecent(entry, 200 + day)).toBe(false);
+    expect(workspaceIsRecent(entry, 200 + day)).toBe(true);
     expect(workspaceIsRecent(entry, 200 + day + 1)).toBe(true);
   });
 

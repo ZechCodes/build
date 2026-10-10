@@ -135,7 +135,7 @@ const watchedTaskRows = () => (watchedTasks?.entries() || []).filter((entry) => 
 function heldAway(entry) {
   if (!unwatched.has(entry.key)) return false;
   const stampMs = unwatched.get(entry.key);
-  if (stampMs == null || entry.anchorMs == null || entry.anchorMs <= stampMs) return true;
+  if (stampMs == null || entry.updatedMs == null || entry.updatedMs <= stampMs) return true;
   unwatched.delete(entry.key);
   return false;
 }
@@ -206,14 +206,11 @@ export function setInboxView(next) {
   draw();
 }
 
-/** Every row the rail paints, on either face. The captures first: they are
- *  the account's unfinished business and belong to no project, so they stand
- *  above the workspace rows on the flat face and above the blocks on the
- *  other. Watched unfinished tasks come next, and sit in their
- *  project's block on the projects face. */
+/** Every row the rail paints, in one anchor order regardless of its kind or
+ *  attention. The projects face groups these same rows by project. */
 function railRows() {
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  return [...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)];
+  return [...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)].sort(byAnchor);
 }
 
 function draw() {
@@ -249,15 +246,16 @@ function withDeviceNames(rows) {
   return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null }));
 }
 
-/** The inbox face's flat durable workspace list. */
+/** The inbox face's flat list of every row kind. */
 function drawWorkspaceList(list, shown) {
   entries = shown;
   const ui = rowUi(true);
   paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
   list.querySelector(":scope > .inbox-unsorted")?.remove();
   list.querySelector(":scope > .inbox-projects")?.remove();
-  const active = shown.filter((entry) => !workspaceIsRecent(entry));
-  const recent = shown.filter((entry) => workspaceIsRecent(entry));
+  const nowMs = Date.now();
+  const active = shown.filter((entry) => !workspaceIsRecent(entry, nowMs));
+  const recent = shown.filter((entry) => workspaceIsRecent(entry, nowMs));
   patchList(list, active, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintRecent(list, recent, ui, "inbox");
 }
@@ -703,7 +701,7 @@ async function unwatchTask(entry) {
     },
     call: async () => {
       const answer = await verbCall(entry, "stop watching this task")("tasks.unwatch", { task_id: entry.taskId });
-      unwatched.set(entry.key, Date.parse(answer?.task?.updated_at || "") || entry.anchorMs);
+      unwatched.set(entry.key, Date.parse(answer?.task?.updated_at || "") || entry.updatedMs);
     },
     failureSummary: `Couldn't stop watching ${entry.name}`,
   });

@@ -1,9 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 const call = vi.fn();
+const route = vi.fn();
 const capture = vi.fn();
 const merge = vi.fn();
-vi.mock("../src/core/inboxDevices.js", () => ({ verbCall: () => call }));
+vi.mock("../src/core/inboxDevices.js", () => ({ verbCall: (row) => { route(row); return call; } }));
 vi.mock("../src/core/deviceContexts.js", () => ({ homeContext: () => ({ deviceId: "dev-1" }) }));
 vi.mock("../src/core/localCache.js", () => ({
   captureCachedRecord: (...args) => capture(...args),
@@ -14,6 +15,7 @@ const { indexRowsByEntity, markSeen } = await import("../src/core/inboxSeen.js")
 
 beforeEach(() => {
   call.mockReset();
+  route.mockReset();
   capture.mockReset().mockResolvedValue(null);
   merge.mockReset();
   indexRowsByEntity([]);
@@ -53,4 +55,20 @@ it("keeps a confirmed cursor confirmed when the roster refresh fails", async () 
   capture.mockResolvedValue({ value: { run_id: "run-1" }, written: "before-pull" });
   call.mockResolvedValueOnce({ ok: true }).mockRejectedValueOnce(new Error("read failed"));
   await expect(markSeen("run-1", "agent-1", 11, 12)).resolves.toBe(true);
+});
+
+it("uses a chat's explicit device before the inbox has indexed its row", async () => {
+  call.mockResolvedValue({ ok: true });
+  await markSeen("run-1", "agent-1", 11, 12, "thread-1", "dev-2");
+  expect(route).toHaveBeenCalledWith({ deviceId: "dev-2" });
+});
+
+it("does not overwrite a roster from another thread generation", async () => {
+  const before = { run_id: "run-1", agents: [{ id: "agent-1", thread_id: "old", unread_count: 2 }] };
+  const after = { run_id: "run-1", agents: [{ id: "agent-1", thread_id: "new", unread_count: 0 }] };
+  capture.mockResolvedValue({ value: before, written: "before-pull" });
+  call.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ runs: [after] });
+  await markSeen("run-1", "agent-1", 11, 12);
+  const [, , replace] = merge.mock.calls[0];
+  expect(replace(before)).toBeNull();
 });

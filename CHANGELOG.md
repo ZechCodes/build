@@ -66,6 +66,11 @@ Wire 3.18.0.
 
 ### Fixed
 
+- Read marks publish the conversation owner's updated badge state. Chat read
+  reports survive transient failures with bounded backoff and work when a
+  cached unread count lags behind the transcript; older bridges get a conditional
+  roster refresh after a successful read (#473).
+
 - Chat message ages update live and on return to the foreground without moving
   rows; refresh pauses while chat is hidden or Agents overview is open (#467).
 - Recognize Claude's saved API key using its config precedence, and treat blank

@@ -81,6 +81,7 @@ import { composerGaugeHtml, composerHtml, mountComposerModelMenu } from "./compo
 import { mountContextGauge } from "./contextGauge.js";
 import { catalogForProvider, creatableCatalog, creationModelId, effortLevels, effortSupported, matchCatalogModel, modelParams } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
+import { createChatReadReporter, hasReadProgress } from "./chatReadReporter.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { notifyError } from "./notify.js";
 import { deviceFeedView } from "./deviceContexts.js";
@@ -1149,8 +1150,7 @@ function mountRailOnContext(host, context, swap) {
     unreadMarker?.leave();
     unreadFrom = null;
   };
-  let reportedRead = 0; // how far this panel has told the daemon it read
-  let reportedFloor = null; // and how much of the conversation it held saying so
+  let readReporter = createChatReadReporter();
   let paintedChat = null; // what the timeline in the panel was drawn from
   let paintedChatContent = null; // drawn rows, including same-cursor edits
   let paintedChatItemCount = 0;
@@ -2695,8 +2695,7 @@ function mountRailOnContext(host, context, swap) {
         if (standing()) paintChat();
       }));
       unreadMarker = unreadMarkers.get(runsFor);
-      reportedRead = 0;
-      reportedFloor = null;
+      readReporter = createChatReadReporter();
       timelineSlice.reset();
     }
     return activityRuns;
@@ -3508,26 +3507,16 @@ function mountRailOnContext(host, context, swap) {
     // level hides can carry the line past something they have yet to read.
     const read = readThroughHiddenItems(readThroughSequence(body), threadItems(thread), detailLevel());
     unreadFrom = unreadLineFor(thread, read);
-    if (!agent || !agent.unread_count) return;
+    if (!hasReadProgress(agent, read)) return;
     const controller = controllerForAgent(agent);
     if (!controller.identity.entityId || !controller.identity.agentId) return;
     // The floor is where what the reader was shown starts: the top of the drawn
     // slice when it cuts the window, else the window's own.
     const floor = timelineSlice.drawnFloor() ?? threadCache.windowFloorSequence();
-    if (!readingIsNews(read, floor)) return;
-    reportedRead = read;
-    reportedFloor = floor;
-    markSeen(controller.identity.entityId, controller.identity.agentId, floor, read, controller.identity.threadId).then(refreshFeed);
+    void readReporter.report(read, floor, () => markSeen(
+      controller.identity.entityId, controller.identity.agentId, floor, read, controller.identity.threadId, cacheScope?.deviceId,
+    )).then((seen) => { if (seen) void refreshFeed().catch(() => null); });
   };
-
-  /// Whether a read report says anything the last one did not.
-  ///
-  /// Two things can make it news. The reader got further down the conversation,
-  /// which is the ordinary case. Or the window they hold reaches further back —
-  /// a report the daemon dropped because it could not vouch for the history
-  /// under the floor is worth making again once that history has landed.
-  const readingIsNews = (read, floor) =>
-    read > reportedRead || (typeof floor === "number" && floor < (reportedFloor ?? Infinity));
 
   // ---- sending --------------------------------------------------------------
 

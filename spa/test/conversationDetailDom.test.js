@@ -644,6 +644,26 @@ describe("live conversation timestamps", () => {
     expect(messageTime()).toBe(time);
   });
 
+  it("restarts the clock when returning from a remembered terminal view", async () => {
+    await mountWorkspaceRail();
+    panel().querySelector(".rail-tui").click();
+    await flush();
+    rail.dispose();
+    rail = null;
+    await mountWorkspaceRail();
+    expect(panel().querySelector(".rail-tui").getAttribute("aria-pressed")).toBe("true");
+
+    panel().querySelector(".rail-tui").click();
+    await flush();
+    const time = messageTime();
+    expect(time.textContent).toBe("Just now");
+
+    vi.advanceTimersByTime(2 * 60_000);
+
+    expect(time.textContent).toBe("2 minutes ago");
+    expect(messageTime()).toBe(time);
+  });
+
   it("stops its timer and foreground listeners when the rail is disposed", async () => {
     const timersBeforeMount = vi.getTimerCount();
     await mountWorkspaceRail();

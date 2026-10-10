@@ -1202,10 +1202,14 @@ describe("the conversation panel unpinned", () => {
     // The same notch the away inbox wears, so the two popovers read as one
     // vocabulary rather than two.
     const inbox = cssRules().find((rule) => rule.selector.includes("#inbox-rail::before"));
-    for (const property of ["transform", "width", "height"]) {
+    for (const property of ["width", "height"]) {
       expect([property, declaration(notch.body, property)])
         .toEqual([property, declaration(inbox.body, property)]);
     }
+    // The inbox centres its caret with a translation; both keep the same
+    // diamond rotation regardless of how their anchors position them.
+    expect(declaration(notch.body, "transform").match(/rotate\([^)]+\)/)[0])
+      .toEqual(declaration(inbox.body, "transform").match(/rotate\([^)]+\)/)[0]);
   });
 });
 

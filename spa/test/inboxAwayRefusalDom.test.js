@@ -56,7 +56,7 @@ const workspace = {
   finish_blockers: [],
   directories: [{ id: "api", source_id: "src-1", is_git: true }],
 };
-const watchedTask = task({ id: "task-7", number: 7, title: "Wire 1.22", watched: true, status: "in_review", updated_at: "2026-09-24T01:00:00Z" });
+const watchedTask = task({ id: "task-7", number: 7, title: "Wire 1.22", watched: true, status: "in_review", updated_at: new Date().toISOString() });
 
 let modules;
 /** The bridge: greets, and answers every verb — so a verb that reached it would

@@ -246,15 +246,16 @@ function withDeviceNames(rows) {
   return rows.map((row) => ({ ...row, deviceName: names.get(row.projectKey) || null }));
 }
 
-/** The inbox face's flat durable workspace list. */
+/** The inbox face's flat list of every row kind. */
 function drawWorkspaceList(list, shown) {
   entries = shown;
   const ui = rowUi(true);
   paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
   list.querySelector(":scope > .inbox-unsorted")?.remove();
   list.querySelector(":scope > .inbox-projects")?.remove();
-  const active = shown.filter((entry) => !workspaceIsRecent(entry));
-  const recent = shown.filter((entry) => workspaceIsRecent(entry));
+  const nowMs = Date.now();
+  const active = shown.filter((entry) => !workspaceIsRecent(entry, nowMs));
+  const recent = shown.filter((entry) => workspaceIsRecent(entry, nowMs));
   patchList(list, active, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintRecent(list, recent, ui, "inbox");
 }

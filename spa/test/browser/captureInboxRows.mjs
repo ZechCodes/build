@@ -1,6 +1,6 @@
-// Capture the review images for #103 with the production inbox rail: the
+// Capture the review images for #103 and #481 with the production inbox rail: the
 // workspace row's running count and status dot, the project agent's row, and
-// the projects face's head expanded and folded.
+// tasks interleaved by anchor on desktop and phone, plus project heads.
 // Run from spa/: node test/browser/captureInboxRows.mjs (CAPTURE_DIR to redirect)
 import { mkdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -24,6 +24,7 @@ await withLayoutPage(async ({ page, basePath }) => {
     inbox: "src/core/inboxShell.js",
     view: "src/core/inboxView.js",
     contexts: "src/core/deviceContexts.js",
+    tracker: "src/core/trackerCache.js",
   }, basePath);
   await page.evaluate(async ({ device }) => {
     const { App } = window.__layoutModules.app;
@@ -68,6 +69,18 @@ await withLayoutPage(async ({ page, basePath }) => {
     await writeCached({ deviceId: device, entityId: "", kind: "feed" },
       { items: [inboxRun, railRun, projectRun], runs: [inboxRun, railRun, projectRun],
         projects: [project], workspaces: [ready, busy] });
+    const task = (id, number, title, age, over = {}) => ({ id, number, title,
+      project_id: project.id, state: "open", status: "in_progress", watched: true,
+      assignee: null, unread_count: 0, created_at: new Date(minutes(age)).toISOString(),
+      updated_at: new Date(minutes(2)).toISOString(), ...over });
+    const tasks = [
+      task("row-order", 481, "One order for every row", 70, { assignee: { kind: "user" } }),
+      task("watched-tasks", 475, "Follow watched tasks", 50),
+      task("quiet-task", 470, "Older watched task", 3000, { updated_at: new Date(minutes(2000)).toISOString() }),
+    ];
+    const { writeTasksRecord, tasksRecord, writeTaskRecord } = window.__layoutModules.tracker;
+    await writeTasksRecord(device, project.id, tasksRecord(tasks, []));
+    for (const task of tasks) await writeTaskRecord(device, project.id, task.id, { task, timeline: [] });
     // A paired machine that is answering, so the rows paint as they do day
     // to day rather than greyed as away.
     window.__layoutModules.contexts.adoptDeviceSession({ deviceId: device, call: async () => ({}),
@@ -77,14 +90,15 @@ await withLayoutPage(async ({ page, basePath }) => {
   }, { device: DEVICE });
 
   const rowKeys = () => page.$$eval("#inbox-list .inbox-entry", (rows) => rows.map((row) => row.dataset.key));
-  await page.waitForFunction(() => document.querySelectorAll("#inbox-list .inbox-entry").length === 3);
+  await page.waitForFunction(() => document.querySelectorAll("#inbox-list > .inbox-entry").length === 5);
   const keys = await rowKeys();
-  const expected = [`workspace:${DEVICE}/inbox-rows`, `project-agent:${PROJECT_KEY}`, `workspace:${DEVICE}/rail-overview`];
+  const expected = [`workspace:${DEVICE}/inbox-rows`, "tracker_task:row-order", `project-agent:${PROJECT_KEY}`,
+    "tracker_task:watched-tasks", `workspace:${DEVICE}/rail-overview`];
   if (JSON.stringify(keys) !== JSON.stringify(expected)) throw new Error(`Unexpected inbox rows: ${keys.join(", ")}`);
   const row = (key) => page.locator(`#inbox-list .inbox-entry[data-key="${key}"]`);
   await page.locator("#inbox-rail").screenshot({ path: `${directory}inbox-face.png` });
   await row(expected[0]).screenshot({ path: `${directory}workspace-row.png` });
-  await row(expected[1]).screenshot({ path: `${directory}project-agent-row.png` });
+  await row(expected[2]).screenshot({ path: `${directory}project-agent-row.png` });
 
   await page.evaluate(() => window.__layoutModules.view.setInboxView("projects"));
   const head = page.locator(`#inbox-list .inbox-project[data-project="${PROJECT_KEY}"] > .inbox-project-head`);
@@ -109,4 +123,8 @@ await withLayoutPage(async ({ page, basePath }) => {
   await page.mouse.move(0, 0);
   await page.locator("#inbox-rail").screenshot({ path: `${directory}projects-face-collapsed.png` });
   await head.screenshot({ path: `${directory}projects-head-collapsed.png` });
+  await page.evaluate(() => window.__layoutModules.view.setInboxView("inbox"));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => document.body.classList.add("inbox-collapsed", "inbox-popover-open"));
+  await page.locator("#inbox-rail").screenshot({ path: `${directory}inbox-face-phone.png` });
 }, { width: 1280, height: 520 });

@@ -190,22 +190,37 @@ function restoreReadingAnchor(scroller, held) {
 /// The one time the line is the landing spot is when the panel OPENS: the
 /// reader came for the first thing they have not read, not the last thing
 /// said, and reading a burst starts at its beginning. `unreadSelector` names
-/// the line (core/thread.js rules it); without one the end of the conversation
-/// is the only place to land.
+/// the line (core/thread.js rules it). Without one, `fallbackToStart` keeps a
+/// pending unread opening at the start; a settled read tail lands at the end.
 ///
 /// `olderItemsPrepended` says this paint grew the timeline at the TOP — a page
 /// of history the reader asked for by scrolling back past the start of the
 /// window. Everything they were reading has moved down by the height of what
 /// arrived, so keeping their scrollTop would keep the pixel and lose the
 /// message, jumping them a page further back on every load.
-export function followConversation({ olderItemsPrepended = false, unreadSelector = null } = {}) {
+const keepPrependedHistory = (prepended, held) => prepended && !held.opening;
+
+function landConversation(scroller, landing, canLand, onLand) {
+  if (!canLand()) return;
+  writeScrollTop(scroller, landing(scroller));
+  const landedTop = scroller.scrollTop;
+  const hasFrame = typeof requestAnimationFrame === "function";
+  onLand(!hasFrame);
+  if (hasFrame) requestAnimationFrame(() => {
+    if (!canLand() || readerIsMoving(scroller) || Math.abs(scroller.scrollTop - landedTop) >= 1) return;
+    writeScrollTop(scroller, landing(scroller));
+    onLand(true);
+  });
+}
+
+export function followConversation({ olderItemsPrepended = false, unreadSelector = null, canLand = () => true, onLand = () => {}, fallbackToStart = false } = {}) {
   /// The scrollTop that puts the top of the unread line at the top of the
-  /// viewport, or the end of the conversation when there is no line to land on.
+  /// viewport, or the caller's fallback when there is no line to land on.
   /// Never past the end: a line in the last screenful cannot reach the top, and
   /// asking for more than there is would only show the end anyway.
   const landing = (scroller) => {
     const line = unreadSelector && scroller.querySelector(unreadSelector);
-    if (!line) return scroller.scrollHeight;
+    if (!line) return fallbackToStart ? 0 : scroller.scrollHeight;
     const above = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
     const wanted = scroller.scrollTop + above - LINE_HEADROOM_PX;
     return Math.max(0, Math.min(wanted, scroller.scrollHeight - scroller.clientHeight));
@@ -220,7 +235,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
     }),
     restore: (scroller, held, changed) => {
       if (!held.opening && !changed) return;
-      if (olderItemsPrepended) {
+      if (keepPrependedHistory(olderItemsPrepended, held)) {
         writeScrollTop(scroller, held.scrollTop + (scroller.scrollHeight - held.scrollHeight));
         return;
       }
@@ -231,11 +246,7 @@ export function followConversation({ olderItemsPrepended = false, unreadSelector
         else writeScrollTop(scroller, held.scrollTop);
         return;
       }
-      const land = () => {
-        writeScrollTop(scroller, landing(scroller));
-      };
-      land();
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(land);
+      landConversation(scroller, landing, canLand, onLand);
     },
   };
 }

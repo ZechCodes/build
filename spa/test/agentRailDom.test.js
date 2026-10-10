@@ -25,6 +25,7 @@ let chatRepository = null;
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
+const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
@@ -256,6 +257,10 @@ const pushRow = async (row = payload) => {
 
 beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
+  // A standing panel has a viewport; jsdom otherwise measures it as hidden.
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", {
+    configurable: true, get() { return this.id === "rail-body" ? 300 : 0; },
+  });
   HTMLElement.prototype.scrollTo = vi.fn();
   localStorage.clear();
   resetAgentRailMemory();
@@ -264,6 +269,7 @@ beforeEach(async () => {
   await wipeCache();
   await wipeUiRecords();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.stubGlobal("requestAnimationFrame", (callback) => setTimeout(() => callback(performance.now()), 0));
   calls = [];
   payload = branchRow();
   painters.length = 0;
@@ -295,6 +301,9 @@ afterEach(async () => {
   chatRepository?.dispose();
   chatRepository = null;
   vi.useRealTimers();
+  vi.unstubAllGlobals();
+  if (originalClientHeight) Object.defineProperty(HTMLElement.prototype, "clientHeight", originalClientHeight);
+  else delete HTMLElement.prototype.clientHeight;
   // Posting queues record merges without awaiting disk. Let this fixture's
   // writes finish before the next one clears the shared IndexedDB; otherwise
   // an old write can land after that clear and look like a duplicate message.
@@ -563,7 +572,7 @@ describe("the unpinned panel's popover", () => {
 
   it("does not report reading from the retained panel while it is collapsed", async () => {
     payload = branchRow({
-      agents: [agent({ unread_count: 2 })],
+      agents: [agent({ unread_count: 2, read_through_sequence: 0 })],
       run: { run_id: "run-3", thread: { items: [
         { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
         { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
@@ -578,7 +587,7 @@ describe("the unpinned panel's popover", () => {
     markSeen.mockClear();
 
     payload = branchRow({
-      agents: [agent({ unread_count: 3 })],
+      agents: [agent({ unread_count: 3, read_through_sequence: 0 })],
       run: { run_id: "run-3", thread: { items: [
         { id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "one" } },
         { id: "m-2", type: "message", data: { sequence: 2, role: "agent", body: "two" } },
@@ -593,7 +602,7 @@ describe("the unpinned panel's popover", () => {
     bubbles()[0].click();
     await flush();
     expect(history.textContent).toContain("three");
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("takes its listeners with it when the rail goes", async () => {
@@ -3033,7 +3042,7 @@ describe("the conversation panel", () => {
 
   it("tells the daemon how far down an agent's conversation it has read", async () => {
     payload = branchRow({
-      agents: [agent({ unread_count: 2, unread_reason: "done" })],
+      agents: [agent({ unread_count: 2, unread_reason: "done", read_through_sequence: 0 })],
       run: {
         run_id: "run-3",
         thread: {
@@ -3049,7 +3058,7 @@ describe("the conversation panel", () => {
     // The floor is the oldest message the panel holds, and 12 is the newest its
     // viewport reached — which over a conversation that arrived whole is all of
     // it.
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1"), { timeout: 6000 });
   });
 
   // A desktop left showing a chat overnight: visible, nobody at it. A mark
@@ -3106,13 +3115,14 @@ describe("the conversation panel", () => {
   it("reports visible messages ahead of the cursor even when the roster still says zero unread", async () => {
     conversationReadThrough(11, 0);
     await mount();
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("retries a failed read report when the reader returns to the same viewport", async () => {
     conversationReadThrough(11, 1);
     markSeen.mockResolvedValue(false);
     await mount();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
     const attempts = markSeen.mock.calls.length;
     expect(attempts).toBeGreaterThan(0);
     markSeen.mockResolvedValue(true);
@@ -3133,6 +3143,7 @@ describe("the conversation panel", () => {
     markSeen.mockResolvedValue(false);
     try {
       await mount();
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
       const attempts = markSeen.mock.calls.length;
       for (let i = 0; i < 5; i++) {
         railHost().querySelector("#rail-body").onscroll();
@@ -3158,6 +3169,7 @@ describe("the conversation panel", () => {
     let finish;
     markSeen.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     await mount();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
     railHost().querySelector("#rail-body").onscroll();
     window.dispatchEvent(new Event("focus"));
     await flush();
@@ -3185,6 +3197,7 @@ describe("the conversation panel", () => {
     });
     try {
       await mount();
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
     } finally {
       geometry.mockRestore();
     }
@@ -3200,6 +3213,7 @@ describe("the conversation panel", () => {
   it("clears New when leaving mid-grace, including with a stale digest on reopening", async () => {
     conversationReadThrough(11, 1);
     await mount();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
     expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     bubbles()[0].click();
     await flush();
@@ -3363,24 +3377,24 @@ describe("reading back past the top of a paged conversation", () => {
   // where that window starts and the daemon keeps the badge up for a message
   // waiting below it.
   it("reports how much of the conversation it holds when it reports it read", async () => {
-    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: 97 })]);
     await mount();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("moves the floor it reports down as the reader scrolls back", async () => {
     // A report the daemon dropped for history it could not vouch for is worth
     // making again once that history has landed, so a window reaching further
     // back is news even when the reader got no further down.
-    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: 97 })]);
     await mount();
     markSeen.mockClear();
 
     railBody().dispatchEvent(new Event("scroll"));
     await flush();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {
@@ -6359,6 +6373,7 @@ describe("a long conversation held in the cache", () => {
     heldConversation(false, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: HELD - 1 })]);
     await mount();
 
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
     const [[, , floor]] = markSeen.mock.calls;
     expect(floor).toBe(drawnSequences()[0]);
   });
@@ -6552,7 +6567,7 @@ describe("review158 independent ownership cases", () => {
 // necessary." The link names the agent; the shell stands the rail on it with
 // `landOnLatest` (core/shell.js). A rail left collapsed comes up with the panel
 // out on that agent, at the message the notification was about — the latest —
-// rather than at the unread line a press would land on.
+// on the unread line, just like a bubble press.
 describe("a conversation opened by a notification's link", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const HEIGHT = 2400;
@@ -6573,6 +6588,11 @@ describe("a conversation opened by a notification's link", () => {
     });
     const body = (element) => element.id === "rail-body";
     geometry = [
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+        if (this.id === "rail-body") return { top: 0, bottom: 300 };
+        const offset = this.matches(".thread-unread-line") ? 800 : 0;
+        return { top: offset - (this.closest("#rail-body")?.scrollTop || 0), bottom: 0 };
+      }),
       vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return body(this) ? HEIGHT : 0; }),
       vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return body(this) ? 300 : 0; }),
     ];
@@ -6585,7 +6605,7 @@ describe("a conversation opened by a notification's link", () => {
 
   const scroller = () => railHost().querySelector("#rail-body");
 
-  it("opens a collapsed rail on the agent it names, scrolled to the latest message", async () => {
+  it("opens a collapsed rail on the agent it names, scrolled to the unread line", async () => {
     await mount();
     expect(panel()).toBeNull();
     rail.dispose();
@@ -6598,7 +6618,7 @@ describe("a conversation opened by a notification's link", () => {
       expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     });
     expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').classList.contains("active")).toBe(true);
-    expect(scroller().scrollTop).toBe(HEIGHT);
+    expect(scroller().scrollTop).toBe(788);
   });
 
   it("moves off the agent the rail was open on", async () => {
@@ -6609,10 +6629,10 @@ describe("a conversation opened by a notification's link", () => {
     await mount({ openAgentId: "ag-1", landOnLatest: true });
     await vi.waitFor(() => expect(panel().textContent).toContain("the latest, which the push was about"));
     expect(headWho()).toBe(TOPICS["ag-1"]);
-    expect(scroller().scrollTop).toBe(HEIGHT);
+    expect(scroller().scrollTop).toBe(788);
   });
 
-  it("lands at the latest message on a workspace's rail, the project's agent beside it", async () => {
+  it("lands at the unread line on a workspace's rail, the project's agent beside it", async () => {
     payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-3", project_id: "p1",
       agents: [agent({ unread_count: 2, unread_reason: "agent_message", read_through_sequence: 11 })],
       run: payload.run };
@@ -6629,7 +6649,240 @@ describe("a conversation opened by a notification's link", () => {
       expect(panel()?.textContent).toContain("the latest, which the push was about");
       expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     });
-    expect(scroller().scrollTop).toBe(HEIGHT);
+    expect(scroller().scrollTop).toBe(788);
+  });
+});
+
+
+describe("every chat opening lands before reporting read (#472)", () => {
+  const scroller = () => railHost().querySelector("#rail-body");
+  const transcript = () => ({ items: Array.from({ length: 5 }, (_, i) => ({
+    type: "message", data: { sequence: 10 + i, role: "agent", body: `message ${10 + i}` },
+  })), has_more: false });
+  const unreadAgent = (over = {}) => agent({ read_through_sequence: 11, unread_count: 3, ...over });
+  let geometry;
+  let frames;
+  let viewportHeight;
+  beforeEach(() => {
+    frames = [];
+    viewportHeight = 300;
+    vi.stubGlobal("requestAnimationFrame", (callback) => { frames.push(callback); return frames.length; });
+    geometry = [
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 2020 : 0; }),
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? viewportHeight : 0; }),
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+        const body = this.closest("#rail-body");
+        if (!body || this === body) return { top: 0, bottom: viewportHeight };
+        const line = this.closest(".thread-unread-line");
+        const sequence = Number(this.closest("[data-sequence]")?.dataset.sequence);
+        const unreadSequence = Number(body.querySelector(".thread-unread-line")?.nextElementSibling?.dataset.sequence || Infinity);
+        const offset = line ? (unreadSequence - 10) * 400 : (sequence - 10) * 400 + (sequence >= unreadSequence ? 20 : 0);
+        return { top: offset - body.scrollTop, bottom: offset + (line ? 20 : 400) - body.scrollTop };
+      }),
+    ];
+  });
+  afterEach(() => {
+    geometry.forEach((spy) => spy.mockRestore());
+    vi.unstubAllGlobals();
+  });
+
+  const expectLandedAndReported = async () => {
+    await vi.waitFor(() => expect(scroller()?.scrollTop).toBe(788));
+    expect(markSeen).not.toHaveBeenCalled();
+    while (frames.length) frames.shift()();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled());
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(11);
+    expect(markSeen.mock.calls.every((call) => call[3] <= 11)).toBe(true);
+  };
+
+  const messageRange = (from, through) => Array.from({ length: through - from + 1 }, (_, i) => ({
+    type: "message", data: { sequence: from + i, role: "agent", body: `message ${from + i}` },
+  }));
+  const openingOlderPages = () => callsTo("thread.page").filter(({ params }) => params.before_sequence === 10);
+  const openUnknownCursorWithPage = async (page = { items: messageRange(5, 9), has_more: false }) => {
+    viewportHeight = 500;
+    geometry[0].mockImplementation(function () {
+      return this.id === "rail-body" ? this.querySelectorAll(".thread-message").length * 400 : 0;
+    });
+    geometry[2].mockImplementation(function () {
+      const body = this.closest("#rail-body");
+      if (!body || this === body) return { top: 0, bottom: viewportHeight };
+      const sequence = Number(this.closest("[data-sequence]")?.dataset.sequence);
+      const floor = Number(body.querySelector(".thread-message")?.dataset.sequence);
+      const offset = (sequence - floor) * 400;
+      return { top: offset - body.scrollTop, bottom: offset + 400 - body.scrollTop };
+    });
+    payload = branchRow({ agents: [agent({ unread_count: 10 }), agent({ id: "ag-2", ordinal: 2 })] });
+    await writeRailThread("run-3", "ag-2", { items: messageRange(30, 34), has_more: false });
+    await writeRailThread("run-3", "ag-1", { items: messageRange(10, 14), has_more: true });
+    const original = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "thread.page" || params.before_sequence !== 10) return original(method, params);
+      calls.push({ method, params });
+      return page;
+    });
+    await mount({ openAgentId: "ag-2" });
+    while (frames.length) frames.shift()();
+    markSeen.mockClear(); // #473 also reports the previously open, zero-unread chat.
+    scroller().scrollTop = 1200;
+    bubbles()[0].click();
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("10"));
+    while (frames.length) frames.shift()();
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen).not.toHaveBeenCalled();
+    // Browsers emit scroll after the opening writes zero; no reader input
+    // has taken over this visit when that event requests the older page.
+    scroller().dispatchEvent(new Event("scroll"));
+    await vi.waitFor(() => expect(openingOlderPages()).toHaveLength(1));
+  };
+
+  it("lands a reload/first paint after the cached transcript fills its empty frame, then reports", async () => {
+    payload = branchRow({ agents: [unreadAgent()] });
+    await mount();
+    markSeen.mockClear();
+    await writeRailThread("run-3", "ag-1", transcript());
+    await expectLandedAndReported();
+  });
+
+  it("lands chat switches from the previous bottom or history, then reports", async () => {
+    payload = branchRow({ agents: [unreadAgent(), unreadAgent({ id: "ag-2", ordinal: 2 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await writeRailThread("run-3", "ag-2", transcript());
+    await mount();
+    for (const [index, previousTop] of [[1, 1720], [0, 100]]) {
+      scroller().scrollTop = previousTop;
+      markSeen.mockClear();
+      bubbles()[index].click();
+      await expectLandedAndReported();
+    }
+  });
+
+  it("lands a workspace switch after its transcript arrives, then reports", async () => {
+    await mount();
+    rail.dispose();
+    payload = { kind: "workspace", workspace_id: "ws-next", entity_id: "run-next", project_id: "p1", agents: [unreadAgent({ id: "ag-next" })] };
+    await writeRailBoard({ workspaces: [{ id: "ws-next", project_id: "p1", entity_id: "run-next" }], items: [payload] });
+    await mount({ kind: "workspace", workspaceId: "ws-next", openAgentId: "ag-next" });
+    markSeen.mockClear();
+    await writeRailThread("run-next", "ag-next", transcript());
+    await vi.waitFor(() => expect(scroller()?.textContent).toContain("message 14"));
+    await vi.waitFor(() => expect(scroller()?.querySelector(".thread-unread-line")).toBeTruthy());
+    await expectLandedAndReported();
+  });
+
+  it("lands a notification link on New, then reports", async () => {
+    payload = branchRow({ agents: [unreadAgent()] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount({ openAgentId: "ag-1", landOnLatest: true });
+    await expectLandedAndReported();
+  });
+
+  it("relands when the roster supplies the delayed cursor", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    expect(markSeen).not.toHaveBeenCalled();
+    await pushRow(branchRow({ agents: [unreadAgent()] }));
+    await expectLandedAndReported();
+  });
+
+
+  it("opens an unknown cursor at the oldest cached message, including above the default slice", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 70 })] });
+    const items = Array.from({ length: 70 }, (_, i) => ({
+      type: "message", data: { sequence: 10 + i, role: "agent", body: `message ${10 + i}` },
+    }));
+    await writeRailThread("run-3", "ag-1", { items, has_more: false });
+    await mount();
+    while (frames.length) frames.shift()();
+    expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("10");
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen).not.toHaveBeenCalled();
+  });
+
+  it("releases the read wait after 5 seconds without reporting past the unknown-cursor viewport", async () => {
+    viewportHeight = 500; // Only message 10 fits completely; 11–14 have not been read.
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    while (frames.length) frames.shift()();
+    expect(markSeen).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(10);
+    expect(markSeen.mock.calls.every((call) => call[3] <= 10)).toBe(true);
+  });
+
+  it("relands an unknown cursor on an automatic older page before timeout reporting", async () => {
+    await openUnknownCursorWithPage();
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("5"));
+    while (frames.length) frames.shift()();
+    expect(markSeen).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(5);
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen.mock.calls.every((call) => call[3] <= 5)).toBe(true);
+  }, 15000);
+
+  it("keeps the reader's visible message when an unknown-cursor older page arrives", async () => {
+    let releasePage;
+    const page = new Promise((resolve) => { releasePage = resolve; });
+    await openUnknownCursorWithPage(page);
+    scroller().dispatchEvent(new WheelEvent("wheel"));
+    scroller().scrollTop = 850;
+    scroller().dispatchEvent(new Event("scroll"));
+    const heldOffset = scroller().querySelector('.thread-message[data-sequence="12"]').getBoundingClientRect().top;
+    releasePage({ items: messageRange(5, 9), has_more: false });
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("5"));
+    while (frames.length) frames.shift()();
+    expect(scroller().querySelector('.thread-message[data-sequence="12"]').getBoundingClientRect().top).toBe(heldOffset);
+    expect(scroller().scrollTop).toBe(2850);
+    expect(openingOlderPages()).toHaveLength(1);
+  });
+
+  it("loads back from a partial unread window and moves the line to its actual first unread message", async () => {
+    payload = branchRow({ agents: [agent({ read_through_sequence: 10, unread_count: 4 })] });
+    const partial = { ...transcript(), items: transcript().items.slice(2), has_more: true };
+    await writeRailThread("run-3", "ag-1", partial);
+    const original = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return { items: transcript().items.slice(0, 2), has_more: false };
+    });
+    await mount();
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-unread-line").nextElementSibling.dataset.sequence).toBe("11"));
+    while (frames.length) frames.shift()();
+    expect(scroller().scrollTop).toBe(388);
+    expect(markSeen).toHaveBeenCalled();
+  });
+
+  it("preserves a reader's scroll when the divider arrives late", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    scroller().dispatchEvent(new WheelEvent("wheel"));
+    scroller().scrollTop = 100;
+    scroller().dispatchEvent(new Event("scroll"));
+    await pushRow(branchRow({ agents: [unreadAgent()] }));
+    expect(scroller().scrollTop).toBe(100);
+    expect(scroller().querySelector(".thread-unread-line")).toBeTruthy();
+  });
+
+  it("opens again on New when returning from the background", async () => {
+    payload = branchRow({ agents: [unreadAgent()] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    scroller().scrollTop = 100;
+    const hidden = vi.spyOn(document, "hidden", "get");
+    hidden.mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    markSeen.mockClear();
+    await expectLandedAndReported();
+    hidden.mockRestore();
   });
 });
 
@@ -6662,7 +6915,7 @@ it("re-reports the now-safe tail after returning from overview to the same conve
   try {
     await mount();
     expect(sequences()[0]).toBe(61);
-    expect(reports).toEqual([{ read: 120, floor: 61, hiddenBelow: true, cursor: 0 }]);
+    await vi.waitFor(() => expect(reports).toEqual([{ read: 120, floor: 61, hiddenBelow: true, cursor: 0 }]), { timeout: 6000 });
     viewportThrough = 60;
     railHost().querySelector(".thread-earlier").click();
     await flush();
@@ -6680,8 +6933,10 @@ it("re-reports the now-safe tail after returning from overview to the same conve
     expect(sequences().at(-1)).toBe(120);
     window.dispatchEvent(new Event("focus"));
     await flush();
-    expect.soft(reports).toHaveLength(3);
-    expect.soft(cursor).toBe(120);
+    await vi.waitFor(() => {
+      expect(reports).toHaveLength(3);
+      expect(cursor).toBe(120);
+    }, { timeout: 6000 });
   } finally {
     geometry.mockRestore();
   }

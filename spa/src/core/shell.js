@@ -125,7 +125,7 @@ const projectStanding = (route) =>
  * to converse with, and an empty strip is the honest answer. The bar, the
  * regions and the inbox rail are still there; only the bubbles are not.
  */
-export function shellPartsForRoute(route = {}, { fromNotification = false } = {}) {
+export function shellPartsForRoute(route = {}) {
   const parts = STANDING[route.name]?.(route);
   if (!parts) return null;
   const deviceId = route.deviceId || null;
@@ -134,13 +134,10 @@ export function shellPartsForRoute(route = {}, { fromNotification = false } = {}
     mintsProjectConversation: parts.mintsProjectConversation,
     // The agent a conversation link names (`?agent=…`, core/router.js): the
     // rail comes up standing on it, whichever kind of page it landed on.
-    // A notification's link opens the conversation at its latest message, not
-    // at the unread line: the notification just said what that message is.
-    // Every other link (a topic link, a reload, back/forward) lands on the
-    // unread line.
+    // Every opening, including notifications, starts at the unread line.
     rail: {
       ...parts.rail, deviceId, openAgentId: route.agent || null, addingAgent: route.newAgent === true,
-      landOnLatest: fromNotification && !!route.agent,
+      landOnLatest: false,
     },
     console: parts.console ? { ...parts.console, deviceId } : null,
   };

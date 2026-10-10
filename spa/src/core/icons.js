@@ -50,6 +50,7 @@ export { default as ICON_SCOPE_OUT } from "lucide-static/icons/arrow-up-right.sv
 export { default as ICON_REFRESH } from "lucide-static/icons/refresh-cw.svg?raw";
 export { default as ICON_HISTORY } from "lucide-static/icons/history.svg?raw";
 export { default as ICON_GIT_MERGE } from "lucide-static/icons/git-merge.svg?raw";
+export { default as ICON_GIT_PULL_REQUEST } from "lucide-static/icons/git-pull-request.svg?raw";
 export { default as ICON_FILE } from "lucide-static/icons/file.svg?raw";
 export { default as ICON_GIT_BRANCH } from "lucide-static/icons/git-branch.svg?raw";
 export { default as ICON_GIT_GRAPH } from "lucide-static/icons/git-graph.svg?raw";

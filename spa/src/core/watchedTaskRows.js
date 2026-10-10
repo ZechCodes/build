@@ -74,6 +74,7 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
     project: project.name || project.id,
     name: task.number ? `#${task.number} ${titleOf(task)}` : titleOf(task),
     title: titleOf(task),
+    reviewSummary: task.review_summary || null,
     // A Needs-you reason keeps the row, while running and unread are facts
     // about its assigned agent and task news, respectively.
     state: working ? "working" : unreadCount > 0 ? "unread" : "inactive",

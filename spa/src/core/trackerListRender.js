@@ -25,6 +25,7 @@ import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
 import { filtersAreSet } from "./trackerFilters.js";
 import { taskBubbleHtml } from "./taskUnread.js";
+import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
 import {
   ageHtml,
   assignPressLabel,
@@ -57,6 +58,7 @@ const factsHtml = (task, columns, nowMs, reading) =>
     // on a closed task is where it stopped, not where it is.
     closedChipHtml(task.state),
     statusChipHtml(columns, task.status, reviewerWords(task, reading)),
+    taskReviewSummaryHtml(task.review_summary),
     ageHtml(task.updated_at, nowMs),
     rowLabelsHtml(task.labels),
   ]

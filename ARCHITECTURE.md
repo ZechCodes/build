@@ -932,10 +932,43 @@ replays Git; it finalizes recorded complete integration or preserves incomplete
 or uncertain work for explicit retry, excluding live merge workers.
 
 Explicit merge retries keep the saved completed or partially integrated plan
-and its recorded results. Running or interrupted work also keeps its recovery
-identity. If a failed plan integrated no source and has no uncertain Git work,
-the caller can confirm the current review version to admit a fresh plan after
-the review changes. Successful integration is retained rather than repeated.
+and its recorded results. RPC selection first matches the exact saved source
+vector, including target preconditions, snapshot and Push destinations. Only
+when no exact match exists does it match refreshed targets for the same snapshot,
+included directories and Push destinations. Selection is independent of the
+retrying actor, so a browser can resume an agent's intent, including older
+actor-hashed request IDs. Among equally exact vectors, intents with unsettled
+publication or running or uncertain Git work rank before settled intents. A
+previously failed intent whose publication has settled cannot hide another
+retained hold. A historical Interrupted Push stops ranking as pending only
+after a later success in that intent matches its source, snapshot, input head,
+destination and original Merge linkage. Its interrupted history row remains;
+earlier or foreign results do not settle it. Running and other unresolved work
+keep their recovery identity.
+
+For a partial plan with known outcomes, explicit confirmation of the current
+version and target tips refreshes admission under the merge lease and receiving
+and target ref locks. Only unresolved target preconditions and admission versions change;
+the request ID, original actor, saved heads, source identities, Push destinations
+and action results remain. Successful sources must remain integrated, and Git
+fences each remaining merge against its confirmed tip. Running or uncertain work
+cannot be refreshed. The SPA offers a separate preparation step with fixed Push
+choices; preparing the form never dispatches Git. Submission consumes prepared
+mode and durably saves the confirmed targets. Both saved retry controls retain
+those targets across reloads for the active latest plan; another explicit
+preparation permits new targets. Publication-only result retries use the intent's
+saved vector to address its original obligations.
+Each retry reads and saves the draft for the intent's own snapshot, preserving
+that snapshot's confirmed targets and choices. The clicked review version and
+plan remain fixed while the draft loads; a newer cached opinion or snapshot
+cannot silently advance the request's confirmation. Retrying another snapshot never
+changes the selected form's draft. The form accepts only submitted requests for
+its selected snapshot and ignores foreign submitted requests left by older
+clients; preparation also requires that the intent's snapshot is selected.
+Historical plans retain their publication-only recovery path without admitting
+a new merge. If a failed plan integrated no source and has no uncertain Git work,
+the caller can still confirm
+the current review version to admit a fresh plan after the review changes.
 
 Reclaim holds a workspace while a durable merge is running or publication of a
 recorded successful merge tip remains unsettled, even after the PR reaches Done
@@ -944,6 +977,12 @@ its build output. These checks run during measurement and again before removal.
 Settling publication releases only that hold; workspace locks and ordinary
 activity, task and Git eligibility checks still apply. Project history deletion
 refuses running merges before releasing any review pins.
+The SPA evaluates those retained results from cache: a later intent-owned Push
+with matching source, snapshot, tip, destination and Merge linkage settles an
+Interrupted Push without erasing its history. Known failed sources from that
+intent do not inherit the settled interruption. Running or unknown Git results
+and missing action records still prevent Reclaim; cached workspace locks continue
+to control the enabled state after publication settles.
 
 `bridge/src/reviews/` saves one task's workspace review as numbered snapshots.
 `capture.rs` reads every manifest directory, resolves each Git directory's

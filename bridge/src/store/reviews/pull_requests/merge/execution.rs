@@ -157,7 +157,7 @@ impl Store {
     }
 }
 
-fn require_intent(
+pub(super) fn require_intent(
     tx: &Transaction,
     intent: &ReviewMergeIntent,
 ) -> Result<ReviewMergeIntent, StoreError> {
@@ -170,7 +170,7 @@ fn require_intent(
     Ok(saved)
 }
 
-fn advance(
+pub(super) fn advance(
     tx: &Transaction,
     mut saved: ReviewMergeIntent,
 ) -> Result<ReviewMergeIntent, StoreError> {

@@ -1,4 +1,5 @@
 import reviewFixture from "../../../fixtures/api/v1/tasks.review.get.json" with { type: "json" };
+import pullRequestFixture from "../../../fixtures/api/v1/tasks.review.open.json" with { type: "json" };
 import { loadBrowserModules, mountLayout } from "./layoutHarness.mjs";
 import { mountChatMenu, settled } from "./chatMenuSeed.mjs";
 
@@ -18,6 +19,7 @@ export const SELECT_SOURCES = {
   "core/taskReviewActions.js": "task review",
   "core/taskReviewControls.js": "task review",
   "core/taskReviewFeedback.js": "task review",
+  "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewRender.js": "task review",
   "core/trackerAssigneeControl.js": "task controls",
   "core/trackerTaskRender.js": "task controls",
@@ -37,6 +39,7 @@ export const SELECT_SURFACES = [
   { name: "new project", selectors: ["#nrdevice"] },
   { name: "workspace review", selectors: ["[data-review-task]"] },
   { name: "task review", selectors: ["[data-review-snapshot]", "[data-review-workspace]", "[data-review-opinion]", "[data-review-merge-branch]", "[data-review-remote]"] },
+  { name: "PR merge", selectors: ["[data-pr-merge-remote]"] },
   { name: "new conversation", selectors: ["[data-new-agent-role]"] },
   { name: "clear conversation", selectors: ["[data-clear-detail]", "[data-clear-compact]"] },
 ];
@@ -58,6 +61,8 @@ const modules = {
   compose: "src/core/composeView.js", workspace: "src/sheets/workspaceSettings.js", newRepo: "src/sheets/newRepo.js",
   project: "src/sheets/projectSettings.js", reviewEntry: "src/core/workspaceReviewEntry.js", tracker: "src/core/trackerCache.js",
   review: "src/core/taskReviewPage.js", reviewSupport: "src/core/taskReviewSupport.js", reviewCache: "src/core/taskReviewCache.js",
+  reviewMerge: "src/core/taskReviewMerge.js",
+  reviewLifecycle: "src/core/taskReviewLifecycle.js",
 };
 
 async function loadSurfaceModules(page, basePath) {
@@ -67,7 +72,7 @@ async function loadSurfaceModules(page, basePath) {
   await loadBrowserModules(page, modules, basePath);
 }
 
-async function seedSelectSurface({ name, theme, catalog, device, project, settings, savedReview }) {
+async function seedSelectSurface({ name, theme, catalog, device, project, settings, savedReview, savedPullRequest }) {
   document.documentElement.dataset.theme = theme;
   const m = window.__layoutModules;
   const root = document.querySelector("#root");
@@ -139,6 +144,31 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     const review = m.review.mountTaskReviewPage(root, { ...scope, callRpc, workspaces: () => [{ id: "workspace-1", name: "Select styling" }], task: () => ({ id: "task-1" }) });
     disposers.push(review.dispose);
   }
+  if (name === "PR merge") {
+    const prScope = { ...scope, taskId: "task-pr-select" };
+    const prReview = { ...savedPullRequest, task_id: prScope.taskId };
+    const snapshot = prReview.snapshots[0];
+    prReview.destinations = prReview.bindings.map((binding) => ({
+      snapshot_id: snapshot.id, directory_id: binding.directory_id, source_path: binding.source_repository,
+      branches: ["main"], remotes: [{ name: "origin", branches: ["main"] }, { name: "backup", branches: ["release"] }],
+    }));
+    const sync = prReview.bindings.map((binding) => ({ directory_id: binding.directory_id,
+      health: "current", received_head: binding.last_received_head, target_head: "1".repeat(40) }));
+    await m.reviewSupport.rememberReviewSupport(device.id, { reviews: { ...support, pullRequests: true, merge: true, close: true } });
+    await m.reviewCache.writeReviewReply(prScope, { review: prReview, sync }, 1);
+    const record = (await m.cache.readCached(m.reviewCache.reviewAddress(prScope))).value;
+    const body = root.querySelector("#tabbody");
+    body.innerHTML = '<section class="task-review"><div data-review-controls></div><div data-review-git-actions></div></section>';
+    const options = {
+      ...prScope, snapshot: record.review.snapshots[0], review: record.review, record,
+      support: await m.reviewSupport.readReviewSupport(device.id),
+      repository: m.reviewCache.createTaskReviewRepository({ ...prScope, callRpc }),
+    };
+    const lifecycle = m.reviewLifecycle.mountTaskReviewLifecycle(body.querySelector('[data-review-controls]'), options);
+    const merge = m.reviewMerge.mountTaskReviewMerge(body.querySelector('[data-review-git-actions]'), options);
+    disposers.push(lifecycle.dispose, merge.dispose);
+    await Promise.all([lifecycle.ready, merge.ready]);
+  }
 }
 
 export async function mountSelectSurface(page, basePath, name, theme, { preserveDocument = false } = {}) {
@@ -157,16 +187,25 @@ export async function mountSelectSurface(page, basePath, name, theme, { preserve
     await settled(page);
     return;
   }
-  await mountLayout(page, '<div id="shell"><div id="view"><main id="root" class="surface"></main></div></div><div id="scrim" class="scrim"><div id="sheet" class="sheet"></div></div>', { basePath, preserveDocument, styles: '#root{padding:16px;overflow:auto} #view{min-width:0}' });
+  const markup = name === "PR merge"
+    ? '<div id="shell"><div id="view"><div id="view-body"><main id="root" class="surface"><div id="tabbody"></div></main></div></div></div>'
+    : '<div id="shell"><div id="view"><main id="root" class="surface"></main></div></div><div id="scrim" class="scrim"><div id="sheet" class="sheet"></div></div>';
+  await mountLayout(page, markup, { basePath, preserveDocument, styles: '#root{padding:16px;overflow:auto} #view{min-width:0}' });
   await page.route("**/api/devices", (route) => route.fulfill({ json: { devices: [device] } }));
   await page.route("**/app/downloads", (route) => route.fulfill({ status: 503, json: { detail: "Fixture downloads unavailable" } }));
   await loadSurfaceModules(page, basePath);
-  await page.evaluate(seedSelectSurface, { name, theme, catalog, device, project, settings, savedReview: reviewFixture.result.review });
+  await page.evaluate(seedSelectSurface, { name, theme, catalog, device, project, settings,
+    savedReview: reviewFixture.result.review, savedPullRequest: pullRequestFixture.result.review });
   if (name === "compose") {
     await page.locator("#compose-advanced").click();
     await page.locator('[data-agent-choice-toggle="compose-choice"]').click();
   }
   if (name === "workspace review") await page.locator("[data-workspace-review]").click();
+  if (name === "PR merge") {
+    await page.locator("[data-pr-merge-sheet] summary").click();
+    await page.locator('[data-pr-merge-push="dir-api"]').check();
+    await page.locator("[data-pr-merge-sheet] summary").click();
+  }
   for (const selector of SELECT_SURFACES.find((surface) => surface.name === name).selectors) {
     await page.waitForSelector(selector, { state: "attached", timeout: 5000 });
   }

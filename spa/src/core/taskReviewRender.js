@@ -1,16 +1,35 @@
 import { esc } from "./text.js";
 import { directoryTabsHtml } from "./workspaceDirectoryTabs.js";
+import { taskReviewStatusLabel } from "./taskReviewSummaryRender.js";
 
 export const reviewSnapshot = (review, id) => review?.snapshots.find((snapshot) => snapshot.id === id) || review?.snapshots.at(-1) || null;
 export const reviewDirectory = (snapshot, id) => snapshot?.directories.find((directory) => directory.id === id) || snapshot?.directories[0] || null;
 export const defaultReviewView = (directory) => directory?.status === "not_git" ? "files" : "changes";
 
 export function reviewHeadHtml(review, snapshot, support) {
-  const completion = review?.completion ? `<p class="task-review-completion">Completed: ${esc(review.completion.description)}</p>` : "";
-  const picker = snapshot ? `<label>Snapshot <select data-review-snapshot>${review.snapshots.map((row) =>
-    `<option value="${esc(row.id)}"${row.id === snapshot.id ? " selected" : ""}>${row.number} · ${esc(row.created_at)}</option>`).join("")}</select></label>` : "";
+  const picker = snapshot ? snapshotPickerHtml(review, snapshot) : "";
   const reviewer = snapshot ? '<button class="btn" data-review-reviewer>Choose reviewer</button>' : "";
-  return `<header class="task-review-head"><h2>Review</h2>${picker}${reviewer}${support.get ? '<button class="btn" data-review-refresh>Refresh</button>' : ""}</header>${completion}`;
+  const isPr = review?.mode === "pull_request";
+  const status = isPr ? reviewStatusHtml(review) : "";
+  const refresh = support.get && !isPr ? '<button class="btn" data-review-refresh>Refresh</button>' : "";
+  return `<header class="task-review-head"><h2>${isPr ? "Pull request" : "Review"}</h2>${status}${picker}${reviewer}${refresh}</header>${isPr ? reviewBranchesHtml(review, snapshot) : completionHtml(review)}`;
+}
+
+const completionHtml = (review) => review?.completion ? `<p class="task-review-completion">Completed: ${esc(review.completion.description)}</p>` : "";
+const reviewStatusHtml = (review) => `<span class="task-review-summary" data-review-pr-status="${esc(review.pull_request?.status)}">${esc(taskReviewStatusLabel(review.pull_request?.status))}</span>`;
+const snapshotPickerHtml = (review, snapshot) => `<label>Snapshot <select data-review-snapshot>${review.snapshots.map((row) =>
+  `<option value="${esc(row.id)}"${row.id === snapshot.id ? " selected" : ""}>${row.number} · ${esc(row.created_at)}</option>`).join("")}</select></label>`;
+const shortBranch = (ref = "") => ref.replace(/^refs\/heads\//, "");
+
+function reviewBranchesHtml(review, snapshot) {
+  return `<div class="task-review-branches">${(review.bindings || []).map((binding) => bindingFactsHtml(binding, snapshot)).join("")}</div>`;
+}
+
+function bindingFactsHtml(binding, snapshot) {
+  const directory = snapshot?.directories.find((row) => row.id === binding.directory_id);
+  const base = directory?.base?.name || shortBranch(binding.base_branch_ref);
+  const branch = directory?.branch || shortBranch(binding.dedicated_branch_ref);
+  return `<p>${esc(directory?.name || binding.directory_id)} · <code>${esc(base)} ← ${esc(branch)}</code></p>`;
 }
 
 export function reviewDirectoryHtml(snapshot, directory, view) {

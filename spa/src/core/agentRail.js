@@ -62,6 +62,7 @@ import {
 } from "./agentRailModel.js";
 import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRailRender.js";
 import { createGitStatusTicker } from "./gitStatusTicker.js";
+import { watchTimeUpdates } from "./timeUpdates.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction, confirmActionAt } from "./confirm.js";
@@ -123,6 +124,7 @@ import {
   scheduleUserMessageTickSync,
   syncUserMessageTicks,
   readThroughSequence,
+  refreshThreadTimes,
   pressedActivityRunKey,
   revealThreadSequence,
   threadOfferState,
@@ -1244,6 +1246,7 @@ function mountRailOnContext(host, context, swap) {
    *  (core/trackerNotice.js), so the row this rail stands on is not enough. */
   let feedView = null;
   let statusTicker = null;
+  let threadTimeWatcher = null;
   // One-shot: the composer steals focus the first time it paints, then never
   // again — a poll rebuilding the panel later (a new agent, a mode switch)
   // must not keep yanking focus back while the human is doing something else.
@@ -2103,7 +2106,11 @@ function mountRailOnContext(host, context, swap) {
 
   const activeBubble = () => host.querySelector(`${STRIP_BUTTONS}.active`);
 
+  const syncThreadTimeVisibility = () =>
+    threadTimeWatcher?.setVisible(panelVisible && selectedKind !== "overview" && shownPanelMode() === "chat");
+
   const syncPopover = () => {
+    syncThreadTimeVisibility();
     const card = !pinned;
     host.classList.toggle("rail-unpinned", !pinned);
     host.classList.toggle(COLLAPSED_CLASS, !panelVisible);
@@ -2368,7 +2375,11 @@ function mountRailOnContext(host, context, swap) {
   };
 
   /** The panel, painted for whatever the rail has selected. */
-  const paintPanel = () => (selectedKind === "overview" ? paintOverviewPanel() : paintConversationPanel());
+  const paintPanel = () => {
+    if (selectedKind === "overview") paintOverviewPanel();
+    else paintConversationPanel();
+    syncThreadTimeVisibility();
+  };
 
   const wireHead = (panel) => {
     const tuiToggle = panel.querySelector(".rail-tui");
@@ -4099,8 +4110,10 @@ function mountRailOnContext(host, context, swap) {
     catalogSettled = true;
     takeCatalog(catalogHeard || offered);
   });
-  // The elapsed-time clock: the one timer left on the rail, and it says nothing
-  // about the wire — it is the "working for 4m" line counting.
+  // Clocks advance cached labels independently of the timeline's paint fingerprint.
+  threadTimeWatcher = watchTimeUpdates(() => refreshThreadTimes(host));
+  syncThreadTimeVisibility();
+  // The faster clock is the "working for 4m" status line.
   statusTicker = setInterval(paintRailStatus, 1000);
   // A harness out of usage on this machine (#58): a strip at the top of the
   // conversation, counting down to its reset, whichever agent is open.
@@ -4140,6 +4153,7 @@ function mountRailOnContext(host, context, swap) {
     unwatchCache();
     clearInterval(statusTicker);
     statusTicker = null;
+    threadTimeWatcher.dispose();
     stopFollowingCatalog();
     unsubscribePending();
     unsubscribeFeed();

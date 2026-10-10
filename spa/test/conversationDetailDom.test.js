@@ -563,3 +563,155 @@ describe("a notice Build wrote, at every level", () => {
     }
   });
 });
+
+describe("live conversation timestamps", () => {
+  const now = new Date("2026-10-09T21:30:00Z");
+  const messageTime = () => timeline().querySelector(".thread-message.agent time");
+
+  beforeEach(() => {
+    Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.setSystemTime(now);
+    conversation = [
+      { type: "message", data: { id: "live", sequence: 1, role: "agent", body: "the retry is fixed", created_at: now.toISOString() } },
+      { type: "message", data: { id: "sent", sequence: 2, role: "agent", body: "sent report", sent_to: SENDER, created_at: now.toISOString() } },
+    ];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.getSelection().removeAllRanges();
+  });
+
+  it("advances only time text while the cached conversation stands still", async () => {
+    await mountWorkspaceRail();
+    const row = messageTime().closest(".thread-message");
+    const time = messageTime();
+    const text = time.firstChild;
+    const body = panel().querySelector("#rail-body");
+    const composer = panel().querySelector("textarea");
+    const selectedText = row.querySelector(".thread-body p").firstChild;
+    const range = document.createRange();
+    range.selectNodeContents(selectedText);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+    expect(window.getSelection().toString()).toBe("the retry is fixed");
+    body.scrollTop = 120;
+    const scrollWrites = vi.spyOn(body, "scrollTop", "set");
+    const observer = new MutationObserver(() => {});
+    observer.observe(timeline(), { subtree: true, childList: true, characterData: true, attributes: true });
+    expect(time.textContent).toBe("Just now");
+
+    vi.advanceTimersByTime(2 * 60_000);
+
+    const mutations = observer.takeRecords();
+    observer.disconnect();
+    expect(time.textContent).toBe("2 minutes ago");
+    expect(timeline().querySelector(".thread-sent time").textContent).toBe("2 minutes ago");
+    expect(messageTime()).toBe(time);
+    expect(time.firstChild).toBe(text);
+    expect(time.closest(".thread-message")).toBe(row);
+    expect(panel().querySelector("textarea")).toBe(composer);
+    expect(window.getSelection().toString()).toBe("the retry is fixed");
+    expect(scrollWrites).not.toHaveBeenCalled();
+    expect(mutations.length).toBeGreaterThan(0);
+    expect(mutations.every((mutation) => mutation.type === "characterData" && mutation.target.parentElement.matches("time"))).toBe(true);
+  });
+
+  it("pauses in the background and refreshes immediately when visible", async () => {
+    await mountWorkspaceRail();
+    const time = messageTime();
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    vi.advanceTimersByTime(20 * 60_000);
+    expect(time.textContent).toBe("Just now");
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(time.textContent).toBe("20 minutes ago");
+    expect(messageTime()).toBe(time);
+  });
+
+  it("refreshes on pageshow before a suspended timer has fired", async () => {
+    await mountWorkspaceRail();
+    const time = messageTime();
+    vi.setSystemTime(new Date(now.getTime() + 19 * 60_000));
+
+    window.dispatchEvent(new Event("pageshow"));
+
+    expect(time.textContent).toBe("19 minutes ago");
+    expect(messageTime()).toBe(time);
+  });
+
+  it("restarts the clock when returning from a remembered terminal view", async () => {
+    await mountWorkspaceRail();
+    panel().querySelector(".rail-tui").click();
+    await flush();
+    rail.dispose();
+    rail = null;
+    await mountWorkspaceRail();
+    expect(panel().querySelector(".rail-tui").getAttribute("aria-pressed")).toBe("true");
+
+    panel().querySelector(".rail-tui").click();
+    await flush();
+    const time = messageTime();
+    expect(time.textContent).toBe("Just now");
+
+    vi.advanceTimersByTime(2 * 60_000);
+
+    expect(time.textContent).toBe("2 minutes ago");
+    expect(messageTime()).toBe(time);
+  });
+
+  it("pauses timestamp scans while the Agents overview is open", async () => {
+    await mountWorkspaceRail();
+    host().querySelector('[data-bubble="overview"]').click();
+    await flush();
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(host().querySelector("time[data-thread-time]")).toBeNull();
+    const scans = vi.spyOn(host(), "querySelectorAll");
+
+    vi.advanceTimersByTime(30_000);
+
+    expect(scans).not.toHaveBeenCalledWith("time[data-thread-time]");
+  });
+
+  it("refreshes immediately and resumes the clock when returning from Agents overview", async () => {
+    await mountWorkspaceRail();
+    host().querySelector('[data-bubble="overview"]').click();
+    await flush();
+    vi.advanceTimersByTime(2 * 60_000);
+    const scans = vi.spyOn(host(), "querySelectorAll");
+
+    host().querySelector('[data-agent="wa-1"]').click();
+    await flush();
+
+    const time = messageTime();
+    expect(time.textContent).toBe("2 minutes ago");
+    expect(scans).toHaveBeenCalledWith("time[data-thread-time]");
+    scans.mockClear();
+
+    vi.advanceTimersByTime(60_000);
+
+    expect(scans).toHaveBeenCalledWith("time[data-thread-time]");
+    expect(time.textContent).toBe("3 minutes ago");
+    expect(messageTime()).toBe(time);
+  });
+
+  it("stops its timer and foreground listeners when the rail is disposed", async () => {
+    const timersBeforeMount = vi.getTimerCount();
+    await mountWorkspaceRail();
+    const time = messageTime();
+    expect(vi.getTimerCount()).toBeGreaterThan(timersBeforeMount);
+
+    rail.dispose();
+    rail = null;
+
+    expect(vi.getTimerCount()).toBe(timersBeforeMount);
+    vi.advanceTimersByTime(2 * 60_000);
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pageshow"));
+    expect(time.textContent).toBe("Just now");
+  });
+});

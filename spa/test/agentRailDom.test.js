@@ -269,7 +269,7 @@ beforeEach(async () => {
   painters.length = 0;
   feedSubscribers.clear();
   feedSnapshot = { items: [], projects: [] };
-  markSeen.mockClear();
+  markSeen.mockReset().mockResolvedValue(true);
   mountAgentTab.mockClear();
   notifyError.mockClear();
   catalog = CATALOG; // asked for once per device; each test gets its own
@@ -3102,6 +3102,41 @@ describe("the conversation panel", () => {
       },
     });
   };
+
+  it("reports visible messages ahead of the cursor even when the roster still says zero unread", async () => {
+    conversationReadThrough(11, 0);
+    await mount();
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined);
+  });
+
+  it("retries a failed read report when the reader returns to the same viewport", async () => {
+    conversationReadThrough(11, 1);
+    markSeen.mockResolvedValue(false);
+    await mount();
+    const attempts = markSeen.mock.calls.length;
+    expect(attempts).toBeGreaterThan(0);
+    markSeen.mockResolvedValue(true);
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(markSeen.mock.calls.length).toBeGreaterThan(attempts);
+    expect(markSeen).toHaveBeenLastCalledWith("run-3", "ag-1", 11, 12, undefined);
+  });
+
+  it("does not repeat an in-flight read report on scroll or focus", async () => {
+    conversationReadThrough(11, 1);
+    let finish;
+    markSeen.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await mount();
+    railHost().querySelector("#rail-body").onscroll();
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(markSeen).toHaveBeenCalledTimes(1);
+    finish(true);
+    await flush();
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(markSeen).toHaveBeenCalledTimes(1);
+  });
 
   it("rules a line above the first message the reader has not read", async () => {
     conversationReadThrough(11, 1);

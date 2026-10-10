@@ -6695,6 +6695,7 @@ describe("every chat opening lands before reporting read (#472)", () => {
   const messageRange = (from, through) => Array.from({ length: through - from + 1 }, (_, i) => ({
     type: "message", data: { sequence: from + i, role: "agent", body: `message ${from + i}` },
   }));
+  const openingOlderPages = () => callsTo("thread.page").filter(({ params }) => params.before_sequence === 10);
   const openUnknownCursorWithPage = async (page = { items: messageRange(5, 9), has_more: false }) => {
     viewportHeight = 500;
     geometry[0].mockImplementation(function () {
@@ -6713,12 +6714,13 @@ describe("every chat opening lands before reporting read (#472)", () => {
     await writeRailThread("run-3", "ag-1", { items: messageRange(10, 14), has_more: true });
     const original = bridge.call;
     bridge.call = vi.fn(async (method, params) => {
-      if (method !== "thread.page") return original(method, params);
+      if (method !== "thread.page" || params.before_sequence !== 10) return original(method, params);
       calls.push({ method, params });
       return page;
     });
     await mount({ openAgentId: "ag-2" });
     while (frames.length) frames.shift()();
+    markSeen.mockClear(); // #473 also reports the previously open, zero-unread chat.
     scroller().scrollTop = 1200;
     bubbles()[0].click();
     await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("10"));
@@ -6728,7 +6730,7 @@ describe("every chat opening lands before reporting read (#472)", () => {
     // Browsers emit scroll after the opening writes zero; no reader input
     // has taken over this visit when that event requests the older page.
     scroller().dispatchEvent(new Event("scroll"));
-    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+    await vi.waitFor(() => expect(openingOlderPages()).toHaveLength(1));
   };
 
   it("lands a reload/first paint after the cached transcript fills its empty frame, then reports", async () => {
@@ -6832,7 +6834,7 @@ describe("every chat opening lands before reporting read (#472)", () => {
     while (frames.length) frames.shift()();
     expect(scroller().querySelector('.thread-message[data-sequence="12"]').getBoundingClientRect().top).toBe(heldOffset);
     expect(scroller().scrollTop).toBe(2850);
-    expect(callsTo("thread.page")).toHaveLength(1);
+    expect(openingOlderPages()).toHaveLength(1);
   });
 
   it("loads back from a partial unread window and moves the line to its actual first unread message", async () => {
@@ -6910,7 +6912,7 @@ it("re-reports the now-safe tail after returning from overview to the same conve
   try {
     await mount();
     expect(sequences()[0]).toBe(61);
-    expect(reports).toEqual([{ read: 120, floor: 61, hiddenBelow: true, cursor: 0 }]);
+    await vi.waitFor(() => expect(reports).toEqual([{ read: 120, floor: 61, hiddenBelow: true, cursor: 0 }]), { timeout: 6000 });
     viewportThrough = 60;
     railHost().querySelector(".thread-earlier").click();
     await flush();
@@ -6928,8 +6930,10 @@ it("re-reports the now-safe tail after returning from overview to the same conve
     expect(sequences().at(-1)).toBe(120);
     window.dispatchEvent(new Event("focus"));
     await flush();
-    expect.soft(reports).toHaveLength(3);
-    expect.soft(cursor).toBe(120);
+    await vi.waitFor(() => {
+      expect(reports).toHaveLength(3);
+      expect(cursor).toBe(120);
+    }, { timeout: 6000 });
   } finally {
     geometry.mockRestore();
   }

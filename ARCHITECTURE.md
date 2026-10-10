@@ -2180,9 +2180,18 @@ Inbox rows, including Recent and the project Workspaces tab, use
 is green; running activity without unread is grey. Only running agents pulse,
 and reduced-motion preferences disable the animation. Watched tasks read their
 assigned agent's running state from cached rosters. A folded project head
-summarizes watched activity, including tasks without a Needs you row; an
+summarizes watched activity, including tasks without a Needs you reason; an
 expanded head uses only its project conversation's own unread and activity.
 The head offers Hide and New workspace directly.
+
+Inbox task rows come from cached `tasks.list` / `tasks.get` records through
+`spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`. Every watched
+open task outside Done stays visible, even after its attention is read. Rows
+with attention reasons or unread news precede quiet tasks; each group retains
+oldest-change-first order. Quiet tasks use a single line. Every task row has an
+eye that uses the existing optimistic `tasks.unwatch` path, removing the row
+immediately and restoring its watch if the write fails. The eye stays visible
+on touch screens. Needs you reasons and unread counting retain their own rules.
 
 The inbox and agent rail share `agentIsRunning` in
 `spa/src/core/agentRunning.js`: an agent runs while its own loop or an agent

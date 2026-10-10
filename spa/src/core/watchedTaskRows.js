@@ -1,11 +1,5 @@
-// Watched tasks as inbox rows (#125), as a pure model.
-//
-// A watched task is a row only while there is something in it for the user:
-// it is assigned to them, or an agent asked them in an unread comment or
-// when filing the task — the Tasks tab's "Needs you" rules
-// (core/trackerAttentionModel.js, which also keeps the earlier rule for a
-// bridge that cannot say which comments asked). When the reason goes, so does the row, and
-// nothing that is Done or closed is ever one.
+// Every watched open task stays in Inbox until Done, closed, or unwatched.
+// Attention reasons explain the rows that need the user; the rest stay quiet.
 //
 // Read from the cached task records, never the board feed's `tracker_task`
 // rows: an `tasks` push re-reads the project's list and nothing re-reads the
@@ -14,7 +8,8 @@
 // No DOM, no app imports — the wiring (core/watchedTaskFollower.js) reads the
 // cache and core/inboxView.js paints these beside the workspace rows.
 
-import { TRACKER_TASK, entryKeyOf } from "./inbox.js";
+import { TRACKER_TASK, byInboxAttentionThenAnchor, entryKeyOf } from "./inbox.js";
+import { isFinished } from "./trackerAgentTasks.js";
 import { taskUnreadCount } from "./taskUnread.js";
 import { ATTENTION_REASONS, watchedTaskReasons } from "./trackerAttentionModel.js";
 
@@ -75,10 +70,10 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
     name: task.number ? `#${task.number} ${titleOf(task)}` : titleOf(task),
     title: titleOf(task),
     reviewSummary: task.review_summary || null,
-    // A Needs-you reason keeps the row, while running and unread are facts
-    // about its assigned agent and task news, respectively.
+    // Attention, running, and unread are independent facts about a watched task.
     state: working ? "working" : unreadCount > 0 ? "unread" : "inactive",
     working,
+    quiet: reasons.length === 0,
     reason: facts,
     facts,
     unreadCount,
@@ -88,15 +83,13 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
   };
 }
 
-/** Oldest change first, as every inbox list is; an undated task goes last. */
-const byChange = (left, right) => (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity);
-
 function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null }) {
   const entries = [];
   for (const task of tasks) {
+    if (task.watched !== true || isFinished(task)) continue;
     const detail = details.get(task.id) || null;
     const reasons = watchedTaskReasons(task, detail, askedOnly);
-    if (reasons.length) entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId));
+    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId));
   }
   return entries;
 }
@@ -111,5 +104,5 @@ function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly
  * `projectAgentId` the cached project owner's holder for legacy assignments.
  */
 export function watchedTaskEntries(sources = []) {
-  return sources.flatMap(entriesFromSource).sort(byChange);
+  return sources.flatMap(entriesFromSource).sort(byInboxAttentionThenAnchor);
 }

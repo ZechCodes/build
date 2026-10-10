@@ -35,7 +35,7 @@
 
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
-import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
 import { freshestRosters, runningAgentCount, watchedAgentsRunning, watchedUnreadCount } from "./inboxRoster.js";
 import { agentIsRunning } from "./agentRunning.js";
@@ -353,6 +353,11 @@ export function mergePendingRows(items = [], pending = []) {
 /// multi-stage task and opens the plan/stages page — two different things
 /// that would otherwise share a word and a row.
 export const TRACKER_TASK = "tracker_task";
+
+/** Task attention precedes quiet watches; each group keeps the inbox's age order. */
+const isQuietTask = (entry) => entry.kind === TRACKER_TASK && !entry.facts && !(entry.unreadCount > 0);
+export const byInboxAttentionThenAnchor = (left, right) => Number(isQuietTask(left)) - Number(isQuietTask(right))
+  || (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity);
 
 const OPENS_AT = {
   capture: (item) => {
@@ -880,7 +885,7 @@ function menuHtml(entry, open) {
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
   if (entry.pending) return "";
-  if (entry.kind === TRACKER_TASK) return menuButtonHtml(entry, open, [unwatchItemHtml(entry)]);
+  if (entry.kind === TRACKER_TASK) return `${taskWatchButtonHtml(entry)}${menuButtonHtml(entry, open, [unwatchItemHtml(entry)])}`;
   const items = [];
   if (entry.canFinish) {
     items.push(menuItemHtml(`data-done="${esc(entry.key)}"`, "Done",
@@ -894,9 +899,12 @@ function menuHtml(entry, open) {
   return menuButtonHtml(entry, open, items);
 }
 
-/** A watched task's row (#125) leaves by itself once nothing in it needs the
- *  user, so it has nothing to clear or finish. Its one verb is its mute: stop
- *  watching, which is what Mute means to the bridge for a task. */
+/** The eye acts on the same optimistic unwatch path as the task menu. */
+const taskWatchButtonHtml = (entry) =>
+  `<button class="iconbtn inbox-watch watching" type="button" data-unwatch="${esc(entry.key)}"
+    aria-pressed="true" aria-label="Stop watching ${esc(entry.name)}" title="Stop watching">${ICON_EYE}</button>`;
+
+/** A watched task stays in Inbox until the reader stops watching or it finishes. */
 const unwatchItemHtml = (entry) =>
   menuItemHtml(`data-unwatch="${esc(entry.key)}"`, "Stop watching", "Keeps the task, but leaves it out of your inbox");
 
@@ -1016,7 +1024,7 @@ const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReview
 export function inboxRowHtml(entry, ui = {}) {
   const ownPainter = ROW_PAINTERS[entry.kind];
   if (ownPainter) return ownPainter(entry, ui);
-  if (ui.quiet) return quietRowHtml(entry, ui);
+  if (ui.quiet || entry.quiet) return quietRowHtml(entry, ui);
   // One list across every project: which project a row belongs to is the one
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing. A row painted under its project's

@@ -1,7 +1,7 @@
-// Watched unfinished tasks remain in Inbox, with attention ahead of quiet rows.
+// Watched unfinished tasks use the same anchor order and Recent rule as every row.
 import { describe, expect, it } from "vitest";
 import { watchedTaskEntries } from "../src/core/watchedTaskRows.js";
-import { TRACKER_TASK, activeEntryKey, inboxRowHtml } from "../src/core/inbox.js";
+import { TRACKER_TASK, activeEntryKey, byAnchor, inboxRowHtml, workspaceIsRecent, RECENT_AFTER_MS } from "../src/core/inbox.js";
 import { workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 import { comment, event, task, taskDetail } from "./trackerWireFixture.js";
 
@@ -45,7 +45,7 @@ describe("which watched tasks are rows by the narrow rule (#144)", () => {
     const review = watched({ id: "i-review", number: 1, status: "in_review", assignee: agent });
     const chatter = watched({ id: "i-chatter", number: 2, read_through: "te-01" });
     const details = new Map([[chatter.id, taskDetail(chatter, [comment({ id: "tc-02", author: agent })])]]);
-    expect(narrow([review, chatter], details).map((row) => [row.taskId, row.facts])).toEqual([["i-chatter", ""], ["i-review", ""]]);
+    expect(narrow([review, chatter], details).map((row) => [row.taskId, row.facts])).toEqual([["i-review", ""], ["i-chatter", ""]]);
   });
 
   it("lists one assigned to the user and one an agent asked, counting all unread news", () => {
@@ -138,26 +138,71 @@ describe("what a row says", () => {
     expect(html).toContain(`data-unwatch="${row.key}"`);
   });
 
-  it("puts attention and unread news before quiet tasks, preserving age within each group", () => {
-    const quiet = watched({ id: "i-quiet", updated_at: "2026-09-23T09:00:00Z" });
-    const review = watched({ id: "i-review", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
-    const news = watched({ id: "i-news", updated_at: "2026-09-23T10:00:00Z" });
+  it("sorts quiet, attention, and unread tasks by creation anchor alone", () => {
+    const quiet = watched({ id: "i-quiet", created_at: "2026-09-23T09:00:00Z", updated_at: "2026-09-23T12:00:00Z" });
+    const review = watched({ id: "i-review", status: "in_review", created_at: "2026-09-23T11:00:00Z" });
+    const news = watched({ id: "i-news", created_at: "2026-09-23T10:00:00Z" });
     const detail = taskDetail(news, [event({ id: "te-02", kind: "moved", actor: { kind: "agent", agent_id: "a1" } })]);
-    expect(rows([quiet, review, news], new Map([[news.id, detail]])).map((row) => row.taskId)).toEqual(["i-news", "i-review", "i-quiet"]);
+    expect(rows([review, news, quiet], new Map([[news.id, detail]])).map((row) => row.taskId)).toEqual(["i-quiet", "i-news", "i-review"]);
   });
 
-  it("keeps attention before quiet tasks on the projects face", () => {
-    const quiet = watched({ id: "i-quiet", updated_at: "2026-09-23T09:00:00Z" });
-    const review = watched({ id: "i-review", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
-    const listed = rows([quiet, review]);
+  it("interleaves quiet and assigned tasks with workspaces inside a project block", () => {
+    const quiet = watched({ id: "i-quiet", created_at: "2026-09-23T09:00:00Z", updated_at: "2026-09-23T09:00:00Z" });
+    const review = watched({ id: "i-review", assignee: { kind: "user" }, created_at: "2026-09-23T11:00:00Z", updated_at: "2026-09-23T11:00:00Z" });
+    const workspace = { kind: "workspace", key: "workspace:middle", projectKey: project.projectKey,
+      anchorMs: Date.parse("2026-09-23T10:00:00Z"), lastActivityMs: Date.parse("2026-09-23T10:00:00Z") };
+    const listed = [...rows([review, quiet]), workspace];
     const { blocks } = workspaceProjectBlocks(listed, [project], [], new Set(), Date.parse("2026-09-23T12:00:00Z"));
-    expect(blocks[0].entries.map((row) => row.taskId)).toEqual(["i-review", "i-quiet"]);
+    expect(blocks[0].entries.map((row) => row.key)).toEqual(["tracker_task:i-quiet", "workspace:middle", "tracker_task:i-review"]);
   });
 
-  it("sorts oldest change first, the inbox's own order", () => {
-    const older = watched({ id: "i-old", status: "in_review", updated_at: "2026-09-23T10:00:00Z" });
-    const newer = watched({ id: "i-new", status: "in_review", updated_at: "2026-09-23T11:00:00Z" });
+  it("sorts oldest creation first, regardless of later changes", () => {
+    const older = watched({ id: "i-old", status: "in_review", created_at: "2026-09-23T10:00:00Z", updated_at: "2026-09-23T12:00:00Z" });
+    const newer = watched({ id: "i-new", status: "in_review", created_at: "2026-09-23T11:00:00Z", updated_at: "2026-09-23T11:00:00Z" });
     expect(rows([newer, older]).map((row) => row.taskId)).toEqual(["i-old", "i-new"]);
+  });
+});
+
+describe("task anchors and Recent", () => {
+  const now = Date.parse("2026-09-24T12:00:00Z");
+  const old = watched({ id: "old", created_at: "2026-09-22T10:00:00Z", updated_at: "2026-09-23T10:00:00Z" });
+
+  it("uses the latest cached comment or event for activity without moving the creation anchor", () => {
+    const timeline = [comment({ created_at: "2026-09-24T11:00:00Z" }), event({ at: "2026-09-24T10:00:00Z" })];
+    const [row] = rows([old], new Map([[old.id, taskDetail(old, timeline)]]));
+    expect(row.anchorMs).toBe(Date.parse(old.created_at));
+    expect(row.lastActivityMs).toBe(Date.parse("2026-09-24T11:00:00Z"));
+    expect(workspaceIsRecent(row, now)).toBe(false);
+  });
+
+  it("puts old tasks in their block's Recent, including assigned tasks with unread news", () => {
+    const assigned = { ...old, id: "assigned", assignee: { kind: "user" }, unread_count: 2 };
+    const listed = rows([assigned, old]);
+    const { blocks } = workspaceProjectBlocks(listed, [project], [], null, now);
+    expect(blocks[0].entries).toEqual([]);
+    expect(blocks[0].recent.map((row) => row.taskId)).toEqual(["assigned", "old"]);
+    expect(blocks[0].recent[0]).toMatchObject({ facts: "Assigned to you", unreadCount: 2 });
+  });
+
+  it("keeps a task in the list while its assigned agent runs", () => {
+    const [row] = watchedTaskEntries([{ ...source([{ ...old, assignee: { kind: "agent", agent_id: "a1" } }]), runningAgentIds: new Set(["a1"]) }]);
+    expect(workspaceIsRecent(row, now)).toBe(false);
+  });
+
+  it.each(["workspace", "project_agent", "capture", "tracker_task", "task", "branch"])("applies the same age and dismissal rule to %s", (kind) => {
+    const row = { kind, anchorMs: 0, lastActivityMs: now - RECENT_AFTER_MS };
+    expect(workspaceIsRecent(row, now)).toBe(true);
+    expect(workspaceIsRecent({ ...row, working: true }, now)).toBe(false);
+    expect(workspaceIsRecent({ ...row, working: true, dismissed: true }, now)).toBe(true);
+    expect(workspaceIsRecent({ ...row, lastActivityMs: null }, now)).toBe(false);
+    expect(workspaceIsRecent({ ...row, lastActivityMs: undefined }, now)).toBe(false);
+  });
+
+  it("interleaves a task without an explicit anchor with older and newer workspaces", () => {
+    const [row] = rows([old]);
+    const before = { kind: "workspace", anchorMs: row.anchorMs - 1 };
+    const after = { kind: "workspace", anchorMs: row.anchorMs + 1 };
+    expect([after, row, before].sort(byAnchor)).toEqual([before, row, after]);
   });
 });
 

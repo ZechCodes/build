@@ -1,5 +1,6 @@
 // Every watched open task stays in Inbox until Done, closed, or unwatched.
-// Attention reasons explain the rows that need the user; the rest stay quiet.
+// Attention reasons explain the rows that need the user; every row keeps the
+// same anchor order and Recent rule as workspaces, regardless of attention.
 //
 // Read from the cached task records, never the board feed's `tracker_task`
 // rows: an `tasks` push re-reads the project's list and nothing re-reads the
@@ -8,7 +9,7 @@
 // No DOM, no app imports — the wiring (core/watchedTaskFollower.js) reads the
 // cache and core/inboxView.js paints these beside the workspace rows.
 
-import { TRACKER_TASK, byInboxAttentionThenAnchor, entryKeyOf } from "./inbox.js";
+import { TRACKER_TASK, byAnchor, entryKeyOf } from "./inbox.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { taskUnreadCount } from "./taskUnread.js";
 import { ATTENTION_REASONS, watchedTaskReasons } from "./trackerAttentionModel.js";
@@ -28,6 +29,16 @@ const ms = (iso) => {
 };
 
 const titleOf = (task) => task.title || "(untitled)";
+
+/** Creation anchors a task without a bridge anchor. Cached comments and
+ *  events can renew its activity without moving that anchor. */
+function taskTimes(task, detail) {
+  const activity = [task.created_at, task.updated_at, task.last_activity,
+    ...(detail?.timeline || []).map((item) => item.created_at || item.at)]
+    .map(ms).filter(Number.isFinite);
+  const lastActivityMs = activity.reduce((latest, value) => Math.max(latest ?? value, value), null);
+  return { anchorMs: ms(task.anchor) ?? ms(task.created_at) ?? lastActivityMs, lastActivityMs };
+}
 
 /** The fields a row carries about a checkout, which a task has none of. */
 const NOT_A_CHECKOUT = Object.freeze({
@@ -51,7 +62,6 @@ export function taskAgentIsRunning(task, runningAgentIds, projectAgentId = null)
 
 function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId) {
   const facts = reasons.map((reason) => reasonWord(reason, askedOnly)).join(" · ");
-  const changedMs = ms(task.updated_at);
   const unreadCount = taskUnreadCount(task, detail);
   const working = taskAgentIsRunning(task, runningAgentIds, projectAgentId);
   return {
@@ -77,9 +87,10 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
     reason: facts,
     facts,
     unreadCount,
+    // Watch confirmation follows record updates, independently of row order.
+    updatedMs: ms(task.updated_at),
     route: { name: "trackerTask", deviceId: project.deviceId, projectId: project.id, taskId: task.id },
-    anchorMs: changedMs,
-    lastActivityMs: changedMs,
+    ...taskTimes(task, detail),
   };
 }
 
@@ -104,5 +115,5 @@ function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly
  * `projectAgentId` the cached project owner's holder for legacy assignments.
  */
 export function watchedTaskEntries(sources = []) {
-  return sources.flatMap(entriesFromSource).sort(byInboxAttentionThenAnchor);
+  return sources.flatMap(entriesFromSource).sort(byAnchor);
 }

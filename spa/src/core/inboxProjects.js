@@ -25,7 +25,7 @@ import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE_OFF, ICON_PLUS } from "
 import {
   PROJECT_AGENT,
   TRACKER_TASK,
-  byInboxAttentionThenAnchor,
+  byAnchor,
   clashingNames,
   dimDeviceHtml,
   workspaceIsRecent,
@@ -79,7 +79,7 @@ const entryIsWatchedRunning = (entry) => entry?.watchedWorking ?? entryIsRunning
 function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
   // The project agent's entry is the block's head, not one of its rows (#103).
   const agentEntry = rows.find((entry) => entry.kind === PROJECT_AGENT) || null;
-  const grouped = rows.filter((entry) => entry.kind !== PROJECT_AGENT).sort(byInboxAttentionThenAnchor);
+  const grouped = rows.filter((entry) => entry.kind !== PROJECT_AGENT).sort(byAnchor);
   const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
   const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
   return {

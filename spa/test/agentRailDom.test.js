@@ -3116,10 +3116,41 @@ describe("the conversation panel", () => {
     const attempts = markSeen.mock.calls.length;
     expect(attempts).toBeGreaterThan(0);
     markSeen.mockResolvedValue(true);
-    window.dispatchEvent(new Event("focus"));
-    await flush();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1000);
+    try {
+      window.dispatchEvent(new Event("focus"));
+      await flush();
+    } finally {
+      clock.mockRestore();
+    }
     expect(markSeen.mock.calls.length).toBeGreaterThan(attempts);
     expect(markSeen).toHaveBeenLastCalledWith("run-3", "ag-1", 11, 12, undefined);
+  });
+
+  it("bounds retries while a bridge keeps refusing read reports", async () => {
+    conversationReadThrough(11, 1);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    markSeen.mockResolvedValue(false);
+    try {
+      await mount();
+      const attempts = markSeen.mock.calls.length;
+      for (let i = 0; i < 5; i++) {
+        railHost().querySelector("#rail-body").onscroll();
+        window.dispatchEvent(new Event("focus"));
+        await flush();
+      }
+      expect(markSeen).toHaveBeenCalledTimes(attempts);
+      clock.mockReturnValue(2000);
+      window.dispatchEvent(new Event("focus"));
+      await flush();
+      expect(markSeen).toHaveBeenCalledTimes(attempts + 1);
+      clock.mockReturnValue(3000);
+      window.dispatchEvent(new Event("focus"));
+      await flush();
+      expect(markSeen).toHaveBeenCalledTimes(attempts + 1);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("does not repeat an in-flight read report on scroll or focus", async () => {

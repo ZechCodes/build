@@ -13,7 +13,8 @@ Wire 3.19.0.
 ### Fixed
 
 - Centre the collapsed inbox popover and hover-peek carets beneath the inbox
-  toggle on phone and desktop layouts, including left safe-area insets (#482).
+  toggle on phone and desktop layouts, including left safe-area insets. Keep
+  the card attached by sharing the standing directory rail's inset policy (#482).
 - Unread counters include only watched conversations and task news since the
   current watch began. Watch baselines survive restart; rewatching excludes
   earlier history. Cached SPA badges also suppress unwatched agents on older

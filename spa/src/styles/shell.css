@@ -81,8 +81,12 @@ body.inbox-collapsed { --inbox-space:0px; }
   height:var(--toolbar-h); display:flex; align-items:center;
   padding:0 calc((var(--dir-rail) - var(--inbox-toggle)) / 2); pointer-events:none; }
 /* A standing directory rail owns this column's centre, including on devices
-   with a left safe-area inset. The toolbar keeps its own safe-area clearance. */
-body.inbox-collapsed #shell:has(#dir-rail:not(:empty)) { --global-controls-left:var(--region-gap); }
+   with a left safe-area inset. Its inbox card follows the same clearance;
+   the toolbar keeps its own safe-area clearance. */
+body.inbox-collapsed #shell:has(#dir-rail:not(:empty)) {
+  --global-controls-left:var(--region-gap);
+  --inbox-popover-left:12px;
+}
 #global-controls > * { pointer-events:auto; }
 
 /* ---- inbox rail (left) ---- */

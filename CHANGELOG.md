@@ -8,13 +8,20 @@ protocol versions; see
 
 ## [0.2.13] - Unreleased
 
-Wire 3.17.0.
+Wire 3.18.0.
 
 ### Added
 
+- Harness inventory reports installation, CLI/session versions and saved sign-in
+  status for Claude, Codex and Pi (`harnesses.list`, `harnesses.refresh`, #434).
+- PR task pages show snapshots and opinions, with Merge, Close, Reopen and
+  retryable publication results (#408).
+- PR task pages offer Reclaim after merge and publication settle; locked
+  workspaces must be unlocked first (#408).
 - New file from the Files tree: `fs.createFile` creates one empty file in a
   workspace or project source, refusing names that already exist (#433).
-- PR-style review tasks with dedicated branches and local push synchronization (#405).
+- PR-style review tasks with dedicated branches, local push synchronization,
+  explicit base retargeting and RPC/MCP lifecycle controls (#405).
 - PR sync observations count the commits since the user's last reviewed
   snapshot, or flag a rewritten history, and the Changes header shows
   "N commits since your last review" (#427).
@@ -36,11 +43,18 @@ Wire 3.17.0.
 
 ### Changed
 
+- End agent tracking when tasks reach Done or close, delivering the final notice;
+  reopening and stale writes do not restore former trackers (#444).
+- Task board, list and inbox rows show each PR's icon and lifecycle status
+  from the cached review summary (#408).
+- Workspace PR controls show snapshots, pending commits and exact Push
+  destinations, preserving confirmation drafts across refreshes (#407).
 - Project Files calls name the folder a source was opened at, and the bridge
   refuses a read, save, new folder, new file or upload once that source has moved
   (`fs.projectSourcePath`). A project source's file root resolves to its
   canonical path (#360).
-- Open reviews from Changes or the workspace menu; review lifecycle and workspace retention are explicit (#405).
+- Open reviews from Changes or the workspace menu; review lifecycle and
+  workspace retention are explicit (#407, #408).
 - Task comment replies quote their parent's author and excerpt, jump to and
   briefly highlight the full comment on activation, and show reply counts (#411).
 - Files directory actions use recognizable upload and new-folder icons, shown
@@ -52,6 +66,34 @@ Wire 3.17.0.
 
 ### Fixed
 
+- Chat message ages update live and on return to the foreground without moving
+  rows; refresh pauses while chat is hidden or Agents overview is open (#467).
+- Recognize Claude's saved API key using its config precedence, and treat blank
+  or non-string credentials as absent across harnesses (#434, #466).
+- Detect installed or removed harness CLIs in model listings without restarting
+  the bridge (#434).
+- Keep Codex sessions alive through late items and compaction turns, queuing
+  messages during compaction for their own turn (#421).
+- Preserve the last applied model and effort, including defaults, when
+  adopting a Codex-started turn (#421).
+- Cap WebRTC GSO batches at the peer family's UDP payload limit, including
+  IPv4-mapped peers, to prevent whole-batch drops (#375).
+- Move LAN sweep interface and neighbour reads outside the WebRTC core lock,
+  stopping probes when ownership changes or cached state expires (#376).
+- Treat an overflowed LAN sweep address watch as a change until drained,
+  so stale interface ownership cannot authorize probes (#376).
+- Report IPv6 and oversized neighbour-table sweep skips accurately, and allow
+  bounded scouting when neighbour GC thresholds are equal (#376).
+- Refresh after mutations during a cache pass, so Git initialization and other
+  changes appear without waiting for an unrelated refresh (#454).
+- Stop superseded cache reads without blocking fresh diff reads; abandoned
+  session waits cannot restart sync or clear a new sync's marker (#454, #460).
+- Read newly created files before opening them, replacing earlier deleted-file
+  contents without overwriting newer concurrent cache updates (#433).
+- Keep cached PR status and sync observations current across delayed replies,
+  cleared reviews and reconnects, preserving review drafts (#406).
+- Bound and reuse commits-since-review history reads, and reject counts for a
+  different displayed snapshot head (#427, #453).
 - Wait briefly for overlapping explicit PR synchronization, and release capture
   and merge leases when their operations finish even if a child retains an
   inherited descriptor (#404).

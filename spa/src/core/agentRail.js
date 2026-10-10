@@ -2816,11 +2816,17 @@ function mountRailOnContext(host, context, swap) {
     const waitingForHistory = openingNeedsHistory(thread);
     if (waitingForHistory && chatLanding.active()) unreadMarker?.leave();
     unreadFrom = unreadLineFor(thread);
-    return chatLanding.prepare(body, {
+    const landing = chatLanding.prepare(body, {
       hasItems: threadItems(thread).length > 0,
       target: unreadFrom,
       waitingForHistory,
     });
+    // An unknown cursor must not skip cached messages at either the slice or
+    // the scroller. Keep the oldest held row available until New can be ruled.
+    if (waitingForHistory && unreadFrom === null && landing.opening) {
+      timelineSlice.reachDown(threadCache.windowFloorSequence());
+    }
+    return { ...landing, fallbackToStart: waitingForHistory };
   };
 
   const paintTimeline = (body, thread, olderItemsPrepended) => {
@@ -2828,9 +2834,9 @@ function mountRailOnContext(host, context, swap) {
     // Whose conversation this is, settled first: a switch drops everything the
     // panel remembers about the last one, including the line about to be ruled.
     const runs = conversationRuns();
+    if (!body.querySelector(".thread-items")) timelineSlice.reset();
     const landing = prepareChatLanding(body, thread);
     const opening = landing.opening;
-    if (!body.querySelector(".thread-items")) timelineSlice.reset();
     const fingerprint = chatFingerprintOf(thread, agentLabel);
     if (fingerprint === paintedChat && !opening) return;
     paintedDigests = digestsOf(thread);

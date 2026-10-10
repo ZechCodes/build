@@ -6659,15 +6659,17 @@ describe("every chat opening lands before reporting read (#472)", () => {
   const unreadAgent = (over = {}) => agent({ read_through_sequence: 11, unread_count: 3, ...over });
   let geometry;
   let frames;
+  let viewportHeight;
   beforeEach(() => {
     frames = [];
+    viewportHeight = 300;
     vi.stubGlobal("requestAnimationFrame", (callback) => { frames.push(callback); return frames.length; });
     geometry = [
       vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 2020 : 0; }),
-      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 300 : 0; }),
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? viewportHeight : 0; }),
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
         const body = this.closest("#rail-body");
-        if (!body || this === body) return { top: 0, bottom: 300 };
+        if (!body || this === body) return { top: 0, bottom: viewportHeight };
         const line = this.closest(".thread-unread-line");
         const sequence = Number(this.closest("[data-sequence]")?.dataset.sequence);
         const unreadSequence = Number(body.querySelector(".thread-unread-line")?.nextElementSibling?.dataset.sequence || Infinity);
@@ -6741,14 +6743,30 @@ describe("every chat opening lands before reporting read (#472)", () => {
   });
 
 
-  it("releases the read wait after 5 seconds against a roster without cursors", async () => {
+  it("opens an unknown cursor at the oldest cached message, including above the default slice", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 70 })] });
+    const items = Array.from({ length: 70 }, (_, i) => ({
+      type: "message", data: { sequence: 10 + i, role: "agent", body: `message ${10 + i}` },
+    }));
+    await writeRailThread("run-3", "ag-1", { items, has_more: false });
+    await mount();
+    while (frames.length) frames.shift()();
+    expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("10");
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen).not.toHaveBeenCalled();
+  });
+
+  it("releases the read wait after 5 seconds without reporting past the unknown-cursor viewport", async () => {
+    viewportHeight = 500; // Only message 10 fits completely; 11–14 have not been read.
     payload = branchRow({ agents: [agent({ unread_count: 3 })] });
     await writeRailThread("run-3", "ag-1", transcript());
     await mount();
     while (frames.length) frames.shift()();
     expect(markSeen).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
-    expect(markSeen.mock.calls.at(-1)[3]).toBe(14);
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(10);
+    expect(markSeen.mock.calls.every((call) => call[3] <= 10)).toBe(true);
   });
 
   it("loads back from a partial unread window and moves the line to its actual first unread message", async () => {

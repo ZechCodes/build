@@ -46,3 +46,12 @@ it("does not let a pending report hide a newer viewport with a different floor",
   await reporter.report(12, 1, send);
   expect(send).toHaveBeenCalledTimes(2);
 });
+
+it("does not synthesize a confirmed viewport from a tail report and an earlier history report", async () => {
+  const reporter = createChatReadReporter();
+  const send = vi.fn().mockResolvedValue(true);
+  await reporter.report(12, 11, send);
+  await reporter.report(10, 1, send);
+  await reporter.report(12, 1, send);
+  expect(send).toHaveBeenCalledTimes(3);
+});

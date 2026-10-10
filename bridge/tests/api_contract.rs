@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.18.0");
+    assert_eq!(API_VERSION, "3.19.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -361,7 +361,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.18.0");
+    assert_eq!(API_VERSION, "3.19.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1228,4 +1228,12 @@ fn project_source_paths_are_announced_on_every_scoped_file_verb() {
             .1;
         handler.parse_params(&example["params"]).unwrap();
     }
+}
+
+#[test]
+fn watch_scoped_unread_is_announced_with_its_semantics() {
+    assert!(capabilities(false).contains(&"unread.watchScoped"));
+    let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
+    assert_eq!(greeting["watch_scoped_unread"]["since"], "3.19.0");
+    assert_eq!(greeting["watch_scoped_unread"]["unwatched_count"], 0);
 }

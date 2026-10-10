@@ -1,6 +1,6 @@
 {
-  "api_version": "3.17.0",
-  "commit": "41404547",
+  "api_version": "3.18.0",
+  "commit": "6522ac1d",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -56,6 +56,8 @@
     "git.status",
     "git.unpushed",
     "github.repos",
+    "harnesses.list",
+    "harnesses.refresh",
     "models.list",
     "project.add_source",
     "project.create",
@@ -208,6 +210,8 @@
     "git.status",
     "git.unpushed",
     "github.repos",
+    "harnesses.list",
+    "harnesses.refresh",
     "messages.context",
     "messages.fromAgent",
     "messages.taskNotices",

@@ -260,7 +260,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.18.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.19.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -374,6 +374,9 @@ runtime that starts them.
   source row carried when the client opened it. If the source has since moved,
   the bridge refuses the call with `conflict` instead of reaching the new
   folder. Beside any other scope it is `invalid_params`.
+  3.19.0 adds `unread.watchScoped` (#474): conversation and task unread
+  counts exclude unwatched conversations and news from before the current
+  watch began. Watch baselines persist separately from read cursors.
   3.18.0 adds the harness inventory (#434): `harnesses.list` and
   `harnesses.refresh`, each announced by its verb name, and the
   `harnesses.changed` push. See Harnesses and the agents' slice.
@@ -2174,6 +2177,18 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
+
+Unread counters count only watched conversations and tasks. A workspace's
+count sums its watched agents. Conversation watches persist a thread sequence
+baseline on the agent; task watches persist a timeline entry baseline. Counts
+start strictly after the later of that baseline and the user's read cursor.
+Repeated watch requests retain the baseline; unwatching and rewatching starts a
+new baseline. User-created conversations watched from creation start at zero.
+Automatic task watches exclude old history while retaining the triggering news.
+Conversation reset returns its watch baseline to zero for the new history.
+The SPA also treats cached `watched: false` as zero on older bridges, without
+waiting for a greeting. Wire 3.19.0 announces `unread.watchScoped`; older
+bridges cannot supply watch-start-scoped counts.
 
 Inbox rows, including Recent and the project Workspaces tab, use
 `spa/src/core/inboxStatusDot.js` for one right-edge status dot. Unread activity

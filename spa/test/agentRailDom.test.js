@@ -6692,6 +6692,45 @@ describe("every chat opening lands before reporting read (#472)", () => {
     expect(markSeen.mock.calls.every((call) => call[3] <= 11)).toBe(true);
   };
 
+  const messageRange = (from, through) => Array.from({ length: through - from + 1 }, (_, i) => ({
+    type: "message", data: { sequence: from + i, role: "agent", body: `message ${from + i}` },
+  }));
+  const openUnknownCursorWithPage = async (page = { items: messageRange(5, 9), has_more: false }) => {
+    viewportHeight = 500;
+    geometry[0].mockImplementation(function () {
+      return this.id === "rail-body" ? this.querySelectorAll(".thread-message").length * 400 : 0;
+    });
+    geometry[2].mockImplementation(function () {
+      const body = this.closest("#rail-body");
+      if (!body || this === body) return { top: 0, bottom: viewportHeight };
+      const sequence = Number(this.closest("[data-sequence]")?.dataset.sequence);
+      const floor = Number(body.querySelector(".thread-message")?.dataset.sequence);
+      const offset = (sequence - floor) * 400;
+      return { top: offset - body.scrollTop, bottom: offset + 400 - body.scrollTop };
+    });
+    payload = branchRow({ agents: [agent({ unread_count: 10 }), agent({ id: "ag-2", ordinal: 2 })] });
+    await writeRailThread("run-3", "ag-2", { items: messageRange(30, 34), has_more: false });
+    await writeRailThread("run-3", "ag-1", { items: messageRange(10, 14), has_more: true });
+    const original = bridge.call;
+    bridge.call = vi.fn(async (method, params) => {
+      if (method !== "thread.page") return original(method, params);
+      calls.push({ method, params });
+      return page;
+    });
+    await mount({ openAgentId: "ag-2" });
+    while (frames.length) frames.shift()();
+    scroller().scrollTop = 1200;
+    bubbles()[0].click();
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("10"));
+    while (frames.length) frames.shift()();
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen).not.toHaveBeenCalled();
+    // Browsers emit scroll after the opening writes zero; no reader input
+    // has taken over this visit when that event requests the older page.
+    scroller().dispatchEvent(new Event("scroll"));
+    await vi.waitFor(() => expect(callsTo("thread.page")).toHaveLength(1));
+  };
+
   it("lands a reload/first paint after the cached transcript fills its empty frame, then reports", async () => {
     payload = branchRow({ agents: [unreadAgent()] });
     await mount();
@@ -6767,6 +6806,33 @@ describe("every chat opening lands before reporting read (#472)", () => {
     expect(scroller().scrollTop).toBe(0);
     expect(markSeen.mock.calls.at(-1)[3]).toBe(10);
     expect(markSeen.mock.calls.every((call) => call[3] <= 10)).toBe(true);
+  });
+
+  it("relands an unknown cursor on an automatic older page before timeout reporting", async () => {
+    await openUnknownCursorWithPage();
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("5"));
+    while (frames.length) frames.shift()();
+    expect(markSeen).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(5);
+    expect(scroller().scrollTop).toBe(0);
+    expect(markSeen.mock.calls.every((call) => call[3] <= 5)).toBe(true);
+  }, 15000);
+
+  it("keeps the reader's visible message when an unknown-cursor older page arrives", async () => {
+    let releasePage;
+    const page = new Promise((resolve) => { releasePage = resolve; });
+    await openUnknownCursorWithPage(page);
+    scroller().dispatchEvent(new WheelEvent("wheel"));
+    scroller().scrollTop = 850;
+    scroller().dispatchEvent(new Event("scroll"));
+    const heldOffset = scroller().querySelector('.thread-message[data-sequence="12"]').getBoundingClientRect().top;
+    releasePage({ items: messageRange(5, 9), has_more: false });
+    await vi.waitFor(() => expect(scroller().querySelector(".thread-message").dataset.sequence).toBe("5"));
+    while (frames.length) frames.shift()();
+    expect(scroller().querySelector('.thread-message[data-sequence="12"]').getBoundingClientRect().top).toBe(heldOffset);
+    expect(scroller().scrollTop).toBe(2850);
+    expect(callsTo("thread.page")).toHaveLength(1);
   });
 
   it("loads back from a partial unread window and moves the line to its actual first unread message", async () => {

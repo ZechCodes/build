@@ -2818,7 +2818,8 @@ function mountRailOnContext(host, context, swap) {
     unreadFrom = unreadLineFor(thread);
     const landing = chatLanding.prepare(body, {
       hasItems: threadItems(thread).length > 0,
-      target: unreadFrom,
+      // A moving cached floor is the provisional target until New is known.
+      target: unreadFrom ?? (waitingForHistory ? threadCache.windowFloorSequence() : null),
       waitingForHistory,
     });
     // An unknown cursor must not skip cached messages at either the slice or

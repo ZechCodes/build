@@ -182,6 +182,7 @@ async fn a_real_peer_reports_ice_failure_from_its_state_events() {
         gathered: Mutex::new(GatheredTypes::default()),
         sweeps,
         ice: ice.clone(),
+        offers: Arc::default(),
     };
     for (state, failed, hooks) in [
         (RTCIceConnectionState::Connected, false, 0),
@@ -342,6 +343,7 @@ async fn a_delayed_failure_callback_must_not_retire_an_accepted_restart() {
         gathered: Mutex::new(GatheredTypes::default()),
         sweeps,
         ice: peer.ice.clone(),
+        offers: Arc::default(),
     };
     let restart = with_ice_credentials(&initial, "restart", "restart-password-0123456789");
     peer.answer(&restart, &[], signaling).await.unwrap();
@@ -444,12 +446,59 @@ async fn a_retired_real_peer_refuses_to_answer() {
 }
 
 /// A native answering core driven by hand: its clock is whatever instant the
-/// test hands it, and its ICE state events are drained and delivered
-/// separately, as the driver does.
+/// test hands it, and its events are drained and delivered separately, as the
+/// driver does.
 struct NativeCore {
     core: rtc::peer_connection::RTCPeerConnection,
     offer: String,
     clock: Instant,
+    /// Have-remote-offer events delivered, as the connection's events count them.
+    offers: Arc<AtomicU64>,
+}
+
+/// One drain's events, held until they are delivered.
+#[derive(Default)]
+struct Drained {
+    states: Vec<RTCIceConnectionState>,
+    offers: u64,
+}
+
+impl Drained {
+    /// Hand the events to the connection's own handler, the offers first.
+    async fn deliver(self, events: &PeerEvents) -> Vec<RTCIceConnectionState> {
+        self.deliver_offers(events).await;
+        self.deliver_states(events).await
+    }
+
+    async fn deliver_offers(&self, events: &PeerEvents) {
+        for _ in 0..self.offers {
+            events
+                .on_signaling_state_change(RTCSignalingState::HaveRemoteOffer)
+                .await;
+        }
+    }
+
+    async fn deliver_states(&self, events: &PeerEvents) -> Vec<RTCIceConnectionState> {
+        for state in &self.states {
+            events.on_ice_connection_state_change(*state).await;
+        }
+        self.states.clone()
+    }
+}
+
+/// The handler a connection's driver delivers to.
+fn peer_events(ice: Arc<IceHealth>, offers: Arc<AtomicU64>) -> PeerEvents {
+    let (connected, _) = mpsc::unbounded_channel();
+    let (sweeps, _) = mpsc::channel(1);
+    PeerEvents {
+        session_id: "native".into(),
+        signaling: Arc::new(Trickling::default()),
+        connected,
+        gathered: Mutex::new(GatheredTypes::default()),
+        sweeps,
+        ice,
+        offers,
+    }
 }
 
 impl NativeCore {
@@ -463,128 +512,499 @@ impl NativeCore {
             core: RTCPeerConnectionBuilder::new().build().unwrap(),
             offer: offer.clone(),
             clock: Instant::now(),
+            offers: Arc::default(),
         };
-        native.accept(offer);
+        let offer = RTCSessionDescription::offer(offer).unwrap();
+        native.core.set_remote_description(offer).unwrap();
+        let answer = native.core.create_answer(None).unwrap();
+        native.core.set_local_description(answer).unwrap();
         native
     }
 
-    fn accept(&mut self, offer: String) {
-        let offer = RTCSessionDescription::offer(offer).unwrap();
-        self.core.set_remote_description(offer).unwrap();
-        let answer = self.core.create_answer(None).unwrap();
-        self.core.set_local_description(answer).unwrap();
-    }
-
-    fn restart(&mut self, ufrag: &str) {
+    fn restart_offer(&self, ufrag: &str) -> String {
         use super::ice_diagnostic_tests::with_ice_credentials;
         let password = format!("{ufrag}-password-0123456789");
-        self.accept(with_ice_credentials(&self.offer, ufrag, &password));
+        with_ice_credentials(&self.offer, ufrag, &password)
     }
 
-    /// The ICE state events the core has queued, as the driver drains them.
-    fn drain(&mut self) -> Vec<RTCIceConnectionState> {
+    /// The events the core has queued, as the driver drains them.
+    fn drain(&mut self) -> Drained {
         use rtc::peer_connection::event::RTCPeerConnectionEvent;
         use rtc::sansio::Protocol;
 
-        let mut states = Vec::new();
+        let mut drained = Drained::default();
         while let Some(event) = self.core.poll_event() {
-            if let RTCPeerConnectionEvent::OnIceConnectionStateChangeEvent(state) = event {
-                states.push(state);
+            match event {
+                RTCPeerConnectionEvent::OnIceConnectionStateChangeEvent(state) => {
+                    drained.states.push(state)
+                }
+                RTCPeerConnectionEvent::OnSignalingStateChangeEvent(
+                    RTCSignalingState::HaveRemoteOffer,
+                ) => drained.offers += 1,
+                _ => {}
             }
         }
-        states
+        drained
     }
 
-    fn deliver(&mut self, ice: &IceHealth) -> Vec<RTCIceConnectionState> {
-        let states = self.drain();
-        states.iter().for_each(|state| ice.observe(*state));
-        states
+    async fn deliver(&mut self, ice: Arc<IceHealth>) -> Vec<RTCIceConnectionState> {
+        let events = peer_events(ice, self.offers.clone());
+        self.drain().deliver(&events).await
     }
 
     /// Run the agent's clock past its failure timeout with no peer answering.
     fn time_out(&mut self) {
-        use rtc::sansio::Protocol;
-
         for _ in 0..2 {
-            self.clock += Duration::from_secs(61);
-            self.core.handle_timeout(self.clock).unwrap();
+            self.tick(Duration::from_secs(61));
         }
     }
 
-    fn state(&mut self) -> Option<rtc::peer_connection::transport::RTCIceTransportState> {
+    fn tick(&mut self, by: Duration) {
+        use rtc::sansio::Protocol;
+
+        self.clock += by;
+        self.core.handle_timeout(self.clock).unwrap();
+    }
+
+    fn state(&mut self) -> Option<RTCIceTransportState> {
         native_ice_state(&self.core.get_stats(self.clock, StatsSelector::None))
     }
 }
 
-/// Review #455 round 2 on the native core: a failure the driver drained
-/// before a restart and delivers after it belongs to the old generation, and
-/// the restart's own checking event opens the new one.
-#[test]
-fn a_failure_drained_before_a_restart_is_the_old_generations() {
-    use rtc::peer_connection::transport::RTCIceTransportState;
-
-    let mut native = NativeCore::answering();
-    let ice = IceHealth::default();
-    native.deliver(&ice);
-    native.time_out();
-    let held = native.drain();
-    assert!(held.contains(&RTCIceConnectionState::Failed), "{held:?}");
-
-    let delivered = ice.checkings();
-    native.restart("restart");
-    let after_restart = native.state();
-    assert_eq!(after_restart, Some(RTCIceTransportState::Failed));
-    ice.accept_restart(delivered, after_restart);
-    held.iter().for_each(|state| ice.observe(*state));
-    assert!(
-        !ice.failed_now(native.state()),
-        "a failure from before the restart closed the restarted peer"
-    );
-
-    let opened = native.deliver(&ice);
-    assert_eq!(opened, [RTCIceConnectionState::Checking]);
-    assert!(!ice.failed_now(native.state()));
-    native.time_out();
-    native.deliver(&ice);
-    assert!(ice.failed_now(native.state()), "the new generation failed");
+/// The async wrapper's scheduling replaced by hand around a real sans-I/O core,
+/// so the production `answer()` and close run against genuine native SDP,
+/// timeouts, drains and statistics (after review #455 round 4's adapter).
+struct CorePeer {
+    native: Mutex<NativeCore>,
+    events: PeerEvents,
+    closed: AtomicBool,
+    /// Fail the agent's next tick as soon as the restart is applied, the way
+    /// the driver can win the core lock before `answer()`'s next call.
+    fail_after_restart: AtomicBool,
+    failure_pending: AtomicBool,
+    deferred: Mutex<Drained>,
 }
 
-/// Review #455 round 3: a restart accepted while the agent was still checking
-/// queues no checking event. The failure that follows is current, and the
-/// idle peer is still cleaned up.
-#[test]
-fn a_failure_after_a_restart_that_queued_no_checking_is_current() {
+impl CorePeer {
+    fn new(native: NativeCore, ice: Arc<IceHealth>) -> Arc<Self> {
+        Arc::new(Self {
+            events: peer_events(ice, native.offers.clone()),
+            native: Mutex::new(native),
+            closed: AtomicBool::new(false),
+            fail_after_restart: AtomicBool::new(false),
+            failure_pending: AtomicBool::new(false),
+            deferred: Mutex::default(),
+        })
+    }
+
+    async fn deliver(&self) -> Vec<RTCIceConnectionState> {
+        let drained = self.native.lock().unwrap().drain();
+        drained.deliver(&self.events).await
+    }
+
+    fn take_deferred(&self) -> Drained {
+        std::mem::take(&mut *self.deferred.lock().unwrap())
+    }
+
+    fn with_native<T>(&self, f: impl FnOnce(&mut NativeCore) -> T) -> T {
+        f(&mut self.native.lock().unwrap())
+    }
+}
+
+#[async_trait]
+impl PeerConnection for CorePeer {
+    async fn close(&self) -> webrtc::error::Result<()> {
+        use rtc::sansio::Protocol;
+
+        self.native.lock().unwrap().core.close()?;
+        self.closed.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn get_stats(&self, now: Instant, selector: StatsSelector) -> RTCStatsReport {
+        self.native.lock().unwrap().core.get_stats(now, selector)
+    }
+
+    async fn create_offer(
+        &self,
+        _options: Option<rtc::peer_connection::configuration::RTCOfferOptions>,
+    ) -> webrtc::error::Result<RTCSessionDescription> {
+        unimplemented!("the bridge answers")
+    }
+
+    async fn create_answer(
+        &self,
+        options: Option<rtc::peer_connection::configuration::RTCAnswerOptions>,
+    ) -> webrtc::error::Result<RTCSessionDescription> {
+        Ok(self.native.lock().unwrap().core.create_answer(options)?)
+    }
+
+    async fn set_local_description(
+        &self,
+        description: RTCSessionDescription,
+    ) -> webrtc::error::Result<()> {
+        Ok(self
+            .native
+            .lock()
+            .unwrap()
+            .core
+            .set_local_description(description)?)
+    }
+
+    async fn local_description(&self) -> Option<RTCSessionDescription> {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn current_local_description(&self) -> Option<RTCSessionDescription> {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn pending_local_description(&self) -> Option<RTCSessionDescription> {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn can_trickle_ice_candidates(&self) -> Option<bool> {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn set_remote_description(
+        &self,
+        description: RTCSessionDescription,
+    ) -> webrtc::error::Result<()> {
+        let applied = self
+            .native
+            .lock()
+            .unwrap()
+            .core
+            .set_remote_description(description);
+        if self.fail_after_restart.swap(false, Ordering::SeqCst) {
+            self.failure_pending.store(true, Ordering::SeqCst);
+        }
+        Ok(applied?)
+    }
+
+    async fn remote_description(&self) -> Option<RTCSessionDescription> {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn current_remote_description(&self) -> Option<RTCSessionDescription> {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn pending_remote_description(&self) -> Option<RTCSessionDescription> {
+        let mut native = self.native.lock().unwrap();
+        if self.failure_pending.swap(false, Ordering::SeqCst) {
+            // The driver wins the core lock first: a restart while checking
+            // keeps the agent's old timer, so its very next tick fails.
+            native.tick(Duration::from_millis(201));
+            let drained = native.drain();
+            assert_eq!(drained.states, [RTCIceConnectionState::Failed]);
+            assert_eq!(drained.offers, 1, "the restart's offer drains with it");
+            *self.deferred.lock().unwrap() = drained;
+        }
+        native.core.pending_remote_description().cloned()
+    }
+
+    async fn add_ice_candidate(
+        &self,
+        _candidate: RTCIceCandidateInit,
+    ) -> webrtc::error::Result<()> {
+        unimplemented!("no candidates are trickled")
+    }
+
+    async fn restart_ice(&self) -> webrtc::error::Result<()> {
+        unimplemented!("the bridge never restarts ICE itself")
+    }
+
+    async fn get_configuration(&self) -> RTCConfiguration {
+        unimplemented!("not read by the bridge")
+    }
+
+    async fn set_configuration(
+        &self,
+        configuration: RTCConfiguration,
+    ) -> webrtc::error::Result<()> {
+        Ok(self
+            .native
+            .lock()
+            .unwrap()
+            .core
+            .set_configuration(configuration)?)
+    }
+
+    async fn create_data_channel(
+        &self,
+        _label: &str,
+        _options: Option<RTCDataChannelInit>,
+    ) -> webrtc::error::Result<Arc<dyn DataChannel>> {
+        unimplemented!("no carriers")
+    }
+
+    async fn get_senders(&self) -> Vec<Arc<dyn webrtc::rtp_transceiver::RtpSender>> {
+        unimplemented!("no media")
+    }
+
+    async fn get_receivers(&self) -> Vec<Arc<dyn webrtc::rtp_transceiver::RtpReceiver>> {
+        unimplemented!("no media")
+    }
+
+    async fn get_transceivers(&self) -> Vec<Arc<dyn webrtc::rtp_transceiver::RtpTransceiver>> {
+        unimplemented!("no media")
+    }
+
+    async fn add_track(
+        &self,
+        _track: Arc<dyn webrtc::media_stream::track_local::TrackLocal>,
+    ) -> webrtc::error::Result<Arc<dyn webrtc::rtp_transceiver::RtpSender>> {
+        unimplemented!("no media")
+    }
+
+    async fn remove_track(
+        &self,
+        _sender: &Arc<dyn webrtc::rtp_transceiver::RtpSender>,
+    ) -> webrtc::error::Result<()> {
+        unimplemented!("no media")
+    }
+
+    async fn add_transceiver_from_track(
+        &self,
+        _track: Arc<dyn webrtc::media_stream::track_local::TrackLocal>,
+        _init: Option<rtc::rtp_transceiver::RTCRtpTransceiverInit>,
+    ) -> webrtc::error::Result<Arc<dyn webrtc::rtp_transceiver::RtpTransceiver>> {
+        unimplemented!("no media")
+    }
+
+    async fn add_transceiver_from_kind(
+        &self,
+        _kind: rtc::rtp_transceiver::rtp_sender::RtpCodecKind,
+        _init: Option<rtc::rtp_transceiver::RTCRtpTransceiverInit>,
+    ) -> webrtc::error::Result<Arc<dyn webrtc::rtp_transceiver::RtpTransceiver>> {
+        unimplemented!("no media")
+    }
+}
+
+/// A real peer whose connection is `native`, negotiated on its first offer as
+/// `answer()` would have: one have-remote-offer queued, its delivery up to
+/// the native core's event stream.
+async fn native_peer(session_id: &str, native: NativeCore) -> (WebrtcPeer, Arc<CorePeer>) {
+    let peer = webrtc_peer(session_id);
+    peer.remote.begin(&native.offer).await;
+    let offers_delivered = native.offers.clone();
+    let connection = CorePeer::new(native, peer.ice.clone());
+    *peer.negotiation.lock().await = Some(Negotiation {
+        connection: connection.clone(),
+        carriers: Vec::new(),
+        path_report: tokio::spawn(std::future::pending::<()>()),
+        sweep_report: tokio::spawn(std::future::pending::<()>()),
+        offers_queued: 1,
+        offers_delivered,
+    });
+    (peer, connection)
+}
+
+async fn failed_native() -> NativeCore {
     let mut native = NativeCore::answering();
-    let ice = IceHealth::default();
+    let opened = native.deliver(Arc::default()).await;
+    assert!(opened.contains(&RTCIceConnectionState::Checking));
+    native.time_out();
+    let failed = native.deliver(Arc::default()).await;
+    assert!(failed.contains(&RTCIceConnectionState::Failed));
+    assert_eq!(native.state(), Some(RTCIceTransportState::Failed));
+    native
+}
+
+/// Attempt the close a newer session's cleanup makes, and say what it did.
+async fn try_close(peer: &WebrtcPeer, connection: &CorePeer) -> (bool, bool, bool, bool) {
+    let removed = Arc::new(AtomicBool::new(false));
+    let flag = removed.clone();
+    let closed = peer
+        .close_if_ice_failed(Box::new(move || flag.store(true, Ordering::SeqCst)))
+        .await;
+    (
+        closed,
+        removed.load(Ordering::SeqCst),
+        peer.ice.retired.load(Ordering::SeqCst),
+        connection.closed.load(Ordering::SeqCst),
+    )
+}
+
+const KEPT: (bool, bool, bool, bool) = (false, false, false, false);
+const RETIRED: (bool, bool, bool, bool) = (true, true, true, true);
+
+/// Review #455 round 4, P1: a cleanup that runs after a restart was accepted,
+/// while the core still records the old failure and the restart's checking is
+/// queued, keeps the peer. It looks again once the driver has drained past
+/// the restart, and only a failure of the new generation retires it.
+#[tokio::test]
+async fn r4_actual_close_must_not_combine_old_native_failure_with_new_checking() {
+    let native = failed_native().await;
+    let restart = native.restart_offer("restarted");
+    let (peer, connection) = native_peer("r4-snapshot", native).await;
+    peer.answer(&restart, &[], session("r4-snapshot"))
+        .await
+        .unwrap();
+    assert_eq!(
+        connection.with_native(NativeCore::state),
+        Some(RTCIceTransportState::Failed),
+        "the restart's checking is still queued"
+    );
+    assert_eq!(try_close(&peer, &connection).await, KEPT);
+
+    assert_eq!(
+        connection.deliver().await,
+        [RTCIceConnectionState::Checking]
+    );
+    assert_eq!(try_close(&peer, &connection).await, KEPT);
+
+    connection.with_native(NativeCore::time_out);
+    assert_eq!(connection.deliver().await, [RTCIceConnectionState::Failed]);
+    assert_eq!(try_close(&peer, &connection).await, RETIRED);
+    assert!(peer.negotiation.lock().await.is_none());
+}
+
+/// The production close unregisters, retires, tears down its negotiation and
+/// closes a native core that genuinely failed.
+#[tokio::test]
+async fn r4_actual_close_retires_and_closes_a_genuine_native_failure() {
+    let native = failed_native().await;
+    let (peer, connection) = native_peer("r4-failed", native).await;
+    assert_eq!(try_close(&peer, &connection).await, RETIRED);
+    assert!(peer.negotiation.lock().await.is_none());
+    let after = peer
+        .answer(
+            &connection.with_native(|n| n.offer.clone()),
+            &[],
+            session("r4-failed"),
+        )
+        .await;
+    assert!(matches!(after, Err(RtcError::Retired(_))), "{after:?}");
+}
+
+/// Review #455 round 4, P2: a restart accepted while the agent is checking
+/// keeps its old timer, so the next tick can genuinely fail before `answer()`
+/// returns. That failure is current and the idle peer is closed.
+#[tokio::test]
+async fn r4_answer_must_not_mask_a_current_failure_forever() {
+    let mut native = NativeCore::answering();
+    native.deliver(Arc::default()).await;
+    native.tick(Duration::from_secs(1));
+    native.deliver(Arc::default()).await;
+    native.tick(Duration::from_secs(30));
+    native.deliver(Arc::default()).await;
+    assert_eq!(native.state(), Some(RTCIceTransportState::Checking));
+    let restart = native.restart_offer("current");
+    let (peer, connection) = native_peer("r4-current", native).await;
     let looked = Arc::new(AtomicU64::new(0));
     let counted = looked.clone();
-    let _ = ice.on_failed.set(Arc::new(move || {
+    let _ = peer.ice.on_failed.set(Arc::new(move || {
         counted.fetch_add(1, Ordering::SeqCst);
     }));
-    let opened = native.deliver(&ice);
+    connection.fail_after_restart.store(true, Ordering::SeqCst);
+    peer.answer(&restart, &[], session("r4-current"))
+        .await
+        .unwrap();
+    let drained = connection.take_deferred().deliver(&connection.events).await;
+    assert_eq!(drained, [RTCIceConnectionState::Failed]);
     assert!(
-        opened.contains(&RTCIceConnectionState::Checking),
-        "{opened:?}"
+        looked.load(Ordering::SeqCst) >= 1,
+        "no cleanup was prompted"
     );
 
-    let delivered = ice.checkings();
-    native.restart("restart");
-    ice.accept_restart(delivered, native.state());
-    let restarted = native.deliver(&ice);
-    assert!(
-        !restarted.contains(&RTCIceConnectionState::Checking),
-        "{restarted:?}"
-    );
+    // Nothing further comes: no checking, and an idle channel never stalls.
+    connection.with_native(|native| native.tick(Duration::from_secs(600)));
+    assert!(connection.deliver().await.is_empty());
+    let mut stall = StallWatch::default();
+    let idle = SendReading {
+        handed: 0,
+        outstanding: 0,
+    };
+    assert_eq!(stall.sample(idle, Duration::from_secs(600)), None);
+    assert_eq!(try_close(&peer, &connection).await, RETIRED);
+}
 
-    native.time_out();
-    let failed = native.deliver(&ice);
+/// Review #455 rounds 3 and 4: a refused second restart neither ends the
+/// first restart's protection nor blocks cleanup once the new generation
+/// fails.
+#[tokio::test]
+async fn r4_refused_second_restart_preserves_actual_stale_failure_hold() {
+    let native = failed_native().await;
+    let first = native.restart_offer("first");
+    let second = native.restart_offer("second");
+    let (peer, connection) = native_peer("r4-refused", native).await;
+    peer.answer(&first, &[], session("r4-refused"))
+        .await
+        .unwrap();
+    let refused = &second[..second.find("m=").unwrap()];
+    let answered = peer.answer(refused, &[], session("r4-refused")).await;
     assert!(
-        failed.contains(&RTCIceConnectionState::Failed),
-        "{failed:?}"
+        matches!(answered, Err(RtcError::Refused(_))),
+        "{answered:?}"
     );
-    assert_eq!(looked.load(Ordering::SeqCst), 1, "no cleanup was prompted");
-    assert!(
-        ice.failed_now(native.state()),
-        "the native failure was masked"
+    assert_eq!(try_close(&peer, &connection).await, KEPT);
+
+    assert_eq!(
+        connection.deliver().await,
+        [RTCIceConnectionState::Checking]
     );
+    connection.with_native(NativeCore::time_out);
+    assert_eq!(connection.deliver().await, [RTCIceConnectionState::Failed]);
+    assert_eq!(try_close(&peer, &connection).await, RETIRED);
+}
+
+/// A restart while checking queues no checking event; the failure after it
+/// still closes the idle peer.
+#[tokio::test]
+async fn r4_checking_restart_with_stats_before_failure_still_closes_idle_peer() {
+    let mut native = NativeCore::answering();
+    native.deliver(Arc::default()).await;
+    let restart = native.restart_offer("checking");
+    let (peer, connection) = native_peer("r4-checking", native).await;
+    peer.answer(&restart, &[], session("r4-checking"))
+        .await
+        .unwrap();
+    assert!(connection.deliver().await.is_empty(), "no checking event");
+    connection.with_native(NativeCore::time_out);
+    assert_eq!(connection.deliver().await, [RTCIceConnectionState::Failed]);
+    assert_eq!(try_close(&peer, &connection).await, RETIRED);
+}
+
+/// The driver may deliver a drained failure before the restart offer drained
+/// with it. The failure prompts a look the close must refuse; the offer's
+/// delivery prompts the look that closes the peer.
+#[tokio::test]
+async fn a_restart_offer_delivered_after_its_failure_prompts_the_close() {
+    let mut native = NativeCore::answering();
+    native.deliver(Arc::default()).await;
+    native.tick(Duration::from_secs(1));
+    native.deliver(Arc::default()).await;
+    native.tick(Duration::from_secs(30));
+    native.deliver(Arc::default()).await;
+    let restart = native.restart_offer("late-offer");
+    let (peer, connection) = native_peer("late-offer", native).await;
+    let looks = Arc::new(Mutex::new(Vec::new()));
+    let (seen, weak) = (looks.clone(), Arc::downgrade(&connection));
+    let peer = Arc::new(peer);
+    let looking = Arc::downgrade(&peer);
+    let _ = peer.ice.on_failed.set(Arc::new(move || {
+        let (Some(peer), Some(connection)) = (looking.upgrade(), weak.upgrade()) else {
+            return;
+        };
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            let outcome = try_close(&peer, &connection).await;
+            seen.lock().unwrap().push(outcome);
+        });
+    }));
+    connection.fail_after_restart.store(true, Ordering::SeqCst);
+    peer.answer(&restart, &[], session("late-offer"))
+        .await
+        .unwrap();
+
+    let drained = connection.take_deferred();
+    drained.deliver_states(&connection.events).await;
+    settled().await;
+    assert_eq!(*looks.lock().unwrap(), [KEPT]);
+    drained.deliver_offers(&connection.events).await;
+    settled().await;
+    assert_eq!(*looks.lock().unwrap(), [KEPT, RETIRED]);
 }

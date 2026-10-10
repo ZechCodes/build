@@ -185,11 +185,12 @@ export function deviceTagHtml(project) {
   return dimDeviceHtml(deviceTagOf(project));
 }
 
-/** The rail and toolbar list projects in the same order: names and displayed
- *  device tags use locale collation; account-wide keys settle remaining ties. */
+/** The rail and toolbar list projects in the same order: names and cached
+ *  device names use locale collation; account-wide keys settle remaining ties.
+ *  Connection status changes the displayed tag, never the sort order. */
 export function byProjectName(left, right) {
   return left.name.localeCompare(right.name, undefined, { sensitivity: "base" })
-    || deviceTagOf(left).localeCompare(deviceTagOf(right), undefined, { sensitivity: "base" })
+    || (left.deviceName || "").localeCompare(right.deviceName || "", undefined, { sensitivity: "base" })
     || (left.projectKey || left.key).localeCompare(right.projectKey || right.key);
 }
 

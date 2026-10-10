@@ -6632,3 +6632,57 @@ describe("a conversation opened by a notification's link", () => {
     expect(scroller().scrollTop).toBe(HEIGHT);
   });
 });
+
+it("re-reports the now-safe tail after returning from overview to the same conversation", async () => {
+  const attention = Array.from({ length: 120 }, (_, index) => index + 1);
+  const items = attention.map((sequence) => ({ type: "message", data: {
+    sequence, id: `hidden-probe-${sequence}`, role: "agent", body: `message ${sequence}`,
+  } }));
+  payload = branchRow({
+    // Match #473: transcript is ahead of a cached zero-unread roster.
+    agents: [agent({ unread_count: 0, unread_reason: null, read_through_sequence: 0 })],
+    run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: 120, thread_last_sequence: 120 } },
+  });
+  let cursor = 0;
+  const reports = [];
+  markSeen.mockImplementation(async (_entityId, _agentId, floor, read) => {
+    const hiddenBelow = attention.some((sequence) => sequence > cursor && sequence < floor);
+    if (!hiddenBelow) cursor = Math.max(cursor, Math.min(read, 120));
+    reports.push({ read, floor, hiddenBelow, cursor });
+    return true;
+  });
+  let viewportThrough = Infinity;
+  const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+    const sequence = Number(this.getAttribute("data-sequence"));
+    const bottom = sequence > viewportThrough ? 200 : 0;
+    return { top: bottom, bottom, left: 0, right: 0, height: 0, width: 0 };
+  });
+  const sequences = () => [...railHost().querySelectorAll(".thread-items > [data-sequence]")]
+    .map((row) => Number(row.dataset.sequence));
+  try {
+    await mount();
+    expect(sequences()[0]).toBe(61);
+    expect(reports).toEqual([{ read: 120, floor: 61, hiddenBelow: true, cursor: 0 }]);
+    viewportThrough = 60;
+    railHost().querySelector(".thread-earlier").click();
+    await flush();
+    expect(sequences()[0]).toBe(1);
+    expect(cursor).toBe(60);
+    expect(reports[1]).toEqual({ read: 60, floor: 1, hiddenBelow: false, cursor: 60 });
+    await pushRow({ ...payload, agents: [agent({ unread_count: 60, unread_reason: "agent_message", read_through_sequence: 60 })] });
+    railHost().querySelector('[data-bubble="overview"]').click();
+    await flush();
+    expect(railHost().querySelector(".thread-items")).toBeNull();
+    viewportThrough = Infinity;
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await flush();
+    expect(sequences()[0]).toBe(61);
+    expect(sequences().at(-1)).toBe(120);
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect.soft(reports).toHaveLength(3);
+    expect.soft(cursor).toBe(120);
+  } finally {
+    geometry.mockRestore();
+  }
+});

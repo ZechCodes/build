@@ -70,3 +70,27 @@ it("caps refusal backoff at thirty seconds without scheduling a retry loop", asy
     now += 1;
   }
 });
+
+it("retries a tail report once reading earlier attention makes its cursor advance safe", async () => {
+  const reporter = createChatReadReporter();
+  let cursor = 0;
+  const attention = Array.from({ length: 120 }, (_, index) => index + 1);
+  const history = [];
+  // bridge/src/thread/conversation.rs unread_attention_below +
+  // bridge/src/app/board/attention.rs conversation_last_sequences/entity_seen:
+  // a hidden unread attention item prevents cursor advancement, but the RPC
+  // still answers {ok:true}; inboxSeen maps any fulfilled RPC to true.
+  const markSeen = vi.fn(async (read, floor) => {
+    const hiddenBelow = attention.some((sequence) => sequence > cursor && sequence < floor);
+    if (!hiddenBelow) cursor = Math.max(cursor, Math.min(read, 120));
+    history.push({ read, floor, hiddenBelow, cursor });
+    return true;
+  });
+  await reporter.report(120, 61, () => markSeen(120, 61), () => cursor);
+  expect(cursor).toBe(0);
+  await reporter.report(60, 1, () => markSeen(60, 1), () => cursor);
+  expect(cursor).toBe(60);
+  await reporter.report(120, 61, () => markSeen(120, 61), () => cursor);
+  expect.soft(markSeen).toHaveBeenCalledTimes(3);
+  expect.soft(cursor).toBe(120);
+});

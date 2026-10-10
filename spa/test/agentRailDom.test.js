@@ -6552,7 +6552,7 @@ describe("review158 independent ownership cases", () => {
 // necessary." The link names the agent; the shell stands the rail on it with
 // `landOnLatest` (core/shell.js). A rail left collapsed comes up with the panel
 // out on that agent, at the message the notification was about — the latest —
-// rather than at the unread line a press would land on.
+// on the unread line, just like a bubble press.
 describe("a conversation opened by a notification's link", () => {
   const atWidth = (width) => Object.defineProperty(window, "innerWidth", { configurable: true, value: width });
   const HEIGHT = 2400;
@@ -6573,6 +6573,10 @@ describe("a conversation opened by a notification's link", () => {
     });
     const body = (element) => element.id === "rail-body";
     geometry = [
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+        const offset = this.matches(".thread-unread-line") ? 800 : 0;
+        return { top: offset - (this.closest("#rail-body")?.scrollTop || 0), bottom: 0 };
+      }),
       vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return body(this) ? HEIGHT : 0; }),
       vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return body(this) ? 300 : 0; }),
     ];
@@ -6585,7 +6589,7 @@ describe("a conversation opened by a notification's link", () => {
 
   const scroller = () => railHost().querySelector("#rail-body");
 
-  it("opens a collapsed rail on the agent it names, scrolled to the latest message", async () => {
+  it("opens a collapsed rail on the agent it names, scrolled to the unread line", async () => {
     await mount();
     expect(panel()).toBeNull();
     rail.dispose();
@@ -6598,7 +6602,7 @@ describe("a conversation opened by a notification's link", () => {
       expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     });
     expect(railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').classList.contains("active")).toBe(true);
-    expect(scroller().scrollTop).toBe(HEIGHT);
+    expect(scroller().scrollTop).toBe(788);
   });
 
   it("moves off the agent the rail was open on", async () => {
@@ -6609,10 +6613,10 @@ describe("a conversation opened by a notification's link", () => {
     await mount({ openAgentId: "ag-1", landOnLatest: true });
     await vi.waitFor(() => expect(panel().textContent).toContain("the latest, which the push was about"));
     expect(headWho()).toBe(TOPICS["ag-1"]);
-    expect(scroller().scrollTop).toBe(HEIGHT);
+    expect(scroller().scrollTop).toBe(788);
   });
 
-  it("lands at the latest message on a workspace's rail, the project's agent beside it", async () => {
+  it("lands at the unread line on a workspace's rail, the project's agent beside it", async () => {
     payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-3", project_id: "p1",
       agents: [agent({ unread_count: 2, unread_reason: "agent_message", read_through_sequence: 11 })],
       run: payload.run };
@@ -6629,7 +6633,113 @@ describe("a conversation opened by a notification's link", () => {
       expect(panel()?.textContent).toContain("the latest, which the push was about");
       expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     });
-    expect(scroller().scrollTop).toBe(HEIGHT);
+    expect(scroller().scrollTop).toBe(788);
+  });
+});
+
+
+describe("every chat opening lands before reporting read (#472)", () => {
+  const scroller = () => railHost().querySelector("#rail-body");
+  const transcript = () => ({ items: Array.from({ length: 5 }, (_, i) => ({
+    type: "message", data: { sequence: 10 + i, role: "agent", body: `message ${10 + i}` },
+  })), has_more: false });
+  const unreadAgent = (over = {}) => agent({ read_through_sequence: 11, unread_count: 3, ...over });
+  let geometry;
+  beforeEach(() => {
+    geometry = [
+      vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 2020 : 0; }),
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function () { return this.id === "rail-body" ? 300 : 0; }),
+      vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+        const body = this.closest("#rail-body");
+        if (!body || this === body) return { top: 0, bottom: 300 };
+        const line = this.closest(".thread-unread-line");
+        const sequence = Number(this.closest("[data-sequence]")?.dataset.sequence);
+        const offset = line ? 800 : (sequence - 10) * 400 + (sequence >= 12 ? 20 : 0);
+        return { top: offset - body.scrollTop, bottom: offset + (line ? 20 : 400) - body.scrollTop };
+      }),
+    ];
+  });
+  afterEach(() => geometry.forEach((spy) => spy.mockRestore()));
+
+  const expectLandedAndReported = async () => {
+    await vi.waitFor(() => expect(scroller()?.scrollTop).toBe(788));
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled());
+    expect(markSeen.mock.calls.at(-1)[3]).toBe(11);
+    expect(markSeen.mock.calls.every((call) => call[3] <= 11)).toBe(true);
+  };
+
+  it("lands a reload/first paint after the cached transcript fills its empty frame, then reports", async () => {
+    payload = branchRow({ agents: [unreadAgent()] });
+    await mount();
+    markSeen.mockClear();
+    await writeRailThread("run-3", "ag-1", transcript());
+    await expectLandedAndReported();
+  });
+
+  it("lands chat switches from the previous bottom or history, then reports", async () => {
+    payload = branchRow({ agents: [unreadAgent(), unreadAgent({ id: "ag-2", ordinal: 2 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await writeRailThread("run-3", "ag-2", transcript());
+    await mount();
+    for (const [index, previousTop] of [[1, 1720], [0, 100]]) {
+      scroller().scrollTop = previousTop;
+      markSeen.mockClear();
+      bubbles()[index].click();
+      await expectLandedAndReported();
+    }
+  });
+
+  it("lands a workspace switch after its transcript arrives, then reports", async () => {
+    await mount();
+    rail.dispose();
+    payload = { kind: "workspace", workspace_id: "ws-next", entity_id: "run-next", project_id: "p1", agents: [unreadAgent()] };
+    await writeRailBoard({ workspaces: [{ id: "ws-next", project_id: "p1", entity_id: "run-next" }], items: [payload] });
+    await mount({ kind: "workspace", workspaceId: "ws-next", openAgentId: "ag-1" });
+    markSeen.mockClear();
+    await writeRailThread("run-next", "ag-1", transcript());
+    await expectLandedAndReported();
+  });
+
+  it("lands a notification link on New, then reports", async () => {
+    payload = branchRow({ agents: [unreadAgent()] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount({ openAgentId: "ag-1", landOnLatest: true });
+    await expectLandedAndReported();
+  });
+
+  it("relands when the roster supplies the delayed cursor", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    expect(markSeen).not.toHaveBeenCalled();
+    await pushRow(branchRow({ agents: [unreadAgent()] }));
+    await expectLandedAndReported();
+  });
+
+  it("preserves a reader's scroll when the divider arrives late", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    scroller().dispatchEvent(new WheelEvent("wheel"));
+    scroller().scrollTop = 100;
+    scroller().dispatchEvent(new Event("scroll"));
+    await pushRow(branchRow({ agents: [unreadAgent()] }));
+    expect(scroller().scrollTop).toBe(100);
+    expect(scroller().querySelector(".thread-unread-line")).toBeTruthy();
+  });
+
+  it("opens again on New when returning from the background", async () => {
+    payload = branchRow({ agents: [unreadAgent()] });
+    await writeRailThread("run-3", "ag-1", transcript());
+    await mount();
+    scroller().scrollTop = 100;
+    const hidden = vi.spyOn(document, "hidden", "get");
+    hidden.mockReturnValue(true);
+    document.dispatchEvent(new Event("visibilitychange"));
+    hidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await expectLandedAndReported();
+    hidden.mockRestore();
   });
 });
 

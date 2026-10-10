@@ -95,7 +95,7 @@ describe("a link naming an agent over the standing page", () => {
     askToOpenLinkedAgent();
     standShell({ ...WORKSPACE, agent: "agent-7" });
     expect(mountAgentRail).toHaveBeenCalledTimes(2);
-    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: true });
+    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: false });
     // Asked once: the next paint of the same page leaves the rail alone.
     standShell({ ...WORKSPACE, agent: "agent-7" });
     expect(mountAgentRail).toHaveBeenCalledTimes(2);
@@ -122,7 +122,7 @@ describe("following a notification link in the open window", () => {
     standShell(App.route);
     followNotificationLink(hash);
     expect(mountAgentRail).toHaveBeenCalledTimes(2);
-    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: true });
+    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: false });
   });
 
   it("routes to another page through the hash, which the router renders", () => {
@@ -131,7 +131,7 @@ describe("following a notification link in the open window", () => {
     expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/w-1/changes?agent=agent-7");
   });
 
-  it("takes the service worker's mark off the link, and lands the stand it causes on the latest message", () => {
+  it("takes the service worker's mark off the link, and lands the stand it causes on the unread line", () => {
     history.replaceState(null, "", "#/device/dev-1/project/p-1/workspace/w-1/changes");
     App.route = routeFromHash(location.hash);
     standShell(App.route);
@@ -139,13 +139,13 @@ describe("following a notification link in the open window", () => {
     expect(location.hash).toBe("#/device/dev-1/project/p-1/workspace/w-1/changes?agent=agent-7");
     // The router's hashchange stands the page the hash now names.
     standShell(routeFromHash(location.hash));
-    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: true });
+    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: false });
     // One-shot: a later link lands on the unread line.
     standShell(routeFromHash("#/device/dev-1/project/p-1/workspace/w-1/changes?agent=agent-8"));
     expect(lastRail()).toMatchObject({ openAgentId: "agent-8", landOnLatest: false });
   });
 
-  it("takes the mark off a marked link to the page already open, and lands on the latest message", () => {
+  it("takes the mark off a marked link to the page already open, and lands on the unread line", () => {
     const hash = "#/device/dev-1/project/p-1/workspace/w-1/changes?agent=agent-7";
     history.replaceState(null, "", hash);
     App.route = routeFromHash(hash);
@@ -154,12 +154,12 @@ describe("following a notification link in the open window", () => {
     followNotificationLink(`${hash}&from=push`);
     expect(location.hash).toBe(hash);
     expect(mountAgentRail).toHaveBeenCalledTimes(2);
-    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: true });
+    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: false });
   });
 });
 
 describe("a cold start on a notification's link", () => {
-  it("lands the first stand on the latest message and drops the mark from the URL, without a new entry", () => {
+  it("lands the first stand on the unread line and drops the mark from the URL, without a new entry", () => {
     const length = history.length;
     history.replaceState(null, "", "#/device/dev-1/project/p-1/workspace/w-1/changes?agent=agent-7&from=push");
     initRouter();
@@ -168,7 +168,7 @@ describe("a cold start on a notification's link", () => {
     expect(App.route).toMatchObject({ name: "workspace", workspaceId: "w-1", agent: "agent-7" });
     expect(App.route).not.toHaveProperty("fromPush");
     standShell(App.route);
-    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: true });
+    expect(lastRail()).toMatchObject({ openAgentId: "agent-7", landOnLatest: false });
     // A reload of the URL left behind lands on the unread line.
     stopShell();
     standShell(routeFromHash(location.hash));

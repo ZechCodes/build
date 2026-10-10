@@ -2203,8 +2203,13 @@ The head offers Hide and New workspace directly.
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
 `spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`. Every watched
 open task outside Done stays visible, even after its attention is read. Rows
-with attention reasons or unread news precede quiet tasks; each group retains
-oldest-change-first order. Quiet tasks use a single line. Every task row has an
+interleave with captures, workspaces and project-agent rows in one list ordered
+by oldest anchor (#481). A task without a bridge anchor uses its creation time;
+its latest cached update, comment or event supplies activity for Recent. Assignment,
+attention reasons and unread counts never change position. Every row kind moves
+to Recent after a day without activity while no agent works; dismissed rows go
+there too. Inside a project block, the same row order and Recent rule apply.
+Quiet tasks use a single line. Every task row has an
 eye that uses the existing optimistic `tasks.unwatch` path, removing the row
 immediately and restoring its watch if the write fails. The eye stays visible
 on touch screens. Needs you reasons and unread counting retain their own rules.

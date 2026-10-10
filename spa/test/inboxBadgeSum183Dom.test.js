@@ -128,7 +128,10 @@ describe("the inbox's top badge", () => {
     await vi.waitFor(() => expect(published).toBe(BUILD + SMARTER), WAIT);
     expectHeadStatus("build", { unread: true });
     expectHeadStatus("smarter", { unread: true });
-    expect(row("tracker_task:i-113")?.classList.contains("inbox-quiet")).toBe(true);
+    // An old watched task counts even while its row is behind Recent (#481).
+    expect(row("tracker_task:i-113")).toBe(null);
+    block("build").querySelector("[data-recent-toggle]").click();
+    await vi.waitFor(() => expect(row("tracker_task:i-113")?.classList.contains("inbox-quiet")).toBe(true), WAIT);
     expect(row(`workspace:${DEVICE}/old-work`)?.closest(".inbox-recent")).not.toBe(null);
     expect(published).toBe(BUILD + SMARTER);
   });

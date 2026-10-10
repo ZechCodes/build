@@ -44,9 +44,13 @@ Wire 3.18.0.
 ### Changed
 
 - Show every watched task that is neither Done nor closed in the inbox,
-  including quiet rows, with attention rows first. Mentions watch the task for
+  including quiet rows. Mentions watch the task for
   the user, and each task row has an eye to unwatch it on desktop and phone
   (#475).
+- Interleave every inbox row by oldest anchor, with no task, assignment or
+  attention priority. Tasks without an anchor use creation time, and every
+  row kind shares the inactive-for-a-day Recent rule, including inside project
+  blocks (#481).
 - End agent tracking when tasks reach Done or close, delivering the final notice;
   reopening and stale writes do not restore former trackers (#444).
 - Task board, list and inbox rows show each PR's icon and lifecycle status

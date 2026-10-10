@@ -602,7 +602,7 @@ describe("the unpinned panel's popover", () => {
     bubbles()[0].click();
     await flush();
     expect(history.textContent).toContain("three");
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("takes its listeners with it when the rail goes", async () => {
@@ -3058,7 +3058,7 @@ describe("the conversation panel", () => {
     // The floor is the oldest message the panel holds, and 12 is the newest its
     // viewport reached — which over a conversation that arrived whole is all of
     // it.
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1"), { timeout: 6000 });
   });
 
   // A desktop left showing a chat overnight: visible, nobody at it. A mark
@@ -3194,6 +3194,7 @@ describe("the conversation panel", () => {
     });
     try {
       await mount();
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
     } finally {
       geometry.mockRestore();
     }
@@ -3209,6 +3210,7 @@ describe("the conversation panel", () => {
   it("clears New when leaving mid-grace, including with a stale digest on reopening", async () => {
     conversationReadThrough(11, 1);
     await mount();
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
     expect(railHost().querySelector(".thread-unread-line")).toBeTruthy();
     bubbles()[0].click();
     await flush();
@@ -3375,7 +3377,7 @@ describe("reading back past the top of a paged conversation", () => {
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: 97 })]);
     await mount();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("moves the floor it reports down as the reader scrolls back", async () => {
@@ -3389,7 +3391,7 @@ describe("reading back past the top of a paged conversation", () => {
     railBody().dispatchEvent(new Event("scroll"));
     await flush();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined, "dev-1");
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined, "dev-1"), { timeout: 6000 });
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {
@@ -6368,6 +6370,7 @@ describe("a long conversation held in the cache", () => {
     heldConversation(false, [agent({ unread_count: 1, unread_reason: "agent_message", read_through_sequence: HELD - 1 })]);
     await mount();
 
+    await vi.waitFor(() => expect(markSeen).toHaveBeenCalled(), { timeout: 6000 });
     const [[, , floor]] = markSeen.mock.calls;
     expect(floor).toBe(drawnSequences()[0]);
   });

@@ -2180,7 +2180,8 @@ open as a modal (`spa/src/views/settingsModal.js`).
 
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence
-baseline on the agent; task watches persist a timeline entry baseline. Counts
+baseline on the agent; task watches persist a timeline entry baseline
+(`watch_started_after` on task records and wire summaries). Counts
 start strictly after the later of that baseline and the user's read cursor.
 Repeated watch requests retain the baseline; unwatching and rewatching starts a
 new baseline. User-created conversations watched from creation start at zero.

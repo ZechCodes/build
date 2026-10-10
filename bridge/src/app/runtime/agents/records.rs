@@ -615,9 +615,13 @@ impl AppState {
     ) -> Result<serde_json::Value, String> {
         let address = self.resolve_conversation_address(owner, Some(agent_id))?;
         self.guard_conversation_reservation(&address)?;
+        let baseline = self.conversation_at(&address)?.last_sequence();
         let mut found = false;
         self.edit_agent_record("set_conversation_watched", owner, agent_id, |agent| {
             found = true;
+            if watching && !agent.watched {
+                agent.watch_started_after = baseline;
+            }
             agent.watched = watching;
         });
         if !found {

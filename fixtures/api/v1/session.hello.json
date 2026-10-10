@@ -262,6 +262,9 @@
     "since": "3.19.0",
     "capability": "unread.watchScoped",
     "unwatched_count": 0,
-    "watch_start": "Only attention messages and task timeline news created after the latest watch began are unread."
+    "watch_start": "Only attention messages and task timeline news created after the latest watch began are unread.",
+    "task_field": {
+      "watch_started_after": "Optional timeline entry ID; omitted or null for an origin watch. Legacy tasks can derive their latest Watched event."
+    }
   }
 }

@@ -82,7 +82,7 @@ pub const QA_METHODS: &[&str] = &["stream.events", "stream.start", "stream.state
 /// single method name. The SPA consumes a subset as shape and behavior gates.
 pub const FEATURE_CAPABILITIES: &[&str] = &[
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
-    "agents.createdBy", // Since 3.1.0: created_by on an agent's digest (#216).
+    "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).
     "agents.names",
     "board.conversationSessions", // Since 1.28.0: a conversation row's own session_started_ms/last_activity_ms.
     "board.usageLimits",

@@ -4,25 +4,39 @@ use super::*;
 fn owner(state: &mut AppState, repo: &Path) -> String {
     let project = added_project(state, repo);
     let workspace = workspace(state, &project, "watch baseline");
-    state.handle(req("workspace.ensure_conversation", json!({"workspace_id": workspace})))
-        ["result"]["run_id"].as_str().unwrap().to_string()
+    state.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id": workspace}),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 fn add(state: &mut AppState, owner: &str, watched: bool) -> String {
-    let reply = state.handle(req("agent.add", json!({"entity_id": owner, "notify_user": watched})));
+    let reply = state.handle(req(
+        "agent.add",
+        json!({"entity_id": owner, "notify_user": watched}),
+    ));
     assert_eq!(reply["ok"], true, "{reply:?}");
     reply["result"]["agent"]["id"].as_str().unwrap().to_string()
 }
 
 fn say(state: &mut AppState, owner: &str, id: &str) {
-    state.edit_agent_conversation(owner, id, |thread, _| {
-        thread.post_agent("please review", None, now_rfc3339());
-        Ok(())
-    }).unwrap();
+    state
+        .edit_agent_conversation(owner, id, |thread, _| {
+            thread.post_agent("please review", None, now_rfc3339());
+            Ok(())
+        })
+        .unwrap();
 }
 
 fn watch(state: &mut AppState, owner: &str, id: &str, watching: bool) {
-    let method = if watching { "conversation.watch" } else { "conversation.unwatch" };
+    let method = if watching {
+        "conversation.watch"
+    } else {
+        "conversation.unwatch"
+    };
     let reply = state.handle(req(method, json!({"entity_id": owner, "agent_id": id})));
     assert_eq!(reply["ok"], true, "{reply:?}");
 }
@@ -49,7 +63,11 @@ fn conversation_watch_baselines_exclude_unwatched_and_pre_watch_news() {
     say(&mut state, &owner, &unwatched);
     assert_eq!(count(&state, &owner, &unwatched), 1);
     watch(&mut state, &owner, &unwatched, true);
-    assert_eq!(count(&state, &owner, &unwatched), 1, "repeat watch is idempotent");
+    assert_eq!(
+        count(&state, &owner, &unwatched),
+        1,
+        "repeat watch is idempotent"
+    );
     watch(&mut state, &owner, &unwatched, false);
     say(&mut state, &owner, &unwatched);
     watch(&mut state, &owner, &unwatched, true);
@@ -62,16 +80,30 @@ fn conversation_watch_baselines_exclude_unwatched_and_pre_watch_news() {
 fn conversation_watch_baselines_survive_restart_and_count_stored_history() {
     let (repo_home, repo) = init_repo();
     let home = tempfile::tempdir().unwrap();
-    let mut state = rooted(home.path()).with_task_store(home.path().join("tasks")).unwrap();
+    let mut state = rooted(home.path())
+        .with_task_store(home.path().join("tasks"))
+        .unwrap();
     let owner = owner(&mut state, &repo);
     let id = add(&mut state, &owner, false);
-    for _ in 0..210 { say(&mut state, &owner, &id); }
+    for _ in 0..210 {
+        say(&mut state, &owner, &id);
+    }
     watch(&mut state, &owner, &id, true);
-    for _ in 0..210 { say(&mut state, &owner, &id); }
+    for _ in 0..210 {
+        say(&mut state, &owner, &id);
+    }
     assert_eq!(count(&state, &owner, &id), 210);
     drop(state);
-    let restored = rooted(home.path()).with_task_store(home.path().join("tasks")).unwrap();
-    assert!(restored.agent_conversation(&owner, Some(&id)).unwrap().resident_from_sequence() > 0);
+    let restored = rooted(home.path())
+        .with_task_store(home.path().join("tasks"))
+        .unwrap();
+    assert!(
+        restored
+            .agent_conversation(&owner, Some(&id))
+            .unwrap()
+            .resident_from_sequence()
+            > 0
+    );
     assert_eq!(count(&restored, &owner, &id), 210);
     drop(repo_home);
 }

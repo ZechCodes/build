@@ -250,6 +250,11 @@ pub struct Agent {
     /// setting it false for an agent an agent made.
     #[serde(default = "watched_by_default")]
     pub watched: bool,
+    /// Creation-sequence floor of the current watch. Zero for conversations
+    /// watched from creation and records saved before watch baselines existed.
+    /// Kept separate from the user's read cursor so watching never marks read.
+    #[serde(default)]
+    pub watch_started_after: u64,
     /// Tokens in context on the last turn this agent's session reported, or
     /// `None` until it reports one — and again once a compaction has been
     /// asked for, so a reading from before it cannot ask for another.
@@ -357,6 +362,7 @@ impl Agent {
             name_asked: false,
             created_by: None,
             watched: true,
+            watch_started_after: 0,
             last_context_tokens: None,
             last_context_at: None,
             session_cache_read_tokens: None,

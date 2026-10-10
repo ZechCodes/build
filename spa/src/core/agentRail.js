@@ -2106,8 +2106,11 @@ function mountRailOnContext(host, context, swap) {
 
   const activeBubble = () => host.querySelector(`${STRIP_BUTTONS}.active`);
 
-  const syncPopover = () => {
+  const syncThreadTimeVisibility = () =>
     threadTimeWatcher?.setVisible(panelVisible && shownPanelMode() === "chat");
+
+  const syncPopover = () => {
+    syncThreadTimeVisibility();
     const card = !pinned;
     host.classList.toggle("rail-unpinned", !pinned);
     host.classList.toggle(COLLAPSED_CLASS, !panelVisible);
@@ -2372,7 +2375,11 @@ function mountRailOnContext(host, context, swap) {
   };
 
   /** The panel, painted for whatever the rail has selected. */
-  const paintPanel = () => (selectedKind === "overview" ? paintOverviewPanel() : paintConversationPanel());
+  const paintPanel = () => {
+    if (selectedKind === "overview") paintOverviewPanel();
+    else paintConversationPanel();
+    syncThreadTimeVisibility();
+  };
 
   const wireHead = (panel) => {
     const tuiToggle = panel.querySelector(".rail-tui");
@@ -4105,7 +4112,7 @@ function mountRailOnContext(host, context, swap) {
   });
   // Clocks advance cached labels independently of the timeline's paint fingerprint.
   threadTimeWatcher = watchTimeUpdates(() => refreshThreadTimes(host));
-  threadTimeWatcher.setVisible(panelVisible && shownPanelMode() === "chat");
+  syncThreadTimeVisibility();
   // The faster clock is the "working for 4m" status line.
   statusTicker = setInterval(paintRailStatus, 1000);
   // A harness out of usage on this machine (#58): a strip at the top of the

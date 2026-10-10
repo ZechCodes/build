@@ -10,6 +10,7 @@
 import { entityIdOf } from "./entityId.js";
 import { isAtLeastAsFresh } from "./cacheFreshness.js";
 import { agentIsRunning } from "./agentRunning.js";
+import { rosterUnreadCount } from "./conversationUnread.js";
 
 const conversationKey = (projectKey, entityId) => JSON.stringify([projectKey, entityId]);
 
@@ -34,11 +35,9 @@ export const runningAgentCount = (agents = []) => agents.filter(agentIsRunning).
 /** The folded project summary includes only watched running agents. */
 export const watchedAgentsRunning = (agents = []) => agents.some((agent) => agent.watched !== false && agentIsRunning(agent));
 
-const unreadOf = (agents) => agents.reduce((total, agent) => total + (agent.unread_count || 0), 0);
-
 /** Everything the watched agents are waiting to tell the user. An agent is
  *  watched unless the bridge says otherwise (#101). */
-export const watchedUnreadCount = (agents = []) => unreadOf(agents.filter((agent) => agent.watched !== false));
+export const watchedUnreadCount = rosterUnreadCount;
 
-/** Everything a conversation's agents are waiting to tell the user. */
-export const agentsUnreadCount = (agents = []) => unreadOf(agents);
+/** Everything a conversation's watched agents are waiting to tell the user. */
+export const agentsUnreadCount = rosterUnreadCount;

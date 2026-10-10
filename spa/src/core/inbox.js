@@ -182,6 +182,7 @@ function withRosterTallies(entry, agents, taskUnread) {
   const runningCount = runningAgentCount(agents);
   const agentIds = agents.map((agent) => agent.id).filter(Boolean);
   const taskUnreadCount = taskUnread.heldBy(entry.projectKey, agentIds);
+  const unreadCount = watchedUnreadCount(agents) + taskUnreadCount;
   return {
     ...entry,
     runningCount,
@@ -190,8 +191,8 @@ function withRosterTallies(entry, agents, taskUnread) {
     // dot and running count still describe every agent working in it.
     watchedWorking: watchedAgentsRunning(agents),
     agentIds,
-    unreadCount: watchedUnreadCount(agents) + taskUnreadCount,
-    state: entryState({ unread: taskUnreadCount > 0 || entry.state === "unread", working: runningCount > 0 }),
+    unreadCount,
+    state: entryState({ unread: unreadCount > 0, working: runningCount > 0 }),
     facts: `${entry.facts} · ${runningCount} running`,
   };
 }

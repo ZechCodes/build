@@ -19,6 +19,7 @@ import { assignedTo, isFinished } from "./trackerAgentTasks.js";
 import { markdownHtml } from "./markdown.js";
 import { hasShortModelName, shortModelLabel } from "./agentChoice.js";
 import { ICON_CHEVRON_RIGHT, ICON_EYE_OFF } from "./icons.js";
+import { conversationUnreadCount } from "./conversationUnread.js";
 
 /** One line of what an agent said, through the one renderer (#229). */
 const plainPreview = (text) => markdownHtml(text, { mode: "plain" });
@@ -47,7 +48,7 @@ export function overviewSnippet(agent, thread) {
   const items = thread?.items || [];
   if (agent.working) return workingSnippet(thread, items);
   if (agentIsRunning(agent)) return agentsRunningText(agent);
-  const unread = agent.unread_count && newest(items, (item) => isMessage(item) && item.data.role === "agent"
+  const unread = conversationUnreadCount(agent) > 0 && newest(items, (item) => isMessage(item) && item.data.role === "agent"
     && sequence(item) > (Number(agent.read_through_sequence) || 0));
   const latest = unread || newest(items, isMessage);
   return messageText(latest) || "No messages yet";
@@ -74,9 +75,9 @@ export const OVERVIEW_STATES = Object.freeze({
 
 const failedStart = (agent) => (agent.start_error
   ? { state: OVERVIEW_STATES.error, word: "Failed to start", detail: String(agent.start_error) } : null);
-const failedRun = (agent) => (agent.unread_count && isFailedReason(agent.unread_reason)
+const failedRun = (agent) => (conversationUnreadCount(agent) > 0 && isFailedReason(agent.unread_reason)
   ? { state: OVERVIEW_STATES.error, word: "Failed", detail: unreadReasonText(agent.unread_reason, "agent") } : null);
-const waitingOnReader = (agent) => (agent.unread_count
+const waitingOnReader = (agent) => (conversationUnreadCount(agent) > 0
   ? { state: OVERVIEW_STATES.waiting, word: WAITING_WORD[agent.unread_reason] || "Unread",
     detail: unreadReasonText(agent.unread_reason, "agent") || `${agent.unread_count} unread` } : null);
 const workingNow = (agent) => (agentIsRunning(agent)
@@ -116,7 +117,10 @@ export function modelWord(agent) {
 }
 
 export function overviewRows(entries, threads) {
-  return entries.map(({ agent, state = agent, source }, index) => {
+  return entries.map(({ agent, state: executionState = agent, source }, index) => {
+    // Execution metadata can lag a watch change; the roster owns the watch
+    // displayed on this same row.
+    const state = { ...executionState, watched: agent.watched };
     const standing = overviewState(state);
     return {
       id: agent.id,
@@ -132,8 +136,8 @@ export function overviewRows(entries, threads) {
       snippet: overviewSnippet(state, threads[index]),
       lastAgentMessageAt: agentMessageTime(threads[index]),
       working: agentIsRunning(state),
-      unread: !!state.unread_count,
-      unreadCount: Number(state.unread_count) || 0,
+      unread: conversationUnreadCount(state) > 0,
+      unreadCount: conversationUnreadCount(state),
       state: standing.state,
       stateWord: standing.word,
       stateDetail: standing.detail,

@@ -8,6 +8,7 @@ export function hasReadProgress(agent, read) {
 // scroll/paint/return events may retry them after a capped refusal backoff.
 export function createChatReadReporter(now = () => Date.now()) {
   const confirmed = new Set();
+  const accepted = new Set();
   let retryAt = 0;
   let retryDelay = 1000;
   const pending = new Set();
@@ -32,15 +33,36 @@ export function createChatReadReporter(now = () => Date.now()) {
     retryDelay = Math.min(retryDelay * 2, 30_000);
   };
 
+  // Acceptance alone may leave the cursor behind unread history below the
+  // floor. Suppress duplicates at that cursor, but reconsider them when the
+  // roster reports progress; only actual cursor coverage confirms a pair.
+  const reconcile = (cursor) => {
+    for (const report of accepted) {
+      if (Number.isFinite(cursor) && cursor >= report.read) {
+        confirm(report.read, report.floor);
+        accepted.delete(report);
+      } else if (cursor !== report.cursor) {
+        accepted.delete(report);
+      }
+    }
+  };
+
   return {
-    async report(read, floor, send) {
+    async report(read, floor, send, observedCursor = () => undefined) {
+      const cursor = observedCursor();
+      reconcile(cursor);
       if (!isNews(read, floor) || now() < retryAt) return false;
+      if ([...accepted].some((report) => covers(report, read, floor))) return false;
       if ([...pending].some((report) => covers(report, read, floor))) return false;
       const report = { read, floor };
       pending.add(report);
       try {
         if (await send()) {
-          confirm(read, floor);
+          const current = observedCursor();
+          if (Number.isFinite(current) && current >= read) confirm(read, floor);
+          else accepted.add({ read, floor, cursor });
+          retryAt = 0;
+          retryDelay = 1000;
           return true;
         }
         refused(read, floor);

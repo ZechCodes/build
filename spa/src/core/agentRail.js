@@ -3515,7 +3515,7 @@ function mountRailOnContext(host, context, swap) {
     const floor = timelineSlice.drawnFloor() ?? threadCache.windowFloorSequence();
     void readReporter.report(read, floor, () => markSeen(
       controller.identity.entityId, controller.identity.agentId, floor, read, controller.identity.threadId, cacheScope?.deviceId,
-    )).then((seen) => { if (seen) void refreshFeed().catch(() => null); });
+    ), () => agentOf(controller.identity.agentId)?.read_through_sequence).then((seen) => { if (seen) void refreshFeed().catch(() => null); });
   };
 
   // ---- sending --------------------------------------------------------------

@@ -84,13 +84,15 @@ export const OVERVIEW_TASKS = [
 
 /** Put the whole project on disk. `writeCached` and `stampWorkspace` are the
  *  cache's own (core/localCache.js, core/feedMerge.js), and
- *  `writeTasksRecord` the tracker's (core/trackerCache.js). */
-export async function writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord }) {
+ *  `writeTasksRecord` the tracker's (core/trackerCache.js). `watching` chooses
+ *  agents that supply unread pills for layout checks. */
+export async function writeAgentsOverviewFixture({ writeCached, stampWorkspace, writeTasksRecord, watching = [] }) {
   const deviceId = OVERVIEW_DEVICE;
   for (const { entityId, kind, workspaceId, agents } of OVERVIEW_ROWS) {
     await writeCached({ deviceId, entityId, kind: "row", sub: "" }, {
       kind, entity_id: entityId, project_id: OVERVIEW_PROJECT,
-      ...(workspaceId ? { workspace_id: workspaceId } : null), agents,
+      ...(workspaceId ? { workspace_id: workspaceId } : null),
+      agents: agents.map((one) => watching.includes(one.id) ? { ...one, watched: true } : one),
     });
     for (const one of agents) {
       await writeCached({ deviceId, entityId, kind: "thread", sub: one.id }, { items: OVERVIEW_THREADS[one.id] || [] });

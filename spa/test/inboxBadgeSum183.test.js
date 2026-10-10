@@ -5,7 +5,7 @@
 // A Done or closed task never counts, whatever the bridge sends.
 import { describe, expect, it } from "vitest";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
-import { inboxRowHtml, watchedWorkspaceEntries } from "../src/core/inbox.js";
+import { byAnchor, inboxRowHtml, watchedWorkspaceEntries, workspaceIsRecent } from "../src/core/inbox.js";
 import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
 import { projectHeadHtml, projectsUnreadCount, workspaceProjectBlocks } from "../src/core/inboxProjects.js";
 import { taskUnreadTally } from "../src/core/taskUnread.js";
@@ -64,6 +64,16 @@ const blocksOf = (rows) => {
   const { blocks, recentBlocks } = workspaceProjectBlocks(rows, feed.projects, [], null, NOW);
   return new Map([...blocks, ...recentBlocks].map((block) => [block.name, block]));
 };
+
+it("keeps the top unread sum after sorting mixed rows and moving tasks to Recent", () => {
+  const rows = railRows([needsYou, unheld, held]);
+  const before = projectsUnreadCount(rows, feed.projects);
+  const sorted = [...rows].sort(byAnchor);
+  const partitioned = [...sorted.filter((row) => !workspaceIsRecent(row, Date.now())),
+    ...sorted.filter((row) => workspaceIsRecent(row, Date.now()))];
+  expect(projectsUnreadCount(partitioned, feed.projects)).toBe(before);
+  expect(before).toBeGreaterThan(0);
+});
 
 const headUnread = (block, folded) => {
   const html = projectHeadHtml(block, { folded: new Set(folded ? [block.projectKey] : []) });

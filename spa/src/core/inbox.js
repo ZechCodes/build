@@ -12,8 +12,9 @@
 // that; this list just stops hiding it). Nothing that is over is ever a row.
 //
 // Workspaces use the bridge's first message after their latest silence of at
-// least 12 hours as the anchor. Other row
-// kinds retain their bridge anchor. All rows sort by anchor, oldest first.
+// least 12 hours as the anchor. Other row kinds retain their bridge anchor;
+// watched tasks without one use their creation time. All rows sort by anchor,
+// oldest first, with no priority for a kind, assignment, or attention reason.
 //
 // A row is two lines: what it is and what it weighs — files touched,
 // ahead/behind, +/−. One status dot at the right says unread activity by its
@@ -28,8 +29,8 @@
 // core/taskUnread.js): on the workspace whose agent holds it, and on the
 // project's row when no workspace row does.
 //
-// A workspace or project agent whose last message is more than a day old goes
-// into Recent at the end of the list. Its rows keep the same anchor order there.
+// Any row with no agent working and no activity for a day goes into Recent at
+// the end of the list, along with dismissed rows. Anchor order holds there too.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -203,17 +204,11 @@ export const RECENT_AFTER_MS = DAY_MS;
 /** The project agent's row (#103): one per project, named by the project. */
 export const PROJECT_AGENT = "project_agent";
 
-/** The rows of the rail's workspace list that go to Recent: workspaces and
- *  the project agent's row. */
-const RECENT_KINDS = new Set(["workspace", PROJECT_AGENT]);
-
-/** Whether a row of the rail's workspace list belongs in Recent: once its
- *  newest message is over a day old. Unknown activity — an older bridge, a
- *  project nobody has talked to yet — is not evidence of age, so the row stays
- *  in the list. */
+/** The shared Recent rule for every row kind: dismissed, or inactive for a
+ *  day with no agent working. Unknown activity is not evidence of age. */
 export const workspaceIsRecent = (entry, nowMs = Date.now()) =>
-  RECENT_KINDS.has(entry.kind) && entry.lastActivityMs !== null
-  && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
+  !!entry.dismissed || (!entry.working && Number.isFinite(entry.lastActivityMs)
+    && nowMs - entry.lastActivityMs >= RECENT_AFTER_MS);
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";
@@ -353,11 +348,6 @@ export function mergePendingRows(items = [], pending = []) {
 /// multi-stage task and opens the plan/stages page — two different things
 /// that would otherwise share a word and a row.
 export const TRACKER_TASK = "tracker_task";
-
-/** Task attention precedes quiet watches; each group keeps the inbox's age order. */
-const isQuietTask = (entry) => entry.kind === TRACKER_TASK && !entry.facts && !(entry.unreadCount > 0);
-export const byInboxAttentionThenAnchor = (left, right) => Number(isQuietTask(left)) - Number(isQuietTask(right))
-  || (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity);
 
 const OPENS_AT = {
   capture: (item) => {
@@ -572,13 +562,13 @@ const NOT_A_CHECKOUT = Object.freeze({
  * When a watched task last moved.
  *
  * The row's own `anchor` and `last_activity`, as every other row in this feed
- * carries them (#64, settled). The event it carries is the fallback: the two
- * say the same thing, and a row that dated neither would sort under everything
- * rather than where it belongs.
+ * carries them (#64, settled). Without an anchor, creation time dates the row;
+ * legacy rows can fall back to the event they carry. Recent uses activity
+ * independently of the anchor.
  */
 function taskTimesOf(item) {
-  const anchorMs = ms(item.anchor) ?? ms(item.last_event?.at);
-  return { anchorMs, lastActivityMs: ms(item.last_activity) ?? anchorMs };
+  const anchorMs = ms(item.anchor) ?? ms(item.created_at) ?? ms(item.last_event?.at) ?? ms(item.updated_at);
+  return { anchorMs, lastActivityMs: ms(item.last_activity) ?? ms(item.last_event?.at) ?? ms(item.updated_at) ?? anchorMs };
 }
 
 function toTrackerTaskEntry(item) {
@@ -595,8 +585,7 @@ function toTrackerTaskEntry(item) {
     name: taskNameOf(item),
     title: taskTitleOf(item),
     status: item.status || null,
-    // A task handed to the reader outranks one that merely moved — the one
-    // departure from activity order, and only among the task rows.
+    // Assignment explains attention but never changes the row's position.
     assignedToUser: !!item.assigned_to_user,
     state: unread ? "unread" : "idle",
     unreadCount: unread,
@@ -693,8 +682,8 @@ function isListed(item) {
 /** The captures the rail lists: what this client is holding because no machine
  *  could take it, and what the router has not placed yet. A capture belongs to
  *  no project until it is routed — at which point it stops being a capture and
- *  becomes the work it was routed to — so these stand above the workspaces
- *  rather than under any project's block. */
+ *  becomes the work it was routed to. Captures interleave on the flat inbox
+ *  face and sit outside the project blocks on the projects face. */
 export function captureEntries(items = []) {
   return items
     .filter((item) => item.kind === "capture" && isListed(item))
@@ -702,34 +691,12 @@ export function captureEntries(items = []) {
     .sort(byAnchor);
 }
 
-/**
- * Tasks the reader was handed, above the tasks that merely moved (#65).
- *
- * Only among the TASK rows, and it keeps their places: the assigned ones take
- * the positions the task rows already occupy, in their own activity order, and
- * every conversation row stays exactly where it was. An assignment is a reason
- * to look at one task before another — it is not a reason to lift a task
- * over a conversation that moved a minute ago.
- */
-function pinAssignedTasks(rows) {
-  const taskAt = rows.map((row, index) => (row.kind === TRACKER_TASK ? index : -1)).filter((index) => index >= 0);
-  if (taskAt.length < 2) return rows;
-  const tasks = taskAt.map((index) => rows[index]);
-  const ordered = [...tasks.filter((row) => row.assignedToUser), ...tasks.filter((row) => !row.assignedToUser)];
-  if (ordered.every((row, index) => row === tasks[index])) return rows;
-  const out = [...rows];
-  taskAt.forEach((index, which) => {
-    out[index] = ordered[which];
-  });
-  return out;
-}
-
 /** Oldest anchor first. A row nobody can date sorts under the ones somebody
  *  can — unknown age is not evidence of being old. */
 export function byAnchor(left, right) {
-  if (left.anchorMs === right.anchorMs) return 0;
-  if (left.anchorMs === null) return 1;
-  if (right.anchorMs === null) return -1;
+  if ((left.anchorMs ?? null) === (right.anchorMs ?? null)) return 0;
+  if (left.anchorMs == null) return 1;
+  if (right.anchorMs == null) return -1;
   return left.anchorMs - right.anchorMs;
 }
 
@@ -743,14 +710,8 @@ export function byAnchor(left, right) {
  * missing data is not evidence that a row is stale.
  */
 export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
-  const rows = pinAssignedTasks(
-    items
-      .filter(isListed)
-      .map(toEntry)
-      .sort(byAnchor),
-  );
-  const quiet = (entry) =>
-    entry.dismissed || (!entry.working && entry.lastActivityMs !== null && nowMs - entry.lastActivityMs >= RECENT_AFTER_MS);
+  const rows = items.filter(isListed).map(toEntry).sort(byAnchor);
+  const quiet = (entry) => workspaceIsRecent(entry, nowMs);
   const entries = rows.filter((entry) => !quiet(entry));
   const recent = rows.filter(quiet);
   return { entries, recent };

@@ -3,7 +3,7 @@
 // The rows arrive on the same push as the conversation rows and are the same
 // kind of thing to the reader: something that moved, how long ago, and how much
 // of it they have not seen. So they interleave by activity rather than sitting
-// in a section of their own — with one exception the brief asks for, below.
+// in a section of their own. Assignment never changes their position (#481).
 //
 // The fixture is the shape proposed on #64. Nothing downstream of it is shaped
 // by these names: if the bridge lands something different, this file changes
@@ -107,25 +107,21 @@ describe("where the rows sit", () => {
     ]);
   });
 
-  // The one exception to activity order the brief asks for: a task the user
-  // was handed outranks the tasks that merely moved.
-  it("puts a task assigned to the reader above the other task rows", () => {
+  it("keeps an assigned task in anchor order among the other task rows", () => {
     const rows = listed([
       taskRow({ task_id: "task-1", number: 1, title: "Older", anchor: "2026-09-21T00:01:00Z", last_activity: "2026-09-21T00:01:00Z" }),
       taskRow({ task_id: "task-2", number: 2, title: "Yours", assigned_to_user: true,
                  anchor: "2026-09-21T00:09:00Z", last_activity: "2026-09-21T00:09:00Z" }),
       taskRow({ task_id: "task-3", number: 3, title: "Newer", anchor: "2026-09-21T00:08:00Z", last_activity: "2026-09-21T00:08:00Z" }),
     ]);
-    expect(rows.map((row) => row.number)).toEqual([2, 1, 3]);
+    expect(rows.map((row) => row.number)).toEqual([1, 3, 2]);
   });
 
-  it("leaves conversation rows alone when an assigned task is pinned", () => {
+  it("keeps an older conversation above a newer assigned task", () => {
     const rows = listed([
       branchRow({ branch: "build/first", anchor: "2026-09-21T00:01:00Z", last_activity: "2026-09-21T00:01:00Z" }),
       taskRow({ assigned_to_user: true, anchor: "2026-09-21T00:09:00Z", last_activity: "2026-09-21T00:09:00Z" }),
     ]);
-    // The pin orders the TASK rows among themselves; it does not lift the
-    // task over a conversation that moved more recently.
     expect(rows.map((row) => row.kind)).toEqual(["branch", "tracker_task"]);
   });
 });
@@ -148,5 +144,12 @@ describe("when the row says it moved", () => {
     const [entry] = listed([row]);
     expect(entry.anchorMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
     expect(entry.lastActivityMs).toBe(Date.parse("2026-09-21T00:06:00Z"));
+  });
+
+  it("uses creation as the anchor when only task record dates are present", () => {
+    const [entry] = listed([taskRow({ anchor: null, last_activity: null, last_event: null,
+      created_at: "2026-09-21T00:01:00Z", updated_at: "2026-09-21T00:08:00Z" })]);
+    expect(entry.anchorMs).toBe(Date.parse("2026-09-21T00:01:00Z"));
+    expect(entry.lastActivityMs).toBe(Date.parse("2026-09-21T00:08:00Z"));
   });
 });

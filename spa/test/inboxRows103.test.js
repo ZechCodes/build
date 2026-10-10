@@ -166,7 +166,8 @@ describe("the project agent's row", () => {
     const [entry] = agentRowsOf(snapshot({ projects: [project()], items: [conversation({
       session_started_ms: 100, last_activity_ms: 200,
     })] }));
-    expect(workspaceIsRecent(entry, 200 + RECENT_AFTER_MS)).toBe(false);
+    expect(workspaceIsRecent(entry, 200 + RECENT_AFTER_MS - 1)).toBe(false);
+    expect(workspaceIsRecent(entry, 200 + RECENT_AFTER_MS)).toBe(true);
     expect(workspaceIsRecent(entry, 200 + RECENT_AFTER_MS + 1)).toBe(true);
   });
 

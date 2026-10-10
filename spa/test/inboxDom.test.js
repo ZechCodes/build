@@ -106,7 +106,7 @@ const capture = (over = {}) => ({
   title: "fix the redirect",
   text: "fix the redirect",
   state: "routing",
-  created_at: "2026-09-02T12:00:00Z",
+  created_at: new Date(Date.now() - 60_000).toISOString(),
   ...over,
 });
 
@@ -217,10 +217,9 @@ describe("the workspace inbox", () => {
     expect(rows()[0].textContent).toContain("↑2 ↓1 +8 −3");
   });
 
-  // A capture is unfinished business that belongs to no project yet — the
-  // router has not said where it goes — so it stands above the workspaces
-  // rather than under any of them, on both faces.
-  it("lists a capture nothing has routed yet above the workspaces", () => {
+  // Captures share anchor order with workspaces on the inbox face and remain
+  // outside project blocks on the projects face.
+  it("lists an older unrouted capture before a newer workspace", () => {
     feed([workspace()], undefined, [capture()]);
 
     expect(rows().map((row) => row.dataset.key)).toEqual(["capture:cap-1", "workspace:dev-1/workspace-1"]);

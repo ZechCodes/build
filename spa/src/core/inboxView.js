@@ -135,7 +135,7 @@ const watchedTaskRows = () => (watchedTasks?.entries() || []).filter((entry) => 
 function heldAway(entry) {
   if (!unwatched.has(entry.key)) return false;
   const stampMs = unwatched.get(entry.key);
-  if (stampMs == null || entry.anchorMs == null || entry.anchorMs <= stampMs) return true;
+  if (stampMs == null || entry.updatedMs == null || entry.updatedMs <= stampMs) return true;
   unwatched.delete(entry.key);
   return false;
 }
@@ -206,14 +206,11 @@ export function setInboxView(next) {
   draw();
 }
 
-/** Every row the rail paints, on either face. The captures first: they are
- *  the account's unfinished business and belong to no project, so they stand
- *  above the workspace rows on the flat face and above the blocks on the
- *  other. Watched unfinished tasks come next, and sit in their
- *  project's block on the projects face. */
+/** Every row the rail paints, in one anchor order regardless of its kind or
+ *  attention. The projects face groups these same rows by project. */
 function railRows() {
   const rows = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
-  return [...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)];
+  return [...captureEntries(rows), ...watchedTaskRows(), ...workRows(rows)].sort(byAnchor);
 }
 
 function draw() {
@@ -723,7 +720,7 @@ async function unwatchTask(entry) {
     },
     call: async () => {
       const answer = await verbCall(entry, "stop watching this task")("tasks.unwatch", { task_id: entry.taskId });
-      unwatched.set(entry.key, Date.parse(answer?.task?.updated_at || "") || entry.anchorMs);
+      unwatched.set(entry.key, Date.parse(answer?.task?.updated_at || "") || entry.updatedMs);
     },
     failureSummary: `Couldn't stop watching ${entry.name}`,
   });

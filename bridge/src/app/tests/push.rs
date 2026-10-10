@@ -136,6 +136,88 @@ fn publish_legacy_task(state: &Arc<Mutex<AppState>>, goal: &str) -> String {
     task_id
 }
 
+/// Reading in one browser must update the replica records that drive badges
+/// in every other browser, without requiring a new `board.list` pull.
+#[tokio::test]
+async fn entity_seen_pushes_the_read_project_conversation_row() {
+    assert_seen_pushes_conversation_badges(false).await;
+}
+
+#[tokio::test]
+async fn entity_seen_pushes_the_read_workspace_conversation_row() {
+    assert_seen_pushes_conversation_badges(true).await;
+}
+
+async fn assert_seen_pushes_conversation_badges(workspace: bool) {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let (method, params) = if workspace {
+        let created = call(
+            &handler,
+            "workspace.create",
+            json!({
+                "project_id": project_id, "name": "read-badges", "isolation": "worktree"
+            }),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        (
+            "workspace.ensure_conversation",
+            json!({
+                "workspace_id": created["result"]["workspace_id"]
+            }),
+        )
+    } else {
+        (
+            "project.ensure_conversation",
+            json!({ "project_id": project_id }),
+        )
+    };
+    let ensured = call(&handler, method, params);
+    assert_eq!(ensured["ok"], true, "{ensured:?}");
+    let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
+    let added = call(&handler, "agent.add", json!({ "entity_id": entity_id }));
+    assert_eq!(added["ok"], true, "{added:?}");
+    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    {
+        let mut app = state.lock().unwrap();
+        app.edit_agent_conversation(&entity_id, &agent_id, |thread, _| {
+            thread.post_agent("read this message", None, now_rfc3339());
+            Ok(json!({}))
+        })
+        .unwrap();
+    }
+    watch_everything(&handler, &sender);
+    settled_pushes(&mut rx, &key).await;
+
+    let before = state
+        .lock()
+        .unwrap()
+        .agent_digests(&entity_id, DigestScope::List);
+    assert_eq!(before[0]["unread_count"], 1, "{before:?}");
+    let seen = call(
+        &handler,
+        "entity.seen",
+        json!({
+            "entity_id": entity_id, "agent_id": agent_id
+        }),
+    );
+    assert_eq!(seen["ok"], true, "{seen:?}");
+    let pushes = settled_pushes(&mut rx, &key).await;
+    let items: Vec<Value> = pushes
+        .iter()
+        .filter(|push| push["type"] == "changes" && push["subscription_id"] == EVERYTHING)
+        .flat_map(|push| push["items"].as_array().cloned().unwrap_or_default())
+        .collect();
+    let row_read = items.iter().any(|item| {
+        item["entity_id"] == entity_id && item["state"]["agents"][0]["unread_count"] == 0
+    });
+    assert!(
+        row_read,
+        "entity.seen must push the read entity row; got {items:?}"
+    );
+}
+
 /// The capability announcement, in both places a client can find it: the
 /// greeting it opens with, and the probe it already sends. An old bridge has
 /// neither, so absence is the answer for a new client too.

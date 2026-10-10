@@ -269,7 +269,7 @@ beforeEach(async () => {
   painters.length = 0;
   feedSubscribers.clear();
   feedSnapshot = { items: [], projects: [] };
-  markSeen.mockClear();
+  markSeen.mockReset().mockResolvedValue(true);
   mountAgentTab.mockClear();
   notifyError.mockClear();
   catalog = CATALOG; // asked for once per device; each test gets its own
@@ -593,7 +593,7 @@ describe("the unpinned panel's popover", () => {
     bubbles()[0].click();
     await flush();
     expect(history.textContent).toContain("three");
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 3, undefined, "dev-1");
   });
 
   it("takes its listeners with it when the rail goes", async () => {
@@ -3049,7 +3049,7 @@ describe("the conversation panel", () => {
     // The floor is the oldest message the panel holds, and 12 is the newest its
     // viewport reached — which over a conversation that arrived whole is all of
     // it.
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
   });
 
   // A desktop left showing a chat overnight: visible, nobody at it. A mark
@@ -3074,7 +3074,7 @@ describe("the conversation panel", () => {
 
       focused.mockReturnValue(true);
       window.dispatchEvent(new Event("focus"));
-      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 2, undefined));
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 1, 2, undefined, "dev-1"));
     } finally {
       focused.mockRestore();
     }
@@ -3102,6 +3102,72 @@ describe("the conversation panel", () => {
       },
     });
   };
+
+  it("reports visible messages ahead of the cursor even when the roster still says zero unread", async () => {
+    conversationReadThrough(11, 0);
+    await mount();
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
+  });
+
+  it("retries a failed read report when the reader returns to the same viewport", async () => {
+    conversationReadThrough(11, 1);
+    markSeen.mockResolvedValue(false);
+    await mount();
+    const attempts = markSeen.mock.calls.length;
+    expect(attempts).toBeGreaterThan(0);
+    markSeen.mockResolvedValue(true);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1000);
+    try {
+      window.dispatchEvent(new Event("focus"));
+      await flush();
+    } finally {
+      clock.mockRestore();
+    }
+    expect(markSeen.mock.calls.length).toBeGreaterThan(attempts);
+    expect(markSeen).toHaveBeenLastCalledWith("run-3", "ag-1", 11, 12, undefined, "dev-1");
+  });
+
+  it("bounds retries while a bridge keeps refusing read reports", async () => {
+    conversationReadThrough(11, 1);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1000);
+    markSeen.mockResolvedValue(false);
+    try {
+      await mount();
+      const attempts = markSeen.mock.calls.length;
+      for (let i = 0; i < 5; i++) {
+        railHost().querySelector("#rail-body").onscroll();
+        window.dispatchEvent(new Event("focus"));
+        await flush();
+      }
+      expect(markSeen).toHaveBeenCalledTimes(attempts);
+      clock.mockReturnValue(2000);
+      window.dispatchEvent(new Event("focus"));
+      await flush();
+      expect(markSeen).toHaveBeenCalledTimes(attempts + 1);
+      clock.mockReturnValue(3000);
+      window.dispatchEvent(new Event("focus"));
+      await flush();
+      expect(markSeen).toHaveBeenCalledTimes(attempts + 1);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it("does not repeat an in-flight read report on scroll or focus", async () => {
+    conversationReadThrough(11, 1);
+    let finish;
+    markSeen.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    await mount();
+    railHost().querySelector("#rail-body").onscroll();
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(markSeen).toHaveBeenCalledTimes(1);
+    finish(true);
+    await flush();
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect(markSeen).toHaveBeenCalledTimes(1);
+  });
 
   it("rules a line above the first message the reader has not read", async () => {
     conversationReadThrough(11, 1);
@@ -3300,7 +3366,7 @@ describe("reading back past the top of a paged conversation", () => {
     pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
     await mount();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98, 99, undefined, "dev-1");
   });
 
   it("moves the floor it reports down as the reader scrolls back", async () => {
@@ -3314,7 +3380,7 @@ describe("reading back past the top of a paged conversation", () => {
     railBody().dispatchEvent(new Event("scroll"));
     await flush();
 
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined);
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96, 99, undefined, "dev-1");
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {
@@ -6565,4 +6631,58 @@ describe("a conversation opened by a notification's link", () => {
     });
     expect(scroller().scrollTop).toBe(HEIGHT);
   });
+});
+
+it("re-reports the now-safe tail after returning from overview to the same conversation", async () => {
+  const attention = Array.from({ length: 120 }, (_, index) => index + 1);
+  const items = attention.map((sequence) => ({ type: "message", data: {
+    sequence, id: `hidden-probe-${sequence}`, role: "agent", body: `message ${sequence}`,
+  } }));
+  payload = branchRow({
+    // Match #473: transcript is ahead of a cached zero-unread roster.
+    agents: [agent({ unread_count: 0, unread_reason: null, read_through_sequence: 0 })],
+    run: { run_id: "run-3", thread: { sessions: [], items, has_more: false, thread_total: 120, thread_last_sequence: 120 } },
+  });
+  let cursor = 0;
+  const reports = [];
+  markSeen.mockImplementation(async (_entityId, _agentId, floor, read) => {
+    const hiddenBelow = attention.some((sequence) => sequence > cursor && sequence < floor);
+    if (!hiddenBelow) cursor = Math.max(cursor, Math.min(read, 120));
+    reports.push({ read, floor, hiddenBelow, cursor });
+    return true;
+  });
+  let viewportThrough = Infinity;
+  const geometry = vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function () {
+    const sequence = Number(this.getAttribute("data-sequence"));
+    const bottom = sequence > viewportThrough ? 200 : 0;
+    return { top: bottom, bottom, left: 0, right: 0, height: 0, width: 0 };
+  });
+  const sequences = () => [...railHost().querySelectorAll(".thread-items > [data-sequence]")]
+    .map((row) => Number(row.dataset.sequence));
+  try {
+    await mount();
+    expect(sequences()[0]).toBe(61);
+    expect(reports).toEqual([{ read: 120, floor: 61, hiddenBelow: true, cursor: 0 }]);
+    viewportThrough = 60;
+    railHost().querySelector(".thread-earlier").click();
+    await flush();
+    expect(sequences()[0]).toBe(1);
+    expect(cursor).toBe(60);
+    expect(reports[1]).toEqual({ read: 60, floor: 1, hiddenBelow: false, cursor: 60 });
+    await pushRow({ ...payload, agents: [agent({ unread_count: 60, unread_reason: "agent_message", read_through_sequence: 60 })] });
+    railHost().querySelector('[data-bubble="overview"]').click();
+    await flush();
+    expect(railHost().querySelector(".thread-items")).toBeNull();
+    viewportThrough = Infinity;
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await flush();
+    expect(sequences()[0]).toBe(61);
+    expect(sequences().at(-1)).toBe(120);
+    window.dispatchEvent(new Event("focus"));
+    await flush();
+    expect.soft(reports).toHaveLength(3);
+    expect.soft(cursor).toBe(120);
+  } finally {
+    geometry.mockRestore();
+  }
 });

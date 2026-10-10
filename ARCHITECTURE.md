@@ -1878,6 +1878,22 @@ In practice:
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written
   straight into the cache: `state`, `thread`, git `status`/`log`/`unpushed`/
   `diff`, the files root listing, and `terminals`.
+- **Chat read marks** (#473) report the viewport sequence and window floor
+  only while the reader is present. A known cursor can establish read progress
+  even if the cached unread count is zero. `chatReadReporter.js` confirms
+  read/floor pairs only when the cached roster cursor covers them. Accepted
+  reports that did not advance the cursor are suppressed at that cursor and
+  reconsidered after cursor progress. It suppresses covered reports in flight
+  and backs off refusals
+  from one second to a thirty-second cap; later paint, scroll and return events
+  drive retries. `entity.seen` emits the owner's updated `state` row after
+  storing the cursor. For older bridges, `inboxSeen.js` follows a successful
+  mark with `board.list` when that owner has a cached row, including owners in
+  `runs` outside inbox `items`. It serializes refreshes per owner and merges only attention/unread fields
+  into an unchanged row with the same roster generation, preserving Detail
+  fields. Identical results cause no cache write; cache announcements redraw
+  badges. Passive clients on
+  other devices need the bridge's state push.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
   Task body checklist changes (#347, `spa/src/core/taskChecklist.js`) rewrite

@@ -1,16 +1,18 @@
 // The read cursor: telling the daemon an entry has been read, on the machine
 // that keeps it.
 //
-// A caller names an entity and nothing else — the agent rail knows the bubble
-// the reader scrolled past, not which bridge answered for it — so the rail's
-// rows are indexed by entity id here and the report goes to the device the row
-// came from.
+// An inbox caller names an entity, so its row supplies the device. A chat
+// already knows its device and supplies it explicitly, even before the inbox
+// has indexed that owner's row.
 
 import { entityIdOf } from "./entityId.js";
 import { verbCall } from "./inboxDevices.js";
+import { homeContext } from "./deviceContexts.js";
+import { cachedWriteOf, captureCachedRecord, mergeCachedIfUnwritten } from "./localCache.js";
 
 // The row holding each entity the feed named, minted with every snapshot.
 let rowsByEntity = new Map();
+const rosterRefreshes = new Map();
 
 /**
  * Tell the bridge this entry has been read. No agent id means the whole entry —
@@ -26,23 +28,88 @@ let rowsByEntity = new Map();
  * half of it — and no sequence says the reader read to the end of what they
  * hold, which is what opening a whole entry means.
  *
+ * A chat passes its device explicitly so a cold inbox cannot route its read
+ * through another machine. Returns true after the bridge accepts the report;
+ * the cached roster tells callers whether its read cursor actually advanced.
+ *
  * This is also the hook for a self-initiated ending: merge and abandon are
  * attention-class events, so a merge the user triggered from this client would
  * otherwise badge its own entry. Whoever runs that verb calls this after it.
  */
-export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null, threadId = "") {
-  if (!entityId) return;
+export async function markSeen(entityId, agentId, readFromSequence = null, readThroughSequence = null, threadId = "", deviceId = null) {
+  if (!entityId) return false;
+  const row = seenRow(entityId, deviceId);
+  const call = verbCall(row);
   try {
-    await verbCall(rowHolding(entityId))("entity.seen", {
-      entity_id: entityId,
-      ...(agentId ? { agent_id: agentId } : {}),
-      ...(threadId ? { thread_id: threadId } : {}),
-      ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
-      ...(typeof readThroughSequence === "number" ? { read_through_sequence: readThroughSequence } : {}),
-    });
+    await call("entity.seen", seenParams(entityId, agentId, readFromSequence, readThroughSequence, threadId));
   } catch {
-    /* the cursor is the daemon's; a failed clear is re-tried by the next open */
+    return false;
   }
+  // The report was accepted even if this compatibility read cannot finish.
+  await queueRosterRefresh(call, seenDeviceId(row), entityId).catch(() => null);
+  return true;
+}
+
+const seenRow = (entityId, deviceId) => deviceId ? { ...rowHolding(entityId), deviceId } : rowHolding(entityId);
+const seenDeviceId = (row) => row?.deviceId || homeContext()?.deviceId;
+const seenParams = (entityId, agentId, floor, read, threadId) => ({
+  entity_id: entityId,
+  ...(agentId ? { agent_id: agentId } : {}),
+  ...(threadId ? { thread_id: threadId } : {}),
+  ...(typeof floor === "number" ? { read_from_sequence: floor } : {}),
+  ...(typeof read === "number" ? { read_through_sequence: read } : {}),
+});
+
+// Each pull takes its cache fence after the prior pull has written. Otherwise
+// the older fallback write can make the newer read lose its own write fence.
+function queueRosterRefresh(call, deviceId, entityId) {
+  const key = JSON.stringify([deviceId, entityId]);
+  const previous = rosterRefreshes.get(key) || Promise.resolve();
+  const refresh = previous.catch(() => null).then(() => refreshReadRoster(call, deviceId, entityId));
+  rosterRefreshes.set(key, refresh);
+  return refresh.finally(() => {
+    if (rosterRefreshes.get(key) === refresh) rosterRefreshes.delete(key);
+  });
+}
+
+const rosterIdentity = (row) => JSON.stringify((row.agents || []).map((agent) =>
+  [agent.id, agent.conversation_id, agent.thread_id]));
+
+const ROW_READ_FIELDS = ["needs_attention", "unread", "unread_count", "unread_reason", "attention"];
+const AGENT_READ_FIELDS = ["unread_count", "unread_reason", "read_through_sequence"];
+
+function mergeReadFields(held, incoming, fields) {
+  const next = { ...held };
+  for (const field of fields) {
+    if (Object.hasOwn(incoming, field)) next[field] = incoming[field];
+  }
+  return next;
+}
+
+/** `runs` can carry List digests, so only read-related fields can replace
+ *  a pushed Detail row. Leave an identical value unwritten and unannounced. */
+function mergeReadRoster(held, incoming) {
+  if (!held || rosterIdentity(held) !== rosterIdentity(incoming)) return null;
+  const next = mergeReadFields(held, incoming, ROW_READ_FIELDS);
+  if (Array.isArray(held.agents)) {
+    next.agents = held.agents.map((agent, index) => mergeReadFields(agent, incoming.agents[index], AGENT_READ_FIELDS));
+  }
+  return JSON.stringify(next) === JSON.stringify(held) ? null : next;
+}
+
+/** Older bridges emit only a board revision after a read. Refresh the exact
+ *  cached roster the badges use, including owners absent from inbox items.
+ *  An intervening cache write or generation change always wins. */
+async function refreshReadRoster(call, deviceId, entityId) {
+  if (!deviceId) return;
+  const address = { deviceId, entityId, kind: "row", sub: "" };
+  const before = await captureCachedRecord(address);
+  if (!before?.value) return;
+  const board = await call("board.list", {});
+  const rows = [...(board.items || []), ...(board.runs || []), ...(board.plans || []), ...(board.external_worktrees || [])];
+  const row = rows.find((candidate) => entityIdOf(candidate) === entityId);
+  if (!row) return;
+  await mergeCachedIfUnwritten(address, cachedWriteOf(before), (held) => mergeReadRoster(held, row));
 }
 
 /** The row holding an entity, off the index the last snapshot minted. A caller

@@ -2,7 +2,8 @@
 // app, at a phone's width: the inbox popover on the projects face, with the top
 // badge beside the project status dots. Two projects each have a fully read task
 // assigned to the user, plus an unassigned watched task with unread moves
-// but no Needs-you row. The top badge stays 3 (Build 2 + smarter-dev 1)
+// but no Needs-you reason. Both watched tasks appear in the inbox (#475).
+// The top badge stays 3 (Build 2 + smarter-dev 1)
 // while head dots show own news expanded and aggregate news folded (#380).
 // Run from spa/: node test/browser/captureInboxBadgeSum.mjs [output directory]
 import { mkdir, readFile } from "node:fs/promises";
@@ -147,8 +148,11 @@ await withLayoutPage(async ({ page, basePath }) => {
   }
   await expectBadges(page);
   for (const id of [113, 40]) {
-    if (await page.locator(`#inbox-list .inbox-entry[data-key="tracker_task:task-${id}"]`).count()) {
-      throw new Error(`Unassigned task ${id} unexpectedly needs the user`);
+    const row = page.locator(`#inbox-list .inbox-entry[data-key="tracker_task:task-${id}"]`);
+    await row.waitFor();
+    if (await row.locator(".inbox-status-dot.inbox-status-unread").count() !== 1
+      || await row.locator(".inbox-status-running, .inbox-facts, .inbox-reason").count()) {
+      throw new Error(`Watched task ${id} must show unread activity without needing the user`);
     }
   }
   const said = await page.evaluate(() => {

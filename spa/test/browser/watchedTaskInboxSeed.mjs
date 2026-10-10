@@ -34,8 +34,10 @@ export async function mountWatchedTaskInbox(page, basePath, { unread = false } =
     });
     const tasks = [
       makeTask(quietId, 475, "Quiet task"),
-      makeTask(askId, 476, "Your next choice", { assignee: { kind: "user" }, updated_at: "2026-10-10T10:03:00Z" }),
-      makeTask("review-watched-task", 477, "Agent review", { status: "in_review" }),
+      makeTask(askId, 476, "Your next choice", { assignee: { kind: "user" },
+        created_at: "2026-10-10T10:03:00Z", updated_at: "2026-10-10T10:03:00Z" }),
+      makeTask("review-watched-task", 477, "Agent review", { status: "in_review",
+        created_at: "2026-10-10T10:06:00Z", updated_at: "2026-10-10T10:06:00Z" }),
       makeTask("done-watched-task", 478, "Completed inbox work", { status: "done" }),
       makeTask("closed-watched-task", 479, "Closed inbox work", { state: "closed" }),
       makeTask("unwatched-task", 480, "Unwatched inbox work", { watched: false }),

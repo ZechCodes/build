@@ -9,14 +9,14 @@ for (const { label, width, height, hasTouch } of [
   { label: "desktop", width: 1280, height: 720, hasTouch: false },
   { label: "phone", width: 390, height: 760, hasTouch: true },
 ]) {
-  it(`paints every unfinished watched task from cache with a visible eye on ${label}`, async () => {
+  it(`paints every unfinished watched task from cache in byAnchor order with a visible eye on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountWatchedTaskInbox(page, basePath);
       for (const view of ["projects", "inbox"]) {
         await page.evaluate((view) => window.__layoutModules.inbox.setInboxView(view), view);
         expect(await page.locator('#inbox-list [data-key^="tracker_task:"]').evaluateAll((rows) =>
-          rows.map((row) => row.dataset.key)), view).toEqual([
-          `tracker_task:${ASK_TASK}`, `tracker_task:${QUIET_TASK}`, "tracker_task:review-watched-task",
+          rows.map((row) => row.dataset.key)), `${view}: byAnchor order regardless of task attention`).toEqual([
+          `tracker_task:${QUIET_TASK}`, `tracker_task:${ASK_TASK}`, "tracker_task:review-watched-task",
         ]);
       }
       expect(await page.evaluate(() => window.__layoutModules.contexts.liveContexts().length)).toBe(0);

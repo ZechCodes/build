@@ -158,14 +158,17 @@ function currentForeground(state) {
   return state.foregroundTurn?.scope === scope ? state.foregroundTurn : startForeground(state, scope);
 }
 
-/** A queued loader must wake on supersession before following another turn:
- * that new turn may be waiting for this very loader to cross the wire. */
+/** Wait without wire admission, then return a synchronous permission check.
+ * Navigation while queued revokes that permission; the scheduler releases its
+ * reservation before following a new turn that may need a push continuation. */
 async function beforeBackgroundRead(state, scope) {
   while (state.context.active()) {
     const turn = currentForeground(state);
-    if (foregroundRequest(state, scope)) return;
+    const ready = () => state.context.active() && state.foregroundTurn === turn
+      && foregroundScope(state) === turn.scope;
+    if (foregroundRequest(state, scope)) return ready;
     await turn.settled;
-    if (state.foregroundTurn === turn && foregroundScope(state) === turn.scope) return;
+    if (ready()) return ready;
   }
 }
 

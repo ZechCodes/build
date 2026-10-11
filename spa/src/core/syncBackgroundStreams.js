@@ -7,14 +7,13 @@ const WITHOUT_SLOT = { reserved: false, release: NOTHING };
 const RETRY = Symbol("background admission required");
 const background = (envelope) => envelope?.priority === "background";
 
-async function sendWithSlot({ active, priority, before, load }, slot) {
+async function sendWithSlot({ active, priority, load }, slot, ready) {
   try {
     if (!active()) return null;
-    // Navigation can change while a read waits for a slot. Check promotion
-    // before following the new barrier, which may be waiting for this read.
-    if (background(priority())) await before?.();
     const envelope = priority();
-    if (background(envelope) && !slot.reserved) return RETRY;
+    // A new foreground turn may depend on a push continuation needing this
+    // slot. Revalidate synchronously and release before retrying its barrier.
+    if (background(envelope) && (!slot.reserved || ready?.() === false)) return RETRY;
     if (!background(envelope)) slot.release();
     return active() ? await load(envelope) : null;
   } finally {
@@ -55,12 +54,14 @@ function deviceStreams() {
     async read(operation) {
       const active = () => !closed && operation.active();
       while (active()) {
-        if (background(operation.priority())) await operation.before?.();
+        // The planner returns a validity check for the turn that granted
+        // permission. All barrier waits happen before reserving admission.
+        const ready = background(operation.priority()) ? await operation.before?.() : null;
         const slot = background(operation.priority()) ? await new Promise((resolve) => {
           waiting.add({ ...operation, active, resolve });
           wake();
         }) : WITHOUT_SLOT;
-        const answer = await sendWithSlot({ ...operation, active }, slot);
+        const answer = await sendWithSlot({ ...operation, active }, slot, ready);
         if (answer !== RETRY) return answer;
       }
       return null;

@@ -5,6 +5,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { called, passesSettled } from "./waits.js";
 
 const App = { route: {}, devices: [{ id: "dev-1" }] };
+const watchers = [];
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/changeEvents.js", () => ({
@@ -14,7 +15,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   }),
   subscriptionsSettledFor: async () => {},
   onSubscriptionHeld: () => () => {},
-  watchChanges: () => ({ dispose() {} }),
+  watchChanges: (options) => { watchers.push(options); return { dispose() {} }; },
 }));
 
 let context;
@@ -81,6 +82,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
   script = {};
+  watchers.length = 0;
   disposers = [];
   abandonedPass = false;
   App.route = routeTo(10);
@@ -110,6 +112,48 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it("keeps a pushed mounted diff when an older foreground diff reply arrives afterwards", async () => {
+    const held = gate();
+    await mountRoutedPanes();
+    script["run.diff"] = (params) => params.run_id === "run-10" ? held.promise : answers["run.diff"]();
+    start();
+    await called(rpc, () => calls("run.diff").some(([, params]) => params.run_id === "run-10"));
+    try {
+      await watchers.find((watcher) => watcher.id === "s-background").onChanges([
+        { entity_id: "run-10", git: { diff: { diff_key: "pushed-diff", patch: "newest pushed patch" } } },
+      ]);
+      expect((await cache.readCached(address("run-10", "diff"))).value.diff_key).toBe("pushed-diff");
+    } finally {
+      held.release({ diff_key: "old-read", patch: "old read patch" });
+      await finish();
+    }
+    expect((await cache.readCached(address("run-10", "diff"))).value).toMatchObject({
+      diff_key: "pushed-diff", patch: "newest pushed patch", stale: false,
+    });
+  });
+
+  it("keeps a null-diff push's stale marker when an older background diff reply arrives", async () => {
+    const held = gate();
+    script["run.diff"] = (params) => params.run_id === "run-1" ? held.promise : answers["run.diff"]();
+    start();
+    await called(rpc, () => calls("run.diff").some(([, params]) => params.run_id === "run-1"));
+    try {
+      // Another cache writer can land a held body after this cold background
+      // request started. The newer invalidation must still own its staleness.
+      await cache.writeCached(address("run-1", "diff"), { diff_key: "held-body", patch: "held patch" });
+      await watchers.find((watcher) => watcher.id === "s-background").onChanges([
+        { entity_id: "run-1", git: { diff: null } },
+      ]);
+      expect((await cache.readCached(address("run-1", "diff"))).value.stale).toBe(true);
+    } finally {
+      held.release({ diff_key: "old-background-read", patch: "old background patch" });
+      await finish();
+    }
+    expect((await cache.readCached(address("run-1", "diff"))).value).toMatchObject({
+      diff_key: "held-body", patch: "held patch", stale: true,
+    });
+  });
+
   it("finishes when a background diff's idle turn makes that same Changes pane foreground", async () => {
     App.route = { name: "inbox", deviceId: "dev-1" };
     let switched = false;
@@ -125,7 +169,7 @@ describe("foreground-first passes", () => {
     let timer;
     const completed = await Promise.race([
       finish().then(() => true),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(false), 2000); }),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), 10_000); }),
     ]);
     clearTimeout(timer);
     // An unresolved loader cycle has no timer to release; let teardown

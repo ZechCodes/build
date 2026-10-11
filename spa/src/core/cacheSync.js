@@ -485,8 +485,9 @@ async function readLists(context, fence) {
 async function landOwnershipList(context, kind, rows, before, fence) {
   const stamp = kind === "projects" ? stampProject : stampWorkspace;
   const incoming = rows.map((row) => stamp(row, context.deviceId));
-  if (!context.active() || pushedSince(addressOf(context, "", kind), fence)) return;
-  await writeSessionList(context, kind, incoming, before);
+  const reading = { ...context, active: () => context.active() && !pushedSince(addressOf(context, "", kind), fence) };
+  if (!reading.active()) return;
+  await writeSessionList(reading, kind, incoming, before);
 }
 
 async function refreshWorkspaceSummaries(context, view, fence) {

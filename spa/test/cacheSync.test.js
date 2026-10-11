@@ -684,7 +684,8 @@ describe("the two bodies that never ride a push", () => {
     script["git.log"] = () => ahead(["h1"]);
     script["git.show"] = (params) => sizeOutcome === "truncated"
       ? { hash: params.hash, patch: "file headers", truncated: true, patch_bytes: 400000 }
-      : { hash: params.hash, patch: (sizeOutcome === "UTF-8 bytes" ? "é" : "x").repeat(sync.COMMIT_PATCH_MAX_BYTES) + "x" };
+      : { hash: params.hash, patch: sizeOutcome === "UTF-8 bytes"
+        ? "é".repeat(sync.COMMIT_PATCH_MAX_BYTES / 2 + 1) : "x".repeat(sync.COMMIT_PATCH_MAX_BYTES + 1) };
     await boot([branchItem()]);
     await sync.syncDevice("dev-1");
     sync.stopCacheSync();

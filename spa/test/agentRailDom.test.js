@@ -783,12 +783,12 @@ describe("one selection in one panel (#148)", () => {
     expect(visibleSyncThread("dev-1")).toBeNull();
     rail = mountAgentRail(railHost(), railAddress());
     await vi.waitFor(() => expect(panel() && shows()).toBe("Polish the rail"));
-    expect(visibleSyncThread("dev-1")).toMatchObject({ entityId: "run-1", agentId: "ag-2" });
+    expect(visibleSyncThread("dev-1")).toMatchObject({ entityId: "run-3", agentId: "ag-2" });
     expect(visibleSyncThread("dev-2")).toBeNull();
     await press("overview");
     expect(visibleSyncThread("dev-1")).toBeNull();
     await press("ag-1");
-    expect(visibleSyncThread("dev-1")).toMatchObject({ entityId: "run-1", agentId: "ag-1" });
+    expect(visibleSyncThread("dev-1")).toMatchObject({ entityId: "run-3", agentId: "ag-1" });
     rail.collapse();
     await flush();
     expect(visibleSyncThread("dev-1")).toBeNull();

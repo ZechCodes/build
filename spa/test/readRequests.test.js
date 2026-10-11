@@ -84,6 +84,75 @@ describe("coordinatedRead", () => {
     expect(load).toHaveBeenCalledTimes(1);
   });
 
+  it("lets replacement background work bypass an inactive foreground request that never answered", async () => {
+    const idle = [];
+    globalThis.requestIdleCallback = (callback) => idle.push(callback);
+    const oldAnswer = deferred();
+    let active = true;
+    const oldRead = coordinatedRead({ key: "old-path", active: () => active, load: () => oldAnswer.promise });
+    await Promise.resolve();
+    active = false;
+    const load = vi.fn().mockResolvedValue("replacement");
+    const replacement = coordinatedRead({ key: "replacement-path", priority: "background", load });
+    try {
+      await Promise.resolve();
+      expect(idle).toHaveLength(1);
+      idle.shift()();
+      await expect(replacement).resolves.toBe("replacement");
+      expect(load).toHaveBeenCalledExactlyOnceWith({ priority: "background" });
+    } finally {
+      oldAnswer.resolve("late old answer");
+      await oldRead;
+    }
+  });
+
+  it("wakes queued background work when a new request finds the foreground lifetime inactive", async () => {
+    const idle = [];
+    globalThis.requestIdleCallback = (callback) => idle.push(callback);
+    const answer = deferred();
+    let active = true;
+    const foreground = coordinatedRead({ key: "inactive-with-waiters", active: () => active, load: () => answer.promise });
+    const queued = coordinatedRead({ key: "already-waiting", priority: "background", load: () => "queued" });
+    await Promise.resolve();
+    active = false;
+    const replacement = coordinatedRead({ key: "wake-inactive-waiters", priority: "background", load: () => "replacement" });
+    try {
+      await Promise.resolve();
+      expect(idle).toHaveLength(2);
+      idle.splice(0).forEach((callback) => callback());
+      await expect(queued).resolves.toBe("queued");
+      await expect(replacement).resolves.toBe("replacement");
+    } finally {
+      answer.resolve("old");
+      await foreground;
+    }
+  });
+
+  it("still waits for a live foreground reader after pruning an inactive one", async () => {
+    const idle = [];
+    globalThis.requestIdleCallback = (callback) => idle.push(callback);
+    const stoppedAnswer = deferred();
+    const liveAnswer = deferred();
+    let active = true;
+    const stopped = coordinatedRead({ key: "mixed-stopped", active: () => active, load: () => stoppedAnswer.promise });
+    const live = coordinatedRead({ key: "mixed-live", load: () => liveAnswer.promise });
+    await Promise.resolve();
+    active = false;
+    const background = coordinatedRead({ key: "mixed-background", priority: "background", load: () => "warm" });
+    await Promise.resolve();
+    expect(idle).toHaveLength(0);
+    stoppedAnswer.resolve("stopped");
+    await stopped;
+    await Promise.resolve();
+    expect(idle).toHaveLength(0);
+    liveAnswer.resolve("live");
+    await live;
+    await Promise.resolve();
+    expect(idle).toHaveLength(1);
+    idle.shift()();
+    await expect(background).resolves.toBe("warm");
+  });
+
   it.each(["foreground", "background"])("replaces a stopped queued read for a new %s caller", async (priority) => {
     const idle = [];
     globalThis.requestIdleCallback = (callback) => idle.push(callback);

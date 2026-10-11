@@ -20,7 +20,7 @@
 
 import "../styles/surfaces.css";
 import { reviewCommentContext } from "./reviewCommentContext.js";
-import { readCached, recordWriteOf, subscribeCache, writeCachedIfStill } from "./localCache.js";
+import { mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache, writeCachedIfStill } from "./localCache.js";
 import { withinBytes } from "./cacheLifetime.js";
 import { WORKING_DIFF_MAX_BYTES } from "./cacheThresholds.js";
 import { createCommentLayer } from "./changesComments.js";
@@ -39,6 +39,7 @@ import { createDiffViewport } from "./diffViewport.js";
 import { diffSortHtml, DIFF_SORT_LATEST } from "./diffSort.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { registerSyncDiff, registerSyncRead, syncPaneShown } from "./syncVisibleScopes.js";
 
 /** Whether an aggregate answer is too big for one record, or was cut: its
  *  shape is kept and its patch is not (#95). */
@@ -60,6 +61,10 @@ const pathsOfDiff = (payload) =>
   payload.files ? payload.files.map((file) => file.path) : [...filePatchesByPath(payload.patch).keys()];
 
 const fileEditedAtOf = (payload) => payload.file_edited_at || {};
+const syncDiffPayload = (payload, before) => payload.unchanged
+  ? { ...payload, patch: before?.value?.patch, file_edited_at: payload.file_edited_at || before?.value?.file_edited_at }
+  : payload;
+const syncDiffKey = (before) => before?.value?.diff_key || null;
 
 /** The bar over the stack: the totals for the WHOLE diff (the changed-only
  *  filter narrows what is drawn, never what is counted), whatever the surface
@@ -131,6 +136,8 @@ export function createReviewPlug({
   let visible = true;
   let needsPaint = false;
   let unwatchDiff = null;
+  let unregisterSyncDiff = () => {};
+  let unregisterSyncRead = () => {};
   let editedTimeWatcher = null;
   let diffKey = null;
   let responseDiffKey = null;
@@ -643,6 +650,27 @@ export function createReviewPlug({
     await writePulledDiff(address, before, withoutPatch(payload), patchUnchanged);
   };
 
+  /** A sync pass owns only this cache validation. The ordinary repaint loop
+   *  stays owned by the mounted reader even when the pass stops underneath it. */
+  const keepSyncDiff = async (address, before, payload, active) => {
+    const normalized = syncDiffPayload(payload, before);
+    const value = diffRecordValue(oversizedDiff(normalized) ? withoutPatch(normalized) : normalized, before, Boolean(payload.unchanged));
+    await mergeCachedRecordsTogether([address], ([current]) => [
+      active() && recordWriteOf(current) === recordWriteOf(before) ? value : null,
+    ]);
+  };
+  const readSyncDiff = async (active) => {
+    const address = diffAddress();
+    if (!address || !active()) return;
+    const before = await readCached(address);
+    if (!active()) return;
+    let payload;
+    try { payload = await fetchDiff(syncDiffKey(before), { active }); }
+    catch { return; }
+    if (!payload || !active()) return;
+    await keepSyncDiff(address, before, payload, active);
+  };
+
   const paintOnce = async () => {
     if (!host || isOffline()) return;
     const address = diffAddress();
@@ -752,8 +780,12 @@ export function createReviewPlug({
       detachViewingContext();
       unwatchDiff?.(); // a mount over a live one reads twice
       unwatchDiff = null;
+      unregisterSyncDiff();
+      unregisterSyncRead();
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       host = element;
+      unregisterSyncDiff = registerSyncDiff(diffAddress, () => visible && syncPaneShown(host));
+      unregisterSyncRead = registerSyncRead(diffAddress, readSyncDiff, () => visible && syncPaneShown(host));
       attachViewingContext();
       gitActionsHost = gitActions;
       noteReader = readNote;
@@ -785,6 +817,8 @@ export function createReviewPlug({
     sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
 
     unmount() {
+      unregisterSyncDiff();
+      unregisterSyncRead();
       reviewUi?.dispose();
       reviewUi = null;
       detachViewingContext();

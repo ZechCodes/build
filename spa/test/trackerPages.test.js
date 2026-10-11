@@ -25,6 +25,51 @@ beforeEach(async () => {
   pages = await import("../src/core/trackerPages.js");
 });
 
+describe("a page walk paused after the foreground page", () => {
+  it("resumes its cursor and removal stretch, keeping stale pages until the walk completes", async () => {
+    const address = trackerCache.tasksAddress("dev-1", "p1");
+    const params = { project_id: "p1" };
+    const oldPage = trackerCache.tasksPageAddress("dev-1", "p1", { ...params, limit: 100 });
+    await cache.writeCached(oldPage, { tasks: [task(9)] });
+    await trackerCache.writeTasksRecord("dev-1", "p1", trackerCache.tasksRecord([task(9), task(8), task(7), task(6), task(1)], []));
+    const ask = vi.fn(async (asked) => asked.cursor
+      ? { tasks: [task(6)] } : { tasks: [task(9), task(7)], next_cursor: "below7" });
+    const walk = pages.createTaskPagePull({
+      deviceId: "dev-1", projectId: "p1", params, ask,
+      fold: (stretch) => pages.foldTasksPage(address, stretch, () => []),
+    });
+
+    expect(await walk.first()).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(numbers((await trackerCache.readTasksRecord("dev-1", "p1")).tasks)).toEqual([9, 7, 6, 1]);
+    expect(await cache.readCached(oldPage)).not.toBeNull();
+
+    expect(await walk.rest()).toBe(true);
+    expect(ask.mock.calls.map(([asked]) => asked)).toEqual([
+      { project_id: "p1", limit: 100 },
+      { project_id: "p1", limit: 100, cursor: "below7" },
+    ]);
+    expect(numbers((await trackerCache.readTasksRecord("dev-1", "p1")).tasks)).toEqual([9, 7, 6]);
+    expect(await cache.readCached(oldPage)).toBeUndefined();
+    expect(await walk.first()).toBe(true);
+    expect(await walk.rest()).toBe(true);
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not resume a paused walk once its session is inactive", async () => {
+    let active = true;
+    const ask = vi.fn(async () => ({ tasks: [task(9)], next_cursor: "below9" }));
+    const walk = pages.createTaskPagePull({
+      deviceId: "dev-1", projectId: "p1", params: { project_id: "p1" }, ask,
+      active: () => active, fold: async () => true,
+    });
+    await walk.first();
+    active = false;
+    expect(await walk.rest()).toBe(false);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("laying a page over a held list", () => {
   const stretch = (tasks, over = {}) => ({ tasks, above: Infinity, through: -Infinity, readAt: null, ...over });
 

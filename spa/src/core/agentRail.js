@@ -101,6 +101,7 @@ import {
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
 import { hashFromRoute } from "./router.js";
+import { registerSyncThread, syncPaneShown } from "./syncVisibleScopes.js";
 import { createRailWorkItem } from "./railWorkItem.js";
 import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
 import { readCached, subscribeCache } from "./localCache.js";
@@ -2882,6 +2883,10 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const chatIsVisible = () => standing() && panelVisible && !document.hidden && shownPanelMode() === "chat";
+  const unregisterSyncThread = registerSyncThread(
+    () => ({ ...controllerInFocus().identity, deviceId: context.deviceId }),
+    () => selectedKind === "agent" && chatIsVisible() && syncPaneShown(host),
+  );
 
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     if (!chatIsVisible()) return;
@@ -4177,6 +4182,7 @@ function mountRailOnContext(host, context, swap) {
   const stopListening = () => {
     if (!listening) return;
     listening = false;
+    unregisterSyncThread();
     overview.close();
     chatLanding.dispose();
     activityRuns?.dispose();

@@ -15,11 +15,13 @@
 // expand/collapse, Enter opens. The open file's row carries `.sel` on every
 // paint; the keyboard selection is `.cursor` — two states, drawn differently.
 
-import { readCached, subscribeCache, writeCached } from "./localCache.js";
+import { mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache } from "./localCache.js";
 import { watchUiState } from "./localUiState.js";
 import { ancestorsOf, fileTreeHtml, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
+import { registerSyncRead, registerSyncTree, syncPaneShown } from "./syncVisibleScopes.js";
 
 const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
+const alwaysActive = () => true;
 
 const readExpanded = (value) =>
   new Set((Array.isArray(value?.expanded) ? value.expanded : []).filter((dir) => typeof dir === "string" && dir));
@@ -90,7 +92,11 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   });
 
   const shown = (dir) => !dir || (expanded.has(dir) && reachable(expanded, dir));
-  const stillListing = (dir, request) => !disposed && requests.get(dir) === request && shown(dir);
+  const unregisterSyncTree = registerSyncTree(
+    () => listingAddress(""), () => ["", ...expanded].filter(shown),
+    () => !disposed && syncPaneShown(listEl),
+  );
+  const stillListing = (dir, request, active = alwaysActive) => active() && !disposed && requests.get(dir) === request && shown(dir);
 
   const takeListing = (dir, listing) => {
     listings.set(dir, listing);
@@ -115,19 +121,26 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   /** A directory nothing holds a listing for (or nothing else keeps true):
    *  ask the machine, and write the answer through so the paint comes from the
    *  record — unless a newer write landed while the question was out. */
-  const listFromMachine = async (dir, request, previousAt) => {
+  const showListingError = (dir, listing, quiet) => {
+    if (!quiet && (!keepHeldOnError || !listings.has(dir))) takeListing(dir, listing);
+  };
+
+  const listFromMachine = async (dir, request, previousAt, quiet = false, active = alwaysActive) => {
+    if (!stillListing(dir, request, active)) return;
     const listing = await askMachine(dir);
-    if (!stillListing(dir, request)) return;
+    if (!stillListing(dir, request, active)) return;
     const address = listingAddress(dir);
     // An error is this mount's news, not the directory's: it never replaces a record.
     if (listing.error) {
-      if (!keepHeldOnError || !listings.has(dir)) takeListing(dir, listing);
+      showListingError(dir, listing, quiet);
       return;
     }
     if (!address) return takeListing(dir, listing);
     const current = await heldRecord(address);
-    if (!stillListing(dir, request) || current?.at !== previousAt) return;
-    await writeCached(address, listing);
+    if (!stillListing(dir, request, active) || current?.at !== previousAt) return;
+    await mergeCachedRecordsTogether([address], ([record]) => [
+      stillListing(dir, request, active) && recordWriteOf(record) === recordWriteOf(current) ? listing : null,
+    ]);
   };
 
   const watch = (dir, request) => {
@@ -136,18 +149,29 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     watches.set(dir, address ? subscribeCache(address, () => void reread(dir, request)) : () => {});
   };
 
-  const load = async (dir) => {
+  const beginListing = (dir) => {
     const request = (requests.get(dir) || 0) + 1;
     requests.set(dir, request);
     watch(dir, request);
+    return request;
+  };
+
+  const load = async (dir, force = false, active = alwaysActive) => {
+    if (!active()) return;
+    const request = beginListing(dir);
     const record = await heldRecord(listingAddress(dir));
-    if (!stillListing(dir, request)) return;
+    if (!stillListing(dir, request, active)) return;
     if (record?.value) {
       takeListing(dir, record.value);
-      if (!readsForItself()) return;
+      if (!force && !readsForItself()) return;
     }
-    await listFromMachine(dir, request, record?.at);
+    await listFromMachine(dir, request, record?.at, force, active);
   };
+
+  const unregisterSyncRead = registerSyncRead(
+    () => listingAddress(""), (active) => Promise.all(["", ...expanded].filter(shown).map((dir) => load(dir, true, active))),
+    () => !disposed && syncPaneShown(listEl),
+  );
 
   const stop = (dir) => {
     watches.get(dir)?.();
@@ -276,6 +300,8 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     },
     dispose() {
       disposed = true;
+      unregisterSyncTree();
+      unregisterSyncRead();
       [...watches.keys()].forEach(stop);
       record?.dispose();
       listEl.removeEventListener("click", onClick);

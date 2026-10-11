@@ -1096,7 +1096,8 @@ describe("the board item", () => {
 
       expect(after.value.items.map((item) => item.run_id)).toEqual(["run-1"]);
       expect(after.order).toBeGreaterThan(before.order);
-      expect(after.value.items[0].__cacheObserved).toEqual({ at: before.at, order: before.order });
+      // #495: independent list metadata writes retain the original board observation.
+      expect(after.value.items[0].__cacheObserved).toEqual(before.value.items[0].__cacheObserved);
       feed.stopFeed();
       feed.dropFeedDevice("dev-1");
       await feed.startFeed();

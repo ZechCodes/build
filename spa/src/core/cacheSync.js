@@ -61,8 +61,10 @@ import {
   evictEntity,
   mergeCached,
   mergeCachedAtomically,
+  mergeCachedRecordsTogether,
   mergeCachedTogether,
   readCached,
+  recordWriteOf,
   updateCachedFeed,
   writeCached,
 } from "./localCache.js";
@@ -1108,9 +1110,9 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
   // await a foreground reader which is joining that same pending answer.
   if (priority === "background") await context.beforeBackgroundRead?.();
   const address = addressOf(context, entityId, "diff");
-  const held = (await readCached(address))?.value;
+  const before = await readCached(address);
   const fence = pushFence();
-  const { method, repository, params } = diffRead(row, held, { patch });
+  const { method, repository, params } = diffRead(row, before?.value, { patch });
   const key = rpcReadKey({
     deviceId: context.deviceId,
     requestScope: context.requestScope,
@@ -1127,8 +1129,12 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
       ? context.call(method, params, context.priorityForRead?.(method, params, envelope) || envelope) : null,
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
-  await mergeCached(address, (current) =>
-    context.active() && !pushedSince(address, fence) ? diffRecord(current, diff, row) : null);
+  // The mounted surface or another tab can write without a push. Compare
+  // the captured write inside the transaction, including an absent record.
+  await mergeCachedRecordsTogether([address], ([current]) => [
+    context.active() && !pushedSince(address, fence) && recordWriteOf(current) === recordWriteOf(before)
+      ? diffRecord(current?.value, diff, row) : null,
+  ]);
 }
 
 /** Whether a diff answer carries a patch the record can hold: one not cut, and

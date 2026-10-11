@@ -10,13 +10,13 @@
 // watched task and workspace count (#183); a Needs-you task row adds no
 // duplicate count. The head offers the create surface behind a + and a direct
 // Hide control that puts the block away.
-// A block folds shut by its chevron and stays that way until it is opened
-// again; one with no workspace in it is flat, and its chevron has nothing to
-// fold.
+// Blocks start open; each block's Recent starts closed, including when all its
+// rows are quiet. The chevron folds the whole block and remembers that choice.
+// A block with no rows has nothing to fold, so its chevron is disabled.
 // Every project stays in one alphabetical list, however long it has been
 // quiet. Names use case-insensitive locale order, then the device tag and
-// project key break ties. Workspaces inside keep their own session order and
-// Recent partition.
+// project key break ties. Rows inside keep their anchor order and per-block
+// Recent partition, the same as the ungrouped inbox.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
@@ -92,7 +92,6 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
     isGit: project.is_git !== false,
     entries,
     recent,
-    flat: entries.length === 0,
     route: { name: "project", projectId: project.id, deviceId: project.deviceId },
     agentEntry,
     // A fold changes the head's dot but never its numeric contribution to
@@ -208,12 +207,10 @@ export function rowDeviceNames({ items = [], projects = [], devices = [] } = {})
   return new Map([...tags].map(([key, tag]) => [key, tag.clash ? tag.deviceName : null]));
 }
 
-/** Whether a block stands folded: what the user said of it if they have said
- *  anything (`folds`: project key → folded), else shut when all it holds is
- *  quiet rows — those always start hidden — and open otherwise. */
+/** Whether a block stands folded: the user's saved choice (`folds`: project
+ *  key → folded), else open. Quiet rows stay behind the block's Recent. */
 export function blockIsFolded(block, folds) {
-  if (folds && folds.has(block.projectKey)) return !!folds.get(block.projectKey);
-  return block.flat && block.recent.length > 0;
+  return !!folds?.get(block.projectKey);
 }
 
 /** The chevron that folds a block shut and unfolds it again, saying which of
@@ -270,7 +267,6 @@ export function projectHeadHtml(block, ui = {}) {
 export function projectBlockHtml(block, ui = {}) {
   const classes = [
     "inbox-project",
-    block.flat ? "inbox-flat" : "",
     ui.folded && ui.folded.has(block.projectKey) ? "inbox-folded" : "",
     ui.activeProjectId === block.projectKey ? "active" : "",
   ]

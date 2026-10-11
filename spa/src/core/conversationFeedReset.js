@@ -113,15 +113,16 @@ const heldFeedRows = (held) => new Map(FEED_COLLECTIONS.map((field) =>
 
 /** Admit a board snapshot against all its thread generations inside the same
  * transaction as the feed write. Other rows remain this list's observation. */
-export function writeConversationFeed(address, view, { active, supersededFeedRow, rewriteRow, pruneView = (held) => held }) {
+export function writeConversationFeed(address, view, { active, supersededFeedRow, rewriteRow, pruneView = (held) => held, mergePartial = false }) {
   const guards = feedGuards(address.deviceId, view);
   return guardedFeedWrite(address, guards, {
     active, options: { observedFeedRows: true, supersededFeedRow },
     makeFeed: (held, found) => {
       const records = new Map(guards.map((at, index) => [recordKey(at), found[index]]));
       const old = heldFeedRows(held);
-      return mapFeedRows(pruneView(view),
+      const incoming = mapFeedRows(pruneView(view),
         (row, field) => admittedFeedRow(row, address.deviceId, records, rewriteRow, old.get(field)?.get(entityIdOf(row))));
+      return mergePartial ? { ...held, ...incoming } : incoming;
     },
   });
 }

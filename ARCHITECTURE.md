@@ -1867,8 +1867,17 @@ In practice:
   `local-cache`.
 - **The sync layer** is `spa/src/core/cacheSync.js`, the main reader of the
   wire. On a greeting, a reconnect or a tab return, `syncDevice()` makes one
-  ordered pass per device: the lists, then the workspace being viewed, then the
-  rest. A refresh requested while the same session's pass is running queues
+  ordered pass per device. The three ownership lists are requested together
+  and written independently as they land. `syncPhases.js` then reads the open
+  conversation, the open checkout and project's first task page, the inbox's
+  other conversations and remaining task pages/review metadata, and finally
+  background checkout records and bodies. Only the visible scope is promoted;
+  mounted panes describe their shown trees, Changes and remembered conversation
+  through `syncVisibleScopes.js`. Route changes interrupt the pending order,
+  including while an unrelated background reply is still out. Task pages
+  resume the same cursor and removal spans across phases (`syncTaskPhases.js`),
+  sharing a session-fenced queue with coalesced push reads. A refresh requested
+  while the same session's pass is running queues
   one follow-up pass; all requests during that pass share the follow-up, and
   their promises settle with its result. The current pass finishes before the
   follow-up starts. Stopping sync or replacing the session discards queued

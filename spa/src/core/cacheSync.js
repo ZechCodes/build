@@ -19,11 +19,9 @@
 //
 // # The order, and why it is an order
 //
-// A pass reads the lists first, then the workspace the reader is standing in,
-// then the rest in inbox order — so the first thing on screen is filled first
-// and the reader's own workspace never waits behind eleven others. Only the
-// routed workspace's reads are foreground; everything else rides behind
-// whatever a surface is waiting on.
+// Lists land independently, then the open conversation and checkout, then
+// inbox conversations and tasks, then background checkout warming. The phase
+// planner re-evaluates the route between reads and at background wire boundaries.
 //
 // # Subscribed before it reads
 //
@@ -38,6 +36,10 @@
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { trailingRead } from "./trailingRead.js";
+import { createSyncPhases } from "./syncPhases.js";
+import { createTaskPhases } from "./syncTaskPhases.js";
+import { createTaskReadQueue } from "./serialTaskReads.js";
+import { readSyncLists } from "./syncLists.js";
 import { App } from "../appState.js";
 import { contextFor, liveContexts, onDeviceStateChanged } from "./deviceContexts.js";
 import { bridgeCapabilities, onSubscriptionHeld, subscriptionsSettledFor, watchChanges } from "./changeEvents.js";
@@ -197,8 +199,10 @@ const heldValue = async (context, entityId, kind, sub = "") =>
 
 /** Cache reads and coordinated requests can yield before dispatch. Check the
  *  captured pass at the wire boundary, including reads with their own loaders. */
-const callWhileActive = (context, method, params, envelope) =>
-  context.active() ? context.call(method, params, envelope) : Promise.resolve(null);
+const callWhileActive = async (context, method, params, envelope) => {
+  if (envelope?.priority === "background") await context.beforeBackgroundRead?.();
+  return context.active() ? context.call(method, params, envelope) : null;
+};
 
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
@@ -380,8 +384,16 @@ async function orderedSync(deviceId, turn) {
   if (!lists || !context.active()) return false;
   const { view, before, ownership } = lists;
   const pass = await workspacesToRead(context, view);
-  const filesRecovered = await readWorkspaces(context, pass, fence);
-  await readProjectTasks(context, view);
+  const phases = createSyncPhases({
+    context, pass, view, route: () => App.route,
+    entityContext: (id) => whileOnBoard(context, id, fence),
+    readers: workspaceReaders,
+    tasks: createTaskPhases(context, { ask, readReviews: (context, projectId) => readReviews(context, projectId),
+      serialize: (projectId, operation) => serializeTasks(context, projectId, operation) }),
+  });
+  context.beforeBackgroundRead = phases.foreground;
+  turn.foreground = phases.foreground;
+  const filesRecovered = await phases.run();
   await evictRowsThatAreOver(context, view, fence);
   await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
@@ -433,21 +445,6 @@ function settledWithin(promise, waitMs) {
   ]).finally(() => clearTimeout(timer));
 }
 
-/** Every workspace in the pass's order — less any a push has taken off the
- *  board since the lists were read, which would only be read back into
- *  records nothing names. One the push takes away while it is being read
- *  stops where it stands. */
-async function readWorkspaces(context, pass, fence) {
-  let filesRecovered = true;
-  for (const entityId of pass.order) {
-    if (!context.active()) return;
-    if (removedSince(addressOf(context, entityId, "row"), fence)) continue;
-    const recovered = await syncWorkspace(whileOnBoard(context, entityId, fence), entityId, pass.rows.get(entityId), entityId === pass.routed);
-    filesRecovered = recovered && filesRecovered;
-  }
-  return filesRecovered;
-}
-
 /** The context for one entity's records, stood down as well once a push takes
  *  the entity off the board after the fence: a read already out when it went
  *  writes nothing back under it, and nothing after that read is asked. Every
@@ -464,15 +461,37 @@ async function readLists(context, fence) {
   const observations = await Promise.all(["projects", "workspaces"].map((kind) =>
     sessionListObservation(addressOf(context, "", kind), kind)));
   const reading = { ...context, sessionListObservations: Object.fromEntries(["projects", "workspaces"].map((kind, index) => [kind, observations[index]])) };
-  const [board, projects, workspaces] = await askOwnershipLists(context);
-  if (!board || !projects || !context.active()) return null;
-  await writeUsageLimits(context.deviceId, board.usage_limits);
-  const view = liveFeedSnapshot(board, projects, workspaces || { workspaces: [] }, context.deviceId);
-  // The compatibility fallback above paints a board without workspace
-  // support. It is never evidence that an unsent draft's owner was deleted.
-  const before = {};
-  await writeLists(reading, view, fence, before);
-  return { view, before, ownership: { ...view, workspaces: workspaces?.workspaces, projects: projects.projects } };
+  const lists = await readSyncLists(reading, { ask,
+    landBoard: async (board) => {
+      await writeUsageLimits(context.deviceId, board.usage_limits);
+      const view = liveFeedSnapshot(board, { projects: [] }, { workspaces: [] }, context.deviceId);
+      delete view.projects;
+      delete view.workspaces;
+      await writeLists(reading, view, fence);
+    },
+    landList: (kind, rows, before) => landOwnershipList(reading, kind, rows, before, fence),
+  });
+  if (lists) await refreshWorkspaceSummaries(reading, lists.view, fence);
+  return lists;
+}
+
+async function landOwnershipList(context, kind, rows, before, fence) {
+  const stamp = kind === "projects" ? stampProject : stampWorkspace;
+  const incoming = rows.map((row) => stamp(row, context.deviceId));
+  if (!context.active() || pushedSince(addressOf(context, "", kind), fence)) return;
+  await writeSessionList(context, kind, incoming, before);
+}
+
+async function refreshWorkspaceSummaries(context, view, fence) {
+  const address = addressOf(context, "", "workspaces");
+  const summaries = workspaceSummaries(view.workspaces);
+  await mergeCachedAtomically(address, (held) =>
+    context.active() && !pushedSince(address, fence) && Array.isArray(held)
+      ? held.map((row) => stampWorkspace(row, context.deviceId, summaries)) : null);
+  const [projects, workspaces] = await Promise.all([heldValue(context, "", "projects"), heldValue(context, "", "workspaces")]);
+  await updateCachedFeed(addressOf(context, "", "feed"), (held) =>
+    context.active() && !pushedSince(addressOf(context, "", "workspaces"), fence)
+      && !pushedSince(addressOf(context, "", "projects"), fence) ? { ...held, projects, workspaces } : null);
 }
 
 async function pruneReadDrafts(context, before, view) {
@@ -491,21 +510,18 @@ const askOwnershipLists = (context) => Promise.all([
   ask(context, "workspace.list", {}, "background"),
 ]);
 
-async function writeLists(context, view, fence, before) {
+async function writeLists(context, view, fence) {
   if (!context.active()) return;
   // Inside the feed's own transaction, so a push landing while it waits is
   // still seen: the rows a push wrote since the fence are not this read's
   // observation, and their own records paint over the board's older copy.
   await writeConversationFeed(addressOf(context, "", "feed"), view, {
+    mergePartial: true,
     active: context.active,
     rewriteRow: resetAliasesInRow,
     pruneView: (current) => withoutPushedRemovals(context, current, fence),
     supersededFeedRow: (row) => Boolean(entityIdOf(row) && pushedSince(addressOf(context, entityIdOf(row), "row"), fence)),
   });
-  for (const kind of ["projects", "workspaces"]) {
-    if (!context.active()) return;
-    if (!pushedSince(addressOf(context, "", kind), fence)) await writeSessionList(context, kind, view[kind], before);
-  }
   for (const row of view.items || []) {
     if (!context.active()) return;
     await writeListedRow(context, row, fence);
@@ -617,31 +633,6 @@ const projectConversationIds = (view) =>
  *  moves between projects, and a project is named by the machine it is on. */
 const projectIds = (view) => (view.projects || []).map((project) => project.project_id || project.id).filter(Boolean);
 
-/**
- * Step 2b: every project's task list.
- *
- * Read on every pass for the same reason a project's conversation is
- * (`projectConversationIds` above): the Tasks tab offers itself the moment the
- * reader opens a project, and a project is not a board row that ages into
- * Recent — it holds no work that finishes. Reading it only when routed there
- * would leave the tab blank on the first pass of a new session, and blank until
- * somebody filed something.
- *
- * The whole list, narrowed by nothing: the tab's filters are `tasks.list`
- * params of their own (core/trackerFilters.js), and a record already narrowed
- * would be missing whatever the next filter is about to ask for.
- *
- * Behind the workspaces, never in front of them. A task list is a project
- * surface and the inbox is the landing one, so nothing on screen waits on this.
- */
-async function readProjectTasks(context, view) {
-  for (const projectId of projectIds(view)) {
-    if (!context.active()) return;
-    await readTasks(context, projectId);
-    await readReviews(context, projectId);
-  }
-}
-
 /** One project's tasks, and its columns the first time. The columns change
  *  with the project rather than with a task, so they are asked for once and
  *  held; a bridge that refuses the verb leaves them empty and every board falls
@@ -696,6 +687,11 @@ async function readTaskPagesNow(context, projectId) {
 /** One project's list read at a time on a session (#119). A push heard while
  *  it is out is read once after it, under the newest context that asked. */
 const latestTaskReads = new Map();
+const taskReadQueue = createTaskReadQueue();
+function serializeTasks(context, projectId, operation) {
+  const key = JSON.stringify([context.deviceId, projectId]);
+  return taskReadQueue(key, taskReadGeneration(context.deviceId), operation);
+}
 const taskReadGenerations = new Map();
 function taskReadGeneration(deviceId) {
   const session = sessionOf(deviceId);
@@ -709,7 +705,7 @@ function taskReadGeneration(deviceId) {
 }
 const taskReads = trailingRead((key) => {
   const { context, projectId } = latestTaskReads.get(key);
-  return readTasksNow(context, projectId);
+  return serializeTasks(context, projectId, () => readTasksNow(context, projectId));
 }, { generationOf: (key) => taskReadGeneration(latestTaskReads.get(key).context.deviceId) });
 
 function readTasks(context, projectId) {
@@ -857,32 +853,31 @@ async function dropUnnamedEntity(context, entityId) {
 
 // ─── Step 3: one workspace ───────────────────────────────────────────────────
 
-/** Everything one workspace holds, in the order a reader opening it wants it:
- *  what changed, where the files are, the shells, the commit lists, the
- *  conversations, and last the big bodies — the patch behind each unpushed
- *  commit and the working tree's diff. Those last are a quarter of a megabyte
- *  each and up to twenty of them; nothing is looking at them until a reviewer
- *  opens the changes, and the thread is on screen the moment the workspace
- *  is. */
-async function syncWorkspace(context, entityId, row, routed) {
-  const priority = routed ? "foreground" : "background";
+/** Optional checkout bodies only run after the foreground and inbox phases. */
+async function syncWorkspaceExtras(context, entityId, row) {
+  const priority = "background";
   const scope = gitScopeOf(row);
-  if (scope) {
-    await syncStatus(context, entityId, scope, priority);
-    await syncTrees(context, entityId, scope, priority);
-  }
-  await syncTerminals(context, entityId, row, priority);
-  const log = scope ? await syncCommits(context, entityId, scope, priority) : null;
-  await syncThreads(context, entityId, row, priority);
   if (!scope) return true;
   // A previous lifetime's file refresh may never land. Recovery takes over
   // the held bodies once; ordinary passes on this session leave them alone.
   // At most RECENT_FILES per workspace; threads stay ahead of these bodies.
   const filesRecovered = !context.recoverFiles || await rereadHeldFiles(context, entityId, scope);
-  await syncPatches(context, entityId, scope, unpushedCommits(log), priority);
+  await syncPatches(context, entityId, scope, unpushedCommits(await heldValue(context, entityId, "log")), priority);
   await syncWorkingDiff(context, entityId, row, priority);
   return filesRecovered;
 }
+
+const workspaceReaders = {
+  scope: gitScopeOf,
+  status: (context, id, row, priority) => syncStatus(context, id, gitScopeOf(row), priority),
+  tree: (context, id, row, path, priority) => listTrees(context, id, gitScopeOf(row), [path], priority),
+  terminals: syncTerminals,
+  log: (context, id, row, priority) => syncLog(context, id, gitScopeOf(row), priority),
+  unpushed: (context, id, row, priority) => syncUnpushed(context, id, gitScopeOf(row), priority),
+  visibleDiff: (context, id, row, priority) => pullWorkingDiff(context, id, row, priority, { patch: false }),
+  thread: syncThread,
+  extras: syncWorkspaceExtras,
+};
 
 /** The status, asked conditionally: the `status_key` the cache holds is the
  *  same key `git.status` answers with, so holding it is proof there is nothing
@@ -891,14 +886,6 @@ async function syncStatus(context, entityId, scope, priority) {
   const held = await heldValue(context, entityId, "status");
   const params = held?.status_key ? { ...scope, if_status_key: held.status_key } : scope;
   await readWhole(context, addressOf(context, entityId, "status"), { method: "git.status", params, priority });
-}
-
-/** The top-level listing always — the Files tab's first paint — plus whichever
- *  directories the reader has walked into, which are the tree records the cache
- *  already holds. */
-async function syncTrees(context, entityId, scope, priority) {
-  const walked = await cachedSubKeys(context.deviceId, entityId, "tree");
-  await listTrees(context, entityId, scope, new Set(["", ...walked]), priority);
 }
 
 async function listTrees(context, entityId, scope, paths, priority) {
@@ -922,15 +909,6 @@ async function syncTerminals(context, entityId, row, priority) {
     { method: "term.list", params: scope, priority },
     (answer) => ({ tabs: answer.terminals || [] }),
   );
-}
-
-/** The two commit lists, answered whole. The commit record is handed back: the
- *  patches behind its unpushed commits are read later in the pass, once the
- *  conversations are in. */
-async function syncCommits(context, entityId, scope, priority) {
-  await syncLog(context, entityId, scope, priority);
-  await syncUnpushed(context, entityId, scope, priority);
-  return heldValue(context, entityId, "log");
 }
 
 /** The commits this checkout has that its push target does not, newest first.
@@ -1170,13 +1148,6 @@ const staleDiffRecord = (held) => (!held || held.stale ? null : { ...held, stale
 /** Every conversation on this workspace. The feed row's `agents[]` IS the
  *  conversation list, so a conversation nobody has opened is still read once
  *  and paints instantly the first time it is. */
-async function syncThreads(context, entityId, row, priority) {
-  for (const agent of row?.agents || []) {
-    if (!context.active()) return;
-    await syncThread(context, entityId, agent, priority);
-  }
-}
-
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest hundred where it holds none. */
 async function syncThread(context, entityId, agent, priority) {
@@ -1317,7 +1288,10 @@ function followRoutedEntity(deviceId, entityId) {
  *  when it does, and again when it ends. */
 export function routeChanged() {
   if (!holdingLock) return;
-  for (const deviceId of [...subscriptions.keys()]) void refollowRoute(deviceId);
+  for (const deviceId of [...subscriptions.keys()]) {
+    void passes.get(deviceId)?.foreground?.();
+    void refollowRoute(deviceId);
+  }
 }
 
 async function refollowRoute(deviceId) {

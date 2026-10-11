@@ -112,6 +112,7 @@ const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { resetUsageLimits, setUsageLimitsForTest: setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
+const { threadWindow } = await import("../src/core/threadSync.js");
 const { greetBridge: greetWatchingBridge, resetChangeEvents: forgetGreetings } = await import("../src/core/changeEvents.js");
 const { pushRailThreadItems, writeRailBoard, writeRailRow, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
@@ -5628,6 +5629,34 @@ describe("a run of activity in the rail", () => {
     runHead().click();
     await flush();
     expect(callsTo("thread.activity")).toHaveLength(1);
+  });
+
+  it.each([true, false])("opens a warm closed run with its first row held after lean=%s catch-up", async (lean) => {
+    payload = conversation([said(1, "Start"), toolCall(2, "Read 2.js")], [
+      { from_sequence: 2, through_sequence: 2, rows: 1, tool_calls: 1 },
+    ]);
+    let answer;
+    answering(new Promise((resolve) => { answer = resolve; }));
+    await mount();
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    const allActivity = Array.from({ length: 99 }, (_, index) => toolCall(index + 2, `Read ${index + 2}.js`));
+    const held = (await readCached(address)).value;
+    await writeCached(address, threadWindow(held, {
+      items: [...(lean ? allActivity.slice(-1) : allActivity.slice(1)), said(101, "Done")],
+      thread_last_sequence: 101, has_more: lean,
+      activity_digests: [{ from_sequence: 2, through_sequence: 100, rows: 99, tool_calls: 99 }],
+    }, { newest: true, lean }));
+    await vi.waitFor(() => expect(railHost().querySelector(".thread-activity-count").textContent).toBe("99"));
+    runHead().click();
+    if (lean) {
+      expect(runBox().querySelector('[role="status"] .throbber')).not.toBeNull();
+      await vi.waitFor(() => expect(callsTo("thread.activity")).toHaveLength(1));
+      expect(callsTo("thread.activity")[0].params).toMatchObject({ from_sequence: 2, through_sequence: 100 });
+      answer({ items: allActivity, has_more: false });
+    }
+    await vi.waitFor(() => expect(runRows().map((row) => Number(row.dataset.sequence))).toEqual(allActivity.map((item) => item.data.sequence)));
+    expect(runBox().querySelector(".throbber")).toBeNull();
+    expect(callsTo("thread.activity")).toHaveLength(lean ? 1 : 0);
   });
 
   it("offers an inline retry when opening a newest-only run fails", async () => {

@@ -1153,6 +1153,7 @@ function mountRailOnContext(host, context, swap) {
   let paintedChatContent = null; // drawn rows, including same-cursor edits
   let paintedChatItemCount = 0;
   let paintedDigests = []; // the run totals that timeline was drawn with
+  let paintedThreadItems = []; // held rows behind those totals, before detail filtering
   let paintedEntryKeyOf = () => null; // which of its entries draws a sequence
   // How much of the held conversation the timeline draws (#158): the newest
   // entries, and more as the reader asks for them.
@@ -2847,6 +2848,7 @@ function mountRailOnContext(host, context, swap) {
     const conversationId = controllerInFocus().identity.conversationId || null;
     // The level reads the cached thread; it never changes what was cached.
     const held = threadItems(thread);
+    paintedThreadItems = held;
     const shown = itemsAtDetailLevel(held, detailLevel());
     const built = timelineEntries(shown, agentLabel, conversationId, paintedDigests, {
       openRuns: runs.openKeys(),
@@ -2965,7 +2967,7 @@ function mountRailOnContext(host, context, swap) {
     // Decided against the timeline the press landed on, before the repaint
     // draws the next one over it.
     const digest = opened
-      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough)
+      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough, paintedThreadItems)
       : null;
     // Start before fold persistence yields: the click paints its loading state.
     const opening = digest ? loadActivityRun(runs, digest) : null;

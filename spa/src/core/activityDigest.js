@@ -52,9 +52,11 @@ export function digestCovering(digests, sequence) {
 /// The digest a pressed run must be fetched over, or nothing.
 ///
 /// Two kinds of run are drawn from the window instead. One the page shipped
-/// whole — its digest starts no earlier than the oldest row in hand, so there
-/// is nothing missing to ask for. And the TAIL run, the one that reaches the
-/// end of the conversation: it is still being written, and the window is where
+/// whole — its span and census are covered by distinct held activity rows,
+/// so there is nothing missing to ask for. Holding its first row alone says
+/// nothing about its interior: lean deltas can omit all but the newest row.
+/// And the TAIL run, the one that reaches the end of the conversation: it is
+/// still being written, and the window is where
 /// its newest rows land. Fetching it would freeze a moving run into a record
 /// kept until the entity is evicted, and every call it grew afterwards would
 /// fall between that record's end and the window's oldest row, unseen and never
@@ -67,12 +69,23 @@ export function digestCovering(digests, sequence) {
 /// end while the run is still being written. `runThrough` is the other half of
 /// the answer: the newest sequence the window holds for the run, its folded
 /// calls included, which is what the run's own box says about itself.
-export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough = 0) {
+export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough = 0, heldItems = []) {
   const key = Number(runKey);
   const digest = digestCovering(digests, key);
-  if (!digest || digest.from_sequence >= key) return null;
+  if (!digest || heldRunComplete(digest, heldItems)) return null;
   const runReaches = Math.max(digest.through_sequence, Number(runThrough) || 0);
   return runReaches >= Number(threadLastSequence) ? null : digest;
+}
+
+/// Sequence gaps can be update counters, so completeness follows the census,
+/// not adjacency. Duplicate copies and non-activity rows prove nothing.
+function heldRunComplete(digest, items) {
+  const sequences = new Set(items
+    .filter((item) => item.type === "event" && EVENT_META[item.data?.event]?.activity)
+    .map((item) => Number(item.data.sequence))
+    .filter((sequence) => sequence >= digest.from_sequence && sequence <= digest.through_sequence));
+  return sequences.has(digest.from_sequence) && sequences.has(digest.through_sequence)
+    && sequences.size >= rowsCountedBy(digest);
 }
 
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);

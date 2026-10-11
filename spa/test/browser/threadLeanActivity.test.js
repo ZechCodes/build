@@ -6,9 +6,10 @@ let session;
 beforeAll(async () => { session = await openLayoutSession(); });
 afterAll(async () => { await session?.close(); });
 
-async function seedLeanThread() {
+async function seedLeanThread(warm) {
   const { App } = window.__layoutModules.app;
-  const { writeCached } = window.__layoutModules.cache;
+  const { readCached, writeCached } = window.__layoutModules.cache;
+  const { threadWindow } = window.__layoutModules.sync;
   const { greetBridge } = window.__layoutModules.events;
   const { mountAgentRail } = window.__layoutModules.rail;
   const { startFeed } = window.__layoutModules.feed;
@@ -26,10 +27,18 @@ async function seedLeanThread() {
     kind: "workspace", entity_id: entityId, project_id: "lean-project", workspace_id: "lean-workspace",
     agents: [{ id: agentId, ordinal: 1, topic: "Lean activity", provider: "codex_app_server", state: "idle", working: false, unread_count: 0 }],
   });
-  await writeCached(threadAddress, {
+  const closedThread = {
     items: [message(1, "Start"), activity(100), message(101, "Done")], deliveredSequence: 101,
     activityDigests: [{ from_sequence: 2, through_sequence: 100, rows: 99, tool_calls: 99 }],
-  });
+  };
+  await writeCached(threadAddress, warm ? {
+    items: [message(1, "Start"), activity(2)], deliveredSequence: 2,
+    activityDigests: [{ from_sequence: 2, through_sequence: 2, rows: 1, tool_calls: 1 }],
+  } : closedThread);
+  window.__leanCatchUp = async () => writeCached(threadAddress, threadWindow((await readCached(threadAddress)).value, {
+    items: [activity(100), message(101, "Done")], thread_last_sequence: 101, has_more: true,
+    activity_digests: closedThread.activityDigests,
+  }, { newest: true, lean: true }));
   await writeCached({ deviceId, entityId: "", kind: "projects", sub: "" }, [{ id: "lean-project", project_id: "lean-project", name: "Lean" }]);
   await writeCached({ deviceId, entityId: "", kind: "workspaces", sub: "" }, [
     stampWorkspace({ id: "lean-workspace", project_id: "lean-project", entity_id: entityId, name: "lean-thread" }, deviceId),
@@ -57,14 +66,15 @@ async function seedLeanThread() {
   });
 }
 
-async function mountLeanThread(page, basePath) {
+async function mountLeanThread(page, basePath, { warm = false } = {}) {
   page.setDefaultTimeout(5000);
   await mountLayout(page, shellHtml(page.viewportSize().width <= 760 ? "phone" : "desktop"), { basePath, styles: SHELL_STYLES });
   await loadBrowserModules(page, {
     app: "src/app.js", rail: "src/core/agentRail.js", cache: "src/core/localCache.js", events: "src/core/changeEvents.js",
     feed: "src/core/taskFeed.js", merge: "src/core/feedMerge.js",
+    sync: "src/core/threadSync.js",
   }, basePath);
-  await page.evaluate(seedLeanThread);
+  await page.evaluate(seedLeanThread, warm);
   await page.locator(".thread-activity-group-head").waitFor();
 }
 
@@ -104,6 +114,22 @@ it.each([{ width: 1180, height: 840 }, { width: 390, height: 844 }])("opens a le
     await page.waitForFunction(() => document.querySelectorAll(".thread-activity-group-list > .thread-activity").length === 4);
     expect(await page.evaluate(() => window.__activityCalls.length)).toBe(2);
   }, viewport);
+}, 30_000);
+
+it("fetches missing interior rows after a warm lean catch-up closes the run", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountLeanThread(page, basePath, { warm: true });
+    await page.evaluate(() => window.__leanCatchUp());
+    await page.waitForFunction(() => document.querySelector(".thread-activity-count")?.textContent === "99");
+    const head = page.locator(".thread-activity-group-head");
+    expect(await head.evaluate((node) => { node.click(); return !!document.querySelector('[role="status"] .throbber'); })).toBe(true);
+    await page.waitForFunction(() => window.__activityCalls.length === 1);
+    expect(await page.evaluate(() => window.__activityCalls[0])).toMatchObject({ from_sequence: 2, through_sequence: 100 });
+    await page.evaluate(() => window.__answerActivity(Array.from({ length: 99 }, (_, index) => index + 2)));
+    await page.locator('.thread-activity-group [role="status"] .throbber').waitFor({ state: "detached" });
+    expect(await page.locator(".thread-activity-group-list > .thread-activity").evaluateAll((rows) => rows.map((row) => Number(row.dataset.sequence))))
+      .toEqual(Array.from({ length: 99 }, (_, index) => index + 2));
+  }, { width: 390, height: 844 });
 }, 30_000);
 
 it("retries a failed lean run inline in Chromium", async () => {

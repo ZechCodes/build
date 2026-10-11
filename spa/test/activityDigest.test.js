@@ -353,7 +353,20 @@ describe("the run a press has to fetch", () => {
   });
 
   it("asks for nothing when the window holds the run whole", () => {
-    expect(runDigestToFetch([digest(60, 90, 8)], 60, 200)).toBe(null);
+    const held = [60, 61, 62, 63, 64, 65, 66, 90].map((sequence) => ({ type: "event", data: { sequence, event: "tool_use" } }));
+    expect(runDigestToFetch([digest(60, 90, 8)], 60, 200, 90, held)).toBe(null);
+  });
+
+  it("does not count duplicate copies or other rows as missing interior activity", () => {
+    const run = digest(2, 100, 3);
+    const held = [2, 2, 100].map((sequence) => ({ type: "event", data: { sequence, event: "tool_use" } }));
+    held.push({ type: "message", data: { sequence: 50 } }, { type: "event", data: { sequence: 60, event: "done" } });
+    expect(runDigestToFetch([run], 2, 101, 100, held)).toBe(run);
+  });
+
+  it("uses the census rather than sequence adjacency when the full run is held", () => {
+    const held = [2, 50, 100].map((sequence) => ({ type: "event", data: { sequence, event: "reasoning" } }));
+    expect(runDigestToFetch([digest(2, 100, 3)], 2, 101, 100, held)).toBe(null);
   });
 
   it("asks for nothing when the run reaches the end of the conversation", () => {

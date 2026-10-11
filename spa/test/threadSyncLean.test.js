@@ -86,11 +86,14 @@ describe("lean thread page requests", () => {
     expect((await cache.readCached(address)).value.items.map((item) => item.data.sequence)).toEqual([200, 300]);
   });
 
-  it.each([{ refusal: false }, { refusal: true }])("repairs an omitted held activity item before paying its debt: $refusal", async ({ refusal }) => {
+  it.each([{ refusal: false }, { refusal: true }, { refusal: false, provisional: true }])("repairs an omitted held activity item before paying its debt: %j", async ({ refusal, provisional }) => {
     await greet(["threads.leanActivity"]);
     const callItem = activity(2);
     const thought = { type: "event", data: { sequence: 3, event: "reasoning", summary: "Thinking" } };
-    await cache.writeCached(address, { items: [message(1), callItem, thought], deliveredSequence: 3, activityDigests: [] });
+    const queued = provisional ? Array.from({ length: 51 }, (_, index) => ({
+      type: "message", data: { provisional: true, operation_id: `queued-${index}`, role: "user", body: "Queued" },
+    })) : [];
+    await cache.writeCached(address, { items: [message(1), callItem, thought, ...queued], deliveredSequence: 3, activityDigests: [] });
     const call = vi.fn(async (method, params) => {
       if (method === "thread.activity") {
         if (refusal) throw new Error("unavailable");

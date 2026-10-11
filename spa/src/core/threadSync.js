@@ -157,7 +157,7 @@ async function recentRepairPage(request, held, floor) {
  * failed reads leave the repair debt in place rather than blessing stale rows. */
 async function repairedActivityCopies(request, held, page) {
   const shipped = new Set((page.items || []).map(threadItemKey));
-  const missing = (held.items || []).slice(-REPAIRED_THREAD_ITEMS).filter((item) =>
+  const missing = recentHeldItems(held).filter((item) =>
     !shipped.has(threadItemKey(item)) && !!digestCovering(page.activity_digests, item.data?.sequence));
   const copies = [];
   for (const item of missing) {
@@ -189,10 +189,13 @@ async function readActivityCopy(request, held, item) {
 /** The sequence just under the newest items the record holds from the wire,
  *  or null where it holds none. */
 function repairFloor(held) {
-  const recent = (held?.items || []).filter((item) => !isProvisionalItem(item)).slice(-REPAIRED_THREAD_ITEMS);
+  const recent = recentHeldItems(held);
   if (!recent.length) return null;
   return Math.max(0, Number(recent[0].data?.sequence || 0) - 1);
 }
+
+const recentHeldItems = (held) => (held?.items || [])
+  .filter((item) => !isProvisionalItem(item)).slice(-REPAIRED_THREAD_ITEMS);
 
 /** The window with the items a repair page carries newer copies of, and its
  *  debt paid where the page was read at or past it — or null where neither. */

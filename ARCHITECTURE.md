@@ -1972,7 +1972,13 @@ In practice:
   with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
   have been read again at or past that counter.
   Sync and load-older pages request `activity: "newest"` only when the device
-  advertises `threads.leanActivity`. A leading folded run on a newest page
+  advertises `threads.leanActivity`. Cold sync and conversation-open reads
+  then request 23 messages, measured to fill the phone conversation even at
+  the dense task-notice row height, plus one newest activity item per run.
+  Legacy cold reads and warm catch-up retain 100; repairs retain 50.
+  A detail filter hiding the entire held window still renders Earlier when
+  the cached window says older items remain, so older dialogue stays reachable.
+  A leading folded run on a newest page
   means `has_more` describes omitted activity, so held message context survives;
   load-older seeks above that run's digest start. A lean repair refreshes any
   omitted recent held activity through exact one-item `thread.activity` reads

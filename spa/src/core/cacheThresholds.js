@@ -10,8 +10,18 @@
 /** Commits read when the cache holds no cursor to read forward from. */
 export const LATEST_COMMITS = 20;
 
-/** Conversation items read when the cache holds no sequence to read after. */
+/** Legacy cold-page and warm catch-up conversation message budget. */
 export const LATEST_THREAD_ITEMS = 100;
+
+/** Lean cold limits count messages; pages also carry newest activity per run.
+ *  Chromium at the captureChatMenu.mjs pinned phone viewport (390 x 844):
+ *  740px scroller - 60px top - 143.05px bottom - 20px timeline padding
+ *  = 516.95px for rows. test/browser/threadLeanActivity.test.js short messages
+ *  measure 20.92px + 22px gaps (13 fill it); folded activity adds 19.81px + gaps.
+ *  test/browser/chatNarrowLayout.test.js notices are denser: 19.25px + 4px gaps.
+ *  The message-only minimum is ceil((516.95 + 4) / (19.25 + 4)) = 23;
+ *  newest activity rows add height without consuming the message budget. */
+export const LEAN_COLD_THREAD_MESSAGES = 23;
 
 /** The newest items of a held conversation read again when something under
  *  the cursor changed while nobody was listening (#120): a delivery status, a

@@ -30,7 +30,7 @@ describe("lean thread page requests", () => {
     await read(call);
     await read(call);
     expect(call.mock.calls.map(([method, params]) => ({ method, params }))).toEqual([
-      { method: "thread.page", params: { entity_id: "run-1", agent_id: "agent-1", limit: 100, ...(lean ? { activity: "newest" } : {}) } },
+      { method: "thread.page", params: { entity_id: "run-1", agent_id: "agent-1", limit: lean ? 23 : 100, ...(lean ? { activity: "newest" } : {}) } },
       { method: "thread.page", params: { entity_id: "run-1", agent_id: "agent-1", after_sequence: 1, newest: true, limit: 100, ...(lean ? { activity: "newest" } : {}) } },
       { method: "thread.page", params: { entity_id: "run-1", agent_id: "agent-1", after_sequence: 0, limit: 50, ...(lean ? { activity: "newest" } : {}) } },
     ]);
@@ -44,6 +44,7 @@ describe("lean thread page requests", () => {
     await greet([]);
     await read(call);
     expect(call.mock.calls.map(([, params]) => params.activity)).toEqual(["newest", undefined, undefined]);
+    expect(call.mock.calls.map(([, params]) => params.limit)).toEqual([23, 100, 100]);
   });
 
   it("keeps held message context when has_more only describes omitted activity", async () => {

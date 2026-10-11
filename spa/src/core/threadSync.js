@@ -19,7 +19,7 @@
 // past. It stays on the record until a repair has — through a failed repair, a
 // pass stood down under it, a reload.
 
-import { LATEST_THREAD_ITEMS, REPAIRED_THREAD_ITEMS } from "./cacheThresholds.js";
+import { LATEST_THREAD_ITEMS, LEAN_COLD_THREAD_MESSAGES, REPAIRED_THREAD_ITEMS } from "./cacheThresholds.js";
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
 import { bridgeCapabilities } from "./changeEvents.js";
@@ -46,10 +46,11 @@ const threadTarget = (request) => request.address || {
 const requestPriority = (request) => request.priority === undefined ? "foreground" : request.priority;
 const requestIsActive = (request) => (request.active === undefined ? ALWAYS_ACTIVE : request.active)();
 
-async function requestThreadPage(request, params) {
+async function requestThreadPage(request, params, cold = false) {
   try {
     const activity = threadActivityParam(request.deviceId);
-    const page = await request.call("thread.page", { ...params, ...activity }, requestPriorityFields(requestPriority(request)));
+    const limit = cold && activity.activity === "newest" ? LEAN_COLD_THREAD_MESSAGES : params.limit;
+    const page = await request.call("thread.page", { ...params, ...activity, limit }, requestPriorityFields(requestPriority(request)));
     return page ? { page, lean: activity.activity === "newest" } : null;
   } catch {
     return null;
@@ -61,14 +62,14 @@ export const threadActivityParam = (deviceId) =>
   bridgeCapabilities(deviceId)?.threads?.leanActivity === true ? { activity: "newest" } : {};
 
 /** One conversation, read forward from the sequence the cache holds — or the
- *  latest hundred where it holds none — and its recent items read again where
+ *  latest page where it holds none — and its recent items read again where
  *  that read says one of them changed. */
 export async function syncThreadWindow(request) {
   if (!validThreadRequest(request)) return false;
   const target = threadTarget(request);
   const held = (await readCached(target))?.value;
   const after = Number(held?.deliveredSequence || 0);
-  const response = await requestThreadPage(request, { ...threadPageParams(request.entityId, request.agentId || "", after), ...threadGenerationParam(threadIdFor(request, held)) });
+  const response = await requestThreadPage(request, { ...threadPageParams(request.entityId, request.agentId || "", after), ...threadGenerationParam(threadIdFor(request, held)) }, !after);
   if (!response) return false;
   const { page, lean } = response;
   if (!requestIsActive(request)) return false;
@@ -244,7 +245,7 @@ const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
 /**
  * The saved window after a page.
  *
- * With no window held, the page IS the window: it is the latest hundred items,
+ * With no window held, the page IS the window: it is the latest page of items,
  * and `has_more` on it means the conversation reaches back further than the
  * window does. With a window held, an abutting page is appended. A newest-mode
  * page whose `has_more` says it skipped a gap replaces the stale window with

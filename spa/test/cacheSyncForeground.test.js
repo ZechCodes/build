@@ -135,6 +135,27 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it.each([
+    { bridge: "lean", advertised: true, limit: 23 },
+    { bridge: "legacy", advertised: false, limit: 100 },
+  ])("sends the measured cold page budget to a $bridge bridge", async ({ advertised, limit }) => {
+    leanActivity = advertised;
+    start();
+    await finish();
+
+    const pages = calls("thread.page");
+    expect(pages).toHaveLength(20);
+    expect(pages[0][1]).toEqual({
+      entity_id: "run-10", agent_id: "ag-10-b", limit,
+      ...(advertised ? { activity: "newest" } : {}),
+    });
+    for (const [, params] of pages) {
+      expect(params.limit).toBe(limit);
+      expect(params.after_sequence).toBeUndefined();
+      expect(params.activity).toBe(advertised ? "newest" : undefined);
+    }
+  });
+
   it("dispatches the new route while an old foreground status is held and keeps its thread ahead of queued work", async () => {
     const oldStatus = gate();
     const newThread = gate();

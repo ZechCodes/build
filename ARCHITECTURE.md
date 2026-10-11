@@ -1941,6 +1941,8 @@ In practice:
   These conditional shape reads reuse the held diff key and leave accepted
   bodies intact when unchanged. Their cache writes retain the session, push and
   atomic record-write fences; ordinary file recovery debt does not re-arm them.
+  Late background subscription coverage re-arms this validation to close the
+  gap between a recovery read and the bridge holding its subscription.
   A conversation's forward read (`syncThreadWindow` in
   `spa/src/core/threadSync.js`) only
   carries items made past the cursor. When its page shows the conversation's

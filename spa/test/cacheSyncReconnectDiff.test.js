@@ -5,7 +5,7 @@ import { called, painted, passesSettled } from "./waits.js";
 import { patchFor } from "./gitWireFixture.js";
 
 const App = { route: {}, devices: [{ id: "dev-1" }] };
-let context, announce;
+let context, announce, coverageLanded;
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/deviceContexts.js", () => ({
@@ -16,7 +16,7 @@ vi.mock("../src/core/deviceContexts.js", () => ({
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   subscriptionsSettledFor: async () => {},
-  onSubscriptionHeld: () => () => {},
+  onSubscriptionHeld: (fn) => { coverageLanded = fn; return () => {}; },
   watchChanges: () => ({ dispose() {} }),
 }));
 
@@ -236,5 +236,25 @@ describe("held working diffs across reconnect", () => {
       expect((await cache.readCached(address(2))).value.diff_key).toBe("new-path");
     } finally { response.release({ diff_key: "old-path", files: [{ path: "old-path.js" }] }); await oldPass; }
     expect((await cache.readCached(address(2))).value.diff_key).toBe("new-path");
+  });
+
+  it.each([false, true])("revalidates held diffs when background coverage lands late (baseline pending: %s)", async (pending) => {
+    await holdDiffs();
+    register(2);
+    const heldThread = gate();
+    const original = rpc.getMockImplementation();
+    if (pending) rpc.mockImplementation((method, params) =>
+      method === "thread.page" && params.agent_id === "ag-3" ? heldThread.promise : original(method, params));
+    sync.startCacheSync();
+    if (pending) await called(rpc, () => rpc.mock.calls.some(([method, params]) => method === "thread.page" && params.agent_id === "ag-3"));
+    else await finish();
+    expect(diffCalls()).toHaveLength(2);
+    diffAnswer = () => ({ diff_key: "coverage-gap", files: [{ path: "coverage-gap.js" }] });
+    coverageLanded("dev-1", "s-background");
+    heldThread.release({ items: [], has_more: false });
+    await finish();
+    expect(diffCalls()).toHaveLength(4);
+    expect((await cache.readCached(address(1))).value.diff_key).toBe("coverage-gap");
+    expect((await cache.readCached(address(2))).value.diff_key).toBe("coverage-gap");
   });
 });

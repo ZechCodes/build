@@ -237,6 +237,15 @@ describe("foreground scope supersession", () => {
 });
 
 describe("mounted source reads in foreground phases", () => {
+  it("validates mounted source Changes on recovery when the route is on another device", async () => {
+    route = { ...routeTo(1), deviceId: "dev-2" };
+    for (const kind of ["status", "tree", "log", "diff"]) mounted(sourceId, kind);
+    await fixture(true).run();
+    expect(events.filter((item) => item.entityId === sourceId)).toEqual([
+      { entityId: sourceId, kind: "diff", priority: "foreground", sub: "" },
+    ]);
+  });
+
   it("reads source status, shown trees, history and diff after the open thread/scope and before inbox", async () => {
     disposers.push(registerSyncDiff(address("run-1", "diff")));
     // Registration order is incidental; the planner owns foreground ordering.

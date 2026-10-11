@@ -51,9 +51,10 @@ const threadJob = (state, entityId, agent, priority) => ({
 });
 
 const SOURCE_ORDER = ["status", "tree", "terminals", "log", "unpushed", "diff"];
-function sourceJobs(state) {
+function sourceJobs(state, diffOnly = false) {
   return visibleSyncReads(state.context.deviceId)
     .filter(({ key }) => !state.pass.rows.has(key.entityId))
+    .filter(({ key }) => !diffOnly || key.kind === "diff")
     .sort((one, two) => SOURCE_ORDER.indexOf(one.key.kind) - SOURCE_ORDER.indexOf(two.key.kind))
     .map(({ key, read }) => ({
       key: keyOf(key.entityId, key.kind, key.sub || ""),
@@ -71,7 +72,7 @@ function foregroundJobs(state) {
     jobs.push({ key: keyOf(entityId, "diff"),
       read: () => state.readers.visibleDiff(state.entityContext(entityId), entityId, row, "foreground") });
   }
-  if (routed) jobs.push(...sourceJobs(state));
+  if (routed || state.context.recoverWorkingDiff) jobs.push(...sourceJobs(state, !routed));
   if (routed && route.projectId && projectIds(state.view).includes(route.projectId)) {
     jobs.push({ key: keyOf(route.projectId, "tasks-first"), read: () => state.tasks.first(route.projectId) });
   }

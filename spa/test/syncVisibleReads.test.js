@@ -30,7 +30,7 @@ afterEach(async () => {
   document.body.innerHTML = "";
 });
 
-async function mountedSourceRead(kind) {
+async function mountedSourceRead(kind, { directDiff = false } = {}) {
   const scope = kind === "diff" ? { workspace_id: "w", source_id: "secondary" } : { project_id: "p", source_id: "secondary" };
   const entityId = directoryCacheId(scope);
   const key = address(entityId, kind);
@@ -57,7 +57,9 @@ async function mountedSourceRead(kind) {
     });
     disposers.push(tree.dispose);
   } else if (kind === "diff") {
-    const plug = createWorkspaceReview({ scope, callRpc: read, cacheScope: scopeFor("dev-1") });
+    const plug = directDiff
+      ? createReviewPlug({ cacheScope: scopeFor("dev-1"), cacheEntity: entityId, fetchDiff: () => read("git.unpushed") })
+      : createWorkspaceReview({ scope, callRpc: read, cacheScope: scopeFor("dev-1") });
     plug.mount(host);
     disposers.push(plug.unmount);
   } else {
@@ -85,7 +87,7 @@ describe("visible sync read jobs", () => {
   });
 
   it.each(["tree", "status", "log", "unpushed", "diff"])("rechecks pass authority inside the source %s write transaction", async (kind) => {
-    const source = await mountedSourceRead(kind);
+    const source = await mountedSourceRead(kind, { directDiff: true });
     const before = await readCached(source.key);
     let active = true;
     const reading = source.job.read(() => active);

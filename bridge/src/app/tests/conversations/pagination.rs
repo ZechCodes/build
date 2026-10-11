@@ -1409,3 +1409,63 @@ fn lean_thread_page_preserves_defaults_and_censuses_cursor_clipped_runs() {
     assert!(page_sequences(&empty["result"]).is_empty());
     assert_eq!(empty["result"]["has_more"], false);
 }
+
+#[test]
+fn lean_thread_pages_match_memory_and_store_across_run_boundaries() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    lean_conversation(&mut state);
+    let thread = primary_thread_mut(&mut state.runs.get_mut("run-lean").unwrap().agents);
+    thread.push_event(
+        crate::thread::ThreadEventKind::Committed,
+        None,
+        None,
+        None,
+        now_rfc3339(),
+    );
+    for _ in 0..4 {
+        thread.push_event(
+            crate::thread::ThreadEventKind::Reasoning,
+            None,
+            None,
+            None,
+            now_rfc3339(),
+        );
+    }
+    let active = state.runs.remove("run-lean").unwrap();
+    state.persist_run_record("run-lean", &active).unwrap();
+    state.runs.insert("run-lean".into(), active);
+    let mut restarted = qa_state(&repo, dir.path());
+    for cursor in [0, 1, 150, 301, 302, 307, 308, 326, 350, 366, 367, 371, 999] {
+        for limit in [1, 2, 20] {
+            for direction in ["before", "after", "newest"] {
+                let mut params =
+                    json!({"entity_id":"run-lean", "limit":limit, "activity":"newest"});
+                if direction == "before" {
+                    params["before_sequence"] = json!(cursor);
+                } else {
+                    params["after_sequence"] = json!(cursor);
+                }
+                if direction == "newest" {
+                    params["newest"] = json!(true);
+                }
+                let memory = state.handle(req("thread.page", params.clone()));
+                let before = crate::store::items_decoded();
+                let stored = restarted.handle(req("thread.page", params.clone()));
+                let decoded = crate::store::items_decoded() - before;
+                assert_eq!(memory["ok"], true, "{memory}");
+                assert_eq!(stored["ok"], true, "{stored}");
+                for field in ["items", "activity_digests", "has_more", "oldest_sequence"] {
+                    assert_eq!(
+                        memory["result"][field], stored["result"][field],
+                        "{field}: {params}"
+                    );
+                }
+                assert!(
+                    decoded <= stored["result"]["items"].as_array().unwrap().len(),
+                    "{params}: decoded {decoded}"
+                );
+            }
+        }
+    }
+}

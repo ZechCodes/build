@@ -358,9 +358,9 @@ impl AppState {
     /// A run older than the newest message never changes: the agent that made
     /// it has moved on, and nothing appends inside a closed run. So a client
     /// may cache what this answers under the run's `from_sequence` until the
-    /// entity is evicted. Only the tail run is live, and that one is not
-    /// fetched at all — it arrives as the forward deltas a poll already
-    /// carries.
+    /// entity is evicted. The tail run remains live: lean pages carry only
+    /// its newest row, so opening it reads the span on demand and a later
+    /// delta advances its digest.
     pub(crate) fn thread_activity(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;

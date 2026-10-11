@@ -202,7 +202,10 @@ const heldValue = async (context, entityId, kind, sub = "") =>
 /** Cache reads and coordinated requests can yield before dispatch. Check the
  *  captured pass at the wire boundary, including reads with their own loaders. */
 const callWhileActive = async (context, method, params, envelope) => {
-  if (envelope?.priority === "background") await context.beforeBackgroundRead?.();
+  // A read promoted during cache lookup may be what the foreground drain is
+  // awaiting. It must cross the wire before joining that drain's barrier.
+  const current = context.priorityForRead?.(method, params, envelope) || envelope;
+  if (current?.priority === "background") await context.beforeBackgroundRead?.();
   const priority = context.priorityForRead?.(method, params, envelope) || envelope;
   return context.active() ? context.call(method, params, priority) : null;
 };

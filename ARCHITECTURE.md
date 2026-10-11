@@ -1936,6 +1936,11 @@ In practice:
   over that recovery before it reads. This repairs abandoned file refreshes
   and changes missed while away or across a reload. Only the newest read of each
   file may write its answer; removing an entity still invalidates all its readers.
+  A new session or restored path also validates held working diffs for the
+  routed entity and every shown Changes pane on that device in the foreground.
+  These conditional shape reads reuse the held diff key and leave accepted
+  bodies intact when unchanged. Their cache writes retain the session, push and
+  atomic record-write fences; ordinary file recovery debt does not re-arm them.
   A conversation's forward read (`syncThreadWindow` in
   `spa/src/core/threadSync.js`) only
   carries items made past the cursor. When its page shows the conversation's

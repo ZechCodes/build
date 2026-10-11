@@ -28,7 +28,7 @@ function conversationFor(route, entityId, rows, deviceId) {
   return agent ? { entityId, agent } : null;
 }
 
-function scopeJobs(state, entityId, priority, paths, workingDiff) {
+function scopeJobs(state, entityId, priority, paths) {
   const row = state.pass.rows.get(entityId);
   if (!row) return [];
   const scope = state.readers.scope(row);
@@ -41,7 +41,6 @@ function scopeJobs(state, entityId, priority, paths, workingDiff) {
   jobs.push(job("terminals", "", state.readers.terminals));
   if (scope) {
     jobs.push(job("log", "", state.readers.log), job("unpushed", "", state.readers.unpushed));
-    if (workingDiff) jobs.push(job("diff", "", state.readers.visibleDiff));
   }
   return jobs;
 }
@@ -64,18 +63,45 @@ function sourceJobs(state) {
 
 function foregroundJobs(state) {
   const route = state.route();
-  if (route.deviceId !== state.context.deviceId) return [];
+  const routed = route.deviceId === state.context.deviceId;
+  const jobs = routed ? routedJobs(state, route) : [];
+  for (const entityId of foregroundDiffEntities(state)) {
+    const row = state.pass.rows.get(entityId);
+    if (!state.readers.scope(row)) continue;
+    jobs.push({ key: keyOf(entityId, "diff"),
+      read: () => state.readers.visibleDiff(state.entityContext(entityId), entityId, row, "foreground") });
+  }
+  if (routed) jobs.push(...sourceJobs(state));
+  if (routed && route.projectId && projectIds(state.view).includes(route.projectId)) {
+    jobs.push({ key: keyOf(route.projectId, "tasks-first"), read: () => state.tasks.first(route.projectId) });
+  }
+  return jobs;
+}
+
+function routedJobs(state, route) {
   const entityId = routedEntityId(route, state.view);
   const conversation = conversationFor(route, entityId, state.pass.rows, state.context.deviceId);
   const jobs = conversation ? [threadJob(state, conversation.entityId, conversation.agent, "foreground")] : [];
   jobs.push(...scopeJobs(state, entityId, "foreground",
-    new Set(["", ...visibleTreePaths(state.context.deviceId, entityId)]),
-    visibleWorkingDiff(state.context.deviceId, entityId)));
-  jobs.push(...sourceJobs(state));
-  if (route.projectId && projectIds(state.view).includes(route.projectId)) {
-    jobs.push({ key: keyOf(route.projectId, "tasks-first"), read: () => state.tasks.first(route.projectId) });
-  }
+    new Set(["", ...visibleTreePaths(state.context.deviceId, entityId)])));
   return jobs;
+}
+
+/** Recovery validates the route even without an open Changes pane, and every
+ * shown Changes pane on this device. Ordinary passes retain the routed pane's
+ * existing validation; unrelated held diffs remain cold-only background work. */
+function foregroundDiffEntities(state) {
+  const { deviceId, recoverWorkingDiff } = state.context;
+  const route = state.route();
+  const routed = route.deviceId === deviceId ? routedEntityId(route, state.view) : null;
+  const entities = new Set();
+  if (routed && (recoverWorkingDiff || visibleWorkingDiff(deviceId, routed))) entities.add(routed);
+  if (recoverWorkingDiff) {
+    for (const entityId of state.pass.rows.keys()) {
+      if (visibleWorkingDiff(deviceId, entityId)) entities.add(entityId);
+    }
+  }
+  return [...entities];
 }
 
 const matchesScope = (scope, params) => Boolean(scope)
@@ -92,11 +118,14 @@ const FOREGROUND_CHECKOUT_READS = {
   "git.unpushed": (_state, _entityId, matches) => matches,
   "fs.tree": (state, entityId, matches, params) => matches
     && new Set(["", ...visibleTreePaths(state.context.deviceId, entityId)]).has(params.path || ""),
-  "run.diff": (state, entityId, matches) => matches && visibleWorkingDiff(state.context.deviceId, entityId),
-  "worktree.diff": (state, entityId, matches) => matches && visibleWorkingDiff(state.context.deviceId, entityId),
 };
 
+const DIFF_READS = new Set(["run.diff", "worktree.diff"]);
+const foregroundDiffRequest = (state, params) => foregroundDiffEntities(state)
+  .some((entityId) => matchesScope(state.readers.scope(state.pass.rows.get(entityId)), params));
+
 function foregroundRequest(state, method, params) {
+  if (DIFF_READS.has(method)) return foregroundDiffRequest(state, params);
   const route = state.route();
   if (route.deviceId !== state.context.deviceId) return false;
   if (method === "tasks.list" || method === "tasks.columns") return params.project_id === route.projectId && !params.cursor;
@@ -183,7 +212,7 @@ async function readBackground(state) {
   let recovered = true;
   for (const entityId of state.pass.order) {
     const paths = new Set(["", ...await cachedSubKeys(state.context.deviceId, entityId, "tree")]);
-    for (const job of scopeJobs(state, entityId, "background", paths, false)) {
+    for (const job of scopeJobs(state, entityId, "background", paths)) {
       await state.foreground();
       await takeJob(state, job);
     }

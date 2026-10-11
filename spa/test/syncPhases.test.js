@@ -24,7 +24,7 @@ const mounted = (entityId, kind, sub = "", active = () => true, read = null) => 
   return callback;
 };
 
-function fixture() {
+function fixture(recoverWorkingDiff = false) {
   const rows = [1, 2].map((number) => ({
     kind: "branch", run_id: `run-${number}`, worktree_id: `wt-${number}`, branch: `build/${number}`,
     project_id: "p1", workspace_id: `ws-${number}`, state: "building",
@@ -34,7 +34,7 @@ function fixture() {
     id: `ws-${index + 1}`, project_id: "p1", entity_id: row.run_id, status: "ready",
   }));
   const view = liveFeedSnapshot({ items: rows }, { projects: [{ project_id: "p1" }] }, { workspaces }, "dev-1");
-  const context = { deviceId: "dev-1", active: () => true };
+  const context = { deviceId: "dev-1", active: () => true, recoverWorkingDiff };
   return createSyncPhases({
     context, view, route: () => route,
     pass: { order: ["run-1", "run-2"], rows: new Map(view.items.map((row) => [row.run_id, row])) },
@@ -67,6 +67,36 @@ afterEach(() => disposers.forEach((dispose) => dispose()));
 const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
 describe("foreground scope supersession", () => {
+  it("lets a queued recovery diff cross its own foreground barrier without a Changes pane", async () => {
+    const held = gate(), asked = gate();
+    let phases;
+    readers.visibleDiff = async (_context, entityId, _row, priority) => {
+      asked.release();
+      await phases.beforeBackgroundRead("run.diff", { run_id: entityId });
+      event(entityId, "diff", priority);
+      await held.promise;
+    };
+    phases = fixture(true);
+    const pass = phases.run();
+    await asked.promise;
+    await microtasks();
+    const beforeRelease = events.slice();
+    held.release();
+    await pass;
+    expect(beforeRelease.some((item) => item.entityId === "run-1" && item.kind === "diff")).toBe(true);
+    expect(phases.priorityForRead("run.diff", { run_id: "run-1" }, { priority: "background" })?.priority).not.toBe("background");
+  });
+
+  it("promotes a mounted recovery diff on this device when the route belongs to another device", async () => {
+    route = { ...routeTo(1), deviceId: "dev-2" };
+    disposers.push(registerSyncDiff(address("run-2", "diff")));
+    const phases = fixture(true);
+    expect(phases.priorityForRead("run.diff", { run_id: "run-2" }, { priority: "background" })?.priority).not.toBe("background");
+    expect(phases.priorityForRead("run.diff", { run_id: "run-1" }, { priority: "background" })?.priority).toBe("background");
+    await phases.run();
+    expect(events[0]).toEqual({ entityId: "run-2", kind: "diff", priority: "foreground", sub: "" });
+  });
+
   it("wakes a background loader's barrier when that loader becomes the selected scope", async () => {
     const heldLookup = gate(), lookupStarted = gate(), heldOther = gate(), otherStarted = gate();
     let phases;

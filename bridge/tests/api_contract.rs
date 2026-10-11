@@ -1292,3 +1292,62 @@ fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
     assert_eq!(newest.len(), 1);
     assert_eq!(newest[0]["data"]["sequence"], digest["through_sequence"]);
 }
+
+#[test]
+fn lean_activity_fixture_examples_match_reachable_pages() {
+    use build_bridge::thread::{Thread, ThreadItem};
+    let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
+    let examples = fixture["examples"].as_array().unwrap();
+    let newest = examples[0]["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "event")
+        .unwrap();
+    let message = &fixture["result"]["items"][0];
+    let mut thread = Thread::new("run-7");
+    for sequence in 1..=29 {
+        let mut item = message.clone();
+        item["data"]["sequence"] = serde_json::json!(sequence);
+        item["data"]["id"] = serde_json::json!(format!("message-{sequence}"));
+        item["data"]["body"] = serde_json::json!("read the post path");
+        thread
+            .items
+            .push(serde_json::from_value::<ThreadItem>(item).unwrap());
+    }
+    for sequence in 30..=37 {
+        let mut item = newest.clone();
+        item["data"]["sequence"] = serde_json::json!(sequence);
+        item["data"]["id"] = serde_json::json!(format!("event-{sequence}"));
+        if matches!(sequence, 35 | 36) {
+            item["data"]["event"] = serde_json::json!("narration");
+            item["data"].as_object_mut().unwrap().remove("outcome");
+        }
+        thread
+            .items
+            .push(serde_json::from_value::<ThreadItem>(item).unwrap());
+    }
+    thread
+        .items
+        .push(serde_json::from_value::<ThreadItem>(message.clone()).unwrap());
+    thread.normalize("run-7");
+    for example in examples {
+        let params = &example["params"];
+        let actual = thread.wire_value_page_newest_activity(
+            params["after_sequence"].as_u64(),
+            params["before_sequence"].as_u64(),
+            params["limit"].as_u64().unwrap() as usize,
+            params["newest"].as_bool().unwrap_or(false),
+        );
+        for field in [
+            "items",
+            "activity_digests",
+            "thread_total",
+            "thread_last_sequence",
+            "oldest_sequence",
+            "has_more",
+        ] {
+            assert_eq!(actual[field], example["result"][field], "{params}: {field}");
+        }
+    }
+}

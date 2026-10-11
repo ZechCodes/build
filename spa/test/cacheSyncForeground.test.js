@@ -424,6 +424,98 @@ describe("foreground-first passes", () => {
   });
 });
 
+describe("bounded background streams", () => {
+  it("keeps at most two background RPCs in flight across ten workspaces and preserves each checkout's read order", async () => {
+    const held = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : held.promise;
+    const original = rpc.getMockImplementation();
+    let inFlight = 0, peak = 0;
+    rpc.mockImplementation(async (method, params, envelope) => {
+      const background = envelope?.priority === "background";
+      if (background) peak = Math.max(peak, ++inFlight);
+      try { return await original(method, params, envelope); }
+      finally { if (background) inFlight -= 1; }
+    });
+    start();
+    try {
+      await vi.waitFor(() => expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2));
+      expect(inFlight).toBe(2);
+      expect(peak).toBe(2);
+    } finally {
+      held.release(answers["git.status"]());
+      await finish();
+    }
+    expect(peak).toBe(2);
+    expect(inFlight).toBe(0);
+    for (let number = 1; number < 10; number += 1) {
+      expect(nonLists().filter(([, params]) => params.run_id === `run-${number}`).map(([method]) => method)).toEqual([
+        "git.status", "fs.tree", "term.list", "git.log", "git.unpushed", "run.diff",
+      ]);
+    }
+  });
+
+  it("advances other workspaces through a free stream while one status remains slow", async () => {
+    const held = gate();
+    script["git.status"] = (params) => params.run_id === "run-1" ? held.promise : answers["git.status"]();
+    start();
+    await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+    try {
+      await vi.waitFor(async () => expect((await cache.readCached(address("run-3", "unpushed")))?.value).toBeTruthy());
+      expect(calls("fs.tree").some(([, params]) => params.run_id === "run-1")).toBe(false);
+    } finally {
+      held.release(answers["git.status"]());
+      await finish();
+    }
+  });
+
+  it("dispatches foreground while both streams are occupied and holds their next reads behind it", async () => {
+    const heldOne = gate(), heldTwo = gate(), heldForeground = gate();
+    script["git.status"] = (params) => ({ "run-1": heldOne, "run-2": heldTwo, "run-9": heldForeground }[params.run_id]?.promise
+      || answers["git.status"]());
+    start();
+    await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+    try {
+      await vi.waitFor(() => expect(calls("git.status").some(([, params]) => params.run_id === "run-2")).toBe(true));
+      const before = rpc.mock.calls.length;
+      App.route = routeTo(9);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-9"));
+      const selected = rpc.mock.calls[before];
+      expect(selected.slice(0, 2)).toEqual(["git.status", expect.objectContaining({ run_id: "run-9" })]);
+      expect(selected[2]?.priority).not.toBe("background");
+      heldTwo.release(answers["git.status"]());
+      await vi.waitFor(async () => expect((await cache.readCached(address("run-2", "status")))?.value).toBeTruthy());
+      expect(calls("fs.tree").some(([, params]) => params.run_id === "run-2")).toBe(false);
+    } finally {
+      heldOne.release(answers["git.status"]());
+      heldTwo.release(answers["git.status"]());
+      heldForeground.release(answers["git.status"]());
+      await finish();
+    }
+  });
+
+  it("cancels both streams and the queued follow-up on stop without writing their late answers", async () => {
+    const held = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : held.promise;
+    start();
+    const pass = sync.passInFlight("dev-1");
+    try {
+      await vi.waitFor(() => expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2));
+      const followUp = sync.syncDevice("dev-1");
+      const before = rpc.mock.calls.length;
+      sync.stopCacheSync();
+      held.release(answers["git.status"]());
+      expect(await Promise.all([pass, followUp])).toEqual([false, false]);
+      expect(rpc.mock.calls).toHaveLength(before);
+      expect(await cache.readCached(address("run-1", "status"))).toBeUndefined();
+      expect(await cache.readCached(address("run-2", "status"))).toBeUndefined();
+    } finally {
+      held.release(answers["git.status"]());
+      await pass;
+    }
+  });
+});
+
 describe("list replies paint independently", () => {
   it.each([
     ["board.list", "feed", "items", 10],

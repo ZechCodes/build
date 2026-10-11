@@ -237,6 +237,7 @@ describe("the order a pass reads in", () => {
 
   it("reads one workspace's shapes in the order a reader opening it wants them", async () => {
     // #495: the open conversation and first project task page lead optional patch warming.
+    // #498: the routed working diff is validated with the foreground checkout.
     script["git.log"] = () => ({ commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1", reset: false });
     await boot([branchItem({ agents: [{ id: "ag-1" }] })], routeTo("build/login"));
     expect(bridge.call.mock.calls.map(([method]) => method).slice(3)).toEqual([
@@ -246,10 +247,10 @@ describe("the order a pass reads in", () => {
       "term.list",
       "git.log",
       "git.unpushed",
+      "run.diff",
       "tasks.columns",
       "tasks.list",
       "git.show",
-      "run.diff",
     ]);
   });
 

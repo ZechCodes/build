@@ -163,6 +163,7 @@ const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
 const fileReads = new Map(); // file address → the newest reader allowed to write its body
 const fileRecoveries = new Map(); // deviceId → per-file recovery on this session and request scope
+const diffRecoveries = new Map(); // deviceId → the session/path whose held diffs were validated
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -382,6 +383,8 @@ async function orderedSync(deviceId, turn) {
   const recoveryRevision = recovery.revision;
   context.fileRecovery = recovery;
   context.recoverFiles = !recovery.complete;
+  const diffRecovery = diffRecoveryFor(context, turn.session);
+  context.recoverWorkingDiff = !diffRecovery.complete;
   readingSessions.set(deviceId, turn.session);
   turn.reading = true;
   const passStartedAt = Date.now();
@@ -410,6 +413,7 @@ async function orderedSync(deviceId, turn) {
   await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
   if (filesRecovered && fileRecoveries.get(deviceId) === recovery && recovery.revision === recoveryRevision) recovery.complete = true;
+  diffRecovery.complete = true;
   // The reader may have walked off while the pass read, and on a cold cache
   // the workspace they stand in had no row to resolve until the lists landed.
   await refollowRoute(deviceId);
@@ -426,6 +430,17 @@ function fileRecoveryFor(context, session) {
   if (recovery?.session !== session || recovery?.requestScope !== context.requestScope) {
     recovery = { session, requestScope: context.requestScope, complete: false, revision: 0, files: new Map() };
     fileRecoveries.set(context.deviceId, recovery);
+  }
+  return recovery;
+}
+
+/** File push debt can reopen independently; it must not turn an ordinary
+ * pass into another validation of every held working diff. */
+function diffRecoveryFor(context, session) {
+  let recovery = diffRecoveries.get(context.deviceId);
+  if (recovery?.session !== session || recovery?.requestScope !== context.requestScope) {
+    recovery = { session, requestScope: context.requestScope, complete: false };
+    diffRecoveries.set(context.deviceId, recovery);
   }
   return recovery;
 }
@@ -1272,10 +1287,13 @@ function subscriptionLanded(deviceId, subscriptionId) {
   if (!holdingLock || !PASS_SUBSCRIPTIONS.has(subscriptionId)) return;
   const session = sessionOf(deviceId);
   if (session === null || readingSessions.get(deviceId) !== session) return;
-  // File bodies read before background coverage can have missed a change.
+  // File bodies and held diffs read before coverage can have missed a change.
   // Invalidate even while a subsequent pass waits for coverage: that pass
   // must take over recovery instead of trusting the earlier completed token.
-  if (subscriptionId === "s-background") fileRecoveries.delete(deviceId);
+  if (subscriptionId === "s-background") {
+    fileRecoveries.delete(deviceId);
+    diffRecoveries.delete(deviceId);
+  }
   const running = passes.get(deviceId);
   if (running && !running.reading) return;
   void syncDevice(deviceId);
@@ -1941,6 +1959,7 @@ export function stopCacheSync() {
   lifetime += 1;
   fileReads.clear();
   fileRecoveries.clear();
+  diffRecoveries.clear();
   forgetPushes();
   // Whatever is still out stands down where it stands: remaining reads and
   // writes are behind `active()`, and queued follow-ups lose their turn.

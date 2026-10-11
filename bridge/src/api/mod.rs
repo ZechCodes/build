@@ -52,7 +52,8 @@ use std::collections::BTreeSet;
 /// 3.18.0 adds the harness inventory: `harnesses.list`, `harnesses.refresh`
 /// and the `harnesses.changed` push (#434).
 /// 3.19.0 scopes unread to watched conversations and news after watch start (#474).
-pub const API_VERSION: &str = "3.19.0";
+/// 3.20.0 adds newest-only thread page activity with exact digests (#496).
+pub const API_VERSION: &str = "3.20.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -126,6 +127,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "settings.workspaceLifecycle",
     "sources.syncBase", // Since 3.3.0: sync_base/sync on source rows, sync_base on project.update_source (#267).
     "thread.attachmentChunks", // Since 1.30.0: offset/length on thread.attachment.
+    "threads.leanActivity", // Since 3.20.0: activity on thread.page selects newest-only runs with exact digests (#496).
     "threads.newestDeltaPagination",
     "threads.postOperations",
     "updates.replaceDevelopmentBuild", // Since 3.5.0: can_replace_development_build, replace_development_build (#322).

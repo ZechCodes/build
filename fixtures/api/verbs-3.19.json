@@ -1,6 +1,6 @@
 {
-  "api_version": "3.18.0",
-  "commit": "6522ac1d",
+  "api_version": "3.19.0",
+  "commit": "ad35f095",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -315,6 +315,7 @@
     "thread.revision",
     "threads.newestDeltaPagination",
     "threads.postOperations",
+    "unread.watchScoped",
     "updates.replaceDevelopmentBuild",
     "user.present",
     "workspace.add_directory",

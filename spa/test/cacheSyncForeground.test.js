@@ -448,6 +448,41 @@ describe("foreground-first passes", () => {
 });
 
 describe("bounded background streams", () => {
+  it("lets a push finish its background task continuation when foreground joins its serialized project", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    start();
+    await finish();
+    rpc.mockClear();
+    const thread = gate(), firstPage = gate();
+    script["thread.page"] = (params) => params.agent_id === "ag-1-a" ? thread.promise : answers["thread.page"]();
+    script["tasks.list"] = (params) => params.project_id === "p2" && !params.cursor
+      ? firstPage.promise : answers["tasks.list"](params);
+    const pass = sync.syncDevice("dev-1");
+    let push;
+    try {
+      await called(rpc, () => calls("thread.page").some(([, params]) => params.agent_id === "ag-1-a"));
+      push = watchers.find((entry) => entry.id === "s-inbox").onChanges([
+        { entity_id: "p2", tasks: { task_ids: [] } },
+      ]);
+      await called(rpc, () => calls("tasks.list").some(([, params]) => params.project_id === "p2"));
+      App.route = routeTo(10);
+      sync.routeChanged();
+      await called(rpc, () => calls("thread.page").some(([, params]) => params.agent_id === "ag-10-b"));
+      firstPage.release(answers["tasks.list"]({ project_id: "p2" }));
+      await vi.waitFor(() => expect(calls("tasks.list").some(([, params]) => params.project_id === "p2" && params.cursor)).toBe(true));
+      const continuation = calls("tasks.list").find(([, params]) => params.project_id === "p2" && params.cursor);
+      expect(continuation[2]?.priority).toBe("background");
+      await push;
+    } finally {
+      firstPage.release(answers["tasks.list"]({ project_id: "p2" }));
+      thread.release(answers["thread.page"]());
+      App.route = { name: "inbox", deviceId: "dev-1" };
+      sync.routeChanged();
+      await Promise.all([push, pass]);
+      await finish();
+    }
+  });
+
   it("promotes a queued lean activity repair before its selected conversation's barrier", async () => {
     leanActivity = true;
     App.route = { name: "inbox", deviceId: "dev-1" };

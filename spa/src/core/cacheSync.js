@@ -205,7 +205,7 @@ const callWhileActive = async (context, method, params, envelope) => {
   // A read promoted during cache lookup may be what the foreground drain is
   // awaiting. It must cross the wire before joining that drain's barrier.
   const current = context.priorityForRead?.(method, params, envelope) || envelope;
-  if (current?.priority === "background") await context.beforeBackgroundRead?.();
+  if (current?.priority === "background") await context.beforeBackgroundRead?.(method, params);
   const priority = context.priorityForRead?.(method, params, envelope) || envelope;
   return context.active() ? context.call(method, params, priority) : null;
 };
@@ -397,7 +397,7 @@ async function orderedSync(deviceId, turn) {
     tasks: createTaskPhases(context, { ask, readReviews: (context, projectId) => readReviews(context, projectId),
       serialize: (projectId, operation) => serializeTasks(context, projectId, operation) }),
   });
-  context.beforeBackgroundRead = phases.foreground;
+  context.beforeBackgroundRead = phases.beforeBackgroundRead;
   context.priorityForRead = phases.priorityForRead;
   turn.foreground = phases.foreground;
   const filesRecovered = await phases.run();
@@ -1111,7 +1111,10 @@ async function syncWorkingDiff(context, entityId, row, priority) {
 async function pullWorkingDiff(context, entityId, row, priority, { patch = true } = {}) {
   // Drain before joining the coordinator: its own background loader cannot
   // await a foreground reader which is joining that same pending answer.
-  if (priority === "background") await context.beforeBackgroundRead?.();
+  if (priority === "background") {
+    const queued = diffRead(row, null, { patch });
+    await context.beforeBackgroundRead?.(queued.method, queued.params);
+  }
   const address = addressOf(context, entityId, "diff");
   const before = await readCached(address);
   const fence = pushFence();

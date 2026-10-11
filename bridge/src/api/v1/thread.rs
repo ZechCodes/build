@@ -27,7 +27,8 @@ use super::{answer, Answer, Handler, WireParams};
 use crate::api::ApiError;
 use crate::app::AppState;
 use crate::thread::{
-    AgentIdentity, CompletionReport, MessageAnchor, SessionLineage, ThreadItem, ViewingContext,
+    AgentIdentity, CompletionReport, MessageAnchor, PageActivity, SessionLineage, ThreadItem,
+    ViewingContext,
 };
 use crate::{v1_method, v1_methods};
 use serde::{Deserialize, Serialize};
@@ -159,6 +160,10 @@ pub struct ThreadPageParams {
     /// its oldest page. Omitted or false keeps the original forward walk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub newest: Option<bool>,
+    /// Since 3.20.0 (`threads.leanActivity`): ship only the newest item of each
+    /// activity run beside its exact digest. Omission keeps the bounded mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<PageActivity>,
     /// Clamped server-side to one page's worth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<PageLimit>,

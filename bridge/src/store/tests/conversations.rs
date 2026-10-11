@@ -1277,3 +1277,211 @@ fn the_waiting_legacy_messages_decode_only_themselves() {
         waiting.len()
     );
 }
+
+fn lean_stored_fixture() -> PersistedRun {
+    let mut record = run_record("run-1", None, NOW);
+    let thread = &mut record.agents[0].thread;
+    for turn in 0..20 {
+        thread.post_user(format!("ask {turn}"), None, NOW);
+        let length = match turn {
+            0 => 300,
+            1 => 5,
+            2 => 1,
+            19 => 40,
+            _ => 0,
+        };
+        append_lean_stored_activity(thread, turn, length);
+    }
+    if let ThreadItem::Event(call) = &mut thread.items[299] {
+        call.outcome = Some(crate::thread::ToolCallOutcome::Error);
+    }
+    record
+}
+
+fn append_lean_stored_activity(thread: &mut crate::thread::Thread, turn: usize, length: usize) {
+    for index in 0..length {
+        let kind = if index + 1 == length && length > 1 {
+            crate::thread::ThreadEventKind::Reasoning
+        } else {
+            crate::thread::ThreadEventKind::ToolUse
+        };
+        thread.push_event(kind, Some(format!("work {turn}-{index}")), None, None, NOW);
+    }
+}
+
+/// Lean pages pay for messages and decode only the single visible row per run.
+#[test]
+fn lean_stored_pages_decode_only_shipped_rows_and_digest_complete_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let record = lean_stored_fixture();
+    store.save_run(&record).unwrap();
+    let agent_id = &record.agents[0].id;
+    let before = items_decoded();
+    let (cut, more) = store
+        .thread_conversation_page_newest_activity(agent_id, None, None, 20, false)
+        .unwrap();
+    assert!(!more);
+    assert_eq!(cut.items.len(), 24);
+    assert_eq!(items_decoded() - before, cut.items.len());
+    assert_eq!(
+        cut.digests.iter().map(|d| d.rows).collect::<Vec<_>>(),
+        vec![300, 5, 1, 40]
+    );
+    assert_eq!(
+        cut.digests.iter().map(|d| d.tool_calls).collect::<Vec<_>>(),
+        vec![299, 4, 1, 39]
+    );
+    let first = &cut.digests[0];
+    assert_eq!((first.from_sequence, first.through_sequence), (2, 301));
+    assert_eq!(first.last_tool_call.as_ref().unwrap().sequence, 300);
+    assert_eq!(
+        first.last_tool_call.as_ref().unwrap().summary.as_deref(),
+        Some("work 0-298")
+    );
+    assert_eq!(
+        first.last_tool_call.as_ref().unwrap().outcome,
+        Some(crate::thread::ToolCallOutcome::Error)
+    );
+}
+
+/// A cursor clips what ships while retaining the complete run's digest.
+#[test]
+fn lean_stored_pages_clipped_cursors_keep_complete_run_digests() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let record = lean_stored_fixture();
+    store.save_run(&record).unwrap();
+    let agent_id = &record.agents[0].id;
+    let (whole, _) = store
+        .thread_conversation_page_newest_activity(agent_id, None, None, 20, false)
+        .unwrap();
+    let first = &whole.digests[0];
+    for (after, bound, newest, visible, messages) in [
+        (Some(150), None, false, 301, 1),
+        (Some(150), Some(200), false, 199, 0),
+        (None, Some(200), false, 199, 1),
+        (Some(150), Some(200), true, 199, 0),
+    ] {
+        let before = items_decoded();
+        let (cut, _) = store
+            .thread_conversation_page_newest_activity(agent_id, after, bound, 1, newest)
+            .unwrap();
+        assert_eq!(items_decoded() - before, cut.items.len());
+        assert_eq!(
+            cut.items
+                .iter()
+                .filter(|item| item.counts_toward_page())
+                .count(),
+            messages
+        );
+        assert_eq!(
+            cut.items
+                .iter()
+                .find(|item| item.is_activity())
+                .unwrap()
+                .sequence(),
+            visible
+        );
+        assert_eq!(cut.digests[0], *first);
+    }
+}
+
+/// Polling at the live tail returns no phantom activity window.
+#[test]
+fn lean_stored_pages_after_live_tail_are_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let record = lean_stored_fixture();
+    store.save_run(&record).unwrap();
+    let agent_id = &record.agents[0].id;
+    let tail = record.agents[0].thread.items.last().unwrap().sequence();
+    let (empty, more) = store
+        .thread_conversation_page_newest_activity(agent_id, Some(tail), None, 1, false)
+        .unwrap();
+    assert!(empty.items.is_empty());
+    assert!(empty.digests.is_empty());
+    assert!(!more);
+}
+
+/// Lifecycle markers ride free and end runs, including after the usual
+/// activity budget is spent. A thinking-only run has no fabricated last call.
+#[test]
+fn lean_stored_pages_preserve_lifecycle_and_one_row_per_run_without_a_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let mut record = run_record("run-1", None, NOW);
+    let thread = &mut record.agents[0].thread;
+    thread.post_user("work", None, NOW);
+    for _ in 0..12 {
+        for _ in 0..2 {
+            thread.push_event(
+                crate::thread::ThreadEventKind::Reasoning,
+                None,
+                None,
+                None,
+                NOW,
+            );
+        }
+        thread.push_event(
+            crate::thread::ThreadEventKind::Committed,
+            None,
+            None,
+            None,
+            NOW,
+        );
+    }
+    store.save_run(&record).unwrap();
+    for (after, newest) in [(None, false), (Some(0), false), (Some(0), true)] {
+        let before = items_decoded();
+        let (cut, more) = store
+            .thread_conversation_page_newest_activity(&record.agents[0].id, after, None, 1, newest)
+            .unwrap();
+        assert!(!more);
+        assert_eq!(
+            cut.items.iter().filter(|item| !item.is_activity()).count(),
+            13
+        );
+        assert_eq!(
+            cut.items.iter().filter(|item| item.is_activity()).count(),
+            12
+        );
+        assert_eq!(items_decoded() - before, cut.items.len());
+        assert_eq!(cut.digests.len(), 12);
+        assert!(cut.digests.iter().all(|digest| digest.rows == 2
+            && digest.tool_calls == 0
+            && digest.last_tool_call.is_none()));
+    }
+}
+
+/// Both whole-run edge probes skip work rows via the covering structure
+/// index. Reopening a current database installs it, including one that was
+/// created before lean paging existed.
+#[test]
+fn lean_stored_run_edges_seek_covering_structure_index_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("tasks");
+    let store = Store::new(&root).unwrap();
+    store
+        .connection()
+        .execute("DROP INDEX thread_items_structure", [])
+        .unwrap();
+    drop(store);
+    let reopened = Store::new(&root).unwrap();
+    let connection = reopened.connection();
+    let plan = query_plan(&connection, super::super::schema::THREAD_RUN_BOUNDARIES_SQL);
+    assert_eq!(
+        plan.iter()
+            .filter(|step| step.contains("COVERING INDEX thread_items_structure"))
+            .count(),
+        2,
+        "{plan:?}"
+    );
+    let structure = query_plan(&connection, THREAD_CONVERSATION_STRUCTURE_SQL);
+    assert!(
+        structure
+            .iter()
+            .any(|step| step.contains("INDEX thread_items_structure")),
+        "{structure:?}"
+    );
+}

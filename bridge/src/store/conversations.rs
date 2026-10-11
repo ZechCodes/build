@@ -1,3 +1,5 @@
+mod newest_activity;
+
 use super::schema::{
     THREAD_CONVERSATION_STRUCTURE_SQL, THREAD_RUN_LAST_CALL_SQL, THREAD_RUN_OLDEST_SQL,
 };

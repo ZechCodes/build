@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.19.0");
+    assert_eq!(API_VERSION, "3.20.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -361,7 +361,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.19.0");
+    assert_eq!(API_VERSION, "3.20.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1236,4 +1236,118 @@ fn watch_scoped_unread_is_announced_with_its_semantics() {
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
     assert_eq!(greeting["watch_scoped_unread"]["since"], "3.19.0");
     assert_eq!(greeting["watch_scoped_unread"]["unwatched_count"], 0);
+}
+
+#[test]
+fn thread_page_activity_mode_is_typed_and_optional() {
+    let handler = &v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "thread.page")
+        .unwrap()
+        .1;
+    let original = serde_json::json!({"entity_id": "run-7", "limit": 20});
+    handler.parse_params(&original).unwrap();
+    for activity in ["bounded", "newest"] {
+        let mut params = original.clone();
+        params["activity"] = serde_json::json!(activity);
+        handler.parse_params(&params).unwrap();
+    }
+    for invalid in [
+        serde_json::json!("all"),
+        serde_json::json!("Newest"),
+        serde_json::json!(true),
+        serde_json::json!(1),
+        serde_json::json!({}),
+    ] {
+        let mut params = original.clone();
+        params["activity"] = invalid;
+        assert!(handler.parse_params(&params).is_err());
+    }
+}
+
+#[test]
+fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
+    assert_eq!(API_VERSION, "3.20.0");
+    assert!(capabilities(false).contains(&"threads.leanActivity"));
+    let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
+    assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
+    assert_eq!(
+        fixture["lean_activity"]["capability"],
+        "threads.leanActivity"
+    );
+    let example = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|example| example["params"]["activity"] == "newest")
+        .expect("lean page example");
+    let digest = &example["result"]["activity_digests"][0];
+    assert_eq!(digest["rows"], 8);
+    assert_eq!(digest["tool_calls"], 6);
+    let items = example["result"]["items"].as_array().unwrap();
+    let newest = items
+        .iter()
+        .filter(|item| item["type"] == "event")
+        .collect::<Vec<_>>();
+    assert_eq!(newest.len(), 1);
+    assert_eq!(newest[0]["data"]["sequence"], digest["through_sequence"]);
+}
+
+#[test]
+fn lean_activity_fixture_examples_match_reachable_pages() {
+    use build_bridge::thread::{Thread, ThreadItem};
+    let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
+    let examples = fixture["examples"].as_array().unwrap();
+    let newest = examples[0]["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "event")
+        .unwrap();
+    let message = &fixture["result"]["items"][0];
+    let mut thread = Thread::new("run-7");
+    for sequence in 1..=29 {
+        let mut item = message.clone();
+        item["data"]["sequence"] = serde_json::json!(sequence);
+        item["data"]["id"] = serde_json::json!(format!("message-{sequence}"));
+        item["data"]["body"] = serde_json::json!("read the post path");
+        thread
+            .items
+            .push(serde_json::from_value::<ThreadItem>(item).unwrap());
+    }
+    for sequence in 30..=37 {
+        let mut item = newest.clone();
+        item["data"]["sequence"] = serde_json::json!(sequence);
+        item["data"]["id"] = serde_json::json!(format!("event-{sequence}"));
+        if matches!(sequence, 35 | 36) {
+            item["data"]["event"] = serde_json::json!("narration");
+            item["data"].as_object_mut().unwrap().remove("outcome");
+        }
+        thread
+            .items
+            .push(serde_json::from_value::<ThreadItem>(item).unwrap());
+    }
+    thread
+        .items
+        .push(serde_json::from_value::<ThreadItem>(message.clone()).unwrap());
+    thread.normalize("run-7");
+    for example in examples {
+        let params = &example["params"];
+        let actual = thread.wire_value_page_newest_activity(
+            params["after_sequence"].as_u64(),
+            params["before_sequence"].as_u64(),
+            params["limit"].as_u64().unwrap() as usize,
+            params["newest"].as_bool().unwrap_or(false),
+        );
+        for field in [
+            "items",
+            "activity_digests",
+            "thread_total",
+            "thread_last_sequence",
+            "oldest_sequence",
+            "has_more",
+        ] {
+            assert_eq!(actual[field], example["result"][field], "{params}: {field}");
+        }
+    }
 }

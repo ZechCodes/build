@@ -191,6 +191,19 @@ mode 0600. It skips active IDs, symlinks and `.git`, with bounded traversal.
 Creation refuses that reserved staging destination namespace, including case
 variants, so a published user file cannot be mistaken for an orphan on boot.
 
+`thread.page` is a message-counted page with folded activity digests. Wire
+3.20.0 announces `threads.leanActivity`: with optional `activity: "newest"`,
+each activity run between non-activity items ships exactly its newest item,
+including a live tail run. Messages and other non-activity items keep their
+existing paging behavior. `activity_digests` retain the exact full-run span,
+row count, tool-call count and newest tool call even when most rows are
+omitted. The bounded store reader reads only the activity items it ships.
+The mode works with `before_sequence`, `after_sequence`, and
+`after_sequence` plus `newest: true`. Omitting `activity` or sending
+`activity: "bounded"` keeps the existing per-run cap and page activity budget.
+A client sends the new param only when the greeting names the capability;
+`thread.activity` fetches the digest's span when the client opens that run.
+
 `conversation.reset` belongs to the typed thread family. It reserves one exact
 conversation, stops its processes and stages files outside the app lock, then
 commits the replacement under the lock. Cleanup does not depend on a browser
@@ -260,7 +273,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.19.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.20.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -374,6 +387,11 @@ runtime that starts them.
   source row carried when the client opened it. If the source has since moved,
   the bridge refuses the call with `conflict` instead of reaching the new
   folder. Beside any other scope it is `invalid_params`.
+  3.20.0 adds `threads.leanActivity` (#496): optional `activity: "newest"`
+  on `thread.page` ships one newest item per activity run, including the live
+  tail, beside an exact full-run digest. Omitting `activity` keeps the bounded
+  default. The mode applies to backward pages, forward deltas and newest
+  deltas; `thread.activity` still reads the digest's span on demand.
   3.19.0 adds `unread.watchScoped` (#474): conversation and task unread
   counts exclude unwatched conversations and news from before the current
   watch began. Watch baselines persist separately from read cursors.

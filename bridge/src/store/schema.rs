@@ -135,6 +135,11 @@ CREATE INDEX IF NOT EXISTS thread_items_tool_calls
 -- conversation. Partial, so the seek that bounds a run walks the work itself.
 CREATE INDEX IF NOT EXISTS thread_items_activity
     ON thread_items(agent_id, sequence) WHERE activity = 1;
+-- Whole-run edges seek through conversation structure, skipping activity
+-- without visiting its large item bodies. Applied on every store open so
+-- existing databases gain the index without rewriting stored items.
+CREATE INDEX IF NOT EXISTS thread_items_structure
+    ON thread_items(agent_id, sequence) WHERE activity = 0;
 
 CREATE TABLE IF NOT EXISTS captures (
     id     TEXT PRIMARY KEY,
@@ -454,6 +459,14 @@ pub(super) const THREAD_RUN_OLDEST_SQL: &str = "SELECT sequence, item FROM threa
 pub(super) const THREAD_RUN_LAST_CALL_SQL: &str = "SELECT sequence, item FROM thread_items \
      WHERE agent_id = ?1 AND tool_call = 1 AND sequence > ?2 AND sequence < ?3 \
      ORDER BY sequence DESC LIMIT 1";
+
+/// The complete boundaries around one activity item. The partial structure
+/// index makes both edge seeks cover sequence alone and skip all work rows.
+pub(super) const THREAD_RUN_BOUNDARIES_SQL: &str =
+    "SELECT COALESCE((SELECT sequence FROM thread_items WHERE agent_id = ?1 AND activity = 0
+     AND sequence < ?2 ORDER BY sequence DESC LIMIT 1), 0),
+     COALESCE((SELECT sequence FROM thread_items WHERE agent_id = ?1 AND activity = 0
+     AND sequence > ?2 ORDER BY sequence ASC LIMIT 1), 9223372036854775807)";
 
 /// How long a conversation is, asked of the primary key rather than of the
 /// items: the load needs the total to say how much of a conversation it left

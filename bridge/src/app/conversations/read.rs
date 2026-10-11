@@ -295,6 +295,9 @@ impl AppState {
             .get("newest")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        if params.get("activity").and_then(Value::as_str) == Some("newest") {
+            return self.lean_thread_page(thread, before, after, newest, params);
+        }
         match (before, after, newest) {
             // Two cursors name two walks, and a verb that picked one would
             // answer a page nobody asked for.
@@ -312,15 +315,52 @@ impl AppState {
         }
     }
 
+    /// One lean conversation page, with exact digests even when a cursor
+    /// starts inside a run whose first rows were left on disk by the load.
+    fn lean_thread_page(
+        &self,
+        thread: &crate::thread::Thread,
+        before: Option<u64>,
+        after: Option<u64>,
+        newest: bool,
+        params: &Value,
+    ) -> Result<Value, String> {
+        if before.is_some() && after.is_some() {
+            return Err("provide exactly one of before_sequence and after_sequence".to_string());
+        }
+        if newest && after.is_none() {
+            return Err("newest must be used with after_sequence".to_string());
+        }
+        let limit = if after.is_some() {
+            thread_page_forward_limit(params)
+        } else {
+            thread_page_limit(params)
+        };
+        if thread.lean_page_reaches_stored_history() {
+            let (cut, has_more) = self
+                .history_store()?
+                .thread_conversation_page_newest_activity(
+                    &thread.agent.id,
+                    after,
+                    before,
+                    limit,
+                    newest,
+                )
+                .map_err(|error| format!("conversation store: {error}"))?;
+            return Ok(thread.wire_value_of_page(&cut, has_more));
+        }
+        Ok(thread.wire_value_page_newest_activity(after, before, limit, newest))
+    }
+
     /// The activity of one folded run, wherever it lives — what a client asks
     /// for when a reviewer opens a run a page shipped only the digest of.
     ///
     /// A run older than the newest message never changes: the agent that made
     /// it has moved on, and nothing appends inside a closed run. So a client
     /// may cache what this answers under the run's `from_sequence` until the
-    /// entity is evicted. Only the tail run is live, and that one is not
-    /// fetched at all — it arrives as the forward deltas a poll already
-    /// carries.
+    /// entity is evicted. The tail run remains live: lean pages carry only
+    /// its newest row, so opening it reads the span on demand and a later
+    /// delta advances its digest.
     pub(crate) fn thread_activity(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;

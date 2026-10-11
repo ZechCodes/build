@@ -112,6 +112,36 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it("promotes a background status lookup when its workspace opens before dispatch", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const held = gate();
+    const lookupStarted = gate();
+    const originalRead = cache.readCached;
+    let intercepted = false;
+    const lookup = vi.spyOn(cache, "readCached").mockImplementation((target) => {
+      if (!intercepted && target.entityId === "run-1" && target.kind === "status") {
+        intercepted = true;
+        lookupStarted.release();
+        return held.promise;
+      }
+      return originalRead(target);
+    });
+    start();
+    await lookupStarted.promise;
+    try {
+      expect(calls("git.status")).toHaveLength(0);
+      App.route = routeTo(1);
+      sync.routeChanged();
+      await vi.waitFor(() => expect(calls("fs.tree").some(([, params]) => params.run_id === "run-1")).toBe(true));
+    } finally {
+      held.release(undefined);
+      lookup.mockRestore();
+      await finish();
+    }
+    const status = calls("git.status").find(([, params]) => params.run_id === "run-1");
+    expect(status[2]?.priority).not.toBe("background");
+  });
+
   it("keeps a pushed mounted diff when an older foreground diff reply arrives afterwards", async () => {
     const held = gate();
     await mountRoutedPanes();

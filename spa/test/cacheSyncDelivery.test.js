@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { announced, called } from "./waits.js";
+import { announced, called, passesSettled } from "./waits.js";
 
 const ago = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
@@ -813,7 +813,8 @@ describe("a pass racing the wire", () => {
     await greet();
     board = [branchItem()];
     sync.startCacheSync();
-    await settle();
+    // #495: finish baseline recovery before adding the file whose push this test holds.
+    await passesSettled(sync, "dev-1");
     const address = { deviceId: "dev-1", entityId: "run-1", kind: "file", sub: "src/a.js" };
     await cache.writeCached(address, { file: { path: "src/a.js", size: 3, content_b64: "b2xk" }, openedAt: 1 });
 

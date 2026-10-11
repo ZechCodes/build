@@ -1237,3 +1237,56 @@ fn watch_scoped_unread_is_announced_with_its_semantics() {
     assert_eq!(greeting["watch_scoped_unread"]["since"], "3.19.0");
     assert_eq!(greeting["watch_scoped_unread"]["unwatched_count"], 0);
 }
+
+
+#[test]
+fn thread_page_activity_mode_is_typed_and_optional() {
+    let handler = &v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "thread.page")
+        .unwrap()
+        .1;
+    let original = serde_json::json!({"entity_id": "run-7", "limit": 20});
+    handler.parse_params(&original).unwrap();
+    for activity in ["bounded", "newest"] {
+        let mut params = original.clone();
+        params["activity"] = serde_json::json!(activity);
+        handler.parse_params(&params).unwrap();
+    }
+    for invalid in [
+        serde_json::json!("all"),
+        serde_json::json!("Newest"),
+        serde_json::json!(true),
+        serde_json::json!(1),
+        serde_json::json!({}),
+    ] {
+        let mut params = original.clone();
+        params["activity"] = invalid;
+        assert!(handler.parse_params(&params).is_err());
+    }
+}
+
+#[test]
+fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
+    assert_eq!(API_VERSION, "3.20.0");
+    assert!(capabilities(false).contains(&"threads.leanActivity"));
+    let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
+    assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
+    assert_eq!(fixture["lean_activity"]["capability"], "threads.leanActivity");
+    let example = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|example| example["params"]["activity"] == "newest")
+        .expect("lean page example");
+    let digest = &example["result"]["activity_digests"][0];
+    assert_eq!(digest["rows"], 8);
+    assert_eq!(digest["tool_calls"], 6);
+    let items = example["result"]["items"].as_array().unwrap();
+    let newest = items
+        .iter()
+        .filter(|item| item["type"] == "event")
+        .collect::<Vec<_>>();
+    assert_eq!(newest.len(), 1);
+    assert_eq!(newest[0]["data"]["sequence"], digest["through_sequence"]);
+}

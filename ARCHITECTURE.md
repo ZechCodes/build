@@ -1892,8 +1892,12 @@ In practice:
   background checkout records and bodies. `syncBackgroundStreams.js` drains
   that final phase through two streams per device, retaining each checkout's
   read/write order and letting a free stream advance past a slow checkout.
-  Foreground reads use no background slot; both streams yield to the current
-  foreground barrier before their next read. Only the visible scope is promoted;
+  Inbox and push-triggered background RPCs share those two wire slots per
+  device/session/restored path. A failed first task page still waits for its
+  parallel columns read before the inbox phase ends. Foreground reads use no
+  background slot; queued reads recheck promotion and the current foreground
+  barrier when they wake. Stop or path/session replacement discards queued
+  reads and abandons the old slots. Only the visible scope is promoted;
   mounted panes describe their shown trees, Changes and remembered conversation
   through `syncVisibleScopes.js`. Mounted source directories supply their own
   fenced cache readers where no board entity addresses those records. Route

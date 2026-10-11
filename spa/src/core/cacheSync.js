@@ -37,6 +37,7 @@
 
 import { trailingRead } from "./trailingRead.js";
 import { createSyncPhases } from "./syncPhases.js";
+import { createBackgroundStreams } from "./syncBackgroundStreams.js";
 import { createTaskPhases } from "./syncTaskPhases.js";
 import { createTaskReadQueue } from "./serialTaskReads.js";
 import { readSyncLists } from "./syncLists.js";
@@ -164,6 +165,7 @@ const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE
 const fileReads = new Map(); // file address → the newest reader allowed to write its body
 const fileRecoveries = new Map(); // deviceId → per-file recovery on this session and request scope
 const diffRecoveries = new Map(); // deviceId → the session/path whose held diffs were validated
+const backgroundStreams = createBackgroundStreams();
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -190,6 +192,7 @@ const syncContext = (context, turn = null) => {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope,
+    backgroundStreams: backgroundStreams.forContext({ deviceId: context.deviceId, session, requestScope, lifetime: startedIn }),
     active: () => context.active() && context.session === session && startedIn === lifetime
       && requestScopeOf(context) === requestScope && !turn?.superseded,
   };
@@ -202,14 +205,12 @@ const heldValue = async (context, entityId, kind, sub = "") =>
 
 /** Cache reads and coordinated requests can yield before dispatch. Check the
  *  captured pass at the wire boundary, including reads with their own loaders. */
-const callWhileActive = async (context, method, params, envelope) => {
-  // A read promoted during cache lookup may be what the foreground drain is
-  // awaiting. It must cross the wire before joining that drain's barrier.
-  const current = context.priorityForRead?.(method, params, envelope) || envelope;
-  if (current?.priority === "background") await context.beforeBackgroundRead?.(method, params);
-  const priority = context.priorityForRead?.(method, params, envelope) || envelope;
-  return context.active() ? context.call(method, params, priority) : null;
-};
+const callWhileActive = (context, method, params, envelope) => context.backgroundStreams.read({
+  active: context.active,
+  priority: () => context.priorityForRead?.(method, params, envelope) || envelope,
+  before: () => context.beforeBackgroundRead?.(method, params),
+  load: (priority) => context.call(method, params, priority),
+});
 
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
@@ -1146,8 +1147,7 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
     key,
     priority,
     active: context.active,
-    load: (envelope) => context.active()
-      ? context.call(method, params, context.priorityForRead?.(method, params, envelope) || envelope) : null,
+    load: (envelope) => callWhileActive(context, method, params, envelope),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
   // The mounted surface or another tab can write without a push. Compare
@@ -1332,6 +1332,7 @@ export function routeChanged() {
   if (!holdingLock) return;
   for (const deviceId of [...subscriptions.keys()]) {
     void passes.get(deviceId)?.foreground?.();
+    backgroundStreams.wake(deviceId);
     void refollowRoute(deviceId);
   }
 }
@@ -1957,6 +1958,7 @@ export function stopCacheSync() {
   taskReadGenerations.clear();
   // Everything still out stands down before the fences it was held to go.
   lifetime += 1;
+  backgroundStreams.clear();
   fileReads.clear();
   fileRecoveries.clear();
   diffRecoveries.clear();

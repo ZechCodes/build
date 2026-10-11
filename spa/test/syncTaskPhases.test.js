@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let paging = true;
-vi.mock("../src/core/trackerPages.js", async (original) => ({
-  ...await original(), pagesTasks: () => paging,
-}));
 
 const task = (number) => ({ id: `task-${number}`, number, updated_at: "2026-10-11T12:00:00Z" });
 const gate = () => {
@@ -19,6 +16,8 @@ beforeEach(async () => {
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   paging = true;
+  const pages = await import("../src/core/trackerPages.js");
+  vi.spyOn(pages, "pagesTasks").mockImplementation(() => paging);
   phases = await import("../src/core/syncTaskPhases.js");
   trackerCache = await import("../src/core/trackerCache.js");
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { drainBackgroundStreams } from "../src/core/syncBackgroundStreams.js";
+import { createBackgroundStreams, drainBackgroundStreams } from "../src/core/syncBackgroundStreams.js";
 
 const gate = () => {
   let release;
@@ -44,5 +44,97 @@ describe("background stream drain", () => {
     sibling.release(true);
     expect(await outcome).toBe(error);
     expect(read.mock.calls).toEqual([[1], [2]]);
+  });
+});
+
+const generation = () => ({ deviceId: "dev-1", session: {}, requestScope: {}, lifetime: 1 });
+const reading = (load, priority = () => ({ priority: "background" })) => ({ active: () => true, priority, load });
+
+describe("shared background wire admission", () => {
+  it("shares two slots across contexts on one device and keeps another device independent", async () => {
+    const streams = createBackgroundStreams(), owner = generation();
+    const pass = streams.forContext(owner), push = streams.forContext({ ...owner });
+    const other = streams.forContext({ ...owner, deviceId: "dev-2" });
+    const one = gate(), two = gate(), third = vi.fn(() => true);
+    const reads = [pass.read(reading(() => one.promise)), push.read(reading(() => two.promise)), push.read(reading(third))];
+    await other.read(reading(() => true));
+    expect(third).not.toHaveBeenCalled();
+    one.release(true);
+    await vi.waitFor(() => expect(third).toHaveBeenCalledTimes(1));
+    two.release(true);
+    await expect(Promise.all(reads)).resolves.toEqual([true, true, true]);
+  });
+
+  it("promotes queued work before its barrier and gives foreground no background slot", async () => {
+    const streams = createBackgroundStreams(), owner = generation(), queue = streams.forContext(owner);
+    const held = gate(), foreground = gate();
+    const reads = [queue.read(reading(() => held.promise)), queue.read(reading(() => held.promise))];
+    let selected = false;
+    const load = vi.fn(() => foreground.promise), before = vi.fn(() => Promise.resolve());
+    reads.push(queue.read({ ...reading(load, () => selected ? {} : { priority: "background" }), before }));
+    await vi.waitFor(() => expect(before).toHaveBeenCalledTimes(1));
+    expect(load).not.toHaveBeenCalled();
+    selected = true;
+    streams.wake(owner.deviceId);
+    await vi.waitFor(() => expect(load).toHaveBeenCalledWith({}));
+    expect(before).toHaveBeenCalledTimes(1);
+    const next = vi.fn(() => true);
+    reads.push(queue.read(reading(next)));
+    held.release(true);
+    await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(1));
+    foreground.release(true);
+    await Promise.all(reads);
+  });
+
+  it.each(["session", "requestScope", "lifetime"])("replaces %s without inheriting old slots or queued work", async (field) => {
+    const streams = createBackgroundStreams(), owner = generation(), old = streams.forContext(owner);
+    const abandoned = gate(), current = gate(), stale = vi.fn(), next = vi.fn(() => true);
+    const reads = [old.read(reading(() => abandoned.promise)), old.read(reading(() => abandoned.promise))];
+    const queued = old.read(reading(stale));
+    // Let the old reads acquire both slots before replacing their generation.
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    const fresh = streams.forContext({ ...owner, [field]: field === "lifetime" ? 2 : {} });
+    await expect(queued).resolves.toBeNull();
+    reads.push(fresh.read(reading(() => current.promise)), fresh.read(reading(() => current.promise)));
+    const following = fresh.read(reading(next));
+    abandoned.release(true);
+    await Promise.all(reads.slice(0, 2));
+    expect(stale).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+    current.release(true);
+    await Promise.all([...reads, following]);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it("reacquires a slot if navigation demotes a read after waking it as foreground", async () => {
+    const streams = createBackgroundStreams(), owner = generation(), queue = streams.forContext(owner), held = gate();
+    const reads = [queue.read(reading(() => held.promise)), queue.read(reading(() => held.promise))];
+    let selected = false;
+    const load = vi.fn(() => true);
+    reads.push(queue.read(reading(load, () => selected ? {} : { priority: "background" })));
+    try {
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+      selected = true;
+      streams.wake(owner.deviceId);
+      selected = false;
+      for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      held.release(true);
+      await Promise.all(reads);
+    }
+    expect(load).toHaveBeenCalledWith({ priority: "background" });
+  });
+
+  it("discards queued reads on stop even while both RPCs remain unanswered", async () => {
+    const streams = createBackgroundStreams(), queue = streams.forContext(generation()), held = gate();
+    const reads = [queue.read(reading(() => held.promise)), queue.read(reading(() => held.promise))];
+    const load = vi.fn(), queued = queue.read(reading(load));
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    streams.clear();
+    await expect(queued).resolves.toBeNull();
+    expect(load).not.toHaveBeenCalled();
+    held.release(true);
+    await Promise.all(reads);
   });
 });

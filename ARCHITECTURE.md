@@ -1873,7 +1873,9 @@ In practice:
   other conversations and remaining task pages/review metadata, and finally
   background checkout records and bodies. Only the visible scope is promoted;
   mounted panes describe their shown trees, Changes and remembered conversation
-  through `syncVisibleScopes.js`. Route changes interrupt the pending order,
+  through `syncVisibleScopes.js`. Mounted source directories supply their own
+  fenced cache readers where no board entity addresses those records. Route
+  changes interrupt the pending order,
   including while an unrelated background reply is still out. Task pages
   resume the same cursor and removal spans across phases (`syncTaskPhases.js`),
   sharing a session-fenced queue with coalesced push reads. A refresh requested

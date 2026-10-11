@@ -201,7 +201,8 @@ const heldValue = async (context, entityId, kind, sub = "") =>
  *  captured pass at the wire boundary, including reads with their own loaders. */
 const callWhileActive = async (context, method, params, envelope) => {
   if (envelope?.priority === "background") await context.beforeBackgroundRead?.();
-  return context.active() ? context.call(method, params, envelope) : null;
+  const priority = context.priorityForRead?.(method, params, envelope) || envelope;
+  return context.active() ? context.call(method, params, priority) : null;
 };
 
 /** One read, written through by the caller. A failure is a cold record: the
@@ -392,8 +393,14 @@ async function orderedSync(deviceId, turn) {
       serialize: (projectId, operation) => serializeTasks(context, projectId, operation) }),
   });
   context.beforeBackgroundRead = phases.foreground;
+  context.priorityForRead = phases.priorityForRead;
   turn.foreground = phases.foreground;
   const filesRecovered = await phases.run();
+  // Detached ownership cleanup uses the same cache/session fences, without
+  // keeping the completed pass's foreground planner alive.
+  context.beforeBackgroundRead = null;
+  context.priorityForRead = null;
+  turn.foreground = null;
   await evictRowsThatAreOver(context, view, fence);
   await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
   if (!context.active()) return false;
@@ -869,6 +876,7 @@ async function syncWorkspaceExtras(context, entityId, row) {
 
 const workspaceReaders = {
   scope: gitScopeOf,
+  terminalScope: terminalScopeOf,
   status: (context, id, row, priority) => syncStatus(context, id, gitScopeOf(row), priority),
   tree: (context, id, row, path, priority) => listTrees(context, id, gitScopeOf(row), [path], priority),
   terminals: syncTerminals,
@@ -1114,7 +1122,8 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
     key,
     priority,
     active: context.active,
-    load: (envelope) => context.active() ? context.call(method, params, envelope) : null,
+    load: (envelope) => context.active()
+      ? context.call(method, params, context.priorityForRead?.(method, params, envelope) || envelope) : null,
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
   await mergeCached(address, (current) =>

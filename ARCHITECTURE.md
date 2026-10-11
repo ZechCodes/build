@@ -2322,8 +2322,13 @@ The head offers Hide and New workspace directly.
 The Projects face lists every project in one flat alphabetical list, using
 case-insensitive locale collation with device-tag and project-key tie breakers.
 Project blocks have transparent backgrounds; only the active head has an accent
-tint. Workspace rows keep their order and per-block Recent partition. The
-ungrouped Inbox face keeps its own Recent disclosure.
+tint. Every block starts open unless the user saved a fold, with its live rows
+in anchor order followed by one project-keyed Recent disclosure. Recent starts
+closed with a quiet-row count, even when the block has only quiet rows; opening
+it paints quiet workspaces on one line and watched tasks with title and reason
+lines. The block chevron folds the whole block independently of its saved
+Recent state. Projects never enter a top-level Recent. The ungrouped Inbox
+face keeps its own Recent disclosure.
 
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
 `spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`. Every watched
@@ -2334,7 +2339,7 @@ its latest cached update, comment or event supplies activity for Recent. Assignm
 attention reasons and unread counts never change position. Every row kind moves
 to Recent after a day without activity while no agent works; dismissed rows go
 there too. Inside a project block, the same row order and Recent rule apply.
-Quiet tasks use a single line. Every task row has an
+Quiet tasks keep their title and reason on separate lines. Every task row has an
 eye that uses the existing optimistic `tasks.unwatch` path, removing the row
 immediately and restoring its watch if the write fails. The eye stays visible
 on touch screens. Needs you reasons and unread counting retain their own rules.

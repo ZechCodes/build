@@ -4,9 +4,10 @@
 //
 // The rail has two faces. The inbox is the one list across every project; the
 // projects face is that same list grouped by project, with a Recent fold per
-// block, the block's head opening the project's checkout and offering the
-// create surface, and a new-project control at the top. The rows are the same
-// rows either way, and so is everything a row can do.
+// block, including blocks holding only quiet rows. Project heads stay in
+// alphabetical order and open the project's own page, with Hide and New
+// workspace controls. The rows are the same rows either way, and so is
+// everything a row can do.
 //
 // WHICH rows appear and what they say is core/inbox.js and core/inboxProjects.js;
 // this module is the wiring. Read state is the bridge's now (`entity.seen`), so
@@ -318,8 +319,8 @@ function drawProjects(list, shown) {
   paintBlocks(frame.blocks, blocks, ui);
 }
 
-/** The projects face's frame, built once: the new-project control, the loose
- *  rows' container, and the blocks'. */
+/** The projects face's frame, built once: the loose rows' container and the
+ *  alphabetical blocks'. Projects have no top-level Recent. */
 function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
@@ -349,22 +350,14 @@ function paintBlocks(host, blocks, ui) {
       element = el(projectBlockHtml(block, ui));
       host.insertBefore(element, anchor);
     } else {
-      element.classList.toggle("inbox-flat", block.flat);
       element.classList.toggle("inbox-folded", ui.folded.has(block.projectKey));
       element.classList.toggle("active", ui.activeProjectId === block.projectKey);
       patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
     const rows = element.querySelector(":scope > .inbox-project-rows");
-    if (block.flat) {
-      // Nothing live: the quiet rows stand straight under the head, and the
-      // block's own chevron is their fold — no Recent disclosure of their own.
-      element.querySelector(":scope > .inbox-recent")?.remove();
-      patchList(rows, block.recent, { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
-    } else {
-      patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-      paintRecent(element, block.recent, ui, block.projectKey);
-    }
+    patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+    paintRecent(element, block.recent, ui, block.projectKey);
     anchor = element;
   }
 }
@@ -400,7 +393,7 @@ function paintRecent(host, recent, ui, scope) {
   if (host.lastElementChild !== section) host.appendChild(section);
   const open = recentIsOpen(recentOpen.get(scope));
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
-  // Recent's rows are quiet rows: one line each, no state dot.
+  // Quiet workspaces use one line; watched tasks keep title and reason lines.
   patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
 }
 

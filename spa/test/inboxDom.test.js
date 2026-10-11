@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { deviceOfflineWord } from "../src/core/text.js";
+import { task } from "./trackerWireFixture.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -361,6 +362,93 @@ describe("a workspace's Done", () => {
 });
 
 describe("the projects face", () => {
+  it("starts a quiet-only block open with a closed Recent count, then paints quiet workspaces and task reasons", async () => {
+    const { writeTasksRecord, tasksRecord } = await import("../src/core/trackerCache.js");
+    const old = Date.now() - 25 * 60 * 60 * 1000;
+    await writeTasksRecord("dev-1", "project-1", tasksRecord([task({
+      id: "quiet-task", project_id: "project-1", number: 510, title: "Fold quiet project rows",
+      watched: true, assignee: { kind: "user" },
+      created_at: new Date(old).toISOString(), updated_at: new Date(old).toISOString(),
+    })], []));
+    feed([workspace({ session_started_ms: old, last_activity_ms: old })]);
+    setInboxView("projects");
+    const block = blocks()[0];
+    const toggle = () => block.querySelector('[data-recent-toggle="dev-1/project-1"]');
+    await vi.waitFor(() => expect(toggle()?.querySelector(".inbox-recent-count").textContent).toBe("2"));
+    expect(block.querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("true");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(block.querySelectorAll(".inbox-entry")).toHaveLength(0);
+    expect(document.querySelector('[data-recent-toggle="projects"]')).toBeNull();
+    toggle().click();
+    await vi.waitFor(() => expect(block.querySelectorAll(".inbox-recent .inbox-entry")).toHaveLength(2));
+    const quietWorkspace = block.querySelector('[data-key="workspace:dev-1/workspace-1"]');
+    expect(quietWorkspace.classList.contains("inbox-quiet")).toBe(true);
+    expect(quietWorkspace.querySelectorAll(".inbox-line")).toHaveLength(1);
+    expect(quietWorkspace.querySelector(".inbox-body > .inbox-facts")).toBeNull();
+    expect(quietWorkspace.querySelector(".inbox-facts-float")).not.toBeNull();
+    const quietTask = block.querySelector('[data-key="tracker_task:quiet-task"]');
+    expect(quietTask.classList.contains("inbox-quiet-task")).toBe(true);
+    expect(quietTask.querySelector(".stitle").textContent).toBe("#510 Fold quiet project rows");
+    expect(quietTask.querySelector(".inbox-facts").textContent).toBe("Assigned to you");
+    expect(block.querySelector(".inbox-project-rows").children).toHaveLength(0);
+  });
+
+  it("paints live rows before a closed project Recent and keeps it when the last live row goes quiet", async () => {
+    const now = Date.now();
+    const old = now - 25 * 60 * 60 * 1000;
+    const quiet = workspace({ id: "quiet", session_started_ms: old, last_activity_ms: old });
+    const live = workspace({ id: "live", session_started_ms: now, last_activity_ms: now });
+    feed([quiet, live]);
+    setInboxView("projects");
+    const block = blocks()[0];
+    const section = block.querySelector(":scope > .inbox-recent");
+    const toggle = () => section.querySelector("[data-recent-toggle]");
+    expect([...block.children].map((child) => child.className)).toEqual([
+      "inbox-project-head", "inbox-project-rows", "inbox-recent",
+    ]);
+    expect(block.querySelector(".inbox-project-rows .inbox-entry").dataset.key).toBe("workspace:dev-1/live");
+    expect(toggle().querySelector(".inbox-recent-count").textContent).toBe("1");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(section.querySelectorAll(".inbox-entry")).toHaveLength(0);
+    feed([quiet, { ...live, session_started_ms: old, last_activity_ms: old }]);
+    expect(block.querySelector(":scope > .inbox-recent")).toBe(section);
+    expect(toggle().querySelector(".inbox-recent-count").textContent).toBe("2");
+    expect(block.querySelectorAll(".inbox-entry")).toHaveLength(0);
+    toggle().click();
+    await vi.waitFor(() => expect(section.querySelectorAll(".inbox-entry")).toHaveLength(2));
+    feed([quiet, live]);
+    expect(toggle().querySelector(".inbox-recent-count").textContent).toBe("1");
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(section.querySelectorAll(".inbox-entry")).toHaveLength(1);
+    expect(block.querySelector(".inbox-project-rows .inbox-entry").dataset.key).toBe("workspace:dev-1/live");
+  });
+
+  it("remembers each quiet-only block's Recent separately from its whole-block fold", async () => {
+    const old = Date.now() - 25 * 60 * 60 * 1000;
+    feed([
+      workspace({ session_started_ms: old, last_activity_ms: old }),
+      workspace({ id: "other", project_id: "project-2", session_started_ms: old, last_activity_ms: old }),
+    ]);
+    setInboxView("projects");
+    const toggle = (projectId) => document.querySelector(`[data-recent-toggle="dev-1/${projectId}"]`);
+    expect(toggle("project-1")).not.toBeNull();
+    toggle("project-1").click();
+    await vi.waitFor(() => expect(toggle("project-1").getAttribute("aria-expanded")).toBe("true"));
+    expect(toggle("project-2").getAttribute("aria-expanded")).toBe("false");
+    blocks()[0].querySelector("[data-project-fold]").click();
+    await vi.waitFor(() => expect(blocks()[0].classList.contains("inbox-folded")).toBe(true));
+    unmountInboxList();
+    mountInboxList();
+    await vi.waitFor(() => expect(blocks()[0].classList.contains("inbox-folded")).toBe(true));
+    await vi.waitFor(() => expect(toggle("project-1").getAttribute("aria-expanded")).toBe("true"));
+    expect(toggle("project-2").getAttribute("aria-expanded")).toBe("false");
+    blocks()[0].querySelector("[data-project-fold]").click();
+    await vi.waitFor(() => expect(blocks()[0].classList.contains("inbox-folded")).toBe(false));
+    expect(toggle("project-1").getAttribute("aria-expanded")).toBe("true");
+    expect(blocks()[0].querySelectorAll(".inbox-recent .inbox-entry")).toHaveLength(1);
+    expect(blocks()[1].querySelectorAll(".inbox-entry")).toHaveLength(0);
+  });
+
   it("lists aged projects alphabetically without a top-level Recent while preserving workspace Recent", async () => {
     const { writeUiRecord, readUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");

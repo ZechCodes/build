@@ -21,7 +21,14 @@ for (const { label, width, height, hasTouch } of [
         expect(blocks.map((block) => block.name)).toEqual(["Alpha", "Bravo", "Build", "Zulu"]);
         expect(await page.locator("#inbox-list > .inbox-recent").count()).toBe(0);
         expect(await page.locator('[data-recent-toggle="projects-review/build"]').count()).toBe(1);
+        expect(await page.locator('[data-project-fold][aria-expanded="true"]').count()).toBe(4);
+        expect(await page.locator('.inbox-project .inbox-recent-toggle[aria-expanded="false"]').count()).toBe(2);
+        expect(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count()).toBe(0);
+        expect(await page.locator('[data-recent-toggle="projects-review/alpha"] .inbox-recent-count').textContent()).toBe("1");
       }
+      await page.locator('[data-recent-toggle="projects-review/alpha"]').click();
+      await page.locator('.inbox-recent [data-key="workspace:projects-review/alpha-quiet"]').waitFor();
+      expect(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-quiet').count()).toBe(1);
     }, { width, height, hasTouch });
   }, 60_000);
 }

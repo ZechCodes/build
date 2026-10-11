@@ -1,4 +1,4 @@
-// Isolated #480 evidence. Run from spa/ with CAPTURE_PHASE=before|after.
+// Isolated Projects face evidence (#480, #510). Run from spa/ with CAPTURE_PHASE=before|after.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -32,6 +32,10 @@ for (const { label, width, height, hasTouch } of [
           assert.equal(block.shadow, "none");
         }
         assert.equal(await page.locator("#inbox-list > .inbox-recent").count(), 0);
+        assert.equal(await page.locator('[data-project-fold][aria-expanded="true"]').count(), 4);
+        assert.equal(await page.locator('.inbox-project .inbox-recent-toggle[aria-expanded="false"]').count(), 2);
+        assert.equal(await page.locator('[data-recent-toggle="projects-review/alpha"] .inbox-recent-count').textContent(), "1");
+        assert.equal(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count(), 0);
       }
       await page.locator("#inbox-rail").screenshot({ path: join(directory, `${phase}-${label}-${theme}.png`) });
     }

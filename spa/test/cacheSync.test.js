@@ -1551,11 +1551,17 @@ describe("a pass that is still out when the next session lands", () => {
 });
 
 describe("every device answers for itself", () => {
+  // RPC quietness on dev-1 cannot prove either device's cache writes and
+  // evictions have landed. Wait for each device's own pass to finish.
+  const finishDevices = () => Promise.all([...contexts.keys()].map((deviceId) => passesSettled(sync, deviceId)));
+
   it("reads each device through its own caller and writes under its own id", async () => {
     const second = vi.fn(async (method, params) =>
       method === "git.log" ? { commits: [{ hash: "other" }], newest: "other" } : answer(method, params));
     registerDevice("dev-2", second);
-    await boot([branchItem()]);
+    board = [branchItem()];
+    sync.startCacheSync();
+    await finishDevices();
     expect((await read("run-1", "log")).value.commits[0].hash).toBe("c1");
     expect(
       (await cache.readCached({ deviceId: "dev-2", entityId: "run-1", kind: "log" })).value.commits[0].hash,
@@ -1571,7 +1577,7 @@ describe("every device answers for itself", () => {
     bridge.call = vi.fn(async (method, params) =>
       method === "board.list" ? { items: [branchItem()] } : answer(method, params));
     sync.startCacheSync();
-    await settle();
+    await finishDevices();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-9", kind: "status" })).toBeUndefined();
     expect(await cache.readCached({ deviceId: "dev-2", entityId: "run-9", kind: "status" })).toBeTruthy();
   });

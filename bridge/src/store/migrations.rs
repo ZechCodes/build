@@ -45,6 +45,7 @@ impl Store {
              DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
+             DROP INDEX IF EXISTS thread_items_structure;
              ALTER TABLE thread_items DROP COLUMN attention;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
@@ -64,6 +65,7 @@ impl Store {
              DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
+             DROP INDEX IF EXISTS thread_items_structure;
              ALTER TABLE thread_items DROP COLUMN message;
              ALTER TABLE thread_items DROP COLUMN tool_call;
              ALTER TABLE thread_items DROP COLUMN activity;
@@ -80,6 +82,7 @@ impl Store {
             "DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_tool_calls;
              DROP INDEX IF EXISTS thread_items_activity;
+             DROP INDEX IF EXISTS thread_items_structure;
              ALTER TABLE thread_items DROP COLUMN tool_call;
              ALTER TABLE thread_items DROP COLUMN activity;
              ALTER TABLE thread_items DROP COLUMN handoff;
@@ -94,6 +97,7 @@ impl Store {
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_own_messages;
              DROP INDEX IF EXISTS thread_items_activity;
+             DROP INDEX IF EXISTS thread_items_structure;
              ALTER TABLE thread_items DROP COLUMN activity;
              ALTER TABLE thread_items DROP COLUMN handoff;
              UPDATE meta SET value = '4' WHERE key = 'schema_version';",

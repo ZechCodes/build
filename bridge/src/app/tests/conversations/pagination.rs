@@ -1250,3 +1250,73 @@ fn a_legacy_delivery_finds_its_messages_under_the_tail_without_reading_the_conve
         "decoded {decoded} rows to find two waiting messages"
     );
 }
+
+
+fn lean_conversation(state: &mut AppState) -> Vec<u64> {
+    run_with_long_conversation(state, "run-lean", 0);
+    let thread = primary_thread_mut(&mut state.runs.get_mut("run-lean").unwrap().agents);
+    let mut newest = Vec::new();
+    for turn in 0..20 {
+        thread.post_user(format!("turn {turn}"), None, now_rfc3339());
+        let rows = match turn { 0 => 300, 1 => 5, 2 => 1, 19 => 40, _ => 0 };
+        for index in 0..rows {
+            thread.push_event(crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("call {index}")), None, None, now_rfc3339());
+        }
+        if rows > 0 { newest.push(thread.last_sequence()); }
+    }
+    newest
+}
+
+fn assert_lean_page(page: &Value, newest: &[u64]) {
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.iter().filter(|item| item["type"] == "message").count(), 20, "{page}");
+    let activity: Vec<u64> = items.iter().filter(|item| item["type"] == "event")
+        .map(|item| item["data"]["sequence"].as_u64().unwrap()).collect();
+    assert_eq!(activity, newest);
+    let digests = page["activity_digests"].as_array().unwrap();
+    assert_eq!(digests.iter().map(|digest| digest["rows"].as_u64().unwrap()).collect::<Vec<_>>(), vec![300, 5, 1, 40]);
+    assert_eq!(digests.iter().map(|digest| digest["tool_calls"].as_u64().unwrap()).collect::<Vec<_>>(), vec![300, 5, 1, 40]);
+    assert_eq!(digests.iter().map(|digest| digest["through_sequence"].as_u64().unwrap()).collect::<Vec<_>>(), newest);
+}
+
+#[test]
+fn lean_thread_page_ships_one_newest_per_run_in_every_direction() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let newest = lean_conversation(&mut state);
+    for cursors in [json!({}), json!({"before_sequence": 999}),
+        json!({"after_sequence": 0}), json!({"after_sequence": 0, "newest": true})] {
+        let mut params = cursors;
+        params["entity_id"] = json!("run-lean");
+        params["limit"] = json!(20);
+        params["activity"] = json!("newest");
+        let answer = state.handle(req("thread.page", params));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_lean_page(&answer["result"], &newest);
+        assert_eq!(answer["result"]["has_more"], false);
+    }
+}
+
+#[test]
+fn lean_thread_page_after_restart_decodes_only_shipped_items() {
+    let (dir, repo) = init_repo();
+    let mut state = qa_state(&repo, dir.path());
+    let newest = lean_conversation(&mut state);
+    let active = state.runs.remove("run-lean").unwrap();
+    state.persist_run_record("run-lean", &active).unwrap();
+    let mut restarted = qa_state(&repo, dir.path());
+    for cursors in [json!({}), json!({"before_sequence": 999}),
+        json!({"after_sequence": 0}), json!({"after_sequence": 0, "newest": true})] {
+        let mut params = cursors;
+        params["entity_id"] = json!("run-lean");
+        params["limit"] = json!(20);
+        params["activity"] = json!("newest");
+        let before = crate::store::items_decoded();
+        let answer = restarted.handle(req("thread.page", params));
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_lean_page(&answer["result"], &newest);
+        let decoded = crate::store::items_decoded() - before;
+        assert!(decoded <= 24, "decoded {decoded} for 24 shipped items");
+    }
+}

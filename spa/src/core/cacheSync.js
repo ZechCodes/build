@@ -131,6 +131,7 @@ export const LOCK_WAIT_MS = 4000;
 export const GREETING_WAIT_MS = 15000;
 const RESTORE_DRAIN_MS = 1000;
 const FILE_RECOVERY_FAILURES = 2;
+const PATCH_WARMING_SKIP_KIND = "patch-over-cap";
 
 // The thresholds this layer is written against live in core/cacheThresholds.js
 // — a module that imports nothing, so the surfaces can read the same bounds
@@ -1051,51 +1052,79 @@ const unpushedRecord = (answer) => {
   return record;
 };
 
+// A pushed summary has a key but no diff shape. Only a held full shape can
+// accept an unchanged answer without leaving the review's metadata missing.
+const unpushedDiffKey = (held) => {
+  if (!held?.base || !held.stat || !Array.isArray(held.files) || !held.file_edited_at
+    || typeof held.published !== "boolean") return null;
+  return typeof held.diff_key === "string" ? held.diff_key : null;
+};
+
 async function syncUnpushed(context, entityId, scope, priority) {
   // Without the aggregate patch: this record never held it — `unpushedRecord`
   // deletes it on arrival — and asking for it anyway put most of a megabyte on
   // the wire for every cold pass. A reader opening the review asks for the
   // body itself, from the pane, uncapped.
+  const key = unpushedDiffKey(await heldValue(context, entityId, "unpushed"));
+  const params = { ...scope, patch: false, ...(key ? { if_diff_key: key } : {}) };
   return readWhole(
     context,
     addressOf(context, entityId, "unpushed"),
-    { method: "git.unpushed", params: { ...scope, patch: false }, priority },
+    { method: "git.unpushed", params, priority },
     unpushedRecord,
   );
 }
 
 /** The patches behind the unpushed commits: the first twenty, and only the
- *  ones not already held.
+ *  ones not already held or known to exceed the warming cap.
  *
  *  Read under the cap, which is what a cache asks under: a commit over it is
- *  answered with the file headers, which are not kept. A reader opening it is
- *  what asks for the patch itself, uncapped, from the pane, which keeps it in
- *  pages (#95). */
+ *  answered with the file headers, which are not kept. A separate size marker
+ *  keeps future passes and pushes off the wire without posing as a patch.
+ *  A reader opening it asks from the pane, uncapped, and keeps it in pages
+ *  (#95); that read never consults the warming marker. */
 async function syncPatches(context, entityId, scope, commits, priority) {
   const hashes = (commits || [])
     .map((commit) => commit.hash)
     .filter(Boolean)
     .slice(0, UNPUSHED_COMMITS_MAX);
-  const held = await cachedSubKeys(context.deviceId, entityId, PATCH_RECORD_KIND);
+  const [held, skipped] = await Promise.all([
+    cachedSubKeys(context.deviceId, entityId, PATCH_RECORD_KIND),
+    cachedSubKeys(context.deviceId, entityId, PATCH_WARMING_SKIP_KIND),
+  ]);
   if (!context.active()) return;
-  await dropStalePatches(context, entityId, held, new Set(hashes));
+  const wanted = new Set(hashes);
+  await dropStalePatches(context, entityId, held, wanted);
+  await dropStalePatches(context, entityId, skipped, wanted, PATCH_WARMING_SKIP_KIND);
   for (const hash of hashes) {
-    if (held.includes(hash) || !context.active()) continue;
-    const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES },
-      priority, addressOf(context, entityId, PATCH_RECORD_KIND, hash));
-    if (!answer || !context.active() || answer.truncated || !withinBytes(answer.patch, COMMIT_PATCH_MAX_BYTES)) continue;
-    await writeCached(addressOf(context, entityId, PATCH_RECORD_KIND, hash), answer);
+    if (held.includes(hash) || skipped.includes(hash) || !context.active()) continue;
+    await warmPatch(context, entityId, scope, hash, priority);
   }
+}
+
+async function warmPatch(context, entityId, scope, hash, priority) {
+  const address = addressOf(context, entityId, PATCH_RECORD_KIND, hash);
+  const fence = pushFence();
+  const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES }, priority, address);
+  if (!answer || !context.active() || removedSince(address, fence)) return;
+  if (answer.truncated || !withinBytes(answer.patch, COMMIT_PATCH_MAX_BYTES)) {
+    const marker = addressOf(context, entityId, PATCH_WARMING_SKIP_KIND, hash);
+    await mergeCachedTogether([marker], () => [
+      context.active() && !removedSince(marker, fence) ? { over_cap: true } : null,
+    ]);
+    return;
+  }
+  await writeCached(address, answer);
 }
 
 /** A patch for a commit that is no longer unpushed has been published: it is
  *  in the log like every other commit, and nobody is reviewing it here. One
- *  kept in pages (#95) goes with them. */
-async function dropStalePatches(context, entityId, held, wanted) {
+ *  kept in pages (#95) goes with them, as does its warming size marker. */
+async function dropStalePatches(context, entityId, held, wanted, kind = PATCH_RECORD_KIND) {
   if (!context.active()) return;
-  const stale = held.filter((hash) => !wanted.has(hash)).map((hash) => addressOf(context, entityId, PATCH_RECORD_KIND, hash));
+  const stale = held.filter((hash) => !wanted.has(hash)).map((hash) => addressOf(context, entityId, kind, hash));
   if (!stale.length) return;
-  for (const head of stale) await dropBodyPages(head);
+  if (kind === PATCH_RECORD_KIND) for (const head of stale) await dropBodyPages(head);
   await deleteCached(stale);
 }
 

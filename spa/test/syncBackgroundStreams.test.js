@@ -51,6 +51,39 @@ const generation = () => ({ deviceId: "dev-1", session: {}, requestScope: {}, li
 const reading = (load, priority = () => ({ priority: "background" })) => ({ active: () => true, priority, load });
 
 describe("shared background wire admission", () => {
+  it("releases stale reservations before waiting on a barrier owned by a push continuation", async () => {
+    const streams = createBackgroundStreams().forContext(generation());
+    const held = gate(), foreground = gate(), passChecks = gate(), changedBarrier = gate();
+    const reads = [streams.read(reading(() => held.promise)), streams.read(reading(() => held.promise))];
+    let unchanged = true, checked = 0, waiting = 0;
+    const passRead = () => streams.read({
+      ...reading(() => true),
+      before: async () => {
+        if (unchanged) {
+          if (++checked === 2) passChecks.release();
+          return () => unchanged;
+        }
+        if (++waiting === 2) changedBarrier.release();
+        await foreground.promise;
+        return () => true;
+      },
+    });
+    reads.push(passRead(), passRead());
+    await passChecks.promise;
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    unchanged = false;
+    held.release(true);
+    await changedBarrier.promise;
+    const continuation = vi.fn(() => { foreground.release(); return true; });
+    reads.push(streams.read(reading(continuation)));
+    try {
+      await vi.waitFor(() => expect(continuation).toHaveBeenCalledTimes(1));
+    } finally {
+      foreground.release();
+      await Promise.all(reads);
+    }
+  });
+
   it("shares two slots across contexts on one device and keeps another device independent", async () => {
     const streams = createBackgroundStreams(), owner = generation();
     const pass = streams.forContext(owner), push = streams.forContext({ ...owner });

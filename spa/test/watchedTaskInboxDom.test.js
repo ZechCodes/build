@@ -159,7 +159,9 @@ describe("one inbox row order (#481)", () => {
 
   it("puts old quiet and assigned tasks behind the same Recent disclosure, then restores them on activity", async () => {
     const old = task({ id: "task-old", watched: true, created_at: date(72), updated_at: date(25) });
-    const mine = { ...old, id: "task-assigned", assignee: { kind: "user" }, unread_count: 2 };
+    const mine = { ...old, id: "task-assigned", number: 34,
+      title: "Keep a long watched task title readable beside its assignment reason on a phone",
+      assignee: { kind: "user" }, unread_count: 2 };
     await boot({ greet: false, tasks: [old, mine], workspaces: [workspace("current", 1)] });
     await vi.waitFor(() => expect(document.querySelector("[data-recent-toggle] .inbox-recent-count")?.textContent).toBe("2"), WAIT);
     expect(rowFor(old.id)).toBe(null);
@@ -167,6 +169,9 @@ describe("one inbox row order (#481)", () => {
     document.querySelector("[data-recent-toggle]").click();
     await vi.waitFor(() => expect(rowFor(old.id)?.closest(".inbox-recent")).toBeTruthy(), WAIT);
     await vi.waitFor(() => expect(rowFor(mine.id)?.closest(".inbox-recent")).toBeTruthy(), WAIT);
+    expect(rowFor(mine.id).querySelector(".inbox-name .stitle").textContent).toBe(`#34 ${mine.title}`);
+    expect(rowFor(mine.id).querySelector(".inbox-body > .inbox-facts")?.textContent).toBe("Assigned to you");
+    expect(rowFor(mine.id).querySelector(".inbox-facts-float")).toBe(null);
     await modules.tracker.writeTasksRecord(DEVICE, PROJECT, modules.tracker.tasksRecord([{ ...old, updated_at: date(0) }, mine], []));
     await vi.waitFor(() => expect(activeKeys()[0]).toBe("tracker_task:task-old"), WAIT);
     expect(call).not.toHaveBeenCalled();

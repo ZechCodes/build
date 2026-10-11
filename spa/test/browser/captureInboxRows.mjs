@@ -76,7 +76,8 @@ await withLayoutPage(async ({ page, basePath }) => {
     const tasks = [
       task("row-order", 481, "One order for every row", 70, { assignee: { kind: "user" } }),
       task("watched-tasks", 475, "Follow watched tasks", 50),
-      task("quiet-task", 470, "Older watched task", 3000, { updated_at: new Date(minutes(2000)).toISOString() }),
+      task("quiet-task", 470, "Keep a long watched task title readable beside its assignment reason on a phone", 3000,
+        { assignee: { kind: "user" }, updated_at: new Date(minutes(2000)).toISOString() }),
     ];
     const { writeTasksRecord, tasksRecord, writeTaskRecord } = window.__layoutModules.tracker;
     await writeTasksRecord(device, project.id, tasksRecord(tasks, []));
@@ -124,7 +125,22 @@ await withLayoutPage(async ({ page, basePath }) => {
   await page.locator("#inbox-rail").screenshot({ path: `${directory}projects-face-collapsed.png` });
   await head.screenshot({ path: `${directory}projects-head-collapsed.png` });
   await page.evaluate(() => window.__layoutModules.view.setInboxView("inbox"));
+  await page.locator('[data-recent-toggle="inbox"]').click();
+  const quiet = row("tracker_task:quiet-task");
+  await quiet.waitFor();
+  await page.setViewportSize({ width: 1280, height: 844 });
+  await page.locator("#inbox-rail").screenshot({ path: `${directory}inbox-face-recent.png` });
   await page.setViewportSize({ width: 390, height: 844 });
+  const session = await page.context().newCDPSession(page);
+  await session.send("Emulation.setTouchEmulationEnabled", { enabled: true });
   await page.evaluate(() => document.body.classList.add("inbox-collapsed", "inbox-popover-open"));
+  const readable = await quiet.evaluate((element) => {
+    const title = element.querySelector(".stitle");
+    const facts = element.querySelector(".inbox-facts");
+    return matchMedia("(pointer:coarse)").matches && title.getBoundingClientRect().width > 100
+      && facts.textContent === "Assigned to you" && !element.querySelector(".inbox-facts-float")
+      && facts.getBoundingClientRect().top >= title.getBoundingClientRect().bottom;
+  });
+  if (!readable) throw new Error("Quiet assigned task title and reason overlap on the phone");
   await page.locator("#inbox-rail").screenshot({ path: `${directory}inbox-face-phone.png` });
 }, { width: 1280, height: 520 });

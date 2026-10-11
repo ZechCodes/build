@@ -355,11 +355,11 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    +/−, and that is the half that says how big this has got. */
 .inbox-facts { font-size:11.5px; color:var(--dim); font-family:var(--mono);
   overflow-wrap:anywhere; }
-/* A quiet row (Recent): one line, and what it weighs floating
+/* A quiet row (Recent), except tasks: one line, and what it weighs floating
    over the line's right edge with the row's own background behind it, so a
    long name runs under it rather than wrapping. */
-.inbox-quiet { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
-.inbox-quiet .inbox-line .stitle { font-size:12.5px; }
+.inbox-quiet:not(.inbox-quiet-task) { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
+.inbox-quiet:not(.inbox-quiet-task) .inbox-line .stitle { font-size:12.5px; }
 .inbox-facts-float { position:absolute; right:10px; top:50%; transform:translateY(-50%);
   padding-left:10px; background:var(--inbox-row-fill); box-shadow:-10px 0 10px -6px var(--inbox-row-fill);
   pointer-events:none; white-space:nowrap; }
@@ -446,7 +446,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
 /* The dot stays visible while controls wait for hover or keyboard focus. */
 .inbox-actions:has(> .inbox-status-dot) { opacity:1; }
-.inbox-project-agent .inbox-actions, .inbox-quiet .inbox-actions { top:50%; transform:translateY(-50%); }
+.inbox-project-agent .inbox-actions, .inbox-quiet:not(.inbox-quiet-task) .inbox-actions { top:50%; transform:translateY(-50%); }
 .inbox-entry.inbox-quiet .inbox-facts-float { right:calc(var(--inbox-actions-room) + var(--inbox-row-bleed-right)); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
 .inbox-workspace-done { min-width:var(--inbox-done-width); }

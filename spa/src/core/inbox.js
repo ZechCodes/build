@@ -982,21 +982,27 @@ const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReview
 
 /** One inbox row, in two lines: what this is, then what it weighs. The status
  * dot follows its actions at the right edge. `ui`: { activeKey,
- *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
- *  line instead (quietRowHtml). */
+ *  openMenuKey, showProject, quiet }. Quiet tasks keep both lines; other quiet
+ *  rows — those in Recent — are one line instead (quietRowHtml). */
 export function inboxRowHtml(entry, ui = {}) {
   const ownPainter = ROW_PAINTERS[entry.kind];
   if (ownPainter) return ownPainter(entry, ui);
   if (ui.quiet || entry.quiet) return quietRowHtml(entry, ui);
+  return twoLineRowHtml(entry, ui);
+}
+
+/** Live rows and quiet tasks share the title/facts shape. Empty quiet facts
+ * stay absent rather than gaining the live row's getting-started prompt. */
+function twoLineRowHtml(entry, ui, extra = [], facts = entry.facts || GETTING_STARTED) {
   // One list across every project: which project a row belongs to is the one
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing. A row painted under its project's
   // own block (`showProject: false`) has already been told.
   const projectTag = projectTagHtml(entry, ui);
-  return `${rowOpenHtml(entry, ui)}
+  return `${rowOpenHtml(entry, ui, extra)}
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span></div>
-      <div class="inbox-facts">${rowReviewSummaryHtml(entry)}${esc(entry.facts || GETTING_STARTED)}</div>
+      ${facts ? `<div class="inbox-facts">${rowReviewSummaryHtml(entry)}${esc(facts)}</div>` : ""}
       <span class="warn" data-done-error hidden></span>
     </div>
     <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
@@ -1042,11 +1048,13 @@ const ROW_PAINTERS = {
   [PROJECT_AGENT]: projectAgentRowHtml,
 };
 
-/** A quiet row, which is what Recent holds: one line — what this is, with
+/** Quiet tasks reuse the live shape so their long reasons cannot cover the
+ * title. Other quiet rows in Recent keep one line — what this is, with
  *  what it weighs floating over the line's right edge. Its status dot follows
  *  the same rules as a live row. Same key, same verbs, same
  *  element shape, so a row going quiet keeps its element. */
 function quietRowHtml(entry, ui) {
+  if (entry.kind === TRACKER_TASK) return twoLineRowHtml(entry, ui, ["inbox-quiet", "inbox-quiet-task"], entry.facts || "");
   const projectTag = projectTagHtml(entry, ui);
   return `${rowOpenHtml(entry, ui, ["inbox-quiet"])}
     <div class="inbox-body">

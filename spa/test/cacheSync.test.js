@@ -304,6 +304,54 @@ describe("what a pass writes", () => {
     expect((await read("run-1", "unpushed")).value.patch).toBeUndefined();
   });
 
+  const unpushedShape = (diff_key = "d1") => ({
+    base: { label: "origin/main" }, published: true, diff_key,
+    stat: { files_changed: 0, insertions: 0, deletions: 0 }, files: [], file_edited_at: {},
+  });
+
+  it("conditionally reads a complete unpushed shape and leaves its unchanged record intact", async () => {
+    script["git.unpushed"] = (params) => params.if_diff_key
+      ? { unchanged: true, diff_key: params.if_diff_key } : unpushedShape();
+    await boot([branchItem()]);
+    const before = await read("run-1", "unpushed");
+    await sync.syncDevice("dev-1");
+    expect(paramsOf("git.unpushed")).toEqual([
+      { run_id: "run-1", patch: false },
+      { run_id: "run-1", patch: false, if_diff_key: "d1" },
+    ]);
+    expect(await read("run-1", "unpushed")).toEqual(before);
+  });
+
+  it("reads the full shape after a lighter unpushed push even when its key is unchanged", async () => {
+    script["git.unpushed"] = () => unpushedShape();
+    await boot([branchItem()]);
+    const summary = { base: { label: "origin/main" }, published: true, commits: [], diff_key: "d1" };
+    const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
+    background.onChanges([{ entity_id: "run-1", git: { unpushed: summary } }]);
+    await vi.waitFor(async () => expect((await read("run-1", "unpushed"))?.value).toEqual(summary));
+    await sync.syncDevice("dev-1");
+    expect(paramsOf("git.unpushed")).toEqual([
+      { run_id: "run-1", patch: false }, { run_id: "run-1", patch: false },
+    ]);
+    expect((await read("run-1", "unpushed")).value).toEqual(unpushedShape());
+  });
+
+  it.each(["stat", "files", "diff_key"])("reads unpushed metadata without a condition when %s is missing", async (field) => {
+    const partial = unpushedShape();
+    delete partial[field];
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unpushed" }, partial);
+    await boot([branchItem()]);
+    expect(paramsOf("git.unpushed")).toEqual([{ run_id: "run-1", patch: false }]);
+  });
+
+  it("replaces changed unpushed metadata while continuing to omit its aggregate patch", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unpushed" }, unpushedShape());
+    script["git.unpushed"] = () => ({ ...unpushedShape("d2"), patch: "aggregate body" });
+    await boot([branchItem()]);
+    expect(paramsOf("git.unpushed")).toEqual([{ run_id: "run-1", patch: false, if_diff_key: "d1" }]);
+    expect((await read("run-1", "unpushed")).value).toEqual(unpushedShape("d2"));
+  });
+
   it("asks nothing of git for a task, and still lists its shells and its conversations", async () => {
     await boot([{
       kind: "task",
@@ -621,6 +669,139 @@ describe("the two bodies that never ride a push", () => {
     script["git.show"] = () => ({ hash: "h1", patch: "x".repeat(sync.COMMIT_PATCH_MAX_BYTES + 1) });
     await boot([branchItem()]);
     expect(await read("run-1", "patch", "h1")).toBeUndefined();
+  });
+
+  it.each(["truncated", "ignored cap", "UTF-8 bytes"])("does not warm a %s patch again, including after sync restarts", async (sizeOutcome) => {
+    script["git.log"] = () => ahead(["h1"]);
+    script["git.show"] = (params) => sizeOutcome === "truncated"
+      ? { hash: params.hash, patch: "file headers", truncated: true, patch_bytes: 400000 }
+      : { hash: params.hash, patch: (sizeOutcome === "UTF-8 bytes" ? "é" : "x").repeat(sync.COMMIT_PATCH_MAX_BYTES) + "x" };
+    await boot([branchItem()]);
+    await sync.syncDevice("dev-1");
+    sync.stopCacheSync();
+    sync.startCacheSync();
+    await passesSettled(sync, "dev-1");
+    expect(calls("git.show")).toHaveLength(1);
+    expect(await read("run-1", "patch", "h1")).toBeUndefined();
+  });
+
+  it.each(["timeout", "internal", "not_found"])("retries a %s patch failure on the next pass", async (error_code) => {
+    script["git.log"] = () => ahead(["h1"]);
+    script["git.show"] = () => { throw Object.assign(new Error("read failed"), { error_code }); };
+    await boot([branchItem()]);
+    script["git.show"] = ANSWERS["git.show"];
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(2);
+    expect((await read("run-1", "patch", "h1")).value.patch).toBe("diff --git");
+  });
+
+  it("remembers warming size outcomes separately for each entity and device", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    script["git.show"] = (params) => ({ hash: params.hash, patch: "headers", truncated: true });
+    const otherDevice = vi.fn(async (method, params) => answer(method, params));
+    registerDevice("dev-2", otherDevice);
+    await boot([branchItem(), branchItem({ run_id: "run-2", worktree_id: "wt-2", branch: "build/other" })]);
+    await Promise.all([sync.syncDevice("dev-1"), sync.syncDevice("dev-2")]);
+    expect(paramsOf("git.show").map((params) => params.run_id).sort()).toEqual(["run-1", "run-2"]);
+    expect(otherDevice.mock.calls.filter(([method]) => method === "git.show")).toHaveLength(2);
+  });
+
+  it("drops a warming size outcome once its hash leaves the unpushed window", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    script["git.show"] = (params) => ({ hash: params.hash, patch: "headers", truncated: true });
+    await boot([branchItem()]);
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(1);
+    script["git.log"] = () => ({ ...ahead([]), reset: true });
+    await sync.syncDevice("dev-1");
+    script["git.log"] = () => ahead(["h1"]);
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(2);
+  });
+
+  it("skips oversized patch warming from git pushes as well as passes", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    script["git.show"] = (params) => ({ hash: params.hash, patch: "headers", truncated: true });
+    await boot([branchItem()]);
+    const background = registeredWatchers.find((watcher) => watcher.id === "s-background" && !watcher.disposed);
+    background.onChanges([{ entity_id: "run-1", git: { log: ahead(["h1"]) } }]);
+    await settle();
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(1);
+  });
+
+  it("forgets warming size outcomes when the entity is evicted", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    script["git.show"] = (params) => ({ hash: params.hash, patch: "headers", truncated: true });
+    await boot([branchItem()]);
+    await cache.evictEntity("dev-1", "run-1");
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(2);
+  });
+
+  it("keeps patches exactly at the warming byte cap", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    const patch = "é".repeat(sync.COMMIT_PATCH_MAX_BYTES / 2);
+    script["git.show"] = (params) => ({ hash: params.hash, patch });
+    await boot([branchItem()]);
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(1);
+    expect((await read("run-1", "patch", "h1")).value.patch).toBe(patch);
+  });
+
+  it("lets a reviewer fetch and page a commit whose warming was skipped", async () => {
+    const hash = "a".repeat(40);
+    const { pagedAnswer, patchFor } = await import("./gitWireFixture.js");
+    const whole = patchFor("src/big.js", Array.from({ length: 12000 }, (_unused, index) => `committed line ${index} of the file`));
+    const commit = { hash, subject: "large commit", short: "aaaaaaa", ahead_of_base: true };
+    script["git.log"] = () => ({ commits: [commit], newest: hash });
+    script["git.show"] = () => ({ hash, patch: "headers", truncated: true, patch_bytes: whole.length });
+    await boot([branchItem()]);
+    await sync.syncDevice("dev-1");
+    expect(calls("git.show")).toHaveLength(1);
+
+    const events = await import("../src/core/changeEvents.js");
+    const capabilities = vi.spyOn(events, "bridgeCapabilities").mockReturnValue({ bodies: { pages: true }, diffs: { perFile: true } });
+    const { scopeFor } = await import("../src/core/cacheScope.js");
+    const { mountGitPane } = await import("../src/core/gitPane.js");
+    const pages = await import("../src/core/bodyPages.js");
+    const callRpc = vi.fn(async (method, params) => method === "git.show"
+      ? { ...commit, patch: whole, truncated: false, ...(params.range ? pagedAnswer(whole, params.range.offset, { version: "large-v1" }) : {}) }
+      : answer(method, params));
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc, cacheScope: scopeFor("dev-1") });
+    try {
+      await vi.waitFor(() => expect(container.querySelector(".crow")).toBeTruthy());
+      container.querySelector(".crow").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await vi.waitFor(async () => expect((await read("run-1", "patch", hash))?.value).toMatchObject({ paged: true, of: "large-v1" }));
+      expect(callRpc.mock.calls.filter(([method]) => method === "git.show").map(([, params]) => params)).toEqual([
+        { run_id: "run-1", hash },
+        { run_id: "run-1", hash, range: { offset: 0, bytes: pages.BODY_PAGE_BYTES } },
+      ]);
+      expect((await pages.readBodyPages({ deviceId: "dev-1", entityId: "run-1", kind: "patch", sub: hash }, "large-v1")).pages).toHaveLength(1);
+    } finally {
+      pane.dispose();
+      container.remove();
+      capabilities.mockRestore();
+    }
+  });
+
+  it("does not record a warming size outcome from a stopped pass", async () => {
+    script["git.log"] = () => ahead(["h1"]);
+    let release;
+    script["git.show"] = () => new Promise((resolve) => { release = resolve; });
+    board = [branchItem()];
+    sync.startCacheSync();
+    await called(bridge.call, () => calls("git.show").length === 1);
+    sync.stopCacheSync();
+    release({ hash: "h1", patch: "headers", truncated: true });
+    await settle();
+    script["git.show"] = ANSWERS["git.show"];
+    sync.startCacheSync();
+    await passesSettled(sync, "dev-1");
+    expect(calls("git.show")).toHaveLength(2);
+    expect((await read("run-1", "patch", "h1")).value.patch).toBe("diff --git");
   });
 
   it("lets go of the patch of a commit that is no longer unpushed", async () => {

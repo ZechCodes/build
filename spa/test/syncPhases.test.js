@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
 import { createSyncPhases } from "../src/core/syncPhases.js";
-import { registerSyncDiff, registerSyncRead } from "../src/core/syncVisibleScopes.js";
+import { registerSyncDiff, registerSyncRead, registerSyncThread } from "../src/core/syncVisibleScopes.js";
 
 vi.mock("../src/core/localCache.js", () => ({ cachedSubKeys: async () => [] }));
 
@@ -63,6 +63,115 @@ beforeEach(() => {
 });
 
 afterEach(() => disposers.forEach((dispose) => dispose()));
+
+const microtasks = async () => { for (let turn = 0; turn < 50; turn += 1) await Promise.resolve(); };
+
+describe("foreground scope supersession", () => {
+  it("starts B while A's foreground status is held, and keeps inbox behind B", async () => {
+    const heldA = gate(), askedA = gate(), heldB = gate();
+    const status = readers.status, thread = readers.thread;
+    readers.status = async (...args) => {
+      await status(...args);
+      if (args[1] === "run-1") { askedA.release(); await heldA.promise; }
+    };
+    readers.thread = async (...args) => {
+      await thread(...args);
+      if (args[2].id === "ag-2-b") await heldB.promise;
+    };
+    const phases = fixture();
+    const pass = phases.run();
+    await askedA.promise;
+    route = routeTo(2);
+    const current = phases.foreground();
+    const joined = phases.foreground();
+    await microtasks();
+    const startedB = events.filter((item) => item.sub === "ag-2-b");
+    heldA.release();
+    await microtasks();
+    const whileB = events.slice();
+    heldB.release();
+    await Promise.all([pass, current, joined]);
+    expect(startedB).toHaveLength(1);
+    expect(startedB[0].priority).toBe("foreground");
+    expect(whileB.filter((item) => item.kind === "thread").map((item) => item.sub)).toEqual(["ag-1-b", "ag-2-b"]);
+  });
+
+  it("lets the new scope and inbox progress before the superseded status answers", async () => {
+    const held = gate(), asked = gate();
+    const status = readers.status;
+    readers.status = async (...args) => {
+      await status(...args);
+      if (args[1] === "run-1") { asked.release(); await held.promise; }
+    };
+    const phases = fixture();
+    const pass = phases.run();
+    await asked.promise;
+    route = routeTo(2);
+    const current = phases.foreground();
+    await microtasks();
+    const beforeRelease = events.slice();
+    held.release();
+    await Promise.all([pass, current]);
+    expect(beforeRelease.filter((item) => item.kind === "thread")).toHaveLength(4);
+    expect(beforeRelease.some((item) => item.kind === "tasks-rest")).toBe(true);
+    expect(beforeRelease.some((item) => item.entityId === "run-1" && item.kind === "tree" && item.priority === "foreground")).toBe(false);
+  });
+
+  it("deduplicates in-flight reads across A to B to A and abandons old drains", async () => {
+    const heldA = gate(), askedA = gate(), heldB = gate();
+    const status = readers.status, thread = readers.thread;
+    readers.status = async (...args) => {
+      await status(...args);
+      if (args[1] === "run-1") { askedA.release(); await heldA.promise; }
+    };
+    readers.thread = async (...args) => {
+      await thread(...args);
+      if (args[2].id === "ag-2-b") await heldB.promise;
+    };
+    const phases = fixture();
+    const pass = phases.run();
+    await askedA.promise;
+    route = routeTo(2);
+    const duringB = phases.foreground();
+    await microtasks();
+    const bStarted = events.some((item) => item.sub === "ag-2-b");
+    route = routeTo(1);
+    const backToA = phases.foreground();
+    await microtasks();
+    const aTreesWhileStatusHeld = events.filter((item) => item.entityId === "run-1" && item.kind === "tree");
+    heldB.release();
+    await microtasks();
+    const bTreesAfterItsRead = events.filter((item) => item.entityId === "run-2" && item.kind === "tree");
+    heldA.release();
+    await Promise.all([pass, duringB, backToA]);
+    expect(bStarted).toBe(true);
+    expect(aTreesWhileStatusHeld).toHaveLength(0);
+    expect(bTreesAfterItsRead).toHaveLength(0);
+    expect(events.filter((item) => item.entityId === "run-1" && item.kind === "status")).toHaveLength(1);
+    expect(events.filter((item) => item.sub === "ag-2-b")).toHaveLength(1);
+  });
+
+  it("preempts a held source when remembered thread and mounted visibility change without a URL change", async () => {
+    let selected = "ag-1-b", showingOld = true;
+    const held = gate(), asked = gate();
+    disposers.push(registerSyncThread(() => ({ deviceId: "dev-1", entityId: selected === "ag-1-b" ? "run-1" : "run-2", agentId: selected })));
+    mounted(sourceId, "status", "", () => showingOld, async () => { event(sourceId, "status", "foreground"); asked.release(); await held.promise; });
+    const newSource = 'workspace:["ws-1","new-source"]';
+    mounted(newSource, "tree", "", () => !showingOld);
+    const phases = fixture();
+    const pass = phases.run();
+    await asked.promise;
+    selected = "ag-2-b";
+    showingOld = false;
+    const current = phases.foreground();
+    await microtasks();
+    const beforeRelease = events.slice();
+    held.release();
+    await Promise.all([pass, current]);
+    expect(beforeRelease.some((item) => item.sub === "ag-2-b" && item.priority === "foreground")).toBe(true);
+    expect(beforeRelease.some((item) => item.entityId === newSource)).toBe(true);
+  });
+});
 
 describe("mounted source reads in foreground phases", () => {
   it("reads source status, shown trees, history and diff after the open thread/scope and before inbox", async () => {

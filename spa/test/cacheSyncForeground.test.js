@@ -112,6 +112,35 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it("dispatches the new route while an old foreground status is held and keeps its thread ahead of queued work", async () => {
+    const oldStatus = gate();
+    const newThread = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? oldStatus.promise : answers["git.status"]();
+    script["thread.page"] = (params) => params.agent_id === "ag-9-b" ? newThread.promise : answers["thread.page"]();
+    start();
+    await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-10"));
+    const before = rpc.mock.calls.length;
+    App.route = routeTo(9);
+    sync.routeChanged();
+    try {
+      await vi.waitFor(() => expect(calls("thread.page").some(([, params]) => params.agent_id === "ag-9-b")).toBe(true));
+      const next = rpc.mock.calls.slice(before).filter(([method]) => !lists.includes(method));
+      expect(next[0].slice(0, 2)).toEqual(["thread.page", expect.objectContaining({ entity_id: "run-9", agent_id: "ag-9-b" })]);
+      expect(next[0][2]?.priority).not.toBe("background");
+      oldStatus.release(answers["git.status"]());
+      // Finish the old drain while B's selected thread is still outstanding.
+      // Its completion must not release B's foreground barrier.
+      await vi.waitFor(async () => expect((await cache.readCached(address("run-10", "status")))?.value).toBeTruthy());
+      expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(0);
+      expect(calls("fs.tree")).toHaveLength(0);
+      expect(calls("thread.page")).toHaveLength(2);
+    } finally {
+      oldStatus.release(answers["git.status"]());
+      newThread.release(answers["thread.page"]());
+      await finish();
+    }
+  });
+
   it("keeps a newer ordinary cache write when an older foreground diff shape arrives", async () => {
     const held = gate();
     await mountRoutedPanes();

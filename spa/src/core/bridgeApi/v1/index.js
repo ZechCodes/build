@@ -181,7 +181,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     conversations: { settings: names.has("conversations.settings"), reset: names.has("conversation.reset") },
     github: { repos: names.has("github.repos") },
     messages: { context: names.has("messages.context") },
-    threads: { postOperations: names.has("threads.postOperations"), attachmentChunks: names.has("thread.attachmentChunks") },
+    threads: { postOperations: names.has("threads.postOperations"), attachmentChunks: names.has("thread.attachmentChunks"), leanActivity: names.has("threads.leanActivity") },
     branches: { finishDelete: names.has("branches.finishDelete") },
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
     agents: { createdBy: names.has("agents.createdBy") },

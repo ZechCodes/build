@@ -42,6 +42,27 @@ describe("a folded run drawn from its digest", () => {
     last_tool_call: lastToolCall,
   });
 
+  it("draws a newest-only run as one folded row with the exact whole-run count", () => {
+    document.body.innerHTML = threadHtml({
+      items: [message(1, "Start"), toolCall(100, "Read newest.js"), message(101, "Done")],
+      activityDigests: [digest(2, 100, 99, { sequence: 100, summary: "Read newest.js" })],
+    });
+    const group = document.querySelector(".thread-activity-group");
+    expect(countOn(group)).toBe("99");
+    expect(previewOn(group)).toBe("Read newest.js");
+    expect(document.querySelectorAll(".thread-activity-group")).toHaveLength(1);
+    expect(group.querySelectorAll(".thread-activity-group-list")).toHaveLength(0);
+  });
+
+  it("uses a newer call from the digest when a delta only holds the latest thought", () => {
+    const group = paint({
+      items: [toolCall(2, "Read old.js"), reasoning(100, "Thinking")],
+      activityDigests: [digest(2, 100, 99, { sequence: 90, summary: "Read newest.js", outcome: "ok" })],
+    });
+    expect(countOn(group)).toBe("99");
+    expect(previewOn(group)).toBe("Read newest.js");
+  });
+
   it("says what the bridge counted, not how many rows arrived", () => {
     const group = paint({
       items: [toolCall(1529, "Read spa/src/core/thread.js"), toolCall(1530, "Bash(cargo test)", { outcome: "ok" })],

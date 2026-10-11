@@ -2851,6 +2851,7 @@ function mountRailOnContext(host, context, swap) {
     const built = timelineEntries(shown, agentLabel, conversationId, paintedDigests, {
       openRuns: runs.openKeys(),
       runItemsOf: fetchedRunItems,
+      runStateOf: (key) => runs.stateOf(key),
       threadState: controllerInFocus().threadState,
       unreadFrom,
       place: conversationPlace(),
@@ -2966,11 +2967,19 @@ function mountRailOnContext(host, context, swap) {
     const digest = opened
       ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough)
       : null;
-    await runs.whenFoldPainted();
-    if (!digest) return;
-    await runs.open(digest).catch((error) => {
-      notifyError("Could not load this activity", error.message);
-    });
+    // Start before fold persistence yields: the click paints its loading state.
+    const opening = digest ? loadActivityRun(runs, digest) : null;
+    await Promise.all([runs.whenFoldPainted(), opening]);
+  };
+
+  const loadActivityRun = (runs, digest) => runs.open(digest).catch((error) => {
+    notifyError("Could not load this activity", error.message);
+  });
+
+  const retryActivityRun = (runKey) => {
+    const runs = conversationRuns();
+    const digest = digestCovering(digestsInHand(), Number(runKey));
+    if (digest) void loadActivityRun(runs, digest);
   };
 
   const composerPlaceholder = () =>
@@ -3142,6 +3151,12 @@ function mountRailOnContext(host, context, swap) {
     // wrote, and a run that opens onto rows it has to fetch cannot be a fold
     // two writers share.
     body.onclick = (event) => {
+      const retry = event.target.closest?.("[data-activity-retry]");
+      if (retry) {
+        event.preventDefault();
+        retryActivityRun(retry.dataset.activityRetry);
+        return;
+      }
       if (jumpToUserMessage(event, { reveal: drawDownTo })) return;
       if (event.target.closest?.(".thread-earlier")) {
         showEarlierEntries();

@@ -112,6 +112,18 @@ describe("agent rail context adapters", () => {
 describe("the page above the window", () => {
   const page = { items: [item(1), item(2)], activity_digests: [digest(1, 2)], has_more: false };
 
+  it.each([{ capabilities: [] }, { capabilities: ["threads.leanActivity"] }])("gates older pages by the device's capability: %j", async ({ capabilities }) => {
+    const { greetBridge } = await import("../src/core/changeEvents.js");
+    await greetBridge(async () => ({ api_version: "3.20.0", capabilities, push_events: false }), { deviceId: address.deviceId });
+    const call = vi.fn(async () => page);
+    const context = createAgentRailContext({ kind: "branch", deviceId: address.deviceId, projectId: "p1", branch: "b" });
+    await context.olderPage(call, { entityId: "run-1", agentId: "agent-2", threadId: "generation-1", beforeSequence: 3, address });
+    expect(call).toHaveBeenCalledWith("thread.page", {
+      entity_id: "run-1", agent_id: "agent-2", thread_id: "generation-1", before_sequence: 3,
+      ...(capabilities.length ? { activity: "newest" } : {}),
+    });
+  });
+
   it("asks for the history before the seek and writes it into the record", async () => {
     await cache.writeCached(address, {
       items: [item(3), item(4)],

@@ -2375,6 +2375,8 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 .thread-activity-group[open] > .thread-activity-group-head .thread-activity-count,
 .thread-activity-group[open] > .thread-activity-group-head .thread-activity-preview { display:none; }
 .thread-activity-group-list { margin-left:17px; }
+.thread-activity-state { display:flex; align-items:center; gap:8px; padding:8px 0; color:var(--dim); }
+.thread-activity-state .throbber { flex:none; }
 .thread-activity-group-list .thread-activity { padding-left:0; }
 .thread-activity-group-list .thread-activity-head { align-items:baseline; }
 .thread-activity-group-list .thread-activity .thread-event-icon { position:static; flex:none; }

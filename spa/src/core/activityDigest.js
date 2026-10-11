@@ -118,7 +118,7 @@ function digestLastCall(covering) {
   const calls = covering.map((digest) => digest.last_tool_call).filter((call) => call && call.summary);
   if (!calls.length) return null;
   const newest = calls.reduce((latest, call) => (call.sequence > latest.sequence ? call : latest));
-  return { meat: firstLine(newest.summary), outcome: newest.outcome, createdAt: newest.created_at };
+  return { sequence: newest.sequence, meat: firstLine(newest.summary), outcome: newest.outcome, createdAt: newest.created_at };
 }
 
 /// The newest call the run holds, by sequence rather than by position.
@@ -130,6 +130,9 @@ function newestHeldCall(toolCalls) {
   if (!toolCalls.length) return null;
   return toolCalls.reduce((latest, call) => (call.sequence > latest.sequence ? call : latest));
 }
+
+const newestCall = (held, counted) =>
+  !held || (counted && counted.sequence > held.sequence) ? counted : held;
 
 const lineOf = (source) => ({
   meat: (source && source.meat) || "",
@@ -168,6 +171,6 @@ export function activityRunSummary(digests, runEntries) {
   const covering = digestsOver(digests || [], heldSpan([...activities, ...rows]));
   const counted = covering.reduce((total, digest) => total + rowsCountedBy(digest), 0);
   const count = counted + arrivedAfterTheDigest(rows, newestCovered(covering)).length;
-  const call = newestHeldCall(toolCalls) || digestLastCall(covering);
+  const call = newestCall(newestHeldCall(toolCalls), digestLastCall(covering));
   return { count, ...headOf(call, activities.at(-1)) };
 }

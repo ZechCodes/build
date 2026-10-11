@@ -305,7 +305,7 @@ export function createThreadCache() {
     // window, or nothing while there is no window to widen.
     olderPageParam() {
       if (!accumulatedItems.length) return null;
-      return { before_sequence: accumulatedItems[0].data?.sequence };
+      return { before_sequence: threadPageFloor(accumulatedItems, activityDigests) };
     },
     // Whether asking for that page is worth it — the daemon's own answer.
     hasOlderItems() {
@@ -345,6 +345,16 @@ export function createThreadCache() {
       return true;
     },
   };
+}
+
+/** The page above a folded run starts before the run itself, so scrolling
+ * history never walks through the activity rows its digest already covers. */
+export function threadPageFloor(items = [], digests = []) {
+  const first = items[0];
+  const sequence = first?.data?.sequence;
+  const digest = first?.type === "event" && activityMetaOf(first.data)
+    ? digestCovering(digests, sequence) : null;
+  return digest ? digest.from_sequence : sequence;
 }
 
 /** A bare thread payload (a first page fetched out of band, with no cache in
@@ -1511,9 +1521,15 @@ function runSpan(run, digests) {
 function runEntry(run, digests, view) {
   const key = run[0].key;
   return withLazyHtml({ key }, () => {
-    const children = view.openRuns.has(key) ? runChildrenHtml(run, view) : null;
+    const children = view.openRuns.has(key) ? runLoadStateHtml(key, view.runStateOf(key)) + runChildrenHtml(run, view) : null;
     return activityRunHtml(runSpan(run, digests), activityRunSummary(digests, run), children);
   });
+}
+
+function runLoadStateHtml(key, state) {
+  if (state?.loading) return '<div class="thread-activity-state" role="status"><span class="throbber" aria-hidden="true"></span>Loading activity…</div>';
+  if (!state?.error) return "";
+  return `<div class="thread-activity-state" role="alert">Could not load this activity. <button class="btn" data-activity-retry="${esc(key)}">Retry</button></div>`;
 }
 
 /// Fold every maximal run of consecutive activity into one entry apiece, and
@@ -1835,6 +1851,7 @@ export function timelineEntries(
   {
     openRuns,
     runItemsOf,
+    runStateOf,
     threadState = createThreadState(),
     unreadFrom,
     place = NOWHERE_IN_PARTICULAR,
@@ -1860,6 +1877,7 @@ export function timelineEntries(
     place,
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
+    runStateOf: runStateOf || noRunItems,
   };
   const timeline = timelineOf(sourceItems, agentLabel, place);
   const { spans, rows } = entrySpansOf(timeline.topLevelItems);

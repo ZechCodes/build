@@ -80,6 +80,12 @@ describe("semver", () => {
 });
 
 describe("adapter selection", () => {
+  it("enables lean activity only by its capability name", () => {
+    for (const capabilities of [[], ["threads.leanActivity"], ["thread.page"]]) {
+      const flags = v1.capabilitiesOf({ api_version: "3.20.0", capabilities });
+      expect(flags.threads.leanActivity).toBe(capabilities.includes("threads.leanActivity"));
+    }
+  });
   const v3 = { major: 3, range: ">=3.0.0 <4.0.0", create: () => ({}) };
 
   it("only enables conversation reset when the bridge advertises its named capability", () => {
@@ -108,7 +114,7 @@ describe("adapter selection", () => {
       conversations: { settings: true, reset: false },
       github: { repos: false },
       messages: { context: false },
-      threads: { postOperations: false, attachmentChunks: false },
+      threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
@@ -192,7 +198,7 @@ describe("adapter selection", () => {
         conversations: { settings: false, reset: false },
         github: { repos: false },
         messages: { context: false },
-        threads: { postOperations: false, attachmentChunks: false },
+        threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
         branches: { finishDelete: false },
         push: { registerKey: false, revokeKey: false },
         agents: { createdBy: false },

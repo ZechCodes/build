@@ -1943,6 +1943,14 @@ In practice:
   changed in place. The record then owes a repair (`repairThrough`, written
   with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
   have been read again at or past that counter.
+  Sync and load-older pages request `activity: "newest"` only when the device
+  advertises `threads.leanActivity`. A leading folded run on a newest page
+  means `has_more` describes omitted activity, so held message context survives;
+  load-older seeks above that run's digest start. A lean repair refreshes any
+  omitted recent held activity through exact one-item `thread.activity` reads
+  before clearing its debt. Closed runs open asynchronously with the existing
+  throbber until their cached rows paint, and offer inline retry on failure;
+  the live tail continues opening from the conversation window.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written

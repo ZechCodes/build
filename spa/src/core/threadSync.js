@@ -22,6 +22,7 @@
 import { LATEST_THREAD_ITEMS, REPAIRED_THREAD_ITEMS } from "./cacheThresholds.js";
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
+import { bridgeCapabilities } from "./changeEvents.js";
 import {
   THREAD_RECORD_KIND,
   isProvisionalItem,
@@ -30,7 +31,7 @@ import {
   threadItemKey,
   windowFromThreadPayload,
 } from "./thread.js";
-import { mergeActivityDigests } from "./activityDigest.js";
+import { digestCovering, mergeActivityDigests } from "./activityDigest.js";
 
 const ALWAYS_ACTIVE = () => true;
 const threadSub = (request) => request.conversationId || request.agentId || "";
@@ -47,11 +48,17 @@ const requestIsActive = (request) => (request.active === undefined ? ALWAYS_ACTI
 
 async function requestThreadPage(request, params) {
   try {
-    return await request.call("thread.page", params, requestPriorityFields(requestPriority(request)));
+    const activity = threadActivityParam(request.deviceId);
+    const page = await request.call("thread.page", { ...params, ...activity }, requestPriorityFields(requestPriority(request)));
+    return page ? { page, lean: activity.activity === "newest" } : null;
   } catch {
     return null;
   }
 }
+
+/** Lean projection is a per-device wire feature, checked at dispatch. */
+export const threadActivityParam = (deviceId) =>
+  bridgeCapabilities(deviceId).threads.leanActivity ? { activity: "newest" } : {};
 
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest hundred where it holds none — and its recent items read again where
@@ -61,12 +68,13 @@ export async function syncThreadWindow(request) {
   const target = threadTarget(request);
   const held = (await readCached(target))?.value;
   const after = Number(held?.deliveredSequence || 0);
-  const page = await requestThreadPage(request, { ...threadPageParams(request.entityId, request.agentId || "", after), ...threadGenerationParam(threadIdFor(request, held)) });
-  if (!page) return false;
+  const response = await requestThreadPage(request, { ...threadPageParams(request.entityId, request.agentId || "", after), ...threadGenerationParam(threadIdFor(request, held)) });
+  if (!response) return false;
+  const { page, lean } = response;
   if (!requestIsActive(request)) return false;
-  const owed = changedUnderCursor(page, after) ? Number(page.thread_last_sequence) : 0;
+  const owed = changedUnderCursor(page, after, lean) ? Number(page.thread_last_sequence) : 0;
   await mergeCachedAtomically(target, (current) =>
-    mergedThreadPage(request, current, page, after, owed));
+    mergedThreadPage(request, current, page, after, owed, lean));
   await repairRecentItems(request, target);
   return true;
 }
@@ -91,10 +99,21 @@ function owingRepair(current, next, owed) {
  * never misses one. A page that skipped a gap replaced the window whole, and
  * a window that was never held has nothing to repair.
  */
-function changedUnderCursor(page, after) {
-  if (!after || page.has_more === true) return false;
-  return Number(page.thread_last_sequence || 0) - after > valuesWornPast(page.items, after).size;
+function changedUnderCursor(page, after, lean) {
+  if (!after || pageSkipsWindow(page, lean)) return false;
+  const omitted = lean ? omittedNewActivity(page, after) : 0;
+  return Number(page.thread_last_sequence || 0) - after > valuesWornPast(page.items, after).size + omitted;
 }
+
+/** A wholly new run's census accounts for creations intentionally omitted
+ * by lean paging. A run crossing the cursor says nothing exact about how
+ * many creations happened since it, so those reads keep conservative repair. */
+const omittedNewActivity = (page, after) =>
+  (page.activity_digests || []).filter((digest) => digest.from_sequence > after).reduce((total, digest) => {
+    const shipped = (page.items || []).filter((item) =>
+      item.data?.sequence >= digest.from_sequence && item.data?.sequence <= digest.through_sequence).length;
+    return total + Math.max(0, Number(digest.rows || 0) - shipped);
+  }, 0);
 
 /** Every counter value past the cursor that an item wears. */
 function valuesWornPast(items, after) {
@@ -116,15 +135,55 @@ async function repairRecentItems(request, target) {
   if (!held?.repairThrough) return;
   const floor = repairFloor(held);
   if (floor === null || !requestIsActive(request)) return;
-  const page = await requestThreadPage(request, {
+  const page = await recentRepairPage(request, held, floor);
+  if (!page || !requestIsActive(request)) return;
+  await mergeCachedAtomically(target, (current) => requestIsActive(request) ? repairedThreadWindow(current, page) : null);
+}
+
+async function recentRepairPage(request, held, floor) {
+  const response = await requestThreadPage(request, {
     entity_id: request.entityId,
     ...(request.agentId ? { agent_id: request.agentId } : {}),
     ...threadGenerationParam(request.threadId || held.thread_id),
     after_sequence: floor,
     limit: REPAIRED_THREAD_ITEMS,
   });
-  if (!page || !requestIsActive(request)) return;
-  await mergeCachedAtomically(target, (current) => requestIsActive(request) ? repairedThreadWindow(current, page) : null);
+  if (!response || !requestIsActive(request)) return null;
+  return response.lean ? repairedActivityCopies(request, held, response.page) : response.page;
+}
+
+/** A lean repair can omit a held call that changed beneath its newest row.
+ * Refresh only omitted recent representatives, over exact one-item spans;
+ * failed reads leave the repair debt in place rather than blessing stale rows. */
+async function repairedActivityCopies(request, held, page) {
+  const shipped = new Set((page.items || []).map(threadItemKey));
+  const missing = (held.items || []).slice(-REPAIRED_THREAD_ITEMS).filter((item) =>
+    !shipped.has(threadItemKey(item)) && !!digestCovering(page.activity_digests, item.data?.sequence));
+  const copies = [];
+  for (const item of missing) {
+    const copy = await readActivityCopy(request, held, item);
+    if (!copy) return null;
+    copies.push(copy);
+  }
+  return { ...page, items: mergeThreadItems(page.items, copies) };
+}
+
+async function readActivityCopy(request, held, item) {
+  if (!requestIsActive(request)) return null;
+  const sequence = item.data.sequence;
+  try {
+    const page = await request.call("thread.activity", {
+      entity_id: request.entityId,
+      ...(request.agentId ? { agent_id: request.agentId } : {}),
+      ...threadGenerationParam(threadIdFor(request, held)),
+      from_sequence: sequence,
+      through_sequence: sequence,
+      limit: 1,
+    }, requestPriorityFields(requestPriority(request)));
+    return (page.items || []).find((copy) => copy.data?.sequence === sequence) || null;
+  } catch {
+    return null;
+  }
 }
 
 /** The sequence just under the newest items the record holds from the wire,
@@ -147,8 +206,12 @@ export function repairedThreadWindow(held, page) {
     ...window,
     ...(paid || !repairThrough ? {} : { repairThrough }),
     items: newer.length ? mergeThreadItems(held.items, newer) : held.items,
+    ...repairedDigests(held, page),
   };
 }
+
+const repairedDigests = (held, page) => page.activity_digests?.length
+  ? { activityDigests: mergeActivityDigests(held.activityDigests, page) } : {};
 
 /** Whether this page was read at or past the counter the record owes a
  *  repair through. */
@@ -184,14 +247,19 @@ const holdsAWindow = (held) => Number(held?.deliveredSequence || 0) > 0;
  * page whose `has_more` says it skipped a gap replaces the stale window with
  * the returned tip, leaving that gap behind the ordinary load-older path.
  */
-export function threadWindow(held, page, { newest = false } = {}) {
+export function threadWindow(held, page, { newest = false, lean = false } = {}) {
   if (differentThreadGeneration(held, page)) return null;
   const arrived = windowFromThreadPayload(page);
   if (!held) return arrived;
   if (!arrived) return null; // nothing new: the record stands
-  if (newest && page.has_more === true) return newestThreadWindow(held, arrived, page);
+  if (newest && pageSkipsWindow(page, lean)) return newestThreadWindow(held, arrived, page);
   return appendedThreadWindow(held, arrived, page);
 }
+
+/** A newest message-budget cut starts at a message. A leading folded run
+ * means has_more describes projected activity, including update-counter gaps. */
+const pageSkipsWindow = (page, lean) =>
+  page.has_more === true && (!lean || !digestCovering(page.activity_digests, page.items?.[0]?.data?.sequence));
 
 const appendedThreadWindow = (held, arrived, page) => ({
   // A record of stand-ins alone is not a window to append to: the page is
@@ -231,7 +299,7 @@ export const threadGenerationParam = (threadId) => threadId ? { thread_id: threa
 export const differentThreadGeneration = (held, page) => Boolean(held?.thread_id && page?.thread_id !== held.thread_id);
 
 const threadIdFor = (request, held) => request.threadId || held?.thread_id;
-function mergedThreadPage(request, current, page, after, owed) {
+function mergedThreadPage(request, current, page, after, owed, lean) {
   if (!requestIsActive(request) || differentThreadGeneration(current, page)) return null;
-  return owingRepair(current, threadWindow(current, page, { newest: after > 0 }), owed);
+  return owingRepair(current, threadWindow(current, page, { newest: after > 0, lean }), owed);
 }

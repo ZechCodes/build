@@ -75,7 +75,7 @@ describe("shared background wire admission", () => {
     await vi.waitFor(() => expect(before).toHaveBeenCalledTimes(1));
     expect(load).not.toHaveBeenCalled();
     selected = true;
-    streams.wake(owner.deviceId);
+    queue.wake();
     await vi.waitFor(() => expect(load).toHaveBeenCalledWith({}));
     expect(before).toHaveBeenCalledTimes(1);
     const next = vi.fn(() => true);
@@ -115,7 +115,7 @@ describe("shared background wire admission", () => {
     try {
       for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
       selected = true;
-      streams.wake(owner.deviceId);
+      queue.wake();
       selected = false;
       for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
       expect(load).not.toHaveBeenCalled();

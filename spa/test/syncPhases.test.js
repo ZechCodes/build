@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
 import { createSyncPhases } from "../src/core/syncPhases.js";
+import { createBackgroundStreams } from "../src/core/syncBackgroundStreams.js";
 import { registerSyncDiff, registerSyncRead, registerSyncThread } from "../src/core/syncVisibleScopes.js";
 
 vi.mock("../src/core/localCache.js", () => ({ cachedSubKeys: async () => [] }));
@@ -24,7 +25,7 @@ const mounted = (entityId, kind, sub = "", active = () => true, read = null) => 
   return callback;
 };
 
-function fixture(recoverWorkingDiff = false) {
+function fixture(recoverWorkingDiff = false, backgroundStreams = null) {
   const rows = [1, 2].map((number) => ({
     kind: "branch", run_id: `run-${number}`, worktree_id: `wt-${number}`, branch: `build/${number}`,
     project_id: "p1", workspace_id: `ws-${number}`, state: "building",
@@ -34,7 +35,7 @@ function fixture(recoverWorkingDiff = false) {
     id: `ws-${index + 1}`, project_id: "p1", entity_id: row.run_id, status: "ready",
   }));
   const view = liveFeedSnapshot({ items: rows }, { projects: [{ project_id: "p1" }] }, { workspaces }, "dev-1");
-  const context = { deviceId: "dev-1", active: () => true, recoverWorkingDiff };
+  const context = { deviceId: "dev-1", active: () => true, recoverWorkingDiff, backgroundStreams };
   return createSyncPhases({
     context, view, route: () => route,
     pass: { order: ["run-1", "run-2"], rows: new Map(view.items.map((row) => [row.run_id, row])) },
@@ -67,6 +68,36 @@ afterEach(() => disposers.forEach((dispose) => dispose()));
 const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
 describe("foreground scope supersession", () => {
+  it("wakes a selected checkout queued behind two push reads when the planner starts its foreground turn", async () => {
+    const streams = createBackgroundStreams().forContext({ deviceId: "dev-1", session: {}, requestScope: {}, lifetime: 1 });
+    const held = gate(), queued = gate();
+    const sideRead = () => streams.read({ active: () => true, priority: () => ({ priority: "background" }), load: () => held.promise });
+    const pushes = [sideRead(), sideRead()];
+    let phases;
+    route = { name: "inbox", deviceId: "dev-1" };
+    readers.scope = (row) => row ? { run_id: row.run_id } : null;
+    readers.status = (_context, entityId, _row, priority) => {
+      queued.release();
+      return streams.read({
+        active: () => true,
+        priority: () => phases.priorityForRead("git.status", { run_id: entityId }, priority === "background" ? { priority } : {}),
+        before: () => phases.beforeBackgroundRead("git.status", { run_id: entityId }),
+        load: (envelope) => event(entityId, "status", envelope?.priority || "foreground"),
+      });
+    };
+    phases = fixture(false, streams);
+    const pass = phases.run();
+    await queued.promise;
+    await microtasks();
+    route = routeTo(1);
+    const selected = phases.foreground();
+    await microtasks();
+    const dispatched = events.some((item) => item.entityId === "run-1" && item.kind === "status" && item.priority === "foreground");
+    held.release();
+    await Promise.all([...pushes, pass, selected]);
+    expect(dispatched).toBe(true);
+  });
+
   it("lets a queued recovery diff cross its own foreground barrier without a Changes pane", async () => {
     const held = gate(), asked = gate();
     let phases;

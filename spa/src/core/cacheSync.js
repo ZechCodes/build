@@ -1332,7 +1332,6 @@ export function routeChanged() {
   if (!holdingLock) return;
   for (const deviceId of [...subscriptions.keys()]) {
     void passes.get(deviceId)?.foreground?.();
-    backgroundStreams.wake(deviceId);
     void refollowRoute(deviceId);
   }
 }

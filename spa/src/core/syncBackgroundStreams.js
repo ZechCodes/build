@@ -86,7 +86,6 @@ export function createBackgroundStreams() {
       }
       return held.streams;
     },
-    wake(deviceId) { devices.get(deviceId)?.streams.wake(); },
     clear() {
       for (const held of devices.values()) held.streams.close();
       devices.clear();

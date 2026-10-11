@@ -176,6 +176,7 @@ function startForeground(state, scope) {
   turn.promise = turn.settled.then(() => {
     if (state.foregroundTurn !== turn || foregroundScope(state) !== turn.scope) return state.foreground();
   });
+  state.context.backgroundStreams?.wake();
   return turn;
 }
 

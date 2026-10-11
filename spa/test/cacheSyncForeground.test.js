@@ -196,6 +196,50 @@ describe("foreground-first passes", () => {
     expect(status[2]?.priority).not.toBe("background");
   });
 
+  it("promotes a queued background read when its route opens during another foreground barrier", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const heldLookup = gate(), lookupStarted = gate(), heldOtherStatus = gate();
+    const originalRead = cache.readCached;
+    let intercepted = false;
+    const lookup = vi.spyOn(cache, "readCached").mockImplementation((target) => {
+      if (!intercepted && target.entityId === "run-1" && target.kind === "status") {
+        intercepted = true;
+        lookupStarted.release();
+        return heldLookup.promise;
+      }
+      return originalRead(target);
+    });
+    script["git.status"] = (params) => params.run_id === "run-2" ? heldOtherStatus.promise : answers["git.status"]();
+    start();
+    await lookupStarted.promise;
+    let completed = false;
+    try {
+      App.route = routeTo(2);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-2"));
+      heldLookup.release(undefined);
+      // The run-1 loader has reached the barrier while run-2 is foreground.
+      for (let turn = 0; turn < 500; turn += 1) await Promise.resolve();
+      expect(calls("git.status").some(([, params]) => params.run_id === "run-1")).toBe(false);
+      App.route = routeTo(1);
+      sync.routeChanged();
+    } finally {
+      heldLookup.release(undefined);
+      heldOtherStatus.release(answers["git.status"]());
+      lookup.mockRestore();
+      let timer;
+      completed = await Promise.race([
+        finish().then(() => true),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), 3_000); }),
+      ]);
+      clearTimeout(timer);
+      abandonedPass = !completed;
+    }
+    expect(completed).toBe(true);
+    const status = calls("git.status").find(([, params]) => params.run_id === "run-1");
+    expect(status[2]?.priority).not.toBe("background");
+  });
+
   it("keeps a pushed mounted diff when an older foreground diff reply arrives afterwards", async () => {
     const held = gate();
     await mountRoutedPanes();

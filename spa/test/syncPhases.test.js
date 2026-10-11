@@ -64,7 +64,7 @@ beforeEach(() => {
 
 afterEach(() => disposers.forEach((dispose) => dispose()));
 
-const microtasks = async () => { for (let turn = 0; turn < 50; turn += 1) await Promise.resolve(); };
+const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
 describe("foreground scope supersession", () => {
   it("starts B while A's foreground status is held, and keeps inbox behind B", async () => {
@@ -84,6 +84,7 @@ describe("foreground scope supersession", () => {
     route = routeTo(2);
     const current = phases.foreground();
     const joined = phases.foreground();
+    expect(joined).toBe(current);
     await microtasks();
     const startedB = events.filter((item) => item.sub === "ag-2-b");
     heldA.release();
@@ -234,7 +235,8 @@ describe("mounted source reads in foreground phases", () => {
     const pass = phases.run();
     await asked.promise;
     shown = true;
-    route = routeTo(2);
+    // #504: the newly shown source belongs to ws-1; ws-2's held read stays unrelated.
+    route = { ...route, sourceId: "secondary" };
     try {
       await phases.foreground();
       expect(sourceRead).toHaveBeenCalledOnce();

@@ -110,18 +110,41 @@ function foregroundRequest(state, method, params) {
 
 async function takeJob(state, job) {
   if (!state.context.active() || state.done.has(job.key)) return;
-  // An already dispatched background read needs no second request when its
-  // checkout becomes foreground. All of its writes retain their own fences.
-  state.done.add(job.key);
-  return job.read();
+  // Returning to an in-flight scope joins its read and still waits for the
+  // cache write; dispatch alone never makes a foreground requirement complete.
+  if (state.pending.has(job.key)) return state.pending.get(job.key);
+  const pending = Promise.resolve().then(job.read).finally(() => {
+    state.pending.delete(job.key);
+    state.done.add(job.key);
+  });
+  state.pending.set(job.key, pending);
+  return pending;
 }
 
-async function drainForeground(state) {
-  while (state.context.active()) {
+const foregroundScope = (state) => JSON.stringify(foregroundJobs(state).map((job) => job.key));
+
+async function drainForeground(state, turn) {
+  while (state.context.active() && state.foregroundTurn === turn && foregroundScope(state) === turn.scope) {
     const next = foregroundJobs(state).find((job) => !state.done.has(job.key));
     if (!next) return;
     await takeJob(state, next);
   }
+}
+
+function startForeground(state, scope) {
+  let supersede;
+  const superseded = new Promise((resolve) => { supersede = resolve; });
+  const turn = { scope, supersede, promise: null };
+  const before = state.foregroundTurn;
+  state.foregroundTurn = turn;
+  before?.supersede();
+  // Only the wait is superseded. Existing readers keep their captured cache,
+  // push and session authority and can finish writing their own answers.
+  const draining = drainForeground(state, turn);
+  turn.promise = Promise.race([draining, superseded]).then(() => {
+    if (state.foregroundTurn !== turn || foregroundScope(state) !== turn.scope) return state.foreground();
+  });
+  return turn.promise;
 }
 
 async function readInbox(state) {
@@ -159,11 +182,11 @@ async function readBackground(state) {
 /** The foreground callback is also called at every background wire boundary
  * and by routeChanged, so a slow background answer never owns the new route. */
 export function createSyncPhases(options) {
-  const state = { ...options, done: new Set(), foreground: null };
-  let foreground = null;
+  const state = { ...options, done: new Set(), pending: new Map(), foreground: null, foregroundTurn: null };
   state.foreground = () => {
-    if (!foreground) foreground = drainForeground(state).finally(() => { foreground = null; });
-    return foreground;
+    const scope = foregroundScope(state);
+    if (state.foregroundTurn?.scope !== scope) return startForeground(state, scope);
+    return state.foregroundTurn.promise;
   };
   return {
     foreground: state.foreground,

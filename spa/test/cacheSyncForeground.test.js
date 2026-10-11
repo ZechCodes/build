@@ -173,16 +173,25 @@ describe("foreground-first passes", () => {
     });
     start();
     await lookupStarted.promise;
+    let completed = false;
     try {
       expect(calls("git.status")).toHaveLength(0);
       App.route = routeTo(1);
       sync.routeChanged();
-      await vi.waitFor(() => expect(calls("fs.tree").some(([, params]) => params.run_id === "run-1")).toBe(true));
+      // #504: returning to a pending scope waits for its status to land before the tree.
+      expect(calls("fs.tree")).toHaveLength(0);
     } finally {
       held.release(undefined);
       lookup.mockRestore();
-      await finish();
+      let timer;
+      completed = await Promise.race([
+        finish().then(() => true),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(false), 3_000); }),
+      ]);
+      clearTimeout(timer);
+      abandonedPass = !completed;
     }
+    expect(completed).toBe(true);
     const status = calls("git.status").find(([, params]) => params.run_id === "run-1");
     expect(status[2]?.priority).not.toBe("background");
   });

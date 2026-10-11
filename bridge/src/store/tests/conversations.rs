@@ -1278,11 +1278,7 @@ fn the_waiting_legacy_messages_decode_only_themselves() {
     );
 }
 
-/// Lean pages pay for messages and decode only the single visible row per run.
-#[test]
-fn lean_stored_pages_decode_only_shipped_rows_and_digest_complete_runs() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = Store::new(dir.path().join("tasks")).unwrap();
+fn lean_stored_fixture() -> PersistedRun {
     let mut record = run_record("run-1", None, NOW);
     let thread = &mut record.agents[0].thread;
     for turn in 0..20 {
@@ -1294,18 +1290,31 @@ fn lean_stored_pages_decode_only_shipped_rows_and_digest_complete_runs() {
             19 => 40,
             _ => 0,
         };
-        for index in 0..length {
-            let kind = if index + 1 == length && length > 1 {
-                crate::thread::ThreadEventKind::Reasoning
-            } else {
-                crate::thread::ThreadEventKind::ToolUse
-            };
-            thread.push_event(kind, Some(format!("work {turn}-{index}")), None, None, NOW);
-        }
+        append_lean_stored_activity(thread, turn, length);
     }
     if let ThreadItem::Event(call) = &mut thread.items[299] {
         call.outcome = Some(crate::thread::ToolCallOutcome::Error);
     }
+    record
+}
+
+fn append_lean_stored_activity(thread: &mut crate::thread::Thread, turn: usize, length: usize) {
+    for index in 0..length {
+        let kind = if index + 1 == length && length > 1 {
+            crate::thread::ThreadEventKind::Reasoning
+        } else {
+            crate::thread::ThreadEventKind::ToolUse
+        };
+        thread.push_event(kind, Some(format!("work {turn}-{index}")), None, None, NOW);
+    }
+}
+
+/// Lean pages pay for messages and decode only the single visible row per run.
+#[test]
+fn lean_stored_pages_decode_only_shipped_rows_and_digest_complete_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let record = lean_stored_fixture();
     store.save_run(&record).unwrap();
     let agent_id = &record.agents[0].id;
     let before = items_decoded();
@@ -1334,8 +1343,20 @@ fn lean_stored_pages_decode_only_shipped_rows_and_digest_complete_runs() {
         first.last_tool_call.as_ref().unwrap().outcome,
         Some(crate::thread::ToolCallOutcome::Error)
     );
+}
 
-    // Both cursors clip inside the run; the digest still describes the whole run.
+/// A cursor clips what ships while retaining the complete run's digest.
+#[test]
+fn lean_stored_pages_clipped_cursors_keep_complete_run_digests() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let record = lean_stored_fixture();
+    store.save_run(&record).unwrap();
+    let agent_id = &record.agents[0].id;
+    let (whole, _) = store
+        .thread_conversation_page_newest_activity(agent_id, None, None, 20, false)
+        .unwrap();
+    let first = &whole.digests[0];
     for (after, bound, newest, visible, messages) in [
         (Some(150), None, false, 301, 1),
         (Some(150), Some(200), false, 199, 0),
@@ -1364,6 +1385,16 @@ fn lean_stored_pages_decode_only_shipped_rows_and_digest_complete_runs() {
         );
         assert_eq!(cut.digests[0], *first);
     }
+}
+
+/// Polling at the live tail returns no phantom activity window.
+#[test]
+fn lean_stored_pages_after_live_tail_are_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("tasks")).unwrap();
+    let record = lean_stored_fixture();
+    store.save_run(&record).unwrap();
+    let agent_id = &record.agents[0].id;
     let tail = record.agents[0].thread.items.last().unwrap().sequence();
     let (empty, more) = store
         .thread_conversation_page_newest_activity(agent_id, Some(tail), None, 1, false)

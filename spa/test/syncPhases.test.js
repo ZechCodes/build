@@ -67,6 +67,38 @@ afterEach(() => disposers.forEach((dispose) => dispose()));
 const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
 describe("foreground scope supersession", () => {
+  it("wakes a background loader's barrier when that loader becomes the selected scope", async () => {
+    const heldLookup = gate(), lookupStarted = gate(), heldOther = gate(), otherStarted = gate();
+    let phases;
+    route = { name: "inbox", deviceId: "dev-1" };
+    readers.status = async (_context, entityId, _row, priority) => {
+      if (entityId === "run-1" && priority === "background") {
+        lookupStarted.release();
+        await heldLookup.promise;
+        await phases.beforeBackgroundRead("git.status", { run_id: entityId });
+      }
+      event(entityId, "status", priority);
+      if (entityId === "run-2" && priority === "foreground") { otherStarted.release(); await heldOther.promise; }
+    };
+    phases = fixture();
+    const pass = phases.run();
+    const outcome = pass.then(() => null, (error) => error);
+    await lookupStarted.promise;
+    route = routeTo(2);
+    const second = phases.foreground();
+    await otherStarted.promise;
+    heldLookup.release();
+    await microtasks();
+    route = routeTo(1);
+    const first = phases.foreground();
+    await microtasks();
+    const dispatched = events.some((item) => item.entityId === "run-1" && item.kind === "status");
+    heldOther.release();
+    await Promise.all([outcome, second, first]);
+    expect(dispatched).toBe(true);
+    expect(await outcome).toBeNull();
+  });
+
   it("starts B while A's foreground status is held, and keeps inbox behind B", async () => {
     const heldA = gate(), askedA = gate(), heldB = gate();
     const status = readers.status, thread = readers.thread;

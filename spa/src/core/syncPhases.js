@@ -134,17 +134,34 @@ async function drainForeground(state, turn) {
 function startForeground(state, scope) {
   let supersede;
   const superseded = new Promise((resolve) => { supersede = resolve; });
-  const turn = { scope, supersede, promise: null };
+  const turn = { scope, supersede, promise: null, settled: null };
   const before = state.foregroundTurn;
   state.foregroundTurn = turn;
   before?.supersede();
   // Only the wait is superseded. Existing readers keep their captured cache,
   // push and session authority and can finish writing their own answers.
   const draining = drainForeground(state, turn);
-  turn.promise = Promise.race([draining, superseded]).then(() => {
+  turn.settled = Promise.race([draining, superseded]);
+  turn.promise = turn.settled.then(() => {
     if (state.foregroundTurn !== turn || foregroundScope(state) !== turn.scope) return state.foreground();
   });
-  return turn.promise;
+  return turn;
+}
+
+function currentForeground(state) {
+  const scope = foregroundScope(state);
+  return state.foregroundTurn?.scope === scope ? state.foregroundTurn : startForeground(state, scope);
+}
+
+/** A queued loader must wake on supersession before following another turn:
+ * that new turn may be waiting for this very loader to cross the wire. */
+async function beforeBackgroundRead(state, method, params) {
+  while (state.context.active()) {
+    const turn = currentForeground(state);
+    if (foregroundRequest(state, method, params)) return;
+    await turn.settled;
+    if (state.foregroundTurn === turn && foregroundScope(state) === turn.scope) return;
+  }
 }
 
 async function readInbox(state) {
@@ -183,13 +200,10 @@ async function readBackground(state) {
  * and by routeChanged, so a slow background answer never owns the new route. */
 export function createSyncPhases(options) {
   const state = { ...options, done: new Set(), pending: new Map(), foreground: null, foregroundTurn: null };
-  state.foreground = () => {
-    const scope = foregroundScope(state);
-    if (state.foregroundTurn?.scope !== scope) return startForeground(state, scope);
-    return state.foregroundTurn.promise;
-  };
+  state.foreground = () => currentForeground(state).promise;
   return {
     foreground: state.foreground,
+    beforeBackgroundRead: (method, params) => beforeBackgroundRead(state, method, params),
     priorityForRead: (method, params, envelope) =>
       envelope?.priority === "background" && foregroundRequest(state, method, params)
         ? requestPriorityFields("foreground") : envelope,

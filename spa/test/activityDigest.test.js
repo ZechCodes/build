@@ -347,17 +347,38 @@ describe("the digest over a sequence", () => {
 // Which pressed runs are a fetch, and which are already in hand.
 describe("the run a press has to fetch", () => {
   const digests = [digest(10, 51, 40), digest(60, 90, 8)];
+  const created = (...sequences) => sequences.map((sequence) => ({ type: "event", data: { sequence, event: "tool_use" } }));
+  const closed = (items, sequence = 200) => [...items, { type: "message", data: { sequence } }];
 
   it("asks over the digest of a run the page cut", () => {
-    expect(runDigestToFetch(digests, 50, 200)).toEqual(digests[0]);
+    expect(runDigestToFetch(digests, 50, closed(created(50)))).toEqual(digests[0]);
   });
 
   it("asks for nothing when the window holds the run whole", () => {
-    expect(runDigestToFetch([digest(60, 90, 8)], 60, 200)).toBe(null);
+    const held = [60, 61, 62, 63, 64, 65, 66, 90].map((sequence) => ({ type: "event", data: { sequence, event: "tool_use" } }));
+    expect(runDigestToFetch([digest(60, 90, 8)], 60, closed(held), 90)).toBe(null);
+  });
+
+  it("does not count duplicate copies or other rows as missing interior activity", () => {
+    const run = digest(2, 100, 3);
+    const held = [2, 2, 100].map((sequence) => ({ type: "event", data: { sequence, event: "tool_use" } }));
+    held.push({ type: "message", data: { sequence: 50 } }, { type: "event", data: { sequence: 60, event: "done" } });
+    expect(runDigestToFetch([run], 2, closed(held, 101), 100)).toBe(run);
+  });
+
+  it("uses the census rather than sequence adjacency when the full run is held", () => {
+    const held = [2, 50, 100].map((sequence) => ({ type: "event", data: { sequence, event: "reasoning" } }));
+    expect(runDigestToFetch([digest(2, 100, 3)], 2, closed(held, 101), 100)).toBe(null);
+  });
+
+  it.each([undefined, 0, Infinity])("cannot prove completeness with a rows census of %s", (rows) => {
+    const run = { from_sequence: 2, through_sequence: 100, tool_calls: 0, ...(rows === undefined ? {} : { rows }) };
+    const held = [2, 100].map((sequence) => ({ type: "event", data: { sequence, event: "reasoning" } }));
+    expect(runDigestToFetch([run], 2, closed(held, 101), 100)).toBe(run);
   });
 
   it("asks for nothing when the run reaches the end of the conversation", () => {
-    expect(runDigestToFetch(digests, 50, 51)).toBe(null);
+    expect(runDigestToFetch(digests, 50, created(50, 51))).toBe(null);
   });
 
   // A digest is cut on a paged answer, and no forward delta refreshes it —
@@ -366,14 +387,14 @@ describe("the run a press has to fetch", () => {
   // end of the conversation, and the run still being written would be frozen
   // into a record kept until the entity is evicted.
   it("asks for nothing when the run itself has grown to the end of the conversation", () => {
-    expect(runDigestToFetch(digests, 50, 55, 55)).toBe(null);
+    expect(runDigestToFetch(digests, 50, created(50, 55), 55)).toBe(null);
   });
 
   it("asks over a historical run whose newest held row is short of the end", () => {
-    expect(runDigestToFetch(digests, 50, 200, 55)).toEqual(digests[0]);
+    expect(runDigestToFetch(digests, 50, closed(created(50, 55)), 55)).toEqual(digests[0]);
   });
 
   it("asks for nothing for a sequence no digest covers", () => {
-    expect(runDigestToFetch(digests, 55, 200)).toBe(null);
+    expect(runDigestToFetch(digests, 55, closed(created(55)))).toBe(null);
   });
 });

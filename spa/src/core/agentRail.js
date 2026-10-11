@@ -1153,6 +1153,7 @@ function mountRailOnContext(host, context, swap) {
   let paintedChatContent = null; // drawn rows, including same-cursor edits
   let paintedChatItemCount = 0;
   let paintedDigests = []; // the run totals that timeline was drawn with
+  let paintedThreadItems = []; // held rows behind those totals, before detail filtering
   let paintedEntryKeyOf = () => null; // which of its entries draws a sequence
   // How much of the held conversation the timeline draws (#158): the newest
   // entries, and more as the reader asks for them.
@@ -2735,16 +2736,11 @@ function mountRailOnContext(host, context, swap) {
   /// hold the span each fetch covered, so there is nothing to translate here.
   const fetchedRunItems = (runKey) => conversationRuns().itemsOf(runKey);
 
-  /// The newest sequence the conversation has reached — the end a run has to
-  /// touch to be the live tail. The record's cursor is that number: everything
-  /// the conversation has said is in it or behind it.
-  const lastSequenceOf = () => threadCache.readWindow()?.deliveredSequence || 0;
-
   /// How far the window has taken delivery of the conversation. The one number
   /// that moves for an item mutated in place — a call answered, a message
   /// marked seen — which changes what a row says without changing how many
   /// rows there are.
-  const deliveredSequenceOf = () => lastSequenceOf();
+  const deliveredSequenceOf = () => threadCache.readWindow()?.deliveredSequence || 0;
 
   const threadItems = (thread) => (thread && thread.items) || [];
 
@@ -2847,10 +2843,12 @@ function mountRailOnContext(host, context, swap) {
     const conversationId = controllerInFocus().identity.conversationId || null;
     // The level reads the cached thread; it never changes what was cached.
     const held = threadItems(thread);
+    paintedThreadItems = held;
     const shown = itemsAtDetailLevel(held, detailLevel());
     const built = timelineEntries(shown, agentLabel, conversationId, paintedDigests, {
       openRuns: runs.openKeys(),
       runItemsOf: fetchedRunItems,
+      runStateOf: (key) => runs.stateOf(key),
       threadState: controllerInFocus().threadState,
       unreadFrom,
       place: conversationPlace(),
@@ -2964,13 +2962,21 @@ function mountRailOnContext(host, context, swap) {
     // Decided against the timeline the press landed on, before the repaint
     // draws the next one over it.
     const digest = opened
-      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough)
+      ? runDigestToFetch(digestsInHand(), runKey, paintedThreadItems, runThrough)
       : null;
-    await runs.whenFoldPainted();
-    if (!digest) return;
-    await runs.open(digest).catch((error) => {
-      notifyError("Could not load this activity", error.message);
-    });
+    // Start before fold persistence yields: the click paints its loading state.
+    const opening = digest ? loadActivityRun(runs, digest) : null;
+    await Promise.all([runs.whenFoldPainted(), opening]);
+  };
+
+  const loadActivityRun = (runs, digest) => runs.open(digest).catch((error) => {
+    notifyError("Could not load this activity", error.message);
+  });
+
+  const retryActivityRun = (runKey) => {
+    const runs = conversationRuns();
+    const digest = digestCovering(digestsInHand(), Number(runKey));
+    if (digest) void loadActivityRun(runs, digest);
   };
 
   const composerPlaceholder = () =>
@@ -3142,6 +3148,12 @@ function mountRailOnContext(host, context, swap) {
     // wrote, and a run that opens onto rows it has to fetch cannot be a fold
     // two writers share.
     body.onclick = (event) => {
+      const retry = event.target.closest?.("[data-activity-retry]");
+      if (retry) {
+        event.preventDefault();
+        retryActivityRun(retry.dataset.activityRetry);
+        return;
+      }
       if (jumpToUserMessage(event, { reveal: drawDownTo })) return;
       if (event.target.closest?.(".thread-earlier")) {
         showEarlierEntries();

@@ -1958,6 +1958,21 @@ In practice:
   changed in place. The record then owes a repair (`repairThrough`, written
   with the cursor) until the newest `REPAIRED_THREAD_ITEMS` (50) held items
   have been read again at or past that counter.
+  Sync and load-older pages request `activity: "newest"` only when the device
+  advertises `threads.leanActivity`. A leading folded run on a newest page
+  means `has_more` describes omitted activity, so held message context survives;
+  load-older seeks above that run's digest start. A lean repair refreshes any
+  omitted recent held activity through exact one-item `thread.activity` reads
+  before clearing its debt. A closed run is complete only when distinct held
+  activity covers its digest span and census; sparse warm catch-up fetches the
+  missing interior even when the first row is held. Without an exact row census,
+  historical runs are fetched conservatively. Closed runs open asynchronously
+  with the existing throbber until their cached rows paint, and offer inline retry on failure;
+  the live tail continues opening from the conversation window. Tail detection
+  compares creation sequences: in-place updates advance delivery without
+  closing a run. Fetched bodies merge newer window copies by update sequence
+  before rendering, including folded descendants; their creation span can
+  cross other runs, so window membership follows owned rows and fetched keys.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written

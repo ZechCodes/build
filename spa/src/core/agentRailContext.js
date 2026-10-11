@@ -10,8 +10,8 @@
 import { mergeCachedAtomically } from "./localCache.js";
 import { mergeActivityDigests } from "./activityDigest.js";
 import { deviceKey } from "./deviceKey.js";
-import { differentThreadGeneration, threadGenerationParam } from "./threadSync.js";
-import { mergeThreadItems } from "./thread.js";
+import { differentThreadGeneration, threadActivityParam, threadGenerationParam } from "./threadSync.js";
+import { mergeThreadItems, threadPageFloor } from "./thread.js";
 
 /**
  * Widen the conversation's record with the page above it.
@@ -33,7 +33,7 @@ export function widenCachedThread(address, page, beforeSequence) {
   return mergeCachedAtomically(address, (held) => {
     if (differentThreadGeneration(held, page)) return null;
     const items = held?.items || [];
-    if (!items.length || items[0].data?.sequence !== beforeSequence) return null;
+    if (!items.length || threadPageFloor(items, held.activityDigests) !== beforeSequence) return null;
     return {
       ...held,
       items: mergeThreadItems(items, page.items || []),
@@ -53,6 +53,7 @@ async function olderThreadPage(call, { entityId, agentId, beforeSequence, addres
     entity_id: entityId,
     ...(agentId ? { agent_id: agentId } : {}),
     ...threadGenerationParam(threadId),
+    ...threadActivityParam(address?.deviceId),
     before_sequence: beforeSequence,
   });
   await widenCachedThread(address, page, beforeSequence);

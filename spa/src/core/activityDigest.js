@@ -52,9 +52,11 @@ export function digestCovering(digests, sequence) {
 /// The digest a pressed run must be fetched over, or nothing.
 ///
 /// Two kinds of run are drawn from the window instead. One the page shipped
-/// whole — its digest starts no earlier than the oldest row in hand, so there
-/// is nothing missing to ask for. And the TAIL run, the one that reaches the
-/// end of the conversation: it is still being written, and the window is where
+/// whole — its span and census are covered by distinct held activity rows,
+/// so there is nothing missing to ask for. Holding its first row alone says
+/// nothing about its interior: lean deltas can omit all but the newest row.
+/// And the TAIL run, the one that reaches the end of the conversation: it is
+/// still being written, and the window is where
 /// its newest rows land. Fetching it would freeze a moving run into a record
 /// kept until the entity is evicted, and every call it grew afterwards would
 /// fall between that record's end and the window's oldest row, unseen and never
@@ -62,17 +64,35 @@ export function digestCovering(digests, sequence) {
 ///
 /// Which run is the tail is answered by everything the client holds about it,
 /// never by the digest alone. A digest is cut on a PAGED answer and no forward
-/// delta refreshes one, while the conversation's newest sequence moves on every
-/// delta — so one call landing on the live tail leaves its digest short of the
+/// delta refreshes one, while newly created rows advance the conversation —
+/// so one call landing on the live tail leaves its digest short of the
 /// end while the run is still being written. `runThrough` is the other half of
 /// the answer: the newest sequence the window holds for the run, its folded
-/// calls included, which is what the run's own box says about itself.
-export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough = 0) {
+/// calls included, which is what the run's own box says about itself. The end
+/// is the newest held creation sequence, never the delivery watermark: an
+/// in-place result advances delivery without closing the trailing run.
+export function runDigestToFetch(digests, runKey, heldItems = [], runThrough = 0) {
   const key = Number(runKey);
   const digest = digestCovering(digests, key);
-  if (!digest || digest.from_sequence >= key) return null;
+  if (!digest || heldRunComplete(digest, heldItems)) return null;
   const runReaches = Math.max(digest.through_sequence, Number(runThrough) || 0);
-  return runReaches >= Number(threadLastSequence) ? null : digest;
+  const newestCreated = heldItems.reduce((newest, item) => {
+    const sequence = item.data?.sequence;
+    return Number.isFinite(sequence) ? Math.max(newest, sequence) : newest;
+  }, 0);
+  return runReaches >= newestCreated ? null : digest;
+}
+
+/// Sequence gaps can be update counters, so completeness follows the census,
+/// not adjacency. Duplicate copies and non-activity rows prove nothing.
+function heldRunComplete(digest, items) {
+  if (!Number.isFinite(digest.rows) || digest.rows <= 0) return false;
+  const sequences = new Set(items
+    .filter((item) => item.type === "event" && EVENT_META[item.data?.event]?.activity)
+    .map((item) => Number(item.data.sequence))
+    .filter((sequence) => sequence >= digest.from_sequence && sequence <= digest.through_sequence));
+  return sequences.has(digest.from_sequence) && sequences.has(digest.through_sequence)
+    && sequences.size >= digest.rows;
 }
 
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);
@@ -118,7 +138,7 @@ function digestLastCall(covering) {
   const calls = covering.map((digest) => digest.last_tool_call).filter((call) => call && call.summary);
   if (!calls.length) return null;
   const newest = calls.reduce((latest, call) => (call.sequence > latest.sequence ? call : latest));
-  return { meat: firstLine(newest.summary), outcome: newest.outcome, createdAt: newest.created_at };
+  return { sequence: newest.sequence, meat: firstLine(newest.summary), outcome: newest.outcome, createdAt: newest.created_at };
 }
 
 /// The newest call the run holds, by sequence rather than by position.
@@ -130,6 +150,9 @@ function newestHeldCall(toolCalls) {
   if (!toolCalls.length) return null;
   return toolCalls.reduce((latest, call) => (call.sequence > latest.sequence ? call : latest));
 }
+
+const newestCall = (held, counted) =>
+  !held || (counted && counted.sequence > held.sequence) ? counted : held;
 
 const lineOf = (source) => ({
   meat: (source && source.meat) || "",
@@ -168,6 +191,6 @@ export function activityRunSummary(digests, runEntries) {
   const covering = digestsOver(digests || [], heldSpan([...activities, ...rows]));
   const counted = covering.reduce((total, digest) => total + rowsCountedBy(digest), 0);
   const count = counted + arrivedAfterTheDigest(rows, newestCovered(covering)).length;
-  const call = newestHeldCall(toolCalls) || digestLastCall(covering);
+  const call = newestCall(newestHeldCall(toolCalls), digestLastCall(covering));
   return { count, ...headOf(call, activities.at(-1)) };
 }

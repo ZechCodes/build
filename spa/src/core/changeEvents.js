@@ -101,7 +101,7 @@ const NO_CAPABILITIES = Object.freeze({
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
-  threads: Object.freeze({ postOperations: false, attachmentChunks: false }),
+  threads: Object.freeze({ postOperations: false, attachmentChunks: false, leanActivity: false }),
   branches: Object.freeze({ finishDelete: false }),
   push: Object.freeze({ registerKey: false, revokeKey: false }),
   agents: Object.freeze({ createdBy: false }),

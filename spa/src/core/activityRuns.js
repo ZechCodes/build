@@ -61,6 +61,7 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
   // The runs being fetched right now. A reader pressing the same fold twice
   // while the first answer is still on its way is one ask, not two.
   const asking = new Set();
+  const failures = new Map();
 
   const activityPage = (fromSequence, beforeSequence) =>
     call("thread.activity", {
@@ -114,6 +115,13 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
   };
 
   return {
+    stateOf(runKey) {
+      const fromSequence = runStartAt(runKey);
+      const key = String(fromSequence);
+      if (fromSequence === null || bodies.has(key)) return null;
+      if (asking.has(key)) return { loading: true };
+      return failures.has(key) ? { error: failures.get(key) } : null;
+    },
     itemsOf(runKey) {
       const fromSequence = runStartAt(runKey);
       return fromSequence === null ? undefined : (bodies.read(fromSequence) || {}).items;
@@ -127,10 +135,16 @@ export function createActivityRuns({ deviceId, entityId, agentId, conversationId
       if (!entityId || bodies.has(key) || asking.has(key)) return false;
       spans.set(digest.from_sequence, digest.through_sequence);
       asking.add(key);
+      failures.delete(key);
+      onChange();
       try {
         return (await bodies.ensure([key])).length > 0;
+      } catch (error) {
+        failures.set(key, error.message);
+        throw error;
       } finally {
         asking.delete(key);
+        onChange();
       }
     },
 

@@ -305,7 +305,7 @@ export function createThreadCache() {
     // window, or nothing while there is no window to widen.
     olderPageParam() {
       if (!accumulatedItems.length) return null;
-      return { before_sequence: accumulatedItems[0].data?.sequence };
+      return { before_sequence: threadPageFloor(accumulatedItems, activityDigests) };
     },
     // Whether asking for that page is worth it — the daemon's own answer.
     hasOlderItems() {
@@ -345,6 +345,16 @@ export function createThreadCache() {
       return true;
     },
   };
+}
+
+/** The page above a folded run starts before the run itself, so scrolling
+ * history never walks through the activity rows its digest already covers. */
+export function threadPageFloor(items = [], digests = []) {
+  const first = items[0];
+  const sequence = first?.data?.sequence;
+  const digest = first?.type === "event" && activityMetaOf(first.data)
+    ? digestCovering(digests, sequence) : null;
+  return digest ? digest.from_sequence : sequence;
 }
 
 /** A bare thread payload (a first page fetched out of band, with no cache in
@@ -1479,19 +1489,23 @@ const runThroughSequence = (run) =>
     0,
   );
 
-/// What an open run draws: the items fetched for it, and whatever the window
-/// holds past them.
-///
-/// A run older than the newest message never changes, so the fetched items are
-/// the whole of it. The tail run is the one still being written, and the window
-/// is where its newest rows land — so the rows past the fetch are taken from
-/// the window, already rendered, and the head of a live run goes on ticking.
+/// Window copies belonging to this run, including folded descendants. Their
+/// creation span can cross messages and other runs, so membership follows the
+/// run's owned rows and fetched keys rather than an interval of sequences.
+function heldRunItems(run, fetched, view) {
+  const owned = new Set(run.flatMap((row) => row.activity.rows).map((row) => row.sequence));
+  const fetchedKeys = new Set(fetched.map(threadItemKey));
+  return view.sourceItems.filter((item) => owned.has(item.data?.sequence) || fetchedKeys.has(threadItemKey(item)));
+}
+
+/// Fetched bodies fill gaps, but a result can still update an existing row.
+/// Merge raw copies by their update sequence before rebuilding child folds,
+/// so the newest copy paints whether it came from the window or the fetch.
 function runChildrenHtml(run, view) {
   const fetched = view.runItemsOf(run[0].key);
   if (!fetched || !fetched.length) return run.map((row) => row.html).join("");
-  const fetchedThrough = fetched.reduce((newest, item) => Math.max(newest, item.data?.sequence || 0), 0);
-  const live = run.filter((row) => Number(row.key) > fetchedThrough);
-  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId, view), ...live]
+  const items = mergeThreadItems(fetched, heldRunItems(run, fetched, view));
+  return timelineRowsOf(items, view.agentLabel, view.threadId, view)
     .map((row) => row.html)
     .join("");
 }
@@ -1511,9 +1525,15 @@ function runSpan(run, digests) {
 function runEntry(run, digests, view) {
   const key = run[0].key;
   return withLazyHtml({ key }, () => {
-    const children = view.openRuns.has(key) ? runChildrenHtml(run, view) : null;
+    const children = view.openRuns.has(key) ? runLoadStateHtml(key, view.runStateOf(key)) + runChildrenHtml(run, view) : null;
     return activityRunHtml(runSpan(run, digests), activityRunSummary(digests, run), children);
   });
+}
+
+function runLoadStateHtml(key, state) {
+  if (state?.loading) return '<div class="thread-activity-state" role="status"><span class="throbber" aria-hidden="true"></span>Loading activity…</div>';
+  if (!state?.error) return "";
+  return `<div class="thread-activity-state" role="alert">Could not load this activity. <button class="btn" data-activity-retry="${esc(key)}">Retry</button></div>`;
 }
 
 /// Fold every maximal run of consecutive activity into one entry apiece, and
@@ -1835,6 +1855,7 @@ export function timelineEntries(
   {
     openRuns,
     runItemsOf,
+    runStateOf,
     threadState = createThreadState(),
     unreadFrom,
     place = NOWHERE_IN_PARTICULAR,
@@ -1852,6 +1873,7 @@ export function timelineEntries(
   } = {},
 ) {
   const view = {
+    sourceItems,
     agentLabel,
     agentLabels,
     workspaces,
@@ -1860,6 +1882,7 @@ export function timelineEntries(
     place,
     openRuns: openRuns || NO_RUNS_OPEN,
     runItemsOf: runItemsOf || noRunItems,
+    runStateOf: runStateOf || noRunItems,
   };
   const timeline = timelineOf(sourceItems, agentLabel, place);
   const { spans, rows } = entrySpansOf(timeline.topLevelItems);

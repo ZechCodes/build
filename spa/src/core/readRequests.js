@@ -21,7 +21,7 @@ export function requestPriorityFields(priority) {
 
 const pending = new Map(); // request key -> { promise, promote, active, join }
 const foregroundWaiters = new Set();
-let activeForeground = 0;
+const foregroundReaders = new Set(); // active predicates, including shared readers
 const identities = new WeakMap();
 let nextIdentity = 0;
 
@@ -57,16 +57,29 @@ function idleTurn() {
   });
 }
 
-function foregroundQuiet() {
-  if (!activeForeground) return Promise.resolve();
-  return new Promise((resolve) => foregroundWaiters.add(resolve));
+function hasActiveForeground() {
+  // A stopped session may never answer its in-flight read. Its lifetime,
+  // rather than that abandoned promise, decides whether warming must wait.
+  for (const active of foregroundReaders) {
+    if (!active()) foregroundReaders.delete(active);
+  }
+  return foregroundReaders.size > 0;
 }
 
-function finishForeground() {
-  activeForeground -= 1;
-  if (activeForeground) return;
+function wakeForegroundWaiters() {
   for (const resolve of foregroundWaiters) resolve();
   foregroundWaiters.clear();
+}
+
+function foregroundQuiet() {
+  if (hasActiveForeground()) return new Promise((resolve) => foregroundWaiters.add(resolve));
+  wakeForegroundWaiters();
+  return Promise.resolve();
+}
+
+function finishForeground(active) {
+  foregroundReaders.delete(active);
+  if (!hasActiveForeground()) wakeForegroundWaiters();
 }
 
 async function startInBackground(start, alreadyStarted) {
@@ -79,7 +92,7 @@ async function startInBackground(start, alreadyStarted) {
     if (alreadyStarted()) return;
     await idleTurn();
     if (alreadyStarted()) return;
-  } while (activeForeground);
+  } while (hasActiveForeground());
   start(false);
 }
 
@@ -92,6 +105,7 @@ function loadActiveReader(readers, envelope) {
 
 function newRead(priority, reader) {
   const readers = [reader];
+  const active = () => readers.some((candidate) => candidate.active());
   let started = false;
   let resolve;
   let reject;
@@ -103,14 +117,14 @@ function newRead(priority, reader) {
   const start = (asForeground) => {
     if (started) return;
     started = true;
-    if (asForeground) activeForeground += 1;
+    if (asForeground) foregroundReaders.add(active);
     // A read promoted to foreground crosses the wire as one: the envelope is
     // stamped where the load starts, not where it was queued.
     Promise.resolve()
       .then(() => loadActiveReader(readers, requestPriorityFields(asForeground ? "foreground" : priority)))
       .then(resolve, reject)
       .finally(() => {
-        if (asForeground) finishForeground();
+        if (asForeground) finishForeground(active);
       });
   };
 
@@ -119,7 +133,7 @@ function newRead(priority, reader) {
   return {
     promise,
     promote: () => start(true),
-    active: () => readers.some((candidate) => candidate.active()),
+    active,
     join: (candidate) => readers.push(candidate),
   };
 }

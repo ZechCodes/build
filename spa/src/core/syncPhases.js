@@ -5,6 +5,7 @@ import { routedEntityId } from "./inbox.js";
 import { visibleTreePaths, visibleWorkingDiff, visibleSyncThread, visibleSyncReads } from "./syncVisibleScopes.js";
 import { cachedSubKeys } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
+import { drainBackgroundStreams } from "./syncBackgroundStreams.js";
 
 const keyOf = (entityId, kind, sub = "") => JSON.stringify([entityId, kind, sub]);
 const projectIds = (view) => (view.projects || []).map((project) => project.project_id || project.id).filter(Boolean);
@@ -105,38 +106,11 @@ function foregroundDiffEntities(state) {
   return [...entities];
 }
 
-const matchesScope = (scope, params) => Boolean(scope)
-  && Object.entries(scope).every(([key, value]) => params[key] === value);
-
-function selectedThreadRequest(state, route, entityId, params) {
-  const selected = conversationFor(route, entityId, state.pass.rows, state.context.deviceId);
-  return selected?.entityId === params.entity_id && selected?.agent.id === params.agent_id;
-}
-
-const FOREGROUND_CHECKOUT_READS = {
-  "git.status": (_state, _entityId, matches) => matches,
-  "git.log": (_state, _entityId, matches) => matches,
-  "git.unpushed": (_state, _entityId, matches) => matches,
-  "fs.tree": (state, entityId, matches, params) => matches
-    && new Set(["", ...visibleTreePaths(state.context.deviceId, entityId)]).has(params.path || ""),
-};
-
-const DIFF_READS = new Set(["run.diff", "worktree.diff"]);
-const foregroundDiffRequest = (state, params) => foregroundDiffEntities(state)
-  .some((entityId) => matchesScope(state.readers.scope(state.pass.rows.get(entityId)), params));
-
-function foregroundRequest(state, method, params) {
-  if (DIFF_READS.has(method)) return foregroundDiffRequest(state, params);
-  const route = state.route();
-  if (route.deviceId !== state.context.deviceId) return false;
-  if (method === "tasks.list" || method === "tasks.columns") return params.project_id === route.projectId && !params.cursor;
-  const entityId = routedEntityId(route, state.view);
-  if (method === "thread.page") return selectedThreadRequest(state, route, entityId, params);
-  const row = state.pass.rows.get(entityId);
-  if (method === "term.list") return matchesScope(state.readers.terminalScope(row), params);
-  const matches = matchesScope(state.readers.scope(row), params);
-  return FOREGROUND_CHECKOUT_READS[method]?.(state, entityId, matches, params) || false;
-}
+/** Every RPC needed to finish one record has that record's identity. A
+ * selected thread's repairs therefore share its page's foreground authority,
+ * without maintaining a list of the verbs its reader happens to issue. */
+const foregroundRequest = (state, scope) => scope?.deviceId === state.context.deviceId
+  && foregroundJobs(state).some((job) => job.key === keyOf(scope.entityId, scope.kind, scope.sub || ""));
 
 async function takeJob(state, job) {
   if (!state.context.active() || state.done.has(job.key)) return;
@@ -175,6 +149,7 @@ function startForeground(state, scope) {
   turn.promise = turn.settled.then(() => {
     if (state.foregroundTurn !== turn || foregroundScope(state) !== turn.scope) return state.foreground();
   });
+  state.context.backgroundStreams?.wake();
   return turn;
 }
 
@@ -183,14 +158,17 @@ function currentForeground(state) {
   return state.foregroundTurn?.scope === scope ? state.foregroundTurn : startForeground(state, scope);
 }
 
-/** A queued loader must wake on supersession before following another turn:
- * that new turn may be waiting for this very loader to cross the wire. */
-async function beforeBackgroundRead(state, method, params) {
+/** Wait without wire admission, then return a synchronous permission check.
+ * Navigation while queued revokes that permission; the scheduler releases its
+ * reservation before following a new turn that may need a push continuation. */
+async function beforeBackgroundRead(state, scope) {
   while (state.context.active()) {
     const turn = currentForeground(state);
-    if (foregroundRequest(state, method, params)) return;
+    const ready = () => state.context.active() && state.foregroundTurn === turn
+      && foregroundScope(state) === turn.scope;
+    if (foregroundRequest(state, scope)) return ready;
     await turn.settled;
-    if (state.foregroundTurn === turn && foregroundScope(state) === turn.scope) return;
+    if (ready()) return ready;
   }
 }
 
@@ -209,19 +187,23 @@ async function readInbox(state) {
   }
 }
 
-async function readBackground(state) {
-  let recovered = true;
-  for (const entityId of state.pass.order) {
-    const paths = new Set(["", ...await cachedSubKeys(state.context.deviceId, entityId, "tree")]);
-    for (const job of scopeJobs(state, entityId, "background", paths)) {
-      await state.foreground();
-      await takeJob(state, job);
-    }
+async function readBackgroundEntity(state, entityId) {
+  const paths = new Set(["", ...await cachedSubKeys(state.context.deviceId, entityId, "tree")]);
+  for (const job of scopeJobs(state, entityId, "background", paths)) {
     await state.foreground();
-    if (!state.context.active()) return false;
-    const files = await state.readers.extras(state.entityContext(entityId), entityId, state.pass.rows.get(entityId));
-    recovered = files && recovered;
+    await takeJob(state, job);
   }
+  await state.foreground();
+  if (!state.context.active()) return false;
+  return state.readers.extras(state.entityContext(entityId), entityId, state.pass.rows.get(entityId));
+}
+
+async function readBackground(state) {
+  const recovered = await drainBackgroundStreams({
+    items: state.pass.order,
+    active: state.context.active,
+    read: (entityId) => readBackgroundEntity(state, entityId),
+  });
   await state.foreground();
   return recovered;
 }
@@ -233,9 +215,9 @@ export function createSyncPhases(options) {
   state.foreground = () => currentForeground(state).promise;
   return {
     foreground: state.foreground,
-    beforeBackgroundRead: (method, params) => beforeBackgroundRead(state, method, params),
-    priorityForRead: (method, params, envelope) =>
-      envelope?.priority === "background" && foregroundRequest(state, method, params)
+    beforeBackgroundRead: (scope) => beforeBackgroundRead(state, scope),
+    priorityForRead: (scope, envelope) =>
+      envelope?.priority === "background" && foregroundRequest(state, scope)
         ? requestPriorityFields("foreground") : envelope,
     async run() {
       await state.foreground();

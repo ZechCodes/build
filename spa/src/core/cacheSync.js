@@ -37,7 +37,8 @@
 
 import { trailingRead } from "./trailingRead.js";
 import { createSyncPhases } from "./syncPhases.js";
-import { createTaskPhases } from "./syncTaskPhases.js";
+import { createBackgroundStreams } from "./syncBackgroundStreams.js";
+import { createTaskPhases, taskReadScope } from "./syncTaskPhases.js";
 import { createTaskReadQueue } from "./serialTaskReads.js";
 import { readSyncLists } from "./syncLists.js";
 import { App } from "../appState.js";
@@ -164,6 +165,7 @@ const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE
 const fileReads = new Map(); // file address → the newest reader allowed to write its body
 const fileRecoveries = new Map(); // deviceId → per-file recovery on this session and request scope
 const diffRecoveries = new Map(); // deviceId → the session/path whose held diffs were validated
+const backgroundStreams = createBackgroundStreams();
 
 /** A subscription hears rather than polls: there is nothing behind it to run. */
 const NOTHING = () => {};
@@ -190,6 +192,8 @@ const syncContext = (context, turn = null) => {
     deviceId: context.deviceId,
     call: context.rpc,
     requestScope,
+    syncTurn: turn,
+    backgroundStreams: backgroundStreams.forContext({ deviceId: context.deviceId, session, requestScope, lifetime: startedIn }),
     active: () => context.active() && context.session === session && startedIn === lifetime
       && requestScopeOf(context) === requestScope && !turn?.superseded,
   };
@@ -200,23 +204,32 @@ const addressOf = (context, entityId, kind, sub = "") => ({ deviceId: context.de
 const heldValue = async (context, entityId, kind, sub = "") =>
   (await readCached(addressOf(context, entityId, kind, sub)))?.value;
 
-/** Cache reads and coordinated requests can yield before dispatch. Check the
- *  captured pass at the wire boundary, including reads with their own loaders. */
-const callWhileActive = async (context, method, params, envelope) => {
-  // A read promoted during cache lookup may be what the foreground drain is
-  // awaiting. It must cross the wire before joining that drain's barrier.
-  const current = context.priorityForRead?.(method, params, envelope) || envelope;
-  if (current?.priority === "background") await context.beforeBackgroundRead?.(method, params);
-  const priority = context.priorityForRead?.(method, params, envelope) || envelope;
-  return context.active() ? context.call(method, params, priority) : null;
+/** Pushes and pass readers follow the active planner for their captured
+ * device/session/path/lifetime. Queue identity excludes replacement owners. */
+const foregroundPlanner = (context) => {
+  const turn = passes.get(context.deviceId);
+  return turn?.context?.backgroundStreams === context.backgroundStreams && turn.context.active() ? turn.phases : null;
 };
+
+// A push can own the serialized task walk that a foreground job joins. It
+// follows foreground priority, but must not wait on that job's pass barrier.
+const beforeBackgroundRead = (context, scope) => context.syncTurn?.phases?.beforeBackgroundRead(scope);
+
+/** Recheck the record's visibility at admission and dispatch. All RPCs needed
+ * to finish that record inherit its scope, including a thread's repairs. */
+const callWhileActive = (context, method, params, envelope, scope = context.readScope) => context.backgroundStreams.read({
+  active: context.active,
+  priority: () => foregroundPlanner(context)?.priorityForRead(scope, envelope) || envelope,
+  before: () => beforeBackgroundRead(context, scope),
+  load: (priority) => context.call(method, params, priority),
+});
 
 /** One read, written through by the caller. A failure is a cold record: the
  *  machine is offline, the checkout moved under the read, or this bridge does
  *  not serve the verb. The next trigger or push asks again. */
-async function ask(context, method, params, priority) {
+async function ask(context, method, params, priority, scope) {
   try {
-    return await callWhileActive(context, method, params, requestPriorityFields(priority));
+    return await callWhileActive(context, method, params, requestPriorityFields(priority), scope);
   } catch {
     return null;
   }
@@ -227,7 +240,7 @@ async function ask(context, method, params, priority) {
  *  (core/pushFence.js). Answers what was read, written or not. */
 async function readWhole(context, address, request, shape = (answer) => answer) {
   const fence = pushFence();
-  const answer = await ask(context, request.method, request.params, request.priority);
+  const answer = await ask(context, request.method, request.params, request.priority, address);
   if (!answer || answer.unchanged || !context.active()) return answer;
   if (!pushedSince(address, fence)) await writeCached(address, shape(answer));
   return answer;
@@ -400,14 +413,13 @@ async function orderedSync(deviceId, turn) {
     tasks: createTaskPhases(context, { ask, readReviews: (context, projectId) => readReviews(context, projectId),
       serialize: (projectId, operation) => serializeTasks(context, projectId, operation) }),
   });
-  context.beforeBackgroundRead = phases.beforeBackgroundRead;
-  context.priorityForRead = phases.priorityForRead;
+  turn.context = context;
+  turn.phases = phases;
   turn.foreground = phases.foreground;
   const filesRecovered = await phases.run();
   // Detached ownership cleanup uses the same cache/session fences, without
   // keeping the completed pass's foreground planner alive.
-  context.beforeBackgroundRead = null;
-  context.priorityForRead = null;
+  turn.phases = null;
   turn.foreground = null;
   await evictRowsThatAreOver(context, view, fence);
   await dropWhatTheBoardStoppedNaming(context, view, passStartedAt, fence);
@@ -670,7 +682,7 @@ const projectIds = (view) => (view.projects || []).map((project) => project.proj
 async function readTasksNow(context, projectId) {
   if (pagesTasks(context.deviceId)) return readTaskPagesNow(context, projectId);
   const read = await nextTaskRead();
-  const answer = await ask(context, "tasks.list", { project_id: projectId }, "background");
+  const answer = await ask(context, "tasks.list", { project_id: projectId }, "background", taskReadScope(context, projectId));
   if (!answer || !context.active()) return;
   const columns = await projectColumns(context, projectId);
   if (!context.active()) return;
@@ -684,7 +696,7 @@ async function readTasksNow(context, projectId) {
 async function projectColumns(context, projectId) {
   const held = await readTasksRecord(context.deviceId, projectId);
   if (held?.columns?.length) return held.columns;
-  return (await ask(context, "tasks.columns", { project_id: projectId }, "background"))?.columns || [];
+  return (await ask(context, "tasks.columns", { project_id: projectId }, "background", taskReadScope(context, projectId)))?.columns || [];
 }
 
 /** The same list, a page at a time from a bridge that pages it (#85): each
@@ -695,7 +707,7 @@ async function readTaskPagesNow(context, projectId) {
   const deviceId = context.deviceId;
   let columns = null;
   await pullTaskPages({
-    ask: (params) => ask(context, "tasks.list", params, "background"),
+    ask: (params) => ask(context, "tasks.list", params, "background", taskReadScope(context, projectId, params)),
     deviceId,
     projectId,
     params: { project_id: projectId },
@@ -950,7 +962,7 @@ const unpushedCommits = (log) => (log?.commits || []).filter((commit) => commit.
 async function syncLog(context, entityId, scope, priority) {
   const held = await heldValue(context, entityId, "log");
   const params = held?.newest ? { ...scope, since: held.newest } : { ...scope, limit: LATEST_COMMITS };
-  const answer = await ask(context, "git.log", params, priority);
+  const answer = await ask(context, "git.log", params, priority, addressOf(context, entityId, "log"));
   if (!answer || !context.active()) return;
   await mergeCached(addressOf(context, entityId, "log"), (current) =>
     context.active() ? mergedLog(current, answer) : null);
@@ -1069,7 +1081,8 @@ async function syncPatches(context, entityId, scope, commits, priority) {
   await dropStalePatches(context, entityId, held, new Set(hashes));
   for (const hash of hashes) {
     if (held.includes(hash) || !context.active()) continue;
-    const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES }, priority);
+    const answer = await ask(context, "git.show", { ...scope, hash, max_bytes: COMMIT_PATCH_MAX_BYTES },
+      priority, addressOf(context, entityId, PATCH_RECORD_KIND, hash));
     if (!answer || !context.active() || answer.truncated || !withinBytes(answer.patch, COMMIT_PATCH_MAX_BYTES)) continue;
     await writeCached(addressOf(context, entityId, PATCH_RECORD_KIND, hash), answer);
   }
@@ -1126,11 +1139,8 @@ async function syncWorkingDiff(context, entityId, row, priority) {
 async function pullWorkingDiff(context, entityId, row, priority, { patch = true } = {}) {
   // Drain before joining the coordinator: its own background loader cannot
   // await a foreground reader which is joining that same pending answer.
-  if (priority === "background") {
-    const queued = diffRead(row, null, { patch });
-    await context.beforeBackgroundRead?.(queued.method, queued.params);
-  }
   const address = addressOf(context, entityId, "diff");
+  if (priority === "background") await beforeBackgroundRead(context, address);
   const before = await readCached(address);
   const fence = pushFence();
   const { method, repository, params } = diffRead(row, before?.value, { patch });
@@ -1146,8 +1156,7 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
     key,
     priority,
     active: context.active,
-    load: (envelope) => context.active()
-      ? context.call(method, params, context.priorityForRead?.(method, params, envelope) || envelope) : null,
+    load: (envelope) => callWhileActive(context, method, params, envelope, address),
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
   // The mounted surface or another tab can write without a push. Compare
@@ -1192,7 +1201,8 @@ const staleDiffRecord = (held) => (!held || held.stale ? null : { ...held, stale
 async function syncThread(context, entityId, agent, priority) {
   await syncThreadWindow({
     deviceId: context.deviceId,
-    call: (method, params, envelope) => callWhileActive(context, method, params, envelope),
+    call: (method, params, envelope) => callWhileActive(context, method, params, envelope,
+      addressOf(context, entityId, THREAD_RECORD_KIND, agent.conversation_id || agent.id)),
     active: context.active,
     entityId,
     agentId: agent.id,
@@ -1755,6 +1765,7 @@ const missingFile = (error) => error?.code === "not_found" || error?.error_code 
 /** Passes and pushes can read the same body concurrently. Only its newest
  *  reader may write; a different file's refresh cannot supersede this one. */
 async function readFileBody(context, entityId, scope, path) {
+  context = { ...context, readScope: addressOf(context, entityId, FILE_RECORD_KIND, path) };
   const held = (await readCached(addressOf(context, entityId, FILE_RECORD_KIND, path)))?.value;
   if (!context.active()) return "cancelled";
   const readPage = backgroundPageReader(context, scope, path);
@@ -1957,6 +1968,7 @@ export function stopCacheSync() {
   taskReadGenerations.clear();
   // Everything still out stands down before the fences it was held to go.
   lifetime += 1;
+  backgroundStreams.clear();
   fileReads.clear();
   fileRecoveries.clear();
   diffRecoveries.clear();

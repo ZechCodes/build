@@ -6,12 +6,14 @@ import { called, passesSettled } from "./waits.js";
 
 const App = { route: {}, devices: [{ id: "dev-1" }] };
 const watchers = [];
+let leanActivity = false;
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/changeEvents.js", () => ({
   bridgeCapabilities: () => ({
     changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] },
     tasks: { listPaged: true },
+    threads: { leanActivity },
   }),
   subscriptionsSettledFor: async () => {},
   onSubscriptionHeld: () => () => {},
@@ -52,7 +54,7 @@ const gate = () => {
   return { promise, release };
 };
 
-let cache, sync, visible, rpc, script, disposers, abandonedPass;
+let cache, sync, visible, rpc, script, disposers, abandonedPass, wireStreams;
 const answers = {
   "board.list": () => ({ items: board }),
   "project.list": () => ({ projects }),
@@ -75,6 +77,17 @@ const calls = (method) => rpc.mock.calls.filter(([name]) => name === method);
 const nonLists = () => rpc.mock.calls.filter(([method]) => !lists.includes(method));
 const finish = () => passesSettled(sync, "dev-1");
 const start = () => sync.startCacheSync();
+const backgroundTraffic = () => {
+  const original = rpc.getMockImplementation();
+  const traffic = { pending: 0, peak: 0 };
+  rpc.mockImplementation(async (method, params, envelope) => {
+    const background = envelope?.priority === "background";
+    if (background) traffic.peak = Math.max(traffic.peak, ++traffic.pending);
+    try { return await original(method, params, envelope); }
+    finally { if (background) traffic.pending -= 1; }
+  });
+  return traffic;
+};
 
 beforeEach(async () => {
   vi.resetModules();
@@ -82,6 +95,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   delete navigator.locks;
   script = {};
+  leanActivity = false;
   watchers.length = 0;
   disposers = [];
   abandonedPass = false;
@@ -92,7 +106,16 @@ beforeEach(async () => {
     cacheScope: { deviceId: "dev-1", active: () => true },
   };
   cache = await import("../src/core/localCache.js");
+  const scheduler = await import("../src/core/syncBackgroundStreams.js");
+  const createStreams = scheduler.createBackgroundStreams;
+  const factorySpy = vi.spyOn(scheduler, "createBackgroundStreams").mockImplementation(() => {
+    const factory = createStreams();
+    const forContext = factory.forContext;
+    factory.forContext = (owner) => (wireStreams = forContext(owner));
+    return factory;
+  });
   sync = await import("../src/core/cacheSync.js");
+  factorySpy.mockRestore();
   visible = await import("../src/core/syncVisibleScopes.js");
 });
 
@@ -421,6 +444,257 @@ describe("foreground-first passes", () => {
     const next = rpc.mock.calls.slice(before).filter(([method]) => !lists.includes(method))[0];
     expect(next.slice(0, 2)).toEqual(["thread.page", expect.objectContaining({ entity_id: "run-9", agent_id: "ag-9-b" })]);
     expect(next[2]?.priority).not.toBe("background");
+  });
+});
+
+describe("bounded background streams", () => {
+  it("lets a push finish its background task continuation when foreground joins its serialized project", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    start();
+    await finish();
+    rpc.mockClear();
+    const thread = gate(), firstPage = gate();
+    script["thread.page"] = (params) => params.agent_id === "ag-1-a" ? thread.promise : answers["thread.page"]();
+    script["tasks.list"] = (params) => params.project_id === "p2" && !params.cursor
+      ? firstPage.promise : answers["tasks.list"](params);
+    const pass = sync.syncDevice("dev-1");
+    let push;
+    try {
+      await called(rpc, () => calls("thread.page").some(([, params]) => params.agent_id === "ag-1-a"));
+      push = watchers.find((entry) => entry.id === "s-inbox").onChanges([
+        { entity_id: "p2", tasks: { task_ids: [] } },
+      ]);
+      await called(rpc, () => calls("tasks.list").some(([, params]) => params.project_id === "p2"));
+      App.route = routeTo(10);
+      sync.routeChanged();
+      await called(rpc, () => calls("thread.page").some(([, params]) => params.agent_id === "ag-10-b"));
+      firstPage.release(answers["tasks.list"]({ project_id: "p2" }));
+      await vi.waitFor(() => expect(calls("tasks.list").some(([, params]) => params.project_id === "p2" && params.cursor)).toBe(true));
+      const continuation = calls("tasks.list").find(([, params]) => params.project_id === "p2" && params.cursor);
+      expect(continuation[2]?.priority).toBe("background");
+      await push;
+    } finally {
+      firstPage.release(answers["tasks.list"]({ project_id: "p2" }));
+      thread.release(answers["thread.page"]());
+      App.route = { name: "inbox", deviceId: "dev-1" };
+      sync.routeChanged();
+      await Promise.all([push, pass]);
+      await finish();
+    }
+  });
+
+  it("promotes a queued lean activity repair before its selected conversation's barrier", async () => {
+    leanActivity = true;
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    start();
+    await finish();
+    rpc.mockClear();
+    const message = { type: "message", data: { sequence: 1, role: "agent", body: "Hello" } };
+    const item = { type: "event", data: { sequence: 2, event: "tool_use", summary: "Read a.js" } };
+    const thought = { type: "event", data: { sequence: 3, event: "reasoning", summary: "Thinking" } };
+    const target = address("run-1", "thread", "ag-1-a");
+    await cache.writeCached(target, { items: [message, item, thought], deliveredSequence: 3, activityDigests: [] });
+    const repair = gate(), pushed = gate(), queued = gate();
+    const repairPage = { items: [thought], has_more: false, thread_last_sequence: 4,
+      activity_digests: [{ from_sequence: 2, through_sequence: 3, rows: 2, tool_calls: 1 }] };
+    script["thread.page"] = (params) => params.agent_id !== "ag-1-a" ? answers["thread.page"]() : params.newest
+      ? { items: [], has_more: false, thread_last_sequence: 4 } : repair.promise;
+    script["thread.activity"] = () => ({ items: [{ ...item, data: { ...item.data, updated_sequence: 4, outcome: "ok" } }] });
+    script["fs.tree"] = (params) => ["run-2", "run-3"].includes(params.run_id) ? pushed.promise : answers["fs.tree"](params);
+    const threads = await import("../src/core/threadSync.js");
+    const readThread = threads.syncThreadWindow;
+    const spy = vi.spyOn(threads, "syncThreadWindow").mockImplementation((request) => readThread({
+      ...request,
+      call: (method, ...args) => {
+        if (method === "thread.activity") queued.release();
+        return request.call(method, ...args);
+      },
+    }));
+    const traffic = backgroundTraffic();
+    const pass = sync.syncDevice("dev-1");
+    let pushes = [];
+    let admission;
+    try {
+      await called(rpc, () => calls("thread.page").filter(([, params]) => params.agent_id === "ag-1-a").length === 2);
+      admission = vi.spyOn(wireStreams, "read");
+      const watcher = watchers.find((entry) => entry.id === "s-background");
+      pushes = [2, 3].map((number) => watcher.onChanges([
+        { entity_id: `run-${number}`, files: { paths: ["changed.js"] } },
+      ]));
+      await called(rpc, () => calls("fs.tree").some(([, params]) => params.run_id === "run-2"));
+      await vi.waitFor(() => expect(admission.mock.calls.length).toBeGreaterThanOrEqual(2));
+      repair.release(repairPage);
+      await called(rpc, () => calls("fs.tree").some(([, params]) => params.run_id === "run-3"));
+      await queued.promise;
+      expect(calls("thread.activity")).toHaveLength(0);
+      App.route = { ...routeTo(1), agent: "ag-1-a" };
+      sync.routeChanged();
+      await vi.waitFor(() => expect(calls("thread.activity")).toHaveLength(1));
+      expect(calls("thread.activity")[0][2]?.priority).not.toBe("background");
+      await vi.waitFor(async () => expect((await cache.readCached(target)).value.repairThrough).toBeUndefined());
+      expect(traffic.pending).toBe(2);
+    } finally {
+      repair.release(repairPage);
+      pushed.release(answers["fs.tree"]({ path: "" }));
+      App.route = { name: "inbox", deviceId: "dev-1" };
+      sync.routeChanged();
+      await Promise.all([...pushes, pass]);
+      await finish();
+      spy.mockRestore();
+      admission?.mockRestore();
+    }
+    expect(traffic.peak).toBe(2);
+  });
+
+  it("keeps the shared cap when a task list fails while its columns read remains pending", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const columns = gate(), statuses = gate();
+    script["tasks.columns"] = (params) => params.project_id === "p2" ? columns.promise : answers["tasks.columns"](params);
+    script["tasks.list"] = (params) => {
+      if (params.project_id === "p2") throw new Error("temporary task failure");
+      return answers["tasks.list"](params);
+    };
+    script["git.status"] = () => statuses.promise;
+    const traffic = backgroundTraffic();
+    start();
+    try {
+      await called(rpc, () => calls("tasks.columns").some(([, params]) => params.project_id === "p2"));
+      await called(rpc, () => calls("tasks.list").some(([, params]) => params.project_id === "p2"));
+      // Both first-page RPCs have started. Keep their sibling pending while
+      // the failed page and any checkout cache lookups finish their turns.
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(traffic.peak).toBeLessThanOrEqual(2);
+      expect(calls("git.status")).toHaveLength(0);
+      App.route = routeTo(1);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+      expect(calls("git.status")[0][2]?.priority).not.toBe("background");
+    } finally {
+      columns.release(answers["tasks.columns"]({ project_id: "p2" }));
+      statuses.release(answers["git.status"]());
+      await finish();
+    }
+    expect(traffic.peak).toBeLessThanOrEqual(2);
+  });
+
+  it("shares the two background slots with a files push and still dispatches a new foreground scope", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const statuses = gate(), pushedTree = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : statuses.promise;
+    script["fs.tree"] = (params) => params.run_id === "run-3" ? pushedTree.promise : answers["fs.tree"](params);
+    const traffic = backgroundTraffic();
+    start();
+    let pushed;
+    try {
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-2"));
+      pushed = watchers.find((watcher) => watcher.id === "s-background").onChanges([
+        { entity_id: "run-3", files: { paths: ["changed.js"] } },
+      ]);
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(traffic.peak).toBe(2);
+      expect(calls("fs.tree")).toHaveLength(0);
+      App.route = routeTo(10);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-10"));
+      expect(calls("git.status").find(([, params]) => params.run_id === "run-10")[2]?.priority).not.toBe("background");
+    } finally {
+      statuses.release(answers["git.status"]());
+      pushedTree.release(answers["fs.tree"]({ path: "" }));
+      await pushed;
+      await finish();
+    }
+    expect(traffic.peak).toBe(2);
+    expect(calls("fs.tree").some(([, params]) => params.run_id === "run-3")).toBe(true);
+  });
+
+  it("keeps at most two background RPCs in flight across ten workspaces and preserves each checkout's read order", async () => {
+    const held = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : held.promise;
+    const original = rpc.getMockImplementation();
+    let inFlight = 0, peak = 0;
+    rpc.mockImplementation(async (method, params, envelope) => {
+      const background = envelope?.priority === "background";
+      if (background) peak = Math.max(peak, ++inFlight);
+      try { return await original(method, params, envelope); }
+      finally { if (background) inFlight -= 1; }
+    });
+    start();
+    try {
+      await vi.waitFor(() => expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2));
+      expect(inFlight).toBe(2);
+      expect(peak).toBe(2);
+    } finally {
+      held.release(answers["git.status"]());
+      await finish();
+    }
+    expect(peak).toBe(2);
+    expect(inFlight).toBe(0);
+    for (let number = 1; number < 10; number += 1) {
+      expect(nonLists().filter(([, params]) => params.run_id === `run-${number}`).map(([method]) => method)).toEqual([
+        "git.status", "fs.tree", "term.list", "git.log", "git.unpushed", "run.diff",
+      ]);
+    }
+  });
+
+  it("advances other workspaces through a free stream while one status remains slow", async () => {
+    const held = gate();
+    script["git.status"] = (params) => params.run_id === "run-1" ? held.promise : answers["git.status"]();
+    start();
+    await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+    try {
+      await vi.waitFor(async () => expect((await cache.readCached(address("run-3", "unpushed")))?.value).toBeTruthy());
+      expect(calls("fs.tree").some(([, params]) => params.run_id === "run-1")).toBe(false);
+    } finally {
+      held.release(answers["git.status"]());
+      await finish();
+    }
+  });
+
+  it("dispatches foreground while both streams are occupied and holds their next reads behind it", async () => {
+    const heldOne = gate(), heldTwo = gate(), heldForeground = gate();
+    script["git.status"] = (params) => ({ "run-1": heldOne, "run-2": heldTwo, "run-9": heldForeground }[params.run_id]?.promise
+      || answers["git.status"]());
+    start();
+    await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+    try {
+      await vi.waitFor(() => expect(calls("git.status").some(([, params]) => params.run_id === "run-2")).toBe(true));
+      const before = rpc.mock.calls.length;
+      App.route = routeTo(9);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-9"));
+      const selected = rpc.mock.calls[before];
+      expect(selected.slice(0, 2)).toEqual(["git.status", expect.objectContaining({ run_id: "run-9" })]);
+      expect(selected[2]?.priority).not.toBe("background");
+      heldTwo.release(answers["git.status"]());
+      await vi.waitFor(async () => expect((await cache.readCached(address("run-2", "status")))?.value).toBeTruthy());
+      expect(calls("fs.tree").some(([, params]) => params.run_id === "run-2")).toBe(false);
+    } finally {
+      heldOne.release(answers["git.status"]());
+      heldTwo.release(answers["git.status"]());
+      heldForeground.release(answers["git.status"]());
+      await finish();
+    }
+  });
+
+  it("cancels both streams and the queued follow-up on stop without writing their late answers", async () => {
+    const held = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : held.promise;
+    start();
+    const pass = sync.passInFlight("dev-1");
+    try {
+      await vi.waitFor(() => expect(calls("git.status").filter(([, params]) => params.run_id !== "run-10")).toHaveLength(2));
+      const followUp = sync.syncDevice("dev-1");
+      const before = rpc.mock.calls.length;
+      sync.stopCacheSync();
+      held.release(answers["git.status"]());
+      expect(await Promise.all([pass, followUp])).toEqual([false, false]);
+      expect(rpc.mock.calls).toHaveLength(before);
+      expect(await cache.readCached(address("run-1", "status"))).toBeUndefined();
+      expect(await cache.readCached(address("run-2", "status"))).toBeUndefined();
+    } finally {
+      held.release(answers["git.status"]());
+      await pass;
+    }
   });
 });
 

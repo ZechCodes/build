@@ -1889,7 +1889,21 @@ In practice:
   and written independently as they land. `syncPhases.js` then reads the open
   conversation, the open checkout and project's first task page, the inbox's
   other conversations and remaining task pages/review metadata, and finally
-  background checkout records and bodies. Only the visible scope is promoted;
+  background checkout records and bodies. `syncBackgroundStreams.js` drains
+  that final phase through two streams per device, retaining each checkout's
+  read/write order and letting a free stream advance past a slow checkout.
+  Inbox and push-triggered background RPCs share those two wire slots per
+  device/session/restored path. A failed first task page still waits for its
+  parallel columns read before the inbox phase ends. Foreground reads use no
+  background slot; queued reads carry the record identity that the foreground
+  jobs name and recheck promotion when they wake. All reads needed to finish
+  that record share its scope, including lean thread activity repairs, so a
+  selected record never waits through its own foreground barrier. Push readers
+  follow the active planner's priorities for their captured
+  device/session/path/lifetime. Only pass readers await their owning pass's
+  barrier; a serialized push can itself be the work that foreground joins.
+  Stop or path/session replacement discards queued
+  reads and abandons the old slots. Only the visible scope is promoted;
   mounted panes describe their shown trees, Changes and remembered conversation
   through `syncVisibleScopes.js`. Mounted source directories supply their own
   fenced cache readers where no board entity addresses those records. Route

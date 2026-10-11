@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
 import { createSyncPhases } from "../src/core/syncPhases.js";
+import { createBackgroundStreams } from "../src/core/syncBackgroundStreams.js";
 import { registerSyncDiff, registerSyncRead, registerSyncThread } from "../src/core/syncVisibleScopes.js";
 
 vi.mock("../src/core/localCache.js", () => ({ cachedSubKeys: async () => [] }));
@@ -24,7 +25,7 @@ const mounted = (entityId, kind, sub = "", active = () => true, read = null) => 
   return callback;
 };
 
-function fixture(recoverWorkingDiff = false) {
+function fixture(recoverWorkingDiff = false, backgroundStreams = null) {
   const rows = [1, 2].map((number) => ({
     kind: "branch", run_id: `run-${number}`, worktree_id: `wt-${number}`, branch: `build/${number}`,
     project_id: "p1", workspace_id: `ws-${number}`, state: "building",
@@ -34,7 +35,7 @@ function fixture(recoverWorkingDiff = false) {
     id: `ws-${index + 1}`, project_id: "p1", entity_id: row.run_id, status: "ready",
   }));
   const view = liveFeedSnapshot({ items: rows }, { projects: [{ project_id: "p1" }] }, { workspaces }, "dev-1");
-  const context = { deviceId: "dev-1", active: () => true, recoverWorkingDiff };
+  const context = { deviceId: "dev-1", active: () => true, recoverWorkingDiff, backgroundStreams };
   return createSyncPhases({
     context, view, route: () => route,
     pass: { order: ["run-1", "run-2"], rows: new Map(view.items.map((row) => [row.run_id, row])) },
@@ -66,13 +67,66 @@ afterEach(() => disposers.forEach((dispose) => dispose()));
 
 const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
+describe("foreground record scopes", () => {
+  it("promotes every read of the selected record and keeps unrelated records in background", () => {
+    const phases = fixture();
+    const background = { priority: "background" };
+    for (const [entityId, kind, sub] of [
+      ["run-1", "thread", "ag-1-b"], ["run-1", "status", ""],
+      ["run-1", "tree", ""], ["p1", "tasks-first", ""],
+    ]) {
+      expect(phases.priorityForRead(address(entityId, kind, sub), background)?.priority).not.toBe("background");
+    }
+    for (const [entityId, kind, sub] of [
+      ["run-1", "thread", "ag-1-a"], ["run-2", "thread", "ag-2-b"],
+      ["run-1", "tree", "hidden"], ["run-1", "file", "a.js"],
+      ["run-1", "patch", "hash"], ["p1", "tasks-rest", "cursor"],
+    ]) {
+      expect(phases.priorityForRead(address(entityId, kind, sub), background)?.priority).toBe("background");
+    }
+    route = routeTo(2);
+    expect(phases.priorityForRead(address("run-1", "thread", "ag-1-b"), background)?.priority).toBe("background");
+    expect(phases.priorityForRead(address("run-2", "thread", "ag-2-b"), background)?.priority).not.toBe("background");
+  });
+});
+
 describe("foreground scope supersession", () => {
+  it("wakes a selected checkout queued behind two push reads when the planner starts its foreground turn", async () => {
+    const streams = createBackgroundStreams().forContext({ deviceId: "dev-1", session: {}, requestScope: {}, lifetime: 1 });
+    const held = gate(), queued = gate();
+    const sideRead = () => streams.read({ active: () => true, priority: () => ({ priority: "background" }), load: () => held.promise });
+    const pushes = [sideRead(), sideRead()];
+    let phases;
+    route = { name: "inbox", deviceId: "dev-1" };
+    readers.scope = (row) => row ? { run_id: row.run_id } : null;
+    readers.status = (_context, entityId, _row, priority) => {
+      queued.release();
+      return streams.read({
+        active: () => true,
+        priority: () => phases.priorityForRead(address(entityId, "status"), priority === "background" ? { priority } : {}),
+        before: () => phases.beforeBackgroundRead(address(entityId, "status")),
+        load: (envelope) => event(entityId, "status", envelope?.priority || "foreground"),
+      });
+    };
+    phases = fixture(false, streams);
+    const pass = phases.run();
+    await queued.promise;
+    await microtasks();
+    route = routeTo(1);
+    const selected = phases.foreground();
+    await microtasks();
+    const dispatched = events.some((item) => item.entityId === "run-1" && item.kind === "status" && item.priority === "foreground");
+    held.release();
+    await Promise.all([...pushes, pass, selected]);
+    expect(dispatched).toBe(true);
+  });
+
   it("lets a queued recovery diff cross its own foreground barrier without a Changes pane", async () => {
     const held = gate(), asked = gate();
     let phases;
     readers.visibleDiff = async (_context, entityId, _row, priority) => {
       asked.release();
-      await phases.beforeBackgroundRead("run.diff", { run_id: entityId });
+      await phases.beforeBackgroundRead(address(entityId, "diff"));
       event(entityId, "diff", priority);
       await held.promise;
     };
@@ -84,15 +138,15 @@ describe("foreground scope supersession", () => {
     held.release();
     await pass;
     expect(beforeRelease.some((item) => item.entityId === "run-1" && item.kind === "diff")).toBe(true);
-    expect(phases.priorityForRead("run.diff", { run_id: "run-1" }, { priority: "background" })?.priority).not.toBe("background");
+    expect(phases.priorityForRead(address("run-1", "diff"), { priority: "background" })?.priority).not.toBe("background");
   });
 
   it("promotes a mounted recovery diff on this device when the route belongs to another device", async () => {
     route = { ...routeTo(1), deviceId: "dev-2" };
     disposers.push(registerSyncDiff(address("run-2", "diff")));
     const phases = fixture(true);
-    expect(phases.priorityForRead("run.diff", { run_id: "run-2" }, { priority: "background" })?.priority).not.toBe("background");
-    expect(phases.priorityForRead("run.diff", { run_id: "run-1" }, { priority: "background" })?.priority).toBe("background");
+    expect(phases.priorityForRead(address("run-2", "diff"), { priority: "background" })?.priority).not.toBe("background");
+    expect(phases.priorityForRead(address("run-1", "diff"), { priority: "background" })?.priority).toBe("background");
     await phases.run();
     expect(events[0]).toEqual({ entityId: "run-2", kind: "diff", priority: "foreground", sub: "" });
   });
@@ -105,10 +159,12 @@ describe("foreground scope supersession", () => {
       if (entityId === "run-1" && priority === "background") {
         lookupStarted.release();
         await heldLookup.promise;
-        await phases.beforeBackgroundRead("git.status", { run_id: entityId });
+        await phases.beforeBackgroundRead(address(entityId, "status"));
       }
       event(entityId, "status", priority);
-      if (entityId === "run-2" && priority === "foreground") { otherStarted.release(); await heldOther.promise; }
+      // The second stream may already be warming B when navigation selects
+      // it. Its foreground turn joins that pending read and owns the barrier.
+      if (entityId === "run-2") { otherStarted.release(); await heldOther.promise; }
     };
     phases = fixture();
     const pass = phases.run();

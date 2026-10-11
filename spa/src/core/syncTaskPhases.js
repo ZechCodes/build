@@ -6,11 +6,17 @@ import { nextTaskRead } from "./taskReadOrder.js";
 import { readTasksRecord, tasksAddress, tasksRecord, writeTasksRecord } from "./trackerCache.js";
 import { writeListedUserSession } from "./userSessionCache.js";
 
+/** Continuations stay background even when the project's first page is shown. */
+export const taskReadScope = (context, projectId, params = {}) => ({
+  deviceId: context.deviceId, entityId: projectId,
+  kind: params.cursor ? "tasks-rest" : "tasks-first",
+});
+
 async function projectColumns(context, projectId, ask, priority) {
   const held = await readTasksRecord(context.deviceId, projectId);
   if (held?.columns?.length) return held.columns;
   if (!context.active()) return [];
-  return (await ask(context, "tasks.columns", { project_id: projectId }, priority))?.columns || [];
+  return (await ask(context, "tasks.columns", { project_id: projectId }, priority, taskReadScope(context, projectId)))?.columns || [];
 }
 
 async function foldPage(context, projectId, columns, stretch, page) {
@@ -26,7 +32,7 @@ async function foldPage(context, projectId, columns, stretch, page) {
 async function wholeList(context, projectId, ask, columns, priority) {
   const read = await nextTaskRead();
   if (!context.active()) return false;
-  const answer = await ask(context, "tasks.list", { project_id: projectId }, priority);
+  const answer = await ask(context, "tasks.list", { project_id: projectId }, priority, taskReadScope(context, projectId));
   if (!answer || !context.active()) return false;
   const value = await columns;
   if (!context.active()) return false;
@@ -37,6 +43,15 @@ async function wholeList(context, projectId, ask, columns, priority) {
   return true;
 }
 
+// Columns and the first page start together. Even a refused or failed page
+// must drain its sibling before the inbox can hand the wire to checkout work.
+async function firstWithColumns(first, columns) {
+  const reads = await Promise.allSettled([first, columns]);
+  const failure = reads.find((read) => read.status === "rejected");
+  if (failure) throw failure.reason;
+  return reads[0].value;
+}
+
 function projectPhases(context, projectId, { ask, readReviews }) {
   let priority = "foreground";
   let pull = null;
@@ -44,14 +59,14 @@ function projectPhases(context, projectId, { ask, readReviews }) {
   let restPromise = null;
   const begin = () => {
     const columns = projectColumns(context, projectId, ask, priority);
-    if (!pagesTasks(context.deviceId)) return wholeList(context, projectId, ask, columns, priority);
+    if (!pagesTasks(context.deviceId)) return firstWithColumns(wholeList(context, projectId, ask, columns, priority), columns);
     pull = createTaskPagePull({
       deviceId: context.deviceId, projectId, params: { project_id: projectId },
       active: () => context.active(),
-      ask: (params) => ask(context, "tasks.list", params, priority),
+      ask: (params) => ask(context, "tasks.list", params, priority, taskReadScope(context, projectId, params)),
       fold: (stretch, page) => foldPage(context, projectId, columns, stretch, page),
     });
-    return pull.first();
+    return firstWithColumns(pull.first(), columns);
   };
   const first = (nextPriority) => {
     priority = nextPriority;

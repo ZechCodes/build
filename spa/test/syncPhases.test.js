@@ -103,8 +103,8 @@ describe("foreground scope supersession", () => {
       queued.release();
       return streams.read({
         active: () => true,
-        priority: () => phases.priorityForRead("git.status", { run_id: entityId }, priority === "background" ? { priority } : {}),
-        before: () => phases.beforeBackgroundRead("git.status", { run_id: entityId }),
+        priority: () => phases.priorityForRead(address(entityId, "status"), priority === "background" ? { priority } : {}),
+        before: () => phases.beforeBackgroundRead(address(entityId, "status")),
         load: (envelope) => event(entityId, "status", envelope?.priority || "foreground"),
       });
     };
@@ -126,7 +126,7 @@ describe("foreground scope supersession", () => {
     let phases;
     readers.visibleDiff = async (_context, entityId, _row, priority) => {
       asked.release();
-      await phases.beforeBackgroundRead("run.diff", { run_id: entityId });
+      await phases.beforeBackgroundRead(address(entityId, "diff"));
       event(entityId, "diff", priority);
       await held.promise;
     };
@@ -138,15 +138,15 @@ describe("foreground scope supersession", () => {
     held.release();
     await pass;
     expect(beforeRelease.some((item) => item.entityId === "run-1" && item.kind === "diff")).toBe(true);
-    expect(phases.priorityForRead("run.diff", { run_id: "run-1" }, { priority: "background" })?.priority).not.toBe("background");
+    expect(phases.priorityForRead(address("run-1", "diff"), { priority: "background" })?.priority).not.toBe("background");
   });
 
   it("promotes a mounted recovery diff on this device when the route belongs to another device", async () => {
     route = { ...routeTo(1), deviceId: "dev-2" };
     disposers.push(registerSyncDiff(address("run-2", "diff")));
     const phases = fixture(true);
-    expect(phases.priorityForRead("run.diff", { run_id: "run-2" }, { priority: "background" })?.priority).not.toBe("background");
-    expect(phases.priorityForRead("run.diff", { run_id: "run-1" }, { priority: "background" })?.priority).toBe("background");
+    expect(phases.priorityForRead(address("run-2", "diff"), { priority: "background" })?.priority).not.toBe("background");
+    expect(phases.priorityForRead(address("run-1", "diff"), { priority: "background" })?.priority).toBe("background");
     await phases.run();
     expect(events[0]).toEqual({ entityId: "run-2", kind: "diff", priority: "foreground", sub: "" });
   });
@@ -159,7 +159,7 @@ describe("foreground scope supersession", () => {
       if (entityId === "run-1" && priority === "background") {
         lookupStarted.release();
         await heldLookup.promise;
-        await phases.beforeBackgroundRead("git.status", { run_id: entityId });
+        await phases.beforeBackgroundRead(address(entityId, "status"));
       }
       event(entityId, "status", priority);
       // The second stream may already be warming B when navigation selects

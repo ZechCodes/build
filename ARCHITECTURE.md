@@ -1895,8 +1895,14 @@ In practice:
   Inbox and push-triggered background RPCs share those two wire slots per
   device/session/restored path. A failed first task page still waits for its
   parallel columns read before the inbox phase ends. Foreground reads use no
-  background slot; queued reads recheck promotion and the current foreground
-  barrier when they wake. Stop or path/session replacement discards queued
+  background slot; queued reads carry the record identity that the foreground
+  jobs name and recheck promotion when they wake. All reads needed to finish
+  that record share its scope, including lean thread activity repairs, so a
+  selected record never waits through its own foreground barrier. Push readers
+  follow the active planner's priorities for their captured
+  device/session/path/lifetime. Only pass readers await their owning pass's
+  barrier; a serialized push can itself be the work that foreground joins.
+  Stop or path/session replacement discards queued
   reads and abandons the old slots. Only the visible scope is promoted;
   mounted panes describe their shown trees, Changes and remembered conversation
   through `syncVisibleScopes.js`. Mounted source directories supply their own

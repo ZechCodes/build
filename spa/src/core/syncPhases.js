@@ -106,38 +106,11 @@ function foregroundDiffEntities(state) {
   return [...entities];
 }
 
-const matchesScope = (scope, params) => Boolean(scope)
-  && Object.entries(scope).every(([key, value]) => params[key] === value);
-
-function selectedThreadRequest(state, route, entityId, params) {
-  const selected = conversationFor(route, entityId, state.pass.rows, state.context.deviceId);
-  return selected?.entityId === params.entity_id && selected?.agent.id === params.agent_id;
-}
-
-const FOREGROUND_CHECKOUT_READS = {
-  "git.status": (_state, _entityId, matches) => matches,
-  "git.log": (_state, _entityId, matches) => matches,
-  "git.unpushed": (_state, _entityId, matches) => matches,
-  "fs.tree": (state, entityId, matches, params) => matches
-    && new Set(["", ...visibleTreePaths(state.context.deviceId, entityId)]).has(params.path || ""),
-};
-
-const DIFF_READS = new Set(["run.diff", "worktree.diff"]);
-const foregroundDiffRequest = (state, params) => foregroundDiffEntities(state)
-  .some((entityId) => matchesScope(state.readers.scope(state.pass.rows.get(entityId)), params));
-
-function foregroundRequest(state, method, params) {
-  if (DIFF_READS.has(method)) return foregroundDiffRequest(state, params);
-  const route = state.route();
-  if (route.deviceId !== state.context.deviceId) return false;
-  if (method === "tasks.list" || method === "tasks.columns") return params.project_id === route.projectId && !params.cursor;
-  const entityId = routedEntityId(route, state.view);
-  if (method === "thread.page") return selectedThreadRequest(state, route, entityId, params);
-  const row = state.pass.rows.get(entityId);
-  if (method === "term.list") return matchesScope(state.readers.terminalScope(row), params);
-  const matches = matchesScope(state.readers.scope(row), params);
-  return FOREGROUND_CHECKOUT_READS[method]?.(state, entityId, matches, params) || false;
-}
+/** Every RPC needed to finish one record has that record's identity. A
+ * selected thread's repairs therefore share its page's foreground authority,
+ * without maintaining a list of the verbs its reader happens to issue. */
+const foregroundRequest = (state, scope) => scope?.deviceId === state.context.deviceId
+  && foregroundJobs(state).some((job) => job.key === keyOf(scope.entityId, scope.kind, scope.sub || ""));
 
 async function takeJob(state, job) {
   if (!state.context.active() || state.done.has(job.key)) return;
@@ -187,10 +160,10 @@ function currentForeground(state) {
 
 /** A queued loader must wake on supersession before following another turn:
  * that new turn may be waiting for this very loader to cross the wire. */
-async function beforeBackgroundRead(state, method, params) {
+async function beforeBackgroundRead(state, scope) {
   while (state.context.active()) {
     const turn = currentForeground(state);
-    if (foregroundRequest(state, method, params)) return;
+    if (foregroundRequest(state, scope)) return;
     await turn.settled;
     if (state.foregroundTurn === turn && foregroundScope(state) === turn.scope) return;
   }
@@ -239,9 +212,9 @@ export function createSyncPhases(options) {
   state.foreground = () => currentForeground(state).promise;
   return {
     foreground: state.foreground,
-    beforeBackgroundRead: (method, params) => beforeBackgroundRead(state, method, params),
-    priorityForRead: (method, params, envelope) =>
-      envelope?.priority === "background" && foregroundRequest(state, method, params)
+    beforeBackgroundRead: (scope) => beforeBackgroundRead(state, scope),
+    priorityForRead: (scope, envelope) =>
+      envelope?.priority === "background" && foregroundRequest(state, scope)
         ? requestPriorityFields("foreground") : envelope,
     async run() {
       await state.foreground();

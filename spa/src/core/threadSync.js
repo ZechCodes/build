@@ -58,7 +58,7 @@ async function requestThreadPage(request, params) {
 
 /** Lean projection is a per-device wire feature, checked at dispatch. */
 export const threadActivityParam = (deviceId) =>
-  bridgeCapabilities(deviceId).threads.leanActivity ? { activity: "newest" } : {};
+  bridgeCapabilities(deviceId)?.threads?.leanActivity === true ? { activity: "newest" } : {};
 
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest hundred where it holds none — and its recent items read again where

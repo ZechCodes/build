@@ -82,6 +82,10 @@ import { mountMeasuredHeight } from "./measuredInset.js";
 import { DIFF_SORT_LATEST } from "./diffSort.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { watchUiState } from "./localUiState.js";
+import { registerSyncRead, syncPaneShown } from "./syncVisibleScopes.js";
+const alwaysActive = () => true;
+const workspaceDiffKeyFields = (ifDiffKey, address, before) =>
+  ifDiffKey && (!address || before?.value) ? { if_diff_key: ifDiffKey } : {};
 
 /** The unpushed answer a source read for itself, kept where the next mount of
  *  this source reads it — which is what puts the base on the rail on the first
@@ -123,10 +127,11 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
     // source will find it. Checkout invalidations refresh it explicitly.
     cacheEntity: directoryCacheId(scope),
     checkOnMount: true,
-    fetchDiff: async (ifDiffKey) => {
+    fetchDiff: async (ifDiffKey, { active = alwaysActive } = {}) => {
       const readLifetime = lifetime;
       const address = cacheScope?.address({ entityId: directoryCacheId(scope), kind: "unpushed" });
       const before = address ? await readCached(address) : undefined;
+      if (!active()) return null;
       const payload = await callRpc("git.unpushed", {
         ...scope,
         // The commit list, the base and the key, and — of a bridge that can
@@ -135,10 +140,10 @@ export function createWorkspaceReview({ scope, callRpc, cacheScope = null, navig
         // it on arrival is what a phone's first seconds went on. A bridge
         // that cannot is asked for the whole thing, exactly as before.
         ...(perFileDiffs() ? { patch: false } : {}),
-        ...(ifDiffKey && (!address || before?.value) ? { if_diff_key: ifDiffKey } : {}),
+        ...workspaceDiffKeyFields(ifDiffKey, address, before),
       });
-      if (readLifetime !== lifetime) return null;
-      if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload, before, () => readLifetime === lifetime);
+      if (!active() || readLifetime !== lifetime) return null;
+      if (!payload.unchanged) await keepUnpushed(cacheScope, scope, payload, before, () => active() && readLifetime === lifetime);
       return { ...payload, commentable: Boolean(submit) };
     },
     /** The hunks of the files the reader has open, out of the same
@@ -1263,22 +1268,22 @@ export function mountGitPane(
   const recordStill = async (address, before) =>
     recordWriteOf(await readCached(address)) === recordWriteOf(before);
 
-  const storeStatus = async (status, before, guarded, staleKinds) => {
+  const storeStatus = async (status, before, guarded, staleKinds, active = alwaysActive) => {
     if (!status) return true;
     const address = cacheAddress("status");
     if (!address) return false;
-    await writeDirectoryGit(address, status, { before, guarded, staleKinds, active: () => !disposed });
+    await writeDirectoryGit(address, status, { before, guarded, staleKinds, active: () => active() && !disposed });
     return true;
   };
 
-  const storeLog = async (log, before, guarded) => {
+  const storeLog = async (log, before, guarded, active = alwaysActive) => {
     if (!log) return true;
     const address = cacheAddress("log");
     if (!address) return false;
     // Merged rather than replaced: another tab may hold more history than this
     // latest page, and a first-page pull must not throw the older pages away.
     await mergeCachedRecordsTogether([address], ([current]) => [
-      disposed || (guarded && recordWriteOf(current) !== recordWriteOf(before)) ? null : freshLogPage(current?.value, log),
+      !active() || disposed || (guarded && recordWriteOf(current) !== recordWriteOf(before)) ? null : freshLogPage(current?.value, log),
     ]);
     return true;
   };
@@ -1309,8 +1314,8 @@ export function mountGitPane(
     await rereadRecords();
   };
 
-  const readCheckoutRecord = (kind) =>
-    callRpc(`git.${kind}`, { ...scope, ...(kind === "status" ? ifStatusKey(lastStatus) : {}) });
+  const readCheckoutRecord = (kind, status = lastStatus) =>
+    callRpc(`git.${kind}`, { ...scope, ...(kind === "status" ? ifStatusKey(status) : {}) });
 
   const showReadError = (error) => {
     if (disposed) return;
@@ -2178,6 +2183,30 @@ export function mountGitPane(
    * The review plug checks its own key, which can move independently.
    */
   const readsForItself = !cacheScope || !syncWalksCheckout(scope);
+  const refreshSyncRecord = async (kind, store, active) => {
+    const before = await cacheRecord(kind);
+    if (!active()) return;
+    const payload = await readCheckoutRecord(kind, before?.value);
+    if (!disposed && active()) await store(payload, before);
+  };
+  const readUnpushedMetadata = async (active) => {
+    const before = await cacheRecord("unpushed");
+    if (!active()) return;
+    const payload = await callRpc("git.unpushed", { ...scope, patch: false });
+    if (active() && !disposed && payload && !payload.unchanged) {
+      await keepUnpushed(cacheScope, scope, payload, before, () => active() && !disposed);
+    }
+  };
+  const syncReaders = {
+    status: (active) => refreshSyncRecord("status", (payload, before) =>
+      storeStatus(statusAfterRead(payload, before?.value || lastStatus), before, true, [], active), active),
+    log: (active) => refreshSyncRecord("log", (payload, before) => storeLog(payload, before, true, active), active),
+    unpushed: readUnpushedMetadata,
+  };
+  const unregisterSyncReads = Object.entries(syncReaders).map(([kind, read]) => registerSyncRead(
+    () => cacheAddress(kind), (active) => Promise.resolve().then(() => read(active)).catch(() => null),
+    () => !disposed && visible && syncPaneShown(container),
+  ));
 
   /** The first paint. Whatever the records say goes on screen at once, so the
    *  reader gets the surface on the first frame. A checkout the cache holds
@@ -2302,6 +2331,7 @@ export function mountGitPane(
     },
     dispose() {
       disposed = true;
+      unregisterSyncReads.forEach((unregister) => unregister());
       draftRecord?.dispose();
       uiRecord?.dispose();
       stopCommitMeasurement();

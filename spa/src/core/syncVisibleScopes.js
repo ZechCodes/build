@@ -4,13 +4,15 @@
 const trees = new Set();
 const diffs = new Set();
 const threads = new Set();
+const reads = new Set();
 const addressOf = (address) => typeof address === "function" ? address() : address;
 const alwaysActive = () => true;
 
 const register = (registry, address, value, active) => {
-  const scope = { address, value, active };
+  let mounted = true;
+  const scope = { address, value, active: () => mounted && active() };
   registry.add(scope);
-  return () => registry.delete(scope);
+  return () => { mounted = false; registry.delete(scope); };
 };
 
 export const registerSyncTree = (address, pathsGetter, activeGetter = alwaysActive) =>
@@ -21,6 +23,32 @@ export const registerSyncDiff = (address, activeGetter = alwaysActive) =>
 
 export const registerSyncThread = (identityGetter, activeGetter = alwaysActive) =>
   register(threads, identityGetter, null, activeGetter);
+
+export const registerSyncRead = (keyGetter, read, activeGetter = alwaysActive) =>
+  register(reads, keyGetter, read, activeGetter);
+
+const readKey = (key) => JSON.stringify([key.deviceId, key.entityId, key.kind, key.sub || ""]);
+const readMounted = (scope, key, passActive) => {
+  const active = () => {
+    const current = addressOf(scope.address);
+    return scope.active() && passActive() && current && readKey(current) === readKey(key);
+  };
+  return active() ? scope.value(active) : null;
+};
+
+/** Source panes own reads that the board's entity sync cannot address. The
+ *  scheduler awaits their normal fenced cache writes in the foreground phase. */
+export function visibleSyncReads(deviceId) {
+  const jobs = new Map();
+  for (const scope of reads) {
+    if (!scope.active()) continue;
+    const key = addressOf(scope.address);
+    if (key?.deviceId !== deviceId) continue;
+    const identity = readKey(key);
+    if (!jobs.has(identity)) jobs.set(identity, { key, read: (active = alwaysActive) => readMounted(scope, key, active) });
+  }
+  return [...jobs.values()];
+}
 
 /** The mounted chat may remember a different agent than the URL names. */
 export function visibleSyncThread(deviceId) {

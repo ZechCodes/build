@@ -2003,7 +2003,9 @@ function threadActionsHtml(actionsId) {
 /// to fetch for it can never be reading two different answers.
 export const digestsOf = (thread) => (thread && thread.activityDigests) || [];
 
-/// The rows a timeline holds: its entries, or the one row an empty one shows.
+/// The rows a timeline holds: its entries, with an empty-state row when no
+/// conversation items are shown. Keep paging controls so a fully filtered
+/// window still offers the older conversation the cache says remains.
 /// Keyed like any other, so the reconciler takes it away the moment there is
 /// something to say.
 ///
@@ -2017,7 +2019,7 @@ const EMPTY_TIMELINE_ENTRY = { key: "empty", html: '<div class="thread-empty">No
 const NOTHING_AT_LEVEL_ENTRY = { key: "empty-level", html: '<div class="thread-empty">Nothing at this level.</div>' };
 
 const timelineRows = ({ entries, itemCount, hiddenByLevel }) =>
-  itemCount ? entries : [hiddenByLevel ? NOTHING_AT_LEVEL_ENTRY : EMPTY_TIMELINE_ENTRY];
+  itemCount ? entries : [...entries, hiddenByLevel ? NOTHING_AT_LEVEL_ENTRY : EMPTY_TIMELINE_ENTRY];
 
 /// The conversation's own head: what it is, how much of it there is, and where
 /// the work it records stands.

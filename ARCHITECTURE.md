@@ -1976,6 +1976,8 @@ In practice:
   then request 23 messages, measured to fill the phone conversation even at
   the dense task-notice row height, plus one newest activity item per run.
   Legacy cold reads and warm catch-up retain 100; repairs retain 50.
+  A detail filter hiding the entire held window still renders Earlier when
+  the cached window says older items remain, so older dialogue stays reachable.
   A leading folded run on a newest page
   means `has_more` describes omitted activity, so held message context survives;
   load-older seeks above that run's digest start. A lean repair refreshes any

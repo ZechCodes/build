@@ -75,6 +75,17 @@ const calls = (method) => rpc.mock.calls.filter(([name]) => name === method);
 const nonLists = () => rpc.mock.calls.filter(([method]) => !lists.includes(method));
 const finish = () => passesSettled(sync, "dev-1");
 const start = () => sync.startCacheSync();
+const backgroundTraffic = () => {
+  const original = rpc.getMockImplementation();
+  const traffic = { pending: 0, peak: 0 };
+  rpc.mockImplementation(async (method, params, envelope) => {
+    const background = envelope?.priority === "background";
+    if (background) traffic.peak = Math.max(traffic.peak, ++traffic.pending);
+    try { return await original(method, params, envelope); }
+    finally { if (background) traffic.pending -= 1; }
+  });
+  return traffic;
+};
 
 beforeEach(async () => {
   vi.resetModules();
@@ -425,6 +436,67 @@ describe("foreground-first passes", () => {
 });
 
 describe("bounded background streams", () => {
+  it("keeps the shared cap when a task list fails while its columns read remains pending", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const columns = gate(), statuses = gate();
+    script["tasks.columns"] = (params) => params.project_id === "p2" ? columns.promise : answers["tasks.columns"](params);
+    script["tasks.list"] = (params) => {
+      if (params.project_id === "p2") throw new Error("temporary task failure");
+      return answers["tasks.list"](params);
+    };
+    script["git.status"] = () => statuses.promise;
+    const traffic = backgroundTraffic();
+    start();
+    try {
+      await called(rpc, () => calls("tasks.columns").some(([, params]) => params.project_id === "p2"));
+      await called(rpc, () => calls("tasks.list").some(([, params]) => params.project_id === "p2"));
+      // Both first-page RPCs have started. Keep their sibling pending while
+      // the failed page and any checkout cache lookups finish their turns.
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(traffic.peak).toBeLessThanOrEqual(2);
+      expect(calls("git.status")).toHaveLength(0);
+      App.route = routeTo(1);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+      expect(calls("git.status")[0][2]?.priority).not.toBe("background");
+    } finally {
+      columns.release(answers["tasks.columns"]({ project_id: "p2" }));
+      statuses.release(answers["git.status"]());
+      await finish();
+    }
+    expect(traffic.peak).toBeLessThanOrEqual(2);
+  });
+
+  it("shares the two background slots with a files push and still dispatches a new foreground scope", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const statuses = gate(), pushedTree = gate();
+    script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : statuses.promise;
+    script["fs.tree"] = (params) => params.run_id === "run-3" ? pushedTree.promise : answers["fs.tree"](params);
+    const traffic = backgroundTraffic();
+    start();
+    let pushed;
+    try {
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-2"));
+      pushed = watchers.find((watcher) => watcher.id === "s-background").onChanges([
+        { entity_id: "run-3", files: { paths: ["changed.js"] } },
+      ]);
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(traffic.peak).toBe(2);
+      expect(calls("fs.tree")).toHaveLength(0);
+      App.route = routeTo(10);
+      sync.routeChanged();
+      await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-10"));
+      expect(calls("git.status").find(([, params]) => params.run_id === "run-10")[2]?.priority).not.toBe("background");
+    } finally {
+      statuses.release(answers["git.status"]());
+      pushedTree.release(answers["fs.tree"]({ path: "" }));
+      await pushed;
+      await finish();
+    }
+    expect(traffic.peak).toBe(2);
+    expect(calls("fs.tree").some(([, params]) => params.run_id === "run-3")).toBe(true);
+  });
+
   it("keeps at most two background RPCs in flight across ten workspaces and preserves each checkout's read order", async () => {
     const held = gate();
     script["git.status"] = (params) => params.run_id === "run-10" ? answers["git.status"]() : held.promise;

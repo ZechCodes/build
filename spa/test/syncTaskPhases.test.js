@@ -7,6 +7,11 @@ vi.mock("../src/core/trackerPages.js", async (original) => ({
 }));
 
 const task = (number) => ({ id: `task-${number}`, number, updated_at: "2026-10-11T12:00:00Z" });
+const gate = () => {
+  let release;
+  const promise = new Promise((resolve) => { release = resolve; });
+  return { promise, release };
+};
 let phases, trackerCache;
 
 beforeEach(async () => {
@@ -32,6 +37,45 @@ function fixture(answers = {}) {
 }
 
 describe("project tasks split around the inbox phase", () => {
+  it.each([true, false])("waits for columns after a refused first list (paging=%s)", async (paged) => {
+    paging = paged;
+    const columns = gate();
+    const { pass, ask, readReviews } = fixture({
+      "tasks.columns": () => columns.promise,
+      "tasks.list": () => null,
+    });
+    let settled = false;
+    const rest = pass.rest("p1").then((answer) => { settled = true; return answer; });
+    try {
+      await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+      expect(settled).toBe(false);
+      expect(readReviews).not.toHaveBeenCalled();
+    } finally {
+      columns.release({ columns: [{ id: "open" }] });
+      await rest;
+    }
+    expect(await rest).toBe(false);
+    expect(await trackerCache.readTasksRecord("dev-1", "p1")).toBeNull();
+  });
+
+  it("waits for the sibling columns read before propagating a first-list failure", async () => {
+    const columns = gate(), failure = new Error("cache unavailable");
+    const { pass, ask } = fixture({
+      "tasks.columns": () => columns.promise,
+      "tasks.list": () => { throw failure; },
+    });
+    let settled = false;
+    const rest = pass.rest("p1").catch((error) => { settled = true; return error; });
+    try {
+      await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(2));
+      expect(settled).toBe(false);
+    } finally {
+      columns.release({ columns: [] });
+      await rest;
+    }
+    expect(await rest).toBe(failure);
+  });
+
   it("requests absent columns beside the first page and defers remaining pages and reviews", async () => {
     let release;
     const heldPage = new Promise((resolve) => { release = resolve; });

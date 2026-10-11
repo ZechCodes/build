@@ -112,6 +112,7 @@ const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { resetUsageLimits, setUsageLimitsForTest: setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
+const { threadWindow } = await import("../src/core/threadSync.js");
 const { greetBridge: greetWatchingBridge, resetChangeEvents: forgetGreetings } = await import("../src/core/changeEvents.js");
 const { pushRailThreadItems, writeRailBoard, writeRailRow, writeRailThread, writeRailWorkItem } = await import("./railCacheFixture.js");
 
@@ -5606,6 +5607,120 @@ describe("a run of activity in the rail", () => {
       return {};
     });
   };
+
+  it("shows a throbber immediately on a newest-only fold until fetched rows paint", async () => {
+    payload = conversation([said(1, "Start"), toolCall(51, "Read newest.js"), said(52, "Done")], [
+      { from_sequence: 10, through_sequence: 51, rows: 40, tool_calls: 40 },
+    ]);
+    let answer;
+    answering(new Promise((resolve) => { answer = resolve; }));
+    await mount();
+    expect(railHost().querySelector(".thread-activity-count").textContent).toBe("40");
+    expect(runBox().open).toBe(false);
+    runHead().click();
+    expect(runBox().querySelector('[role="status"] .throbber')).not.toBeNull();
+    await vi.waitFor(() => expect(callsTo("thread.activity")).toHaveLength(1));
+    expect(runBox().querySelector(".throbber")).not.toBeNull();
+    answer({ items: [toolCall(10, "Read oldest.js"), toolCall(51, "Read newest.js")], has_more: false });
+    await vi.waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "51"]));
+    expect(runBox().querySelector(".throbber")).toBeNull();
+    runHead().click();
+    await flush();
+    runHead().click();
+    await flush();
+    expect(callsTo("thread.activity")).toHaveLength(1);
+  });
+
+  it.each([true, false])("opens a warm closed run with its first row held after lean=%s catch-up", async (lean) => {
+    payload = conversation([said(1, "Start"), toolCall(2, "Read 2.js")], [
+      { from_sequence: 2, through_sequence: 2, rows: 1, tool_calls: 1 },
+    ]);
+    let answer;
+    answering(new Promise((resolve) => { answer = resolve; }));
+    await mount();
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    const allActivity = Array.from({ length: 99 }, (_, index) => toolCall(index + 2, `Read ${index + 2}.js`));
+    const held = (await readCached(address)).value;
+    await writeCached(address, threadWindow(held, {
+      items: [...(lean ? allActivity.slice(-1) : allActivity.slice(1)), said(101, "Done")],
+      thread_last_sequence: 101, has_more: lean,
+      activity_digests: [{ from_sequence: 2, through_sequence: 100, rows: 99, tool_calls: 99 }],
+    }, { newest: true, lean }));
+    await vi.waitFor(() => expect(railHost().querySelector(".thread-activity-count").textContent).toBe("99"));
+    runHead().click();
+    if (lean) {
+      expect(runBox().querySelector('[role="status"] .throbber')).not.toBeNull();
+      await vi.waitFor(() => expect(callsTo("thread.activity")).toHaveLength(1));
+      expect(callsTo("thread.activity")[0].params).toMatchObject({ from_sequence: 2, through_sequence: 100 });
+      answer({ items: allActivity, has_more: false });
+    }
+    await vi.waitFor(() => expect(runRows().map((row) => Number(row.dataset.sequence))).toEqual(allActivity.map((item) => item.data.sequence)));
+    expect(runBox().querySelector(".throbber")).toBeNull();
+    expect(callsTo("thread.activity")).toHaveLength(lean ? 1 : 0);
+  });
+
+  it.each([2, 100])("keeps a warm sparse tail window-backed after row %s updates", async (updatedRow) => {
+    const activities = [toolCall(2, "Read 2.js"), toolCall(100, "Read 100.js")];
+    const updated = activities.find((item) => item.data.sequence === updatedRow);
+    updated.data = { ...updated.data, updated_sequence: 101, outcome: "ok" };
+    payload = conversation([said(1, "Start"), ...activities], [
+      { from_sequence: 2, through_sequence: 100, rows: 99, tool_calls: 99 },
+    ]);
+    payload.run.thread.thread_last_sequence = 101;
+    answering({ items: Array.from({ length: 99 }, (_, index) => toolCall(index + 2, `Read ${index + 2}.js`)), has_more: false });
+    await mount();
+    runHead().click();
+    expect(runBox().querySelector(".throbber")).toBeNull();
+    await flush();
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["2", "100"]);
+    expect(callsTo("thread.activity")).toEqual([]);
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    const cached = (await readCached(address)).value;
+    await writeCached(address, { ...cached, deliveredSequence: 102, items: [
+      said(1, "Start"), activities[0],
+      { ...activities[1], data: { ...activities[1].data, updated_sequence: 102, outcome: "ok", summary: "Read 100.js\n→ Tool finished" } },
+    ] });
+    await vi.waitFor(() => expect(runBox().querySelector('[data-sequence="100"] .thread-activity-outcome').dataset.outcome).toBe("ok"));
+    await vi.waitFor(() => expect(runBox().textContent).toContain("Tool finished"));
+    expect(callsTo("thread.activity")).toEqual([]);
+  });
+
+  it("offers an inline retry when opening a newest-only run fails", async () => {
+    payload = conversation([said(1, "Start"), toolCall(51, "Read newest.js"), said(52, "Done")], [
+      { from_sequence: 10, through_sequence: 51, rows: 40, tool_calls: 40 },
+    ]);
+    answering(Promise.resolve({ items: [toolCall(10, "Read oldest.js")], has_more: false }));
+    const answer = bridge.call.getMockImplementation();
+    let refused = false;
+    bridge.call.mockImplementation(async (method, params) => {
+      if (method === "thread.activity" && !refused) { refused = true; throw new Error("try again"); }
+      return answer(method, params);
+    });
+    await mount();
+    runHead().click();
+    await vi.waitFor(() => expect(runBox().querySelector("[data-activity-retry]")).not.toBeNull());
+    expect(runBox().textContent).toContain("Could not load this activity");
+    expect(runBox().querySelector(".throbber")).toBeNull();
+    runBox().querySelector("[data-activity-retry]").click();
+    expect(runBox().querySelector(".throbber")).not.toBeNull();
+    await vi.waitFor(() => expect(runRows().map((row) => row.dataset.sequence)).toEqual(["10", "51"]));
+    expect(runBox().querySelector("[data-activity-retry]")).toBeNull();
+  });
+
+  it("opens a newest-only live tail from the window and keeps following arrivals", async () => {
+    payload = conversation([said(1, "Start"), toolCall(51, "Read newest.js")], [
+      { from_sequence: 10, through_sequence: 51, rows: 40, tool_calls: 40 },
+    ]);
+    await mount();
+    runHead().click();
+    await flush();
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["51"]);
+    await pushRailThreadItems("run-3", "ag-1", [toolCall(52, "Read live.js")]);
+    await flush();
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["51", "52"]);
+    expect(callsTo("thread.activity")).toEqual([]);
+    expect(runBox().querySelector(".throbber")).toBeNull();
+  });
 
   it("draws a shut run as a head, and its rows on the press that opens it", async () => {
     payload = conversation([said(1, "Have a look."), toolCall(2, "Read a.js"), toolCall(3, "Read b.js")], [

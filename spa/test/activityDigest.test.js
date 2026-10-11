@@ -369,6 +369,12 @@ describe("the run a press has to fetch", () => {
     expect(runDigestToFetch([digest(2, 100, 3)], 2, 101, 100, held)).toBe(null);
   });
 
+  it.each([undefined, 0, Infinity])("cannot prove completeness with a rows census of %s", (rows) => {
+    const run = { from_sequence: 2, through_sequence: 100, tool_calls: 0, ...(rows === undefined ? {} : { rows }) };
+    const held = [2, 100].map((sequence) => ({ type: "event", data: { sequence, event: "reasoning" } }));
+    expect(runDigestToFetch([run], 2, 101, 100, held)).toBe(run);
+  });
+
   it("asks for nothing when the run reaches the end of the conversation", () => {
     expect(runDigestToFetch(digests, 50, 51)).toBe(null);
   });

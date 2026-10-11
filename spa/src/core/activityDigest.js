@@ -80,12 +80,13 @@ export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough
 /// Sequence gaps can be update counters, so completeness follows the census,
 /// not adjacency. Duplicate copies and non-activity rows prove nothing.
 function heldRunComplete(digest, items) {
+  if (!Number.isFinite(digest.rows) || digest.rows <= 0) return false;
   const sequences = new Set(items
     .filter((item) => item.type === "event" && EVENT_META[item.data?.event]?.activity)
     .map((item) => Number(item.data.sequence))
     .filter((sequence) => sequence >= digest.from_sequence && sequence <= digest.through_sequence));
   return sequences.has(digest.from_sequence) && sequences.has(digest.through_sequence)
-    && sequences.size >= rowsCountedBy(digest);
+    && sequences.size >= digest.rows;
 }
 
 const sequenceOf = (activity) => (Number.isFinite(activity.sequence) ? activity.sequence : null);

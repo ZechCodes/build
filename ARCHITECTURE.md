@@ -1950,8 +1950,9 @@ In practice:
   omitted recent held activity through exact one-item `thread.activity` reads
   before clearing its debt. A closed run is complete only when distinct held
   activity covers its digest span and census; sparse warm catch-up fetches the
-  missing interior even when the first row is held. Closed runs open asynchronously with the existing
-  throbber until their cached rows paint, and offer inline retry on failure;
+  missing interior even when the first row is held. Without an exact row census,
+  historical runs are fetched conservatively. Closed runs open asynchronously
+  with the existing throbber until their cached rows paint, and offer inline retry on failure;
   the live tail continues opening from the conversation window.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in

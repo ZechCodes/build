@@ -33,8 +33,9 @@ pub use metadata::{ConversationHit, ConversationQuery, ItemMetadata, WorktreeSco
 use paging::default_query_limit;
 pub use paging::{
     activity_rows_read, cut_activity_runs, page_activity_budget, run_items_shipped,
-    wire_value_activity_page, ActivityDigest, LastToolCall, PageCut, RunCensus, UnreadSummary,
-    DEFAULT_ACTIVITY_PAGE, DEFAULT_QUERY_LIMIT, DEFAULT_THREAD_PAGE, MAX_ACTIVITY_PAGE,
-    MAX_QUERY_LIMIT, MAX_THREAD_PAGE, PAGE_ACTIVITY_PER_MESSAGE, PAGE_ACTIVITY_RUN_CAP,
+    run_items_shipped_with_activity, wire_value_activity_page, ActivityDigest, LastToolCall,
+    PageActivity, PageCut, RunCensus, UnreadSummary, DEFAULT_ACTIVITY_PAGE, DEFAULT_QUERY_LIMIT,
+    DEFAULT_THREAD_PAGE, MAX_ACTIVITY_PAGE, MAX_QUERY_LIMIT, MAX_THREAD_PAGE,
+    PAGE_ACTIVITY_PER_MESSAGE, PAGE_ACTIVITY_RUN_CAP,
 };
 use rendering::{page_span, snapshot_contents};

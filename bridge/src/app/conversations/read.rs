@@ -295,6 +295,9 @@ impl AppState {
             .get("newest")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        if params.get("activity").and_then(Value::as_str) == Some("newest") {
+            return self.lean_thread_page(thread, before, after, newest, params);
+        }
         match (before, after, newest) {
             // Two cursors name two walks, and a verb that picked one would
             // answer a page nobody asked for.
@@ -310,6 +313,43 @@ impl AppState {
             (_, None, true) => Err("newest must be used with after_sequence".to_string()),
             (_, None, false) => self.thread_page_at(thread, before, thread_page_limit(params)),
         }
+    }
+
+    /// One lean conversation page, with exact digests even when a cursor
+    /// starts inside a run whose first rows were left on disk by the load.
+    fn lean_thread_page(
+        &self,
+        thread: &crate::thread::Thread,
+        before: Option<u64>,
+        after: Option<u64>,
+        newest: bool,
+        params: &Value,
+    ) -> Result<Value, String> {
+        if before.is_some() && after.is_some() {
+            return Err("provide exactly one of before_sequence and after_sequence".to_string());
+        }
+        if newest && after.is_none() {
+            return Err("newest must be used with after_sequence".to_string());
+        }
+        let limit = if after.is_some() {
+            thread_page_forward_limit(params)
+        } else {
+            thread_page_limit(params)
+        };
+        if thread.lean_page_reaches_stored_history() {
+            let (cut, has_more) = self
+                .history_store()?
+                .thread_conversation_page_newest_activity(
+                    &thread.agent.id,
+                    after,
+                    before,
+                    limit,
+                    newest,
+                )
+                .map_err(|error| format!("conversation store: {error}"))?;
+            return Ok(thread.wire_value_of_page(&cut, has_more));
+        }
+        Ok(thread.wire_value_page_newest_activity(after, before, limit, newest))
     }
 
     /// The activity of one folded run, wherever it lives — what a client asks

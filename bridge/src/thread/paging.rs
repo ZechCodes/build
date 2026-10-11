@@ -1,10 +1,22 @@
 use super::{
     count_serialized_items, page_span, EventClass, MessageRole, Thread, ThreadItem, ToolCallOutcome,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+mod lean;
 use serde_json::json;
 use serde_json::Value;
 use std::borrow::Borrow;
+
+/// Activity projection for a conversation page. Silence retains the bounded
+/// legacy projection; `newest` ships one item for each run, with its census.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PageActivity {
+    #[default]
+    Bounded,
+    Newest,
+}
 
 /// How many MESSAGES a page carries when the caller asks for one without
 /// saying how large.
@@ -56,7 +68,20 @@ pub fn page_activity_budget(limit: usize) -> usize {
 /// run to read at all, and a run it reads more of than it ships is exactly the
 /// cost the bounded read exists to remove.
 pub fn run_items_shipped(run_len: usize, activity_left: usize) -> usize {
-    run_len.min(PAGE_ACTIVITY_RUN_CAP).min(activity_left)
+    run_items_shipped_with_activity(run_len, activity_left, PageActivity::Bounded)
+}
+
+/// The shared read/shipping rule. Lean runs each have one representative;
+/// the legacy whole-page budget cannot hide a run in the lean projection.
+pub fn run_items_shipped_with_activity(
+    run_len: usize,
+    activity_left: usize,
+    activity: PageActivity,
+) -> usize {
+    match activity {
+        PageActivity::Bounded => run_len.min(PAGE_ACTIVITY_RUN_CAP).min(activity_left),
+        PageActivity::Newest => run_len.min(1),
+    }
 }
 
 /// How much of one run's activity a `thread.activity` call ships when it does
@@ -82,7 +107,7 @@ pub fn activity_rows_read(limit: usize) -> usize {
 /// A fixed shape: `summary` and `outcome` serialize as `null` when the call
 /// carries none, so the client falls back rather than reading around an absent
 /// field.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct LastToolCall {
     pub sequence: u64,
     pub created_at: String,

@@ -236,39 +236,37 @@ describe("the order a pass reads in", () => {
   });
 
   it("reads one workspace's shapes in the order a reader opening it wants them", async () => {
-    // What is on screen first is read first. The conversation comes before the
-    // patches behind the unpushed commits, which are twenty reads of a quarter
-    // of a megabyte and nothing anybody is looking at yet — and the projects'
-    // task lists come after every workspace, because a task list is a
-    // project surface and the inbox is the landing one.
+    // #495: the open conversation and first project task page lead optional patch warming.
     script["git.log"] = () => ({ commits: [{ hash: "h1", ahead_of_base: true }], newest: "h1", reset: false });
     await boot([branchItem({ agents: [{ id: "ag-1" }] })], routeTo("build/login"));
     expect(bridge.call.mock.calls.map(([method]) => method).slice(3)).toEqual([
+      "thread.page",
       "git.status",
       "fs.tree",
       "term.list",
       "git.log",
       "git.unpushed",
-      "thread.page",
+      "tasks.columns",
+      "tasks.list",
       "git.show",
       "run.diff",
-      "tasks.list",
-      "tasks.columns",
     ]);
   });
 
-  it("reads only the routed workspace ahead of the foreground", async () => {
+  it("reads the lists and open scope at foreground priority", async () => {
+    // #495: the inbox lists and open project's first task page are foreground reads too.
     await boot(two, routeTo("build/search"));
     const ahead = bridge.call.mock.calls
       .filter(([, , envelope]) => envelope?.priority !== "background")
       .map(([, params]) => params?.run_id || "list");
-    expect([...new Set(ahead)]).toEqual(["run-2"]);
+    expect([...new Set(ahead)]).toEqual(["list", "run-2"]);
   });
 
-  it("puts every read behind the foreground when nothing is routed", async () => {
+  it("puts reads after the lists in background when nothing is routed", async () => {
+    // #495: the on-screen inbox lists remain foreground even without an open entity.
     await boot(two);
     const ahead = bridge.call.mock.calls.filter(([, , envelope]) => envelope?.priority !== "background");
-    expect(ahead).toEqual([]);
+    expect(ahead.map(([method]) => method)).toEqual(["board.list", "project.list", "workspace.list"]);
   });
 });
 
@@ -543,9 +541,9 @@ describe("the cursors", () => {
     expect(active).toBeDefined();
     expect(active.entity).toBe("run-proj");
     expect(active.mode).toBe("realtime");
-    // And it is read first, ahead of the foreground, like any open workspace.
+    // #495: verify the open conversation's priority separately from lists and task reads.
     const ahead = bridge.call.mock.calls
-      .filter(([, , envelope]) => envelope?.priority !== "background")
+      .filter(([, params, envelope]) => envelope?.priority !== "background" && (params?.run_id || params?.entity_id))
       .map(([, params]) => params?.run_id || params?.entity_id);
     expect([...new Set(ahead)]).toEqual(["run-proj"]);
   });
@@ -1629,11 +1627,11 @@ describe("every project's tasks", () => {
     expect(calls("tasks.list")).toHaveLength(2);
   });
 
-  // A task list is a project surface; the inbox is the landing one.
-  it("reads them behind the workspaces, never in front", async () => {
+  // #495: task pages feed the inbox, so they land before unrelated checkout warming.
+  it("reads task lists before unrelated workspace Git", async () => {
     await boot([branchItem()]);
     const order = bridge.call.mock.calls.map(([method]) => method);
-    expect(order.indexOf("tasks.list")).toBeGreaterThan(order.indexOf("git.status"));
+    expect(order.indexOf("tasks.list")).toBeLessThan(order.indexOf("git.status"));
   });
 
   // A project holds records but is not a board row: the pass that drops what

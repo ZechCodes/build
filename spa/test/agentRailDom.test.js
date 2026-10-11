@@ -101,6 +101,7 @@ const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
 const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
 const pinnedValue = async () => (await readUiRecord(pinnedAddress))?.value?.pinned;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { visibleSyncThread } = await import("../src/core/syncVisibleScopes.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { SURFACE_PILL_GRACE_MS } = await import("../src/core/agentSurfacesModel.js");
@@ -773,6 +774,24 @@ describe("one selection in one panel (#148)", () => {
     expect(panelOut()).toBe(true);
     expect(shows()).toBe("overview");
     expect(selected()).toEqual(["overview"]);
+  });
+
+  it("prioritizes the visible remembered conversation without a route agent", async () => {
+    await mount();
+    await press("ag-2");
+    rail.dispose();
+    expect(visibleSyncThread("dev-1")).toBeNull();
+    rail = mountAgentRail(railHost(), railAddress());
+    await vi.waitFor(() => expect(panel() && shows()).toBe("Polish the rail"));
+    expect(visibleSyncThread("dev-1")).toMatchObject({ entityId: "run-1", agentId: "ag-2" });
+    expect(visibleSyncThread("dev-2")).toBeNull();
+    await press("overview");
+    expect(visibleSyncThread("dev-1")).toBeNull();
+    await press("ag-1");
+    expect(visibleSyncThread("dev-1")).toMatchObject({ entityId: "run-1", agentId: "ag-1" });
+    rail.collapse();
+    await flush();
+    expect(visibleSyncThread("dev-1")).toBeNull();
   });
 
   it("keeps an open overview through a remount", async () => {

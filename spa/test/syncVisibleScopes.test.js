@@ -5,7 +5,7 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
-const { registerSyncTree, registerSyncDiff, visibleTreePaths, visibleWorkingDiff } = await import("../src/core/syncVisibleScopes.js");
+const { registerSyncTree, registerSyncDiff, visibleTreePaths, visibleWorkingDiff, registerSyncThread, visibleSyncThread } = await import("../src/core/syncVisibleScopes.js");
 const { mountFileTree } = await import("../src/core/fileTree.js");
 const { createReviewPlug } = await import("../src/core/changesReview.js");
 const { scopeFor } = await import("../src/core/cacheScope.js");
@@ -26,6 +26,25 @@ afterEach(() => {
 });
 
 describe("mounted sync scopes", () => {
+  it("follows the visible conversation's selected controller and drops provisional identities", () => {
+    let identity = { deviceId: "dev-1", entityId: "run-1", agentId: "remembered", threadId: "thread-1" };
+    let active = true;
+    const dispose = registerSyncThread(() => identity, () => active);
+    disposers.push(dispose);
+    expect(visibleSyncThread("dev-1")).toEqual(identity);
+    expect(visibleSyncThread("dev-2")).toBeNull();
+    identity = { ...identity, agentId: "selected", threadId: "thread-2" };
+    expect(visibleSyncThread("dev-1")).toEqual(identity);
+    active = false;
+    expect(visibleSyncThread("dev-1")).toBeNull();
+    active = true;
+    identity = { deviceId: "dev-1", draftId: "provisional" };
+    expect(visibleSyncThread("dev-1")).toBeNull();
+    identity = { deviceId: "dev-1", entityId: "run-1", agentId: "selected" };
+    dispose();
+    expect(visibleSyncThread("dev-1")).toBeNull();
+  });
+
   it("unions live tree paths, follows changed scopes, and removes disposed mounts", () => {
     let paths = ["", "src"];
     let active = true;
@@ -78,6 +97,13 @@ describe("production mounts", () => {
     host.style.display = "none";
     expect(visibleTreePaths("dev-1", "run-1")).toEqual([]);
     host.style.display = "";
+    const visibility = Object.getOwnPropertyDescriptor(document, "hidden");
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    try { expect(visibleTreePaths("dev-1", "run-1")).toEqual([]); }
+    finally {
+      if (visibility) Object.defineProperty(document, "hidden", visibility);
+      else delete document.hidden;
+    }
     list.remove();
     expect(visibleTreePaths("dev-1", "run-1")).toEqual([]);
     host.append(list);

@@ -9,7 +9,7 @@ let context, announce, coverageLanded;
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/deviceContexts.js", () => ({
-  contextFor: (id) => id === "dev-1" ? context : null,
+  contextFor: (id) => (id === "dev-1" ? context : null),
   liveContexts: () => [context],
   onDeviceStateChanged: (fn) => { announce = fn; return () => {}; },
 }));

@@ -67,6 +67,29 @@ afterEach(() => disposers.forEach((dispose) => dispose()));
 
 const microtasks = async () => { for (let turn = 0; turn < 500; turn += 1) await Promise.resolve(); };
 
+describe("foreground record scopes", () => {
+  it("promotes every read of the selected record and keeps unrelated records in background", () => {
+    const phases = fixture();
+    const background = { priority: "background" };
+    for (const [entityId, kind, sub] of [
+      ["run-1", "thread", "ag-1-b"], ["run-1", "status", ""],
+      ["run-1", "tree", ""], ["p1", "tasks-first", ""],
+    ]) {
+      expect(phases.priorityForRead(address(entityId, kind, sub), background)?.priority).not.toBe("background");
+    }
+    for (const [entityId, kind, sub] of [
+      ["run-1", "thread", "ag-1-a"], ["run-2", "thread", "ag-2-b"],
+      ["run-1", "tree", "hidden"], ["run-1", "file", "a.js"],
+      ["run-1", "patch", "hash"], ["p1", "tasks-rest", "cursor"],
+    ]) {
+      expect(phases.priorityForRead(address(entityId, kind, sub), background)?.priority).toBe("background");
+    }
+    route = routeTo(2);
+    expect(phases.priorityForRead(address("run-1", "thread", "ag-1-b"), background)?.priority).toBe("background");
+    expect(phases.priorityForRead(address("run-2", "thread", "ag-2-b"), background)?.priority).not.toBe("background");
+  });
+});
+
 describe("foreground scope supersession", () => {
   it("wakes a selected checkout queued behind two push reads when the planner starts its foreground turn", async () => {
     const streams = createBackgroundStreams().forContext({ deviceId: "dev-1", session: {}, requestScope: {}, lifetime: 1 });

@@ -990,9 +990,12 @@ fn prepared_agent_spec_carries_the_done_mcp_server_and_the_owner_id() {
     assert_eq!(spec.spec.binary, "claude");
     let args = spec.spec.args.join(" ");
     assert!(
-        args.contains("--mcp-config .build/mcp-agent-42.json --strict-mcp-config"),
+        args.contains("--mcp-config .build/mcp-agent-42.json"),
         "the harness reads the config written for THIS agent: {args}"
     );
+    // The user's own MCP servers (claude.ai connectors included) load beside
+    // Build's; --strict-mcp-config would drop them.
+    assert!(!args.contains("--strict-mcp-config"), "{args}");
     assert!(!args.contains("--continue"), "{args}");
     assert!(
         spec.spec

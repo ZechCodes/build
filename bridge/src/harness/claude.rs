@@ -182,7 +182,6 @@ impl Harness for ClaudeHarness {
             .unset_all(DAEMON_IDENTITY_VARS)
             .arg("--mcp-config")
             .arg(options.mcp_config())
-            .arg("--strict-mcp-config")
             .arg("--settings")
             .arg(compaction_settings)
             .arg("--dangerously-skip-permissions");

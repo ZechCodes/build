@@ -100,8 +100,8 @@ impl Harness for AdkHarness {
     /// else moved.
     ///
     /// The MCP half is identical on purpose — the same per-agent
-    /// `--mcp-config`, the same `--strict-mcp-config`, the same
-    /// `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because
+    /// `--mcp-config` (added to the user's own servers, not in place of
+    /// them), the same `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because
     /// `post_thread_message` and `search_conversation`
     /// arrive over the same unix socket whichever provider is running. No
     /// settle window and no submit delay: those are how a prompt is typed into
@@ -129,7 +129,6 @@ impl Harness for AdkHarness {
             .for_agent(&options.owner_id)
             .arg("--mcp-config")
             .arg(options.mcp_config())
-            .arg("--strict-mcp-config")
             .arg("--dangerously-skip-permissions");
         // The two are alternatives and never both: `--resume` names the exact
         // conversation this agent was having, `--continue` guesses the newest

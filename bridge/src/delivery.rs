@@ -159,10 +159,10 @@ impl AgentSpawnPlan {
     /// tree what this session continues, write `.build/` into the checkout,
     /// and build the argv.
     ///
-    /// The scaffold is unconditional and idempotent: under
-    /// `--strict-mcp-config` a missing config kills the harness before it reads
-    /// a byte of the prompt, and the config is written per AGENT, so two agents
-    /// sharing a checkout report as themselves.
+    /// The scaffold is unconditional and idempotent: a missing `--mcp-config`
+    /// file kills the harness before it reads a byte of the prompt, and the
+    /// config is written per AGENT, so two agents sharing a checkout report as
+    /// themselves.
     pub fn probe_and_scaffold(self) -> Result<ReadyToSpawn, StartFailure> {
         refuse_unrunnable(&self.cli_readings, &self.model_choice).map_err(StartFailure::Refused)?;
         let provider = self.model_choice.provider;

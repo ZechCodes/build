@@ -121,7 +121,7 @@ async fn ensure_agent_tab_is_idempotent_for_one_root() {
         s.session_registry.test_counts().claims == 0,
         "the spawn reservation is released"
     );
-    // Under --strict-mcp-config a missing config kills the harness before it
+    // A missing --mcp-config file kills the harness before it
     // reads a byte of the prompt, so the scaffold is part of the spawn.
     assert!(root
         .join(crate::orchestrator::mcp_config_path(

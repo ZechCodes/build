@@ -979,7 +979,7 @@ fn real_claude_session_receives_the_whole_multiline_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().join("fresh-worktree");
     std::fs::create_dir_all(&workspace).unwrap();
-    // The adapter passes --mcp-config .build/mcp.json --strict-mcp-config,
+    // The adapter passes --mcp-config .build/mcp.json,
     // so the file must exist or claude exits before reading a byte of the
     // prompt. Real dispatch scaffolds this (Orchestrator::scaffold_build_dir);
     // mirror the shape here. The server is never called — this test asserts

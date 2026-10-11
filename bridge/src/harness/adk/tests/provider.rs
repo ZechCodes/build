@@ -92,15 +92,22 @@ fn the_headless_spec_carries_exactly_the_interactive_mcp_wiring() {
         spec.args
             .iter()
             .skip_while(|arg| *arg != "--mcp-config")
-            .take(3)
+            .take(2)
             .cloned()
             .collect()
     };
     assert_eq!(
         mcp_args(&headless),
         mcp_args(&interactive),
-        "the same per-agent config, loaded the same strict way"
+        "the same per-agent config"
     );
+    for spec in [&headless, &interactive] {
+        assert!(
+            !spec.args.iter().any(|arg| arg == "--strict-mcp-config"),
+            "the user's own MCP servers load beside Build's: {:?}",
+            spec.args
+        );
+    }
     assert!(mcp_args(&headless).contains(&crate::orchestrator::mcp_config_path(&options.owner_id)));
 }
 /// The catalog, the trust registry and the transcripts belong to the CLI,

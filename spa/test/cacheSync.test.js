@@ -336,12 +336,21 @@ describe("what a pass writes", () => {
     expect((await read("run-1", "unpushed")).value).toEqual(unpushedShape());
   });
 
-  it.each(["stat", "files", "diff_key"])("reads unpushed metadata without a condition when %s is missing", async (field) => {
+  it.each(["base", "published", "stat", "files", "file_edited_at", "diff_key"])("reads unpushed metadata without a condition when %s is missing", async (field) => {
     const partial = unpushedShape();
     delete partial[field];
     await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unpushed" }, partial);
     await boot([branchItem()]);
     expect(paramsOf("git.unpushed")).toEqual([{ run_id: "run-1", patch: false }]);
+  });
+
+  it("conditionally reads complete metadata with no push target and no changed files", async () => {
+    const held = { ...unpushedShape(), published: false };
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "unpushed" }, held);
+    script["git.unpushed"] = () => ({ unchanged: true, diff_key: "d1" });
+    await boot([branchItem()]);
+    expect(paramsOf("git.unpushed")).toEqual([{ run_id: "run-1", patch: false, if_diff_key: "d1" }]);
+    expect((await read("run-1", "unpushed")).value).toEqual(held);
   });
 
   it("replaces changed unpushed metadata while continuing to omit its aggregate patch", async () => {

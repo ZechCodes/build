@@ -1923,6 +1923,13 @@ In practice:
   per device: `s-inbox`
   (realtime), `s-background` (git, files and shells on a 30 s cooldown) and
   `s-active` (the routed workspace, realtime).
+  Unpushed metadata reads send `if_diff_key` only when the held record has the
+  complete diff shape; the lighter pushed summary requires a full shape read.
+  Commit patches exceeding the warming cap leave only a `patch-over-cap`
+  marker per entity/hash. Later passes and pushes skip those hashes; explicit
+  review reads still fetch uncapped patches and pages. Markers follow the
+  newest twenty unpushed hashes and the workspace's eviction and expiry rules;
+  failed reads without size evidence remain retryable.
 - **Reconnect catch-up.** The bridge starts a subscription empty and records a
   change only for the subscriptions it holds when the change happens. So a pass
   takes its subscriptions out before it reads anything, and where the cache has

@@ -5,6 +5,7 @@ import { routedEntityId } from "./inbox.js";
 import { visibleTreePaths, visibleWorkingDiff, visibleSyncThread, visibleSyncReads } from "./syncVisibleScopes.js";
 import { cachedSubKeys } from "./localCache.js";
 import { requestPriorityFields } from "./readRequests.js";
+import { drainBackgroundStreams } from "./syncBackgroundStreams.js";
 
 const keyOf = (entityId, kind, sub = "") => JSON.stringify([entityId, kind, sub]);
 const projectIds = (view) => (view.projects || []).map((project) => project.project_id || project.id).filter(Boolean);
@@ -209,19 +210,23 @@ async function readInbox(state) {
   }
 }
 
-async function readBackground(state) {
-  let recovered = true;
-  for (const entityId of state.pass.order) {
-    const paths = new Set(["", ...await cachedSubKeys(state.context.deviceId, entityId, "tree")]);
-    for (const job of scopeJobs(state, entityId, "background", paths)) {
-      await state.foreground();
-      await takeJob(state, job);
-    }
+async function readBackgroundEntity(state, entityId) {
+  const paths = new Set(["", ...await cachedSubKeys(state.context.deviceId, entityId, "tree")]);
+  for (const job of scopeJobs(state, entityId, "background", paths)) {
     await state.foreground();
-    if (!state.context.active()) return false;
-    const files = await state.readers.extras(state.entityContext(entityId), entityId, state.pass.rows.get(entityId));
-    recovered = files && recovered;
+    await takeJob(state, job);
   }
+  await state.foreground();
+  if (!state.context.active()) return false;
+  return state.readers.extras(state.entityContext(entityId), entityId, state.pass.rows.get(entityId));
+}
+
+async function readBackground(state) {
+  const recovered = await drainBackgroundStreams({
+    items: state.pass.order,
+    active: state.context.active,
+    read: (entityId) => readBackgroundEntity(state, entityId),
+  });
   await state.foreground();
   return recovered;
 }

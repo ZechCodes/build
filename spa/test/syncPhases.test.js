@@ -108,7 +108,9 @@ describe("foreground scope supersession", () => {
         await phases.beforeBackgroundRead("git.status", { run_id: entityId });
       }
       event(entityId, "status", priority);
-      if (entityId === "run-2" && priority === "foreground") { otherStarted.release(); await heldOther.promise; }
+      // The second stream may already be warming B when navigation selects
+      // it. Its foreground turn joins that pending read and owns the barrier.
+      if (entityId === "run-2") { otherStarted.release(); await heldOther.promise; }
     };
     phases = fixture();
     const pass = phases.run();

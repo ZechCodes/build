@@ -1889,7 +1889,11 @@ In practice:
   and written independently as they land. `syncPhases.js` then reads the open
   conversation, the open checkout and project's first task page, the inbox's
   other conversations and remaining task pages/review metadata, and finally
-  background checkout records and bodies. Only the visible scope is promoted;
+  background checkout records and bodies. `syncBackgroundStreams.js` drains
+  that final phase through two streams per device, retaining each checkout's
+  read/write order and letting a free stream advance past a slow checkout.
+  Foreground reads use no background slot; both streams yield to the current
+  foreground barrier before their next read. Only the visible scope is promoted;
   mounted panes describe their shown trees, Changes and remembered conversation
   through `syncVisibleScopes.js`. Mounted source directories supply their own
   fenced cache readers where no board entity addresses those records. Route

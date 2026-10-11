@@ -18,6 +18,7 @@
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 import { watchUiState } from "./localUiState.js";
 import { ancestorsOf, fileTreeHtml, treeEdge, treeKeyMove, visibleTreeRows } from "./fileTreeModel.js";
+import { registerSyncTree, syncPaneShown } from "./syncVisibleScopes.js";
 
 const heldRecord = (address) => (address ? readCached(address) : Promise.resolve(undefined));
 
@@ -90,6 +91,10 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
   });
 
   const shown = (dir) => !dir || (expanded.has(dir) && reachable(expanded, dir));
+  const unregisterSyncTree = registerSyncTree(
+    () => listingAddress(""), () => ["", ...expanded].filter(shown),
+    () => !disposed && syncPaneShown(listEl),
+  );
   const stillListing = (dir, request) => !disposed && requests.get(dir) === request && shown(dir);
 
   const takeListing = (dir, listing) => {
@@ -276,6 +281,7 @@ export function mountFileTree(listEl, { listingAddress, stateAddress = null, rea
     },
     dispose() {
       disposed = true;
+      unregisterSyncTree();
       [...watches.keys()].forEach(stop);
       record?.dispose();
       listEl.removeEventListener("click", onClick);

@@ -39,6 +39,7 @@ import { createDiffViewport } from "./diffViewport.js";
 import { diffSortHtml, DIFF_SORT_LATEST } from "./diffSort.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { bridgeCapabilities } from "./changeEvents.js";
+import { registerSyncDiff, syncPaneShown } from "./syncVisibleScopes.js";
 
 /** Whether an aggregate answer is too big for one record, or was cut: its
  *  shape is kept and its patch is not (#95). */
@@ -131,6 +132,7 @@ export function createReviewPlug({
   let visible = true;
   let needsPaint = false;
   let unwatchDiff = null;
+  let unregisterSyncDiff = () => {};
   let editedTimeWatcher = null;
   let diffKey = null;
   let responseDiffKey = null;
@@ -752,8 +754,10 @@ export function createReviewPlug({
       detachViewingContext();
       unwatchDiff?.(); // a mount over a live one reads twice
       unwatchDiff = null;
+      unregisterSyncDiff();
       if (editedTimeWatcher) editedTimeWatcher.dispose();
       host = element;
+      unregisterSyncDiff = registerSyncDiff(diffAddress, () => visible && syncPaneShown(host));
       attachViewingContext();
       gitActionsHost = gitActions;
       noteReader = readNote;
@@ -785,6 +789,7 @@ export function createReviewPlug({
     sendComments: () => (commentLayer ? commentLayer.send() : Promise.resolve()),
 
     unmount() {
+      unregisterSyncDiff();
       reviewUi?.dispose();
       reviewUi = null;
       detachViewingContext();

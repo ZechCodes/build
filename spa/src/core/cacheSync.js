@@ -1095,8 +1095,12 @@ async function syncWorkingDiff(context, entityId, row, priority) {
 }
 
 async function pullWorkingDiff(context, entityId, row, priority, { patch = true } = {}) {
+  // Drain before joining the coordinator: its own background loader cannot
+  // await a foreground reader which is joining that same pending answer.
+  if (priority === "background") await context.beforeBackgroundRead?.();
   const address = addressOf(context, entityId, "diff");
   const held = (await readCached(address))?.value;
+  const fence = pushFence();
   const { method, repository, params } = diffRead(row, held, { patch });
   const key = rpcReadKey({
     deviceId: context.deviceId,
@@ -1110,10 +1114,11 @@ async function pullWorkingDiff(context, entityId, row, priority, { patch = true 
     key,
     priority,
     active: context.active,
-    load: (envelope) => callWhileActive(context, method, params, envelope),
+    load: (envelope) => context.active() ? context.call(method, params, envelope) : null,
   }).catch(() => null);
   if (!diff || diff.unchanged || !context.active()) return;
-  await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
+  await mergeCached(address, (current) =>
+    context.active() && !pushedSince(address, fence) ? diffRecord(current, diff, row) : null);
 }
 
 /** Whether a diff answer carries a patch the record can hold: one not cut, and
@@ -1145,9 +1150,6 @@ const diffRecord = (held, diff, row) => {
  *  showing yesterday's tree for ever. */
 const staleDiffRecord = (held) => (!held || held.stale ? null : { ...held, stale: true });
 
-/** Every conversation on this workspace. The feed row's `agents[]` IS the
- *  conversation list, so a conversation nobody has opened is still read once
- *  and paints instantly the first time it is. */
 /** One conversation, read forward from the sequence the cache holds — or the
  *  latest hundred where it holds none. */
 async function syncThread(context, entityId, agent, priority) {
@@ -1576,6 +1578,7 @@ async function applyGit(context, entityId, git) {
 
 async function writePushedDiff(context, entityId, diff, row) {
   const address = addressOf(context, entityId, "diff");
+  notePush(address);
   await mergeCached(address, (current) => context.active() ? diffRecord(current, diff, row) : null);
 }
 
@@ -1589,6 +1592,7 @@ async function pullWhatTheGitItemCouldNotCarry(context, entityId, git, row) {
   }
   if (!context.active()) return;
   if (git.diff !== null) return;
+  notePush(addressOf(context, entityId, "diff"));
   // A null diff is one the bridge had and could not send. It is only worth a
   // round trip for the workspace on screen; the rest are marked, and read it
   // when a reader opens them.

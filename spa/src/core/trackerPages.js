@@ -253,16 +253,35 @@ const sinceAfter = (stretch, place, own) => (stretch.tasks.length ? own : place.
  * `fold(stretch, page)` before the next is asked. Answers whether the pull
  * reached the last page. A caller that stops being `active` stops it.
  */
-export async function pullTaskPages(pull) {
+export const pullTaskPages = (pull) => createTaskPagePull(pull).rest();
+
+/** A page walk that can yield after its first page without losing the
+ * cursor, the read spans across empty pages, or its eventual page cleanup. */
+export function createTaskPagePull(pull) {
   const walk = { active: () => true, limit: TASK_PAGE_LIMIT, ...pull };
   const landed = new Set();
   let place = { cursor: null, above: Infinity, pullRead: null, since: null };
-  do {
+  let finished = null;
+  let firstPromise = null;
+  let restPromise = null;
+  const advance = async () => {
+    if (!walk.active()) return false;
+    if (finished !== null) return finished;
     place = await pullPage(walk, place);
-    if (!place) return false;
+    if (!place) return (finished = false);
     landed.add(place.sub);
-  } while (place.cursor && walk.active());
-  if (!walk.active()) return false;
-  await forgetOtherPages(walk.deviceId, walk.projectId, walk.params, landed, place.pullRead);
-  return true;
+    if (place.cursor) return true;
+    if (!walk.active()) return false;
+    await forgetOtherPages(walk.deviceId, walk.projectId, walk.params, landed, place.pullRead);
+    return (finished = true);
+  };
+  const first = () => (firstPromise ||= advance());
+  const finish = async () => {
+    if (!await first()) return false;
+    while (finished === null && walk.active()) {
+      if (!await advance()) return false;
+    }
+    return finished === true && walk.active();
+  };
+  return { first, rest: () => (restPromise ||= finish()) };
 }

@@ -7,7 +7,7 @@
 // never how many rows happened to arrive.
 
 import { describe, expect, it } from "vitest";
-import { threadHtml } from "../src/core/thread.js";
+import { threadHtml, timelineEntries } from "../src/core/thread.js";
 
 const toolCall = (sequence, summary, extra = {}) => ({
   type: "event",
@@ -33,6 +33,48 @@ const paint = (thread) => {
 const countOn = (group) => group.querySelector(".thread-activity-count").textContent;
 const previewOn = (group) => group.querySelector(".thread-activity-preview").textContent;
 const iconOn = (group) => group.querySelector(".thread-activity-group-head .thread-event-icon").textContent;
+
+describe("updates to a fetched run", () => {
+  const digests = [{ from_sequence: 2, through_sequence: 100, rows: 99, tool_calls: 99 }];
+  const paintFetched = (held, fetched) => {
+    const { entries } = timelineEntries(held, "Agent", "thread", digests, {
+      openRuns: new Set(["2"]), runItemsOf: (key) => key === "2" ? fetched : null,
+    });
+    document.body.innerHTML = entries.map((entry) => entry.html).join("");
+  };
+
+  it("paints a later in-place tool result below the fetched end", () => {
+    const fetched = Array.from({ length: 99 }, (_, index) => toolCall(index + 2, `Read ${index + 2}.js`));
+    fetched[0].data = { ...fetched[0].data, updated_sequence: 101, outcome: "ok" };
+    paintFetched([
+      message(1, "Start"), fetched[0],
+      toolCall(100, "Read 100.js\n→ Tool finished", { updated_sequence: 102, outcome: "ok" }),
+    ], fetched);
+    expect(document.querySelector('[data-sequence="100"] .thread-activity-outcome')?.dataset.outcome).toBe("ok");
+    expect(document.querySelector('[data-sequence="100"]').textContent).toContain("Tool finished");
+  });
+
+  it("keeps a newer fetched result when the window holds an older copy", () => {
+    paintFetched([
+      message(1, "Start"), toolCall(2, "Read 2.js"),
+      toolCall(100, "Read 100.js", { updated_sequence: 101, outcome: "error" }),
+    ], [toolCall(2, "Read 2.js"), toolCall(100, "Read 100.js\n→ Tool finished", { updated_sequence: 102, outcome: "ok" })]);
+    expect(document.querySelector('[data-sequence="100"] .thread-activity-outcome').dataset.outcome).toBe("ok");
+  });
+
+  it("updates a fetched descendant across a message without importing another run", () => {
+    const parent = toolCall(2, "Agent(Inspect)");
+    const child = toolCall(100, "Read child.js", { parent_sequence: 2 });
+    paintFetched([
+      message(1, "Start"), parent, message(50, "Another run"), toolCall(60, "Read unrelated.js"),
+      { ...child, data: { ...child.data, updated_sequence: 102, summary: "Read child.js\n→ Child finished", outcome: "ok" } },
+    ], [parent, child]);
+    const first = document.querySelector(".thread-activity-group");
+    expect(first.querySelector('[data-sequence="100"] .thread-activity-outcome')?.dataset.outcome).toBe("ok");
+    expect(first.querySelector('[data-sequence="60"]')).toBeNull();
+    expect(first.textContent).not.toContain("unrelated.js");
+  });
+});
 
 describe("a folded run drawn from its digest", () => {
   const digest = (from, through, rows, lastToolCall = null) => ({

@@ -5659,6 +5659,32 @@ describe("a run of activity in the rail", () => {
     expect(callsTo("thread.activity")).toHaveLength(lean ? 1 : 0);
   });
 
+  it.each([2, 100])("keeps a warm sparse tail window-backed after row %s updates", async (updatedRow) => {
+    const activities = [toolCall(2, "Read 2.js"), toolCall(100, "Read 100.js")];
+    const updated = activities.find((item) => item.data.sequence === updatedRow);
+    updated.data = { ...updated.data, updated_sequence: 101, outcome: "ok" };
+    payload = conversation([said(1, "Start"), ...activities], [
+      { from_sequence: 2, through_sequence: 100, rows: 99, tool_calls: 99 },
+    ]);
+    payload.run.thread.thread_last_sequence = 101;
+    answering({ items: Array.from({ length: 99 }, (_, index) => toolCall(index + 2, `Read ${index + 2}.js`)), has_more: false });
+    await mount();
+    runHead().click();
+    expect(runBox().querySelector(".throbber")).toBeNull();
+    await flush();
+    expect(runRows().map((row) => row.dataset.sequence)).toEqual(["2", "100"]);
+    expect(callsTo("thread.activity")).toEqual([]);
+    const address = { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" };
+    const cached = (await readCached(address)).value;
+    await writeCached(address, { ...cached, deliveredSequence: 102, items: [
+      said(1, "Start"), activities[0],
+      { ...activities[1], data: { ...activities[1].data, updated_sequence: 102, outcome: "ok", summary: "Read 100.js\n→ Tool finished" } },
+    ] });
+    await vi.waitFor(() => expect(runBox().querySelector('[data-sequence="100"] .thread-activity-outcome').dataset.outcome).toBe("ok"));
+    await vi.waitFor(() => expect(runBox().textContent).toContain("Tool finished"));
+    expect(callsTo("thread.activity")).toEqual([]);
+  });
+
   it("offers an inline retry when opening a newest-only run fails", async () => {
     payload = conversation([said(1, "Start"), toolCall(51, "Read newest.js"), said(52, "Done")], [
       { from_sequence: 10, through_sequence: 51, rows: 40, tool_calls: 40 },

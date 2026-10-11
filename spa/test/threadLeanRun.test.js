@@ -18,5 +18,16 @@ it.each([true, false])("opens a warm historical run after a lean=%s arrival", (l
   }, { newest: true, lean });
   expect(window.items.map((item) => item.data.sequence)).toEqual(lean ? [1, 2, 100, 101] : Array.from({ length: 101 }, (_, index) => index + 1));
   expect(window.activityDigests).toEqual([digest]);
-  expect(runDigestToFetch(window.activityDigests, 2, window.deliveredSequence, 100, window.items)).toEqual(lean ? digest : null);
+  expect(runDigestToFetch(window.activityDigests, 2, window.items, 100)).toEqual(lean ? digest : null);
+});
+
+it.each([2, 100])("keeps a sparse live tail window-backed after row %s updates", (updatedRow) => {
+  const items = [message(1), activity(2), activity(100)].map((item) => item.data.sequence === updatedRow
+    ? { ...item, data: { ...item.data, updated_sequence: 101, outcome: "ok" } }
+    : item);
+  const window = threadWindow({ ...held, items, activityDigests: [digest] }, {
+    items: [items.find((item) => item.data.sequence === updatedRow)], thread_last_sequence: 101, has_more: false,
+  });
+  expect(window.deliveredSequence).toBe(101);
+  expect(runDigestToFetch(window.activityDigests, 2, window.items, 100)).toBe(null);
 });

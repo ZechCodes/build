@@ -64,17 +64,23 @@ export function digestCovering(digests, sequence) {
 ///
 /// Which run is the tail is answered by everything the client holds about it,
 /// never by the digest alone. A digest is cut on a PAGED answer and no forward
-/// delta refreshes one, while the conversation's newest sequence moves on every
-/// delta — so one call landing on the live tail leaves its digest short of the
+/// delta refreshes one, while newly created rows advance the conversation —
+/// so one call landing on the live tail leaves its digest short of the
 /// end while the run is still being written. `runThrough` is the other half of
 /// the answer: the newest sequence the window holds for the run, its folded
-/// calls included, which is what the run's own box says about itself.
-export function runDigestToFetch(digests, runKey, threadLastSequence, runThrough = 0, heldItems = []) {
+/// calls included, which is what the run's own box says about itself. The end
+/// is the newest held creation sequence, never the delivery watermark: an
+/// in-place result advances delivery without closing the trailing run.
+export function runDigestToFetch(digests, runKey, heldItems = [], runThrough = 0) {
   const key = Number(runKey);
   const digest = digestCovering(digests, key);
   if (!digest || heldRunComplete(digest, heldItems)) return null;
   const runReaches = Math.max(digest.through_sequence, Number(runThrough) || 0);
-  return runReaches >= Number(threadLastSequence) ? null : digest;
+  const newestCreated = heldItems.reduce((newest, item) => {
+    const sequence = item.data?.sequence;
+    return Number.isFinite(sequence) ? Math.max(newest, sequence) : newest;
+  }, 0);
+  return runReaches >= newestCreated ? null : digest;
 }
 
 /// Sequence gaps can be update counters, so completeness follows the census,

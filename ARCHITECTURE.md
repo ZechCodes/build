@@ -1953,7 +1953,11 @@ In practice:
   missing interior even when the first row is held. Without an exact row census,
   historical runs are fetched conservatively. Closed runs open asynchronously
   with the existing throbber until their cached rows paint, and offer inline retry on failure;
-  the live tail continues opening from the conversation window.
+  the live tail continues opening from the conversation window. Tail detection
+  compares creation sequences: in-place updates advance delivery without
+  closing a run. Fetched bodies merge newer window copies by update sequence
+  before rendering, including folded descendants; their creation span can
+  cross other runs, so window membership follows owned rows and fetched keys.
 - **Pushes**: `watchChanges()` in `spa/src/core/changeEvents.js` registers
   subscriptions and routes each `changes` flush to the appliers (`APPLIERS` in
   `spa/src/core/cacheSync.js`). Most fields carry bodies that are written

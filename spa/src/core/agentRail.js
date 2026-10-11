@@ -2736,16 +2736,11 @@ function mountRailOnContext(host, context, swap) {
   /// hold the span each fetch covered, so there is nothing to translate here.
   const fetchedRunItems = (runKey) => conversationRuns().itemsOf(runKey);
 
-  /// The newest sequence the conversation has reached — the end a run has to
-  /// touch to be the live tail. The record's cursor is that number: everything
-  /// the conversation has said is in it or behind it.
-  const lastSequenceOf = () => threadCache.readWindow()?.deliveredSequence || 0;
-
   /// How far the window has taken delivery of the conversation. The one number
   /// that moves for an item mutated in place — a call answered, a message
   /// marked seen — which changes what a row says without changing how many
   /// rows there are.
-  const deliveredSequenceOf = () => lastSequenceOf();
+  const deliveredSequenceOf = () => threadCache.readWindow()?.deliveredSequence || 0;
 
   const threadItems = (thread) => (thread && thread.items) || [];
 
@@ -2967,7 +2962,7 @@ function mountRailOnContext(host, context, swap) {
     // Decided against the timeline the press landed on, before the repaint
     // draws the next one over it.
     const digest = opened
-      ? runDigestToFetch(digestsInHand(), runKey, lastSequenceOf(), runThrough, paintedThreadItems)
+      ? runDigestToFetch(digestsInHand(), runKey, paintedThreadItems, runThrough)
       : null;
     // Start before fold persistence yields: the click paints its loading state.
     const opening = digest ? loadActivityRun(runs, digest) : null;

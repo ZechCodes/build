@@ -39,6 +39,12 @@ async function seedLeanThread(warm) {
     items: [activity(100), message(101, "Done")], thread_last_sequence: 101, has_more: true,
     activity_digests: closedThread.activityDigests,
   }, { newest: true, lean: true }));
+  window.__updatedLeanTail = (finished = false) => writeCached(threadAddress, {
+    items: [message(1, "Start"),
+      { ...activity(2), data: { ...activity(2).data, updated_sequence: 101, outcome: "ok" } },
+      { ...activity(100), data: { ...activity(100).data, ...(finished ? { updated_sequence: 102, outcome: "ok", summary: "Read a100.js\n→ Tool finished" } : {}) } },
+    ], deliveredSequence: finished ? 102 : 101, activityDigests: closedThread.activityDigests,
+  });
   await writeCached({ deviceId, entityId: "", kind: "projects", sub: "" }, [{ id: "lean-project", project_id: "lean-project", name: "Lean" }]);
   await writeCached({ deviceId, entityId: "", kind: "workspaces", sub: "" }, [
     stampWorkspace({ id: "lean-workspace", project_id: "lean-project", entity_id: entityId, name: "lean-thread" }, deviceId),
@@ -129,6 +135,23 @@ it("fetches missing interior rows after a warm lean catch-up closes the run", as
     await page.locator('.thread-activity-group [role="status"] .throbber').waitFor({ state: "detached" });
     expect(await page.locator(".thread-activity-group-list > .thread-activity").evaluateAll((rows) => rows.map((row) => Number(row.dataset.sequence))))
       .toEqual(Array.from({ length: 99 }, (_, index) => index + 2));
+  }, { width: 390, height: 844 });
+}, 30_000);
+
+it("keeps an updated warm live tail window-backed and paints its later tool result", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountLeanThread(page, basePath, { warm: true });
+    await page.evaluate(() => window.__updatedLeanTail());
+    await page.waitForFunction(() => document.querySelector(".thread-activity-count")?.textContent === "99");
+    const head = page.locator(".thread-activity-group-head");
+    expect(await head.evaluate((node) => { node.click(); return !!document.querySelector('[role="status"] .throbber'); })).toBe(false);
+    await page.waitForFunction(() => document.querySelectorAll(".thread-activity-group-list > .thread-activity").length === 2);
+    expect(await page.locator(".thread-activity-group-list > .thread-activity").evaluateAll((rows) => rows.map((row) => row.dataset.sequence))).toEqual(["2", "100"]);
+    expect(await page.evaluate(() => window.__activityCalls.length)).toBe(0);
+    await page.evaluate(() => window.__updatedLeanTail(true));
+    await page.waitForFunction(() => document.querySelector('.thread-activity-group-list [data-sequence="100"] .thread-activity-outcome')?.dataset.outcome === "ok");
+    expect(await page.locator('.thread-activity-group-list [data-sequence="100"]').textContent()).toContain("Tool finished");
+    expect(await page.evaluate(() => window.__activityCalls.length)).toBe(0);
   }, { width: 390, height: 844 });
 }, 30_000);
 

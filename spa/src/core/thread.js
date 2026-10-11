@@ -1489,19 +1489,23 @@ const runThroughSequence = (run) =>
     0,
   );
 
-/// What an open run draws: the items fetched for it, and whatever the window
-/// holds past them.
-///
-/// A run older than the newest message never changes, so the fetched items are
-/// the whole of it. The tail run is the one still being written, and the window
-/// is where its newest rows land — so the rows past the fetch are taken from
-/// the window, already rendered, and the head of a live run goes on ticking.
+/// Window copies belonging to this run, including folded descendants. Their
+/// creation span can cross messages and other runs, so membership follows the
+/// run's owned rows and fetched keys rather than an interval of sequences.
+function heldRunItems(run, fetched, view) {
+  const owned = new Set(run.flatMap((row) => row.activity.rows).map((row) => row.sequence));
+  const fetchedKeys = new Set(fetched.map(threadItemKey));
+  return view.sourceItems.filter((item) => owned.has(item.data?.sequence) || fetchedKeys.has(threadItemKey(item)));
+}
+
+/// Fetched bodies fill gaps, but a result can still update an existing row.
+/// Merge raw copies by their update sequence before rebuilding child folds,
+/// so the newest copy paints whether it came from the window or the fetch.
 function runChildrenHtml(run, view) {
   const fetched = view.runItemsOf(run[0].key);
   if (!fetched || !fetched.length) return run.map((row) => row.html).join("");
-  const fetchedThrough = fetched.reduce((newest, item) => Math.max(newest, item.data?.sequence || 0), 0);
-  const live = run.filter((row) => Number(row.key) > fetchedThrough);
-  return [...timelineRowsOf(fetched, view.agentLabel, view.threadId, view), ...live]
+  const items = mergeThreadItems(fetched, heldRunItems(run, fetched, view));
+  return timelineRowsOf(items, view.agentLabel, view.threadId, view)
     .map((row) => row.html)
     .join("");
 }
@@ -1869,6 +1873,7 @@ export function timelineEntries(
   } = {},
 ) {
   const view = {
+    sourceItems,
     agentLabel,
     agentLabels,
     workspaces,

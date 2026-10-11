@@ -112,6 +112,22 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it("keeps a newer ordinary cache write when an older foreground diff shape arrives", async () => {
+    const held = gate();
+    await mountRoutedPanes();
+    script["run.diff"] = (params) => params.run_id === "run-10" ? held.promise : answers["run.diff"]();
+    start();
+    await called(rpc, () => calls("run.diff").some(([, params]) => params.run_id === "run-10"));
+    const newer = { diff_key: "newer-surface", patch: "newer surface patch", files: [{ path: "newer.js" }] };
+    try {
+      await cache.writeCached(address("run-10", "diff"), newer);
+    } finally {
+      held.release({ diff_key: "older-read", files: [{ path: "older.js" }] });
+      await finish();
+    }
+    expect((await cache.readCached(address("run-10", "diff"))).value).toMatchObject(newer);
+  });
+
   it("promotes a background status lookup when its workspace opens before dispatch", async () => {
     App.route = { name: "inbox", deviceId: "dev-1" };
     const held = gate();

@@ -44,6 +44,7 @@ describe("lean thread page requests", () => {
     await greet([]);
     await read(call);
     expect(call.mock.calls.map(([, params]) => params.activity)).toEqual(["newest", undefined, undefined]);
+    expect(call.mock.calls.map(([, params]) => params.limit)).toEqual([23, 100, 100]);
   });
 
   it("keeps held message context when has_more only describes omitted activity", async () => {

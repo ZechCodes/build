@@ -1226,7 +1226,7 @@ const diffRecord = (held, diff, row) => {
 const staleDiffRecord = (held) => (!held || held.stale ? null : { ...held, stale: true });
 
 /** One conversation, read forward from the sequence the cache holds — or the
- *  latest hundred where it holds none. */
+ *  latest capability-sized page where it holds none. */
 async function syncThread(context, entityId, agent, priority) {
   await syncThreadWindow({
     deviceId: context.deviceId,

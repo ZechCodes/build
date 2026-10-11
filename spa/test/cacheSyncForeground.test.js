@@ -51,7 +51,7 @@ const gate = () => {
   return { promise, release };
 };
 
-let cache, sync, visible, rpc, script, disposers;
+let cache, sync, visible, rpc, script, disposers, abandonedPass;
 const answers = {
   "board.list": () => ({ items: board }),
   "project.list": () => ({ projects }),
@@ -82,6 +82,7 @@ beforeEach(async () => {
   delete navigator.locks;
   script = {};
   disposers = [];
+  abandonedPass = false;
   App.route = routeTo(10);
   rpc = vi.fn(async (method, params = {}) => (script[method] || answers[method] || (() => ({})))(params));
   context = {
@@ -96,7 +97,8 @@ beforeEach(async () => {
 afterEach(async () => {
   sync.stopCacheSync();
   disposers.forEach((dispose) => dispose());
-  await finish();
+  vi.unstubAllGlobals();
+  if (!abandonedPass) await finish();
 });
 
 const mountRoutedPanes = async () => {
@@ -108,6 +110,67 @@ const mountRoutedPanes = async () => {
 };
 
 describe("foreground-first passes", () => {
+  it("finishes when a background diff's idle turn makes that same Changes pane foreground", async () => {
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    let switched = false;
+    vi.stubGlobal("requestIdleCallback", (callback) => setTimeout(() => {
+      if (!switched) {
+        switched = true;
+        App.route = routeTo(1);
+        disposers.push(visible.registerSyncDiff(address("run-1", "diff")));
+      }
+      callback();
+    }, 0));
+    start();
+    let timer;
+    const completed = await Promise.race([
+      finish().then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), 2000); }),
+    ]);
+    clearTimeout(timer);
+    // An unresolved loader cycle has no timer to release; let teardown
+    // invalidate its lifetime rather than waiting on that cyclic promise.
+    abandonedPass = !completed;
+    expect(switched).toBe(true);
+    expect(completed).toBe(true);
+    expect(calls("run.diff").some(([, params]) => params.run_id === "run-1")).toBe(true);
+  });
+
+  it("dispatches a newly opened conversation while an unrelated background Git reply is still held", async () => {
+    const held = gate();
+    const extra = {
+      ...board[9], branch: "build/11", run_id: "run-11", worktree_id: "wt-11",
+      agents: [{ id: "ag-11-b" }],
+    };
+    script["board.list"] = () => ({ items: board, runs: [extra] });
+    script["workspace.list"] = () => ({ workspaces: [...workspaces, {
+      ...workspaces[9], id: "ws-11", workspace_id: "ws-11", entity_id: "run-11",
+      conversations: [{ conversation_id: "ag-11-b" }],
+    }] });
+    script["git.status"] = (params) => params.run_id === "run-1" ? held.promise : answers["git.status"]();
+    start();
+    await called(rpc, () => calls("git.status").some(([, params]) => params.run_id === "run-1"));
+    try {
+      App.route = routeTo(11);
+      sync.routeChanged();
+      await vi.waitFor(() => expect(calls("thread.page").some(([, params]) => params.agent_id === "ag-11-b")).toBe(true));
+      const selected = calls("thread.page").find(([, params]) => params.agent_id === "ag-11-b");
+      expect(selected[2]?.priority).not.toBe("background");
+      expect(calls("git.status").find(([, params]) => params.run_id === "run-1")[2]?.priority).toBe("background");
+    } finally {
+      held.release(answers["git.status"]());
+      await finish();
+    }
+  });
+
+  it("reads the mounted chat's remembered conversation first when the route names no agent", async () => {
+    delete App.route.agent;
+    disposers.push(visible.registerSyncThread(() => ({ deviceId: "dev-1", entityId: "run-10", agentId: "ag-10-b" })));
+    start();
+    await finish();
+    expect(nonLists()[0].slice(0, 2)).toEqual(["thread.page", expect.objectContaining({ entity_id: "run-10", agent_id: "ag-10-b" })]);
+  });
+
   it("reads the selected conversation, open scope, then inbox before warming ten checkouts", async () => {
     await mountRoutedPanes();
     start();

@@ -24,33 +24,8 @@ fn add_project_agent(name: &str) -> BridgeAction {
 fn project_workers_list_and_add_project_agents_with_coding_tools() {
     let mut project = WorkerProject::new();
     let worker = project.worker("Rail scroll");
+    let docs = a_worker_reads_and_adds(&mut project, &worker);
     let (owner, pin) = (project.owner.clone(), project.pin.clone());
-
-    let listed = project
-        .state
-        .on_agent_mcp_action(&owner, &worker, BridgeAction::ListProjectAgents)
-        .unwrap();
-    assert_eq!(listed["project_id"], json!(project.project_id));
-    assert_eq!(listed["entity_id"], json!(owner));
-    assert_eq!(listed["pinned_agent_id"], json!(pin));
-    assert_eq!(listed_ids(&listed), vec![pin.clone(), worker.clone()]);
-    assert_eq!(listed["agents"][1]["project_role"], "worker");
-
-    let added = project
-        .state
-        .on_agent_mcp_action(&owner, &worker, add_project_agent("Docs"))
-        .unwrap();
-    let docs = added["agent"]["id"].as_str().unwrap().to_string();
-    assert_eq!(added["project_id"], json!(project.project_id));
-    assert_eq!(added["entity_id"], json!(owner));
-    assert_eq!(added["agent"]["project_role"], "worker");
-    assert_eq!(added["agent"]["created_by"], json!(worker));
-    assert_eq!(added["agent"]["watched"], false, "unwatched by default");
-    assert_eq!(
-        project.roster(),
-        vec![pin.clone(), worker.clone(), docs.clone()]
-    );
-    assert_eq!(project.state.project_pin(&owner), Some(pin.as_str()));
 
     // An agent in one of the project's workspaces is on the coding surface
     // too, and the project it reads and staffs is its own.
@@ -60,10 +35,7 @@ fn project_workers_list_and_add_project_agents_with_coding_tools() {
         .on_agent_mcp_action(&workspace_owner, &coder, BridgeAction::ListProjectAgents)
         .unwrap();
     assert_eq!(from_workspace["entity_id"], json!(owner));
-    assert_eq!(
-        listed_ids(&from_workspace),
-        vec![pin.clone(), worker.clone(), docs.clone()]
-    );
+    assert_eq!(listed_ids(&from_workspace), vec![pin, worker, docs]);
     let delegated = project
         .state
         .on_agent_mcp_action(&workspace_owner, &coder, add_project_agent("Bench"))
@@ -72,7 +44,42 @@ fn project_workers_list_and_add_project_agents_with_coding_tools() {
     assert_eq!(delegated["agent"]["created_by"], json!(coder));
     assert_eq!(project.roster().len(), 4);
 
-    // Another project's worker sees its own roster, never this one.
+    another_project_lists_only_its_own(&mut project);
+}
+
+/// `worker` lists the roster and adds one more worker; answers its id.
+fn a_worker_reads_and_adds(project: &mut WorkerProject, worker: &str) -> String {
+    let (owner, pin) = (project.owner.clone(), project.pin.clone());
+    let listed = project
+        .state
+        .on_agent_mcp_action(&owner, worker, BridgeAction::ListProjectAgents)
+        .unwrap();
+    assert_eq!(listed["project_id"], json!(project.project_id));
+    assert_eq!(listed["entity_id"], json!(owner));
+    assert_eq!(listed["pinned_agent_id"], json!(pin));
+    assert_eq!(listed_ids(&listed), vec![pin.clone(), worker.to_string()]);
+    assert_eq!(listed["agents"][1]["project_role"], "worker");
+
+    let added = project
+        .state
+        .on_agent_mcp_action(&owner, worker, add_project_agent("Docs"))
+        .unwrap();
+    let docs = added["agent"]["id"].as_str().unwrap().to_string();
+    assert_eq!(added["project_id"], json!(project.project_id));
+    assert_eq!(added["entity_id"], json!(owner));
+    assert_eq!(added["agent"]["project_role"], "worker");
+    assert_eq!(added["agent"]["created_by"], json!(worker));
+    assert_eq!(added["agent"]["watched"], false, "unwatched by default");
+    assert_eq!(
+        project.roster(),
+        vec![pin.clone(), worker.to_string(), docs.clone()]
+    );
+    assert_eq!(project.state.project_pin(&owner), Some(pin.as_str()));
+    docs
+}
+
+/// Another project's worker sees its own roster, never `project`'s.
+fn another_project_lists_only_its_own(project: &mut WorkerProject) {
     let (_other_home, other_repo) = a_repo();
     let other_id = added_project(&mut project.state, &other_repo);
     let other_owner = ensure(&mut project.state, &other_id);

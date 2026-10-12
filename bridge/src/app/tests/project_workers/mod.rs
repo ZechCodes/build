@@ -6,6 +6,7 @@ use super::project_agent::{added_project, workspace};
 use super::project_coordinator::{a_repo, a_state_root, add_worker, booted, ensure};
 use super::*;
 
+mod assignment;
 mod tools;
 
 /// A booted bridge over a temporary store with one project, its owner and
@@ -13,7 +14,6 @@ mod tools;
 pub(super) struct WorkerProject {
     pub(super) _home: tempfile::TempDir,
     pub(super) _tmp: tempfile::TempDir,
-    pub(super) state_root: PathBuf,
     pub(super) repo: PathBuf,
     pub(super) state: AppState,
     pub(super) project_id: String,
@@ -32,7 +32,6 @@ impl WorkerProject {
         Self {
             _home: home,
             _tmp: tmp,
-            state_root,
             repo,
             state,
             project_id,

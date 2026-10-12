@@ -181,8 +181,8 @@ pub(crate) use fs::MOVED_SOURCE;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 pub(crate) use projects::PINNED_AGENT_STAYS;
 use projects::{
-    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
-    WorkspaceAgentAddress, WorkspaceDirectoryArgs,
+    default_projects_dir, AgentChoiceArgs, NewProjectWorker, Project, ProjectRegistry,
+    ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 pub use push_keys::PushKeyRefusal;
 

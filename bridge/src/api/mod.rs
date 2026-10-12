@@ -100,6 +100,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
     "tasks.agentIdentities",
+    "tasks.assignProjectAgent", // Since 3.21.0: new_project_agent assignee, operation_id on tasks.assign (#533).
     "tasks.attachmentChunks",
     "tasks.attachments",
     "tasks.bodyPrecondition", // Since 3.10.0: expected_body_hash on tasks.update (#347).

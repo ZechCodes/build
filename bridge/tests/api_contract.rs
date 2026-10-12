@@ -1381,3 +1381,27 @@ fn project_workers_are_announced_with_their_roster_read_and_purposes() {
     let remove = read_json(&fixtures_root().join("v1/agent.remove.json"));
     assert_eq!(remove["pinned_coordinator"]["since"], "3.21.0");
 }
+
+/// A task handed to a new project worker, and an assignment a client can
+/// retry, ride one capability: the `new_project_agent` assignee kind and
+/// `operation_id` on `tasks.assign`, whose dispatch names no workspace and
+/// echoes the client's id.
+#[test]
+fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
+    assert_eq!(API_VERSION, "3.21.0");
+    assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
+    let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
+    let example = &assign["project_agent_assignment"];
+    assert_eq!(example["since"], "3.21.0");
+    assert_eq!(example["capability"], "tasks.assignProjectAgent");
+    let params: v1::tasks::TasksAssignParams =
+        serde_json::from_value(example["params"].clone()).expect("the example params parse");
+    assert_eq!(params.operation_id.as_deref(), Some("op-assign-7c1e"));
+    assert_eq!(params.assignee["kind"], "new_project_agent");
+    let dispatch = &example["dispatch"];
+    assert_eq!(dispatch["kind"], params.assignee["kind"]);
+    assert_eq!(dispatch["operation_id"], example["params"]["operation_id"]);
+    assert!(dispatch["workspace_id"].is_null(), "{dispatch}");
+    serde_json::from_value::<v1::tasks::TaskDispatch>(dispatch.clone())
+        .expect("the example dispatch is a TaskDispatch");
+}

@@ -1174,7 +1174,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "assign_task",
-                "description": "Hand a task to somebody. Assigning IS dispatching: it delivers the task into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the task is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself. For a new_workspace or new_agent assignee, give the agent a short job name in agent_name.",
+                "description": "Hand a task to somebody. Assigning IS dispatching: it delivers the task into that agent's conversation and starts it. This is how you hand work off — anything beyond a quick question or a one-line correction is filed and assigned rather than sent as a message, because the task is where the user and the other agents look and a brief sent as a message is a brief only its reader has. Assign it to yourself to plan and track work you are doing yourself. For a new_workspace, new_agent or new_project_agent assignee, give the agent a short job name in agent_name. new_project_agent puts a new worker in the project's original sources, shared with the user and its other agents; new_workspace gives the work a checkout of its own.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1183,21 +1183,22 @@ impl DoneServer {
                             "type": "object",
                             "description": "Who gets it, and where the work runs. Pass null to unassign.",
                             "properties": {
-                                "kind": { "type": "string", "enum": ["user", "project_agent", "agent", "new_workspace", "new_agent"] },
+                                "kind": { "type": "string", "enum": ["user", "project_agent", "agent", "new_workspace", "new_agent", "new_project_agent"] },
                                 "agent_id": { "type": "string", "description": "With kind=agent. An agent of your project; one outside it is refused." },
                                 "workspace_id": { "type": "string", "description": "With kind=new_agent: the workspace the new agent works in." },
                                 "name": { "type": "string", "description": "With kind=new_workspace, the WORKSPACE name. The task's title when omitted." },
-                                "agent_name": { "type": "string", "minLength": 1, "description": "Required with kind=new_workspace or new_agent. A short name describing the agent's job, like \"Flaky test fixer\"." },
+                                "agent_name": { "type": "string", "minLength": 1, "description": "Required with kind=new_workspace, new_agent or new_project_agent. A short name describing the agent's job, like \"Flaky test fixer\"." },
                                 "isolation": { "type": "string", "enum": ["worktree", "rift"], "description": "With kind=new_workspace. Omit for the project's own setting." },
                                 "harness": { "type": "string", "description": "What a new agent runs on. Omit for the user's default." },
                                 "model": { "type": "string" },
                                 "effort": { "type": "string" },
-                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace or new_agent: watch the new agent and show its workspace in the USER's inbox. Off by default: pass true only when the user asked to follow its work; starting work they asked for is not that. This is separate from the top-level notify_user, which watches the task." }
+                                "notify_user": { "type": "boolean", "description": "With kind=new_workspace, new_agent or new_project_agent: watch the new agent and show its workspace in the USER's inbox. Off by default: pass true only when the user asked to follow its work; starting work they asked for is not that. This is separate from the top-level notify_user, which watches the task." }
                             },
                             "required": ["kind"],
                             "allOf": [
                                 { "if": { "properties": { "kind": { "const": "new_workspace" } } }, "then": { "required": ["agent_name"] } },
-                                { "if": { "properties": { "kind": { "const": "new_agent" } } }, "then": { "required": ["agent_name"] } }
+                                { "if": { "properties": { "kind": { "const": "new_agent" } } }, "then": { "required": ["agent_name"] } },
+                                { "if": { "properties": { "kind": { "const": "new_project_agent" } } }, "then": { "required": ["agent_name"] } }
                             ]
                         },
                         "note": { "type": "string", "description": "Extra instruction delivered under the task. The task's body is the task; this is what you would have said in a message." },
@@ -2272,7 +2273,7 @@ fn required_created_agent_name(params: Option<&Value>, field: &str) -> Result<St
 fn require_created_agent_name(assignee: &Value) -> Result<(), String> {
     if matches!(
         assignee.get("kind").and_then(Value::as_str),
-        Some("new_workspace" | "new_agent")
+        Some("new_workspace" | "new_agent" | "new_project_agent")
     ) {
         created_agent_name(assignee.get("agent_name").and_then(Value::as_str))?;
     }
@@ -3966,9 +3967,19 @@ mod tests {
             assignee["allOf"][1]["then"]["required"],
             json!(["agent_name"])
         );
+        assert_eq!(
+            assignee["allOf"][2]["then"]["required"],
+            json!(["agent_name"])
+        );
 
         for (tool, args) in [
             ("add_workspace_agent", r#"{"workspace_id":"ws-1"}"#),
+            ("add_project_agent", r#"{}"#),
+            ("add_project_agent", r#"{"name":" "}"#),
+            (
+                "assign_task",
+                r#"{"task_id":"task-1","assignee":{"kind":"new_project_agent"}}"#,
+            ),
             (
                 "add_workspace_agent",
                 r#"{"workspace_id":"ws-1","name":"  "}"#,

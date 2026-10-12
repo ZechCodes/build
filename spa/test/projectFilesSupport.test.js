@@ -50,6 +50,47 @@ describe("project source filesystem support", () => {
     await projectFilesRpc(machine, "code", { project, currentProject: () => project })("fs.write", { project_id: "p", source_id: "docs", path: "README.md" });
     expect(machine.rpc).toHaveBeenCalledWith("fs.write", { project_id: "p", source_id: "docs", path: "README.md" });
   });
+  it("reads a newly added or moved root from its captured location after reconciliation", async () => {
+    const machine = context();
+    capabilities.fs = { projectSources: true, projectSourcePath: true };
+    const before = { sources: [{ id: "code", path: "/old" }] };
+    const after = { sources: [{ id: "code", path: "/new" }, { id: "docs", path: "/docs" }] };
+    const rpc = projectFilesRpc(machine, "code", { project: before, currentProject: () => after });
+    for (const [source_id, source_path] of [["code", "/new"], ["docs", "/docs"]]) {
+      const params = { project_id: "p", source_id, source_path, path: "README.md" };
+      await rpc("fs.read", params);
+      expect(machine.rpc).toHaveBeenLastCalledWith("fs.read", params);
+    }
+  });
+  it("refuses a captured location after move or removal but permits other source drafts", async () => {
+    const machine = context();
+    capabilities.fs = { projectSources: true, projectSourcePath: true };
+    const before = { sources: [{ id: "code", path: "/code" }, { id: "docs", path: "/docs" }] };
+    let current = { sources: [{ id: "code", path: "/moved" }, { id: "docs", path: "/docs" }] };
+    const rpc = projectFilesRpc(machine, "code", { project: before, currentProject: () => current });
+    const stale = { project_id: "p", source_id: "code", source_path: "/code", path: "README.md" };
+    for (const method of ["fs.read", "fs.write"]) await expect(rpc(method, stale)).rejects.toThrow("folder moved");
+    current = { sources: [{ id: "docs", path: "/docs" }] };
+    await expect(rpc("fs.write", stale)).rejects.toThrow("folder moved");
+    const safe = { project_id: "p", source_id: "docs", source_path: "/docs", path: "draft.md", content: "draft" };
+    await rpc("fs.write", safe);
+    expect(machine.rpc).toHaveBeenCalledExactlyOnceWith("fs.write", safe);
+  });
+  it("removes captured source paths before calling an older source-aware bridge", async () => {
+    const machine = context();
+    capabilities.fs.projectSources = true;
+    const project = { sources: [{ id: "docs", path: "/docs" }] };
+    const params = { project_id: "p", source_id: "docs", source_path: "/docs", path: "README.md" };
+    await projectFilesRpc(machine, "code", { project, currentProject: () => project })("fs.read", params);
+    expect(machine.rpc).toHaveBeenCalledWith("fs.read", { project_id: "p", source_id: "docs", path: "README.md" });
+    expect(params.source_path).toBe("/docs");
+  });
+  it("removes both selectors before calling a legacy primary bridge", async () => {
+    const machine = context();
+    const project = { sources: [{ id: "code", path: "/code" }] };
+    await projectFilesRpc(machine, "code", { project, currentProject: () => project })("fs.write", { project_id: "p", source_id: "code", source_path: "/code", path: "README.md" });
+    expect(machine.rpc).toHaveBeenCalledWith("fs.write", { project_id: "p", path: "README.md" });
+  });
   it("keeps rendering support in the device cache for a cold mount", async () => {
     await rememberProjectFilesSupport("d", { fs: { projectSources: true } });
     expect(await readProjectFilesSupport("d")).toBe(true);

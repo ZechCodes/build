@@ -4,6 +4,7 @@ import { projectFilesRoots, workspaceFilesRoots } from "../src/core/filesRoots.j
 describe("Files roots", () => {
   it("keeps bodies and listings from a moved source folder in separate caches", () => {
     const roots = (path) => projectFilesRoots({ sources: [{ id: "docs", path }] }, "p");
+    expect(roots("/old")[0].scope).toEqual({ project_id: "p", source_id: "docs", source_path: "/old" });
     expect(roots("/old")[0].cacheEntityId).toBe('project:["p","docs","/old"]');
     expect(roots("/new")[0].cacheEntityId).not.toBe(roots("/old")[0].cacheEntityId);
     expect(roots("/new")[0].id).toBe("docs");

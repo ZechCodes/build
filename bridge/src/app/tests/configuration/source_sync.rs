@@ -616,6 +616,70 @@ fn project_source_mutation_serializes_with_base_sync() {
 }
 
 #[test]
+fn legacy_workspace_source_mutation_serializes_with_base_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (upstream, code) = clone_of_upstream(&root, "code");
+    let config = root.join("config.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let mut state = configured(&root, &config);
+    let opened = state.handle(req(
+        "project.create",
+        json!({"name": "single", "sources": [{"path": code}]}),
+    ));
+    assert_eq!(opened["ok"], true, "{opened}");
+    let project_id = opened["result"]["project_id"].as_str().unwrap();
+    let workspace_id = format!("legacy-{project_id}");
+    assert!(state.workspaces.get(&workspace_id).is_none());
+    advance(&upstream, "news.txt");
+    std::fs::write(code.join("work.txt"), "mine\n").unwrap();
+    let state = state.shared();
+
+    let (held, _) = SyncLock::acquire(&code, Duration::ZERO).unwrap();
+    // No workspace.get first: ordinary staging lazily adopts the source alias.
+    let staging = frame_on_a_thread(
+        &state,
+        "stage",
+        "git.stage",
+        json!({"workspace_id": workspace_id, "source_id": "source-1", "paths": ["work.txt"]}),
+    );
+    assert!(
+        staging.recv_timeout(STILL_WAITING).is_err(),
+        "legacy workspace staging must wait for the sync holding the source"
+    );
+    assert!(state.try_lock().is_ok(), "the wait holds the app mutex");
+    let listed = frame_on_a_thread(&state, "list", "project.list", json!({}))
+        .recv_timeout(ANSWERED_WITHIN)
+        .expect("project.list remains responsive while legacy staging waits");
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert!(
+        crate::git_fixture::git_command(&code, &["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap()
+            .stdout
+            .is_empty(),
+        "legacy staging must not change the original index while sync holds the lock"
+    );
+    let synced = sync_base(&code, "main", Fetch::Within(Duration::from_secs(10)));
+    assert!(
+        matches!(synced.outcome, SyncOutcome::FastForwarded { commits: 1 }),
+        "{synced:?}"
+    );
+    drop(held);
+
+    let staged = staging.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(staged["ok"], true, "{staged}");
+    assert_eq!(head(&code, "HEAD"), head(&upstream, "main"));
+    assert_eq!(
+        crate::git_fixture::git_command(&code, &["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap()
+            .stdout,
+        b"work.txt\n"
+    );
+}
+
+#[test]
 fn workspace_cut_preserves_local_base_commits() {
     for sync_base in [true, false] {
         let mut fixture = fixture();

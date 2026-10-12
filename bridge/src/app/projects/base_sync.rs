@@ -184,6 +184,7 @@ pub(in crate::app) struct SyncSubject {
     base_branch: String,
     fetch: Fetch,
     origin: SyncOrigin,
+    enabled: bool,
 }
 
 /// Who ran a sync: the service (the timer or Sync now), or a workspace cut.
@@ -197,6 +198,7 @@ pub(in crate::app) enum SyncOrigin {
 pub(in crate::app) struct Synced {
     subject: SyncSubject,
     report: SyncReport,
+    start: Option<String>,
 }
 
 impl Synced {
@@ -213,7 +215,9 @@ impl Synced {
                 ..
             })
         );
-        !(self.subject.origin == SyncOrigin::Cut && ran_out) && !self.left_the_checkout()
+        self.subject.enabled
+            && !(self.subject.origin == SyncOrigin::Cut && ran_out)
+            && !self.left_the_checkout()
     }
 
     fn left_the_checkout(&self) -> bool {
@@ -231,10 +235,7 @@ pub(in crate::app) fn cut_start(synced: &[Synced], source: &WorkspaceSource) -> 
         let same = subject.source_id == source.id
             && subject.path == source.path
             && subject.base_branch == source.base_branch;
-        match &synced.report.outcome {
-            SyncOutcome::CheckoutLeft { cut_from } if same => Some(cut_from.clone()),
-            _ => None,
-        }
+        same.then(|| synced.start.clone()).flatten()
     })
 }
 
@@ -269,51 +270,132 @@ pub(in crate::app) fn now_ms() -> i64 {
 }
 
 /// Sync one source for the service, once no other sync holds it.
-fn sync_for_the_service(subject: SyncSubject) -> Option<Synced> {
+fn sync_for_the_service(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> Option<Synced> {
     let (_held, _) = SyncLock::acquire(&subject.path, SERVICE_FETCH_DEADLINE)?;
+    if !subject.is_current(&state.lock().unwrap()) {
+        return None;
+    }
     let report = sync_base(&subject.path, &subject.base_branch, subject.fetch);
-    Some(Synced { subject, report })
+    Some(Synced {
+        subject,
+        report,
+        start: None,
+    })
 }
 
 /// Sync one source before a cut. A sync already running is waited for up to
 /// the cut's deadline, and then what it fetched is used rather than fetching
-/// again; one that outlasts the deadline leaves the base as it stands. The
+/// again; one that outlasts the lock deadline refuses the cut so no mutable ref is
+/// resolved without protection. The
 /// cut never fast-forwards the source's own checkout, which can take
 /// minutes: that is left to the service, and the cut branches from the
 /// commit the checkout is moving to ([`SyncOutcome::CheckoutLeft`]).
-fn sync_for_a_cut(subject: SyncSubject) -> Synced {
-    let report = match SyncLock::acquire(&subject.path, CUT_FETCH_DEADLINE) {
-        Some((_held, waited)) => {
-            let fetch = if waited { Fetch::Skip } else { subject.fetch };
-            sync_base_for_a_cut(&subject.path, &subject.base_branch, fetch)
+fn sync_for_a_cut(
+    subject: SyncSubject,
+    waited: bool,
+    state: Option<&std::sync::Weak<Mutex<AppState>>>,
+) -> Result<Synced, String> {
+    if let Some(state) = state.and_then(std::sync::Weak::upgrade) {
+        if !subject.is_current(&state.lock().unwrap()) {
+            return Err(super::MOVED_GIT_SOURCE.to_string());
         }
-        None => SyncReport {
-            outcome: SyncOutcome::Failed(Failure {
-                reason: "Another sync of this source was still running.".to_string(),
-                needs_you: false,
-                timed_out: true,
-            }),
-            ahead: 0,
+    }
+    let mut report = if subject.enabled {
+        let fetch = if waited { Fetch::Skip } else { subject.fetch };
+        sync_base_for_a_cut(&subject.path, &subject.base_branch, fetch)
+    } else {
+        SyncReport {
+            outcome: SyncOutcome::NoRemote,
+            ahead: local_base_commits(&subject),
             behind: 0,
             fetched: false,
-        },
+        }
     };
-    Synced { subject, report }
+    report.ahead = report.ahead.max(local_base_commits(&subject));
+    // Pin while the repository is protected. Materialization must never resolve
+    // the mutable base ref again after this lock drops (#271, #530).
+    let start = match &report.outcome {
+        SyncOutcome::CheckoutLeft { cut_from } => cut_from.clone(),
+        _ => git2::Repository::open(&subject.path)
+            .and_then(|repo| {
+                repo.revparse_single(&subject.base_branch)?
+                    .peel_to_commit()
+                    .map(|commit| commit.id().to_string())
+            })
+            .map_err(|error| format!("cannot pin workspace base: {error}"))?,
+    };
+    Ok(Synced {
+        subject,
+        report,
+        start: Some(start),
+    })
 }
 
-/// Every source a cut takes, synced side by side, so the cut waits for the
-/// slowest one rather than for all of them in turn.
-pub(in crate::app) fn sync_before_cut(subjects: &[SyncSubject]) -> Vec<Synced> {
+impl SyncSubject {
+    fn is_current(&self, app: &AppState) -> bool {
+        app.projects
+            .get(&self.project_id)
+            .and_then(|project| {
+                project
+                    .sources
+                    .iter()
+                    .find(|source| source.id == self.source_id)
+            })
+            .is_some_and(|source| {
+                source.path == self.path && source.base_branch == self.base_branch && source.is_git
+            })
+    }
+}
+
+/// Count unpublished base commits without syncing when automatic sync is off.
+fn local_base_commits(subject: &SyncSubject) -> usize {
+    let counts = (|| {
+        let repo = git2::Repository::open(&subject.path).ok()?;
+        let base = repo
+            .find_branch(&subject.base_branch, git2::BranchType::Local)
+            .ok()?;
+        let upstream = base
+            .upstream()
+            .or_else(|_| {
+                repo.find_branch(
+                    &format!("origin/{}", subject.base_branch),
+                    git2::BranchType::Remote,
+                )
+            })
+            .ok()?;
+        repo.graph_ahead_behind(base.get().target()?, upstream.get().target()?)
+            .ok()
+    })();
+    counts.map_or(0, |(ahead, _)| ahead)
+}
+
+/// Sync independent repositories side by side. Aliases sharing refs are
+/// prepared together under one acquisition of their common Git directory.
+pub(in crate::app) fn sync_before_cut(
+    subjects: &[SyncSubject],
+    state: Option<&std::sync::Weak<Mutex<AppState>>>,
+) -> Result<Vec<Synced>, String> {
+    let mut groups: std::collections::BTreeMap<PathBuf, Vec<SyncSubject>> = Default::default();
+    for subject in subjects {
+        groups
+            .entry(crate::source_sync::sync_lock_identity(&subject.path))
+            .or_default()
+            .push(subject.clone());
+    }
     std::thread::scope(|scope| {
-        let running: Vec<_> = subjects
-            .iter()
-            .cloned()
-            .map(|subject| scope.spawn(move || sync_for_a_cut(subject)))
-            .collect();
-        running
+        let running: Vec<_> = groups.into_values().map(|group| scope.spawn(move || {
+            let (_held, waited) = SyncLock::acquire(&group[0].path, CUT_FETCH_DEADLINE)
+                .ok_or_else(|| "Another source operation is still running; try creating the workspace again.".to_string())?;
+            group.into_iter().map(|subject| sync_for_a_cut(subject, waited, state)).collect::<Result<Vec<_>, String>>()
+        })).collect();
+        let batches: Result<Vec<_>, String> = running
             .into_iter()
-            .filter_map(|sync| sync.join().ok())
-            .collect()
+            .map(|sync| {
+                sync.join()
+                    .map_err(|_| "workspace base preparation failed".to_string())?
+            })
+            .collect();
+        Ok(batches?.into_iter().flatten().collect())
     })
 }
 
@@ -331,6 +413,37 @@ fn commits(count: usize) -> String {
 fn cut_warning(synced: &Synced) -> Option<String> {
     let subject = &synced.subject;
     let behind = synced.report.behind;
+    if synced.report.ahead > 0 {
+        let mut included = format!(
+            "{}: {} local {} on {} {} included in this workspace.",
+            subject.label,
+            synced.report.ahead,
+            if synced.report.ahead == 1 {
+                "commit"
+            } else {
+                "commits"
+            },
+            subject.base_branch,
+            if synced.report.ahead == 1 {
+                "is"
+            } else {
+                "are"
+            }
+        );
+        if behind > 0 {
+            included.push_str(&format!(
+                " The configured base is {} behind its remote; it was preserved as it stood.",
+                commits(behind)
+            ));
+        }
+        if let SyncOutcome::Failed(failure) = &synced.report.outcome {
+            included.push_str(&format!(
+                " The base could not be synced: {}",
+                failure.reason
+            ));
+        }
+        return Some(included);
+    }
     let why = match &synced.report.outcome {
         SyncOutcome::Failed(failure) => failure.reason.clone(),
         SyncOutcome::Skipped(reason) if behind > 0 => {
@@ -401,7 +514,7 @@ impl AppState {
         let subjects = state.lock().unwrap().source_sync_subjects(pass, now_ms);
         let synced: Vec<Synced> = subjects
             .into_iter()
-            .filter_map(sync_for_the_service)
+            .filter_map(|subject| sync_for_the_service(subject, state))
             .collect();
         state.lock().unwrap().settle_source_syncs(synced, now_ms);
     }
@@ -409,16 +522,21 @@ impl AppState {
     fn source_sync_subjects(&mut self, pass: SyncPass, now_ms: i64) -> Vec<SyncSubject> {
         let requested = std::mem::take(&mut self.source_sync_requested);
         let fetch = Fetch::Within(SERVICE_FETCH_DEADLINE);
-        self.projects
-            .iter()
-            .flat_map(|project| project.sources.iter().map(move |source| (project, source)))
-            .filter(|(project, source)| {
-                let asked = requested.contains(&(project.id.clone(), source.id.clone()));
-                source.is_git
-                    && (asked || (pass == SyncPass::Due && due_for_the_timer(source, now_ms)))
-            })
-            .map(|(project, source)| subject(&project.id, source, fetch, SyncOrigin::Service))
-            .collect()
+        let mut subjects: Vec<_> = requested.into_values().collect();
+        if pass == SyncPass::Due {
+            for project in self.projects.iter() {
+                for source in &project.sources {
+                    if due_for_the_timer(source, now_ms)
+                        && !subjects.iter().any(|subject| {
+                            subject.project_id == project.id && subject.source_id == source.id
+                        })
+                    {
+                        subjects.push(subject(&project.id, source, fetch, SyncOrigin::Service));
+                    }
+                }
+            }
+        }
+        subjects
     }
 
     /// The sources a workspace cut in `project_id` syncs first, each fetching
@@ -428,7 +546,7 @@ impl AppState {
         self.sources_for(project_id)
             .unwrap_or_default()
             .iter()
-            .filter(|source| source.syncs_base())
+            .filter(|source| source.is_git)
             .map(|source| {
                 let fresh = source
                     .sync_status
@@ -456,7 +574,10 @@ impl AppState {
             );
         }
         let mut wrote = false;
-        for Synced { subject, report } in synced.into_iter().filter(Synced::tells_the_timer) {
+        for Synced {
+            subject, report, ..
+        } in synced.into_iter().filter(Synced::tells_the_timer)
+        {
             let Some(source) = self
                 .projects
                 .source_mut(&subject.project_id, &subject.source_id)
@@ -497,14 +618,34 @@ impl AppState {
                     .to_string(),
             );
         }
+        self.resolve_project_source(
+            &project_id,
+            &source_id,
+            params.get("source_path").and_then(Value::as_str),
+            super::MOVED_GIT_SOURCE,
+        )?;
         self.request_source_sync(project_id, source_id);
         Ok(json!({ "pending": true }))
     }
 
     /// Ask the service to sync one source as soon as it can.
     pub(in crate::app) fn request_source_sync(&mut self, project_id: String, source_id: String) {
-        self.source_sync_requested.insert((project_id, source_id));
-        self.source_sync_nudge.notify_one();
+        if let Some(source) = self
+            .projects
+            .get(&project_id)
+            .and_then(|project| project.sources.iter().find(|source| source.id == source_id))
+        {
+            let mut captured = subject(
+                &project_id,
+                source,
+                Fetch::Within(SERVICE_FETCH_DEADLINE),
+                SyncOrigin::Service,
+            );
+            captured.enabled = true; // Manual sync works even when automatic sync is off.
+            self.source_sync_requested
+                .insert((project_id, source_id), captured);
+            self.source_sync_nudge.notify_one();
+        }
     }
 
     /// Bring back what the last syncs concluded, so the settings view has
@@ -566,6 +707,7 @@ fn subject(
         base_branch: source.base_branch.clone(),
         fetch,
         origin,
+        enabled: origin == SyncOrigin::Service || source.syncs_base(),
     }
 }
 

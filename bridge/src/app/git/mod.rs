@@ -542,7 +542,12 @@ impl AppState {
         invalidates: bool,
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            call: Box::new(ScopedGitCall { scope, work }),
+            call: Box::new(ScopedGitCall {
+                scope,
+                work,
+                serialized: invalidates,
+                state: self.self_handle.clone(),
+            }),
             params: params.clone(),
             invalidates,
             #[cfg(test)]

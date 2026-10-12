@@ -124,6 +124,7 @@
       "settings.set",
       "settings.workspaceLifecycle",
       "sources.syncBase",
+      "sources.syncBasePath",
       "task.doc",
       "task.get",
       "task.stage_diff",

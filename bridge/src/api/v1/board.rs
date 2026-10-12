@@ -277,6 +277,9 @@ pub struct ProjectUpdateSourceParams {
 pub struct ProjectSyncSourceParams {
     pub project_id: String,
     pub source_id: String,
+    /// Captured source location, announced by sources.syncBasePath.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
 }
 
 /// The sync is on its way; the project list is noted changed when it lands.

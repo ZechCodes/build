@@ -34,6 +34,7 @@ struct WorkspaceCreateWork {
     isolation: Isolation,
     /// The sources whose base is brought up to date before the cut (#267).
     base_syncs: Vec<SyncSubject>,
+    source_state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
     /// What those syncs concluded, for the settlement to write.
     synced: std::sync::Mutex<Vec<Synced>>,
 }
@@ -47,7 +48,8 @@ impl DeferredGitWork for WorkspaceCreateWork {
         *self
             .synced
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sync_before_cut(&self.base_syncs);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            sync_before_cut(&self.base_syncs, self.source_state.as_ref())?;
         let mut registry = match WorkspaceRegistry::load(&self.registry_root) {
             Ok(registry) => registry,
             Err(error) => {
@@ -623,6 +625,7 @@ impl AppState {
                 sources,
                 isolation,
                 base_syncs: self.cut_sync_subjects(&project_id),
+                source_state: self.self_handle.clone(),
                 synced: Default::default(),
             }),
             params: params.clone(),
@@ -807,6 +810,7 @@ impl AppState {
                 sources,
                 isolation: workspace.isolation,
                 base_syncs: self.cut_sync_subjects(&workspace.project_id),
+                source_state: self.self_handle.clone(),
                 synced: Default::default(),
             }),
             params: params.clone(),

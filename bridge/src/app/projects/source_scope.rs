@@ -34,6 +34,23 @@ pub(in crate::app) struct ResolvedProjectSource {
 }
 
 impl AppState {
+    /// Recheck a captured original-source identity after waiting off the app mutex.
+    pub(in crate::app) fn validate_source_location(
+        &self,
+        captured: &ResolvedProjectSource,
+    ) -> Result<(), String> {
+        let current = self.resolve_project_source(
+            &captured.project_id,
+            &captured.source_id,
+            Some(&captured.source_path),
+            MOVED_GIT_SOURCE,
+        )?;
+        if current.root != captured.root || current.is_git != captured.is_git {
+            return Err(MOVED_GIT_SOURCE.to_string());
+        }
+        Ok(())
+    }
+
     /// Resolve `source_id` within `project_id` and, when the caller says
     /// where it opened the source, refuse with `moved` unless the row still
     /// names that folder.

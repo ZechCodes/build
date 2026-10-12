@@ -399,6 +399,8 @@ runtime that starts them.
   `source_path` for one original project source, and `changes.subscribe`
   takes scope `{kind: "project_source", project_id, source_id, source_path}`,
   whose items carry `project_source`. See Projects and sources.
+  3.21.0 adds `sources.syncBasePath` (#530): optional captured `source_path`
+  on `project.sync_source`, checked on admission and after queue/lock waits.
   3.21.0 adds `agents.projectWorkers` (#532): `agent.list {entity_id,
   include_project_workers}` (a verb again, after 3.0 retired the old one),
   `project_role` (`coordinator` or `worker`) on a project owner's agent
@@ -601,8 +603,11 @@ app lock: a source moved or removed by then comes back `withdrawn`, and its
 item is dropped. A frame whose facts passed that check just before the move
 can still go out just after it. It carries what the old folder held before
 the move, under the old `project_source`. Nothing collected after the move
-goes out for the old folder. `project.sync_source` does not yet take
-`source_path`; that precondition, with the sync lock, is #530.
+goes out for the old folder. `project.sync_source` also accepts an optional
+captured `source_path` (`sources.syncBasePath`, wire 3.21.0, #530). A manual
+request captures the registered location and configured base through the
+service queue; after acquiring the source lock the service rechecks both,
+refusing a moved source rather than syncing either its old or new folder.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.
@@ -681,6 +686,26 @@ the backoff is at its longest, plus up to 10 s at each workspace cut. One sync r
 time. Each row's `sync` is kept in the store's `meta` table
 (`bridge/src/store/source_sync.rs`), and a sync that lands notes the project
 list changed.
+
+Build-managed source Git mutations (including legacy first-source verbs),
+source settings edits and base sync share `source_sync::SyncLock`, keyed by
+canonical common Git directory (#530). They acquire it off the app mutex and
+revalidate source membership/location after waiting. A settings edit locks
+its old/new repositories and affected independent workspace repositories in
+canonical order, deduplicating aliases, through config settlement. Reads and
+unrelated RPCs continue while an operation waits. Shell Git and file edits
+remain outside this lock.
+
+Cut preparation groups aliases by common Git directory and pins exact configured
+base OIDs under that lock, including when automatic sync is disabled. It keeps
+#271's fetched OID when safe; otherwise it uses the configured base's committed
+state, including local commits, never another checked-out branch's HEAD. Cut
+warnings disclose local commits and a stale remote separately. Materialization
+uses the pinned OID after releasing the lock and retains existing worktree/Rift
+copy rules. Adding a local Git directory to an existing workspace also pins its
+base before materialization. A lock wait beyond the cut's ten-second deadline
+refuses creation rather than resolving an unprotected mutable base ref; a fetch
+failure still cuts the pinned local base with its existing warning.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes

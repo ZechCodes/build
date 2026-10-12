@@ -8,7 +8,7 @@
 //! user asked for: a workspace checkout with a repository of its own follows
 //! a remote change when it still named the source's old `origin`.
 
-use super::{canonical_source_path, ProjectSource};
+use super::{canonical_source_path, ProjectSource, ResolvedProjectSource};
 use crate::app::{expand_tilde, require_str, AppState};
 use crate::lifecycle::{PendingState, SourceUpdated, UpdateSource, WorkspaceCheckout};
 use crate::remote_url::usable_remote_url;
@@ -81,13 +81,25 @@ impl AppState {
             name: edit.name,
             sync_base: edit.sync_base,
         };
+        let captured = self.resolve_project_source(
+            &address.project_id,
+            &address.source_id,
+            None,
+            super::MOVED_GIT_SOURCE,
+        )?;
+        let mutation = SerializedSourceUpdate {
+            mutation,
+            captured,
+            state: self.self_handle.clone(),
+        };
         self.defer_project(
             source.path,
             title,
             PendingState::Updating,
             mutation,
-            move |state: &mut AppState, result: Result<SourceUpdated, String>| {
-                state.settle_source_update(address, result?)
+            move |state: &mut AppState, result: Result<LockedSourceUpdate, String>| {
+                let LockedSourceUpdate { updated, _held } = result?;
+                state.settle_source_update(address, updated)
             },
         )
     }
@@ -278,5 +290,49 @@ fn usable_remote_or_clear(remote: &str) -> Result<String, String> {
     match remote.trim() {
         "" => Ok(String::new()),
         named => usable_remote_url(named),
+    }
+}
+
+/// Source settings and their Git writes take one turn together. Keep the old,
+/// new and independent workspace repository locks through config settlement.
+struct SerializedSourceUpdate {
+    mutation: UpdateSource,
+    captured: ResolvedProjectSource,
+    state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
+}
+
+struct LockedSourceUpdate {
+    updated: SourceUpdated,
+    _held: Vec<crate::source_sync::SyncLock>,
+}
+
+impl crate::lifecycle::WorktreeMutation for SerializedSourceUpdate {
+    type Output = LockedSourceUpdate;
+
+    fn perform(self) -> Result<crate::lifecycle::Performed<Self::Output>, String> {
+        use crate::source_sync::{SyncLock, SERVICE_FETCH_DEADLINE};
+        let mut paths = vec![self.mutation.path.clone()];
+        paths.extend(self.mutation.new_path.iter().cloned());
+        paths.extend(
+            self.mutation
+                .workspace_checkouts
+                .iter()
+                .map(|checkout| checkout.path.clone()),
+        );
+        let held = SyncLock::acquire_many(&paths, SERVICE_FETCH_DEADLINE)?;
+        if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+            state
+                .lock()
+                .unwrap()
+                .validate_source_location(&self.captured)?;
+        }
+        let performed = self.mutation.perform()?;
+        Ok(crate::lifecycle::Performed {
+            change: performed.change,
+            output: LockedSourceUpdate {
+                updated: performed.output,
+                _held: held,
+            },
+        })
     }
 }

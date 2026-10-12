@@ -470,7 +470,8 @@ pub struct AppState {
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
     /// Sources somebody asked to sync now (#267), by project and source id,
     /// until the source sync service takes them.
-    source_sync_requested: std::collections::HashSet<(String, String)>,
+    source_sync_requested:
+        std::collections::HashMap<(String, String), self::projects::base_sync::SyncSubject>,
     /// Wakes the source sync service for `source_sync_requested`.
     source_sync_nudge: std::sync::Arc<tokio::sync::Notify>,
     source_sync_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,

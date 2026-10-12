@@ -165,6 +165,55 @@ afterEach(() => {
   page?.dispose();
 });
 
+describe("comment header reply", () => {
+  it.each([
+    { anchor: { snapshot_id: "snap-1", directory_id: "dir-1", path: "a.js", side: "new", line: 1 } },
+    { opinion: { snapshot_id: "snap-1", verdict: "approve" } },
+    { reply_to: "tc-1" },
+  ])("puts an eligible comment's icon last in its header: %j", async (metadata) => {
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({}, [
+      comment({ id: "tc-icon", ...metadata }), comment({ id: "tc-plain" }),
+    ]));
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector('[data-review-reply="tc-icon"]')).not.toBeNull());
+    const button = host.querySelector('[data-review-reply="tc-icon"]');
+    const head = host.querySelector("#comment-tc-icon .task-entry-head");
+    expect(button.parentElement).toBe(head);
+    expect(head.lastElementChild).toBe(button);
+    expect(button.getAttribute("aria-label")).toBe("Reply");
+    expect(button.title).toBe("Reply");
+    expect(button.textContent.trim()).toBe("");
+    expect(button.querySelector("svg")).not.toBeNull();
+    expect(host.querySelectorAll("[data-review-reply]")).toHaveLength(1);
+    expect(host.querySelector("#comment-tc-plain [data-review-reply]")).toBeNull();
+  });
+
+  it("sends review feedback addressed to the comment clicked in the header", async () => {
+    const scope = { deviceId: "dev-1", projectId: "proj-1", taskId: "task-1" };
+    const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
+    const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
+    await rememberReviewSupport("dev-1", { reviews: { get: true, comments: true } });
+    await writeReviewRecord(scope, { version: 1, state: "open", snapshots: [
+      { id: "snap-1", number: 1, directories: [] },
+    ] }, 1);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({}, [
+      comment({ id: "tc-icon", opinion: { snapshot_id: "snap-1", verdict: "approve" } }),
+    ]));
+    await mount({}, { waitForPaint: false });
+    await vi.waitFor(() => expect(host.querySelector("[data-review-feedback] textarea")).not.toBeNull());
+    const button = host.querySelector(".task-entry-head [data-review-reply]");
+    expect(button).not.toBeNull();
+    button.querySelector("svg").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    const field = host.querySelector("[data-review-feedback] textarea");
+    await vi.waitFor(() => expect(document.activeElement).toBe(field));
+    field.value = "Reply from the header";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    host.querySelector("[data-review-feedback]").dispatchEvent(new Event("submit", { cancelable: true }));
+    await vi.waitFor(() => expect(listed("tasks.comment")).toHaveLength(1));
+    expect(listed("tasks.comment")[0][1]).toEqual({ task_id: "task-1", body: "Reply from the header", reply_to: "tc-icon" });
+  });
+});
+
 describe("review comment snapshot labels", () => {
   it("uses cached snapshot numbers and repaints when review history changes", async () => {
     const reviewCache = await import("../src/core/taskReviewCache.js");

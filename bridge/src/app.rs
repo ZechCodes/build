@@ -456,6 +456,8 @@ pub struct AppState {
     /// a checked native receipt can recover them from the Store after restart.
     dispatched_task: HashMap<String, String>,
     task_completion_authority: HashMap<String, self::tracker::TaskCompletionAuthority>,
+    spent_task_completion_operations:
+        HashMap<String, std::collections::HashSet<String>>,
     pending_task_completion_authority:
         HashMap<String, self::tracker::PendingTaskCompletionAuthority>,
     task_delivery_in_flight: std::collections::HashSet<String>,
@@ -695,6 +697,7 @@ impl AppState {
             resetting_conversations: Default::default(),
             dispatched_task: HashMap::new(),
             task_completion_authority: HashMap::new(),
+            spent_task_completion_operations: HashMap::new(),
             pending_task_completion_authority: HashMap::new(),
             task_delivery_in_flight: Default::default(),
             reminded_holdings: HashMap::new(),

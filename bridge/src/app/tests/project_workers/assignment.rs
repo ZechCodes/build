@@ -278,3 +278,46 @@ async fn a_stale_worker_session_cannot_assign() {
     assert!(dispatches(&app, &task).is_empty());
     assert_eq!(notices(&mut app, &owner, &target), 0);
 }
+
+/// Removing a worker that holds a task keeps the task's record — who it was
+/// handed to and the dispatch that did it — and says the worker is gone;
+/// the turn still queued for the worker goes with it.
+#[test]
+fn removing_a_worker_keeps_its_tasks_record_and_drops_its_queued_turn() {
+    let mut project = WorkerProject::new();
+    let worker = project.worker("Holder");
+    let owner = project.owner.clone();
+    let task = file(&mut project, "Held work");
+    let assigned = assign(
+        &mut project.state,
+        json!({ "task_id": task, "assignee": { "kind": "agent", "agent_id": worker } }),
+    );
+    let queued_for = |state: &AppState| {
+        state
+            .delivery_queue
+            .queued()
+            .any(|turn| turn.agent_id == worker)
+    };
+    assert!(queued_for(&project.state), "the hand-off is queued");
+
+    let removed = project.state.handle(req(
+        "agent.remove",
+        json!({ "entity_id": owner, "agent_id": worker }),
+    ));
+    assert_eq!(removed["ok"], true, "{removed:?}");
+    assert!(!queued_for(&project.state), "its queued turn went with it");
+    let read = project
+        .state
+        .handle(req("tasks.get", json!({ "task_id": task })));
+    let stored = &read["result"]["task"];
+    assert_eq!(stored["assignee"], assigned["task"]["assignee"]);
+    assert_eq!(
+        stored["identities"][&worker]["available"], false,
+        "{stored}"
+    );
+    assert_eq!(stored["identities"][&worker]["name"], "Holder");
+    assert_eq!(
+        dispatches(&project.state, &task),
+        vec![assigned["dispatch"]["operation_id"].as_str().unwrap()]
+    );
+}

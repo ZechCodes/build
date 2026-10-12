@@ -146,3 +146,132 @@ fn durable_delivery_generation_and_live_graph_fence_saved_work() {
         .unwrap());
     assert!(store.delivery_intents_ready(1).unwrap().is_empty());
 }
+
+#[test]
+fn delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let (mut task, intent) = assignment(&store);
+    store
+        .claim_delivery_intent(&intent.id, intent.generation)
+        .unwrap();
+    store
+        .checkpoint_delivery_intent(
+            &intent.id,
+            intent.generation,
+            json!({}),
+            Some(json!({"body":"frozen"})),
+        )
+        .unwrap();
+    let mut plan = super::support::plan_record("owner-delivery");
+    plan.agents[0].thread.post_user("frozen", None, NOW);
+    let mut receipt = super::support::queued_operation(&intent.operation_id, 1);
+    receipt.entity_id = "owner-delivery".into();
+    store
+        .accept_thread_post("owner-delivery", &plan.agents, &receipt)
+        .unwrap();
+    let blocker = store
+        .create_tracker_task(
+            Task::drafted(PROJECT, "reopened blocker", Actor::User, NOW),
+            &[],
+        )
+        .unwrap();
+    store
+        .edit_waiting_on(PROJECT, &task.id, &[blocker.id], &[], &Actor::User, NOW)
+        .unwrap();
+    assert!(!store
+        .delivery_intent_is_current(&intent.id, intent.generation)
+        .unwrap());
+    assert_eq!(store.delivery_intents_ready(1).unwrap().len(), 1);
+    let before = task.status.clone();
+    task.status = "in_progress".into();
+    let moved = TaskEvent::new(
+        &task.id,
+        Actor::Build,
+        TaskEventKind::Moved,
+        json!({"from":before,"to":"in_progress"}),
+        NOW,
+    );
+    let dispatched = TaskEvent::new(
+        &task.id,
+        Actor::Build,
+        TaskEventKind::Dispatched,
+        json!({"operation_id":intent.operation_id}),
+        NOW,
+    );
+    assert!(store
+        .settle_delivery_intent(&intent.id, intent.generation, &task, &[moved, dispatched])
+        .unwrap());
+    assert_eq!(
+        store.load_tracker_task(&task.id).unwrap().unwrap().status,
+        before
+    );
+    let timeline = store.load_tracker_timeline(&task.id).unwrap();
+    assert!(!timeline.iter().any(|entry| matches!(entry, crate::tracker::TimelineEntry::Event(event) if event.kind == TaskEventKind::Moved && event.payload["to"] == "in_progress")), "receipt recovery cannot record a column move it refused");
+    assert!(store.delivery_intents_ready(1).unwrap().is_empty());
+}
+
+#[test]
+fn delivery_admission_fences_graph_writes_and_failed_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let (task, intent) = assignment(&store);
+    store
+        .claim_delivery_intent(&intent.id, intent.generation)
+        .unwrap();
+    store
+        .checkpoint_delivery_intent(
+            &intent.id,
+            intent.generation,
+            json!({}),
+            Some(json!({"body":"saved"})),
+        )
+        .unwrap();
+    let blocker = store
+        .create_tracker_task(Task::drafted(PROJECT, "new blocker", Actor::User, NOW), &[])
+        .unwrap();
+    store
+        .edit_waiting_on(
+            PROJECT,
+            &task.id,
+            &[blocker.id.clone()],
+            &[],
+            &Actor::User,
+            NOW,
+        )
+        .unwrap();
+    let mut plan = super::support::plan_record("owner-fenced");
+    plan.agents[0].thread.post_user("saved", None, NOW);
+    let receipt = super::support::queued_operation(&intent.operation_id, 1);
+    assert!(store
+        .accept_thread_post("owner-fenced", &plan.agents, &receipt)
+        .is_err());
+    assert!(store.operation(&intent.operation_id).unwrap().is_none());
+    assert!(store.thread_items(&plan.agents[0].id).unwrap().is_empty());
+    assert!(store.delivery_intents_ready(1).unwrap().is_empty());
+    store
+        .edit_waiting_on(PROJECT, &task.id, &[], &[blocker.id], &Actor::User, NOW)
+        .unwrap();
+    store
+        .fail_delivery_intent(&intent.id, intent.generation, "target unavailable")
+        .unwrap();
+    assert!(store
+        .accept_thread_post("owner-fenced", &plan.agents, &receipt)
+        .is_err());
+    store.retry_delivery_intent(&intent.id).unwrap();
+    store
+        .accept_thread_post("owner-fenced", &plan.agents, &receipt)
+        .unwrap();
+    let mut unassigned = task.clone();
+    unassigned.assignee = None;
+    store
+        .save_tracker_task_activity(&unassigned, &[], &[])
+        .unwrap();
+    assert_eq!(
+        store
+            .accept_thread_post("owner-fenced", &plan.agents, &receipt)
+            .unwrap(),
+        receipt,
+        "a revoked generation can reconcile its prior receipt without posting again"
+    );
+}

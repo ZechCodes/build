@@ -88,6 +88,15 @@ it("opens a source-qualified commit deep link and carries its diff location to F
   });
 }, 60_000);
 
+it("opens a commit-only deep link on the default source", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountProject(page, basePath, { sourceId: null, commit: COMMIT });
+    await page.locator(`[data-surface="code"] .commitheader[data-hash="${COMMIT}"]`).waitFor({ timeout: 3000 });
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ tab: "changes", sourceId: "code", commit: COMMIT });
+    expect(await page.evaluate(() => window.__calls.find((call) => call.method === "git.show").params)).toMatchObject({ source_id: "code", source_path: "/code", hash: COMMIT });
+  });
+}, 60_000);
+
 it("keeps source commit drafts across tabs and faces and commits only the captured source", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountProject(page, basePath);
@@ -133,6 +142,25 @@ it("reconciles source rename, addition, removal and movement without losing unre
     await page.locator('[data-directory="code"]').click();
     await page.waitForFunction(() => window.__calls.some((call) => call.method === "git.status" && call.params.source_path === "/moved-code"));
     expect(await page.locator('[data-surface="code"] .csinput').inputValue()).toBe("");
+    const movedDraft = page.locator('[data-recovered-draft="code"] textarea');
+    await movedDraft.waitFor({ timeout: 3000 });
+    expect(await movedDraft.inputValue()).toBe("Old code location draft");
+    expect(await movedDraft.getAttribute("readonly")).not.toBeNull();
+    await page.evaluate(() => window.__writeProject(window.__project.sources.filter((source) => source.id !== "docs")));
+    const removedDraft = page.locator('[data-recovered-draft="docs"] textarea');
+    await removedDraft.waitFor({ timeout: 3000 });
+    expect(await removedDraft.inputValue()).toBe("Surviving docs draft");
+    // A fresh controller recovers from the persisted UI store, not a kept DOM.
+    await page.evaluate(async () => {
+      const { app, project } = window.__layoutModules;
+      app.App.viewDispose?.();
+      app.App.viewDispose = null;
+      app.App.route = { ...app.App.route, tab: "changes" };
+      await project.renderProject();
+    });
+    await page.locator('[data-recovered-draft="docs"] textarea').waitFor({ timeout: 3000 });
+    expect(await page.locator('[data-recovered-draft="code"] textarea').inputValue()).toBe("Old code location draft");
+    expect(await page.locator('[data-recovered-draft="docs"] textarea').inputValue()).toBe("Surviving docs draft");
   });
 }, 60_000);
 

@@ -279,4 +279,9 @@
 .project-changes-context p { margin:0 0 4px; }
 .project-changes-context [data-project-source-context] { color:var(--muted); }
 .project-changes-context [data-project-sync-error] { margin-left:8px; }
+.project-changes-drafts { flex:0 0 auto; max-height:30%; overflow:auto; padding:8px var(--pane-gutter); border-bottom:1px solid var(--line); font-size:var(--small); }
+.project-changes-drafts h3, .project-changes-drafts p { margin:0 0 6px; }
+.project-changes-drafts label { display:block; margin-top:8px; }
+.project-changes-drafts label span { display:block; overflow-wrap:anywhere; color:var(--muted); }
+.project-changes-drafts textarea { display:block; width:100%; margin-top:4px; }
 [data-project-changes-body] { flex:1 1 auto; min-height:0; }

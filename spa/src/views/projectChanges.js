@@ -5,9 +5,11 @@ import { projectChangesDirectories, projectSourceContext } from "../core/project
 import { projectChangesRpc } from "../core/projectChangesRpc.js";
 import { PROJECT_CHANGES_SUPPORT_KIND, readProjectChangesSupport } from "../core/projectChangesSupport.js";
 import { subscribeCache } from "../core/localCache.js";
+import { mountProjectChangesDrafts } from "../core/projectChangesDrafts.js";
 
 export function mountProjectChanges(host, { project, route, context, viewingContext, agentSelection, onSourceSelection, onCommitSelection, onOpenFile }) {
-  host.innerHTML = '<div class="project-changes-context"><p>Original sources · shared checkout</p><p data-project-source-context></p><button type="button" class="btn mini" data-project-sync-base hidden>Sync base</button><span class="warn" data-project-sync-error role="status"></span></div><div data-project-changes-body></div>';
+  host.innerHTML = '<div class="project-changes-context"><p>Original sources · shared checkout</p><p data-project-source-context></p><button type="button" class="btn mini" data-project-sync-base hidden>Sync base</button><span class="warn" data-project-sync-error role="status"></span></div><div class="project-changes-drafts" data-project-changes-drafts hidden></div><div data-project-changes-body></div>';
+  const drafts = mountProjectChangesDrafts(host.querySelector("[data-project-changes-drafts]"), { deviceId: context.deviceId, project });
   const body = host.querySelector("[data-project-changes-body]");
   const note = host.querySelector("[data-project-source-context]");
   const sync = host.querySelector("[data-project-sync-base]");
@@ -20,6 +22,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   let visible = true;
   let lastSelection = null;
   const commits = new Map();
+  let defaultCommit = !route.sourceId ? route.commit : null;
   const sourceOf = (id) => project?.sources?.find((source) => source.id === id)
     || (!project?.sources && id === "primary" ? { id, name: project?.name, path: project?.path } : null);
   const sourceKey = (id) => JSON.stringify([id, sourceOf(id)?.path]);
@@ -52,6 +55,10 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   function reconcile() {
     const directories = projectChangesDirectories(project, route.projectId, support.projectSources);
     if (!directories.some((directory) => directory.sourceId === standing)) standing = directories[0]?.sourceId || null;
+    if (defaultCommit && standing) {
+      commits.set(sourceKey(standing), defaultCommit);
+      defaultCommit = null;
+    }
     if (!pane) pane = mountWorkspaceChanges(body, { directories, current: standing, git, viewingContext, onSelectDirectory: selectSource });
     else pane.workspaceMoved(directories);
     if (lastSelection !== sourceKey(standing)) {
@@ -84,8 +91,8 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   });
   void readSupport();
   return {
-    update(next) { project = next; if (pane) reconcile(); },
+    update(next) { project = next; drafts.update(next); if (pane) reconcile(); },
     setVisible(shown) { visible = shown; pane?.setVisible?.(shown); },
-    dispose() { disposed = true; unwatch(); pane?.dispose(); },
+    dispose() { disposed = true; unwatch(); drafts.dispose(); pane?.dispose(); },
   };
 }

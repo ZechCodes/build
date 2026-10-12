@@ -3,7 +3,7 @@
 Planning amendment for **#522**, 2026-10-12. **Decided, implementation on #529–#538.**
 Code audit baseline: `d4bd92fd2ed2cbfc8b0ae02648e6e8d601d7f1c4`.
 Implementation is on separately reviewed child branches under the decided rules
-below. Opus implements; the #522 planner reviews every child. Filed children are
+below. Opus implements; a fresh Astra reviewer reviews each child in its own workspace. Filed children are
 #529–#538, linked to #522 and dispatched in dependency order. This document
 supersedes the older planning documents only for the scope it describes.
 `ARCHITECTURE.md` and the code still describe what ships today.

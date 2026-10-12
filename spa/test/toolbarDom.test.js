@@ -325,6 +325,18 @@ describe("the workspace breadcrumbs", () => {
     }));
   });
 
+  it("advertises the saved project face on the return row before a modified click", async () => {
+    const saved = { name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md", line: 12 };
+    await rememberProjectRailRoute(saved);
+    await standOnWorkspace();
+    const row = (await openJump("workspace")).querySelector("[data-project-page]");
+    await vi.waitFor(() => expect(routeFromHash(row.getAttribute("href"))).toMatchObject(saved));
+    const standing = App.route;
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+    expect(menu()).not.toBeNull();
+    expect(App.route).toBe(standing);
+  });
+
   it("returns through the project crumb in one activation without opening a picker", async () => {
     await rememberProjectRailRoute({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md" });
     await standOnWorkspace();
@@ -472,6 +484,42 @@ describe("the workspace toolbar", () => {
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
   });
 
+  it("does not let a dismissed global project pick steal a newly opened local scope", async () => {
+    const foreign = { id: "ws-other", project_id: "p2", name: "mascot checkout", status: "ready", directories: [] };
+    workshopHolds({ p1: [payments], p2: [foreign] });
+    await standOnWorkspace();
+    (await openJump("project")).querySelector('[data-project="dev-1/p2"]').click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    const local = await openJump("workspace");
+    // Let the dismissed project's IndexedDB write and readback finish; only
+    // the still-open local interaction is allowed to own this menu's scope.
+    await new Promise((done) => setTimeout(done, 50));
+    expect(menu()).toBe(local);
+    expect(local.querySelector(".tb-scope > span").textContent).toBe("relaydb");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    expect(document.activeElement).toBe(local.querySelector(".tb-filter"));
+  });
+
+  it("closes once when a rebuilt selector receives pointerdown then click", async () => {
+    await standOnWorkspace();
+    await openJump("workspace");
+    const original = bar().querySelector('[data-select="workspace"]');
+    const projects = feed.projects;
+    try {
+      feed = { ...feed, projects: projects.map((project) => project.projectKey === "dev-1/p1" ? { ...project, name: "Renamed relaydb" } : project) };
+      await refreshFeed();
+      const rebuilt = bar().querySelector('[data-select="workspace"]');
+      expect(rebuilt).not.toBe(original);
+      expect(original.isConnected).toBe(false);
+      rebuilt.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      rebuilt.click();
+      await waitMenuClosed();
+    } finally {
+      feed = { ...feed, projects };
+      await refreshFeed();
+    }
+  });
+
   // The workspace rides the workspace list itself, so reopening the menu on the
   // project you are in draws it off the record rather than reading the one row
   // again.
@@ -537,15 +585,20 @@ describe("the project menu", () => {
     expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot");
   });
 
-  it("repaints an open menu and project scope on external cache writes", async () => {
+  it("applies external menu writes while preserving the active popup scope", async () => {
     const menuAddress = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
     const scopeAddress = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
     await writeUiRecord(menuAddress, { open: true, select: "project", list: "projects", query: "" });
     await waitMenuList("projects");
     await writeUiRecord(scopeAddress, { projectKey: "dev-1/p2" });
-    await vi.waitFor(() => expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot"));
+    expect((await readUiRecord(scopeAddress)).value.projectKey).toBe("dev-1/p2");
+    expect(menu().querySelector(".mi.current .mt").textContent).toBe("relaydb");
     await writeUiRecord(menuAddress, { open: false });
     await waitMenuClosed();
+    await stopToolbar();
+    App.route = { name: "inbox" };
+    await initToolbar();
+    expect((await openJump("project")).querySelector(".mi.current .mt").textContent).toBe("mascot");
   });
 
   it("lists projects and only projects, and shuts on Escape", async () => {

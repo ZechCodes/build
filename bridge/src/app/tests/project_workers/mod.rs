@@ -9,6 +9,7 @@ use super::*;
 mod assignment;
 mod cleanup;
 mod lifecycle;
+mod sources;
 mod tools;
 
 /// A booted bridge over a temporary store with one project, its owner and

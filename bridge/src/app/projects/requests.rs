@@ -480,6 +480,7 @@ impl AppState {
         if project.sources.len() == 1 {
             return Err("a project must have at least one source".to_string());
         }
+        self.refuse_moving_sources_under_workers(&project_id)?;
         let sources = project
             .sources
             .iter()

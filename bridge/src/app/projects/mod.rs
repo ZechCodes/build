@@ -104,6 +104,8 @@ mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
 mod requests;
+mod source_holds;
+pub(in crate::app) use source_holds::SourceMoves;
 mod source_update;
 
 /// What an edit leaves a source's record as. `None` keeps its label.

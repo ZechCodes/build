@@ -305,6 +305,7 @@ pub(in crate::app) fn reserve_agent_spawn(
         return Err(format!("agent {agent_id} is no longer attached to {owner}"));
     }
     s.refuse_worker_without_sources(owner, agent_id)?;
+    s.refuse_worker_during_source_move(owner, agent_id)?;
     // A router session belongs to no project — deciding which one
     // the capture belongs to is its job. Any project's
     // orchestrator builds the same harness spec for it, since the

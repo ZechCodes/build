@@ -273,6 +273,8 @@ pub struct AppState {
     projects: ProjectRegistry,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
+    /// Projects one of whose sources is moving; their workers wait (#533).
+    source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
     active_deferred_filesystem_jobs: usize,
     worktrees_root: std::path::PathBuf,
@@ -630,6 +632,7 @@ impl AppState {
         let mut state = AppState {
             projects: ProjectRegistry::new(),
             project_deletion_in_progress: false,
+            source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
             worktrees_root,
             workspaces,

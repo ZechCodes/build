@@ -31,11 +31,10 @@ import {
   mergePendingRows,
   recentIsOpen,
   recentToggleHtml,
-  watchedWorkspaceEntries,
   workspaceEntryKey,
   workspaceIsRecent,
 } from "./inbox.js";
-import { projectAgentEntries } from "./inboxProjectAgent.js";
+import { navigationUnreadEntries } from "./navigationUnread.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { patchList } from "./patchList.js";
 import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams, branchFinishNotice } from "./branchFinish.js";
@@ -171,14 +170,8 @@ function publishAttentionCount(rows = railRows()) {
  *  the inbox's anchor order. On the projects face the project agent's row is
  *  its block's head rather than a row (core/inboxProjects.js). */
 function workRows(rows) {
-  // A watched task's unread counts like an agent's (#104): on the workspace
-  // row whose agent holds it, and on the project agent's row otherwise.
   const taskUnread = watchedTasks?.taskUnread() || NO_TASK_UNREAD;
-  const workspaceRows = watchedWorkspaceEntries(workspaces, projects, rows, runs, taskUnread);
-  return [
-    ...workspaceRows,
-    ...projectAgentEntries(projects, rows, runs, taskUnread.unheldBy(workspaceRows)),
-  ].sort(byAnchor);
+  return navigationUnreadEntries({ projects, workspaces, items: rows, runs, taskUnread }).sort(byAnchor);
 }
 
 /** The one name a row has, which is what the reconciler matches rows by. */

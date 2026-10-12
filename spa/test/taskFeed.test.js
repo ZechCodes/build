@@ -84,6 +84,32 @@ const settle = async () => {
   for (let index = 0; index < 20; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
 };
 
+describe("destination roster knowledge on the shared feed", () => {
+  it("publishes unknown then confirmed empty independently of a board record", async () => {
+    const project = { id: "proj-1", deviceId: "dev-1", projectKey: "dev-1/proj-1" };
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [project]);
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    expect(snapshot.devices["dev-1"].listKnowledge.workspaces.present).toBe(false);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+    await vi.waitFor(() => expect(snapshot.devices["dev-1"].listKnowledge.workspaces.present).toBe(true));
+    expect(snapshot.workspaces).toEqual([]);
+    expect(syncDevice).not.toHaveBeenCalled();
+  });
+
+  it("publishes an empty cached list even when no other records exist", async () => {
+    await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+    let snapshot;
+    subscribeFeed((next) => { snapshot = next; });
+    await startFeed();
+    expect(snapshot.devices["dev-1"].listKnowledge.workspaces.present).toBe(true);
+    expect(snapshot.devices["dev-1"].listKnowledge.projects.present).toBe(false);
+  });
+});
+
 describe("the feed's cached running-agent rollups (#386)", () => {
   const parentRow = (agents, over = {}) => branchRow({ entity_id: "run-project", agents, ...over });
   const project = { id: "proj-1", name: "Build", entity_id: "run-project", deviceId: "dev-1", projectKey: "dev-1/proj-1" };

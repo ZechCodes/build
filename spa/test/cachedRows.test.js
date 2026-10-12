@@ -37,6 +37,21 @@ const rowAddress = (entityId) => ({ deviceId: "dev-1", entityId, kind: "row" });
 const heldFeed = async () => (await readCached(feedAddress))?.value;
 const heldRow = async (entityId) => (await readCached(rowAddress(entityId)))?.value;
 
+describe("cached destination list knowledge", () => {
+  it("distinguishes unknown lists from a confirmed empty roster", async () => {
+    expect((await cachedFeedView("dev-1")).listKnowledge).toEqual({
+      projects: { present: false, observedAt: null },
+      workspaces: { present: false, observedAt: null },
+    });
+    const address = { deviceId: "dev-1", entityId: "", kind: "workspaces" };
+    await writeCached(address, []);
+    const record = await readCached(address);
+    expect((await cachedFeedView("dev-1")).listKnowledge.workspaces)
+      .toEqual({ present: true, observedAt: record.at });
+    expect((await cachedFeedView("dev-2")).listKnowledge.workspaces.present).toBe(false);
+  });
+});
+
 describe("patching a row a press has moved", () => {
   it("writes the fields onto the row's own record and onto the board list", async () => {
     await writeCached(feedAddress, { items: [branch()] });

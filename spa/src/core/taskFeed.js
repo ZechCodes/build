@@ -88,13 +88,15 @@ function stampedBoard(record) {
 }
 
 function feedSnapshot(record, view, live) {
-  if (!record && !view.items.length && !view.projects.length && !view.workspaces.length) return null;
+  const listsPresent = Object.values(view.listKnowledge).some((list) => list.present);
+  if (!record && !view.items.length && !view.projects.length && !view.workspaces.length && !listsPresent) return null;
   const board = stampedBoard(record);
   return {
     ...board,
     items: rowsOverBoard(board.items, view.items),
     projects: view.projects,
     workspaces: view.workspaces,
+    listKnowledge: view.listKnowledge,
     pending: live ? board.pending || [] : [],
     cached: !live,
   };

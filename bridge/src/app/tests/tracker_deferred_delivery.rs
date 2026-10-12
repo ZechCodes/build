@@ -264,3 +264,92 @@ fn restart_at(boundary: crate::app::tracker::DeferredDeliveryBoundary) {
     pump(&mut app);
     assert_eq!(dispatched_count(&app, &id), 1);
 }
+
+#[test]
+fn deferred_receipt_recovery_fences_missing_retired_and_foreign_targets() {
+    for changed in ["removed", "retired", "foreign"] {
+        for reblocked in [false, true] {
+            receipt_target_changed(changed, reblocked);
+        }
+    }
+}
+
+fn receipt_target_changed(changed: &str, reblocked: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let (owner, _) = project_agent(&mut app, &project);
+    let worker = app.handle(req(
+        "agent.add",
+        json!({"entity_id":owner,"project_role":"worker"}),
+    ));
+    assert_eq!(worker["ok"], true, "{worker}");
+    let agent = worker["result"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (id, blocker) = waiting_task(&mut app, &project);
+    assign_waiting(&mut app, &id, json!({"kind":"agent","agent_id":agent}));
+    let intent = app
+        .tracker_store()
+        .unwrap()
+        .current_delivery_intent(&id)
+        .unwrap()
+        .unwrap();
+    finish(&mut app, &blocker);
+    app.stop_task_delivery_after_for_test(crate::app::tracker::DeferredDeliveryBoundary::Posted);
+    assert!(app.pump_task_deliveries_for_test().unwrap());
+    let receipt = app
+        .tracker_store()
+        .unwrap()
+        .operation(&intent.operation_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(dispatched_count(&app, &id), 0);
+    if reblocked {
+        let answer = app.handle(req(
+            "tasks.update",
+            json!({"task_id":blocker,"status":"ready"}),
+        ));
+        assert_eq!(answer["ok"], true, "{answer}");
+    }
+    change_receipt_target(&mut app, &owner, &agent, changed, root.path());
+    pump(&mut app);
+    let store = app.tracker_store().unwrap();
+    let saved = store.load_delivery_intent(&intent.id).unwrap().unwrap();
+    assert_eq!(
+        saved.state, "failed",
+        "{changed}, reblocked={reblocked}: {saved:?}"
+    );
+    assert_eq!(
+        store.load_tracker_task(&id).unwrap().unwrap().status,
+        "backlog"
+    );
+    assert_eq!(dispatched_count(&app, &id), 0, "stale receipt settled");
+    assert_eq!(
+        store
+            .operation(&intent.operation_id)
+            .unwrap()
+            .unwrap()
+            .request_hash,
+        receipt.request_hash
+    );
+}
+
+fn change_receipt_target(app: &mut AppState, owner: &str, agent: &str, changed: &str, root: &Path) {
+    match changed {
+        "removed" => {
+            let answer = app.handle(req(
+                "agent.remove",
+                json!({"entity_id":owner,"agent_id":agent}),
+            ));
+            assert_eq!(answer["ok"], true, "{answer}");
+        }
+        "retired" => app.runs.get_mut(owner).unwrap().run.state = crate::run::RunState::Archived,
+        _ => {
+            let source = root.join("foreign-project");
+            std::fs::create_dir(&source).unwrap();
+            let foreign = app.add_project(source, "main".into());
+            app.projects.bind_entity(owner.into(), foreign);
+        }
+    }
+}

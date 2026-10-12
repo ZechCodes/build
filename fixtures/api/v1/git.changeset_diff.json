@@ -77,11 +77,57 @@
           "version": "5d41402abc4b2a76"
         }
       }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs",
+        "paths": [
+          "src/main.rs"
+        ],
+        "if_diff_key": "9f3c1a0b7e2d4c55"
+      },
+      "result": {
+        "stat": {
+          "files_changed": 1,
+          "insertions": 3,
+          "deletions": 1
+        },
+        "files": [
+          {
+            "path": "src/main.rs",
+            "status": "Modified",
+            "additions": 3,
+            "deletions": 1,
+            "content_key": "9f3c1a0b7e2d4c55"
+          }
+        ],
+        "patch": "diff --git a/src/main.rs b/src/main.rs\n@@ -1,2 +1,4 @@\n+use std::io;\n",
+        "file_edited_at": {
+          "src/main.rs": 1789000000000
+        },
+        "diff_key": "9f3c1a0b7e2d4c55"
+      }
     }
   ],
   "errors": [
     "not_found",
     "invalid_params",
+    "conflict",
     "internal"
-  ]
+  ],
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "git.projectSources",
+    "params": [
+      "project_id",
+      "source_id",
+      "source_path"
+    ],
+    "refused_with": {
+      "moved": "conflict",
+      "plain_folder": "invalid_params"
+    }
+  }
 }

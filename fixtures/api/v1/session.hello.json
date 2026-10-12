@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.20.0",
+    "api_version": "3.21.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -31,6 +31,7 @@
       "capture.get",
       "capture.reroute",
       "changes.bodies",
+      "changes.projectSources",
       "changes.refusedKinds",
       "changes.subscribe",
       "changes.subscriptions",
@@ -67,6 +68,7 @@
       "git.fetch",
       "git.log",
       "git.merge_abort",
+      "git.projectSources",
       "git.pull",
       "git.push",
       "git.refs",

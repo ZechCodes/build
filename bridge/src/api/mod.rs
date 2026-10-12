@@ -53,7 +53,9 @@ use std::collections::BTreeSet;
 /// and the `harnesses.changed` push (#434).
 /// 3.19.0 scopes unread to watched conversations and news after watch start (#474).
 /// 3.20.0 adds newest-only thread page activity with exact digests (#496).
-pub const API_VERSION: &str = "3.20.0";
+/// 3.21.0 adds original project source scopes on the Git verbs and
+/// source-qualified change subscriptions (#529).
+pub const API_VERSION: &str = "3.21.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -90,6 +92,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "bodies.pages", // Since 1.26.0: range on fs.read, git.diff, git.show, git.changeset_diff.
     "branches.finishDelete",
     "changes.bodies",
+    "changes.projectSources", // Since 3.21.0: project_source subscription scope and source-qualified items (#529).
     "changes.refusedKinds",
     "changes.subscriptions",
     "conversations.settings",
@@ -98,6 +101,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "fs.mediaRawPages", // Since 1.30.0: exact binary ranges for Blob media reads, through 64 MiB.
     "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
+    "git.projectSources", // Since 3.21.0: project_id + source_id + source_path on the git.* verbs (#529).
     "tasks.agentIdentities",
     "tasks.attachmentChunks",
     "tasks.attachments",

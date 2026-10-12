@@ -46,6 +46,68 @@
   "errors": [
     "not_found",
     "invalid_params",
+    "conflict",
     "internal"
+  ],
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "git.projectSources",
+    "params": [
+      "project_id",
+      "source_id",
+      "source_path"
+    ],
+    "refused_with": {
+      "moved": "conflict",
+      "plain_folder": "invalid_params"
+    }
+  },
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs"
+      },
+      "result": {
+        "current": {
+          "kind": "branch",
+          "name": "build/wire",
+          "full_ref": "refs/heads/build/wire"
+        },
+        "refs": [
+          {
+            "kind": "local",
+            "name": "build/wire",
+            "full_ref": "refs/heads/build/wire",
+            "current": true,
+            "remote": null,
+            "upstream": "origin/build/wire",
+            "ahead": 2,
+            "behind": 0
+          },
+          {
+            "kind": "remote",
+            "name": "origin/main",
+            "full_ref": "refs/remotes/origin/main",
+            "current": false,
+            "remote": "origin",
+            "upstream": null,
+            "ahead": 0,
+            "behind": 0
+          },
+          {
+            "kind": "tag",
+            "name": "v0.2.0",
+            "full_ref": "refs/tags/v0.2.0",
+            "current": false,
+            "remote": null,
+            "upstream": null,
+            "ahead": 0,
+            "behind": 0
+          }
+        ]
+      }
+    }
   ]
 }

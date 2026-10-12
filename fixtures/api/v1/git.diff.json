@@ -54,11 +54,45 @@
           }
         ]
       }
+    },
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs",
+        "paths": [
+          "src/main.rs"
+        ]
+      },
+      "result": {
+        "files": [
+          {
+            "path": "src/main.rs",
+            "content_key": "8b1a9953c4611296",
+            "patch": "diff --git a/src/main.rs b/src/main.rs\n@@ -1,2 +1,3 @@\n+use std::io;\n",
+            "truncated": false
+          }
+        ]
+      }
     }
   ],
   "errors": [
     "not_found",
     "invalid_params",
+    "conflict",
     "internal"
-  ]
+  ],
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "git.projectSources",
+    "params": [
+      "project_id",
+      "source_id",
+      "source_path"
+    ],
+    "refused_with": {
+      "moved": "conflict",
+      "plain_folder": "invalid_params"
+    }
+  }
 }

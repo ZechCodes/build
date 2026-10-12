@@ -29,8 +29,28 @@
       "details": { "kinds": ["reviews"] }
     }
   },
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "changes.projectSources",
+    "kinds": ["git", "files", "terminals"],
+    "params": {
+      "subscription_id": "s-source-docs",
+      "scope": {
+        "kind": "project_source",
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs"
+      },
+      "kinds": ["git", "files", "terminals"],
+      "mode": "realtime",
+      "priority": "foreground"
+    },
+    "refused_with": { "moved": "conflict", "unknown": "not_found", "plain_folder_git": "invalid_params" }
+  },
   "errors": [
     "invalid_params",
+    "not_found",
+    "conflict",
     "unavailable"
   ]
 }

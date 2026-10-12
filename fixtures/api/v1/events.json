@@ -341,6 +341,65 @@
       ]
     },
     {
+      "type": "changes",
+      "subscription_id": "s-source-docs",
+      "items": [
+        {
+          "entity_id": "project-source:f3c0b44ec5a898b2122d77c879ae8021",
+          "project_source": {
+            "project_id": "proj-1",
+            "source_id": "source-2",
+            "source_path": "/home/me/src/docs"
+          },
+          "git": {
+            "status_key": "9f3c1a0b7e2d4c55",
+            "head": "7d0c2e1",
+            "status": {
+              "branch": "main",
+              "path": "/home/me/src/docs",
+              "head": "7d0c2e1",
+              "repo_state": "clean",
+              "upstream": "origin/main",
+              "ahead": 1,
+              "behind": 0,
+              "stash_count": 0,
+              "files": [
+                {
+                  "path": "guide.md",
+                  "index_status": " ",
+                  "worktree_status": "M",
+                  "staged": "none",
+                  "content_key": "5c6d7e8f90123456",
+                  "additions": 2,
+                  "deletions": 1
+                }
+              ],
+              "status_key": "9f3c1a0b7e2d4c55"
+            }
+          },
+          "files": {
+            "paths": [
+              "guide.md"
+            ],
+            "truncated": false,
+            "root": {
+              "path": "",
+              "entries": [
+                {
+                  "name": "guide.md",
+                  "kind": "file",
+                  "size": 2048
+                }
+              ]
+            }
+          },
+          "terminals": {
+            "tabs": []
+          }
+        }
+      ]
+    },
+    {
       "type": "bridge.update_status",
       "running_version": "0.2.0",
       "platform": "linux-x86_64",

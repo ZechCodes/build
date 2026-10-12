@@ -705,7 +705,10 @@ uses the pinned OID after releasing the lock and retains existing worktree/Rift
 copy rules. Adding a local Git directory to an existing workspace also pins its
 base before materialization. A lock wait beyond the cut's ten-second deadline
 refuses creation rather than resolving an unprotected mutable base ref; a fetch
-failure still cuts the pinned local base with its existing warning.
+failure still cuts the pinned local base with its existing warning. Contention
+does not prove a fetch occurred: a requested fetch uses only the budget remaining
+after the lock wait. Refused preparation removes only that create request's
+unpublished root and preserves existing workspace files.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes

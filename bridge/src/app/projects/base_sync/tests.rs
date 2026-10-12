@@ -92,6 +92,48 @@ impl Fixture {
 }
 
 #[test]
+fn a_cut_fetch_uses_only_the_budget_left_after_waiting() {
+    let fixture = fixture();
+    // A listening loopback endpoint that never answers the Git protocol.
+    // No real remote, helper, or serving bridge participates in this test.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("git://{}/project", listener.local_addr().unwrap());
+    git_in(&fixture.source().path, &["remote", "add", "origin", &url]);
+    let mut subject = fixture.subject(SyncOrigin::Cut);
+    subject.fetch = Fetch::Within(Duration::from_secs(2));
+    let local_base = git2::Repository::open(&subject.path)
+        .unwrap()
+        .revparse_single("main")
+        .unwrap()
+        .id()
+        .to_string();
+    let (held, _) = SyncLock::acquire(&subject.path, Duration::ZERO).unwrap();
+    let path = subject.path.clone();
+    let (ready, waiting) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_millis(300);
+        ready.send(()).unwrap();
+        let (_held, waited) = SyncLock::acquire(&path, Duration::from_millis(300)).unwrap();
+        assert!(waited);
+        let started = Instant::now();
+        let synced = sync_for_a_cut(subject, deadline, None).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            synced.report.outcome,
+            SyncOutcome::Failed(Failure {
+                timed_out: true,
+                ..
+            })
+        ));
+        assert_eq!(synced.start.as_deref(), Some(local_base.as_str()));
+    });
+    waiting.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    drop(held);
+    waiter.join().unwrap();
+}
+
+#[test]
 fn a_service_fetch_that_timed_out_is_retried_on_the_next_pass() {
     let mut fixture = fixture();
 

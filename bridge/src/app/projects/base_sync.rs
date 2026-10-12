@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[cfg(test)]
 mod tests;
@@ -283,16 +283,16 @@ fn sync_for_the_service(subject: SyncSubject, state: &Arc<Mutex<AppState>>) -> O
     })
 }
 
-/// Sync one source before a cut. A sync already running is waited for up to
-/// the cut's deadline, and then what it fetched is used rather than fetching
-/// again; one that outlasts the lock deadline refuses the cut so no mutable ref is
+/// Sync one source before a cut, using the budget left after acquiring its
+/// shared source lock. Waiting for a mutation does not satisfy a requested
+/// fetch. A lock wait beyond the deadline refuses the cut so no mutable ref is
 /// resolved without protection. The
 /// cut never fast-forwards the source's own checkout, which can take
 /// minutes: that is left to the service, and the cut branches from the
 /// commit the checkout is moving to ([`SyncOutcome::CheckoutLeft`]).
 fn sync_for_a_cut(
     subject: SyncSubject,
-    waited: bool,
+    deadline: Instant,
     state: Option<&std::sync::Weak<Mutex<AppState>>>,
 ) -> Result<Synced, String> {
     if let Some(state) = state.and_then(std::sync::Weak::upgrade) {
@@ -301,7 +301,12 @@ fn sync_for_a_cut(
         }
     }
     let mut report = if subject.enabled {
-        let fetch = if waited { Fetch::Skip } else { subject.fetch };
+        let fetch = match subject.fetch {
+            Fetch::Within(limit) => {
+                Fetch::Within(limit.min(deadline.saturating_duration_since(Instant::now())))
+            }
+            Fetch::Skip => Fetch::Skip,
+        };
         sync_base_for_a_cut(&subject.path, &subject.base_branch, fetch)
     } else {
         SyncReport {
@@ -384,9 +389,10 @@ pub(in crate::app) fn sync_before_cut(
     }
     std::thread::scope(|scope| {
         let running: Vec<_> = groups.into_values().map(|group| scope.spawn(move || {
-            let (_held, waited) = SyncLock::acquire(&group[0].path, CUT_FETCH_DEADLINE)
+            let deadline = Instant::now() + CUT_FETCH_DEADLINE;
+            let (_held, _) = SyncLock::acquire(&group[0].path, deadline.saturating_duration_since(Instant::now()))
                 .ok_or_else(|| "Another source operation is still running; try creating the workspace again.".to_string())?;
-            group.into_iter().map(|subject| sync_for_a_cut(subject, waited, state)).collect::<Result<Vec<_>, String>>()
+            group.into_iter().map(|subject| sync_for_a_cut(subject, deadline, state)).collect::<Result<Vec<_>, String>>()
         })).collect();
         let batches: Result<Vec<_>, String> = running
             .into_iter()

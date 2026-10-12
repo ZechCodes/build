@@ -445,9 +445,9 @@ impl SyncLock {
             .collect()
     }
 
-    /// The checkout at `path`, once no other sync holds it, waiting at most
-    /// `within`. The flag says whether another sync had it first, so a cut
-    /// that waited can take what that sync fetched instead of fetching again.
+    /// The repository at `path`, once no other source operation holds it,
+    /// waiting at most `within`. The flag reports contention only; the prior
+    /// holder might have mutated Git without fetching.
     pub fn acquire(path: &Path, within: Duration) -> Option<(Self, bool)> {
         let path = sync_lock_identity(path);
         let (held, released) = held_checkouts();

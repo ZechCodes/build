@@ -45,29 +45,17 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
+        let prepared = match sync_before_cut(&self.base_syncs, self.source_state.as_ref()) {
+            Ok(prepared) => prepared,
+            Err(error) => return self.preparation_failed(error),
+        };
         *self
             .synced
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            sync_before_cut(&self.base_syncs, self.source_state.as_ref())?;
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = prepared;
         let mut registry = match WorkspaceRegistry::load(&self.registry_root) {
             Ok(registry) => registry,
-            Err(error) => {
-                if !self.unpublished {
-                    return Err(error);
-                }
-                let cleanup = std::fs::remove_dir_all(&self.workspace.root);
-                return match cleanup {
-                    Ok(()) => Err(error),
-                    Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
-                        Err(error)
-                    }
-                    Err(cleanup_error) => Err(format!(
-                        "{error}; additionally could not remove {}: {cleanup_error}",
-                        self.workspace.root.display()
-                    )),
-                };
-            }
+            Err(error) => return self.preparation_failed(error),
         };
         if !self.unpublished {
             let workspace = registry.provision(
@@ -184,6 +172,22 @@ pub(super) fn materialize_source(
 }
 
 impl WorkspaceCreateWork {
+    /// Nothing has materialized yet. Only a root this create privately
+    /// prepared may be removed; an existing workspace retains its files.
+    fn preparation_failed(&self, error: String) -> Result<Value, String> {
+        if !self.unpublished {
+            return Err(error);
+        }
+        match std::fs::remove_dir_all(&self.workspace.root) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(format!(
+                "{error}; additionally could not remove {}: {cleanup}",
+                self.workspace.root.display()
+            )),
+        }
+    }
+
     fn materialize(
         &self,
         source: &WorkspaceSource,

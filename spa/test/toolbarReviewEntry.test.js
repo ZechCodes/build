@@ -165,16 +165,18 @@ describe("workspace jump-menu review entry", () => {
     expect(state.rpc).not.toHaveBeenCalled();
   });
 
-  it("keeps the entry tied to the standing project when the same menu switches project", async () => {
+  it("removes local workspace actions when the same dialog widens globally", async () => {
     await mount();
     await vi.waitFor(() => expect(reviewButton()).not.toBeNull());
+    const dialog = menu();
     menu().querySelector("[data-projects]").click();
     await vi.waitFor(() => expect(menu()?.dataset.list).toBe("projects"));
-    menu().querySelector('[data-project="device/other"]').click();
-    await vi.waitFor(() => expect(menu()?.dataset.list).toBe("workspaces"));
-    expect(reviewButton()).toBeNull();
+    expect(menu()).toBe(dialog);
+    expect(menu().querySelector("[data-workspace-review], [data-create], [data-manage-workspaces]")).toBeNull();
+    expect(menu().querySelector('[data-project="device/other"]:not([data-visit])').tagName).toBe("A");
     deliver([workspace()]);
     expect(reviewButton()).toBeNull();
+    expect(state.rpc).not.toHaveBeenCalled();
   });
 
   it("does not borrow another workspace's active review or another device's capability", async () => {
@@ -183,7 +185,10 @@ describe("workspace jump-menu review entry", () => {
     await vi.waitFor(() => expect(reviewButton()?.textContent).toContain("Open review"));
     state.App.route = route({ deviceId: "other-device" });
     toolbarRouteChanged();
-    await vi.waitFor(() => expect(reviewButton()).toBeNull());
+    await vi.waitFor(() => expect(menu()).toBeNull());
+    await openJump();
+    expect(reviewButton()).toBeNull();
+    expect(menu().querySelector(".tb-scope > span").textContent).not.toBe("Build");
     expect(state.rpc).not.toHaveBeenCalled();
   });
 });
@@ -232,7 +237,7 @@ describe("current breadcrumb and picker destinations", () => {
     await initToolbar();
     await openJump();
     const filter = menu().querySelector(".tb-filter");
-    const first = menu().querySelector('.tbmenu-list [role="menuitem"]');
+    const first = menu().querySelector('.tbmenu-list a[href]');
     filter.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(document.activeElement).toBe(first);
   });
@@ -256,7 +261,7 @@ describe("current breadcrumb and picker destinations", () => {
     await initToolbar();
     await openJump();
     const filter = menu().querySelector(".tb-filter");
-    expect(menu().querySelector('.tbmenu-list [role="menuitem"]').classList.contains("current")).toBe(true);
+    expect(menu().querySelector('.tbmenu-list a[href]').classList.contains("current")).toBe(true);
     filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await vi.waitFor(() => expect(menu()).toBeNull());
     expect(state.go).not.toHaveBeenCalled();
@@ -269,7 +274,7 @@ describe("current breadcrumb and picker destinations", () => {
     const filter = menu().querySelector(".tb-filter");
     filter.value = "Other checkout";
     filter.dispatchEvent(new Event("input"));
-    expect(menu().querySelector('.tbmenu-list [role="menuitem"]').dataset.workspace).toBe("device/sibling");
+    expect(menu().querySelector('.tbmenu-list a[href]').dataset.workspace).toBe("device/sibling");
     filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith({
       name: "workspace", deviceId: "device", projectId: "project", workspaceId: "sibling", tab: "changes",

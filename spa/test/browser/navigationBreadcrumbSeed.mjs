@@ -11,7 +11,10 @@ export const navigationAppShim = {
   load(id) {
     if (id !== "\0navigation-breadcrumb-app") return null;
     return `import { App } from '/src/appState.js'; export { App };
-      export function go(route) { window.__navigationHarness.navigate(route); }
+      export function go(route) {
+        const navigate = () => { window.__navigationHarness.navigate(route); return true; };
+        return App.routeLeaveGuard ? Promise.resolve(App.routeLeaveGuard()).then((allowed) => allowed && navigate()) : navigate();
+      }
       export function render() {} export function rememberSelectedDevice() {}`;
   },
 };

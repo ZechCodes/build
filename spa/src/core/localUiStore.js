@@ -278,10 +278,10 @@ export function writeUiRecord(address, value, { source, sequence } = {}) {
  * replace each other's edits. An account reset fences queued updates. */
 export async function updateUiRecord(address, update, active = () => true) {
   const started = wipes;
-  await adoptCachedUiRecords();
+  await watchReplica();
   const key = recordKey(address);
   let applied = false;
-  await database.write((store) => {
+  const committed = await database.write((store) => {
     applied = false;
     const current = store.get(key);
     current.onsuccess = () => {
@@ -291,7 +291,7 @@ export async function updateUiRecord(address, update, active = () => true) {
     };
     return null;
   });
-  if (applied) announce(partsOfKey(key));
+  if (committed && applied) announce(partsOfKey(key));
 }
 
 /** Clear a sent draft only while the write captured before sending is still

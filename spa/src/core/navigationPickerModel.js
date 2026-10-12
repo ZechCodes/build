@@ -16,6 +16,13 @@ export function globalNavigationPicker(catalog, { query = "", visits = [] } = {}
 /** Keep occurrence ordering for this query/scope. Payloads remain live; new
  * occurrences append, and vanished ones leave without moving kept rows. */
 export function reconcilePickerOrder(previous, next) {
+  const groupKeys = [...new Set([...previous, ...next].map((row) => row.groupKey))];
+  return groupKeys.flatMap((groupKey) => reconcileGroupOrder(
+    previous.filter((row) => row.groupKey === groupKey), next.filter((row) => row.groupKey === groupKey),
+  ));
+}
+
+function reconcileGroupOrder(previous, next) {
   const live = new Map(next.map((row) => [row.key, row]));
   const held = new Set(previous.map((row) => row.key));
   return [...previous.map((row) => live.get(row.key)).filter(Boolean), ...next.filter((row) => !held.has(row.key))];

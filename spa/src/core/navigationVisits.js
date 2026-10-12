@@ -12,9 +12,17 @@ const readPrevious = (storage) => { try { return storage?.getItem(TAB_KEY) || nu
 const savePrevious = (storage, value) => {
   try { if (value) storage?.setItem(TAB_KEY, value); else storage?.removeItem(TAB_KEY); } catch { /* Private storage can be refused. */ }
 };
+const tabStorage = () => { try { return globalThis.sessionStorage; } catch { return null; } };
 
-export function mountNavigationVisits({ storage = globalThis.sessionStorage, now = Date.now, onChange = () => {} } = {}) {
-  const started = generation;
+function mergeVisit(value, visit) {
+  const identity = destinationIdentity(visit);
+  const held = validVisits(value);
+  const newer = held.find((row) => destinationIdentity(row) === identity && row.at > visit.at);
+  return [newer || visit, ...held.filter((row) => destinationIdentity(row) !== identity)].sort(byVisitTime).slice(0, 20);
+}
+
+export function mountNavigationVisits({ storage = tabStorage(), now = Date.now, onChange = () => {} } = {}) {
+  let started = generation;
   let disposed = false;
   let previous = readPrevious(storage);
   let pending = Promise.resolve();
@@ -22,7 +30,7 @@ export function mountNavigationVisits({ storage = globalThis.sessionStorage, now
     if (started === generation) onChange(validVisits(value));
   });
   const active = () => !disposed && generation === started;
-  const tracker = { reset() { previous = null; savePrevious(storage, null); } };
+  const tracker = { reset() { started = generation; previous = null; savePrevious(storage, null); onChange([]); } };
   trackers.add(tracker);
   return {
     ready: record.ready,
@@ -35,8 +43,9 @@ export function mountNavigationVisits({ storage = globalThis.sessionStorage, now
       savePrevious(storage, identity);
       if (!destination) return pending;
       const visit = { kind: destination.kind, key: destination.key, at: now() };
-      pending = pending.then(() => updateUiState(navigationVisitAddress, (value) =>
-        [visit, ...validVisits(value).filter((row) => destinationIdentity(row) !== identity)].sort(byVisitTime).slice(0, 20), active));
+      const requested = generation;
+      pending = pending.then(() => updateUiState(navigationVisitAddress, (value) => mergeVisit(value, visit),
+      () => active() && requested === generation));
       return pending;
     },
     async dispose() {
@@ -53,5 +62,5 @@ export function mountNavigationVisits({ storage = globalThis.sessionStorage, now
 export function resetNavigationVisits() {
   generation += 1;
   for (const tracker of trackers) tracker.reset();
-  savePrevious(globalThis.sessionStorage, null);
+  savePrevious(tabStorage(), null);
 }

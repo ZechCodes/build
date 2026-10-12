@@ -77,7 +77,10 @@ impl AppState {
         creation_id: &str,
     ) -> Result<(String, String, Option<String>), String> {
         self.project_for(project_id)?;
-        self.guard_saved_resource_owner(project_id, creation_id)?;
+        let recovered = self.saved_resource_owner(project_id, creation_id)?;
+        if let Some(owner) = recovered {
+            return self.recover_assignment_agent(project_id, target, workspace_id, actor, creation_id, &owner);
+        }
         let (entity_id, workspace_id) = match target {
             AssignTarget::Agent { agent_id } => {
                 let entity_id = self.agent_of_this_project(project_id, agent_id)?;
@@ -122,7 +125,7 @@ impl AppState {
     /// A creation identity is global to the saved delivery, including owners
     /// no longer attached in memory. Refuse retirement before minting a new
     /// conversation, which would otherwise lose roster-local deduplication.
-    fn guard_saved_resource_owner(&self, project_id: &str, creation_id: &str) -> Result<(), String> {
+    fn saved_resource_owner(&self, project_id: &str, creation_id: &str) -> Result<Option<String>, String> {
         let live = self.runs.iter().find(|(_, run)| run.agents.iter()
             .any(|agent| agent.creation_id.as_deref() == Some(creation_id)));
         if let Some((owner, run)) = live {
@@ -130,7 +133,7 @@ impl AppState {
                 return Err("saved task delivery owner was retired or changed project".into());
             }
         }
-        let Some(store) = &self.store else { return Ok(()); };
+        let Some(store) = &self.store else { return Ok(live.map(|(owner, _)| owner.clone())); };
         let saved = store.load_all_run_rosters().map_err(|error| error.to_string())?;
         for run in saved.iter().filter(|run| run.agents.iter()
             .any(|agent| agent.creation_id.as_deref() == Some(creation_id))) {
@@ -139,7 +142,32 @@ impl AppState {
                 return Err("saved task delivery owner was retired or changed project".into());
             }
         }
-        Ok(())
+        Ok(live.map(|(owner, _)| owner.clone()))
+    }
+
+    fn recover_assignment_agent(
+        &mut self, project_id: &str, target: &AssignTarget, workspace_id: Option<&str>,
+        actor: &Actor, creation_id: &str, owner: &str,
+    ) -> Result<(String, String, Option<String>), String> {
+        let expected_workspace = match target {
+            AssignTarget::NewWorkspace { .. } => workspace_id,
+            AssignTarget::NewAgent { workspace_id, .. } => Some(workspace_id.as_str()),
+            AssignTarget::NewProjectAgent { .. } => None,
+            _ => return Err("saved creation does not match assignment target".into()),
+        };
+        let actual_workspace = self.workspace_of_conversation(owner);
+        if actual_workspace.as_deref() != expected_workspace
+            || self.projects.project_id_of(owner) != Some(project_id) {
+            return Err("saved task delivery owner no longer matches its target".into());
+        }
+        let mut params = creating_agent_params(target, actor, creation_id)?;
+        params["entity_id"] = json!(owner);
+        if matches!(target, AssignTarget::NewProjectAgent { .. }) {
+            params["project_role"] = json!("worker");
+        }
+        let added = self.agent_add(&params)?;
+        let agent_id = added["agent"]["id"].as_str().ok_or("saved agent has no id")?.to_string();
+        Ok((agent_id, owner.to_string(), actual_workspace))
     }
 
     fn deferred_project_owner(&mut self, project_id: &str) -> Result<String, String> {

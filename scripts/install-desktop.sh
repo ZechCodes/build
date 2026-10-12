@@ -78,11 +78,12 @@ say "${BOLD}Build installer${RESET}"
 say ""
 case "$(uname -s)/$(uname -m)" in
     Darwin/arm64) platform=macos-arm64 platform_name='macOS (arm64)' ;;
-    Darwin/x86_64) platform=macos-x86_64 platform_name='macOS (x86_64)' ;;
+    Darwin/x86_64) fail_with 2 "Intel Macs are not supported by Build Desktop." \
+        "Use an Apple Silicon Mac, or open https://getbuild.ing/app/ in your browser." ;;
     Linux/x86_64|Linux/amd64) platform=linux-x86_64 platform_name='Linux (x86_64)' ;;
     Linux/aarch64|Linux/arm64) platform=linux-aarch64 platform_name='Linux (arm64)' ;;
     *) fail_with 2 "unsupported platform $(uname -s)/$(uname -m)" \
-        "The Build app is built for macOS and Linux, on arm64 and x86_64." ;;
+        "The Build app supports Apple Silicon macOS and Linux on arm64 or x86_64." ;;
 esac
 for tool in curl tar awk find readlink; do
     has "$tool" || fail "$tool is required to install Build and is not on PATH." \

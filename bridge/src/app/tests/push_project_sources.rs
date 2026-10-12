@@ -14,7 +14,11 @@ pub(in crate::app::tests) struct SourcedProject {
     pub(in crate::app::tests) plain: PathBuf,
 }
 
-pub(in crate::app::tests) fn add_sources(state: &Arc<Mutex<AppState>>, dir: &Path, repo: &Path) -> SourcedProject {
+pub(in crate::app::tests) fn add_sources(
+    state: &Arc<Mutex<AppState>>,
+    dir: &Path,
+    repo: &Path,
+) -> SourcedProject {
     let second = dir.join("second");
     git_in(dir, &["clone", "-q", repo.to_str().unwrap(), "second"]);
     git_in(&second, &["remote", "remove", "origin"]);

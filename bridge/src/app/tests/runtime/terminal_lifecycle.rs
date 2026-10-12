@@ -1113,7 +1113,10 @@ async fn project_source_terminal_survives_detach_not_source_retarget() {
     let (first, mut first_pushes, first_key) = SessionSender::observable("first");
     let attached = handler.call(
         first,
-        req("term.attach", on_source(&opened_at, json!({ "term_id": term_id }))),
+        req(
+            "term.attach",
+            on_source(&opened_at, json!({ "term_id": term_id })),
+        ),
     );
     assert_eq!(attached["ok"], true, "{attached:?}");
     call(
@@ -1130,7 +1133,10 @@ async fn project_source_terminal_survives_detach_not_source_retarget() {
     let (second, _second_pushes, _) = SessionSender::observable("second");
     let reattached = handler.call(
         second,
-        req("term.attach", on_source(&opened_at, json!({ "term_id": term_id }))),
+        req(
+            "term.attach",
+            on_source(&opened_at, json!({ "term_id": term_id })),
+        ),
     );
     assert_eq!(reattached["ok"], true, "{reattached:?}");
     assert_eq!(reattached["result"]["term_id"], term_id.as_str());
@@ -1154,8 +1160,14 @@ async fn project_source_terminal_survives_detach_not_source_retarget() {
         "project.remove_source",
         json!({ "project_id": project_id, "source_id": "source-2" }),
     );
-    assert_eq!(refused_removal["error_code"], "conflict", "{refused_removal:?}");
-    assert!(refused_removal["error"].as_str().unwrap().contains(&term_id));
+    assert_eq!(
+        refused_removal["error_code"], "conflict",
+        "{refused_removal:?}"
+    );
+    assert!(refused_removal["error"]
+        .as_str()
+        .unwrap()
+        .contains(&term_id));
     assert_eq!(
         source_selector(&state, &project_id, "source-2"),
         opened_at,
@@ -1166,7 +1178,10 @@ async fn project_source_terminal_survives_detach_not_source_retarget() {
         "project.update_source",
         json!({ "project_id": project_id, "source_id": "source-2", "name": "Docs" }),
     );
-    assert_eq!(relabelled["ok"], true, "a new label moves nothing: {relabelled:?}");
+    assert_eq!(
+        relabelled["ok"], true,
+        "a new label moves nothing: {relabelled:?}"
+    );
 
     let closed = call(
         &handler,
@@ -1179,13 +1194,24 @@ async fn project_source_terminal_survives_detach_not_source_retarget() {
 
     let stale = call(&handler, "term.list", opened_at.clone());
     assert_eq!(stale["error_code"], "conflict", "{stale:?}");
-    let stale_create = call(&handler, "term.create", opened_at);
+    let stale_create = call(&handler, "term.create", opened_at.clone());
     assert_eq!(stale_create["error_code"], "conflict", "{stale_create:?}");
     let renewed = source_selector(&state, &project_id, "source-2");
     let listed = call(&handler, "term.list", renewed.clone());
     assert_eq!(listed["result"]["terminals"], json!([]), "{listed:?}");
     let reopened = call(&handler, "term.create", renewed);
     assert_eq!(reopened["ok"], true, "{reopened:?}");
+    for verb in ["term.attach", "term.close"] {
+        let stale = call(
+            &handler,
+            verb,
+            on_source(
+                &opened_at,
+                json!({ "term_id": reopened["result"]["term_id"] }),
+            ),
+        );
+        assert_eq!(stale["error_code"], "conflict", "{verb}: {stale:?}");
+    }
     let key = state
         .lock()
         .unwrap()
@@ -1216,7 +1242,10 @@ async fn a_legacy_shell_in_a_source_folder_holds_the_source() {
         "project.remove_source",
         json!({ "project_id": project_id, "source_id": "source-3" }),
     );
-    assert_eq!(removed["ok"], true, "a source with no shell leaves: {removed:?}");
+    assert_eq!(
+        removed["ok"], true,
+        "a source with no shell leaves: {removed:?}"
+    );
 }
 
 /// A move is admitted with no shell open and settles after its Git ran off
@@ -1241,9 +1270,16 @@ async fn a_source_move_in_flight_holds_new_shells_back() {
     };
     held.wait_for_arrival();
     let during = call(&handler, "term.create", opened_at.clone());
-    assert_eq!(during["error_code"], "busy", "{during:?}");
-    assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
+    let during_count = state.lock().unwrap().shell_tab_count();
+    let removal = call(
+        &handler,
+        "project.remove_source",
+        json!({ "project_id": project_id, "source_id": "source-2" }),
+    );
     held.release();
+    assert_eq!(during["error_code"], "busy", "{during:?}");
+    assert_eq!(during_count, 0);
+    assert_eq!(removal["error_code"], "busy", "{removal:?}");
     let settled = moving.join().unwrap();
     assert_eq!(settled["ok"], true, "{settled:?}");
 

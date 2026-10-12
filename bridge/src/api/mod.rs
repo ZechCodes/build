@@ -55,7 +55,7 @@ use std::collections::BTreeSet;
 /// 3.20.0 adds newest-only thread page activity with exact digests (#496).
 /// 3.21.0 adds original project source scopes on the Git verbs and
 /// source-qualified change subscriptions (#529), and project workers on the
-/// agent roster (#532).
+/// agent roster (#532), and original-source terminal ownership (#531).
 pub const API_VERSION: &str = "3.21.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
@@ -104,6 +104,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "fs.projectSourcePath", // Since 3.17.0: source_path refuses a moved project source (#360).
     "fs.projectSources", // Since 3.9.0: project_id + source_id on fs.tree/read/write (#359).
     "git.projectSources", // Since 3.21.0: project_id + source_id + source_path on the git.* verbs (#529).
+    "term.projectSources", // Since 3.21.0: exact source selectors on term.create/list/attach/close (#531).
     "tasks.agentIdentities",
     "tasks.attachmentChunks",
     "tasks.attachments",
@@ -420,6 +421,8 @@ impl ApiError {
             || sentence.starts_with("stale unversioned mutation")
             || sentence == crate::app::MOVED_SOURCE
             || sentence == crate::app::MOVED_GIT_SOURCE
+            || sentence == crate::app::MOVED_TERMINAL_SOURCE
+            || sentence.starts_with(crate::app::SOURCE_SHELLS_LIVE)
             || sentence == crate::app::PINNED_AGENT_STAYS
         {
             return ApiError::conflict(message, None);
@@ -428,6 +431,7 @@ impl ApiError {
             || sentence.contains("process is still stopping")
             || sentence.contains("session delivery is in progress")
             || sentence.contains("native history became shared")
+            || sentence == crate::app::SOURCE_TERMINAL_BUSY
             || sentence == crate::reclaim::BUSY
             || sentence == crate::reclaim::RESERVED
         {

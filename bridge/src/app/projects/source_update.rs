@@ -62,6 +62,13 @@ impl AppState {
         let source = source.clone();
         let title = project.name.clone();
         let edit = self.checked_edit(params, &source, index)?;
+        if edit
+            .path
+            .as_ref()
+            .is_some_and(|path| *path != Self::canonical_root(&source.path))
+        {
+            self.refuse_source_shells_at(&source.path)?;
+        }
         if !edit.needs_git() && edit.name.is_none() {
             return self.set_source_sync(&project_id, &source_id, edit.sync_base);
         }

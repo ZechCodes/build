@@ -1502,3 +1502,37 @@ fn project_workers_are_announced_with_their_roster_read_and_purposes() {
     let remove = read_json(&fixtures_root().join("v1/agent.remove.json"));
     assert_eq!(remove["pinned_coordinator"]["since"], "3.21.0");
 }
+
+/// Terminal selectors are separately advertised: file/Git source capabilities
+/// never authorize sending a new selector to an older terminal implementation.
+#[test]
+fn project_source_terminals_are_announced_with_exact_scope_and_legacy_examples() {
+    assert!(capabilities(false).contains(&"term.projectSources"));
+    for method in ["term.create", "term.list", "term.attach", "term.close"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        let sources = &fixture["project_sources"];
+        assert_eq!(sources["since"], "3.21.0", "{method}");
+        assert_eq!(sources["capability"], "term.projectSources", "{method}");
+        assert_eq!(
+            sources["params"],
+            serde_json::json!(["project_id", "source_id", "source_path"])
+        );
+        assert_eq!(sources["refused_with"]["moved"], "conflict", "{method}");
+        assert_eq!(
+            sources["refused_with"]["foreign_terminal"], "not_found",
+            "{method}"
+        );
+        assert_eq!(sources["plain_folder"], "supported", "{method}");
+        assert!(
+            fixture["params"].get("source_id").is_none(),
+            "{method}: legacy example retained"
+        );
+        let example = &fixture["examples"][0];
+        assert_eq!(example["params"]["source_id"], "source-2", "{method}");
+        assert!(example["params"]["source_path"].is_string(), "{method}");
+        assert!(fixture["errors"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("conflict")));
+    }
+}

@@ -186,6 +186,9 @@ use projects::{
 };
 pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
+pub(crate) use runtime::terminals::{
+    MOVED_TERMINAL_SOURCE, SOURCE_SHELLS_LIVE, SOURCE_TERMINAL_BUSY,
+};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

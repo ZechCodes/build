@@ -64,6 +64,7 @@ fn agent_tab(
                 agent_id: agent.into(),
                 provider: AgentProvider::default(),
             },
+            project_source: None,
             created_at: now_rfc3339(),
             session: Arc::clone(&session),
             session_instance: Some(row.clone()),

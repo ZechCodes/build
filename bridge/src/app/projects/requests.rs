@@ -480,6 +480,12 @@ impl AppState {
         if project.sources.len() == 1 {
             return Err("a project must have at least one source".to_string());
         }
+        let source = project
+            .sources
+            .iter()
+            .find(|source| source.id == source_id)
+            .expect("source was checked");
+        self.refuse_source_shells_at(&source.path)?;
         let sources = project
             .sources
             .iter()

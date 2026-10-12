@@ -202,7 +202,7 @@ pub(in crate::app) fn dispatch_frame(
                 // reserved: try again in a moment.
                 ApiError::busy(error)
             } else {
-                conversation_session_refusal(error)
+                terminal_session_refusal(&method, &params, error)
             }
         }),
         // The caller is named for the frame: the `changes.*` verbs push to
@@ -222,6 +222,16 @@ fn conversation_session_refusal(error: String) -> ApiError {
         ApiError::classify(error)
     } else {
         ApiError::from(error)
+    }
+}
+
+fn terminal_session_refusal(method: &str, params: &Value, error: String) -> ApiError {
+    if (method.starts_with("term.") && super::runtime::terminals::source_scope_requested(params))
+        || error == crate::app::SOURCE_TERMINAL_BUSY
+    {
+        ApiError::classify(error)
+    } else {
+        conversation_session_refusal(error)
     }
 }
 
@@ -621,7 +631,9 @@ impl AppState {
             return answered;
         }
         match self.route_legacy(method, params) {
-            Some(outcome) => outcome.map_err(conversation_session_refusal),
+            Some(outcome) => {
+                outcome.map_err(|error| terminal_session_refusal(method, params, error))
+            }
             None => Err(ApiError::unknown_method(method)),
         }
     }

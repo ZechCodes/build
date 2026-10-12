@@ -603,6 +603,28 @@ can still go out just after it. It carries what the old folder held before
 the move, under the old `project_source`. Nothing collected after the move
 goes out for the old folder. `project.sync_source` does not yet take
 `source_path`; that precondition, with the sync lock, is #530.
+`term.create`, `term.list`, `term.attach` and source-asserted `term.close`
+accept the same exact original-source selector under `term.projectSources`
+(wire 3.21.0, #531). Plain folders support shells too. Terminal scope parsing
+in `app/runtime/terminals/scope.rs` rejects malformed, foreign, mixed selectors
+and caller roots before opening a PTY; `source_path` asserts the registered
+location, and a moved location returns `conflict`. Each explicit source shell
+keeps immutable project/source/location ownership beside its canonical cwd.
+Lists and `terminals` facts use that ownership, so registered aliases sharing
+a folder still have separate explicit tab rows. Legacy scopes remain canonical
+root aliases, including shells opened before an explicit source selector was
+available; input/resize/ack continue to address the captured terminal ID.
+
+Client detach or reconnect keeps the shell and ID. Explicit tab close, EOF,
+a missing root and project deletion use the existing kill/reap and screen
+closure lifecycle. Source move/remove refuses while shells stand in that
+source folder, naming their IDs. Create and move/remove admission run under
+the app lock; shell spawn stays under that guard, and the existing Updating
+reservation blocks shell starts and source removal throughout deferred source
+update work and settlement. Label changes leave live shells alone. These holds
+keep the source's membership/location consistent; they do not restrict shell
+commands or serialize them with Git/base sync. Project worker holds are #533.
+
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.

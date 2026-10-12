@@ -715,7 +715,10 @@ async fn shell_prints_its_folder(
     let (sender, mut pushes, key) = SessionSender::observable("cwd");
     let attached = handler.call(
         sender,
-        req("term.attach", on_source(selector, json!({ "term_id": term_id }))),
+        req(
+            "term.attach",
+            on_source(selector, json!({ "term_id": term_id })),
+        ),
     );
     assert_eq!(attached["ok"], true, "{attached:?}");
     let wrote = handler.call(
@@ -869,20 +872,79 @@ async fn project_source_terminal_cannot_attach_sibling() {
     let second_path = selector("source-2")["source_path"].clone();
     let plain_path = selector("source-3")["source_path"].clone();
     let refused = [
-        (on_source(&selector("source-2"), json!({ "workspace_id": "legacy-x" })), "invalid_params"),
-        (on_source(&selector("source-2"), json!({ "run_id": "run-1" })), "invalid_params"),
-        (on_source(&selector("source-2"), json!({ "worktree_id": "wt-1" })), "invalid_params"),
-        (json!({ "workspace_id": "legacy-x", "source_id": "source-2", "source_path": second_path }), "invalid_params"),
-        (json!({ "project_id": project_id, "source_id": "source-2" }), "invalid_params"),
-        (json!({ "project_id": project_id, "source_path": second_path }), "invalid_params"),
-        (on_source(&selector("source-2"), json!({ "source_path": "" })), "invalid_params"),
-        (on_source(&selector("source-2"), json!({ "source_id": 2 })), "invalid_params"),
-        (on_source(&selector("source-2"), json!({ "project_id": [] })), "invalid_params"),
-        (on_source(&selector("source-2"), json!({ "source_id": "source-9" })), "not_found"),
-        (on_source(&selector("source-2"), json!({ "project_id": "proj-elsewhere" })), "not_found"),
-        (on_source(&selector("source-2"), json!({ "source_path": plain_path })), "conflict"),
-        (on_source(&selector("source-2"), json!({ "source_path": dir.path().join("gone") })), "conflict"),
+        (
+            on_source(&selector("source-2"), json!({ "workspace_id": "legacy-x" })),
+            "invalid_params",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "run_id": "run-1" })),
+            "invalid_params",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "worktree_id": "wt-1" })),
+            "invalid_params",
+        ),
+        (
+            json!({ "workspace_id": "legacy-x", "source_id": "source-2", "source_path": second_path }),
+            "invalid_params",
+        ),
+        (
+            json!({ "project_id": project_id, "source_id": "source-2" }),
+            "invalid_params",
+        ),
+        (
+            json!({ "project_id": project_id, "source_path": second_path }),
+            "invalid_params",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "source_path": "" })),
+            "invalid_params",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "source_id": 2 })),
+            "invalid_params",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "project_id": [] })),
+            "invalid_params",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "source_id": "source-9" })),
+            "not_found",
+        ),
+        (
+            on_source(
+                &selector("source-2"),
+                json!({ "project_id": "proj-elsewhere" }),
+            ),
+            "not_found",
+        ),
+        (
+            on_source(&selector("source-2"), json!({ "source_path": plain_path })),
+            "conflict",
+        ),
+        (
+            on_source(
+                &selector("source-2"),
+                json!({ "source_path": dir.path().join("gone") }),
+            ),
+            "conflict",
+        ),
     ];
+    let mut refused = refused.to_vec();
+    for params in [
+        json!({ "source_path": null }),
+        json!({ "source_path": 1 }),
+        json!({ "source_id": null }),
+        json!({ "source_id": "" }),
+        json!({ "workspace_id": null }),
+        json!({ "run_id": null }),
+        json!({ "root": repo }),
+        json!({ "cwd": repo }),
+        json!({ "path": repo }),
+    ] {
+        refused.push((on_source(&selector("source-2"), params), "invalid_params"));
+    }
     let shells = state.lock().unwrap().shell_tab_count();
     for (params, code) in &refused {
         for method in ["term.create", "term.list"] {
@@ -894,7 +956,19 @@ async fn project_source_terminal_cannot_attach_sibling() {
             "term.attach",
             on_source(params, json!({ "term_id": second_id })),
         );
-        assert_eq!(attached["error_code"], *code, "term.attach {params}: {attached:?}");
+        assert_eq!(
+            attached["error_code"], *code,
+            "term.attach {params}: {attached:?}"
+        );
+        let closed = call(
+            &handler,
+            "term.close",
+            on_source(params, json!({ "term_id": second_id })),
+        );
+        assert_eq!(
+            closed["error_code"], *code,
+            "term.close {params}: {closed:?}"
+        );
     }
     assert_eq!(
         state.lock().unwrap().shell_tab_count(),

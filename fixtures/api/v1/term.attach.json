@@ -1,0 +1,57 @@
+{
+  "method": "term.attach",
+  "since": "1.0.0",
+  "params": {
+    "term_id": "term-1"
+  },
+  "result": {
+    "term_id": "term-1",
+    "snapshot": "",
+    "cursor": 0,
+    "live": true,
+    "provider": null,
+    "cols": 80,
+    "rows": 24
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "busy",
+    "internal"
+  ],
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "term.projectSources",
+    "params": [
+      "project_id",
+      "source_id",
+      "source_path"
+    ],
+    "plain_folder": "supported",
+    "refused_with": {
+      "moved": "conflict",
+      "foreign_terminal": "not_found",
+      "mixed_selector": "invalid_params"
+    }
+  },
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs",
+        "term_id": "term-1"
+      },
+      "result": {
+        "term_id": "term-1",
+        "snapshot": "",
+        "cursor": 0,
+        "live": true,
+        "provider": null,
+        "cols": 80,
+        "rows": 24
+      }
+    }
+  ]
+}

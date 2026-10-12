@@ -28,6 +28,21 @@ const eventExamples = fixtures
   .flatMap(({ name, body }) => body.events.map((event, index) => ({ where: `${name}[${index}]`, event })));
 
 describe("the v1 adapter against fixtures/api/v1", () => {
+  it("announces terminal source selectors independently of Git and Files", () => {
+    const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
+    expect(greeting.result.capabilities).toContain("term.projectSources");
+    for (const method of ["term.create", "term.list", "term.attach", "term.close"]) {
+      const fixture = methodFixtures.find(({ body }) => body.method === method)?.body;
+      expect(fixture.project_sources).toMatchObject({
+        since: "3.21.0", capability: "term.projectSources",
+        params: ["project_id", "source_id", "source_path"], plain_folder: "supported",
+        refused_with: { moved: "conflict", foreign_terminal: "not_found" },
+      });
+      expect(fixture.params.source_id).toBeUndefined();
+      expect(fixture.examples[0].params.source_id).toBe("source-2");
+    }
+  });
+
   it("announces PR mutations and their shared feature while retaining Snapshot verbs", () => {
     const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
     expect(greeting.result.api_version).toBe(versions.current);
@@ -330,7 +345,8 @@ function declaredSinces(value, into = new Set()) {
 /** (a) Every verb with a fixture now and none at the manifest's minor must say
  *  it arrived in the current release. */
 function newVerbsFiledAtTheWrongMinor({ methodFixtures, manifest, current }) {
-  const before = new Set(manifest.verbs);
+  // Legacy methods appear in the historical capability inventory, without a typed v1 entry.
+  const before = new Set([...manifest.verbs, ...manifest.capabilities]);
   const release = releaseOf(current);
   return methodFixtures
     .filter(({ body }) => !before.has(body.method) && body.since !== release)
@@ -439,6 +455,13 @@ describe("the arrival checks, on a synthetic violation each", () => {
 
   const previous = { api_version: "1.23.0", verbs: ["a.old"], capabilities: ["a.old", "a.feature"] };
   const fixture = (method, since, extra = {}) => ({ name: `${method}.json`, body: { method, since, ...extra } });
+
+  it("(a) keeps a legacy verb's arrival date when it was already announced", () => {
+    const legacy = { ...previous, capabilities: [...previous.capabilities, "term.create"] };
+    expect(newVerbsFiledAtTheWrongMinor({
+      methodFixtures: [fixture("term.create", "1.0.0")], manifest: legacy, current: "1.24.0",
+    })).toEqual([]);
+  });
 
   it("(a) refuses a new verb filed at the previous minor", () => {
     const methodFixtures = [fixture("a.old", "1.0.0"), fixture("a.new", "1.23.0")];

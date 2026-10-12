@@ -175,6 +175,7 @@
       "term.create",
       "term.input",
       "term.list",
+      "term.projectSources",
       "term.resize",
       "thread.activity",
       "thread.attach",

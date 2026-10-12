@@ -9,24 +9,30 @@
 
 use crate::app::{AppState, TabKey};
 use crate::project_roster::ProjectRole;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-/// Project ids whose source is moving right now, from admission to the
-/// settlement that writes (or refuses) the new folder.
+/// Each successfully admitted source move holds its project until its own
+/// settlement. Overlapping moves release one hold each, never each other's.
 #[derive(Debug, Default)]
-pub(in crate::app) struct SourceMoves(HashSet<String>);
+pub(in crate::app) struct SourceMoves(HashMap<String, usize>);
 
 impl SourceMoves {
     pub(in crate::app) fn begin(&mut self, project_id: &str) {
-        self.0.insert(project_id.to_string());
+        *self.0.entry(project_id.to_string()).or_default() += 1;
     }
 
     pub(in crate::app) fn end(&mut self, project_id: &str) {
-        self.0.remove(project_id);
+        let Some(remaining) = self.0.get_mut(project_id) else {
+            return;
+        };
+        *remaining -= 1;
+        if *remaining == 0 {
+            self.0.remove(project_id);
+        }
     }
 
     fn moving(&self, project_id: &str) -> bool {
-        self.0.contains(project_id)
+        self.0.contains_key(project_id)
     }
 }
 

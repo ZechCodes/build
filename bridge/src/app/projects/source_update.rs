@@ -85,11 +85,6 @@ impl AppState {
             name: edit.name,
             sync_base: edit.sync_base,
         };
-        // The move holds the project's workers off its folders until it
-        // settles, whichever way it goes.
-        if moves {
-            self.source_moves.begin(&address.project_id);
-        }
         let project_id = address.project_id.clone();
         let deferred = self.defer_project(
             source.path,
@@ -97,14 +92,18 @@ impl AppState {
             PendingState::Updating,
             mutation,
             move |state: &mut AppState, result: Result<SourceUpdated, String>| {
-                state.source_moves.end(&address.project_id);
+                if moves {
+                    state.source_moves.end(&address.project_id);
+                }
                 state.settle_source_update(address, result?)
             },
-        );
-        if deferred.is_err() {
-            self.source_moves.end(&project_id);
+        )?;
+        // Admission and this hold are acquired under the same app mutex.
+        // A rejected request owns no hold; only this move's settlement ends it.
+        if moves {
+            self.source_moves.begin(&project_id);
         }
-        deferred
+        Ok(deferred)
     }
 
     fn checked_edit(

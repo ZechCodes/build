@@ -30,6 +30,14 @@ import { conversationIsWatched, conversationUnreadCount, rosterUnreadCount } fro
 // the same harness.
 export { providerLabel };
 
+/** Only the cached badge values can change model attribution in the timeline.
+ *  Roster activity and ordering must not make it rebuild Markdown. */
+export const agentModelsSignature = (models) => JSON.stringify(
+  Object.entries(models)
+    .sort(([left], [right]) => (left < right ? -1 : 1))
+    .map(([id, agent]) => [id, agentModelBadge(agent)]),
+);
+
 /** What the header over the conversation says: the topic the agent named its
  *  work with (`set_topic`, 2-4 words), or "Starting" until it has — flagged so
  *  the head can shimmer the word rather than sit on it. A blank topic is no

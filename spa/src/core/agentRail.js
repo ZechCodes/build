@@ -50,6 +50,7 @@ import {
   agentHeading,
   agentRemovalWho,
   agentWho,
+  agentModelsSignature,
   canRemoveAgent,
   providerLabel,
   railBubbles,
@@ -2777,9 +2778,8 @@ function mountRailOnContext(host, context, swap) {
     return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
   };
 
-  /** The names as the paint sees them. In the fingerprint because a feed that
-   *  renames an agent has to repaint a line already on screen, and out of it
-   *  nothing else would notice. */
+  /** Current cached models for message attribution. The fingerprint below
+   *  includes only their rendered badges, independent of roster activity. */
   const conversationAgentModels = () => {
     const place = conversationPlace();
     return agentModelsFromFeed(feedView, deviceKey(place.deviceId, place.projectId));
@@ -2804,7 +2804,7 @@ function mountRailOnContext(host, context, swap) {
       agentLabel,
       unreadFrom,
       detailLevel: detailLevel(),
-      agentLabels: `${agentLabelsSignature()}:${JSON.stringify(conversationAgentModels())}`,
+      agentLabels: `${agentLabelsSignature()}:${agentModelsSignature(conversationAgentModels())}`,
       slice: `${timelineSlice.signature()}:${threadCache.hasOlderItems()}`,
       ...threadOfferState(threadState),
     });

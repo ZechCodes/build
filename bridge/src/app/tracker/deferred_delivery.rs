@@ -154,30 +154,9 @@ impl AppState {
     ) -> Result<(), String> {
         if let Some(result) = result {
             let git = git.expect("a resource result has its job");
-            let current = self.guard_task_delivery(intent);
-            if let Err(error) = current {
-                if git.invalidates || git.call.invalidates_on_error() {
-                    git.call.invalidate(self);
-                }
-                return Err(error);
-            }
-            let settled = result.and_then(|value| git.call.settle(self, value));
-            if git.invalidates || git.call.invalidates_on_error() {
-                git.call.invalidate(self);
-            }
-            let settled = settled?;
-            if let Some(warnings) = settled.get("warnings") {
-                intent.reservation["warnings"] = warnings.clone();
-            }
-            if !self
-                .tracker_store()?
-                .delivery_authority_current(&intent.id, intent.generation)
-                .stored()?
-            {
+            if !self.settle_delivery_resource(intent, git, result)? {
                 return Ok(());
             }
-            intent.reservation["materialized"] = json!(true);
-            self.checkpoint_task_delivery(intent)?;
             stop_after!(Materialized);
         }
         if !self
@@ -189,6 +168,39 @@ impl AppState {
             return Ok(());
         }
         self.advance_task_delivery(intent)
+    }
+
+    fn settle_delivery_resource(
+        &mut self,
+        intent: &mut DeliveryIntent,
+        git: &DeferredGit,
+        result: Result<Value, String>,
+    ) -> Result<bool, String> {
+        let current = self.guard_task_delivery(intent);
+        if let Err(error) = current {
+            if git.invalidates || git.call.invalidates_on_error() {
+                git.call.invalidate(self);
+            }
+            return Err(error);
+        }
+        let settled = result.and_then(|value| git.call.settle(self, value));
+        if git.invalidates || git.call.invalidates_on_error() {
+            git.call.invalidate(self);
+        }
+        let settled = settled?;
+        if let Some(warnings) = settled.get("warnings") {
+            intent.reservation["warnings"] = warnings.clone();
+        }
+        if !self
+            .tracker_store()?
+            .delivery_authority_current(&intent.id, intent.generation)
+            .stored()?
+        {
+            return Ok(false);
+        }
+        intent.reservation["materialized"] = json!(true);
+        self.checkpoint_task_delivery(intent)?;
+        Ok(true)
     }
 
     fn advance_task_delivery(&mut self, intent: &mut DeliveryIntent) -> Result<(), String> {

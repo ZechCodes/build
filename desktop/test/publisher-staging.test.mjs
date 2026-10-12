@@ -183,6 +183,8 @@ test("each publisher invocation gets fresh staging in runner.temp", ubuntuPublis
   const f = fixture(t);
   assert.equal(runPublisher(f).status, 0);
   const firstStage = f.stage;
+  assertPublished(f);
+  writeFileSync(f.env.CALLS, "");
   assert.equal(runPublisher(f).status, 0);
   assert.notEqual(f.stage, firstStage);
   assertPublished(f);
@@ -199,7 +201,9 @@ for (const [label, channel, channelUploaded] of [["empty pointer", null, true], 
 for (const [label, options] of [["invalid pointer", {channel: "invalid"}], ["channel download failure", {channel: "0.1.0", failDownload: true}], ["signature verification failure", {failVerify: true}]]) {
   test(`publisher stops safely on ${label}`, ubuntuPublisher, t => {
     const f = fixture(t, options);
-    assert.notEqual(runPublisher(f).status, 0);
+    const result = runPublisher(f);
+    assert.notEqual(result.status, 0);
+    assert.match(result.step, options.failVerify ? /Sign and verify/ : /Advance the public desktop channel/);
     assert.ok(!existsSync(join(f.env.UPLOADS, "desktop-latest/version.txt")));
     if (options.failVerify) assert.ok(!existsSync(f.env.UPLOADS));
   });

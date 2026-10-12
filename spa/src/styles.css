@@ -1005,7 +1005,16 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* `min-height` is overridden deliberately: the page's textareas stand 96px tall
    by default, and this one opens as ONE line and earns every row after it. */
 .csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto; min-height:0; max-height:240px; }
-.csbox-actions { flex:none; }
+.csbox-actions { flex:none; display:flex; }
+/* The verb serves the review field: a compact outline, with both split halves
+   on the same scale. Keep the shared primary buttons and focus ring intact. */
+.csbox-actions .btn.primary { display:inline-flex; align-items:center; justify-content:center;
+  height:30px; padding:0 10px; font-size:12px; font-weight:500; line-height:1; border-radius:7px;
+  color:var(--accent); border-color:currentColor; background:transparent; white-space:nowrap; }
+.csbox-actions .btn.primary:hover:not(:disabled) { color:var(--accent); border-color:currentColor;
+  background:var(--accent-soft); filter:none; }
+.csbox-actions .splitbtn .btn.primary.caret { padding:0 6px; border-left-color:currentColor; border-radius:0 7px 7px 0; }
+.csbox-actions .splitbtn .btn:only-child { border-radius:7px; }
 .csbox .githint:empty { display:none; }
 .csbox .githint { display:block; padding-bottom:6px; }
 @media (max-width: 720px) { .csbox .csinput { max-height:30vh; } }

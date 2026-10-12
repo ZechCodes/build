@@ -60,8 +60,7 @@ test("a symlink cannot stand in for a verified distributable", (t) => {
   assert.throws(() => validateDesktopReleaseAssets("0.1.1", directory), /regular file/i);
 });
 
-test("release workflow keeps supported platform and signing gates", () => {
-  const workflow = readFileSync(new URL("../../.github/workflows/release-desktop.yml", import.meta.url), "utf8");
+function assertReleaseWorkflowContract(workflow) {
   const macJob = workflow.split("  build:\n")[1].split("  build-linux:\n")[0];
   const linuxJob = workflow.split("  build-linux:\n")[1].split("  publish:\n")[0];
   const publishJob = workflow.split("  publish:\n")[1];
@@ -76,7 +75,14 @@ test("release workflow keeps supported platform and signing gates", () => {
   assert.match(publishJob, /actions\/checkout@/);
   assert.ok(publishJob.indexOf("desktop-release-assets.mjs") < publishJob.indexOf("sha256sum"));
   assert.match(publishJob, /cosign verify-blob/);
-});
+}
+
+for (const [name, newline] of [["LF", "\n"], ["CRLF", "\r\n"]]) {
+  test(`release workflow keeps supported platform and signing gates with ${name} newlines`, () => {
+    const workflow = readFileSync(new URL("../../.github/workflows/release-desktop.yml", import.meta.url), "utf8");
+    assertReleaseWorkflowContract(workflow.replace(/\r?\n/g, newline));
+  });
+}
 
 test("default Mac packages are ARM64 and package versions agree", () => {
   const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url)));

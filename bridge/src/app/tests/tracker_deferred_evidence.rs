@@ -239,11 +239,34 @@ fn app_deferred_dispatch_retry_freezes_mutable_message_and_context() {
     let delivered = fixture.load(&frozen.id);
     assert_eq!(delivered.state, "delivered");
     assert_eq!(delivered.operation_id, frozen.operation_id);
-    assert_eq!(delivered.admitted, Some(admitted));
+    assert_eq!(delivered.admitted, Some(admitted.clone()));
     let messages = fixture.messages(&fixture.owner.clone(), &fixture.pin.clone());
-    assert_eq!(messages.len(), 1, "{messages:?}");
-    assert_eq!(messages[0]["body"].as_str().unwrap(), body);
+    let assignments: Vec<_> = messages
+        .iter()
+        .filter(|message| message["operation_id"] == frozen.operation_id)
+        .collect();
+    assert_eq!(assignments.len(), 1, "{messages:?}");
+    assert_eq!(assignments[0]["body"].as_str().unwrap(), body);
+    assert_eq!(assignments[0]["from_task"], admitted["envelope"]);
+    let failure_notices: Vec<_> = messages
+        .iter()
+        .filter(|message| {
+            message["operation_id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("task-dependency-notice-"))
+        })
+        .collect();
+    assert_eq!(failure_notices.len(), 1, "{messages:?}");
+    assert!(failure_notices[0]["body"]
+        .as_str()
+        .unwrap()
+        .contains("injected failure before post"));
     assert_eq!(fixture.event_count(TaskEventKind::Dispatched), 1);
+    fixture.pump();
+    assert_eq!(
+        fixture.messages(&fixture.owner.clone(), &fixture.pin.clone()),
+        messages
+    );
 }
 
 fn mutate_after_freeze(fixture: &mut WaitingDelivery, closed: &str, workspace: &str) {

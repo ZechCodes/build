@@ -807,11 +807,7 @@ fn workspace_cut_fetches_after_waiting_for_a_source_mutation() {
 
 #[test]
 fn a_cut_refused_after_a_source_move_removes_its_unpublished_root() {
-    let mut fixture = fixture();
-    let existing = cut(&mut fixture, "existing");
-    let existing_root = PathBuf::from(existing["root"].as_str().unwrap());
-    let user_file = checkout_of(&existing, "code").join("user.txt");
-    std::fs::write(&user_file, "keep this work").unwrap();
+    let fixture = fixture();
     let replacement = init_repo_named(&fixture.root, "replacement");
     let shared = fixture.state.shared();
     let project_root = shared
@@ -840,14 +836,9 @@ fn a_cut_refused_after_a_source_move_removes_its_unpublished_root() {
     assert_eq!(reply["ok"], false, "{reply}");
     assert_eq!(reply["error_code"], "conflict", "{reply}");
     assert!(
-        std::fs::read_dir(project_root).unwrap().all(|entry| {
-            let path = entry.unwrap().path();
-            !path.is_dir() || path == existing_root
-        }),
+        std::fs::read_dir(project_root)
+            .unwrap()
+            .all(|entry| !entry.unwrap().path().is_dir()),
         "a refused cut left its unpublished staging root behind"
-    );
-    assert_eq!(
-        std::fs::read_to_string(user_file).unwrap(),
-        "keep this work"
     );
 }

@@ -91,7 +91,7 @@ describe("the banner at the top of a conversation", () => {
     return document.querySelector("#rail-panel");
   };
 
-  it.each(["codex_app_server", "codex", "pi", "other", ""]) (
+  it.each(["codex_app_server", "codex", "pi", "other", ""])(
     "hides cached Claude limits on a %s conversation without discarding them", (provider) => {
       setUsageLimits("dev-1", [limit()]);
       const host = panel();

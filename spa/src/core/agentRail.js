@@ -4178,9 +4178,13 @@ function mountRailOnContext(host, context, swap) {
   syncThreadTimeVisibility();
   // The faster clock is the "working for 4m" status line.
   statusTicker = setInterval(paintRailStatus, 1000);
-  // A harness out of usage on this machine (#58): a strip at the top of the
-  // conversation, counting down to its reset, whichever agent is open.
-  usageLimitBanner = mountUsageLimitBanner(() => host.querySelector(`#rail-panel:not([data-body="${OVERVIEW_BODY}"])`), context.deviceId);
+  // Device-wide facts stay cached; the visible strip follows the conversation
+  // in focus, including swaps between workspace workers and project agents.
+  usageLimitBanner = mountUsageLimitBanner(
+    () => host.querySelector(`#rail-panel:not([data-body="${OVERVIEW_BODY}"])`),
+    context.deviceId,
+    () => agentInFocus()?.provider || "",
+  );
   const visibilityChanged = () => {
     if (document.hidden) leaveUnreadMarker();
     else paintChat();

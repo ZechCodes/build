@@ -368,7 +368,7 @@ describe("selected session usage limits (#573)", () => {
     railHost().querySelector('[data-bubble="project"]').click();
     await vi.waitFor(() => expect(headWho()).toBe("Project coordinator"));
     expect(banner()?.textContent).toContain("Claude");
-    railHost().querySelector('[data-bubble="workspace"][data-agent="ag-one"]').click();
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-one"]').click();
     await vi.waitFor(() => expect(headWho()).toBe("Workspace worker"));
     expect(banner()).toBeNull();
   });

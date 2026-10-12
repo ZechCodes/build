@@ -386,3 +386,93 @@ fn forge_message_origin(receipt: &mut crate::operation::OperationReceipt, change
         _ => unreachable!("unknown forged field"),
     }
 }
+
+#[test]
+fn moving_pending_creating_assignment_from_backlog_to_ready_retires_delivery() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut task = store
+        .create_tracker_task(
+            Task::drafted(PROJECT, "waiting for an agent", Actor::User, NOW),
+            &[],
+        )
+        .unwrap();
+    let mut blocker = store
+        .create_tracker_task(
+            Task::drafted(PROJECT, "prerequisite", Actor::User, NOW),
+            &[],
+        )
+        .unwrap();
+    store
+        .edit_waiting_on(
+            PROJECT,
+            &task.id,
+            std::slice::from_ref(&blocker.id),
+            &[],
+            &Actor::User,
+            NOW,
+        )
+        .unwrap();
+    let assigned = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Assigned,
+        json!({}),
+        NOW,
+    );
+    let intent = store
+        .accept_delivery_intent(
+            &task,
+            &[assigned],
+            DeliveryIntent {
+                id: String::new(),
+                task_id: task.id.clone(),
+                project_path: PROJECT.into(),
+                generation: 0,
+                target: json!({"kind":"new_agent","workspace_id":"existing-workspace"}),
+                actor: Actor::User,
+                sender: None,
+                note: None,
+                operation_id: String::new(),
+                state: String::new(),
+                reservation: serde_json::Value::Null,
+                admitted: None,
+                error: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(intent.state, "waiting");
+    assert!(task.assignee.is_none());
+    task.status = "ready".into();
+    let moved = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Moved,
+        json!({"from":"backlog","to":"ready"}),
+        NOW,
+    );
+    store
+        .save_tracker_task_activity(&task, &[], &[moved])
+        .unwrap();
+    blocker.status = "done".into();
+    store
+        .save_tracker_task_activity(&blocker, &[], &[])
+        .unwrap();
+    while store.reconcile_waiting_on(100).unwrap().pending {}
+    assert_eq!(
+        store
+            .load_delivery_intent(&intent.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        "cancelled"
+    );
+    assert!(!store
+        .delivery_authority_current(&intent.id, intent.generation)
+        .unwrap());
+    assert!(store.delivery_intents_ready(100).unwrap().is_empty());
+    assert_eq!(
+        store.load_tracker_task(&task.id).unwrap().unwrap().status,
+        "ready"
+    );
+}

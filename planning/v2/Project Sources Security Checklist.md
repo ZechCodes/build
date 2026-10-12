@@ -105,6 +105,16 @@ children. Shell Git and OS file writes remain outside Build's shared lock.
 | PS522-4 | Build-managed original-source Git mutations, source settings and base sync share canonical common-Git-dir locks outside the app mutex; settings retain ordered, deduplicated old/new/workspace locks through config settlement. Cuts pin exact configured-base OIDs, preserve local commits and dirty files, and retain #271's fetched fast-forward path. | `project_source_mutation_serializes_with_base_sync` (inherited test failed before implementation), `source_settings_wait_for_base_sync_without_holding_app_mutex`, `ordered_source_mutation_locks_deduplicate_linked_checkouts`, `cut_aliases_of_a_common_git_directory_do_not_reenter_the_lock`, `cut_oid_is_pinned_before_materialization_even_with_sync_off`, `workspace_cut_preserves_local_base_commits`; all 78 source-sync regressions passed with two test threads under nice 10. |
 | PS522-2 (Git/Sync base) | Captured source location is checked after lock waits. Manual sync queues retain their original registered path/base, including legacy requests, so moving a source never redirects queued sync to the replacement folder. The optional wire precondition is announced by `sources.syncBasePath`. | `moved_source_mutation_refuses_after_sync_lock_wait`, `sync_source_captured_path_survives_queue_and_lock_wait`, `manual_sync_does_not_follow_a_source_moved_before_queue_drain`; `sync_base_path_precondition_is_announced_and_typed` and shared SPA API fixtures. |
 
+The #600 retry correction extends PS522-4's pinning proof to saved manifests:
+the nine `app::tests::workspaces::retry::` regressions pass after the observed
+pre-fix failures. They cover unrelated unborn sources admitted through the
+real API with sync off, saved move/removal/base drift, off-app-mutex contention,
+base advancement after pinning, missing-pin refusal, exclusion of ready
+directories, and preservation of the published root/ready files on inaccessible
+or unresolvable saved inputs. Detached saved inputs retain their saved base
+and use the same canonical common-Git-dir lock; later project edits alone do
+not refuse retry. Exact-head red/green and full-gate receipts are on #530.
+
 PS522-4's C2 scope is verified; the other planned #522 rows above still need
 the remaining children. Full gate results and the exact reviewed head are
 recorded on #530, rather than claiming future end-to-end coverage here.

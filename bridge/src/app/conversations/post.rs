@@ -61,31 +61,6 @@ impl AppState {
         self.post_to_thread(&params, PostOrigin::asked_by(requester, sender))
     }
 
-    /// `thread.post`, carrying the task that assigning one handed over.
-    ///
-    /// The same write, with the envelope added — and, when an AGENT did the
-    /// assigning, the sender and the requester a hand-off already carries. The
-    /// human assigning a task is the human speaking, so that case wears an
-    /// envelope and no sender.
-    pub(in crate::app) fn thread_post_handing_over_task(
-        &mut self,
-        params: &Value,
-        task: crate::thread::TaskEnvelope,
-        requester: Option<OperationRequester>,
-    ) -> Result<Value, String> {
-        let origin = match requester {
-            Some(requester) => {
-                let sender = self.sender_identity(&requester.entity_id, &requester.agent_id);
-                let mut origin = PostOrigin::asked_by(requester, sender);
-                origin.from_task = Some(task);
-                origin
-            }
-            None => PostOrigin::handing_over(task, None),
-        };
-        let params = self.current_thread_params(params)?;
-        self.post_to_thread(&params, origin)
-    }
-
     /// Admit a deferred task using its persisted conversation generation and origin.
     pub(in crate::app) fn thread_post_frozen_task(
         &mut self,
@@ -93,9 +68,13 @@ impl AppState {
     ) -> Result<Value, String> {
         let origin = PostOrigin {
             operation_id: None,
-            from_task: Some(serde_json::from_value(frozen["envelope"].clone()).map_err(|e| e.to_string())?),
-            from_agent: serde_json::from_value(frozen["sender"].clone()).map_err(|e| e.to_string())?,
-            requested_by: serde_json::from_value(frozen["requester"].clone()).map_err(|e| e.to_string())?,
+            from_task: Some(
+                serde_json::from_value(frozen["envelope"].clone()).map_err(|e| e.to_string())?,
+            ),
+            from_agent: serde_json::from_value(frozen["sender"].clone())
+                .map_err(|e| e.to_string())?,
+            requested_by: serde_json::from_value(frozen["requester"].clone())
+                .map_err(|e| e.to_string())?,
         };
         self.post_to_thread(&frozen["params"], origin)
     }

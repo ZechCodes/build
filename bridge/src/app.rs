@@ -181,7 +181,7 @@ pub(crate) use fs::MOVED_SOURCE;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 pub(crate) use projects::PINNED_AGENT_STAYS;
 use projects::{
-    default_projects_dir, AgentChoiceArgs, NewProjectWorker, Project, ProjectRegistry,
+    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry,
     ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
@@ -451,10 +451,14 @@ pub struct AppState {
     /// move guessed — it took the newest open task assigned to the agent —
     /// and twice today moved a task nobody had touched.
     ///
-    /// In memory, like the reminder's own marker: a restart forgets which turn
-    /// was in flight, and a report that arrives after one moves nothing, which
-    /// is the safe way round.
+    /// This readable mirror is set only when a delivery is consumed. The
+    /// generation and conversation fences live in task_completion_authority;
+    /// a checked native receipt can recover them from the Store after restart.
     dispatched_task: HashMap<String, String>,
+    task_completion_authority: HashMap<String, self::tracker::TaskCompletionAuthority>,
+    pending_task_completion_authority:
+        HashMap<String, self::tracker::PendingTaskCompletionAuthority>,
+    task_delivery_in_flight: std::collections::HashSet<String>,
     /// What each agent was last told it still holds (spec: Tasks → The
     /// Complete reminder), so the same list is not sent twice.
     ///
@@ -690,6 +694,9 @@ impl AppState {
             compactions: Default::default(),
             resetting_conversations: Default::default(),
             dispatched_task: HashMap::new(),
+            task_completion_authority: HashMap::new(),
+            pending_task_completion_authority: HashMap::new(),
+            task_delivery_in_flight: Default::default(),
             reminded_holdings: HashMap::new(),
             workspace_lifecycle: HashMap::new(),
             reclaim_nudge: Default::default(),
@@ -870,6 +877,7 @@ impl AppState {
         ChangeBus::spawn_flusher_on(Arc::clone(&changes), push_runtime);
         WorktreeWatchers::spawn_reconciler(watchers, changes);
         Self::spawn_waiting_on_service(&state);
+        Self::spawn_task_delivery_service(&state);
         state
     }
 

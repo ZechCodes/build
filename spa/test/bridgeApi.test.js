@@ -119,7 +119,7 @@ describe("adapter selection", () => {
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
-      projects: { updateSource: false, syncBase: false },
+      projects: { updateSource: false, syncBase: false, syncBasePath: false },
       workspaces: { measureSizes: false, setLocked: false },
     });
   });
@@ -204,7 +204,7 @@ describe("adapter selection", () => {
         branches: { finishDelete: false },
         push: { registerKey: false, revokeKey: false },
         agents: { createdBy: false },
-        projects: { updateSource: false, syncBase: false },
+        projects: { updateSource: false, syncBase: false, syncBasePath: false },
         workspaces: { measureSizes: false, setLocked: false },
       });
     }

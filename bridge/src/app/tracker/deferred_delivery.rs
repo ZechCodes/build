@@ -397,8 +397,12 @@ impl AppState {
         entity: &str,
         agent: &str,
     ) -> Result<(), String> {
+        if !self.tracker_store()?.delivery_authority_current(&intent.id, intent.generation).stored()? {
+            return Ok(());
+        }
         let (project, task) = self.tracker_task(&intent.task_id)?;
         let target = AssignTarget::parse(Some(&intent.target))?;
+        self.guard_delivery_receipt_target(intent, &project, &target, entity, agent)?;
         let delivered = Delivered {
             workspace_id: intent.reservation["workspace_id"]
                 .as_str()
@@ -448,16 +452,39 @@ impl AppState {
         Ok(())
     }
 
+    // Receipt recovery checks current target authority independently of
+    // readiness. A valid admitted delivery may settle while reblocked.
+    fn guard_delivery_receipt_target(
+        &self,
+        intent: &DeliveryIntent,
+        project: &str,
+        target: &AssignTarget,
+        entity: &str,
+        agent: &str,
+    ) -> Result<(), String> {
+        if self.tracker_project_path(project)? != intent.project_path {
+            return Err("task delivery project changed".into());
+        }
+        self.validate_task_delivery_target(project, target)?;
+        if intent.reservation["entity_id"].as_str() != Some(entity)
+            || intent.reservation["agent_id"].as_str() != Some(agent)
+            || self.live_task_delivery_agent(project, agent)? != entity
+        {
+            return Err("task delivery receipt target changed".into());
+        }
+        Ok(())
+    }
+
     pub(super) fn fail_task_delivery(
         &self,
         intent: &DeliveryIntent,
         error: &str,
     ) -> Result<(), String> {
-        if !self
-            .tracker_store()?
-            .delivery_intent_is_current(&intent.id, intent.generation)
-            .stored()?
-        {
+        let store = self.tracker_store()?;
+        let authorized = store.delivery_intent_is_current(&intent.id, intent.generation).stored()?
+            || (self.operation_receipt(&intent.operation_id)?.is_some()
+                && store.delivery_authority_current(&intent.id, intent.generation).stored()?);
+        if !authorized {
             return Ok(());
         }
         self.tracker_store()?

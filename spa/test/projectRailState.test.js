@@ -24,7 +24,8 @@ describe("returning to a project's rail", () => {
     expect((await projectReturnTarget(project, { route })).route).toEqual(saved);
     const tracker = { name: "trackerTask", deviceId: "d", projectId: "p", taskId: "t", commentId: "tc" };
     expect((await navigationSelectionTarget(destination, { route: tracker })).route).toBe(tracker);
-    expect((await navigationSelectionTarget({ ...destination, returnToProject: true }, { route: tracker })).route).toBe(tracker);
+    expect(await navigationSelectionTarget({ ...destination, returnToProject: true }, { route: tracker }))
+      .toMatchObject({ current: false, route: saved });
     expect((await projectReturnTarget(project, { route: tracker })).route).toEqual(saved);
   });
 

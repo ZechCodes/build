@@ -45,7 +45,7 @@ export async function projectReturnTarget(project, { route = {}, currentHash = n
  * Global/rail choices use ordinary Tasks/Changes/Files destinations. */
 export async function navigationSelectionTarget(destination, context = {}) {
   const target = destinationTarget(destination, context);
-  return destination.returnToProject && !target.current
+  return destination.returnToProject
     ? projectReturnTarget({ id: destination.projectId, deviceId: destination.deviceId }, context)
     : target;
 }

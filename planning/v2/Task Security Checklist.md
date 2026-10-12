@@ -50,3 +50,21 @@ count toward 100/100; planning does not satisfy these controls.
 | --- | --- | --- |
 | TS522-1 | Existing/new project worker assignment and MCP tools are same-project scoped, idempotent and purpose-authorized; clients cannot mint or demote the pin. | C4/C5/C8: assign_project_worker_is_idempotent; cross-project, forged-purpose, removal and task-assignee tests. |
 | TS522-2 | Task links preserve exact worker identity without a fake workspace; worker removal and project deletion retire pending delivery/tracking consistently without rewriting history. | C5/C10: assignment/link/cleanup and stale-generation lifecycle tests. |
+
+
+## #558 planned extension — not yet verified
+
+These rows are proposed by [Tasks](Tasks%20Spec.md#waiting-on-decisions-and-delivery-558).
+Existing scores above remain scoped to implemented controls. W1–W5 are the
+children in that plan; each supplies regression and gate evidence before its
+rows count as verified. Planning does not earn a security score.
+
+| ID | Pending control | Required evidence |
+| --- | --- | --- |
+| TS558-1 | Dependency create/add/remove and reverse reads stay within the caller's project; mixed valid/foreign writes fail atomically without exposing foreign titles or identities. | W1/W3: `waiting_on_same_project_dag_is_atomic`, RPC/MCP cross-project create, add, remove, read and partial-write refusal tests. |
+| TS558-2 | Deferred delivery revalidates the saved target's project and current authority before provisioning and after off-lock work; missing/retired targets never fall back to another agent. | W2/W3: existing/new/project agent scope, removed target, retired sender, restart and cross-project target substitution tests. |
+| TS558-3 | Only a committed dependency transition and current authorized assignment can enqueue delivery; caller-authored notices, pushes or forged unblock/generation/operation fields grant no authority. | W2/W3: `deferred_dispatch_generation_fences`, forged-input refusals, client-free startup reconciliation and receipt deduplication tests. |
+| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2/W3/W5: unlink with/without intent, cancelled generation and racing reassignment tests; task-page removal browser coverage. |
+| TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
+| TS558-6 | Recovery creates at most one resource set and delivery per assignment; cancellation and late Complete cannot resurrect a retired generation. | W2/W3: restart fault injection around reservation, resource creation, message persistence and settlement; payload mutation, fan-out and stale Complete tests. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W4/W5: hostile title rendering, cache-first/push grouping, current-greeting refusal and older-bridge browser fixtures. |

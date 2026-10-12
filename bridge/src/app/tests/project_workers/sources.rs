@@ -76,7 +76,7 @@ impl TwoSources {
             .collect()
     }
 
-    fn git(&mut self, method: &str, source_id: &str, extra: Value) -> Value {
+    fn git_ok(&mut self, method: &str, source_id: &str, extra: Value) -> Value {
         let source = self
             .state
             .projects
@@ -93,7 +93,9 @@ impl TwoSources {
             .as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        self.state.handle(req(method, params))
+        let reply = self.state.handle(req(method, params));
+        assert_eq!(reply["ok"], true, "{method}: {reply:?}");
+        reply["result"].clone()
     }
 
     fn assert_worker_starts_blocked(&self) {
@@ -204,18 +206,15 @@ fn a_held_source_keeps_git_writes_on_its_original_repository() {
         std::fs::write(Path::new(path).join("same.txt"), "same\n").unwrap();
     }
     for (source_id, path) in [("source-1", &paths[0]), ("source-2", &paths[1])] {
-        let status = f.git("git.status", source_id, json!({}));
-        assert_eq!(status["ok"], true, "{status:?}");
-        assert_eq!(status["result"]["path"], *path);
+        let status = f.git_ok("git.status", source_id, json!({}));
+        assert_eq!(status["path"], *path);
     }
-    let staged = f.git("git.stage", "source-2", json!({ "paths": ["same.txt"] }));
-    assert_eq!(staged["ok"], true, "{staged:?}");
-    let committed = f.git(
+    f.git_ok("git.stage", "source-2", json!({ "paths": ["same.txt"] }));
+    f.git_ok(
         "git.commit",
         "source-2",
         json!({ "message": "held docs only" }),
     );
-    assert_eq!(committed["ok"], true, "{committed:?}");
     let code = git2::Repository::open(&paths[0]).unwrap();
     let docs = git2::Repository::open(&paths[1]).unwrap();
     assert_eq!(code.head().unwrap().target().unwrap(), heads[0]);
@@ -240,9 +239,8 @@ fn a_held_source_keeps_git_writes_on_its_original_repository() {
         }),
     ));
     refused_with(&stale, "conflict");
-    let current = f.git("git.status", "source-2", json!({}));
-    assert_eq!(current["ok"], true, "{current:?}");
-    assert_eq!(current["result"]["path"], f.sources()[1]);
+    let current = f.git_ok("git.status", "source-2", json!({}));
+    assert_eq!(current["path"], f.sources()[1]);
 }
 
 /// A running worker holds the sources; the pin, which only reads, does not

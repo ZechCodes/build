@@ -72,7 +72,7 @@ impl OutboundEnvelope {
 
     /// The envelope either variant carries. Test-only: a writer matches on the
     /// variant, because what it does with the envelope depends on which it is.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn envelope(&self) -> &Envelope {
         match self {
             OutboundEnvelope::Frame(envelope) => envelope,
@@ -210,8 +210,9 @@ impl SessionSender {
 
     /// Test-only: a sender with a real session key and a captured channel, so
     /// tests can decrypt every pushed frame (`term.output`, `term.closed`, …)
-    /// with [`decrypt_push`](Self::decrypt_push).
-    #[cfg(test)]
+    /// with [`decrypt_push`](Self::decrypt_push). The integration tests reach
+    /// it through the `testing` feature.
+    #[cfg(any(test, feature = "testing"))]
     pub fn observable(
         session_id: impl Into<String>,
     ) -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>, String) {
@@ -231,7 +232,7 @@ impl SessionSender {
 
     /// Test-only: decode one captured [`Self::observable`] envelope back to the
     /// pushed inner payload.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn decrypt_push(session_key: &str, outbound: &OutboundEnvelope) -> Value {
         transport::decrypt_envelope(session_key, outbound.envelope())
             .expect("push decrypts with the session key")

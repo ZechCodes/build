@@ -131,6 +131,7 @@
       "task.stages",
       "tasks.agentIdentities",
       "tasks.assign",
+      "tasks.assignProjectAgent",
       "tasks.attach",
       "tasks.attachment",
       "tasks.attachmentChunks",

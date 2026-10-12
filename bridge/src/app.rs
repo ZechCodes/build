@@ -181,8 +181,8 @@ pub(crate) use fs::MOVED_SOURCE;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 pub(crate) use projects::PINNED_AGENT_STAYS;
 use projects::{
-    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
-    WorkspaceAgentAddress, WorkspaceDirectoryArgs,
+    default_projects_dir, AgentChoiceArgs, NewProjectWorker, Project, ProjectRegistry,
+    ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
@@ -274,6 +274,8 @@ pub struct AppState {
     projects: ProjectRegistry,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
+    /// Projects one of whose sources is moving; their workers wait (#533).
+    source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
     active_deferred_filesystem_jobs: usize,
     worktrees_root: std::path::PathBuf,
@@ -631,6 +633,7 @@ impl AppState {
         let mut state = AppState {
             projects: ProjectRegistry::new(),
             project_deletion_in_progress: false,
+            source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
             worktrees_root,
             workspaces,

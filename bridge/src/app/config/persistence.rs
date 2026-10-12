@@ -73,7 +73,7 @@ impl AppState {
                     entry["isolation"] = json!(isolation);
                 }
                 entry
-            }).collect::<Vec<_>>(),
+            }).chain(self.projects.parked().iter().cloned()).collect::<Vec<_>>(),
         })
     }
 

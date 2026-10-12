@@ -65,6 +65,10 @@ impl AppState {
         if !edit.needs_git() && edit.name.is_none() {
             return self.set_source_sync(&project_id, &source_id, edit.sync_base);
         }
+        let moves = edit.path.as_ref().is_some_and(|path| *path != source.path);
+        if moves {
+            self.refuse_moving_sources_under_workers(&project_id)?;
+        }
         let mutation = UpdateSource {
             path: source.path.clone(),
             is_git: source.is_git,
@@ -81,15 +85,25 @@ impl AppState {
             name: edit.name,
             sync_base: edit.sync_base,
         };
-        self.defer_project(
+        let project_id = address.project_id.clone();
+        let deferred = self.defer_project(
             source.path,
             title,
             PendingState::Updating,
             mutation,
             move |state: &mut AppState, result: Result<SourceUpdated, String>| {
+                if moves {
+                    state.source_moves.end(&address.project_id);
+                }
                 state.settle_source_update(address, result?)
             },
-        )
+        )?;
+        // Admission and this hold are acquired under the same app mutex.
+        // A rejected request owns no hold; only this move's settlement ends it.
+        if moves {
+            self.source_moves.begin(&project_id);
+        }
+        Ok(deferred)
     }
 
     fn checked_edit(

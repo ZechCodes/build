@@ -82,9 +82,15 @@ export function filePatchesByPath(patch) {
 export function pathsToFetch(views, { openPaths, bodyOf }) {
   return (views || [])
     .filter((view) => !view.rows && openPaths.has(view.path))
-    .filter((view) => !bodyMatches(bodyOf(view.path), view.contentKey))
+    .filter((view) => !hasAnsweredBody(bodyOf(view.path)) || !bodyMatches(bodyOf(view.path), view.contentKey))
     .map((view) => view.path);
 }
+
+/** Older truncated aggregates kept empty pages for paths the patch never
+ *  reached. They carry a content key but still owe the reader a body. Empty
+ *  complete replies remain valid, including binary and unchanged files, and
+ *  a page read can complete a body whose original answer was truncated. */
+const hasAnsweredBody = (body) => Boolean(body && (!body.truncated || body.patch || body.pages?.complete));
 
 /** The paths one call at a time, in request order. */
 export function batchPaths(paths, max = CHANGESET_DIFF_MAX_PATHS) {
@@ -93,24 +99,24 @@ export function batchPaths(paths, max = CHANGESET_DIFF_MAX_PATHS) {
   return batches;
 }
 
-/** The paths of a cut answer whose bodies the cut fell in: the file the
- *  answer ends on, and every asked path it never reached. A file before the
- *  last one the answer carries arrived whole. */
-function cutPaths(answer, segments, paths) {
+/** The carried body the cut fell in. Earlier segments arrived whole;
+ *  paths the patch never reached have no body to keep yet. */
+function cutPaths(answer, segments) {
   if (!answer.truncated) return new Set();
   const carried = [...segments.keys()];
   const last = carried[carried.length - 1];
-  return new Set(paths.filter((path) => path === last || !segments.has(path)));
+  return new Set(last ? [last] : []);
 }
 
 /** One answer's bodies, one per asked path, in request order: a path with
- *  nothing to say answers an empty patch under the key the list holds for it,
- *  the way `git.diff` answers one. */
+ *  nothing to say in a complete answer gets an empty patch under the list's
+ *  key, the way `git.diff` answers one. A truncated answer's metadata can
+ *  name paths its patch never reached; those still need a wire read. */
 function answeredBodies(answer, paths, keyFor) {
   const segments = filePatchesByPath(answer.patch);
   const keys = new Map((answer.files || []).map((file) => [file.path, file.content_key]));
-  const cut = cutPaths(answer, segments, paths);
-  return paths.map((path) => ({
+  const cut = cutPaths(answer, segments);
+  return paths.filter((path) => !answer.truncated || segments.has(path)).map((path) => ({
     path,
     content_key: keys.get(path) ?? keyFor(path),
     patch: segments.get(path) || "",
@@ -162,6 +168,9 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
   // changeset's patch, read for the aggregate — which a fill takes its bodies
   // from instead of the wire.
   let inHand = null;
+  // Coverage of the current fill's replies, separate from bodies already
+  // held or hydrated. A reply can name a newer key than the requesting list.
+  let fillReplies = null;
   /** The page of `path`'s body the bridge cuts from `offset`, named by the
    *  version the bridge gives the whole patch; null where it cannot cut one —
    *  asked as the page is wanted, so a bridge greeted after this surface
@@ -172,9 +181,16 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
     return answer.range ? pageFromAnswer(answer, "patch") : null;
   };
 
+  const fetchMissing = async (paths) => {
+    const replies = fillReplies;
+    const files = answeredBodies(inHand || (await fetchFiles(paths)) || {}, paths, keyFor);
+    for (const file of files) replies?.set(file.path, file.content_key);
+    return files;
+  };
+
   const bodies = createCachedBodies({
     addressOf,
-    fetchMissing: async (paths) => answeredBodies(inHand || (await fetchFiles(paths)) || {}, paths, keyFor),
+    fetchMissing,
     valueOf: (file) => ({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, ...(file.truncated ? { truncated: true } : {}) },
@@ -193,18 +209,41 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
   });
 
   const bodyOf = (path) => bodies.read(path);
+  const wasAnswered = (path, key) => Boolean(hasAnsweredBody(bodyOf(path)) && answered.has(path) && answered.get(path) === key);
+
+  const settleReplies = (landed, keyOf, replies) => {
+    for (const path of landed) {
+      const body = bodyOf(path);
+      const key = keyOf.get(path);
+      // Stale hydration cannot settle the request. A mismatching key settles
+      // only when this fill carried a reply under the key now held.
+      const replied = replies.has(path) && bodyMatches(body, replies.get(path));
+      if (hasAnsweredBody(body) && (bodyMatches(body, key) || replied)) answered.set(path, key);
+    }
+  };
+
+  const fillBatch = async (batch, keyOf) => {
+    const replies = new Map();
+    fillReplies = replies;
+    try {
+      const landed = await bodies.ensure(batch);
+      settleReplies(landed, keyOf, replies);
+      return landed.length;
+    } finally {
+      fillReplies = null;
+    }
+  };
 
   async function fill(views, openPaths, budget) {
     const keyOf = new Map((views || []).map((view) => [view.path, view.contentKey]));
     const wanted = pathsToFetch(views, { openPaths, bodyOf })
-      .filter((path) => answered.get(path) !== keyOf.get(path))
+      .filter((path) => !wasAnswered(path, keyOf.get(path)))
       .slice(0, budget);
     if (!wanted.length || disposed) return 0;
     let filled = 0;
     for (const batch of batchPaths(wanted)) {
       if (disposed) break;
-      filled += (await bodies.ensure(batch)).length;
-      for (const path of batch) answered.set(path, keyOf.get(path));
+      filled += await fillBatch(batch, keyOf);
     }
     return filled;
   }

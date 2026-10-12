@@ -399,6 +399,8 @@ runtime that starts them.
   `source_path` for one original project source, and `changes.subscribe`
   takes scope `{kind: "project_source", project_id, source_id, source_path}`,
   whose items carry `project_source`. See Projects and sources.
+  3.21.0 adds `sources.syncBasePath` (#530): optional captured `source_path`
+  on `project.sync_source`, checked on admission and after queue/lock waits.
   3.21.0 adds `agents.projectWorkers` (#532): `agent.list {entity_id,
   include_project_workers}` (a verb again, after 3.0 retired the old one),
   `project_role` (`coordinator` or `worker`) on a project owner's agent
@@ -407,7 +409,11 @@ runtime that starts them.
   conversation owner. Every roster read that predates workers (board rows,
   the project list's conversations, `agent.remove`, and `agent.list` without
   the flag) carries a project owner's pinned coordinator alone. See MCP
-  tools.
+  tools. 3.21.0 also adds `tasks.assignProjectAgent` (#533): the
+  `new_project_agent` assignee kind on `tasks.assign` and `tasks.create`,
+  and `operation_id` on `tasks.assign`, which a retry answers with the
+  dispatch already made. A reused id asked of a different assignment is
+  `conflict`.
   3.19.0 adds `unread.watchScoped` (#474): conversation and task unread
   counts exclude unwatched conversations and news from before the current
   watch began. Watch baselines persist separately from read cursors.
@@ -536,6 +542,13 @@ checkout's `origin`, read from the checkout for every row
 it, and ignores the copy older bridges wrote. The project row's `path`,
 `base_branch` and `remote` are its first source's. That first source is the
 project's home (orchestrator, registry identity) and cannot move.
+A configured project whose home folder is missing at boot is parked, not
+dropped (`bridge/src/app/projects/parked.rs`): its configuration is kept
+verbatim and written back on every save, its `proj-N` stays reserved, and
+whenever something needs it — a worker starting, `project.list`,
+`project.ensure_conversation`, `project.create`, the source-sync timer — the
+bridge looks again, loads it under its own id, and binds the owners a boot
+could not bind, so its conversation, pin and workers answer unrepaired.
 A project whose home is not a Git repository is a valid project: its project
 agent spawns and is delivered to there (`agent_launch_for`, not `orch_for`),
 and only the verbs that use git (branches, diffs, git checkouts) refuse it with
@@ -601,8 +614,12 @@ app lock: a source moved or removed by then comes back `withdrawn`, and its
 item is dropped. A frame whose facts passed that check just before the move
 can still go out just after it. It carries what the old folder held before
 the move, under the old `project_source`. Nothing collected after the move
-goes out for the old folder. `project.sync_source` does not yet take
-`source_path`; that precondition, with the sync lock, is #530.
+goes out for the old folder. `project.sync_source` also accepts an optional
+captured `source_path` (`sources.syncBasePath`, wire 3.21.0, #530). A manual
+request captures the registered location and configured base through the
+service queue; after acquiring the source lock the service rechecks both,
+refusing a moved source rather than syncing either its old or new folder.
+
 `term.create`, `term.list`, `term.attach` and source-asserted `term.close`
 accept the same exact original-source selector under `term.projectSources`
 (wire 3.21.0, #531). Plain folders support shells too. Terminal scope parsing
@@ -627,7 +644,15 @@ collected retirements. A create that spawns first is included in that collection
 even when its original source folder survives deletion.
 Label changes leave live shells alone. These holds
 keep the source's membership/location consistent; they do not restrict shell
-commands or serialize them with Git/base sync. Project worker holds are #533.
+commands or serialize them with Git/base sync. Worker holds also permit
+source shells and base sync; both shell and worker holds must end before
+relocation or removal.
+A worker-held source can open and attach a shell while base sync waits on its
+Git lock, and sync can fast-forward with that shell still open. Closing the
+shell leaves the worker's location hold intact. An already-admitted terminal
+create rechecks Updating at spawn: a move's reservation holds it back during
+the SyncLock wait and after work completes, until config settlement. The old
+selector then conflicts; a fresh selector opens at the settled location.
 
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
@@ -707,6 +732,46 @@ the backoff is at its longest, plus up to 10 s at each workspace cut. One sync r
 time. Each row's `sync` is kept in the store's `meta` table
 (`bridge/src/store/source_sync.rs`), and a sync that lands notes the project
 list changed.
+
+Build-managed Git mutations across all resolved scopes (including legacy
+first-source verbs and adopted workspace aliases),
+source settings edits and base sync share `source_sync::SyncLock`, keyed by
+canonical common Git directory (#530). Linked worktrees share that lock;
+independent workspace repositories have their own. They acquire it off the app mutex and
+revalidate source membership/location after waiting. A settings edit locks
+its old/new repositories and affected independent workspace repositories in
+canonical order, deduplicating aliases, through config settlement. Reads and
+unrelated RPCs continue while an operation waits. Shell Git and file edits
+remain outside this lock.
+
+Worker holds pin source locations without preventing Git or base sync. Admitted
+source moves retain their counted worker-start hold across repository-lock waits;
+settlement releases only that move's count on success or failure, while retaining
+its Git locks through source-record settlement.
+
+Cut preparation groups aliases by common Git directory and pins exact configured
+base OIDs under that lock, including when automatic sync is disabled. It keeps
+#271's fetched OID when safe; otherwise it uses the configured base's committed
+state, including local commits, never another checked-out branch's HEAD. Cut
+warnings disclose local commits and a stale remote separately. Materialization
+uses the pinned OID after releasing the lock and retains existing worktree/Rift
+copy rules. Adding a local Git directory to an existing workspace also pins its
+base before materialization. A lock wait beyond the cut's ten-second deadline
+refuses creation rather than resolving an unprotected mutable base ref; a fetch
+failure still cuts the pinned local base with its existing warning. Contention
+does not prove a fetch occurred: a requested fetch uses only the budget remaining
+after the lock wait. Refused preparation removes only that create request's
+unpublished root and preserves existing workspace files.
+
+Retry preparation uses only unfinished directories in the saved workspace
+manifest. Their saved source identity, path and base remain the inputs after a
+project source moves, is removed or changes base; those changes alone do not
+refuse retry. A matching current source supplies its sync policy, while a
+detached saved input is pinned locally without automatic sync. Every Git
+directory requires an exact prepared OID before materialization. Failure to
+access or resolve a saved input preserves the published retry root and all
+ready directories. Settling an old cut never requests sync for a moved or
+rebased replacement source.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes
@@ -850,6 +915,23 @@ paints from the cache: the greeting writes whether the machine measures
 dim dash there rather than a spinner.
 
 ### Task reviews
+
+Task prerequisite storage (#560) lives in `store/waiting_on/`, separate from
+parent links. Schema 16 adds the normalized directed graph, readiness state,
+durable reconciliation cursors, transition receipts and task invalidations.
+Edges are same-project, bounded at 20, and checked for cycles under the store's
+IMMEDIATE write transaction, including edges already resolved by Done or close.
+Forward summaries are batched; reverse reads seek by immutable task number
+with a project/blocker/store-bound cursor.
+
+The common tracker writer journals status, state and title changes, so ordinary
+updates, review lifecycle writes and workspace finish all reach the same
+reconciliation rule. `app/tracker/waiting_on.rs` drains bounded pages at startup
+and after committed writes, off tokio workers, and invalidates affected task
+summaries through the existing change bus. Readiness events preserve Done/close
+provenance and have durable outbox receipts. This storage slice grants no
+assignment delivery authority; durable assignments are the following #561
+slice, and the waiting-on capability remains absent until #562.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
@@ -1422,8 +1504,8 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `task_tools()`. They cover conversation tools (`post_thread_message`,
 `message_agent`, `set_topic`, `compact_self`, …; compaction in
 `bridge/src/mcp/compaction.rs`), workspace tools (`create_workspace`,
-`add_workspace_agent`, …) and the tracker (`get_task`, `comment_task`,
-`move_task`, `label_task`, …).
+`add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
+tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
 **A project's agents.** A project's conversation owner (the run
 `project.ensure_conversation` mints over the project's scratch directory)
@@ -1451,6 +1533,31 @@ purpose (`AppState::agent_mcp_surface`). A worker's launch also declares the
 coding surface to its MCP server in `BRIDGE_MCP_SURFACE` (codex through its
 server `env` and `enabled_tools`), which `McpSurface::launched` only ever
 narrows, so a copied value grants nothing.
+
+**Project workers at work** (#533). Both working surfaces carry
+`list_project_agents` (the owner's whole roster, the pin first, each with its
+`project_role`) and `add_project_agent` (one more worker through `agent.add`,
+unwatched unless asked, stamped `created_by`), scoped to the caller's own
+project by its binding, so an agent in a named workspace can staff the project
+too (`bridge/src/app/projects/agent_tools.rs`, `agent_writes.rs`). Source
+administration, reclaim and `compact_agent` stay the pin's. `assign_task` and
+`tasks.assign` take `{kind: "new_project_agent", agent_name, …}`: a new worker
+on the task's project's owner, handed the task, linking no workspace
+(`bridge/src/app/tracker/dispatch.rs`). `tasks.assign` takes the client's
+`operation_id`; the delivery is queued under it, and asking again with the
+same id answers the `dispatched` event the task already records instead of
+delivering again or making a second worker (`bridge/src/app/tracker/handoff.rs`).
+Removing a worker retires its session, token and queued turns alone, and
+resetting one replaces its own history and session: siblings and the pin keep
+theirs though they share its folder, and the task it held keeps its record. A live worker — a session running, being
+started, or owed a queued turn — holds every source of its project:
+`project.remove_source` and a folder move through `project.update_source`
+refuse with `conflict` naming the workers to stop, and while a move is in
+flight no worker starts (`bridge/src/app/projects/source_holds.rs`). Workspace
+reclaim never sees the project's owner, and reclaiming or deleting a named
+workspace never retires a project worker, even one its agents made.
+`project.delete` retires the pin and every worker, revokes their tokens and
+queued turns, and removes the project's scratch; its sources stay.
 
 **Tracking.** A task's `trackers` are the agents told about each change to it
 (`bridge/src/app/tracker/notices.rs`; never the agent that made the change).
@@ -2483,6 +2590,12 @@ The family is dim monospace, with the short versioned name and known effort in
 its native tooltip. Unknown model families leave no badge. Task headers and
 agent-message attribution read the already held feed, and changes to cached
 roster models or efforts also invalidate the thread paint.
+
+Usage limits remain cached per device in `spa/src/core/usageLimits.js`. The
+conversation banner filters those records by the selected agent's provider
+family from `providerCatalog.js`, so Claude headless and TUI carriers share
+their limits without displaying them on Codex sessions. Rail switches reread
+the provider in focus; the overview and new-agent chooser show no session limit.
 
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence

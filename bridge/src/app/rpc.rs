@@ -561,6 +561,20 @@ impl AppState {
         Self::handler(self.shared())
     }
 
+    /// Mark only the test-only inline drain. Pump/delivery self handles keep
+    /// their normal behavior; only source preflight capture uses this flag.
+    #[cfg(test)]
+    pub(in crate::app) fn with_inline_deferred<R>(
+        &mut self,
+        work: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.inline_deferred;
+        self.inline_deferred = true;
+        let result = work(self);
+        self.inline_deferred = previous;
+        result
+    }
+
     /// Synchronous dispatch used by the unit tests (no background producer). The
     /// running handler goes through [`dispatch_frame`].
     #[cfg(test)]
@@ -605,20 +619,22 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, ApiError> {
-        let (outcome, deferred) = self.dispatch_deferring(method, params);
-        // No `Arc` to release the mutex through — the synchronous entry point.
-        // The git work runs right here, exactly as it did before the split;
-        // [`dispatch_frame`] is the caller that runs it with the lock free.
-        let Some(mut deferred) = deferred else {
-            return outcome;
-        };
-        loop {
-            let done = deferred.run();
-            match self.apply_deferred_stage(method, params, done) {
-                DeferredNext::Answered(answer) => return answer.map_err(ApiError::classify),
-                DeferredNext::Again(next) => deferred = next,
+        self.with_inline_deferred(|app| {
+            let (outcome, deferred) = app.dispatch_deferring(method, params);
+            // No `Arc` to release the mutex through — the synchronous entry point.
+            // The git work runs right here, exactly as it did before the split;
+            // [`dispatch_frame`] is the caller that runs it with the lock free.
+            let Some(mut deferred) = deferred else {
+                return outcome;
+            };
+            loop {
+                let done = deferred.run();
+                match app.apply_deferred_stage(method, params, done) {
+                    DeferredNext::Answered(answer) => return answer.map_err(ApiError::classify),
+                    DeferredNext::Again(next) => deferred = next,
+                }
             }
-        }
+        })
     }
 
     /// v1 first, legacy second (wire spec Part 2, step 2.2). A verb

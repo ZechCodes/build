@@ -208,6 +208,9 @@ run_case() {
             "      certificate identity: https://github.com/example/build/.github/workflows/release-desktop.yml@refs/tags/desktop-v1.2.3" ;;
         download-failure) says "Error: could not download" "run the installer again" ;;
         unsupported) says "Error: unsupported platform Plan9/mips" ;;
+        intel-unsupported)
+            [ "$status" = 2 ] && [ ! -e "$TEST_ROOT/urls" ] &&
+                says "Intel Macs are not supported" "Apple Silicon" ;;
         *) true ;;
     esac
 }
@@ -222,7 +225,7 @@ check linux-x64 Linux x86_64 linux-x86_64 success
 check linux-arm Linux aarch64 linux-aarch64 success
 check pinned Linux x86_64 linux-x86_64 pinned
 check mac-arm Darwin arm64 macos-arm64 success
-check mac-intel Darwin x86_64 macos-x86_64 success
+check mac-intel Darwin x86_64 macos-x86_64 intel-unsupported
 check no-cosign Linux x86_64 linux-x86_64 no-cosign
 if [ "$has_pty" = 1 ]; then
     check terminal Linux x86_64 linux-x86_64 terminal

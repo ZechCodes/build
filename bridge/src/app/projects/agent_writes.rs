@@ -63,6 +63,15 @@ impl AgentChoiceArgs<'_> {
     }
 }
 
+/// One worker to put on a project's own conversation: what it runs on, what
+/// it is called, whether the user follows it, and the agent that asked.
+pub(in crate::app) struct NewProjectWorker<'a> {
+    pub(in crate::app) choice: AgentChoiceArgs<'a>,
+    pub(in crate::app) name: Option<&'a str>,
+    pub(in crate::app) notify_user: bool,
+    pub(in crate::app) created_by: Option<&'a str>,
+}
+
 /// What a project agent asked one added folder to be made from. Every field is
 /// optional and an absent one is left OUT of the params: the verb reads which
 /// keys are present to tell a path from a remote, and a null would read as a
@@ -263,6 +272,66 @@ impl AppState {
         let mut added = self.agent_add(&params)?;
         added["workspace_id"] = json!(workspace_id);
         Ok(added)
+    }
+
+    /// `add_project_agent` — put one more worker on this agent's project's own
+    /// conversation, through `agent.add` on the project's owner. Always a
+    /// worker: nothing the call carries names a purpose.
+    pub(in crate::app) fn project_agent_add_project_agent(
+        &mut self,
+        caller: crate::app::AgentSender<'_>,
+        choice: AgentChoiceArgs<'_>,
+        name: Option<&str>,
+        notify_user: Option<bool>,
+    ) -> Result<Value, String> {
+        let project_id = self.project_agent_project(caller.entity_id)?;
+        let (_, _, added) = self.add_project_worker(
+            &project_id,
+            NewProjectWorker {
+                choice,
+                name,
+                notify_user: notify_user.unwrap_or(false),
+                created_by: Some(caller.agent_id),
+            },
+        )?;
+        Ok(added)
+    }
+
+    /// Put a worker on `project_id`'s own conversation through the same
+    /// `agent.add` a client calls, minting the owner — born with its pin —
+    /// when nobody has talked to the project yet. Answers `(agent_id,
+    /// entity_id, agent.add's answer with the project named)`.
+    pub(in crate::app) fn add_project_worker(
+        &mut self,
+        project_id: &str,
+        worker: NewProjectWorker<'_>,
+    ) -> Result<(String, String, Value), String> {
+        let conversation =
+            self.project_ensure_conversation(&json!({ "project_id": project_id }))?;
+        let entity_id = conversation["run_id"]
+            .as_str()
+            .ok_or("the project conversation has no owner")?
+            .to_string();
+        let mut params = worker.choice.params();
+        params["entity_id"] = json!(entity_id);
+        params["project_role"] = json!("worker");
+        if let Some(name) = worker.name {
+            params["name"] = json!(name);
+        }
+        // Made for a piece of work rather than by the user at the rail, so
+        // the user only follows it when asked to.
+        params["made_by_agent"] = json!(true);
+        params["notify_user"] = json!(worker.notify_user);
+        if let Some(created_by) = worker.created_by {
+            params["created_by"] = json!(created_by);
+        }
+        let mut added = self.agent_add(&params)?;
+        let agent_id = added["agent"]["id"]
+            .as_str()
+            .ok_or("the added agent has no id")?
+            .to_string();
+        added["project_id"] = json!(project_id);
+        Ok((agent_id, entity_id, added))
     }
 
     /// `remove_workspace_agent` — take an agent off one of this project's

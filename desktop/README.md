@@ -1,6 +1,8 @@
 # Build Desktop
 
 Build Desktop is a sandboxed Electron shell for the hosted Build web client.
+Published builds support Apple Silicon (ARM64) Macs and Linux x86_64/ARM64.
+Intel Macs can use the browser client.
 It connects to the user's separately installed bridge through Build's existing
 end-to-end encrypted relay. The desktop app does not install, launch, or access
 the bridge or the user's files.
@@ -30,6 +32,7 @@ node scripts/build-desktop.mjs
 ```
 
 Output is in `desktop/dist/`. Add `--dir` for an unpacked application.
+The macOS DMG and ZIP targets default to ARM64.
 This local script ignores signing credentials and disables notarization;
 on macOS it uses an ad-hoc signature and disables hardened runtime.
 See the root [contributing guide](../CONTRIBUTING.md#build-locally) for

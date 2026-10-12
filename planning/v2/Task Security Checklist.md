@@ -50,3 +50,84 @@ count toward 100/100; planning does not satisfy these controls.
 | --- | --- | --- |
 | TS522-1 | Existing/new project worker assignment and MCP tools are same-project scoped, idempotent and purpose-authorized; clients cannot mint or demote the pin. | C4/C5/C8: assign_project_worker_is_idempotent; cross-project, forged-purpose, removal and task-assignee tests. |
 | TS522-2 | Task links preserve exact worker identity without a fake workspace; worker removal and project deletion retire pending delivery/tracking consistently without rewriting history. | C5/C10: assignment/link/cleanup and stale-generation lifecycle tests. |
+
+C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
+
+- TS522-1: `assign_project_worker_is_idempotent` (existing and new worker,
+  `operation_id` retry delivers once and makes no second worker, a reused id
+  on another assignment is `conflict`), `assigning_refuses_a_foreign_or_removed_project_worker`,
+  `a_worker_assigns_a_task_to_a_new_project_worker`,
+  `project_workers_list_and_add_project_agents_with_coding_tools`,
+  `a_worker_cannot_administer_sources_or_retire_the_pin_through_mcp` (a forged
+  `project_role` on `add_project_agent` makes a worker), contract test
+  `project_worker_assignment_is_announced_with_its_kind_and_operation_id`.
+- TS522-2: dispatches to a worker link its owner and no workspace
+  (`assign_project_worker_is_idempotent`),
+  `removing_a_worker_keeps_its_tasks_record_and_drops_its_queued_turn`,
+  `a_stale_worker_session_cannot_assign`, and
+  `project_deletion_retires_workers_and_preserves_sources` (tokens revoked,
+  queued turns dropped).
+## #558 planned extension — not yet verified
+
+These rows follow Zech's 2026-10-12 decisions in
+[Tasks](Tasks%20Spec.md#waiting-on-decisions-and-delivery-558).
+Done or closed releases a wait; delivery must distinguish closed-without-Done
+prerequisites and ask the receiving agent to assess them and escalate with
+`mention_user` when they do not clearly permit the work. Existing scores above
+remain scoped to implemented controls. W1–W5 are the children in that plan;
+each supplies regression and gate evidence before its rows count as verified.
+Planning does not earn a security score.
+
+W1 / #560 evidence (2026-10-12): the focused `cargo test -j2 --lib waiting_on
+-- --test-threads=2` run passes. TS558-1's store boundary is covered by
+`waiting_on_same_project_dag_is_atomic` and
+`waiting_on_mixed_link_write_and_reconciliation_page_roll_back`: foreign and
+missing endpoints refuse without task, link or timeline partial writes;
+reverse reads refuse foreign projects and mismatched cursors. TS558-5's store
+boundary is covered by the same DAG test and
+`waiting_on_concurrent_opposite_edges_cannot_cycle`, with distinct SQLite
+connections, resolved-edge cycles, deduplication and the 20-edge bound.
+
+TS558-3's W1 provenance evidence is `waiting_on_close_resolution_reasons`,
+`waiting_on_pending_fan_in_preserves_the_final_cause`,
+`waiting_on_pending_fan_in_retains_close_cause_after_rename`,
+`waiting_on_pending_fan_in_retains_close_cause_after_closed_move`,
+`waiting_on_pending_fan_in_retains_done_cause_after_close`,
+`waiting_on_a_readded_edge_is_retained_at_unblock`,
+`waiting_on_fan_out_resumes_after_restart_and_invalidates_titles`, and
+`waiting_on_reconciles_at_startup_without_a_client`. Ordinary moves, explicit
+review completion and workspace finish share the writer in
+`waiting_on_manual_review_completion_and_workspace_finish_share_transitions`.
+`waiting_on_migration_defaults` opens a schema-15 database with old assignments
+and no dependency tables; migration adds no waits, transitions or delivery
+authority. These are W1 proofs only: TS558-1/3/5 still require their W2/W3
+authority and RPC/MCP evidence before the extension is fully verified. W1
+announces no waiting-on capability and provisions no assignment resources.
+
+The TS558-3 delayed fan-in regression queues B's Done, C's close and C's
+rename before draining. It proves that A's single durable unblock event
+retains both lifecycle cause IDs and C in `closed_without_done_task_ids`,
+and a repeated drain emits no duplicate.
+`waiting_on_pending_fan_in_retains_close_cause_after_closed_move` queues B's
+Done, C's close in Backlog, and C's Backlog-to-Ready move while still closed.
+`waiting_on_pending_fan_in_retains_done_cause_after_close` queues B's Done,
+C's Done and then C's close. Both reopen the store before the first bounded
+page, verify that A's only unblock contains the actual releasing event IDs
+and excludes the later non-releasing event, and verify close/Done precedence
+and repeated-drain idempotence. The writer records whether resolution changed
+before replacing the task record; a partial index seeks those recorded
+transitions rather than the newest lifecycle activity.
+`waiting_on_dependent_edits_invalidate_reverse_blocks` verifies that renaming,
+moving and closing A invalidate B's reverse Blocks digest after A waits on B;
+the affected prerequisite writes share the task transaction and the 20-edge
+bound. W2/W3 delivery authorization and forged-notice evidence remain pending.
+
+| ID | Pending control | Required evidence |
+| --- | --- | --- |
+| TS558-1 | Dependency create/add/remove and reverse reads stay within the caller's project; mixed valid/foreign writes fail atomically without exposing foreign titles or identities. | W1/W3: `waiting_on_same_project_dag_is_atomic`, RPC/MCP cross-project create, add, remove, read and partial-write refusal tests. |
+| TS558-2 | Deferred delivery revalidates the saved target's project and current authority before provisioning and after off-lock work; missing/retired targets never fall back to another agent. | W2/W3: existing/new/project agent scope, removed target, retired sender, restart and cross-project target substitution tests. |
+| TS558-3 | Only a committed same-project readiness change (Done, close or edge removal) with a current authorized assignment, or an explicit ready assignment, can enqueue delivery; closed edges retain resolved-by-close provenance. Caller-authored notices, pushes or forged close/unblock/generation/operation fields grant no authority. | W1 provenance: `waiting_on_close_resolution_reasons`, `waiting_on_pending_fan_in_retains_close_cause_after_rename`, `waiting_on_pending_fan_in_retains_close_cause_after_closed_move` and `waiting_on_pending_fan_in_retains_done_cause_after_close` prove retained release causes across delayed fan-in, rename, closed-task moves and Done→Closed, including restart, close/Done precedence and one durable unblock event. W2/W3 authority: `deferred_dispatch_generation_fences`, forged close/unblock and foreign prerequisite refusals, client-free startup reconciliation and receipt deduplication tests. |
+| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2/W3/W5: unlink with/without intent, cancelled generation and racing reassignment tests; task-page removal browser coverage. |
+| TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
+| TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2/W3: restart fault injection around reservation, resource creation, message persistence and settlement; payload mutation, closed-before-assignment and mixed Done/close blocker tests; `closed_blockers_delivery_context` and `closed_blocker_notice_contract` cover assignment and coordinator notices, with `mention_user` escalation directed to the agent rather than automatic user attention; fan-out and stale Complete tests. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W4/W5: hostile title rendering, cache-first/push grouping including Backlog Blocked/Ready without label or column writes, resolved-by-close presentation, current-greeting refusal and older-bridge browser fixtures. |

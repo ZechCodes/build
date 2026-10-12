@@ -23,8 +23,8 @@ pub(in crate::app) use attachments::{
     sanitize_attachment_name, write_attachment, ATTACHMENTS_PER_MESSAGE_MAX,
 };
 pub(in crate::app) use inputs::{
-    append_user_thread_messages, apply_thread_action, parse_thread_inputs, parse_viewing_context,
-    with_post_receipt,
+    append_user_thread_messages, apply_thread_action, optional_operation_id, parse_thread_inputs,
+    parse_viewing_context, with_post_receipt,
 };
 pub use read::LATEST_THREAD_ITEMS;
 pub(in crate::app) use read::{thread_cursor, thread_detail, view_thread_detail, ReadReport};

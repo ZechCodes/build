@@ -181,8 +181,8 @@ pub(crate) use fs::MOVED_SOURCE;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 pub(crate) use projects::PINNED_AGENT_STAYS;
 use projects::{
-    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
-    WorkspaceAgentAddress, WorkspaceDirectoryArgs,
+    default_projects_dir, AgentChoiceArgs, NewProjectWorker, Project, ProjectRegistry,
+    ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
@@ -277,6 +277,8 @@ pub struct AppState {
     projects: ProjectRegistry,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
+    /// Projects one of whose sources is moving; their workers wait (#533).
+    source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
     active_deferred_filesystem_jobs: usize,
     worktrees_root: std::path::PathBuf,
@@ -365,6 +367,13 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    /// Test-only pause after workspace OID preparation, before materialization.
+    #[cfg(test)]
+    off_lock_workspace_prepared_gate: Option<OffLockGate>,
+    /// Test-only synchronous drains own AppState directly, even when the
+    /// test holds it through an Arc. Their source preflights cannot relock it.
+    #[cfg(test)]
+    inline_deferred: bool,
     /// Project-list-only gate, kept separate so a lifecycle test's global git
     /// gate does not also stop the unrelated project.list probe it uses to
     /// prove the mutex is free.
@@ -476,7 +485,8 @@ pub struct AppState {
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
     /// Sources somebody asked to sync now (#267), by project and source id,
     /// until the source sync service takes them.
-    source_sync_requested: std::collections::HashSet<(String, String)>,
+    source_sync_requested:
+        std::collections::HashMap<(String, String), self::projects::base_sync::SyncSubject>,
     /// Wakes the source sync service for `source_sync_requested`.
     source_sync_nudge: std::sync::Arc<tokio::sync::Notify>,
     source_sync_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -637,6 +647,7 @@ impl AppState {
         let mut state = AppState {
             projects: ProjectRegistry::new(),
             project_deletion_in_progress: false,
+            source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
             worktrees_root,
             workspaces,
@@ -673,6 +684,10 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            off_lock_workspace_prepared_gate: None,
+            #[cfg(test)]
+            inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
             #[cfg(test)]
@@ -874,6 +889,7 @@ impl AppState {
         // runs off this mutex.
         ChangeBus::spawn_flusher_on(Arc::clone(&changes), push_runtime);
         WorktreeWatchers::spawn_reconciler(watchers, changes);
+        Self::spawn_waiting_on_service(&state);
         state
     }
 

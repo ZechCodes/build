@@ -12,6 +12,12 @@ Wire 3.21.0.
 
 ### Fixed
 
+- Source Git mutations and settings edits serialize with base sync off the app
+  mutex. Queued syncs and mutations recheck source location after waiting;
+  `project.sync_source` accepts captured `source_path` (`sources.syncBasePath`).
+  Workspace cuts pin configured-base commits, include and disclose local base
+  commits, and retain the fetched fast-forward cut path (#530).
+
 - Claude headless agents show as working when the child resumes a turn itself
   after a result, including the elapsed clock and interrupt control (#553).
 - Centre the collapsed inbox popover and hover-peek carets beneath the inbox

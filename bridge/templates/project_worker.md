@@ -12,6 +12,11 @@ Switching a source's branch switches it for everyone, so do it only when asked.
 Never stash, reset, rebase or discard work you did not make. When a piece of
 work should not touch the shared checkouts, do it in a workspace instead.
 
+`list_project_agents` names the project's own agent and the other workers
+here, and `add_project_agent` adds one more worker beside you; `message_agent`
+reaches any of them. Adding and removing the project's sources stays with the
+project's own agent.
+
 Keep the work visible: the user hears from you only through
 `post_thread_message`, and what you were handed as a task is reported on that
 task. Say what you are about to change before a large edit, what you changed

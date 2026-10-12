@@ -54,6 +54,7 @@ impl AppState {
     /// a coherent snapshot: registration changes while the probes run affect
     /// the next list request, not this one.
     pub(crate) fn defer_project_list(&mut self) -> Value {
+        self.revive_parked_projects();
         let projects = self.project_list_rows();
         self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
             subject: ReadSubject::ProjectList { projects },

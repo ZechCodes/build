@@ -16,6 +16,7 @@
 //! carries the task as prose in its body so a harness that never learns the
 //! field still reads the whole task.
 
+use super::handoff::Handoff;
 use super::{edits, StoredAnswer, TaskWrite};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::rpc::missing_param;
@@ -28,11 +29,11 @@ use serde_json::{json, Value};
 
 /// Where an `tasks.assign` was told to put the work.
 ///
-/// One tagged value covering all five kinds, because assignment IS dispatch:
+/// One tagged value covering all six kinds, because assignment IS dispatch:
 /// a second `dispatch` field beside the assignee would be two places for the
-/// same decision to be made, and they could disagree. The two creating kinds
-/// are not assignees — they resolve to [`Assignee::Agent`] before anything is
-/// stored.
+/// same decision to be made, and they could disagree. The three creating
+/// kinds are not assignees — they resolve to [`Assignee::Agent`] before
+/// anything is stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::app) enum AssignTarget {
     /// Nobody. Dispatches nothing and stops nothing already running.
@@ -56,8 +57,16 @@ pub(in crate::app) enum AssignTarget {
         workspace_id: String,
         choice: OwnedChoice,
         notify_user: Option<bool>,
-        /// The same key on both creating kinds, so a caller that learned it
+        /// The same key on every creating kind, so a caller that learned it
         /// once has learned it.
+        agent_name: Option<String>,
+    },
+    /// A new worker on the task's own project's conversation, working in the
+    /// project's original sources (`tasks.assignProjectAgent`). The project
+    /// is the task's; nothing the assignee carries can name another.
+    NewProjectAgent {
+        choice: OwnedChoice,
+        notify_user: Option<bool>,
         agent_name: Option<String>,
     },
 }
@@ -166,9 +175,14 @@ impl AssignTarget {
                 notify_user: value.get("notify_user").and_then(Value::as_bool),
                 agent_name: agent_name_of(value)?,
             }),
+            "new_project_agent" => Ok(AssignTarget::NewProjectAgent {
+                choice: OwnedChoice::from_wire(value),
+                notify_user: value.get("notify_user").and_then(Value::as_bool),
+                agent_name: agent_name_of(value)?,
+            }),
             other => Err(format!(
                 "unknown assignee kind: {other} — one of user, project_agent, agent, \
-                 new_workspace, new_agent"
+                 new_workspace, new_agent, new_project_agent"
             )),
         }
     }
@@ -215,8 +229,11 @@ impl AppState {
         let task_id = crate::app::require_str(params, "task_id")?;
         let (project_id, task) = self.tracker_task(&task_id)?;
         let target = AssignTarget::parse(params.get("assignee"))?;
-        let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
-        self.assign_task_to(&project_id, task, target, note, Actor::User, None)
+        let handoff = Handoff {
+            note: crate::app::optional_nonempty_string(params, "note")?.map(str::to_string),
+            operation_id: crate::app::conversations::optional_operation_id(params)?,
+        };
+        self.assign_task_to(&project_id, task, target, handoff, Actor::User, None)
     }
 
     /// The whole of assignment, for the wire verb and for the MCP tool alike.
@@ -224,15 +241,22 @@ impl AppState {
     /// `sender` is the agent that asked, when one did. It decides two things
     /// and nothing else: whose name is on the events, and whether the delivered
     /// message wears a sender beside its task.
+    ///
+    /// A hand-off naming an `operation_id` this task has already dispatched
+    /// answers that dispatch again and does nothing else, so a retried
+    /// request neither delivers twice nor makes a second agent.
     pub(in crate::app) fn assign_task_to(
         &mut self,
         project_id: &str,
         task: Task,
         target: AssignTarget,
-        note: Option<String>,
+        handoff: Handoff,
         actor: Actor,
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<Value, String> {
+        if let Some(replayed) = self.replayed_dispatch(project_id, &task, &target, &handoff)? {
+            return Ok(replayed);
+        }
         let now = crate::store::now_rfc3339();
         // The creating kinds cut a checkout, which is minutes of git on a big
         // repository. They hand that work to the drain and answer from there.
@@ -252,20 +276,14 @@ impl AppState {
                 choice,
                 notify_user.unwrap_or(matches!(actor, Actor::User)),
                 agent_name.clone(),
-                note,
+                handoff,
                 actor,
                 sender,
             );
         }
         let mut write = TaskWrite::by(actor.clone(), task);
-        let delivery = self.deliver_for(
-            project_id,
-            &write.task,
-            &target,
-            note.as_deref(),
-            &actor,
-            sender,
-        )?;
+        let delivery =
+            self.deliver_for(project_id, &write.task, &target, &handoff, &actor, sender)?;
         self.settle_assignment(&mut write, &target, &delivery, &actor, &now)?;
         let answered = self.commit_task_write(project_id, write, &now)?;
         Ok(json!({
@@ -373,54 +391,98 @@ impl AppState {
         project_id: &str,
         task: &Task,
         target: &AssignTarget,
-        note: Option<&str>,
+        handoff: &Handoff,
         actor: &Actor,
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<Option<Delivered>, String> {
-        let (workspace_id, entity_id) = match target {
-            AssignTarget::Nobody | AssignTarget::User => return Ok(None),
+        let (entity_id, agent_id) = match target {
+            // Answered by the drain; never reaches here.
+            AssignTarget::Nobody | AssignTarget::User | AssignTarget::NewWorkspace { .. } => {
+                return Ok(None)
+            }
             AssignTarget::ProjectAgent => {
-                let conversation =
-                    self.project_ensure_conversation(&json!({ "project_id": project_id }))?;
-                let entity_id = conversation["run_id"]
-                    .as_str()
-                    .ok_or("the project conversation has no owner")?
-                    .to_string();
-                (None, entity_id)
-            }
-            AssignTarget::Agent { agent_id } => {
-                let entity_id = self.agent_of_this_project(project_id, agent_id)?;
                 return self
-                    .hand_over(task, &entity_id, agent_id, note, sender)
-                    .map(Some);
+                    .deliver_to_the_project_agent(project_id, task, handoff, sender)
+                    .map(Some)
             }
+            AssignTarget::Agent { agent_id } => (
+                self.agent_of_this_project(project_id, agent_id)?,
+                agent_id.clone(),
+            ),
+            creating => {
+                let (agent_id, entity_id) = self.agent_made_for(project_id, creating, actor)?;
+                (entity_id, agent_id)
+            }
+        };
+        self.hand_over(task, &entity_id, &agent_id, handoff, sender)
+            .map(Some)
+    }
+
+    /// `{kind:"project_agent"}`: the project's own conversation, minted if
+    /// nobody has talked to it, and the agent it answers with.
+    fn deliver_to_the_project_agent(
+        &mut self,
+        project_id: &str,
+        task: &Task,
+        handoff: &Handoff,
+        sender: Option<crate::app::AgentSender<'_>>,
+    ) -> Result<Delivered, String> {
+        let conversation =
+            self.project_ensure_conversation(&json!({ "project_id": project_id }))?;
+        let entity_id = conversation["run_id"]
+            .as_str()
+            .ok_or("the project conversation has no owner")?
+            .to_string();
+        let agent_id = self.ensure_primary_agent(&entity_id)?;
+        let mut delivered = self.hand_over(task, &entity_id, &agent_id, handoff, sender)?;
+        // The project's agent works in the repository itself, so there is no
+        // workspace to name and the hand-off must not invent one.
+        delivered.workspace_id = None;
+        Ok(delivered)
+    }
+
+    /// Make the agent a creating kind asks for, on a checkout that already
+    /// exists: a workspace's conversation for `new_agent`, the project's own
+    /// for `new_project_agent`. Answers `(agent_id, entity_id)`.
+    fn agent_made_for(
+        &mut self,
+        project_id: &str,
+        target: &AssignTarget,
+        actor: &Actor,
+    ) -> Result<(String, String), String> {
+        // An agent's new worker is unwatched, while one the user creates is
+        // watched; an explicit notify_user on the assignee overrides either.
+        let watched = |asked: &Option<bool>| asked.unwrap_or(matches!(actor, Actor::User));
+        match target {
             AssignTarget::NewAgent {
                 workspace_id,
                 choice,
                 notify_user,
                 agent_name,
+            } => self.add_agent_for_task(
+                project_id,
+                workspace_id,
+                choice.args(),
+                agent_name.as_deref(),
+                watched(notify_user),
+                actor.agent_id(),
+            ),
+            AssignTarget::NewProjectAgent {
+                choice,
+                notify_user,
+                agent_name,
             } => {
-                let added = self.add_agent_for_task(
-                    project_id,
-                    workspace_id,
-                    choice.args(),
-                    agent_name.as_deref(),
-                    notify_user.unwrap_or(matches!(actor, Actor::User)),
-                    actor.agent_id(),
-                )?;
-                return self
-                    .hand_over(task, &added.1, &added.0, note, sender)
-                    .map(Some);
+                let worker = crate::app::NewProjectWorker {
+                    choice: choice.args(),
+                    name: agent_name.as_deref(),
+                    notify_user: watched(notify_user),
+                    created_by: actor.agent_id(),
+                };
+                let (agent_id, entity_id, _) = self.add_project_worker(project_id, worker)?;
+                Ok((agent_id, entity_id))
             }
-            // Answered by the drain; never reaches here.
-            AssignTarget::NewWorkspace { .. } => return Ok(None),
-        };
-        let agent_id = self.ensure_primary_agent(&entity_id)?;
-        let mut delivered = self.hand_over(task, &entity_id, &agent_id, note, sender)?;
-        // The project's agent works in the repository itself, so there is no
-        // workspace to name and the hand-off must not invent one.
-        delivered.workspace_id = workspace_id;
-        Ok(Some(delivered))
+            other => Err(format!("{} makes no agent", other.wire_kind())),
+        }
     }
 
     /// One agent of THIS project, or why it is none of this task's business.
@@ -508,11 +570,21 @@ impl AppState {
         task: &Task,
         entity_id: &str,
         agent_id: &str,
-        note: Option<&str>,
+        handoff: &Handoff,
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<Delivered, String> {
-        let operation_id = format!("op-{}", uuid::Uuid::new_v4());
-        self.hand_over_with_operation(task, entity_id, agent_id, note, &operation_id, sender)
+        let operation_id = handoff
+            .operation_id
+            .clone()
+            .unwrap_or_else(|| format!("op-{}", uuid::Uuid::new_v4()));
+        self.hand_over_with_operation(
+            task,
+            entity_id,
+            agent_id,
+            handoff.note.as_deref(),
+            &operation_id,
+            sender,
+        )
     }
 
     fn hand_over_with_operation(
@@ -659,6 +731,7 @@ impl AssignTarget {
             AssignTarget::Agent { .. } => "agent",
             AssignTarget::NewWorkspace { .. } => "new_workspace",
             AssignTarget::NewAgent { .. } => "new_agent",
+            AssignTarget::NewProjectAgent { .. } => "new_project_agent",
         }
     }
 }
@@ -698,7 +771,7 @@ pub(in crate::app) struct DispatchPlan {
     notify_user: bool,
     /// What to call the agent the drain will make, carried across the git.
     agent_name: Option<String>,
-    note: Option<String>,
+    handoff: Handoff,
     actor: Actor,
     /// The agent and generation that asked, retained across the workspace cut.
     sender: Option<crate::app::mcp::McpConversationGeneration>,
@@ -770,7 +843,7 @@ impl AppState {
         choice: &OwnedChoice,
         notify_user: bool,
         agent_name: Option<String>,
-        note: Option<String>,
+        handoff: Handoff,
         actor: Actor,
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<Value, String> {
@@ -796,7 +869,7 @@ impl AppState {
             choice: choice.clone(),
             notify_user,
             agent_name,
-            note,
+            handoff,
             actor,
             sender: sender
                 .map(|sender| self.mcp_conversation_generation(sender.entity_id, sender.agent_id))
@@ -851,8 +924,7 @@ impl AppState {
             entity_id: &sender.entity_id,
             agent_id: &sender.agent_id,
         });
-        let mut delivered =
-            self.hand_over(&task, &entity_id, &agent_id, plan.note.as_deref(), sender)?;
+        let mut delivered = self.hand_over(&task, &entity_id, &agent_id, &plan.handoff, sender)?;
         delivered.workspace_id = Some(plan.workspace_id.clone());
         // Kept before the delivery is handed to the write: the answer names
         // the receipt for the turn that was actually queued, which is the

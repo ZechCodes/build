@@ -368,6 +368,10 @@ with per-agent session/MCP/compaction artifacts keyed by exact agent/session.
 Keep those artifacts out of source roots, and don't use shared cwd as resume
 identity. Reuse existing `agent_process_cwd` and harness launch abstractions;
 worker startup fails visibly if its captured source configuration has moved.
+As built (#533): a project whose home folder is missing at boot is parked with
+its configuration intact rather than dropped; the worker's start is refused
+naming the folder, and the project is loaded again, owners bound, as soon as
+the folder is back.
 Shared cwd makes provider cleanup especially sensitive: reset/remove one worker
 must never delete sibling or coordinator history merely because they share cwd.
 
@@ -380,6 +384,9 @@ must never delete sibling or coordinator history merely because they share cwd.
   Project is the task/caller's validated project; do not overload `new_agent`,
   whose `workspace_id` remains required. User, workspace, agent, new_workspace
   and existing new_agent assignment semantics remain unchanged.
+  As built (#533): the worker's name is `agent_name`, the key every creating
+  kind uses, and `tasks.assign` also takes the client's `operation_id`, which a
+  retry answers with the dispatch already made; the capability covers both.
 - The project workspace rail renders its one pin above the line and workers
   below, named by the user just like workspace agents; Add creates a worker.
   Project-hosted task pages keep this rail. Isolated workspace/branch rails show

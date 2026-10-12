@@ -510,7 +510,7 @@ impl AppState {
             &scope.project_id,
             task,
             target,
-            note,
+            super::handoff::Handoff::noted(note),
             scope.actor.clone(),
             Some(sender),
         )

@@ -1536,3 +1536,50 @@ fn project_source_terminals_are_announced_with_exact_scope_and_legacy_examples()
             .contains(&serde_json::json!("conflict")));
     }
 }
+
+#[test]
+fn sync_base_path_precondition_is_announced_and_typed() {
+    assert!(capabilities(false).contains(&"sources.syncBasePath"));
+    let fixture = read_json(&fixtures_root().join("v1/project.sync_source.json"));
+    assert_eq!(fixture["source_path"]["capability"], "sources.syncBasePath");
+    assert_eq!(fixture["source_path"]["since"], "3.21.0");
+    let handler = &v1::methods()
+        .iter()
+        .find(|(method, _)| *method == "project.sync_source")
+        .unwrap()
+        .1;
+    assert!(
+        handler.parse_params(&fixture["params"]).is_ok(),
+        "legacy sync remains valid"
+    );
+    assert!(handler
+        .parse_params(&fixture["examples"][0]["params"])
+        .is_ok());
+    let mut malformed = fixture["examples"][0]["params"].clone();
+    malformed["source_path"] = serde_json::json!(5);
+    assert!(handler.parse_params(&malformed).is_err());
+}
+
+/// A task handed to a new project worker, and an assignment a client can
+/// retry, ride one capability: the `new_project_agent` assignee kind and
+/// `operation_id` on `tasks.assign`, whose dispatch names no workspace and
+/// echoes the client's id.
+#[test]
+fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
+    assert_eq!(API_VERSION, "3.21.0");
+    assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
+    let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
+    let example = &assign["project_agent_assignment"];
+    assert_eq!(example["since"], "3.21.0");
+    assert_eq!(example["capability"], "tasks.assignProjectAgent");
+    let params: v1::tasks::TasksAssignParams =
+        serde_json::from_value(example["params"].clone()).expect("the example params parse");
+    assert_eq!(params.operation_id.as_deref(), Some("op-assign-7c1e"));
+    assert_eq!(params.assignee["kind"], "new_project_agent");
+    let dispatch = &example["dispatch"];
+    assert_eq!(dispatch["kind"], params.assignee["kind"]);
+    assert_eq!(dispatch["operation_id"], example["params"]["operation_id"]);
+    assert!(dispatch["workspace_id"].is_null(), "{dispatch}");
+    serde_json::from_value::<v1::tasks::TaskDispatch>(dispatch.clone())
+        .expect("the example dispatch is a TaskDispatch");
+}

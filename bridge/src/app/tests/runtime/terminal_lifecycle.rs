@@ -1339,3 +1339,79 @@ async fn an_admitted_source_terminal_create_cannot_outlive_project_deletion() {
     assert_eq!(during_count, 0);
     assert_eq!(created["error_code"], "unavailable", "{created:?}");
 }
+
+/// A create that passed RPC admission must still obey a move's Updating
+/// reservation at spawn, across its SyncLock wait and config settlement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_source_terminal_create_cannot_cross_a_serialized_source_move() {
+    use crate::source_sync::SyncLock;
+
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let selector = source_selector(&state, &sourced.project_id, "source-2");
+    let moved = clone_beside(dir.path(), &sourced.second, "moved");
+    let params = json!({"project_id": sourced.project_id, "source_id": "source-2", "path": moved});
+    let (gate, paused) = OffLockGate::new();
+    state.lock().unwrap().terminal_create_admission_gate = Some(gate);
+    let creating = {
+        let handler = handler.clone();
+        let selector = selector.clone();
+        std::thread::spawn(move || call(&handler, "term.create", selector))
+    };
+    paused.wait_for_arrival();
+    state.lock().unwrap().terminal_create_admission_gate = None;
+    let (held, _) = SyncLock::acquire(&sourced.second, Duration::ZERO).unwrap();
+    let pending = {
+        let mut app = state.lock().unwrap();
+        app.project_update_source(&params).unwrap();
+        app.take_deferred().unwrap()
+    };
+    let (answered, answers) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        answered.send(pending.run()).unwrap();
+    });
+    assert!(answers.recv_timeout(Duration::from_millis(400)).is_err());
+    paused.release();
+    let created = creating.join().unwrap();
+    let during_count = state.lock().unwrap().shell_tab_count();
+    // Close a reproduced orphan before any assertion on a broken resolution.
+    if let Some(id) = created["result"]["term_id"].as_str() {
+        call(&handler, "term.close", json!({"term_id": id}));
+    }
+    drop(held);
+    let done = answers.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(SyncLock::acquire(&sourced.second, Duration::ZERO).is_none());
+    assert!(SyncLock::acquire(&moved, Duration::ZERO).is_none());
+    let before_settlement = call(&handler, "term.create", selector.clone());
+    if let Some(id) = before_settlement["result"]["term_id"].as_str() {
+        call(&handler, "term.close", json!({"term_id": id}));
+    }
+    state
+        .lock()
+        .unwrap()
+        .apply_deferred("project.update_source", &params, done)
+        .unwrap();
+    assert_eq!(created["error_code"], "busy", "{created}");
+    assert_eq!(during_count, 0);
+    assert_eq!(
+        before_settlement["error_code"], "busy",
+        "{before_settlement}"
+    );
+    let stale = call(&handler, "term.create", selector);
+    assert_eq!(stale["error_code"], "conflict", "{stale}");
+    let renewed = source_selector(&state, &sourced.project_id, "source-2");
+    let opened = call(&handler, "term.create", renewed.clone());
+    assert_eq!(opened["ok"], true, "{opened}");
+    let id = opened["result"]["term_id"].as_str().unwrap();
+    assert_eq!(
+        state.lock().unwrap().tab_key_of_wire_id(id).unwrap().root,
+        moved
+    );
+    let closed = call(
+        &handler,
+        "term.close",
+        on_source(&renewed, json!({"term_id": id})),
+    );
+    assert_eq!(closed["ok"], true, "{closed}");
+}

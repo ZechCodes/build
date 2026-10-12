@@ -66,6 +66,28 @@
       "operation_id": "op-5f1c9a02-7d4e-4b61-9c38-2ea7f0b6d514"
     }
   },
+  "project_agent_assignment": {
+    "since": "3.21.0",
+    "capability": "tasks.assignProjectAgent",
+    "note": "assignee kind new_project_agent puts a new worker on the task's own project's conversation, beside its pinned coordinator, and hands it the task; it works in the project's original sources, so the dispatch names no workspace. It takes agent_name, provider, model, effort, role, capability and notify_user like new_agent, and no project: the project is the task's. operation_id is the client's id for the assignment: the delivery is queued under it, and asking again with the same id answers the dispatch the task already records, delivering nothing and making no agent a second time. The same id asked of a different assignment of the task is conflict.",
+    "params": {
+      "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+      "assignee": {
+        "kind": "new_project_agent",
+        "agent_name": "Docs page",
+        "provider": "codex",
+        "effort": "high"
+      },
+      "operation_id": "op-assign-7c1e"
+    },
+    "dispatch": {
+      "kind": "new_project_agent",
+      "workspace_id": null,
+      "entity_id": "run-0a4e7d21",
+      "agent_id": "project-01K5ZQ8M4T0J7WQ2R6X3YB9C4F",
+      "operation_id": "op-assign-7c1e"
+    }
+  },
   "errors": [
     "not_found",
     "invalid_params",

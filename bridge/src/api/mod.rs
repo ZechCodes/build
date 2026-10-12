@@ -55,7 +55,8 @@ use std::collections::BTreeSet;
 /// 3.20.0 adds newest-only thread page activity with exact digests (#496).
 /// 3.21.0 adds original project source scopes on the Git verbs and
 /// source-qualified change subscriptions (#529), and project workers on the
-/// agent roster (#532), and original-source terminal ownership (#531).
+/// agent roster (#532), original-source terminal ownership (#531), and the
+/// captured sync-base path precondition (#530).
 pub const API_VERSION: &str = "3.21.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
@@ -106,6 +107,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "git.projectSources", // Since 3.21.0: project_id + source_id + source_path on the git.* verbs (#529).
     "term.projectSources", // Since 3.21.0: exact source selectors on term.create/list/attach/close (#531).
     "tasks.agentIdentities",
+    "tasks.assignProjectAgent", // Since 3.21.0: new_project_agent assignee, operation_id on tasks.assign (#533).
     "tasks.attachmentChunks",
     "tasks.attachments",
     "tasks.bodyPrecondition", // Since 3.10.0: expected_body_hash on tasks.update (#347).
@@ -132,6 +134,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "settings.projectAgent",
     "settings.roleModels",
     "settings.workspaceLifecycle",
+    "sources.syncBasePath", // Since 3.21.0: captured source_path on project.sync_source (#530).
     "sources.syncBase", // Since 3.3.0: sync_base/sync on source rows, sync_base on project.update_source (#267).
     "thread.attachmentChunks", // Since 1.30.0: offset/length on thread.attachment.
     "threads.leanActivity", // Since 3.20.0: activity on thread.page selects newest-only runs with exact digests (#496).

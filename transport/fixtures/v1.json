@@ -1,0 +1,316 @@
+{
+  "accept": {
+    "ciphertext": "24Xi3S0hO5smTTk6I7UHAYc1kS73AdX3C4UytAN3/vdWnbsL2a8OFbukSDnWsAo",
+    "nonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+    "route_to": "client:fixture",
+    "session_id": "vector-session",
+    "version": 1
+  },
+  "bad_signature": "sIxWBPbCHPwOMdMUqxqiLOErZXC7BkoifwpRyJagPQ/bQA0g35GquHGG/bQA5G6E2NZEvDLxc4f/HK8+kQUqDg",
+  "envelope_cases": [
+    {
+      "accepts": {
+        "js": true,
+        "python": true
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session"
+      },
+      "name": "missing-version"
+    },
+    {
+      "accepts": {
+        "js": true,
+        "python": false
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": null
+      },
+      "name": "null-version"
+    },
+    {
+      "accepts": {
+        "js": false,
+        "python": true
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": true
+      },
+      "name": "boolean-version"
+    },
+    {
+      "accepts": {
+        "js": true,
+        "python": true
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": 1.0
+      },
+      "name": "float-version"
+    },
+    {
+      "accepts": {
+        "js": false,
+        "python": false
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": 2
+      },
+      "name": "bad-version"
+    },
+    {
+      "accepts": {
+        "js": false,
+        "python": false
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "wrong-session",
+        "version": 1
+      },
+      "name": "session-mismatch"
+    },
+    {
+      "accepts": {
+        "js": false,
+        "python": false
+      },
+      "envelope": {
+        "ciphertext": "!not-base64",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": 1
+      },
+      "name": "invalid-base64"
+    },
+    {
+      "accepts": {
+        "js": false,
+        "python": true
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ=",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": 1
+      },
+      "name": "padded-base64"
+    },
+    {
+      "accepts": {
+        "js": true,
+        "python": true
+      },
+      "envelope": {
+        "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "extra": "ignored",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": 1
+      },
+      "name": "unknown-field"
+    },
+    {
+      "accepts": {
+        "js": false,
+        "python": false
+      },
+      "envelope": {
+        "ciphertext": "DzAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+        "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+        "route_to": "device:fixture",
+        "session_id": "vector-session",
+        "version": 1
+      },
+      "name": "tampered-ciphertext"
+    }
+  ],
+  "fingerprint": "56475aa75463474c0285df5dbf2bcab73da651358839e9b77481b2eab107708c",
+  "frames": [
+    {
+      "envelopes": {
+        "js": {
+          "ciphertext": "htl4pQYYDCsUfsg20o64k60fsbOUUGK6S0UJbZHwC8GJcKAcD1VS6oM8j1xXkJZ5heZlR0+f+RWAMIPP5ebA7vzUKFWkIXP75zM+HDwyPQ1bru9vSwEltBt8B50mwCu3xkqv0xY4UBmhmUGIQ/tanoscBf3HBTFa9OFMUxI8SHlIJSXuWoEP0lhFLoJ5CpFlYHSuJtY8pzB6TZU9vNW3WOjQT8vcAvw8WvVxwt5n99tvB8TjTUwrFdorbfcQEokRfcZ/5qKsKoVcAtWVXWmq/oTccE0WoivdEoQwBQk",
+          "nonce": "ERERERERERERERERERERERERERERERER",
+          "route_to": "device:fixture",
+          "session_id": "vector-session",
+          "version": 1
+        },
+        "python": {
+          "ciphertext": "DjAPwd54zkuvw5O5FJy9oWNM3U9W/lzRDfueD1eLrsJMTerbbLUxCF40oLf+G3E48UDRkiqHEixyUHJl0j4d4vGjbnbTGTgLyCGzuj4CXUULOxUdvBuwZByL4x9IziT3FPEdjcr1X3HlzuLznJ6wdVE3/zO38xYwqfnWH329ofWzIpKwaf54eIa7qgf4BVgdoSmMsoHmLqId9qfEioT/epvP5bre26czZXsjqmksde++PMRA1q5Zevhn8LtpZ/u3Gi97PpuWVtLXQP+ZX2PBhee0l+PAEcF3VOH4MRQ",
+          "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+          "route_to": "device:fixture",
+          "session_id": "vector-session",
+          "version": 1
+        }
+      },
+      "fields": {
+        "created_at": "2026-01-01T00:00:00Z",
+        "frame_type": "data",
+        "message_id": "fixture-0",
+        "payload": {
+          "nested": [
+            true,
+            null,
+            {
+              "a": 1,
+              "z": 2
+            }
+          ],
+          "text": "héllo 世界 🔐"
+        },
+        "sender": "client"
+      },
+      "js_nonce": "ERERERERERERERERERERERERERERERER",
+      "name": "unicode-nested",
+      "nonce": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB",
+      "outer": {
+        "route_to": "device:fixture",
+        "session_id": "vector-session"
+      },
+      "plaintext": {
+        "created_at": "2026-01-01T00:00:00Z",
+        "frame_type": "data",
+        "message_id": "fixture-0",
+        "payload": {
+          "nested": [
+            true,
+            null,
+            {
+              "a": 1,
+              "z": 2
+            }
+          ],
+          "text": "héllo 世界 🔐"
+        },
+        "sender": "client",
+        "session_id": "vector-session"
+      }
+    },
+    {
+      "envelopes": {
+        "js": {
+          "ciphertext": "vyoOM+o9az8om5QtP3vfXcWKvYmbzXWW37kLxN8bMQlAqgGTetr1+PgbLtfIPsuwt7ogqsO3akpd2z26Jrh/B8BriLdfx6oCcTmE09DfwWubGWBXPY3cso//amx33lDXTNyS8pCDF2mJLGMjkKuh5pYt2dH1v6ln75NIcDr42KtGbbWEFRxw8eKPVg5nKQVc5b59TNRBPhsEKFEyPV3C5Y5LneWywL3gan4zyk53pqqI/k48u+JLoSNHS/vP",
+          "nonce": "EhISEhISEhISEhISEhISEhISEhISEhIS",
+          "route_to": "device:fixture",
+          "session_id": "vector-session",
+          "version": 1
+        },
+        "python": {
+          "ciphertext": "qePHeNvpAT0g6+xT0TcWZcFDJAHhY15zoIPq16DWsjAuatjnnorLyEpvx46PDCm+mMd5DtX2bQK7Ch/6UrbHHpvlh9Pu3e4hw9gwfYF/VtlBnryuYl6YiT15TG3gtoVhsb/z5Pv0NFWrXoJ+jpBIrnHfHBkLLMmAvkbFGZuh6BAL1KSWDcXpCUPYEZyVuFotbynM9aHPWDiDS5egH5U2TK4jzEHD5GNfyxshbZ6GeE8Fo2Y2SKCZcDZXC5E03JM",
+          "nonce": "AgICAgICAgICAgICAgICAgICAgICAgIC",
+          "route_to": "device:fixture",
+          "session_id": "vector-session",
+          "version": 1
+        }
+      },
+      "fields": {
+        "created_at": "2026-01-01T00:00:00Z",
+        "frame_type": "data",
+        "message_id": "fixture-1",
+        "payload": {
+          "10": "ten",
+          "2": "two",
+          "value": 1.0
+        },
+        "sender": "client"
+      },
+      "js_nonce": "EhISEhISEhISEhISEhISEhISEhISEhIS",
+      "name": "number-key-order",
+      "nonce": "AgICAgICAgICAgICAgICAgICAgICAgIC",
+      "outer": {
+        "route_to": "device:fixture",
+        "session_id": "vector-session"
+      },
+      "plaintext": {
+        "created_at": "2026-01-01T00:00:00Z",
+        "frame_type": "data",
+        "message_id": "fixture-1",
+        "payload": {
+          "10": "ten",
+          "2": "two",
+          "value": 1.0
+        },
+        "sender": "client",
+        "session_id": "vector-session"
+      }
+    },
+    {
+      "envelopes": {
+        "js": {
+          "ciphertext": "mRpbpvZA5gycrBrM43T55MaR32H+rIsfNJdkNqEThqJtMES99YYAuT8nh5kAjSjtYzEDkgrEsYczn9zPXmbyEKi8zSHf492x+aALaRAufhs1ZfUM0cuvh1Pd7hXkjRmxQo6xmB4r4zPWdbK7IRFA4/FACgZy2d/VaSgqxkgrRdkzYVRLrbvZwCTGwhE5ORWbNe/kD05GA0/peqiX8l7q+HXf",
+          "nonce": "ExMTExMTExMTExMTExMTExMTExMTExMT",
+          "route_to": "device:fixture",
+          "session_id": "vector-session",
+          "version": 1
+        },
+        "python": {
+          "ciphertext": "BPBSFLn2yVrqWfLtBXLnV3rY1hmR2RQ1NsDCnihR5cdLZqPccqlTFnSiIa7GgvzIUWpRJxMXsQKLf13IAcQL0YWO+HTsshl1io14d07nNs6lqsQzLiYGgZwgAQs8nGDFEk87QSG9uEBSlZZzUt3gt+dHQWHMvFECHUKPvQJfWW4zJdTT2gKcPOckqmu7yIN96/BuZurCG7Q0/4G27IjiqfCC",
+          "nonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD",
+          "route_to": "device:fixture",
+          "session_id": "vector-session",
+          "version": 1
+        }
+      },
+      "fields": {
+        "created_at": "2026-01-01T00:00:00Z",
+        "frame_type": "close",
+        "message_id": "fixture-2",
+        "payload": null,
+        "sender": "client"
+      },
+      "js_nonce": "ExMTExMTExMTExMTExMTExMTExMTExMT",
+      "name": "close",
+      "nonce": "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMD",
+      "outer": {
+        "route_to": "device:fixture",
+        "session_id": "vector-session"
+      },
+      "plaintext": {
+        "created_at": "2026-01-01T00:00:00Z",
+        "frame_type": "close",
+        "message_id": "fixture-2",
+        "payload": null,
+        "sender": "client",
+        "session_id": "vector-session"
+      }
+    }
+  ],
+  "identity_public": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "identity_seed": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "session_init": {
+    "device_id": "fixture-device",
+    "session_id": "vector-session",
+    "wrapped_session_key": "2H5R/Em+23aflNrfssH3XAjMaEhyQ6ON5f1pCT/6PUEZIY5miH+udDJ+yAGRTvpO6A2rEbIG5vtSi4BJeHkG3P2b3HNB4CYooaovHI9o2Cw"
+  },
+  "session_key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+  "signature": "sYxWBPbCHPwOMdMUqxqiLOErZXC7BkoifwpRyJagPQ/bQA0g35GquHGG/bQA5G6E2NZEvDLxc4f/HK8+kQUqDg",
+  "transport_private": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+  "transport_public": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ",
+  "upstream_commit": "4bce3aacebd66a9674aaa96c6ec0d97ab4bcd793",
+  "wrong_transport_private": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8"
+}

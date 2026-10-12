@@ -277,6 +277,9 @@ pub struct ProjectUpdateSourceParams {
 pub struct ProjectSyncSourceParams {
     pub project_id: String,
     pub source_id: String,
+    /// Captured source location, announced by sources.syncBasePath.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
 }
 
 /// The sync is on its way; the project list is noted changed when it lands.
@@ -1070,7 +1073,7 @@ pub struct ModelsListResult {
 /// codes, so the phrases are matched here rather than the sentences rewritten:
 /// a message is the wire's, and changing one to win a code would be a change
 /// to what every existing client shows its user.
-const CONFLICTS: [&str; 12] = [
+const CONFLICTS: [&str; 13] = [
     "a project must have at least one source",
     "source overlaps",
     "source remote is already registered",
@@ -1081,6 +1084,7 @@ const CONFLICTS: [&str; 12] = [
     "the router has not asked anything",
     "Wait for workspace provisioning",
     "Stop running agents before deleting",
+    "while its workers are working in them",
     "Cannot delete a workspace containing",
     "Cannot delete a workspace whose source checkout",
 ];

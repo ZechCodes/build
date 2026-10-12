@@ -6,7 +6,7 @@
 
 import {
   conversationUiRecordBelongsTo, conversationUiRecordIsRetired, deleteConversationUiRecords,
-  readUiRecord, subscribeConversationUiRetirements, subscribeUiRecords, writeUiRecord, writeUiRecordIfNewer,
+  readUiRecord, subscribeConversationUiRetirements, subscribeUiRecords, updateUiRecord, writeUiRecord, writeUiRecordIfNewer,
 } from "./localUiStore.js";
 
 // IndexedDB cannot finish a new transaction once the document is torn down.
@@ -143,6 +143,8 @@ export const uiAddress = ({ deviceId = "", entityId = "", view, kind, sub = "" }
   kind: `ui-${kind}`,
   sub: `${view}:${sub}`,
 });
+
+export const updateUiState = (address, update, active) => updateUiRecord(address, update, active);
 
 /** Watch one local record. `ready` is the mount's cache read; `write` waits for
  * the committed write and its announced readback. Drafts use `schedule`, then

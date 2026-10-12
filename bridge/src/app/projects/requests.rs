@@ -231,6 +231,8 @@ impl AppState {
     /// or the projects folder by default — and register it. An optional `remote`
     /// is wired as `origin` at creation.
     pub(crate) fn project_create(&mut self, params: &Value) -> Result<Value, String> {
+        // A folder that is back answers as the project it was, not a new one.
+        self.revive_parked_projects();
         let name = usable_project_name(require_str(params, "name")?)?;
         if params.get("sources").is_some() {
             return self.project_from_sources(params, Some(name));
@@ -486,6 +488,8 @@ impl AppState {
             .find(|source| source.id == source_id)
             .expect("source was checked");
         self.refuse_source_shells_at(&source.path)?;
+
+        self.refuse_moving_sources_under_workers(&project_id)?;
         let sources = project
             .sources
             .iter()

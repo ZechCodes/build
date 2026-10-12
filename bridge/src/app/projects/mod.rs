@@ -87,7 +87,8 @@ mod agent_tools;
 mod agent_writes;
 pub(in crate::app) mod base_sync;
 pub(in crate::app) use agent_writes::{
-    AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
+    AgentChoiceArgs, NewProjectWorker, ProjectSourceArgs, WorkspaceAgentAddress,
+    WorkspaceDirectoryArgs,
 };
 mod conversation;
 mod coordinator;
@@ -99,10 +100,13 @@ mod deletion;
 mod lifecycle;
 mod list;
 pub(in crate::app) use list::primary_remote;
+mod parked;
 mod project_registry;
 #[cfg(test)]
 mod project_registry_tests;
 mod requests;
+mod source_holds;
+pub(in crate::app) use source_holds::SourceMoves;
 mod source_scope;
 pub(in crate::app) use source_scope::ResolvedProjectSource;
 pub(crate) use source_scope::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
@@ -227,6 +231,72 @@ pub(in crate::app) fn repo_name_from_url(url: &str) -> String {
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
+/// The folder a configured project stands in: its `path`, or for a
+/// configuration that names only sources, its first source's.
+pub(in crate::app) fn configured_primary_path(project: &Value) -> Option<&str> {
+    project.get("path").and_then(Value::as_str).or_else(|| {
+        project
+            .get("sources")?
+            .as_array()?
+            .first()?
+            .get("path")?
+            .as_str()
+    })
+}
+
+/// The `N` of a configured project's `proj-N` id, when it carries one.
+fn configured_project_number(project: &Value) -> Option<u64> {
+    project
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| id.strip_prefix("proj-"))
+        .and_then(|id| id.parse::<u64>().ok())
+        .filter(|number| *number > 0 && *number < u64::MAX)
+}
+
+/// A configured project's sources that can be opened now, each as written.
+fn configured_sources(entries: &[Value]) -> Vec<ProjectSource> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| configured_source(index, source))
+        .collect()
+}
+
+fn configured_source(index: usize, source: &Value) -> Option<ProjectSource> {
+    let path = source.get("path")?.as_str()?;
+    let path = canonical_source_path(&expand_tilde(path)).ok()?;
+    let fallback_name = path.file_name()?.to_string_lossy().into_owned();
+    let name = source
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(&fallback_name)
+        .to_string();
+    let mount = source
+        .get("mount")
+        .and_then(Value::as_str)
+        .map(safe_mount_name)
+        .unwrap_or_else(|| safe_mount_name(&name));
+    Some(ProjectSource {
+        id: source
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("source-{}", index + 1)),
+        name,
+        mount,
+        is_git: path.join(".git").exists(),
+        path,
+        base_branch: source
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .unwrap_or("main")
+            .to_string(),
+        sync_base: source.get("sync_base").and_then(Value::as_bool),
+        sync_status: None,
+    })
+}
+
 impl AppState {
     #[cfg(test)]
     pub(in crate::app) fn project_at(&self, index: usize) -> &Project {
@@ -248,95 +318,64 @@ impl AppState {
             .into_iter()
             .flatten();
         for project in projects {
-            let stored_sources = project.get("sources").and_then(Value::as_array);
-            let primary_path = project
-                .get("path")
-                .and_then(Value::as_str)
-                .or_else(|| stored_sources?.first()?.get("path")?.as_str());
-            let Some(repo) = primary_path else {
-                continue;
-            };
-            let base = project
-                .get("base_branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string();
-            let repo = std::path::PathBuf::from(repo);
-            if !repo.exists() {
-                continue;
-            }
-            let number = project
-                .get("id")
-                .and_then(Value::as_str)
-                .and_then(|id| id.strip_prefix("proj-"))
-                .and_then(|id| id.parse::<u64>().ok())
-                .filter(|number| *number > 0 && *number < u64::MAX)
-                .unwrap_or(self.projects.next_id());
-            let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
-            let id = if let Some(existing) = self.projects.find_by_canonical_path(&repo) {
-                existing.id.clone()
-            } else {
-                if self.projects.get(&format!("proj-{number}")).is_some() {
-                    continue;
-                }
-                let candidate = self.project_candidate_at(
-                    repo.clone(),
-                    base,
-                    repo.join(".git").exists(),
-                    Some(number),
-                );
-                self.insert_project(candidate)
-            };
-            if let Some(entries) = stored_sources {
-                let sources = entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, source)| {
-                        let path = source.get("path")?.as_str()?;
-                        let path = canonical_source_path(&expand_tilde(path)).ok()?;
-                        let fallback_name = path.file_name()?.to_string_lossy().into_owned();
-                        let name = source
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or(&fallback_name)
-                            .to_string();
-                        let mount = source
-                            .get("mount")
-                            .and_then(Value::as_str)
-                            .map(safe_mount_name)
-                            .unwrap_or_else(|| safe_mount_name(&name));
-                        let is_git = path.join(".git").exists();
-                        let sync_base = source.get("sync_base").and_then(Value::as_bool);
-                        Some(ProjectSource {
-                            id: source
-                                .get("id")
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                                .unwrap_or_else(|| format!("source-{}", index + 1)),
-                            name,
-                            mount,
-                            path,
-                            is_git,
-                            base_branch: source
-                                .get("base_branch")
-                                .and_then(Value::as_str)
-                                .unwrap_or("main")
-                                .to_string(),
-                            sync_base,
-                            sync_status: None,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                if !sources.is_empty() {
-                    self.projects.set_sources(&id, sources);
-                }
-            }
-            if let Some(next) = project.get("next_source").and_then(Value::as_u64) {
-                self.projects.reserve_source_ids_through(&id, next);
-            }
-            let isolation = configured_isolation(project, "project isolation");
-            self.projects.set_isolation(&id, isolation);
+            self.restore_configured_project(project);
         }
+    }
+
+    /// Load one project's configuration, and answer its id. A project whose
+    /// folder is away is parked rather than dropped: its configuration is
+    /// written back on every save, and [`Self::revive_parked_projects`]
+    /// loads it the moment the folder is back.
+    pub(in crate::app) fn restore_configured_project(&mut self, project: &Value) -> Option<String> {
+        let repo = std::path::PathBuf::from(configured_primary_path(project)?);
+        let number = configured_project_number(project);
+        if !repo.exists() {
+            // Its id stays its own while it is away.
+            if let Some(number) = number {
+                self.projects.reserve_ids_through(number + 1);
+            }
+            self.projects.park(project.clone());
+            return None;
+        }
+        let base = project
+            .get("base_branch")
+            .and_then(Value::as_str)
+            .unwrap_or("main")
+            .to_string();
+        let id = self.register_configured_project(repo, base, number)?;
+        if let Some(entries) = project.get("sources").and_then(Value::as_array) {
+            let sources = configured_sources(entries);
+            if !sources.is_empty() {
+                self.projects.set_sources(&id, sources);
+            }
+        }
+        if let Some(next) = project.get("next_source").and_then(Value::as_u64) {
+            self.projects.reserve_source_ids_through(&id, next);
+        }
+        let isolation = configured_isolation(project, "project isolation");
+        self.projects.set_isolation(&id, isolation);
+        Some(id)
+    }
+
+    /// The project at `repo` under its configured number, or the one already
+    /// registered there. `None` when another project already holds the number.
+    fn register_configured_project(
+        &mut self,
+        repo: std::path::PathBuf,
+        base: String,
+        number: Option<u64>,
+    ) -> Option<String> {
+        let number = number.unwrap_or(self.projects.next_id());
+        let repo = std::fs::canonicalize(&repo).unwrap_or(repo);
+        if let Some(existing) = self.projects.find_by_canonical_path(&repo) {
+            return Some(existing.id.clone());
+        }
+        if self.projects.get(&format!("proj-{number}")).is_some() {
+            return None;
+        }
+        let candidate =
+            self.project_candidate_at(repo.clone(), base, repo.join(".git").exists(), Some(number));
+        Some(self.insert_project(candidate))
     }
 
     /// Override where cloned repos land and the browser starts (e.g. from an env).

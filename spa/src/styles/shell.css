@@ -796,6 +796,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .tb-filter { flex:none; width:100%; margin-bottom:4px; }
 .tb-group { font-size:10.5px; letter-spacing:.06em; text-transform:uppercase;
   color:var(--dim); padding:8px 8px 3px; }
+.tb-project-group { display:flex; align-items:center; gap:6px; }
+.tb-project-group > span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 /* The work list names the project whose work it is, and carries the way back to
    the project list: two menus, one flow. */
 .tb-scope { display:flex; align-items:baseline; justify-content:space-between; gap:8px; }

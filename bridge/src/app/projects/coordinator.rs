@@ -193,7 +193,7 @@ impl AppState {
             return Ok(());
         }
         Err(format!(
-            "Build cannot start this agent: the project folder {project_path} is missing."
+            "Build cannot start this agent: the project folder {project_path} is missing. It starts once the folder is back."
         ))
     }
 

@@ -17,6 +17,7 @@ mod attachments;
 mod comments;
 mod dispatch;
 mod edits;
+mod handoff;
 mod identities;
 mod inbox;
 mod notices;
@@ -31,6 +32,7 @@ mod said;
 mod tools;
 mod tracking;
 mod views;
+mod waiting_on;
 
 #[cfg(test)]
 pub(in crate::app) use agent_files::between_check_and_copy;
@@ -313,7 +315,14 @@ impl AppState {
             }));
         };
         let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
-        self.assign_task_to(&project_id, task, target, note, actor, None)
+        self.assign_task_to(
+            &project_id,
+            task,
+            target,
+            handoff::Handoff::noted(note),
+            actor,
+            None,
+        )
     }
 
     /// `tasks.update` — title, body, labels, priority, status, state.

@@ -120,7 +120,12 @@ impl Store {
     pub fn pretend_to_be_v7(&self) {
         self.connection()
             .execute_batch(
-                "DROP INDEX IF EXISTS tracker_tasks_number;
+                "DROP TABLE IF EXISTS tracker_dependency_outbox;
+                 DROP TABLE IF EXISTS tracker_dependency_changes;
+                 DROP TABLE IF EXISTS tracker_dependency_reconcile;
+                 DROP TABLE IF EXISTS tracker_dependency_readiness;
+                 DROP TABLE IF EXISTS tracker_task_dependencies;
+                 DROP INDEX IF EXISTS tracker_tasks_number;
                  DROP INDEX IF EXISTS tracker_tasks_by_project;
                  DROP INDEX IF EXISTS tracker_comments_by_task;
                  DROP INDEX IF EXISTS tracker_events_by_task;

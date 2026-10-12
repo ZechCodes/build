@@ -54,7 +54,7 @@ impl Store {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
-            super::delivery_intents::check_operation_admission(tx, &receipt.operation_id)?;
+            super::delivery_intents::check_operation_admission(tx, receipt)?;
             Store::write_agents(tx, conversation_owner_id, agents)?;
             insert_operation(tx, receipt)?;
             Ok(receipt.clone())

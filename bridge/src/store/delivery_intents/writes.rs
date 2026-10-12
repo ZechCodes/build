@@ -174,9 +174,11 @@ impl Store {
                 saved.status = super::task(tx, &intent)?.expect("authority checked").status;
             }
             tracker::write_tracker_task(tx, &saved)?;
-            let settled_events: Vec<_> = events.iter().filter(|event| {
-                event.kind != TaskEventKind::Moved || saved.status == task.status
-            }).cloned().collect();
+            let settled_events: Vec<_> = events
+                .iter()
+                .filter(|event| event.kind != TaskEventKind::Moved || saved.status == task.status)
+                .cloned()
+                .collect();
             tracker::append_activity(tx, &[], &settled_events)?;
             intent.state = "delivered".into();
             write(tx, &intent)?;
@@ -199,8 +201,9 @@ fn extends_reservation(before: &Value, after: &Value) -> bool {
 
 pub(in crate::store) fn check_operation_admission(
     tx: &Transaction,
-    operation_id: &str,
+    receipt: &crate::operation::OperationReceipt,
 ) -> Result<(), StoreError> {
+    let operation_id = &receipt.operation_id;
     let id: Option<String> = tx
         .query_row(
             "SELECT id FROM tracker_delivery_intents WHERE operation_id=?1",
@@ -218,6 +221,58 @@ pub(in crate::store) fn check_operation_admission(
         || !is_ready(tx, &intent)?
     {
         return Err(invalid("delivery no longer authorized for admission"));
+    }
+    check_frozen_receipt(&intent, receipt)
+}
+
+fn check_frozen_receipt(
+    intent: &DeliveryIntent,
+    receipt: &crate::operation::OperationReceipt,
+) -> Result<(), StoreError> {
+    let frozen = intent.admitted.as_ref().expect("admission checked");
+    let params = &frozen["params"];
+    if receipt.method != crate::operation::THREAD_POST_METHOD
+        || params["entity_id"].as_str() != Some(&receipt.entity_id)
+        || params["agent_id"].as_str() != Some(&receipt.agent_id)
+        || params["conversation_id"].as_str() != Some(&receipt.conversation_id)
+        || receipt.request_hash
+            != crate::operation::thread_post_request_hash(
+                params,
+                &receipt.entity_id,
+                &receipt.agent_id,
+                &receipt.conversation_id,
+            )
+        || json!(receipt.requested_by) != frozen["requester"]
+    {
+        return Err(invalid("delivery receipt differs from frozen request"));
+    }
+    check_frozen_origin(frozen, receipt)
+}
+
+fn check_frozen_origin(
+    frozen: &Value,
+    receipt: &crate::operation::OperationReceipt,
+) -> Result<(), StoreError> {
+    let delivery = receipt
+        .delivery
+        .as_ref()
+        .ok_or_else(|| invalid("delivery receipt lacks its payload"))?;
+    let payload = delivery
+        .payload
+        .as_ref()
+        .ok_or_else(|| invalid("delivery receipt lacks its messages"))?;
+    if delivery.owner_id != receipt.entity_id
+        || delivery.agent_id != receipt.agent_id
+        || payload.messages.len() != 1
+    {
+        return Err(invalid("delivery payload differs from frozen target"));
+    }
+    let message = &payload.messages[0];
+    if frozen["params"]["body"].as_str() != Some(&message.body)
+        || json!(message.from_task) != frozen["envelope"]
+        || json!(message.from_agent) != frozen["sender"]
+    {
+        return Err(invalid("delivery message differs from frozen origin"));
     }
     Ok(())
 }

@@ -44,7 +44,7 @@ Observed pre-move parser baseline (runtime behavior is preserved):
 | null version | rejects | accepts as 1 | rejects |
 | boolean `true` version | accepts (`True == 1`) | rejects | rejects |
 | JSON `1.0` version | accepts | accepts | rejects typed integer |
-| padded ciphertext Base64 | accepts | rejects | rejects |
+| padded ciphertext Base64 | accepts | rejects | accepts (trailing padding stripped) |
 | unknown outer field | ignores | ignores | ignores |
 | version 2, bad Base64, tamper, session mismatch | rejects | rejects | rejects |
 

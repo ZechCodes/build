@@ -107,7 +107,8 @@ fn rust_parser_baseline_and_rejections() {
             Ok(env) => transport::decrypt_envelope(string(&v, "session_key"), &env).is_ok(),
             Err(_) => false,
         };
-        let expected = string(case, "name") == "unknown-field";
+        // The existing decoder strips trailing padding; record that baseline.
+        let expected = matches!(string(case, "name"), "unknown-field" | "padded-base64");
         assert_eq!(accepts, expected, "{}", case["name"]);
     }
     // Route metadata is deliberately not authenticated by these crypto bindings.

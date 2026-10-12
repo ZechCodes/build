@@ -443,6 +443,79 @@ fn waiting_on_pending_fan_in_preserves_the_final_cause() {
 }
 
 #[test]
+fn waiting_on_pending_fan_in_retains_close_cause_after_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let a = filed(&store, "dependent");
+    let mut b = filed(&store, "first");
+    let mut c = filed(&store, "last");
+    add(&store, &a, &[b.id.clone(), c.id.clone()]);
+    let mut causes = Vec::new();
+    for (task, status, state, kind) in [
+        (&mut b, "done", TaskState::Open, TaskEventKind::Moved),
+        (&mut c, "backlog", TaskState::Closed, TaskEventKind::Closed),
+    ] {
+        let event = TaskEvent::new(&task.id, Actor::User, kind, serde_json::json!({}), NOW);
+        task.status = status.into();
+        task.state = state;
+        task.closed_at = (state == TaskState::Closed).then(|| NOW.to_string());
+        store
+            .save_tracker_task_activity(task, &[], std::slice::from_ref(&event))
+            .unwrap();
+        causes.push(event.id);
+    }
+    c.title = "renamed after close".into();
+    store.save_tracker_task_activity(&c, &[], &[]).unwrap();
+    drain(&store);
+    let unblocked = events(&store, &a, TaskEventKind::Unblocked);
+    assert_eq!(unblocked.len(), 1);
+    let admitted = unblocked[0].payload["cause_event_ids"].as_array().unwrap();
+    for cause in causes {
+        assert!(
+            admitted.contains(&serde_json::json!(cause)),
+            "later metadata must not erase a pending release cause"
+        );
+    }
+    assert_eq!(
+        unblocked[0].payload["closed_without_done_task_ids"],
+        serde_json::json!([c.id])
+    );
+    drain(&store);
+    assert_eq!(events(&store, &a, TaskEventKind::Unblocked).len(), 1);
+}
+
+#[test]
+fn waiting_on_dependent_edits_invalidate_reverse_blocks() {
+    for (title, status, state) in [
+        ("renamed", "backlog", TaskState::Open),
+        ("dependent", "ready", TaskState::Open),
+        ("dependent", "backlog", TaskState::Closed),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let mut a = filed(&store, "dependent");
+        let b = filed(&store, "prerequisite");
+        add(&store, &a, std::slice::from_ref(&b.id));
+        store.take_waiting_on_changes(100).unwrap();
+        let before = store.waiting_on_blocks(PROJECT, &b.id, 100, None).unwrap();
+        a.title = title.into();
+        a.status = status.into();
+        a.state = state;
+        a.closed_at = (state == TaskState::Closed).then(|| NOW.to_string());
+        store.save_tracker_task_activity(&a, &[], &[]).unwrap();
+        drain(&store);
+        let after = store.waiting_on_blocks(PROJECT, &b.id, 100, None).unwrap();
+        assert_ne!(before.blocks, after.blocks);
+        let changes = store.take_waiting_on_changes(100).unwrap();
+        assert!(changes.iter().any(|(_, id)| id == &a.id));
+        assert!(
+            changes.iter().any(|(_, id)| id == &b.id),
+            "editing a dependent must invalidate its prerequisite's reverse digest"
+        );
+    }
+}
+
+#[test]
 fn waiting_on_a_readded_edge_is_retained_at_unblock() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

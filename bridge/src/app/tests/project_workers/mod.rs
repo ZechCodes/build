@@ -7,6 +7,8 @@ use super::project_coordinator::{a_repo, a_state_root, add_worker, booted, ensur
 use super::*;
 
 mod assignment;
+mod cleanup;
+mod lifecycle;
 mod tools;
 
 /// A booted bridge over a temporary store with one project, its owner and

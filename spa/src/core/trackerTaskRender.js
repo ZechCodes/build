@@ -19,7 +19,7 @@ import { taskUnreadKey } from "./trackerUnread.js";
 import { ageHtml, ageText, assigneeHtml, labelsHtml, numberHtml, stateMarkHtml } from "./trackerChips.js";
 import { composerPartIds } from "./composer.js";
 import { attachmentListHtml } from "./attachmentTiles.js";
-import { ICON_PAPERCLIP } from "./icons.js";
+import { ICON_PAPERCLIP, ICON_REPLY } from "./icons.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { commentReplyIndex, commentReplyHtml, commentRepliesHtml } from "./taskCommentReplies.js";
 import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
@@ -107,13 +107,12 @@ const reviewMetadataHtml = (row, context) => {
 const commentHtml = (row, context) => `<li class="task-entry task-comment${row.mentionsUser ? " task-comment-mentioned" : ""}" id="comment-${esc(row.key)}" data-comment-id="${esc(row.key)}">
     ${taskAvatarHtml(row.actor, context)}
     <div class="task-comment-card">
-      <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}</div>
+      <div class="task-entry-head"><strong>${actorIdentityHtml(row.actor, context)}</strong>${whenHtml(row)}${row.anchor || row.opinion || row.replyTo ? `<button class="task-comment-reply" type="button" data-review-reply="${esc(row.key)}" aria-label="Reply" title="Reply">${ICON_REPLY}</button>` : ""}</div>
       ${reviewMetadataHtml(row, context)}
       ${commentReplyHtml(row, context)}
       <div class="task-comment-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ taskMarkdownHtml(row.body, context, false, taskMarkdownScope(context, "comment", row.key))}</div>
       ${attachmentListHtml(row.attachments, { className: "task-comment-attachments" }) || '<div class="thread-attachments task-comment-attachments" hidden></div>'}
       ${commentRepliesHtml(row, context)}
-      ${row.anchor || row.opinion || row.replyTo ? `<button class="btn" type="button" data-review-reply="${esc(row.key)}">Reply</button>` : ""}
     </div>
   </li>`;
 

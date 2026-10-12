@@ -13,13 +13,18 @@ async function mountRealNavigationPicker(page, basePath) {
   await loadBrowserModules(page, { realApp: "src/app.js?navigation-real-router" }, basePath);
   await page.evaluate(() => {
     Object.assign(window.__layoutModules, window.__realRouterBaseModules);
-    const { realApp, app } = window.__layoutModules;
+    const { realApp, app, toolbar } = window.__layoutModules;
     app.App.gated = true;
     realApp.initRouter();
     // Delegate before the fixture guard, so production go owns the decision,
     // attempt arbitration and commit. This promise counts accepted outcomes.
     window.__navigationHarness.go = (next, options) => {
-      window.__pendingPickerNavigation = Promise.resolve(realApp.go(next, options));
+      window.__pendingPickerNavigation = Promise.resolve(realApp.go(next, options)).then((accepted) => {
+        // Gating skips live surfaces. Repaint the cached toolbar as standShell
+        // normally does, only after production go actually commits.
+        if (accepted) toolbar.toolbarRouteChanged();
+        return accepted;
+      });
       return window.__pendingPickerNavigation;
     };
   });
@@ -69,6 +74,19 @@ for (const scope of ["global", "local"]) for (const outcome of ["removed", "fini
         expect(accepted).toBe(true);
         expect(await page.evaluate(() => history.length)).toBe(before.entries + 1);
         expect(await page.evaluate(() => location.hash)).toBe(targetHash);
+        expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({
+          name: "workspace", deviceId: key.split("/")[0], workspaceId: key.split("/")[1],
+        });
+        const previousAt = before.visits.find((row) => row.kind === "workspace" && row.key === key)?.at || 0;
+        await page.waitForFunction(async ({ key, previousAt }) => {
+          const { ui, visits } = window.__layoutModules;
+          const rows = (await ui.readUiRecord(visits.navigationVisitAddress))?.value || [];
+          return rows.find((row) => row.kind === "workspace" && row.key === key)?.at > previousAt;
+        }, { key, previousAt });
+        expect(await page.evaluate(async (key) => {
+          const { ui, visits } = window.__layoutModules;
+          return (await ui.readUiRecord(visits.navigationVisitAddress)).value.filter((row) => row.kind === "workspace" && row.key === key).length;
+        }, key)).toBe(1);
       } else {
         expect(accepted).toBe(false);
         const after = await page.evaluate(async () => {

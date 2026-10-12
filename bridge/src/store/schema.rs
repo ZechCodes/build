@@ -276,6 +276,9 @@ CREATE TABLE IF NOT EXISTS tracker_dependency_reconcile (
 );
 CREATE INDEX IF NOT EXISTS tracker_reconcile_by_source
     ON tracker_dependency_reconcile(source_task_id, id DESC);
+CREATE INDEX IF NOT EXISTS tracker_reconcile_lifecycle_causes
+    ON tracker_dependency_reconcile(source_task_id, id DESC)
+    WHERE fanout = 1 AND cause_event_ids <> '[]';
 -- Transition receipts are retained for W2 to admit notices/delivery. A read
 -- or an old assignment can never create one.
 CREATE TABLE IF NOT EXISTS tracker_dependency_outbox (

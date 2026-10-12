@@ -16,7 +16,8 @@ pub(in crate::store) fn note_task_write(tx: &Transaction, task: &Task) -> Result
     if project != task.project_path || number != task.number as i64 {
         return Err(invalid("task project and number are immutable"));
     }
-    let unresolved = reads::forward(tx, &task.id)?.iter().any(|d| !d.resolved);
+    let forward = reads::forward(tx, &task.id)?;
+    let unresolved = forward.iter().any(|d| !d.resolved);
     if status != task.status
         && unresolved
         && !task.is_finished()
@@ -27,6 +28,7 @@ pub(in crate::store) fn note_task_write(tx: &Transaction, task: &Task) -> Result
     if state == task.state.as_str() && status == task.status && title == task.title {
         return Ok(());
     }
+    invalidate_reverse_blocks(tx, &forward)?;
     let affected: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM tracker_task_dependencies WHERE task_id = ?1)
         OR EXISTS(SELECT 1 FROM tracker_task_dependencies WHERE waiting_on_task_id = ?1)",
@@ -42,6 +44,18 @@ pub(in crate::store) fn note_task_write(tx: &Transaction, task: &Task) -> Result
     Ok(())
 }
 
+/// A dependent's digest appears in each prerequisite's reverse Blocks list.
+/// Forward edges are bounded at twenty and share this task write's transaction.
+fn invalidate_reverse_blocks(
+    tx: &Transaction,
+    forward: &[super::DependencyDigest],
+) -> Result<(), StoreError> {
+    for edge in forward {
+        changed(tx, &edge.task_id)?;
+    }
+    Ok(())
+}
+
 /// Attach lifecycle causes to the marker this write just created. Additional
 /// review events append to that same marker; readiness events never become
 /// their own causes. Plain title writes legitimately have no timeline cause.
@@ -49,10 +63,15 @@ pub(in crate::store) fn note_activity(
     tx: &Transaction,
     events: &[TaskEvent],
 ) -> Result<(), StoreError> {
-    for event in events
-        .iter()
-        .filter(|e| !matches!(e.kind, TaskEventKind::Blocked | TaskEventKind::Unblocked))
-    {
+    for event in events.iter().filter(|e| {
+        matches!(
+            e.kind,
+            TaskEventKind::Moved
+                | TaskEventKind::Closed
+                | TaskEventKind::Reopened
+                | TaskEventKind::ReviewCompleted
+        )
+    }) {
         let marker: Option<(i64, String)> = tx.query_row(
             "SELECT id, cause_event_ids FROM tracker_dependency_reconcile WHERE source_task_id = ?1 AND at = ?2 AND self_done = 0 ORDER BY id DESC LIMIT 1",
             params![event.task_id, event.at], |r| Ok((r.get(0)?, r.get(1)?)),
@@ -189,7 +208,8 @@ fn transition(
 /// A live readiness check may see a later prerequisite write before its
 /// queued page runs. Preserve that write's cause too, rather than attributing
 /// a fan-in release solely to the first marker the service happened to drain.
-/// Each of the at most twenty edges seeks only its newest pending marker.
+/// Each of the at most twenty edges seeks its newest pending lifecycle cause
+/// through a partial index; later metadata and graph edits cannot hide it.
 fn current_causes(
     tx: &Transaction,
     forward: &[super::DependencyDigest],
@@ -198,7 +218,7 @@ fn current_causes(
     let mut result = causes.to_vec();
     for edge in forward {
         let raw: Option<String> = tx.query_row(
-            "SELECT cause_event_ids FROM tracker_dependency_reconcile WHERE source_task_id = ?1 ORDER BY id DESC LIMIT 1",
+            "SELECT cause_event_ids FROM tracker_dependency_reconcile WHERE source_task_id = ?1 AND fanout = 1 AND cause_event_ids <> '[]' ORDER BY id DESC LIMIT 1",
             [&edge.task_id], |r| r.get(0),
         ).optional()?;
         if let Some(raw) = raw {

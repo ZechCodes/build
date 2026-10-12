@@ -41,6 +41,30 @@ impl AppState {
         Ok(listed)
     }
 
+    /// `list_project_agents` — the whole roster of this agent's project's own
+    /// conversation: the pinned coordinator first, then every worker, each
+    /// with its purpose. A project nobody has talked to has no owner yet, and
+    /// reading it mints none.
+    pub(in crate::app) fn project_agent_project_agents(
+        &mut self,
+        owner_id: &str,
+    ) -> Result<Value, String> {
+        let project_id = self.project_agent_project(owner_id)?;
+        let Some(entity_id) = self.project_conversation_run(&project_id) else {
+            return Ok(json!({
+                "project_id": project_id,
+                "entity_id": Value::Null,
+                "agents": [],
+            }));
+        };
+        let mut listed = self.agent_list(&json!({
+            "entity_id": entity_id,
+            "include_project_workers": true,
+        }))?;
+        listed["project_id"] = json!(project_id);
+        Ok(listed)
+    }
+
     /// What a project agent is told it is, on a cold start: the project it is
     /// the agent of, the base it stands in and may only read, and the tools it
     /// has. Never the coding protocol — that one is about phases, a plan and a

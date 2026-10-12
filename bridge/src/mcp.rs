@@ -234,6 +234,23 @@ pub enum BridgeAction {
         role: Option<String>,
         capability: Option<String>,
     },
+    /// The agents of this agent's own project's conversation: the pinned
+    /// coordinator and every worker below it. On both working surfaces, and
+    /// read-only; which project comes from the caller's binding.
+    ListProjectAgents,
+    /// Put one more worker on this agent's own project's conversation. On both
+    /// working surfaces. Always a worker: the bridge alone makes the
+    /// coordinator, so no argument names a purpose.
+    AddProjectAgent {
+        /// Make the new agent watched, so its conversation appears in the user's inbox.
+        notify_user: Option<bool>,
+        harness: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+        name: Option<String>,
+        role: Option<String>,
+        capability: Option<String>,
+    },
     /// Take an agent off one of this project's workspaces. Project only.
     RemoveWorkspaceAgent {
         workspace_id: String,
@@ -510,6 +527,8 @@ impl BridgeAction {
             BridgeAction::CreateWorkspace { .. } => "create_workspace",
             BridgeAction::AddWorkspaceAgent { .. } => "add_workspace_agent",
             BridgeAction::RemoveWorkspaceAgent { .. } => "remove_workspace_agent",
+            BridgeAction::ListProjectAgents => "list_project_agents",
+            BridgeAction::AddProjectAgent { .. } => "add_project_agent",
             BridgeAction::MessageAgent { .. } => "message_agent",
             BridgeAction::MessageWorkspaceAgent { .. } => "message_workspace_agent",
             BridgeAction::DeleteWorkspace { .. } => "delete_workspace",
@@ -575,6 +594,8 @@ impl BridgeAction {
             | BridgeAction::CreateWorkspace { .. }
             | BridgeAction::AddWorkspaceAgent { .. }
             | BridgeAction::RemoveWorkspaceAgent { .. }
+            | BridgeAction::ListProjectAgents
+            | BridgeAction::AddProjectAgent { .. }
             | BridgeAction::MessageWorkspaceAgent { .. }
             | BridgeAction::DeleteWorkspace { .. }
             | BridgeAction::AddWorkspaceDirectory { .. }
@@ -1575,6 +1596,28 @@ impl DoneServer {
                     "required": ["workspace_id", "directory_id"]
                 }
             }),
+            json!({
+                "name": "list_project_agents",
+                "description": "The agents of your project's own conversation, in rail order: the project's pinned agent first, then every worker that works in the project's original sources. Each says who it is, what it runs on, its project_role and whether it is working right now. Which project is read comes from who you are. Message one with message_agent.",
+                "inputSchema": { "type": "object", "properties": {} }
+            }),
+            json!({
+                "name": "add_project_agent",
+                "description": "Put a new worker on your project's own conversation. It works directly in the project's original sources, shared with the user and every other agent there; use create_workspace and add_workspace_agent instead for work that should not touch them. Nothing is said to the agent until you message it or assign it a task. The agent is unwatched unless you pass notify_user: true.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "role": Self::role_enum(),
+                        "capability": Self::capability_enum(),
+                        "harness": Self::harness_enum(),
+                        "model": { "type": "string", "description": "A model id, when the user named one. list_harnesses is where the ids are. Omit to take the user's own choice for the role." },
+                        "effort": Self::effort_enum(),
+                        "name": { "type": "string", "minLength": 1, "description": "Required. A short name describing the agent's job, like \"Docs writer\". It is what you and the user will see instead of \"Agent 2\"." },
+                        "notify_user": { "type": "boolean", "description": "Watch this new agent and show it in the USER's inbox. Off by default: pass true only when the user asked to follow its work." }
+                    },
+                    "required": ["name"]
+                }
+            }),
         ]
     }
 
@@ -2296,6 +2339,18 @@ fn workspace_tool_action(
                     agent_id: optional_argument(params, "agent_id"),
                     body: required_argument(params, "body")?,
                 })
+            })
+        }
+        "list_project_agents" => Ok(BridgeAction::ListProjectAgents),
+        "add_project_agent" => {
+            required_created_agent_name(params, "name").map(|name| BridgeAction::AddProjectAgent {
+                notify_user: optional_flag(params, "notify_user"),
+                harness: optional_argument(params, "harness"),
+                model: optional_argument(params, "model"),
+                effort: optional_argument(params, "effort"),
+                name: Some(name),
+                role: optional_argument(params, "role"),
+                capability: optional_argument(params, "capability"),
             })
         }
         "delete_workspace" => required_argument(params, "workspace_id")
@@ -3130,7 +3185,7 @@ mod tests {
     /// surface's own — a coding agent never sees a router tool, a router never
     /// sees a coding one, and the two verbs that change what a project is made
     /// of are the project agent's alone.
-    const WORKSPACE_TOOLS: [&str; 10] = [
+    const WORKSPACE_TOOLS: [&str; 12] = [
         "list_workspaces",
         "list_workspace_agents",
         "create_workspace",
@@ -3141,6 +3196,8 @@ mod tests {
         "delete_workspace",
         "add_workspace_directory",
         "remove_workspace_directory",
+        "list_project_agents",
+        "add_project_agent",
     ];
 
     /// The task tracker and review inventory shared between the two

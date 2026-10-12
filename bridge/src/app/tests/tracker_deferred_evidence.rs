@@ -114,6 +114,9 @@ impl WaitingDelivery {
     fn frozen(&mut self, target: Value) -> DeliveryIntent {
         let intent = self.assign(target);
         self.release();
+        // Fixtures may have additional prerequisite or link edits queued.
+        // Drain graph pages before aiming at the message admission boundary.
+        self.reconcile();
         self.app
             .stop_task_delivery_after_for_test(DeferredDeliveryBoundary::Frozen);
         assert!(self.app.pump_task_deliveries_for_test().unwrap());

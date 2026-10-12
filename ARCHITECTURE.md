@@ -2458,6 +2458,12 @@ its native tooltip. Unknown model families leave no badge. Task headers and
 agent-message attribution read the already held feed, and changes to cached
 roster models or efforts also invalidate the thread paint.
 
+Usage limits remain cached per device in `spa/src/core/usageLimits.js`. The
+conversation banner filters those records by the selected agent's provider
+family from `providerCatalog.js`, so Claude headless and TUI carriers share
+their limits without displaying them on Codex sessions. Rail switches reread
+the provider in focus; the overview and new-agent chooser show no session limit.
+
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence
 baseline on the agent; task watches persist a timeline entry baseline

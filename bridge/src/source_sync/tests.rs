@@ -509,3 +509,26 @@ fn linked_worktrees_share_the_repository_sync_lock() {
     drop(first);
     assert!(SyncLock::acquire(&linked, Duration::ZERO).is_some());
 }
+
+#[test]
+fn ordered_source_mutation_locks_deduplicate_linked_checkouts() {
+    let pair = pair();
+    let linked = pair.base.parent().unwrap().join("linked-mutation");
+    git_in(
+        &pair.base,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "mutation",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let paths = vec![linked.clone(), pair.base.clone(), pair.base.clone()];
+    let held = SyncLock::acquire_many(&paths, Duration::from_secs(1)).unwrap();
+    assert_eq!(held.len(), 1);
+    assert!(SyncLock::acquire(&linked, Duration::ZERO).is_none());
+    drop(held);
+    assert!(SyncLock::acquire(&pair.base, Duration::ZERO).is_some());
+}

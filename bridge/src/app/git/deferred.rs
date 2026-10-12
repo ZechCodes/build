@@ -21,6 +21,30 @@ pub(in crate::app) struct DeferredGit {
 }
 
 impl GitCallScope for GitScope {
+    fn mutation_path(&self) -> Option<&std::path::Path> {
+        // Selector identity does not determine repository identity: adopted
+        // workspace aliases can reach the original source, and linked worktrees
+        // share refs. SyncLock canonicalizes the resolved common Git directory.
+        Some(self.repo_path.as_path())
+    }
+
+    fn validate(&self, app: &AppState) -> Result<(), String> {
+        if let Some(source) = &self.source {
+            app.validate_source_location(source)?;
+        } else if let Some(project_id) = &self.project_id {
+            if self.run.is_none()
+                && self.worktree.is_none()
+                && !app
+                    .projects
+                    .get(project_id)
+                    .is_some_and(|project| project.repo_path == self.repo_path)
+            {
+                return Err(super::super::projects::MOVED_GIT_SOURCE.to_string());
+            }
+        }
+        Ok(())
+    }
+
     fn invalidate(&self, app: &mut AppState) {
         if app.git_scope_is_current(self) {
             app.invalidate_git_scope_caches(self);
@@ -30,6 +54,26 @@ impl GitCallScope for GitScope {
 
 impl<S: GitCallScope> DeferredGitWork for ScopedGitCall<S> {
     fn run(&self, params: &Value) -> Result<Value, String> {
+        let _held = if self.serialized {
+            self.scope
+                .mutation_path()
+                .map(|path| {
+                    crate::source_sync::SyncLock::acquire(
+                        path,
+                        crate::source_sync::SERVICE_FETCH_DEADLINE,
+                    )
+                    .map(|(held, _)| held)
+                    .ok_or_else(|| {
+                        "Another source operation is still running; try again.".to_string()
+                    })
+                })
+                .transpose()?
+        } else {
+            None
+        };
+        if let Some(state) = self.state.as_ref().and_then(std::sync::Weak::upgrade) {
+            self.scope.validate(&state.lock().unwrap())?;
+        }
         (self.work)(&self.scope, params)
     }
 
@@ -67,6 +111,12 @@ pub(in crate::app) trait DeferredGitWork: Send {
 /// caches once a call against it has changed the tree.
 pub(in crate::app) trait GitCallScope: Send {
     fn invalidate(&self, app: &mut AppState);
+    fn mutation_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+    fn validate(&self, _app: &AppState) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// One resolved scope and the call to make against it.
@@ -74,8 +124,11 @@ pub(in crate::app) trait GitCallScope: Send {
 /// The scope and the function are one value because they are one decision —
 /// the verb that defers the work picks both at once, and no other pairing can
 /// be spelled. The call itself is a plain function of the scope and the
-/// request, so it holds no state and cannot reach the daemon while it runs.
+/// request, so it holds no state. Only the scope preflight briefly rechecks app records
+/// after its source lock acquisition.
 pub(in crate::app) struct ScopedGitCall<S: GitCallScope> {
     pub(in crate::app) scope: S,
     pub(in crate::app) work: fn(&S, &Value) -> Result<Value, String>,
+    pub(in crate::app) serialized: bool,
+    pub(in crate::app) state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
 }

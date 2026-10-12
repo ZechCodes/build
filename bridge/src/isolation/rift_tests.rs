@@ -351,3 +351,48 @@ fn cloned_managers_serialize_first_rift_initialization() {
         .find_reference("refs/heads/build/parallel-two")
         .is_ok());
 }
+
+/// #530 pins the configured base before the provider copies the checkout.
+/// The fake provider exercises Rift normalization without a real CLI or registry.
+#[test]
+fn pinned_workspace_cut_preserves_local_base_with_fake_rift() {
+    let (dir, project) = init_repo();
+    std::fs::write(project.join(".gitignore"), ".cache/\n").unwrap();
+    let local = commit(&project, "local-base");
+    git_in(&project, &["switch", "-q", "-c", "other"]);
+    commit(&project, "other-work");
+    std::fs::write(project.join("README.md"), "unsaved\n").unwrap();
+    std::fs::create_dir(project.join(".cache")).unwrap();
+    std::fs::write(project.join(".cache/warm"), "cache\n").unwrap();
+    let root = dir.path().join("workspaces");
+    let destination = root.join("cut");
+    crate::worktree::WorktreeManager::new(&project, &root)
+        .with_rift_executable(fake_rift(dir.path()))
+        .create_workspace_checkout_from(
+            "cut",
+            "main",
+            Some(&local.to_string()),
+            &destination,
+            Isolation::Rift,
+        )
+        .unwrap();
+    assert_eq!(
+        git2::Repository::open(&destination)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target(),
+        Some(local)
+    );
+    assert!(destination.join("local-base.txt").exists());
+    assert!(!destination.join("other-work.txt").exists());
+    assert!(destination.join(".cache/warm").exists());
+    assert_ne!(
+        std::fs::read_to_string(destination.join("README.md")).unwrap(),
+        "unsaved\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("README.md")).unwrap(),
+        "unsaved\n"
+    );
+}

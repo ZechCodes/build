@@ -58,6 +58,25 @@ count toward 100/100; planning does not satisfy these controls.
 | RI522-1 | Project workers are explicitly unisolated; creating an isolated workspace preserves configured-base/local-commit and existing provider copy rules, never silently switches to current source HEAD. | C2/C10: workspace_cut_preserves_local_base_commits; existing Rift/worktree cut regressions. |
 | RI522-2 | Project scratch owner and original sources never enter workspace reclaim; worker removal and whole-project deletion remove only owned artifacts and preserve source trees. | C5/C10: workspace_reclaim_never_reclaims_project_agents; project deletion with workers and shells. |
 
+
+### #530 (C2) evidence — configured-base cuts
+
+C2 verifies RI522-1's cut/provider portion. Worker prompts and the combined
+journey remain with their owning children; this does not claim those are shipped.
+
+- `workspace_cut_preserves_local_base_commits` drives real bridge workspace
+  creation on temporary repositories with sync enabled and disabled: local
+  configured-base commits are included and disclosed, another current branch
+  is excluded, and source dirt survives.
+- `pinned_workspace_cut_preserves_local_base_with_fake_rift` uses the existing
+  fake CLI to verify the exact base OID, removal of copied tracked dirt, retained
+  ignored cache files, and an unchanged original source. No provider skips.
+- The source-sync suite (78 passing tests) retains #271's fetched-commit and
+  slow-checkout regressions. Exact-head full gates are recorded on #530.
+
+The ten original integration controls remain verified. The remaining #522
+extension scope stays pending until its owning children and #538 pass.
+
 C5 evidence (#533; RI522-2 stays pending until C10 adds project deletion
 with source shells): `workspace_reclaim_never_reclaims_project_agents` (the
 owner is no reclaim subject, and reclaiming a named workspace leaves the pin,

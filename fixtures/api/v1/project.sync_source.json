@@ -9,8 +9,29 @@
     "pending": true
   },
   "errors": [
+    "conflict",
     "not_found",
     "invalid_params",
     "internal"
+  ],
+  "source_path": {
+    "since": "3.21.0",
+    "capability": "sources.syncBasePath",
+    "meaning": "Captured registered source location, revalidated after queueing and lock wait; never a caller-selected root.",
+    "refused_with": {
+      "moved": "conflict"
+    }
+  },
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/tmp/project/docs"
+      },
+      "result": {
+        "pending": true
+      }
+    }
   ]
 }

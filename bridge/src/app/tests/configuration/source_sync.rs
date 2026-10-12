@@ -1,11 +1,15 @@
 //! Keeping each source's base branch in step with its remote (#267): the
 //! setting and its default, the service's passes, `project.sync_source`, and
-//! the sync a workspace cut runs first.
+//! the sync a workspace cut runs first. Build's own Git on an original source
+//! takes its turn with those syncs (#530).
 
 use super::*;
 use crate::app::projects::{SYNC_BASE_FOR_EXISTING_SOURCES, SYNC_BASE_FOR_NEW_SOURCES};
+use crate::app::tests::workflow::lifecycle_offlock::frame_on_a_thread;
 use crate::app::SyncPass;
+use crate::source_sync::{sync_base, Fetch, SyncLock, SyncOutcome};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -517,5 +521,388 @@ fn the_agent_that_asked_for_the_workspace_hears_its_base_may_be_stale() {
         assigned["warnings"].as_array().map(Vec::len),
         Some(1),
         "{assigned}"
+    );
+}
+
+/// The scope a client holding a source's row sends for its Git.
+fn source_scope(project_id: &str, source_id: &str, path: &Path) -> Value {
+    json!({ "project_id": project_id, "source_id": source_id, "source_path": path.display().to_string() })
+}
+
+fn with(scope: &Value, extra: Value) -> Value {
+    let mut params = scope.clone();
+    params
+        .as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    params
+}
+
+/// How long a test lets a frame that should be waiting go unanswered before
+/// it takes the silence as waiting.
+const STILL_WAITING: Duration = Duration::from_millis(400);
+const ANSWERED_WITHIN: Duration = Duration::from_secs(30);
+
+/// Build's own Git on an original source takes its turn behind a base sync
+/// of the same repository instead of racing it (#530, PS522-4), and waits
+/// with the app mutex free: other frames, a status read of that very source
+/// among them, are answered meanwhile. The stage asked for while the sync
+/// held the source lands after it, so the sync found the index clean and
+/// fast-forwarded; the commit then lands on top of what the sync brought,
+/// and the uncommitted file survives both.
+#[test]
+fn project_source_mutation_serializes_with_base_sync() {
+    let Fixture {
+        _dir,
+        state,
+        project_id,
+        code_upstream,
+        code,
+        ..
+    } = fixture();
+    advance(&code_upstream, "news.txt");
+    std::fs::write(code.join("work.txt"), "mine\n").unwrap();
+    std::fs::write(code.join("scratch.txt"), "unsaved\n").unwrap();
+    let scope = source_scope(&project_id, "source-1", &code);
+    let state = state.shared();
+
+    let (held, _) = SyncLock::acquire(&code, Duration::from_secs(1)).unwrap();
+    let staging = frame_on_a_thread(
+        &state,
+        "stage",
+        "git.stage",
+        with(&scope, json!({ "paths": ["work.txt"] })),
+    );
+    assert!(
+        staging.recv_timeout(STILL_WAITING).is_err(),
+        "the stage waits for the sync holding the source"
+    );
+    assert!(state.try_lock().is_ok(), "the wait holds the app mutex");
+    let status = frame_on_a_thread(&state, "status", "git.status", scope.clone())
+        .recv_timeout(ANSWERED_WITHIN)
+        .expect("a read of the same source is answered while the stage waits");
+    assert_eq!(status["ok"], true, "{status}");
+    let listed = frame_on_a_thread(&state, "list", "project.list", json!({}))
+        .recv_timeout(ANSWERED_WITHIN)
+        .expect("an unrelated frame is answered while the stage waits");
+    assert_eq!(listed["ok"], true, "{listed}");
+
+    // What the service does with the lock it holds: the index is still
+    // clean, so the base fast-forwards.
+    let synced = sync_base(&code, "main", Fetch::Within(Duration::from_secs(10)));
+    assert!(
+        matches!(synced.outcome, SyncOutcome::FastForwarded { commits: 1 }),
+        "{synced:?}"
+    );
+    drop(held);
+
+    let staged = staging.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(staged["ok"], true, "{staged}");
+    let committed = frame_on_a_thread(
+        &state,
+        "commit",
+        "git.commit",
+        with(&scope, json!({ "message": "my work" })),
+    )
+    .recv_timeout(ANSWERED_WITHIN)
+    .unwrap();
+    assert_eq!(committed["ok"], true, "{committed}");
+    assert_eq!(head(&code, "main^"), head(&code_upstream, "main"));
+    assert!(code.join("news.txt").exists() && code.join("work.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(code.join("scratch.txt")).unwrap(),
+        "unsaved\n"
+    );
+}
+
+#[test]
+fn legacy_workspace_source_mutation_serializes_with_base_sync() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let (upstream, code) = clone_of_upstream(&root, "code");
+    let config = root.join("config.json");
+    std::fs::write(&config, b"{}").unwrap();
+    let mut state = configured(&root, &config);
+    let opened = state.handle(req(
+        "project.create",
+        json!({"name": "single", "sources": [{"path": code}]}),
+    ));
+    assert_eq!(opened["ok"], true, "{opened}");
+    let project_id = opened["result"]["project_id"].as_str().unwrap();
+    let workspace_id = format!("legacy-{project_id}");
+    assert!(state.workspaces.get(&workspace_id).is_none());
+    advance(&upstream, "news.txt");
+    std::fs::write(code.join("work.txt"), "mine\n").unwrap();
+    let state = state.shared();
+
+    let (held, _) = SyncLock::acquire(&code, Duration::ZERO).unwrap();
+    // No workspace.get first: ordinary staging lazily adopts the source alias.
+    let staging = frame_on_a_thread(
+        &state,
+        "stage",
+        "git.stage",
+        json!({"workspace_id": workspace_id, "source_id": "source-1", "paths": ["work.txt"]}),
+    );
+    assert!(
+        staging.recv_timeout(STILL_WAITING).is_err(),
+        "legacy workspace staging must wait for the sync holding the source"
+    );
+    assert!(state.try_lock().is_ok(), "the wait holds the app mutex");
+    let listed = frame_on_a_thread(&state, "list", "project.list", json!({}))
+        .recv_timeout(ANSWERED_WITHIN)
+        .expect("project.list remains responsive while legacy staging waits");
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert!(
+        crate::git_fixture::git_command(&code, &["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap()
+            .stdout
+            .is_empty(),
+        "legacy staging must not change the original index while sync holds the lock"
+    );
+    let synced = sync_base(&code, "main", Fetch::Within(Duration::from_secs(10)));
+    assert!(
+        matches!(synced.outcome, SyncOutcome::FastForwarded { commits: 1 }),
+        "{synced:?}"
+    );
+    drop(held);
+
+    let staged = staging.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(staged["ok"], true, "{staged}");
+    assert_eq!(head(&code, "HEAD"), head(&upstream, "main"));
+    assert_eq!(
+        crate::git_fixture::git_command(&code, &["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap()
+            .stdout,
+        b"work.txt\n"
+    );
+}
+
+#[test]
+fn workspace_cut_preserves_local_base_commits() {
+    for sync_base in [true, false] {
+        let mut fixture = fixture();
+        fixture.update("source-1", json!({"sync_base": sync_base}));
+        advance(&fixture.code, "local.txt");
+        let local = head(&fixture.code, "main");
+        git_in(&fixture.code, &["switch", "-q", "-c", "other"]);
+        advance(&fixture.code, "other.txt");
+        std::fs::write(fixture.code.join("README.md"), "unsaved\n").unwrap();
+        let created = fixture.state.handle(req(
+            "workspace.create",
+            json!({"project_id": fixture.project_id, "name": "local", "isolation": "worktree"}),
+        ));
+        assert_eq!(created["ok"], true, "{created}");
+        let checkout = checkout_of(&created["result"], "code");
+        assert_eq!(head(&checkout, "HEAD"), local);
+        assert!(checkout.join("local.txt").exists());
+        assert!(!checkout.join("other.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(fixture.code.join("README.md")).unwrap(),
+            "unsaved\n"
+        );
+        assert_eq!(head(&fixture.code, "main"), local);
+        let warnings = created["result"]["warnings"].to_string();
+        assert!(
+            warnings.contains("1 local commit") && warnings.contains("included"),
+            "{created}"
+        );
+    }
+}
+
+#[test]
+fn moved_source_mutation_refuses_after_sync_lock_wait() {
+    let fixture = fixture();
+    std::fs::write(fixture.docs.join("work.txt"), "mine\n").unwrap();
+    let scope = source_scope(&fixture.project_id, "source-2", &fixture.docs);
+    let shared = fixture.state.shared();
+    let (held, _) = SyncLock::acquire(&fixture.docs, Duration::ZERO).unwrap();
+    let staging = frame_on_a_thread(
+        &shared,
+        "stage",
+        "git.stage",
+        with(&scope, json!({"paths": ["work.txt"]})),
+    );
+    assert!(staging.recv_timeout(STILL_WAITING).is_err());
+    // Simulate a source record changing while the operation waits. Production
+    // updates also take the source lock; the check must defend stale queued work.
+    shared
+        .lock()
+        .unwrap()
+        .projects
+        .source_mut(&fixture.project_id, "source-2")
+        .unwrap()
+        .path = fixture.code.clone();
+    drop(held);
+    let reply = staging.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error_code"], "conflict", "{reply}");
+    assert!(
+        crate::git_fixture::git_command(&fixture.docs, &["diff", "--cached", "--name-only"])
+            .output()
+            .unwrap()
+            .stdout
+            .is_empty()
+    );
+}
+
+#[test]
+fn sync_source_captured_path_survives_queue_and_lock_wait() {
+    let fixture = fixture();
+    let upstream = fixture.root.join("docs-upstream");
+    advance(&upstream, "remote.txt");
+    let before = head(&fixture.docs, "origin/main");
+    let shared = fixture.state.shared();
+    let stale = frame_on_a_thread(
+        &shared,
+        "stale",
+        "project.sync_source",
+        source_scope(&fixture.project_id, "source-2", &fixture.code),
+    )
+    .recv_timeout(ANSWERED_WITHIN)
+    .unwrap();
+    assert_eq!(stale["error_code"], "conflict", "{stale}");
+    let asked = frame_on_a_thread(
+        &shared,
+        "sync",
+        "project.sync_source",
+        source_scope(&fixture.project_id, "source-2", &fixture.docs),
+    )
+    .recv_timeout(ANSWERED_WITHIN)
+    .unwrap();
+    assert_eq!(asked["ok"], true, "{asked}");
+    let (held, _) = SyncLock::acquire(&fixture.docs, Duration::ZERO).unwrap();
+    let state = Arc::clone(&shared);
+    let syncing =
+        std::thread::spawn(move || AppState::sync_sources(&state, SyncPass::Requested, 1_000));
+    // Wait until the service has captured its subject and drained the queue.
+    let deadline = std::time::Instant::now() + ANSWERED_WITHIN;
+    loop {
+        if shared.lock().unwrap().source_sync_requested.is_empty() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    shared
+        .lock()
+        .unwrap()
+        .projects
+        .source_mut(&fixture.project_id, "source-2")
+        .unwrap()
+        .path = fixture.code.clone();
+    drop(held);
+    syncing.join().unwrap();
+    assert_eq!(
+        head(&fixture.docs, "origin/main"),
+        before,
+        "stale sync must not even fetch the old source"
+    );
+    let state = shared.lock().unwrap();
+    assert!(state.projects.get(&fixture.project_id).unwrap().sources[1]
+        .sync_status
+        .is_none());
+}
+
+#[test]
+fn source_settings_wait_for_base_sync_without_holding_app_mutex() {
+    let fixture = fixture();
+    let shared = fixture.state.shared();
+    let (held, _) = SyncLock::acquire(&fixture.docs, Duration::ZERO).unwrap();
+    let update = frame_on_a_thread(
+        &shared,
+        "update",
+        "project.update_source",
+        json!({"project_id": fixture.project_id, "source_id": "source-2", "name": "renamed"}),
+    );
+    assert!(update.recv_timeout(STILL_WAITING).is_err());
+    assert!(shared.try_lock().is_ok());
+    drop(held);
+    assert_eq!(update.recv_timeout(ANSWERED_WITHIN).unwrap()["ok"], true);
+}
+
+#[test]
+fn manual_sync_does_not_follow_a_source_moved_before_queue_drain() {
+    let mut fixture = fixture();
+    let before = head(&fixture.docs, "origin/main");
+    advance(&fixture.root.join("docs-upstream"), "remote.txt");
+    let asked = fixture.state.handle(req(
+        "project.sync_source",
+        source_scope(&fixture.project_id, "source-2", &fixture.docs),
+    ));
+    assert_eq!(asked["ok"], true, "{asked}");
+    fixture
+        .state
+        .projects
+        .source_mut(&fixture.project_id, "source-2")
+        .unwrap()
+        .path = fixture.code.clone();
+    let fixture = fixture.pass(SyncPass::Requested);
+    assert_eq!(head(&fixture.docs, "origin/main"), before);
+    assert!(fixture.row_source("source-2")["sync"].is_null());
+}
+
+/// Waiting for a source Git mutation is not evidence that anybody fetched.
+/// A clean source behind its upstream must still cut from the fetched commit.
+#[test]
+fn workspace_cut_fetches_after_waiting_for_a_source_mutation() {
+    let fixture = fixture();
+    advance(&fixture.code_upstream, "incoming.txt");
+    let shared = fixture.state.shared();
+    let (held, _) = SyncLock::acquire(&fixture.code, Duration::ZERO).unwrap();
+    let cutting = frame_on_a_thread(
+        &shared,
+        "cut",
+        "workspace.create",
+        json!({"project_id": fixture.project_id, "name": "waited", "isolation": "worktree"}),
+    );
+    assert!(cutting.recv_timeout(STILL_WAITING).is_err());
+    drop(held); // A mutation's turn ended, without a fetch.
+    let reply = cutting.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(
+        checkout_of(&reply["result"], "code")
+            .join("incoming.txt")
+            .exists(),
+        "a waited source mutation must not suppress the cut's fetch: {reply}"
+    );
+}
+
+#[test]
+fn a_cut_refused_after_a_source_move_removes_its_unpublished_root() {
+    let fixture = fixture();
+    let replacement = init_repo_named(&fixture.root, "replacement");
+    let shared = fixture.state.shared();
+    let project_root = shared
+        .lock()
+        .unwrap()
+        .workspaces
+        .root()
+        .join(&fixture.project_id);
+    let (held, _) = SyncLock::acquire(&fixture.docs, Duration::ZERO).unwrap();
+    let cutting = frame_on_a_thread(
+        &shared,
+        "cut",
+        "workspace.create",
+        json!({"project_id": fixture.project_id, "name": "moved", "isolation": "worktree"}),
+    );
+    assert!(cutting.recv_timeout(STILL_WAITING).is_err());
+    shared
+        .lock()
+        .unwrap()
+        .projects
+        .source_mut(&fixture.project_id, "source-2")
+        .unwrap()
+        .path = replacement;
+    drop(held);
+    let reply = cutting.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error_code"], "conflict", "{reply}");
+    assert!(
+        std::fs::read_dir(project_root)
+            .unwrap()
+            .all(|entry| !entry.unwrap().path().is_dir()),
+        "a refused cut left its unpublished staging root behind"
     );
 }

@@ -63,12 +63,14 @@ async function rowFill(row, expectedFill, state) {
   }, { expectedFill, state });
 }
 
-function expectedFill(context, state) {
+function expectedFill(context, state, theme) {
   if (context.projectPage && state.hover) return "var(--line2)";
   const inActiveBlock = context.grouped && context.activeProject;
   const standing = inActiveBlock ? "color-mix(in srgb, var(--accent-soft) 90%, var(--accent-ink))" : "var(--accent-soft)";
   const base = state.active ? standing : inActiveBlock ? "var(--accent-soft)" : "var(--panel)";
-  return state.hover ? `color-mix(in srgb, var(--bg) 12%, ${base})` : base;
+  const ink = theme === "light" ? "var(--ink)" : "rgb(from var(--accent-ink) calc(r * .1) calc(g * .1) calc(b * .1))";
+  const weight = theme === "light" ? "12%" : "70%";
+  return state.hover ? `color-mix(in srgb, ${ink} ${weight}, ${base})` : base;
 }
 
 it("samples final row and overlay fills while their colour transitions are pending", async () => {
@@ -137,7 +139,7 @@ for (const theme of ["light", "dark"]) {
             for (const state of states) {
               await session.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: state.hover ? ["hover"] : [] });
               const label = `${context.label}: ${key}, ${state.label}`;
-              const fill = await rowFill(row, expectedFill(context, state), state);
+              const fill = await rowFill(row, expectedFill(context, state, theme), state);
               expect(fill.connected, label).toBe(true);
               expect(fill.active, label).toBe(Boolean(state.active));
               expect(fill.hovered, label).toBe(Boolean(state.hover));

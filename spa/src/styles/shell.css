@@ -29,8 +29,7 @@
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
   --inbox-rest-fill:var(--panel); --inbox-row-fill:var(--panel);
   --inbox-row-inset-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-inset-right:10px;
-  --inbox-hover-weight:12%;
-  --inbox-hover-shade:color-mix(in srgb, var(--bg) var(--inbox-hover-weight), transparent);
+  --inbox-hover-shade:color-mix(in srgb, var(--inbox-hover-ink) var(--inbox-hover-weight), transparent);
   --chat-glass-opacity:72%;
   --chat-glass-blur:6px;
 }
@@ -326,7 +325,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .srow.inbox-entry.active { background:var(--inbox-standing-fill, var(--accent-soft));
   --inbox-rest-fill:var(--inbox-standing-fill, var(--accent-soft));
   --inbox-row-fill:var(--inbox-rest-fill); --inbox-row-background:var(--inbox-rest-fill); }
-.srow.inbox-entry:hover { --inbox-row-fill:color-mix(in srgb, var(--bg) var(--inbox-hover-weight), var(--inbox-rest-fill));
+.srow.inbox-entry:hover { --inbox-row-fill:color-mix(in srgb, var(--inbox-hover-ink) var(--inbox-hover-weight), var(--inbox-rest-fill));
   background:linear-gradient(var(--inbox-hover-shade), var(--inbox-hover-shade))
     var(--inbox-row-background, var(--inbox-rest-fill)); }
 .inbox-entry.active::before { content:""; position:absolute; left:0; top:6px; bottom:6px;

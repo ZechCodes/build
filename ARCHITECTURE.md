@@ -1774,6 +1774,15 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 ### Files
 
+Workspace directory edits publish their completed workspace result to the
+shared `workspaces` cache list as well as the settings sheet's detail record.
+The mounted workspace view listens to that list: Files reconciles its roots
+in place, and Changes reconciles its tabs and kept directory surfaces. A
+pending directory is listed immediately and loads its tree or Git surface
+when the cache says it is ready. Removing a directory disposes its readers;
+other roots, the open file, the selected surviving tab and the console retain
+their state.
+
 The Files explorer shares directory upload and New folder actions across
 workspace sources, project sources and checkouts. `spa/src/core/filesUploads.js`
 mounts them from cached upload capabilities; `fileUploadRpc.js` checks the
@@ -2323,6 +2332,23 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
+
+Add project (`spa/src/sheets/newRepo.js`) replaces its form with the quiet
+source list in `newRepoProgress.js` while `project.create` runs. Creation's
+internal pending row is not published and the bridge has no per-source
+creation events, so all lines run and settle together. Escape and scrim
+dismissal are blocked only until the request settles. Failure keeps the
+source errors visible; Back restores the draft and focus to Create. Transport
+loss or either RPC deadline shows an unknown outcome and Close, explaining
+that the project may still be being created and will appear in the Projects
+list if it succeeds. The existing transport-error predicate distinguishes
+these from bridge refusals, including uncoded ones. A stable live summary is
+outside the busy actions and atomic announcements exclude the source list. Success
+writes and rereads the project cache before opening it. Dismissing the settled
+sheet prevents a delayed cache write from navigating afterwards. An opening
+or cache failure after successful creation keeps source lines Done and reports
+the opening error separately without repainting the unchanged source list or
+offering another creation attempt. The settled success action is Close.
 
 Agent name badges use the family rule beside `shortModelName` in
 `spa/src/core/agentChoice.js` and the shared painter in `agentModelBadge.js`.

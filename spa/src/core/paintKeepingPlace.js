@@ -215,14 +215,16 @@ function landConversation(scroller, landing, canLand, onLand) {
 
 export function followConversation({ olderItemsPrepended = false, unreadSelector = null, canLand = () => true, onLand = () => {}, fallbackToStart = false } = {}) {
   /// The scrollTop that puts the top of the unread line at the top of the
-  /// viewport, or the caller's fallback when there is no line to land on.
+  /// visible viewport, below any overlaid header declared by scroll padding,
+  /// or the caller's fallback when there is no line to land on.
   /// Never past the end: a line in the last screenful cannot reach the top, and
   /// asking for more than there is would only show the end anyway.
   const landing = (scroller) => {
     const line = unreadSelector && scroller.querySelector(unreadSelector);
     if (!line) return fallbackToStart ? 0 : scroller.scrollHeight;
     const above = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-    const wanted = scroller.scrollTop + above - LINE_HEADROOM_PX;
+    const clearance = parseFloat(getComputedStyle(scroller).scrollPaddingTop) || 0;
+    const wanted = scroller.scrollTop + above - clearance - LINE_HEADROOM_PX;
     return Math.max(0, Math.min(wanted, scroller.scrollHeight - scroller.clientHeight));
   };
   return {

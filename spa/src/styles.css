@@ -1005,7 +1005,16 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* `min-height` is overridden deliberately: the page's textareas stand 96px tall
    by default, and this one opens as ONE line and earns every row after it. */
 .csbox .csinput { flex:1; min-width:0; display:block; resize:none; overflow-y:auto; min-height:0; max-height:240px; }
-.csbox-actions { flex:none; }
+.csbox-actions { flex:none; display:flex; }
+/* The verb serves the review field: a compact outline, with both split halves
+   on the same scale. Keep the shared primary buttons and focus ring intact. */
+.csbox-actions .btn.primary { display:inline-flex; align-items:center; justify-content:center;
+  height:30px; padding:0 10px; font-size:12px; font-weight:500; line-height:1; border-radius:7px;
+  color:var(--accent); border-color:currentColor; background:transparent; white-space:nowrap; }
+.csbox-actions .btn.primary:hover:not(:disabled) { color:var(--accent); border-color:currentColor;
+  background:var(--accent-soft); filter:none; }
+.csbox-actions .splitbtn .btn.primary.caret { padding:0 6px; border-left-color:currentColor; border-radius:0 7px 7px 0; }
+.csbox-actions .splitbtn .btn:only-child { border-radius:7px; }
 .csbox .githint:empty { display:none; }
 .csbox .githint { display:block; padding-bottom:6px; }
 @media (max-width: 720px) { .csbox .csinput { max-height:30vh; } }
@@ -1424,6 +1433,19 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
    Its error slot should take space only when it has a message. */
 #sheet:has(#nrerr) { padding-bottom:22px; }
 #nrerr:empty { display:none; }
+/* Creation is a quiet list of source operations, with no implied percentage. */
+#nrprogress { outline:none; overflow-wrap:anywhere; }
+.nr-progress-sources { list-style:none; padding:0; margin:18px 0; }
+.nr-progress-source { display:flex; align-items:flex-start; gap:12px; padding:12px 0; font-size:13px; line-height:1.5; }
+.nr-progress-source + .nr-progress-source { border-top:1px solid var(--line); }
+.nr-progress-mark { flex:0 0 20px; text-align:center; color:var(--ink2); }
+.nr-progress-detail { min-width:0; }
+.nr-progress-state { color:var(--ink2); font-size:12px; margin-top:4px; }
+[data-source-state="done"] .nr-progress-mark { color:var(--accent); }
+[data-source-state="failed"] .nr-progress-mark,
+[data-source-state="failed"] .nr-progress-state { color:var(--red); }
+.sheet .nr-progress-note { margin:16px 0 0; }
+.sheet #nrprogress-actions[hidden] { display:none; }
 .btn.mini { padding:4px 9px; font-size:12px; }
 .taskactions .btn { padding:4px 9px; font-size:12px; }
 .projfolder { margin-top:14px; font-size:12.5px; color:var(--ink2); display:flex; align-items:center; gap:8px; flex-wrap:wrap; }

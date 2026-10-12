@@ -191,13 +191,15 @@ it("ignores a stale browser choice and enables directory creation in the picker"
 
 // The caller's own rpc refuses when its machine goes: the sheet has no device
 // question of its own, so it shows whatever that refusal says.
-it("shows the message its machine's caller refuses with", async () => {
+it("shows an unknown outcome when its machine's caller goes offline", async () => {
   openSheet(); document.querySelector("#nrproject").value = "docs"; document.querySelector("#nraddremote").click();
   document.querySelector("[data-source-value]").value = "https://example.com/docs.git";
   document.querySelector("[data-source-value]").dispatchEvent(new Event("input"));
   callRpc.mockRejectedValueOnce(new Error("Device offline"));
   document.querySelector("#nrdo").click(); await flush();
-  expect(document.querySelector("#nrerr").textContent).toBe("Device offline");
+  expect(document.querySelector("#nrlosterr").textContent).toBe("Device offline");
+  expect(document.querySelector('[data-source-state="unknown"]')).not.toBeNull();
+  expect(document.querySelector("#nrback")).toBeNull();
 });
 
 // Zech, Sep 27: "show only the device selector then once the device is chosen
@@ -316,7 +318,7 @@ it("never caches a stale projects folder after returning and switching devices",
   expect(openBrowser.mock.calls[1][0].startPath).toBe("/lap-projects");
 });
 
-it("disables device selection while project creation is in flight", async () => {
+it("replaces device selection while project creation is in flight", async () => {
   let finishCreate;
   const lap = vi.fn((method) => method === "project.create"
     ? new Promise((resolve) => { finishCreate = resolve; })
@@ -328,7 +330,8 @@ it("disables device selection while project creation is in flight", async () => 
   remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
 
   document.querySelector("#nrdo").click();
-  expect(document.querySelector("#nrdevice").disabled).toBe(true);
+  expect(document.querySelector("#nrdevice")).toBeNull();
+  expect(document.querySelector("#nrprogress-actions").getAttribute("aria-busy")).toBe("true");
   finishCreate({ project_id: "p1" }); await flush();
 });
 

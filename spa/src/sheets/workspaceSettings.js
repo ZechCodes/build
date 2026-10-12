@@ -28,6 +28,7 @@ import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
+import { upsertSessionRow } from "../core/sessionListCache.js";
 import { subscribeFeed } from "../core/taskFeed.js";
 
 /** The defaults panel's own element ids. Distinct from the account page's
@@ -307,6 +308,9 @@ function wireDirectories(workspace, { callRpc, record, current, deviceId, draft,
       const changed = await callRpc(method, params);
       draft.directory = emptyDirectoryDraft();
       await saveDraft();
+      // Publish to the shared workspace list: the page and other readers all
+      // hear the same mutation, even when the settings sheet has closed.
+      await upsertSessionRow({ deviceId, entityId: "", kind: "workspaces" }, "workspaces", changed);
       await record.write(changed);
     } catch (thrown) {
       button.disabled = false;

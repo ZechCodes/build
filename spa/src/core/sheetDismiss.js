@@ -43,6 +43,7 @@ export function requestSheetDismiss() {
   if (isConfirmOpen()) return;
   const scrim = $("#scrim");
   if (!scrim || !scrim.classList.contains("show")) return;
+  if (scrim.querySelector('#nrprogress-actions[aria-busy="true"]')) return;
   if (!hasDraftValues(sheetDraftValues())) {
     closeSheet();
     return;

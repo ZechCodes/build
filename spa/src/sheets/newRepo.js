@@ -1,5 +1,5 @@
 import { $ } from "../dom.js";
-import { esc } from "../core/text.js";
+import { esc, messageOf } from "../core/text.js";
 import { openBrowser } from "./browser.js";
 import { deviceSettingsAddress, projectSettingsAddress, watchSettingsRecord, writeProjectSetting } from "../core/settingsRecords.js";
 import { readCached } from "../core/localCache.js";
@@ -7,6 +7,21 @@ import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
+import { mountNewRepoProgress } from "./newRepoProgress.js";
+import { isTransientTransportError } from "../core/transientRead.js";
+import { UNKNOWN_CODE } from "../core/bridgeApi/index.js";
+
+function hasRefusalCode(error) {
+  const code = error?.code || error?.error_code;
+  return typeof code === "string" && code !== UNKNOWN_CODE;
+}
+
+function creationOutcomeUnknown(error) {
+  // A bridge code settles the outcome even when its message happens to match
+  // a carrier's wording. Uncoded refusals still keep Back unless transport
+  // evidence says the request's outcome is unknown.
+  return !hasRefusalCode(error) && isTransientTransportError(error);
+}
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -29,6 +44,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   let projectsDirRecord = null;
   let draftRecord;
   let firstPaint = true;
+  let creationView = null;
   const draftSnapshot = () => ({ name: draft.name, nameAutomatic: draft.nameAutomatic, sources: draft.sources, selectedDeviceId });
   const derivedName = () => draft.sources[0]?.name.trim() || "";
   /** The name the project is created with: the typed one, or the first folder's. */
@@ -69,9 +85,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   };
   const visible = (node) => active && node?.isConnected && scrim.classList.contains("show");
   const close = () => { active = false; version += 1; repoAsks.forEach((ask) => ask.stop()); disposeRepoPickers(sheet); projectsDirRecord?.dispose(); draftRecord?.dispose(); scrim.classList.remove("show"); };
-  const disableForm = (disabled) => sheet.querySelectorAll("button,input,select").forEach((node) => { node.disabled = disabled; });
-  const finish = async (project, target) => {
-    await draftRecord?.write({ name: "", nameAutomatic: true, sources: [], selectedDeviceId });
+  const finish = (project, target) => {
     close();
     if (selectable) onDone?.(project, target);
     else onDone?.(project);
@@ -102,30 +116,49 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     return name;
   };
   const addSource = (kind) => { const source = { id: ++serial, kind, path: "", remote: "", name: "", base_branch: "", automaticName: true }; draft.sources.push(source); return source; };
+  const backToForm = () => {
+    creationView = null;
+    paint();
+    $("#nrdo")?.focus();
+  };
+  const openCreatedProject = async (project, target, progress) => {
+    try {
+      // An accepted creation clears its draft even if the reader dismisses the
+      // settled sheet while these independent stores finish writing.
+      await Promise.all([
+        writeProjectSetting(target.id, project),
+        draftRecord?.write({ name: "", nameAutomatic: true, sources: [], selectedDeviceId }),
+      ]);
+      const stored = (await readCached(projectSettingsAddress(target.id, project.project_id)))?.value;
+      if (!stored) throw new Error("The new project could not be read from the local cache.");
+      if (visible(progress.root)) finish(stored, target);
+    } catch (error) {
+      if (visible(progress.root)) progress.openingFailed(messageOf(error));
+    }
+  };
   const submit = async (params) => {
     if (busy) return;
     const target = selectedDevice();
     if (!target) return;
     const targetCall = selectedCall();
     busy = true;
-    const anchor = sheet.firstElementChild;
-    disableForm(true);
-    $("#nrdo").setAttribute("aria-busy", "true"); $("#nrerr").textContent = "";
+    saveDraft();
+    disposeRepoPickers(sheet);
+    creationView = mountNewRepoProgress(sheet, params, { onBack: backToForm, onClose: close, deviceName: target.name });
+    const progress = creationView;
     try {
       const project = await targetCall("project.create", params);
-      if (!visible(anchor)) return;
-      await writeProjectSetting(target.id, project);
-      const stored = (await readCached(projectSettingsAddress(target.id, project.project_id)))?.value;
-      if (!stored) throw new Error("The new project could not be read from the local cache.");
-      await finish(stored, target);
-    } catch (error) { if (visible(anchor)) $("#nrerr").textContent = error.message; }
-    finally {
-      busy = false;
-      if (visible(anchor)) {
-        disableForm(false);
-        $("#nrdo")?.removeAttribute("aria-busy");
+      if (!visible(progress.root)) return;
+      progress.done();
+      await openCreatedProject(project, target, progress);
+    } catch (error) {
+      if (visible(progress.root)) {
+        saveDraft();
+        if (creationOutcomeUnknown(error)) progress.unknown(messageOf(error));
+        else progress.fail(messageOf(error));
       }
     }
+    finally { busy = false; }
   };
   const sourceHtml = (source, index) => `<fieldset data-source-row="${source.id}" style="border:1px solid var(--line);border-radius:8px;margin:10px 0;padding:10px"><legend>Folder ${index + 1}</legend>
     ${source.kind === "remote" ? `<div class="field"><label for="nrsource-${source.id}">Git remote URL</label><input id="nrsource-${source.id}" data-source-value="${source.id}" ${fieldTraits("identifier", "next")} value="${esc(source.remote)}" placeholder="git@github.com:org/repo.git"></div>` : `<div class="field"><span id="nrsource-label-${source.id}">Selected folder</span><div class="browse-path" aria-labelledby="nrsource-label-${source.id}">${source.path ? esc(source.path) : "No folder selected"}</div><button class="btn" type="button" data-choose-source="${source.id}">Choose folder…</button></div>`}
@@ -291,7 +324,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     else if (focused) sheet.querySelector(`#${focused}`)?.focus();
     firstPaint = false;
   };
-  function paint() { if (active) paintSources(); }
+  function paint() { if (active && !creationView) paintSources(); }
   function restoreDraft(saved) {
     const ownerAvailable = choices.some((device) => device.id === saved.selectedDeviceId);
     const sameContext = !defaultDeviceId || saved.selectedDeviceId === defaultDeviceId;
@@ -310,7 +343,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
   draftRecord = watchUiState(
     uiAddress({ deviceId: selectable ? "" : deviceId || "", view: "new-project", kind: "draft" }),
     (saved) => {
-      if (!active || !saved || typeof saved.name !== "string") return;
+      if (!active || creationView || !saved || typeof saved.name !== "string") return;
       if (JSON.stringify(saved) === JSON.stringify(draftSnapshot())) return;
       restoreDraft(saved);
       paint();

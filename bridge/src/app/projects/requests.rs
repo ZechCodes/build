@@ -491,6 +491,8 @@ impl AppState {
             "the project was just resolved"
         );
         self.persist();
+        // The source's watcher and subscriptions end with its membership.
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         let project = self
             .projects
             .get(&project_id)

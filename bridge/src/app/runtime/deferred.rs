@@ -276,6 +276,10 @@ pub(in crate::app) enum ReadSubject {
     Project {
         project_id: String,
         repo_path: std::path::PathBuf,
+        /// An original project source's cache namespace, under which its
+        /// files' `content_key`s are answered as its other `git.*` verbs
+        /// answer them. `None` for the legacy primary scope.
+        key_namespace: Option<String>,
     },
     /// `worktree.diff` — one external checkout against its base branch.
     Worktree {
@@ -366,6 +370,7 @@ impl ReadSubject {
             Self::Project {
                 project_id,
                 repo_path,
+                key_namespace,
             } => {
                 let branch = git2::Repository::open(repo_path)
                     .ok()
@@ -377,14 +382,18 @@ impl ReadSubject {
                     .unwrap_or_else(|| "HEAD".to_string());
                 let diff = crate::diff::diff_against_head_for(repo_path, paths)
                     .map_err(|error| error.to_string())?;
-                Ok(json!({
+                let body = json!({
                     "project_id": project_id,
                     "branch": branch,
                     "path": repo_path.display().to_string(),
                     "stat": diff.stat().to_json(),
                     "files": diff_file_rows(&diff),
                     "patch": diff.patch(),
-                }))
+                });
+                Ok(match key_namespace {
+                    Some(namespace) => crate::app::git::namespace_payload_keys(namespace, body),
+                    None => body,
+                })
             }
             Self::Worktree {
                 external,
@@ -967,11 +976,26 @@ impl AppState {
     /// run's worktree and the external checkout it was adopted from, and a
     /// client watching either is looking at the same tab row.
     pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
-        let root = Self::canonical_root(root);
-        for (entity_id, path) in self.worktree_roots() {
-            if Self::canonical_root(&path) == root {
-                self.changes.note_terminals(&entity_id);
-            }
+        for entity_id in self.entities_rooted_at(root) {
+            self.changes.note_terminals(&entity_id);
         }
+    }
+
+    /// A Build-made Git change in this checkout, heard the same way: every
+    /// entity rooted there, a project source's included.
+    pub(in crate::app) fn note_git_at(&self, root: &std::path::Path) {
+        for entity_id in self.entities_rooted_at(root) {
+            self.changes
+                .note_kind(&entity_id, crate::changes::Kind::Git);
+        }
+    }
+
+    fn entities_rooted_at(&self, root: &std::path::Path) -> Vec<String> {
+        let root = Self::canonical_root(root);
+        self.worktree_roots()
+            .into_iter()
+            .filter(|(_, path)| Self::canonical_root(path) == root)
+            .map(|(entity_id, _)| entity_id)
+            .collect()
     }
 }

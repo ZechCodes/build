@@ -101,7 +101,8 @@ describe("adapter selection", () => {
       // The kinds come through as the greeting states them: a caller asks
       // whether this bridge carries the one it is about to name, because every
       // kind in one subscribe shares that call's fate.
-      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
+      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
+      git: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
@@ -185,7 +186,8 @@ describe("adapter selection", () => {
       expect(selected.version).toBe("0.0.0");
       expect(selected.major).toBe(3);
       expect(selected.create(vi.fn()).capabilities).toEqual({
-        changes: { subscriptions: false, kinds: [] },
+        changes: { subscriptions: false, kinds: [], projectSources: false },
+        git: { projectSources: false },
         fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
         requests: { priority: false },
         rtc: { clientLanCache: false },
@@ -547,4 +549,19 @@ it("gates task body preconditions by capability name", () => {
 it("gates project source paths by capability name", () => {
   expect(v1.capabilitiesOf({ api_version: "3.17.0", capabilities: ["fs.projectSources", "fs.projectSourcePath"] }).fs.projectSourcePath).toBe(true);
   expect(v1.capabilitiesOf({ api_version: "3.14.0", capabilities: ["fs.projectSources"] }).fs.projectSourcePath).toBe(false);
+});
+
+// Wire 3.21.0 (#529): project source Git scopes and source-qualified change
+// subscriptions are named features of their own, independent of fs.
+it("gates project source Git and change subscriptions by capability name", () => {
+  const current = v1.capabilitiesOf({
+    api_version: "3.21.0",
+    capabilities: ["changes.subscriptions", "git.projectSources", "changes.projectSources"],
+  });
+  expect(current.git.projectSources).toBe(true);
+  expect(current.changes.projectSources).toBe(true);
+  const previous = v1.capabilitiesOf({ api_version: "3.20.0", capabilities: ["changes.subscriptions", "fs.projectSources"] });
+  expect(previous.git.projectSources).toBe(false);
+  expect(previous.changes.projectSources).toBe(false);
+  expect(previous.fs.projectSources).toBe(true);
 });

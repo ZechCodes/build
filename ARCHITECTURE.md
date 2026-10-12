@@ -218,7 +218,9 @@ address or stale generation is refused before any history or process changes.
 noted inside the window go out together when it closes. Every session gets
 `changes` frames only for what it subscribed to with `changes.subscribe`. A
 greeting that omits `changes: "subscriptions"` is still accepted and gets the
-same subscriptions session: the legacy invalidation pushes went in 3.0.0. The
+same subscriptions session: the legacy invalidation pushes went in 3.0.0. A
+subscription's scope is `board`, `entity`, `all` or, since 3.21.0,
+`project_source` (one original project source; see Projects and sources). The
 events the bridge announces are `ANNOUNCED_EVENTS` in the same file
 (`changes`, `bridge.update_status`, `models.changed`, `rtc.diagnostics`,
 `harnesses.changed`). Terminal output
@@ -392,6 +394,11 @@ runtime that starts them.
   tail, beside an exact full-run digest. Omitting `activity` keeps the bounded
   default. The mode applies to backward pages, forward deltas and newest
   deltas; `thread.activity` still reads the digest's span on demand.
+  3.21.0 adds `git.projectSources` and `changes.projectSources` (#529):
+  the `git.*` verbs take `project_id` + `source_id` + a required
+  `source_path` for one original project source, and `changes.subscribe`
+  takes scope `{kind: "project_source", project_id, source_id, source_path}`,
+  whose items carry `project_source`. See Projects and sources.
   3.21.0 adds `agents.projectWorkers` (#532): `agent.list {entity_id,
   include_project_workers}` (a verb again, after 3.0 retired the old one),
   `project_role` (`coordinator` or `worker`) on a project owner's agent
@@ -554,6 +561,48 @@ captured location as `source_path`, so the bridge refuses a stale scope
 itself even when the client's copy of the project is out of date. A
 project source's root resolves to its canonical path, as a workspace
 source's does.
+The Git verbs reach each original source the same way (#529): every `git.*`
+verb a Changes pane calls takes `project_id` + `source_id` + `source_path`,
+announced as `git.projectSources`. `source_path` is required there, and
+membership and the moved-source check come from one resolver shared with
+Files (`resolve_project_source`, `bridge/src/app/projects/source_scope.rs`).
+A moved source answers `conflict`; a plain folder answers `invalid_params`
+("not a Git repository"), so no Git verb reaches some enclosing repository.
+Every key a source scope answers is namespaced by project, source and
+captured path: `status_key` and each status file's `content_key` (`git.status`,
+the status every mutation answers, and the pushed `git` item), the
+`content_key`s of `git.diff`, `git.changeset_diff` and `git.unpushed`, and
+`git.unpushed`'s `diff_key` and the pushed `unpushed.diff_key`. No other Git
+answer carries a key. So two sources with identical changes never share a
+cache key, and a moved source starts a new namespace. A workspace directory's
+unpublished keys stay raw, because its narrowed `git.changeset_diff` has to
+agree with them. History marks nothing,
+as the primary checkout's does; `GitScope::marks_unpushed` chooses a
+workspace directory's publication marking explicitly. `git.changeset_diff`
+reads a source's uncommitted work, like the primary checkout's. Legacy
+`{project_id}` still reaches the first source with its established keys.
+The same three fields name a source to `changes.subscribe` (scope kind
+`project_source`, `changes.projectSources`). Every source, Git or plain, is a
+watched entity keyed `project-source:` + a digest of project, source and
+captured path (`project_source_entity_id`, `bridge/src/changes.rs`); its
+items carry `project_source` and the keys its own Git verbs answer. Scope
+`all` never covers those entities, so an older client hears exactly what it
+did. A subscription given a new scope (another folder, `all`, an entity, the
+board) drops what it held for the old one. A frame already taken is sealed
+off-lock and sent under the bus lock only if the very subscription that
+took it is still there (an instance minted per subscribe, so an id
+unsubscribed and subscribed again is a new one) and its scope epoch still
+matches. So once the re-scoping `changes.subscribe` is applied, no
+old-scope frame follows it. A source moved or removed in settings leaves the
+roots snapshot and its watcher stops. Reconcile passes apply their snapshots
+in the order they read them, so a stale pass cannot restart that watcher.
+After its off-lock reads, the facts source re-checks the sources under the
+app lock: a source moved or removed by then comes back `withdrawn`, and its
+item is dropped. A frame whose facts passed that check just before the move
+can still go out just after it. It carries what the old folder held before
+the move, under the old `project_source`. Nothing collected after the move
+goes out for the old folder. `project.sync_source` does not yet take
+`source_path`; that precondition, with the sync lock, is #530.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.
@@ -2301,6 +2350,9 @@ refuses when that device cannot answer.
   get a name.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
+  Wire 3.21.0's `git.projectSources` and `changes.projectSources` are
+  `git.projectSources` and `changes.projectSources` there; no surface sends a
+  project source Git scope or subscription yet (#534 does).
 - `conversation.reset` also gates the generation fields added to existing
   conversation requests in wire 3.11. The adapter restores their old shapes
   with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the

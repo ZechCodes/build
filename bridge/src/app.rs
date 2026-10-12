@@ -184,6 +184,7 @@ use projects::{
     default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
     WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
+pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
 
 use std::collections::HashMap;

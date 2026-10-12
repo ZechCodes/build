@@ -72,7 +72,7 @@ impl OutboundEnvelope {
 
     /// The envelope either variant carries. Test-only: a writer matches on the
     /// variant, because what it does with the envelope depends on which it is.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn envelope(&self) -> &Envelope {
         match self {
             OutboundEnvelope::Frame(envelope) => envelope,
@@ -210,8 +210,9 @@ impl SessionSender {
 
     /// Test-only: a sender with a real session key and a captured channel, so
     /// tests can decrypt every pushed frame (`term.output`, `term.closed`, …)
-    /// with [`decrypt_push`](Self::decrypt_push).
-    #[cfg(test)]
+    /// with [`decrypt_push`](Self::decrypt_push). The integration tests reach
+    /// it through the `testing` feature.
+    #[cfg(any(test, feature = "testing"))]
     pub fn observable(
         session_id: impl Into<String>,
     ) -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>, String) {
@@ -231,7 +232,7 @@ impl SessionSender {
 
     /// Test-only: decode one captured [`Self::observable`] envelope back to the
     /// pushed inner payload.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn decrypt_push(session_key: &str, outbound: &OutboundEnvelope) -> Value {
         transport::decrypt_envelope(session_key, outbound.envelope())
             .expect("push decrypts with the session key")
@@ -241,7 +242,15 @@ impl SessionSender {
     /// Encrypt `payload` as an inner frame and hand it to the carrier. Returns
     /// false once the carrier is gone (so the app can drop the stale sender).
     pub fn push(&self, payload: Value) -> bool {
-        let envelope = match transport::encrypt_frame(
+        self.seal(payload)
+            .is_some_and(|sealed| self.send_sealed(sealed))
+    }
+
+    /// Encrypt `payload` as an inner frame without sending it, so a caller
+    /// can decide under its own lock whether the frame still goes out.
+    /// `None` when it cannot be encrypted.
+    pub(crate) fn seal(&self, payload: Value) -> Option<OutboundEnvelope> {
+        transport::encrypt_frame(
             &self.session_key,
             &OuterFields {
                 session_id: self.session_id.clone(),
@@ -255,11 +264,15 @@ impl SessionSender {
                 created_at: None,
             },
             None,
-        ) {
-            Ok(env) => env,
-            Err(_) => return false,
-        };
-        self.out.send(OutboundEnvelope::new(envelope)).is_ok()
+        )
+        .ok()
+        .map(OutboundEnvelope::new)
+    }
+
+    /// Hand a [`Self::seal`]ed frame to the carrier: a channel send, cheap
+    /// enough to run under a lock. False once the carrier is gone.
+    pub(crate) fn send_sealed(&self, sealed: OutboundEnvelope) -> bool {
+        self.out.send(sealed).is_ok()
     }
 }
 

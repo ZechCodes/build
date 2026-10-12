@@ -29,7 +29,9 @@ use super::Handler;
 use crate::api::ApiError;
 use crate::app::{AppState, WatchAnswer};
 use crate::carrier::SessionSender;
-use crate::changes::{Kind, KindNames, Scope, SubscriptionSpec, WatchState};
+use crate::changes::{
+    is_project_source_entity, Kind, KindNames, Scope, SubscriptionSpec, WatchState,
+};
 use crate::{v1_method, v1_methods};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -116,6 +118,8 @@ fn changes_subscribe(
     let params = known_kinds(params)?;
     let session = caller()?;
     check(&params)?;
+    app.check_source_subscription(&params.scope, &params.kinds)
+        .map_err(ApiError::classify)?;
     let subscription_id = params.id.clone();
     let outcome = app.changes().subscribe(&session, params.clone());
     // The watchers are reconciled with the lock released, and the reply's
@@ -179,6 +183,21 @@ fn check(sub: &SubscriptionSpec) -> Result<(), ApiError> {
     if sub.scope == Scope::Board && sub.kinds.iter().any(|kind| kind != Kind::State) {
         return Err(ApiError::invalid_params(
             "changes.subscribe: a board scope carries state only",
+        ));
+    }
+    if matches!(sub.scope, Scope::ProjectSource(_))
+        && sub
+            .kinds
+            .iter()
+            .any(|kind| !(kind.is_worktree() || kind == Kind::Terminals))
+    {
+        return Err(ApiError::invalid_params(
+            "changes.subscribe: a project source scope carries git, files and terminals only",
+        ));
+    }
+    if matches!(&sub.scope, Scope::Entity(id) if is_project_source_entity(id)) {
+        return Err(ApiError::invalid_params(
+            "changes.subscribe: a project source must be named by a project_source scope",
         ));
     }
     Ok(())

@@ -35,18 +35,23 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("git.stage", git_stage, GitPathsParams, StatusPayload),
         v1_method!("git.discard", git_discard, GitPathsParams, StatusPayload),
         v1_method!("git.commit", git_commit, GitCommitParams, GitCommitResult),
-        v1_method!("git.fetch", git_fetch, ScopeParams, StatusPayload),
+        v1_method!("git.fetch", git_fetch, SourceScopeParams, StatusPayload),
         v1_method!("git.pull", git_pull, GitPullParams, StatusPayload),
         v1_method!("git.push", git_push, GitPushParams, StatusPayload),
-        v1_method!("git.stash", git_stash, ScopeParams, StatusPayload),
-        v1_method!("git.stash_pop", git_stash_pop, ScopeParams, StatusPayload),
+        v1_method!("git.stash", git_stash, SourceScopeParams, StatusPayload),
+        v1_method!(
+            "git.stash_pop",
+            git_stash_pop,
+            SourceScopeParams,
+            StatusPayload
+        ),
         v1_method!(
             "git.merge_abort",
             git_merge_abort,
-            ScopeParams,
+            SourceScopeParams,
             StatusPayload
         ),
-        v1_method!("git.refs", git_refs, ScopeParams, RefListResult),
+        v1_method!("git.refs", git_refs, SourceScopeParams, RefListResult),
         v1_method!(
             "git.checkout_ref",
             git_checkout_ref,
@@ -123,8 +128,10 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 /// `project_id` alone is the project's repository, `run_id` is a run's
 /// worktree, `project_id` + `worktree_id` is one of the project's external
 /// worktrees, and `workspace_id` + `source_id` is one directory of a
-/// multi-source workspace. `fs.*` also accepts `project_id` + `source_id`
-/// for an original configured source, announced by `fs.projectSources`.
+/// multi-source workspace. `project_id` + `source_id` is one original
+/// configured source of the project: on `fs.*` since `fs.projectSources`,
+/// and on `git.*` since `git.projectSources`, where `source_path` is required
+/// beside it.
 ///
 /// The workspace pair is exclusive with the three legacy ids — the
 /// implementation refuses a request naming both — and, for a `git.*` verb,
@@ -140,8 +147,8 @@ pub struct ScopeParams {
     /// A multi-source workspace. Requires `source_id` beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
-    /// One directory of that workspace, or for `fs.*`, one configured source
-    /// of `project_id`. Requires the workspace or project id beside it.
+    /// One directory of that workspace, or one configured source of
+    /// `project_id`. Requires the workspace or project id beside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_id: Option<String>,
     /// The conversation the client files this directory under: the SPA sends
@@ -152,15 +159,16 @@ pub struct ScopeParams {
     pub entity_id: Option<String>,
 }
 
-/// The scope of a file verb: [`ScopeParams`] plus, for a project source, the
-/// folder the caller opened it at (#360).
+/// The scope of a file or Git verb: [`ScopeParams`] plus, for a project
+/// source, the folder the caller opened it at (#360, #529).
 #[derive(Debug, Deserialize, Serialize)]
-pub struct FileScopeParams {
+pub struct SourceScopeParams {
     #[serde(flatten)]
     pub scope: ScopeParams,
     /// The `path` the project source row carried when the caller opened it.
     /// Only beside `project_id` + `source_id`; once the source has moved the
     /// call is refused with `conflict` instead of reaching the new folder.
+    /// Optional on `fs.*`, required on `git.*`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
 }
@@ -176,7 +184,7 @@ pub const LATEST_COMMITS: u64 = 20;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitLogParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// Clamped to 1..=200 server-side; 30 when absent, or
     /// [`LATEST_COMMITS`] when `since` names a cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -206,7 +214,7 @@ pub const COMMIT_PATCH_MAX_BYTES: u64 = 262_144;
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitShowParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// A 4–40 character lowercase hex object-id prefix, never a revspec.
     pub hash: String,
     /// The most patch this answer may carry, clamped server-side to
@@ -226,7 +234,7 @@ pub struct GitShowParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitStatusParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// The `status_key` the client is already painting; when it still names
     /// the working tree the answer is [`UnchangedStatus`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,7 +244,7 @@ pub struct GitStatusParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitDiffParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// 1 to 50 repo-relative paths, answered in request order — exactly one
     /// beside `range`.
     pub paths: Vec<String>,
@@ -251,21 +259,21 @@ pub struct GitDiffParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitPathsParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     pub paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitCommitParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     pub message: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitPullParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// `ff` (the default), `merge`, or `rebase`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<String>,
@@ -274,7 +282,7 @@ pub struct GitPullParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitPushParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// `--force-with-lease`, never a bare force.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force: Option<bool>,
@@ -302,7 +310,7 @@ pub struct FsMkdirParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsTreeParams {
     #[serde(flatten)]
-    pub scope: FileScopeParams,
+    pub scope: SourceScopeParams,
     /// Scope-relative; the scope root when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -311,7 +319,7 @@ pub struct FsTreeParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsReadParams {
     #[serde(flatten)]
-    pub scope: FileScopeParams,
+    pub scope: SourceScopeParams,
     pub path: String,
     /// One page of the file (#95): the answer carries the bytes from
     /// `offset`, whole lines of at most `bytes`, and `range` says where they
@@ -324,7 +332,7 @@ pub struct FsReadParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsWriteParams {
     #[serde(flatten)]
-    pub scope: FileScopeParams,
+    pub scope: SourceScopeParams,
     pub path: String,
     /// The revision `fs.read` answered with; a stale one is refused.
     pub expected_revision: String,
@@ -336,7 +344,7 @@ pub struct FsWriteParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsCreateDirectoryParams {
     #[serde(flatten)]
-    pub scope: FileScopeParams,
+    pub scope: SourceScopeParams,
     /// An existing scope-relative directory; empty means the scope root.
     pub parent: String,
     /// One child name, with no separators, `.` or `..`.
@@ -347,7 +355,7 @@ pub struct FsCreateDirectoryParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct FsUploadBeginParams {
     #[serde(flatten)]
-    pub scope: FileScopeParams,
+    pub scope: SourceScopeParams,
     pub parent: String,
     pub name: String,
     /// Exact decoded byte count expected when the upload finishes.
@@ -377,7 +385,7 @@ pub struct FsUploadIdParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitCheckoutRefParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// The `full_ref` of a row `git.refs` answered.
     pub full_ref: String,
 }
@@ -385,7 +393,7 @@ pub struct GitCheckoutRefParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct GitUnpushedParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// The `diff_key` the caller already holds; the read answers
     /// [`UnchangedDiff`] rather than the patch when it still matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,7 +419,7 @@ pub struct GitUnpushedParams {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ChangesetDiffParams {
     #[serde(flatten)]
-    pub scope: ScopeParams,
+    pub scope: SourceScopeParams,
     /// 1 to 50 repo-relative paths — the files the reader has open.
     pub paths: Vec<String>,
     /// The `diff_key` the caller already holds. The key names the WHOLE
@@ -1010,7 +1018,10 @@ fn git_commit(
     answer(app.git_commit(&params.wire()))
 }
 
-fn git_fetch(app: &mut AppState, params: ScopeParams) -> Result<Answer<StatusPayload>, ApiError> {
+fn git_fetch(
+    app: &mut AppState,
+    params: SourceScopeParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
     answer(app.git_fetch(&params.wire()))
 }
 
@@ -1022,25 +1033,31 @@ fn git_push(app: &mut AppState, params: GitPushParams) -> Result<Answer<StatusPa
     answer(app.git_push(&params.wire()))
 }
 
-fn git_stash(app: &mut AppState, params: ScopeParams) -> Result<Answer<StatusPayload>, ApiError> {
+fn git_stash(
+    app: &mut AppState,
+    params: SourceScopeParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
     answer(app.git_stash(&params.wire()))
 }
 
 fn git_stash_pop(
     app: &mut AppState,
-    params: ScopeParams,
+    params: SourceScopeParams,
 ) -> Result<Answer<StatusPayload>, ApiError> {
     answer(app.git_stash_pop(&params.wire()))
 }
 
 fn git_merge_abort(
     app: &mut AppState,
-    params: ScopeParams,
+    params: SourceScopeParams,
 ) -> Result<Answer<StatusPayload>, ApiError> {
     answer(app.git_merge_abort(&params.wire()))
 }
 
-fn git_refs(app: &mut AppState, params: ScopeParams) -> Result<Answer<RefListResult>, ApiError> {
+fn git_refs(
+    app: &mut AppState,
+    params: SourceScopeParams,
+) -> Result<Answer<RefListResult>, ApiError> {
     answer(app.git_refs(&params.wire()))
 }
 

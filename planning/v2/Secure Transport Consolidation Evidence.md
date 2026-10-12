@@ -3,7 +3,8 @@
 Companion to [the #572 migration plan](Secure%20Transport%20Consolidation%20Plan.md).
 Inspection date: 2026-10-12. The original #572 planning inventory is retained;
 #575 local receipts below cover import/package evidence P1/P2; #576 receipts
-cover compatibility evidence C1–C3. The remaining migration evidence is pending.
+cover compatibility evidence C1–C3; #577 receipts cover consumer evidence
+D1–D2. The remaining migration evidence is pending.
 Paths below are relative to Build unless prefixed `upstream:`.
 
 ## Inspected baseline
@@ -279,8 +280,9 @@ review and integration evidence B1–R2 remain with their assigned children.
 This consumer cutover must integrate with #578's container/CI cutover.
 
 - Base: `6335adbe0aeab4b60cb6bdf16cfb790321d44351`.
-- Consumer source/lock commit: `bab587d279f47f38c3eb16148d9b361e16fb0191`.
-  The following evidence-only commit leaves all executable/config/lock bytes
+- Dependency cutover commit: `bab587d279f47f38c3eb16148d9b361e16fb0191`.
+  Final policy/test source: `d2e1c1df8bd41a770059b1a7c28f0d20d92dfc5e`.
+  The subsequent evidence-only commit leaves all executable/config/lock bytes
   and file modes unchanged; the final #577 handoff attaches that equality proof.
 - Tested tools: Node 22.23.3, npm 12.0.2, Chromium `/usr/bin/chromium`.
   npm was installed only into a disposable tool directory with scripts disabled;
@@ -298,7 +300,8 @@ This consumer cutover must integrate with #578's container/CI cutover.
   sodium from the linked package's own installed dependencies; Vite bundles the
   in-tree binding through the existing SPA-local sodium shim.
 - SPA/web `.nvmrc`, `engines` and `packageManager` record the tested tools.
-  `.npmrc` disables install scripts in each consumer and persists SPA's
+  `.npmrc` disables install scripts in each consumer, requires seven days
+  before resolving a new registry release, and persists SPA's
   `legacy-peer-deps=true`. `AGENTS.md` changes the lockfile prohibition atomically
   with the portable locks. From the root, install transport first with
   `npm ci --prefix transport/js --ignore-scripts`; then use SPA
@@ -314,17 +317,24 @@ This consumer cutover must integrate with #578's container/CI cutover.
 | consumer-green / contracts-all | consumer contracts / all transport contracts | 0 / 0; five / 24 cases |
 | spa-focused / spa-lint / web-test | focused in-tree/sodium test / lint / unit tests | 0 / 0 / 0; one / clean / 23 cases |
 | import-check / source-proof / baseline-graph | import digests / immutable sources and ranges / main resolution comparison | 0 / 0 / 0 |
-| first-* / second-* | fresh checkout frozen installs, contracts, focused SPA, web unit tests, Vite build and clean tree | all 0 |
+| first-* / second-* (both rounds) | fresh checkout frozen installs, contracts, focused SPA, web unit tests, Vite build and clean tree | all 0 |
+| release-age-red / release-age-green | consumer policy contract before/after seven-day release threshold | 1 / 0 |
+| spa-install-r2 | `npm install --legacy-peer-deps` after policy amendment | 0; committed lock unchanged |
+| initial/semgrep | initial scan requiring minimum release age in both new `.npmrc` files | 1; fixed by tested policy amendment |
 
-The two unrelated Git checkouts are
-`/tmp/build-577-first-wdsu1wpn/checkout` and
-`/var/tmp/build-577-second-45uwzt89/checkout`, each with its own initially empty
+The final two unrelated Git checkouts are
+`/tmp/build-577-first-l7ou5_85/checkout` and
+`/var/tmp/build-577-second-ku2ay9pe/checkout`, each with its own initially empty
 npm cache and no prior dependency tree or external sibling source. Git objects
 are shared solely for checkout creation; dependency installs fetch registry
 artifacts independently. Transport dependencies are installed first, then SPA
 with `--legacy-peer-deps`, then web. Both checkouts resolve the exact local source,
 initialize sodium, pass web's 23 unit cases and Vite builds, and leave tracked
-files unchanged. No cache or sibling-link prerequisite remains.
+files unchanged. The initial round at the dependency cutover commit also passed;
+its logs remain under `initial/` in the receipt bundle. After Semgrep found the
+missing minimum release age, the full isolated-install sequence was repeated at
+the final policy source commit. Both rounds used separate empty caches. No cache
+or sibling-link prerequisite remains.
 
 The final #577 task comment attaches the complete command/head/exit manifest,
 logs for every required full SPA/capture/build and security gate, and final-head

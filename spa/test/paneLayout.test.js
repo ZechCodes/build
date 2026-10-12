@@ -918,7 +918,6 @@ describe("the surface's text column", () => {
   // one that is not is one that can drift.
   const inRail = (row) => [FLUSH_BODY, ".pane-split", LIST_COLUMN, row];
   const CHAIN = {
-    "the toolbar's project name": [".toolbar", ".tb-sel"],
     "a one-column pane": [".surface #tabbody"],
     "a section heading in the Changes rail": inRail(".crail .rhead"),
     "a changeset in the Changes rail": inRail(".crail .rrow"),
@@ -941,7 +940,7 @@ describe("the surface's text column", () => {
   // drawer's follow it there too. (Below the stacking width the list column is
   // an overlay positioned against the split's border box, so its rows' own
   // inset is the whole distance — the test below pins that instead.)
-  it.each(["the toolbar's project name", "a one-column pane"])(
+  it.each(["a one-column pane"])(
     "keeps %s on the gutter where the phone narrows it",
     (row) => {
       expect(textColumn(CHAIN[row], 390)).toBe(pixels("var(--pane-gutter)", tokensAt(390)));
@@ -955,7 +954,8 @@ describe("the surface's text column", () => {
     // two tokens the control itself is padded from — one number to move.
     const [toolbar] = rulesFor(".toolbar");
     expect(shorthandSide(declaration(toolbar.body, "padding"), 3)).toBe("var(--toolbar-gutter)");
-    expect(declaration(rulesFor(".tb-sel")[0].body, "padding")).toMatch(/var\(--tbsel-inset\)/);
+    // Breadcrumb links have no horizontal padding; the arrow precedes them.
+    expect(declaration(rulesFor(".tb-project")[0].body, "padding")).toBe("0");
     expect(declaration(rulesFor(".tabs .t")[0].body, "padding")).toMatch(/var\(--tab-inset\)/);
     // Both derived gutters are stated once, against the one gutter token.
     for (const derived of ["--toolbar-gutter", "--tabbar-gutter"]) {
@@ -1283,7 +1283,7 @@ describe("the row of heads across a work surface", () => {
     expect((stylesSource + strippedSurfaces).match(/--surface-head:/g) || []).toHaveLength(1);
     expect(tokensAt(1400)["--surface-head"]).toBe("46px");
     // It is the sibling of the view column's own top row, one row down.
-    expect(tokensAt(1400)["--toolbar-h"]).toBe("38px");
+    expect(tokensAt(1400)["--toolbar-h"]).toBe("44px");
   });
 
   it("gives all three bars that one height and centres what they carry", () => {

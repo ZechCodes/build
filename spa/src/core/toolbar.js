@@ -172,12 +172,14 @@ const nameOf = (project) => (project ? projectNameOf(project) : "");
 /** The project the menu is scoped to: where you are standing, else the last
  *  place you stood, else the first project the account knows. */
 function scopedProject() {
-  return projectFor(scopedProjectKey) || projectsOf()[0] || null;
+  return scopedProjectKey ? projectFor(scopedProjectKey) : projectsOf()[0] || null;
 }
 
 function rememberScope(projectKey) {
   if (!projectKey || projectKey === scopedProjectKey) return Promise.resolve();
-  return scopeRecord ? scopeRecord.write({ projectKey }) : Promise.resolve();
+  const saved = scopeRecord ? scopeRecord.write({ projectKey }) : Promise.resolve();
+  scopedProjectKey = projectKey;
+  return saved;
 }
 
 /** One project's workspaces, off the cache the feed is a view over. The rows
@@ -204,10 +206,10 @@ function workspaceRows(deviceId, projectId) {
  *  the board pushes fill the workspace list, and this is the bar's own view of
  *  it. A project whose machine has never been read lists nothing, and lists
  *  something the moment that machine's records land. */
-function loadWorkspaces(project) {
+function loadWorkspaces(project, { repaint = true } = {}) {
   if (!project?.projectKey) return;
   workspacesByProject.set(project.projectKey, workspaceRows(project.deviceId, project.id));
-  paint();
+  if (repaint) paint();
 }
 
 /** The project the route is standing in, as the workspace reads need it: the
@@ -335,6 +337,7 @@ function wireToolbar(host) {
   if (open) {
     open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
     open.anchor.setAttribute("aria-expanded", "true");
+    positionMenu(open.element, open.anchor);
   }
   for (const control of host.querySelectorAll("[data-select]")) control.onclick = (event) => {
     event.stopPropagation();
@@ -361,8 +364,8 @@ function activateSwitcher(control) {
   removeMenu(false);
   const list = MENU_FOR_SELECTOR[control.dataset.select];
   if (list === "workspaces") {
-    scopedProjectKey = routeProjectKey(App.route) || scopedProjectKey;
-    loadWorkspaces(scopedProject());
+    void rememberScope(routeProjectKey(App.route) || scopedProjectKey);
+    loadWorkspaces(scopedProject(), { repaint: false });
   }
   // Focus must precede IndexedDB, imports or animations to summon a touch keyboard.
   openJumpMenu(control, { list, focus: true });
@@ -381,7 +384,7 @@ function updateProjectReturnLink(host) {
 }
 
 /** Explicit project ancestry returns to its saved face; a self-link does nothing. */
-async function openProjectPage(project = scopedProject()) {
+async function openProjectPage(project = returnProject()) {
   const standing = App.route;
   closeMenu();
   if (!project) return;
@@ -391,6 +394,18 @@ async function openProjectPage(project = scopedProject()) {
 
 // ---- the menu each selector opens -------------------------------------------
 
+function positionMenu(element, anchor) {
+  const box = anchor.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const offset = viewport?.offsetTop || 0;
+  const bottom = offset + (viewport?.height || window.innerHeight);
+  const top = Math.max(offset + 8, Math.min(box.bottom + 4, bottom - 180));
+  element.style.position = "fixed";
+  element.style.left = `${Math.max(8, Math.min(box.left, window.innerWidth - 340))}px`;
+  element.style.top = `${top}px`;
+  element.style.setProperty("--tbmenu-max-h", `${bottom - top - 8}px`);
+}
+
 function menuShell(anchor, className) {
   const element = document.createElement("div");
   element.className = className;
@@ -398,11 +413,12 @@ function menuShell(anchor, className) {
   element.setAttribute("aria-label", "Switch project or workspace");
   // Fixed to the viewport under its anchor, like the tab row's menus: the
   // toolbar is a narrow row and would clip a child popup.
-  const box = anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : { left: 0, right: 0, bottom: 0 };
-  element.style.position = "fixed";
-  element.style.left = `${Math.max(8, Math.min(box.left, (window.innerWidth || 0) - 340))}px`;
-  element.style.top = `${box.bottom + 4}px`;
   document.body.appendChild(element);
+  const position = () => positionMenu(element, open?.element === element ? open.anchor : anchor);
+  position();
+  window.visualViewport?.addEventListener("resize", position);
+  window.visualViewport?.addEventListener("scroll", position);
+  window.addEventListener("resize", position);
 
   const onKeydown = (event) => {
     if (event.key === "Escape") {
@@ -413,7 +429,7 @@ function menuShell(anchor, className) {
   };
   const onOutside = (event) => {
     if (element.contains(event.target)) return;
-    if (anchor.contains && anchor.contains(event.target)) return;
+    if (open?.anchor?.contains(event.target)) return;
     closeMenu();
   };
   document.addEventListener("keydown", onKeydown, true);
@@ -424,6 +440,9 @@ function menuShell(anchor, className) {
     dismiss() {
       document.removeEventListener("keydown", onKeydown, true);
       document.removeEventListener("pointerdown", onOutside);
+      window.visualViewport?.removeEventListener("resize", position);
+      window.visualViewport?.removeEventListener("scroll", position);
+      window.removeEventListener("resize", position);
     },
   };
 }
@@ -459,10 +478,11 @@ function openJumpMenu(anchor, { list = MENU_FOR_SELECTOR[anchor.dataset.select] 
     query,
   };
   anchor.setAttribute("aria-expanded", "true");
-  paintMenu();
+  paintMenuShell();
   const filter = open.element.querySelector(".tb-filter");
-  const initialChoice = open.element.querySelector('[aria-checked="true"]') || open.element.querySelector("[role=menuitem]");
-  if (focus) (filter || initialChoice)?.focus();
+  if (focus) filter?.focus();
+  paintMenu();
+  if (focus && !filter) open.element.querySelector('[role="menuitem"]')?.focus();
 }
 
 function applyMenuRecord(saved) {
@@ -519,8 +539,9 @@ function focusMenuChoice(filter) {
 function showList(list) {
   open.list = list;
   open.query = "";
-  paintMenu();
+  paintMenuShell();
   focusMenuChoice(open.element.querySelector(".tb-filter"));
+  paintMenu();
   persistMenu({ open: true, select: open.select, list, query: "" });
 }
 
@@ -539,11 +560,32 @@ function paintMenu() {
     keyOf: (entry) => entry.key,
     render: (entry) => entry.html,
   });
+  updateMenuReturnLink();
   const reviewHost = open.element.querySelector(".tbmenu-review");
   if (reviewHost) {
     const review = workspaceReviewMenuEntry();
     patchList(reviewHost, review ? [review] : [], { keyOf: () => "review", render: (entry) => entry.html });
   }
+}
+
+// #541 can identify a parent from its cached children before project.list
+// supplies that parent's name. Returns still use that device-qualified identity.
+function returnProject() {
+  const project = scopedProject();
+  if (project) return project;
+  const picker = toolbarDestinationModel(App.route, feed, { projectKey: scopedProjectKey });
+  return picker.groups[0]?.destination.project || null;
+}
+
+function updateMenuReturnLink() {
+  const menu = open;
+  const link = menu.element.querySelector("[data-project-page]");
+  const project = returnProject();
+  if (!link || !project) return;
+  const route = App.route;
+  void projectReturnTarget(project, { route, currentHash: currentHash() }).then((target) => {
+    if (open === menu && App.route === route && link.isConnected && scopedProjectKey === project.projectKey) link.href = target.hash;
+  });
 }
 
 /** The workspace name menu offers review only for the place the route stands.
@@ -609,11 +651,9 @@ function paintMenuShell() {
 function pickProject(element) {
   if (!element) return false;
   const project = projectFor(element.dataset.project);
-  void rememberScope(element.dataset.project).then(() => {
-    if (!open) return;
-    showList("workspaces");
-    loadWorkspaces(project);
-  });
+  void rememberScope(element.dataset.project);
+  showList("workspaces");
+  loadWorkspaces(project);
   return true;
 }
 
@@ -629,21 +669,33 @@ function pickWorkspace(element) {
   return true;
 }
 
+function cycleMenuTab(event) {
+  const controls = [...open.element.querySelectorAll("*")]
+    .filter((node) => node.matches('input, button:not(:disabled), a[href]'));
+  const index = controls.indexOf(document.activeElement);
+  const step = event.shiftKey ? -1 : 1;
+  event.preventDefault();
+  controls[(index + step + controls.length) % controls.length]?.focus();
+}
+
 function onMenuKeydown(event) {
-  const rows = [...open.element.querySelectorAll('[role="menuitem"], [data-menu-close]')];
+  if (event.key === "Tab") return cycleMenuTab(event);
+  const rows = [...open.element.querySelectorAll('.tbmenu-list [role="menuitem"]')];
   const index = rows.indexOf(document.activeElement);
   const moves = { ArrowDown: 1, ArrowUp: -1 };
   if (moves[event.key]) {
     event.preventDefault();
-    rows[(index + moves[event.key] + rows.length) % rows.length]?.focus();
+    const start = moves[event.key] > 0 ? 0 : rows.length - 1;
+    const next = index < 0 ? start : (index + moves[event.key] + rows.length) % rows.length;
+    rows[next]?.focus();
   } else if (event.key === "Enter" && document.activeElement.matches(".tb-filter")) {
     event.preventDefault();
-    open.element.querySelector('.tbmenu-list [role="menuitem"]')?.click();
+    rows[0]?.click();
   }
 }
 
 function manageWorkspaces() {
-  const project = scopedProject();
+  const project = returnProject();
   closeMenu();
   if (project) go({ name: "project", deviceId: project.deviceId, projectId: project.id, tab: "workspaces" });
 }
@@ -736,7 +788,7 @@ const menuHeading = (title) => `<div class="tbmenu-head"><strong>${esc(title)}</
 
 /** What the scoped project is called, for the lines the menus head themselves
  *  with. */
-const scopedName = () => nameOf(scopedProject()) || "This project";
+const scopedName = () => nameOf(returnProject()) || "This project";
 
 function workspaceMenuShellHtml() {
   return `${menuHeading(`Workspaces in ${scopedName()}`)}
@@ -797,6 +849,8 @@ export function initToolbar() {
     paint();
   });
   scopeRecord = watchUiState(SCOPE_ADDRESS, (saved) => {
+    // An active gesture owns its scope; an older/cross-tab echo cannot steal it.
+    if (open) return;
     scopedProjectKey = typeof saved?.projectKey === "string" ? saved.projectKey : null;
     paint();
   });

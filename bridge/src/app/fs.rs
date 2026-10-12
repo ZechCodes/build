@@ -1,4 +1,4 @@
-use crate::api::v1::git::{FileScopeParams, FsCreateDirectoryParams, FsCreateDirectoryResult};
+use crate::api::v1::git::{SourceScopeParams, FsCreateDirectoryParams, FsCreateDirectoryResult};
 use crate::api::v1::WireParams;
 use crate::api::ApiError;
 use crate::app::{expand_tilde, mime_hint};
@@ -99,27 +99,14 @@ impl FileScope {
                 project_id,
                 source_id,
                 source_path,
-            } => {
-                let project = state
-                    .projects
-                    .get(project_id)
-                    .ok_or_else(|| format!("unknown project_id: {project_id}"))?;
-                let source = project
-                    .sources
-                    .iter()
-                    .find(|source| &source.id == source_id)
-                    .ok_or_else(|| {
-                        format!("unknown source_id {source_id} in project {project_id}")
-                    })?;
-                if source_path
-                    .as_ref()
-                    .is_some_and(|opened| *opened != source.path.display().to_string())
-                {
-                    return Err(MOVED_SOURCE.to_string());
-                }
-                std::fs::canonicalize(&source.path)
-                    .map_err(|error| format!("cannot resolve scope root: {error}"))
-            }
+            } => state
+                .resolve_project_source(
+                    project_id,
+                    source_id,
+                    source_path.as_deref(),
+                    MOVED_SOURCE,
+                )
+                .map(|source| source.root),
             Self::Legacy(scope) => scope.resolve_root(state),
         }
     }
@@ -223,7 +210,7 @@ impl AppState {
 
     fn file_mutation_scope(
         &mut self,
-        params: &FileScopeParams,
+        params: &SourceScopeParams,
     ) -> Result<(FileScope, std::path::PathBuf), ApiError> {
         let scope = FileScope::parse(&params.wire()).map_err(ApiError::classify)?;
         let root = scope.resolve_root(self).map_err(ApiError::classify)?;

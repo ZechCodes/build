@@ -407,9 +407,13 @@ impl ApiError {
         if sentence.starts_with(crate::reclaim::REFUSAL) {
             return ApiError::conflict(message, None);
         }
+        if sentence == crate::app::NOT_GIT_SOURCE {
+            return ApiError::invalid_params(message);
+        }
         if sentence.starts_with("stale thread_id")
             || sentence.starts_with("stale unversioned mutation")
             || sentence == crate::app::MOVED_SOURCE
+            || sentence == crate::app::MOVED_GIT_SOURCE
         {
             return ApiError::conflict(message, None);
         }

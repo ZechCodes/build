@@ -967,11 +967,25 @@ impl AppState {
     /// run's worktree and the external checkout it was adopted from, and a
     /// client watching either is looking at the same tab row.
     pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
-        let root = Self::canonical_root(root);
-        for (entity_id, path) in self.worktree_roots() {
-            if Self::canonical_root(&path) == root {
-                self.changes.note_terminals(&entity_id);
-            }
+        for entity_id in self.entities_rooted_at(root) {
+            self.changes.note_terminals(&entity_id);
         }
+    }
+
+    /// A Build-made Git change in this checkout, heard the same way: every
+    /// entity rooted there, a project source's included.
+    pub(in crate::app) fn note_git_at(&self, root: &std::path::Path) {
+        for entity_id in self.entities_rooted_at(root) {
+            self.changes.note_kind(&entity_id, crate::changes::Kind::Git);
+        }
+    }
+
+    fn entities_rooted_at(&self, root: &std::path::Path) -> Vec<String> {
+        let root = Self::canonical_root(root);
+        self.worktree_roots()
+            .into_iter()
+            .filter(|(_, path)| Self::canonical_root(path) == root)
+            .map(|(entity_id, _)| entity_id)
+            .collect()
     }
 }

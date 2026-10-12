@@ -13,8 +13,8 @@ use crate::thread::{RunCensus, ThreadItem};
 use std::collections::{HashMap, HashSet};
 
 mod conversations;
-mod documents;
 mod delivery_intents;
+mod documents;
 mod entities;
 mod legacy;
 mod migrations;

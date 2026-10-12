@@ -181,8 +181,8 @@ pub(crate) use fs::MOVED_SOURCE;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 pub(crate) use projects::PINNED_AGENT_STAYS;
 use projects::{
-    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry,
-    ProjectSourceArgs, WorkspaceAgentAddress, WorkspaceDirectoryArgs,
+    default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
+    WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
 pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
@@ -456,8 +456,7 @@ pub struct AppState {
     /// a checked native receipt can recover them from the Store after restart.
     dispatched_task: HashMap<String, String>,
     task_completion_authority: HashMap<String, self::tracker::TaskCompletionAuthority>,
-    spent_task_completion_operations:
-        HashMap<String, std::collections::HashSet<String>>,
+    spent_task_completion_operations: HashMap<String, std::collections::HashSet<String>>,
     pending_task_completion_authority:
         HashMap<String, self::tracker::PendingTaskCompletionAuthority>,
     task_delivery_in_flight: std::collections::HashSet<String>,

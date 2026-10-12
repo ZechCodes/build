@@ -20,12 +20,12 @@ mod completion_authority;
 pub(in crate::app) use completion_authority::{
     PendingTaskCompletionAuthority, TaskCompletionAuthority,
 };
-mod dispatch;
 mod deferred_delivery;
 mod deferred_resources;
 mod delivery_acceptance;
 mod delivery_notices;
 mod delivery_service;
+mod dispatch;
 #[cfg(test)]
 pub(in crate::app) use deferred_delivery::DeferredDeliveryBoundary;
 mod edits;

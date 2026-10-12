@@ -57,8 +57,8 @@ pub(crate) use reviews::TrackingExpectation;
 
 mod conversation_reset;
 mod conversations;
-mod documents;
 mod delivery_intents;
+mod documents;
 pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
 mod legacy;

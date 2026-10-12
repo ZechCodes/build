@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet};
 
 mod conversations;
 mod documents;
+mod delivery_intents;
 mod entities;
 mod legacy;
 mod migrations;

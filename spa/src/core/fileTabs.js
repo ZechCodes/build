@@ -102,6 +102,8 @@ export function mountFileTabs(stripEl, { stateAddress = null, dirtyPaths, confir
       await ready;
       if (!disposed) await commit(openTab(layout, path));
     },
+    /** Recheck root membership and labels without reopening the active file. */
+    reconcile() { paint(layout); },
     /** Repaint the unsaved marks when they changed. */
     refresh() {
       if (started && markedKey() !== marked) paint(layout);

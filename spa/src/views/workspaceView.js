@@ -252,7 +252,7 @@ function mountTasksTab(body, { canonical, callRpc, context, feed, agentSelection
 function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
   const roots = workspaceFilesRoots(workspace, canonical.workspaceId);
   const openAt = canonical.file ? { rootId: canonical.sourceId, path: canonical.file, line: canonical.line || null } : null;
-  return renderFilesTab(body, {
+  const files = renderFilesTab(body, {
     roots,
     layoutEntityId: workspaceLayoutCacheId(canonical.workspaceId),
     callRpc,
@@ -261,6 +261,7 @@ function mountFilesPane(body, { canonical, workspace, callRpc, cacheScope }) {
     onFileOpen: (path, rootId) => markRoute({ ...canonical, sourceId: path ? rootId : roots[0]?.id, file: path }),
     viewingContext: App.viewingContext,
   });
+  return { ...files, workspaceMoved: (next) => files.updateRoots?.(workspaceFilesRoots(next, canonical.workspaceId)) };
 }
 
 /** The URL names the commit the standing directory's surface has selected. */
@@ -273,11 +274,14 @@ const markCommit = (commit) => {
  *  moves within the surface: its directory is a place in the URL, and the
  *  commit named there is the one that directory's surface has selected — one
  *  named in another directory names nothing in this one. */
+const changesDirectories = (workspace, workspaceId) => workspaceDirectoryModel(workspace)
+  .map((directory) => ({ ...directory, scope: workspaceScope(workspaceId, directory.sourceId, workspace) }));
+
 function mountChangesPane(body, { canonical, workspace, callRpc, cacheScope, agentSelection, onSelectDirectory }) {
   const commits = new Map([[canonical.sourceId, canonical.commit || null]]);
   const changes = mountWorkspaceChanges(body, {
     review: { deviceId: canonical.deviceId, projectId: canonical.projectId, workspaceId: canonical.workspaceId, callRpc, navigate: go },
-    directories: workspaceDirectoryModel(workspace),
+    directories: changesDirectories(workspace, canonical.workspaceId),
     current: canonical.sourceId,
     viewingContext: App.viewingContext,
     onSelectDirectory: (sourceId) => onSelectDirectory(sourceId, commits.get(sourceId) || null),
@@ -297,7 +301,10 @@ function mountChangesPane(body, { canonical, workspace, callRpc, cacheScope, age
     }),
   });
   return { ...changes,
-    workspaceMoved: (next) => changes.workspaceMoved(workspaceDirectoryModel(next)),
+    workspaceMoved: (next) => {
+      workspace = next;
+      changes.workspaceMoved(changesDirectories(next, canonical.workspaceId));
+    },
   };
 }
 
@@ -398,7 +405,7 @@ async function probeSourceGit(state, sourceId) {
  *  still has none. It is rebuilt from scratch whenever the pane repaints.
  *  Files, a tree over every directory, carries none. */
 const SHOWN_SURFACE = ".workspace-changes-surface:not([hidden])";
-const offerHost = (body) => body.querySelector(`${SHOWN_SURFACE} .workspace-gitinit-offer, ${SHOWN_SURFACE} .crail-host`);
+const offerHost = (body) => body.querySelector(`${SHOWN_SURFACE} .workspace-gitinit-offer, ${SHOWN_SURFACE} .crail-host, ${SHOWN_SURFACE} .workspace-directory-offer`);
 
 /** Hang a failed workspace's Retry and the git-initialization offer where
  *  Changes keeps them, for the directory standing. */
@@ -409,7 +416,7 @@ function gitOfferPainter(body, state) {
     const list = offerHost(body);
     if (!list) return true;
     paintWorkspaceAction(list, state);
-    paintGitInitialization(list, state, state.sourceId, directory);
+    if (!directory.status || directory.status === "ready") paintGitInitialization(list, state, state.sourceId, directory);
     return true;
   };
 }
@@ -457,7 +464,6 @@ function standOnDirectory(state, sourceId, commit) {
 function refreshWorkspacePane(state, workspace) {
   const canonical = canonicalRoute(state.route, workspace);
   const { sourceId } = canonical;
-  if (!sourceId) return null;
   state.sourceId = sourceId;
   const body = $("#tabbody");
   const previousGuard = state.pane?.canLeave;
@@ -489,11 +495,6 @@ function mountWorkspace(workspace, state) {
   installWorkspaceAction(state, workspace);
   const canonical = canonicalRoute(route, workspace);
   const { sourceId } = canonical;
-  if (!sourceId) {
-    $("#tabbody").innerHTML = errorHtml("This workspace has no source directories.");
-    return;
-  }
-
   // The tasks tab is not about a directory, so none is written into its URL —
   // the sourceId on the canonical route is only there for the console's scope.
   if (!onTasksTab(route) && (route.sourceId !== sourceId || route.tab !== canonical.tab)) markRoute(canonical);

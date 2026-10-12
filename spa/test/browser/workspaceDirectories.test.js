@@ -6,17 +6,17 @@ let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [deviceShim] }); });
 afterAll(async () => { await session?.close(); });
 
-async function mountWorkspace(page, basePath, tab) {
+async function mountWorkspace(page, basePath, tab, directories = null) {
   await mountLayout(page, '<div id="dir-rail"></div><main id="root"></main><div id="console">Kept console</div><div id="scrim"><div id="sheet"></div></div>', { basePath });
   await loadBrowserModules(page, {
     app: "src/app.js", view: "src/views/workspaceView.js", cache: "src/core/localCache.js",
     feed: "src/core/taskFeed.js", contexts: "src/core/deviceContexts.js", settings: "src/sheets/workspaceSettings.js",
   }, basePath);
-  await page.evaluate(async (tab) => {
+  await page.evaluate(async ({ tab, directories }) => {
     const { app, view, cache, feed, contexts } = window.__layoutModules;
     const deviceId = "directory-refresh";
-    window.__workspace = { id: "ws", workspace_id: "ws", project_id: "project", name: "Workspace", status: "ready",
-      directories: [{ id: "dir-a", source_id: "a", name: "Alpha", is_git: false, status: "ready" }] };
+    window.__workspace = { id: "ws", workspace_id: "ws", project_id: "project", name: "Workspace", status: "ready", entity_id: "workspace-run",
+      directories: directories || [{ id: "dir-a", source_id: "a", name: "Alpha", is_git: false, status: "ready" }] };
     window.__calls = [];
     const rpc = async (method, params) => {
       window.__calls.push({ method, params });
@@ -44,7 +44,7 @@ async function mountWorkspace(page, basePath, tab) {
     await feed.startFeed();
     await view.renderWorkspace();
     window.__console = document.querySelector("#console");
-  }, tab);
+  }, { tab, directories });
 }
 
 const added = { id: "dir-b", source_id: "b", name: "Beta", is_git: false, status: "pending" };
@@ -107,5 +107,73 @@ it("publishes settings directory mutations to the workspace list watched by File
     await page.evaluate(() => { window.__mutation = window.__workspace; });
     await page.locator('[data-remove-directory="dir-b"]').click();
     await page.waitForFunction(() => !document.querySelector('[data-root-head="b"]'));
+  });
+}, 60_000);
+
+it("shows the no-git offer when a new directory becomes ready and selects a survivor when it is removed", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkspace(page, basePath, "changes");
+    await page.locator('[data-directory="a"]').waitFor();
+    await page.evaluate((added) => window.__writeWorkspace([...window.__workspace.directories, added]), added);
+    await page.locator('[data-directory="b"]').click();
+    await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.map((dir) => dir.source_id === "b" ? { ...dir, status: "ready", name: "Renamed Beta" } : dir)));
+    await page.locator('[data-surface="b"] [data-init-git]').waitFor();
+    expect(await page.locator('[data-surface="b"] .workspace-gitinit-say').textContent()).toBe("Renamed Beta has no Git repository.");
+    await page.locator('[data-surface="b"] [data-init-git]').click();
+    await page.locator(".modal-workspace-init").waitFor();
+    await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "b")));
+    await page.waitForFunction(() => document.querySelector('[data-directory="a"]')?.getAttribute("aria-selected") === "true");
+    expect(await page.locator('[data-surface="b"]').count()).toBe(0);
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route.sourceId)).toBe("a");
+    expect(await page.locator(".modal-workspace-init").count()).toBe(0);
+    await page.evaluate(() => window.__writeWorkspace([]));
+    await page.waitForFunction(() => !document.querySelector('[data-surface]'));
+    await page.evaluate((added) => window.__writeWorkspace([{ ...added, status: "ready" }]), added);
+    await page.locator('[data-surface="b"] [data-init-git]').waitFor();
+    expect(await page.locator('[data-directory="b"]').getAttribute("aria-selected")).toBe("true");
+  });
+}, 60_000);
+
+
+for (const tab of ["files", "changes"]) {
+  it(`mounts a directory added to an initially empty workspace on ${tab}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountWorkspace(page, basePath, tab, []);
+      await page.evaluate((added) => window.__writeWorkspace([{ ...added, status: "ready" }]), added);
+      await page.locator(tab === "files" ? '[data-root-head="b"]' : '[data-directory="b"]').waitFor({ timeout: 3000 });
+    });
+  }, 60_000);
+}
+
+it("keeps an open surviving file subscribed when removing the first Git directory changes its cache scope", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkspace(page, basePath, "files", [
+      { id: "dir-a", source_id: "a", name: "Alpha", is_git: true, status: "ready" },
+      { ...added, is_git: true, status: "ready" },
+    ]);
+    await page.locator('[data-root="b"] [data-path="readme.txt"]').dblclick();
+    await page.waitForFunction(() => document.querySelector(".fpdoc")?.textContent.includes("Kept file"));
+    await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));
+    await page.waitForFunction(() => !document.querySelector('[data-root="a"]'));
+    await page.evaluate(() => window.__layoutModules.cache.writeCached({ deviceId: "directory-refresh", entityId: "workspace-run", kind: "file", sub: "readme.txt" },
+      { file: { mime: "text/plain", content_b64: btoa("Updated file"), size: 12 } }));
+    await page.waitForFunction(() => document.querySelector(".fpdoc")?.textContent.includes("Updated file"), null, { timeout: 3000 });
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route.sourceId)).toBe("b");
+  });
+}, 60_000);
+
+it("rebinds a kept Changes directory when it becomes the workspace's first Git directory", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkspace(page, basePath, "changes", [
+      { id: "dir-a", source_id: "a", name: "Alpha", is_git: true, status: "ready" },
+      { ...added, is_git: true, status: "ready" },
+    ]);
+    await page.locator('[data-directory="b"]').click();
+    await page.locator('[data-surface="b"] .crail-host').waitFor();
+    await page.evaluate(() => { window.__beta = document.querySelector('[data-surface="b"]'); });
+    await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));
+    await page.waitForFunction(() => window.__calls.some((call) => call.method === "git.log" && call.params.source_id === "b" && call.params.entity_id === "workspace-run"), null, { timeout: 3000 });
+    expect(await page.evaluate(() => window.__beta === document.querySelector('[data-surface="b"]'))).toBe(true);
+    expect(await page.locator('[data-directory="b"]').getAttribute("aria-selected")).toBe("true");
   });
 }, 60_000);

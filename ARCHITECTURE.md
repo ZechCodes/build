@@ -1774,6 +1774,15 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 
 ### Files
 
+Workspace directory edits publish their completed workspace result to the
+shared `workspaces` cache list as well as the settings sheet's detail record.
+The mounted workspace view listens to that list: Files reconciles its roots
+in place, and Changes reconciles its tabs and kept directory surfaces. A
+pending directory is listed immediately and loads its tree or Git surface
+when the cache says it is ready. Removing a directory disposes its readers;
+other roots, the open file, the selected surviving tab and the console retain
+their state.
+
 The Files explorer shares directory upload and New folder actions across
 workspace sources, project sources and checkouts. `spa/src/core/filesUploads.js`
 mounts them from cached upload capabilities; `fileUploadRpc.js` checks the

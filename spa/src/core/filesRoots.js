@@ -5,7 +5,7 @@ const root = (id, label, scope) => ({ id, label, scope });
 
 export const workspaceFilesRoots = (workspace, workspaceId) =>
   workspaceDirectoryModel(workspace).map((directory) =>
-    root(directory.sourceId, directory.label, workspaceScope(workspaceId, directory.sourceId, workspace)));
+    ({ ...root(directory.sourceId, directory.label, workspaceScope(workspaceId, directory.sourceId, workspace)), status: directory.status }));
 
 export function projectFilesRoots(project, projectId) {
   if (!project) return [];

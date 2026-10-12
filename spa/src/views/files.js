@@ -126,11 +126,20 @@ const singleCheckout = (scopeNow) => {
 };
 
 /** A workspace's directories as roots: a file is its root and its path. */
-const rootedCheckout = (roots) => ({
-  roots,
-  locate: (key) => (key ? locateRooted(roots, key) : null),
-  keyOf: (root, path) => rootedKey(root.id, path),
-});
+const rootedCheckout = (roots, keepDraft) => {
+  const known = new Map(roots.map((root) => [root.id, root]));
+  return {
+    roots,
+    locate: (key) => {
+      if (!key) return null;
+      const found = locateRooted(roots, key);
+      if (found) known.set(found.root.id, found.root);
+      // A removed directory cannot discard edits in a file already open.
+      return found || (keepDraft(key) ? locateRooted([...known.values()], key) : null);
+    },
+    keyOf: (root, path) => rootedKey(root.id, path),
+  };
+};
 
 /**
  * renderFilesTab(body, { scope, callRpc, cacheScope }) — mount the browser into
@@ -183,7 +192,7 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
 
   // What the files here are named by: a path, or a root and a path. Everything
   // below holds a file by that key and asks here for its root and its path.
-  const checkout = roots ? rootedCheckout(roots) : singleCheckout(() => scope);
+  const checkout = roots ? rootedCheckout(roots, (key) => dirtyPaths().has(key)) : singleCheckout(() => scope);
   const { locate } = checkout;
   const pathOf = (key) => locate(key)?.path ?? key;
   const openKey = openedKey(checkout, openAt);
@@ -902,6 +911,15 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       document.removeEventListener("selectionchange", onDocumentSelectionChange);
       window.removeEventListener("beforeunload", onBeforeUnload);
       drawer.dispose();
+    },
+    updateRoots(next) {
+      if (disposed || !roots) return;
+      const previousAddress = selectedPath ? fileAddress(selectedPath) : null;
+      tree.updateRoots(next);
+      tabs.reconcile();
+      if (selectedPath && JSON.stringify(previousAddress) !== JSON.stringify(fileAddress(selectedPath))) {
+        watchFile(selectedPath, ++fileRequest);
+      }
     },
     canLeave: discardDirty,
     hasUnsavedChanges: () => dirtyPaths().size > 0,

@@ -485,6 +485,141 @@ fn waiting_on_pending_fan_in_retains_close_cause_after_rename() {
 }
 
 #[test]
+fn waiting_on_pending_fan_in_retains_close_cause_after_closed_move() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let a = filed(&store, "dependent");
+    let mut b = filed(&store, "first");
+    let mut c = filed(&store, "last");
+    add(&store, &a, &[b.id.clone(), c.id.clone()]);
+    let done = queue_lifecycle(
+        &store,
+        &mut b,
+        "done",
+        TaskState::Open,
+        TaskEventKind::Moved,
+    );
+    let close = queue_lifecycle(
+        &store,
+        &mut c,
+        "backlog",
+        TaskState::Closed,
+        TaskEventKind::Closed,
+    );
+    let moved = queue_lifecycle(
+        &store,
+        &mut c,
+        "ready",
+        TaskState::Closed,
+        TaskEventKind::Moved,
+    );
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    let page = store.reconcile_waiting_on(1).unwrap();
+    assert_eq!(page.transitions.len(), 1);
+    assert_eq!(page.transitions[0].task_id, a.id);
+    assert_eq!(page.transitions[0].kind, TaskEventKind::Unblocked);
+    assert_eq!(
+        page.transitions[0].payload["cause_event_ids"],
+        serde_json::json!([done.id, close.id])
+    );
+    assert!(!page.transitions[0].payload["cause_event_ids"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!(moved.id)));
+    assert_eq!(
+        page.transitions[0].payload["resolved_task_ids"],
+        serde_json::json!([b.id, c.id])
+    );
+    assert_eq!(
+        page.transitions[0].payload["closed_without_done_task_ids"],
+        serde_json::json!([c.id])
+    );
+    drain(&store);
+    drain(&store);
+    assert_eq!(events(&store, &a, TaskEventKind::Unblocked).len(), 1);
+}
+
+#[test]
+fn waiting_on_pending_fan_in_retains_done_cause_after_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let a = filed(&store, "dependent");
+    let mut b = filed(&store, "first");
+    let mut c = filed(&store, "last");
+    add(&store, &a, &[b.id.clone(), c.id.clone()]);
+    let first = queue_lifecycle(
+        &store,
+        &mut b,
+        "done",
+        TaskState::Open,
+        TaskEventKind::Moved,
+    );
+    let done = queue_lifecycle(
+        &store,
+        &mut c,
+        "done",
+        TaskState::Open,
+        TaskEventKind::Moved,
+    );
+    let close = queue_lifecycle(
+        &store,
+        &mut c,
+        "done",
+        TaskState::Closed,
+        TaskEventKind::Closed,
+    );
+    drop(store);
+    let store = Store::new(dir.path()).unwrap();
+    let page = store.reconcile_waiting_on(1).unwrap();
+    assert_eq!(page.transitions.len(), 1);
+    assert_eq!(page.transitions[0].task_id, a.id);
+    assert_eq!(page.transitions[0].kind, TaskEventKind::Unblocked);
+    assert_eq!(
+        page.transitions[0].payload["cause_event_ids"],
+        serde_json::json!([first.id, done.id])
+    );
+    assert!(!page.transitions[0].payload["cause_event_ids"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!(close.id)));
+    assert_eq!(
+        page.transitions[0].payload["resolved_task_ids"],
+        serde_json::json!([b.id, c.id])
+    );
+    assert_eq!(
+        page.transitions[0].payload["closed_without_done_task_ids"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        store.waiting_on_summary(PROJECT, &a.id).unwrap().waiting_on[1]
+            .resolved_by
+            .as_deref(),
+        Some("done")
+    );
+    drain(&store);
+    drain(&store);
+    assert_eq!(events(&store, &a, TaskEventKind::Unblocked).len(), 1);
+}
+
+fn queue_lifecycle(
+    store: &Store,
+    task: &mut Task,
+    status: &str,
+    state: TaskState,
+    kind: TaskEventKind,
+) -> TaskEvent {
+    let event = TaskEvent::new(&task.id, Actor::User, kind, serde_json::json!({}), NOW);
+    task.status = status.into();
+    task.state = state;
+    task.closed_at = (state == TaskState::Closed).then(|| NOW.to_string());
+    store
+        .save_tracker_task_activity(task, &[], std::slice::from_ref(&event))
+        .unwrap();
+    event
+}
+
+#[test]
 fn waiting_on_dependent_edits_invalidate_reverse_blocks() {
     for (title, status, state) in [
         ("renamed", "backlog", TaskState::Open),

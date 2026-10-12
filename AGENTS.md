@@ -129,7 +129,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | --- | --- | --- |
 | bridge | `bridge/` | `nice -n 10 cargo test` · `nice -n 10 cargo clippy --all-targets -- -D warnings` · `nice -n 10 cargo fmt --check` |
 | bridge vendored webrtc | `bridge/` | `nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib` (the patched webrtc on the patched rtc, `bridge/vendor/README.md`) |
-| SPA | `spa/` | `nice -n 10 npm install --legacy-peer-deps` (when `package.json` changed) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
+| SPA | `spa/` | `nice -n 10 npm ci --legacy-peer-deps` (fresh install; transport first) · `nice -n 10 npm install --legacy-peer-deps` (dependency edits; commit lock) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
 | skriftapp | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp` · `nice -n 10 uv run --frozen pytest buildapp -q` |
 | landing | `landing/` | `nice -n 10 npm ci` · `nice -n 10 npm test` (builds the Astro page, then reads it back) |
 | landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then `CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/landing-check.mjs` |
@@ -138,6 +138,10 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | shell | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 
 The two `#[ignore]`d timing tests (git child cost, daemon under PTY flood) are out of `cargo test`; `.github/workflows/timing.yml` runs them nightly and by hand.
+
+Transport is maintained in this checkout; [transport/README.md](transport/README.md)
+records ownership, tests and the historical source pin. The dedicated CI job
+requires JS/Python and Rust/Python compatibility; missing uv/reference files fail.
 
 The SPA resolves `@build/secure-transport` from `file:../transport/js` within
 this checkout. Install that package's locked dependencies before the SPA as

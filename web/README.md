@@ -15,6 +15,8 @@ first and got as far as DTLS; its SCTP association never completed against the
 bridge's webrtc-rs.) `web/` is dev-only, which is why a dependency here costs
 nothing shipped.
 
+Build maintains the binding here; [transport ownership and tests](../transport/README.md)
+and [import provenance](../transport/UPSTREAM.md) describe the boundary.
 It depends on the binding within the same checkout:
 
 ```

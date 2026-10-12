@@ -27,7 +27,7 @@ not need:
   connections you can't afford to drop" principle is violated by the relay itself.
 - **The relay carries application traffic it has no role in.** The crypto layer
   (`bridge/src/transport.rs`, `@build/secure-transport`) never touches a socket, and
-  the threat model in `build-secure-transport/E2E-MVP.md` already treats the relay as a
+  the historical threat model now preserved in [transport/E2E-MVP.md](../../transport/E2E-MVP.md) treats the relay as a
   non-party that can only drop, delay, or replay. What the relay uniquely provides is
   auth, per-user device scoping, presence fan-out, and rendezvous. None of those need
   to see the terminal bytes.

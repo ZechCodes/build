@@ -8,6 +8,20 @@ These manifests deploy the maintainers' instance; adapt the namespace, context a
 
 ## Local stack (compose)
 
+App and QA builds use the repository root as their context, with recipes
+[`skriftapp/Containerfile`](../skriftapp/Containerfile) and
+[`web/Containerfile`](../web/Containerfile). Both copy `transport/js` beside
+their consumer, install transport from its lock with scripts disabled, then
+install the committed consumer lock. Node 22.23.3/npm 12.0.2 match local setup;
+SPA uses `--legacy-peer-deps`, QA retains `--omit=dev`. For a standalone QA
+image build, run `podman build -f web/Containerfile .` from the repo root.
+A web-only context cannot supply the in-tree binding. The Build commit pins
+transport source; no external clone or transport-commit build argument remains.
+Root `.dockerignore` and `.containerignore` exclude dependency trees, Python
+environments and generated outputs while retaining the consumer locks. The app
+ships the transport BSL notice beside its bundle in `licenses/`; QA keeps it
+with the local package. See [license/provenance](../transport/UPSTREAM.md).
+
 `compose.real.yml` runs the production topology locally — **skriftapp**
 (auth + device registry + gateway tokens + the SPA), the **Rust relay**
 (single broker: `/ws/device` + `/ws/client`), and a **bridge** with the

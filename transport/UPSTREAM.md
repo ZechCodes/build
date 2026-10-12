@@ -1,6 +1,12 @@
 # Secure transport provenance
 
 Source: `ZechCodes/build-secure-transport` at `4bce3aacebd66a9674aaa96c6ec0d97ab4bcd793`.
+This is the historical import source, not the active maintenance repository.
+Build owns the in-tree JS/Python work and the existing Rust implementation.
+The original pinned clone in the app recipe was removed; app/QA images and CI
+now use the Build checkout, with the cutover landed at
+`eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f`.
+
 Import only regular tracked blobs through `scripts/transport_import.py import`.
 Working-tree bytes, symlinks and directories are never copied from the sibling.
 
@@ -8,14 +14,17 @@ Working-tree bytes, symlinks and directories are never copied from the sibling.
 
 Each upstream path maps to `transport/<path>`. Source SHA is the unmodified
 pinned blob; current SHA records separately reviewed metadata/doc amendments.
-Crypto/runtime sources and LICENSE.md must keep the source digest. Explicit
-harness amendments retain the original digest and record their current digest.
+Crypto/runtime sources, LICENSE.md and the language READMEs must keep the
+source digest at this migration baseline. Explicit harness and root README
+amendments retain the original digest and record their current digest.
+`js/README.md` and `python/README.md` are imported, do not edit here; current
+ownership/setup is in [README.md](README.md).
 
 | Upstream path | Source SHA-256 | Current SHA-256 |
 | --- | --- | --- |
 | `E2E-MVP.md` | `984ddc9c7582a6340b073274602d03f3e50a889d2ae8deb42de9f3b7d4e35c38` | `c606c628deff57f5b357292f157e9e5559a84b490838c0522e57e7b285a22574` |
 | `LICENSE.md` | `964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2` | `964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2` |
-| `README.md` | `4794e30bbf5b744b5b05f1186cdd804185cc6fc673f6ec3d8fd4804f39e6d54e` | `9cc187474d5280243d22d1f6c30618185ba90d685d1f0e2c7443ee74b2123f47` |
+| `README.md` | `4794e30bbf5b744b5b05f1186cdd804185cc6fc673f6ec3d8fd4804f39e6d54e` | `f88ca3c02b82891e9bf3941039b2fcc9b185706f723b690f1286af2efd220a32` |
 | `js/README.md` | `5cc959b5d8fe9a31cb273a18eca62840debb441b4294680c0a878c955e0a75b1` | `5cc959b5d8fe9a31cb273a18eca62840debb441b4294680c0a878c955e0a75b1` |
 | `js/package-lock.json` | `fe06ddb52117f0767fba5e613167a446a13879ff07bfd5417a4c317dd3ebba5f` | `709c8ce1b4e4b13507a87cb8df4c5dba046f15122a530adaed73eda1bb074b21` |
 | `js/package.json` | `17ad3fb3cf0874c4c640295620113ad167741ce1d9a910f5d7519492c85a4208` | `5527f61d426144c6858879ae2fe0f35f96a94481766f722b3b1af44b5f2cbce4` |
@@ -94,3 +103,31 @@ transport's license scope.
 
 Dependency manifests/locks are unchanged by #576, including resolved sodium
 0.7.16, PyNaCl 1.6.2, cffi 2.0.0 and pycparser 3.0.
+
+## #579 documentation amendment
+
+`README.md` now records the completed one-checkout cutover, Build ownership and
+private reporting destination, frozen development/tests, preserved language
+README bytes, and the legacy repository boundary. Its source digest remains the
+original pinned blob; only its current digest changes. No language README,
+crypto, fixture, dependency, manifest, lock or license bytes change in #579.
+
+## Maintenance and future imports
+
+After the verified cutover, Build is the maintenance/audit source of truth.
+Develop fixes here through normal task, branch, test and review gates; changes
+are pinned by the Build commit. The old repository stays reachable and untouched
+for provenance and rollback. It is not archived by this task, and no read-only
+hosting status is asserted. #579’s task comment drafts a README pointer for
+Zech to apply by hand; applying it is separately coordinated.
+
+There is no automatic upstream sync or live clone in the build. If a future
+change is imported from the legacy repository or another source, review it as
+an explicit import: name the source and immutable commit, select canonical
+tracked regular blobs, record source/current hashes and exclusions, preserve
+license notices, and rerun package-content and old/new compatibility checks.
+Reconcile the checker’s recorded pin/allowlists only within that separately
+reviewed change; the current `import` operation reproduces the original pin
+into a fresh destination and refuses existing source files. Do not rerun it
+over maintained source. Keep baseline provenance distinguishable from later
+maintenance, rather than replacing original hashes with current bytes.

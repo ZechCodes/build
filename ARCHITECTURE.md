@@ -1352,7 +1352,12 @@ other agent a worker with its id, history and settings) and mint a pin only
 where none can be kept, never by roster position. The pin is first in rail
 order, so every verb that names no agent reaches it. `agent.remove` and
 `run.abandon` refuse the pin and its owner with `conflict`; `agent.add` makes
-only workers there. The coordinator is on the `Project` surface with the
+only workers there. Recovery never retires the owner either. A boot or the
+vanished-run sweep that finds the scratch directory gone creates it again
+instead of abandoning or archiving the owner. A boot that cannot reach the
+project's folder keeps the owner live, recognised by the project path on its
+record, so the pin keeps its purpose and refusals. The same owner answers
+once the folder is back. Only `project.delete` retires the pin. The coordinator is on the `Project` surface with the
 `project_agent` prompt; a worker is on the `Coding` surface with the
 `project_worker` prompt (`bridge/templates/project_worker.md`): it starts in
 the project's folder, may write every source, and is refused a start while

@@ -571,3 +571,174 @@ fn old_clients_see_only_the_pinned_coordinator() {
     );
     assert!(listed["result"]["agents"][0].get("project_role").is_none());
 }
+
+/// A project with its owner, pin and one worker, written down and closed, for
+/// a test that changes the disk under it before the next boot.
+fn a_stored_project(state_root: &Path, repo: &Path) -> (String, String, String, PathBuf) {
+    let mut state = booted(state_root);
+    let project_id = added_project(&mut state, repo);
+    let owner = ensure(&mut state, &project_id);
+    let pin = state.project_pin(&owner).unwrap().to_string();
+    let worker = add_worker(&mut state, &owner, json!({}));
+    let scratch = state.runs[&owner].worktree.path.clone();
+    (owner, pin, worker, scratch)
+}
+
+/// The owner a boot restored still stands with its pin, and the project's
+/// `project.ensure_conversation` answers that owner rather than a new one.
+fn the_owner_stands(state: &mut AppState, owner: &str, pin: &str) {
+    assert!(
+        !state.runs[owner].run.state.is_terminal(),
+        "{:?}",
+        state.runs[owner].run.state
+    );
+    assert_eq!(state.project_pin(owner), Some(pin));
+    let project_id = state.projects.project_id_of(owner).unwrap().to_string();
+    assert_eq!(ensure(state, &project_id), owner);
+    assert_eq!(coordinators(state, owner), vec![pin.to_string()]);
+}
+
+/// A project's scratch directory is Build's own, so one deleted under a
+/// stopped bridge is cut again at boot: the owner, its pin and its workers
+/// stand, and no later ensure mints a second owner beside them.
+#[test]
+fn a_missing_project_scratch_is_recreated_and_keeps_the_pin() {
+    let (_home, repo) = a_repo();
+    let (_tmp, state_root) = a_state_root();
+    let (owner, pin, worker, scratch) = a_stored_project(&state_root, &repo);
+    std::fs::remove_dir_all(&scratch).unwrap();
+
+    for boot in 0..2 {
+        let mut state = booted(&state_root);
+        assert!(scratch.is_dir(), "boot {boot} cut the scratch again");
+        the_owner_stands(&mut state, &owner, &pin);
+        assert_eq!(
+            roles(&state, &owner),
+            vec![
+                (pin.clone(), Some(ProjectRole::Coordinator)),
+                (worker.clone(), Some(ProjectRole::Worker)),
+            ],
+            "boot {boot}"
+        );
+        assert_eq!(state.runs.len(), 1, "boot {boot}: no second owner");
+    }
+}
+
+/// The pin's purpose is the record's: a boot that cannot reach the project's
+/// primary source neither retires the owner nor forgets which agent is its
+/// coordinator. The pin keeps the project surface and every refusal, a worker
+/// still cannot start without the sources, and once the folder is back —
+/// added again within the boot, or found at the next — the project answers
+/// the same owner and the same pin.
+#[tokio::test]
+async fn a_boot_without_the_primary_source_keeps_the_pins_purpose() {
+    let (_home, repo) = a_repo();
+    let (_tmp, state_root) = a_state_root();
+    let (owner, pin, worker, scratch) = a_stored_project(&state_root, &repo);
+    let away = repo.with_extension("away");
+    std::fs::rename(&repo, &away).unwrap();
+
+    {
+        let state = booted(&state_root);
+        assert!(!state.runs[&owner].run.state.is_terminal());
+        the_pin_keeps_its_purpose_unbound(state, &owner, &pin, &worker, &scratch).await;
+    }
+
+    {
+        let mut state = booted(&state_root);
+        std::fs::rename(&away, &repo).unwrap();
+        let project_id = added_project(&mut state, &repo);
+        assert_eq!(ensure(&mut state, &project_id), owner);
+        assert_eq!(state.project_pin(&owner), Some(pin.as_str()));
+    }
+    let mut state = booted(&state_root);
+    the_owner_stands(&mut state, &owner, &pin);
+    assert_eq!(state.agent_mcp_surface(&owner, &pin), McpSurface::Project);
+    assert_eq!(state.runs.len(), 1, "no second owner");
+
+    // The same worker starts again in the sources, with nothing repaired.
+    let shared = state.shared();
+    let spawns = record_spawns(&shared);
+    ensure_agent_tab(
+        &shared,
+        &AppState::canonical_root(&scratch),
+        &owner,
+        &worker,
+        &ModelChoice::default(),
+        "start",
+    )
+    .expect("the worker starts once its folder is back");
+    assert_eq!(only_spawn(&spawns).cwd, repo);
+}
+
+/// What a boot without the project's sources still owes the pin.
+async fn the_pin_keeps_its_purpose_unbound(
+    mut state: AppState,
+    owner: &str,
+    pin: &str,
+    worker: &str,
+    scratch: &Path,
+) {
+    assert_eq!(state.project_pin(owner), Some(pin));
+    assert_eq!(state.agent_mcp_surface(owner, pin), McpSurface::Project);
+    assert_eq!(state.agent_mcp_surface(owner, worker), McpSurface::Coding);
+    let removed = state.handle(req(
+        "agent.remove",
+        json!({ "entity_id": owner, "agent_id": pin }),
+    ));
+    refused_with(&removed, "conflict");
+    let abandoned = state.handle(req("run.abandon", json!({ "run_id": owner })));
+    refused_with(&abandoned, "conflict");
+    let forged = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": owner, "project_role": "coordinator" }),
+    ));
+    refused_with(&forged, "invalid_params");
+    assert_eq!(coordinators(&state, owner), vec![pin.to_string()]);
+
+    // No project is loaded to start anything with; the refusal is the
+    // worker's own, read off the record's path, before any spawn is tried.
+    let shared = state.shared();
+    let scratch = AppState::canonical_root(scratch);
+    let refused = ensure_agent_tab(
+        &shared,
+        &scratch,
+        owner,
+        worker,
+        &ModelChoice::default(),
+        "start",
+    )
+    .unwrap_err();
+    assert!(refused.contains("project folder"), "{refused}");
+}
+
+/// The live sweep that archives a run whose checkout was deleted never
+/// retires a project's owner over its scratch: the board's sweep cuts the
+/// directory again, and an archive the sweep decided on still passes the
+/// owner by.
+#[test]
+fn a_scratch_deleted_while_running_never_archives_the_owner() {
+    use crate::app::runtime::recovery::DecidedVanishedRun;
+    let (_home, repo) = a_repo();
+    let (_tmp, state_root) = a_state_root();
+    let mut state = booted(&state_root);
+    let project_id = added_project(&mut state, &repo);
+    let owner = ensure(&mut state, &project_id);
+    let pin = state.project_pin(&owner).unwrap().to_string();
+    let scratch = state.runs[&owner].worktree.path.clone();
+
+    std::fs::remove_dir_all(&scratch).unwrap();
+    let board = state.handle(req("board.list", json!({})));
+    assert_eq!(board["ok"], true, "{board:?}");
+    assert!(scratch.is_dir(), "the sweep cut the scratch again");
+
+    std::fs::remove_dir_all(&scratch).unwrap();
+    state.archive_vanished_runs(vec![DecidedVanishedRun {
+        run_id: owner.clone(),
+        published: Default::default(),
+    }]);
+    the_owner_stands(&mut state, &owner, &pin);
+    drop(state);
+    let mut state = booted(&state_root);
+    the_owner_stands(&mut state, &owner, &pin);
+}

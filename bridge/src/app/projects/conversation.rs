@@ -39,6 +39,36 @@ pub(in crate::app) fn scratch_dir(state_root: &Path, project_path: &Path) -> Pat
         .join(scratch_key(project_path))
 }
 
+/// Whether a run standing at `root` is the conversation owner of the project
+/// at `project_path`: read off the run's own record, so recovery knows a
+/// project's owner before it binds any project — and while the project's
+/// folder cannot be reached at all.
+pub(in crate::app) fn is_project_scratch(
+    state_root: &Path,
+    project_path: &Path,
+    root: &Path,
+) -> bool {
+    !project_path.as_os_str().is_empty()
+        && crate::app::workspaces::same_path(root, &scratch_dir(state_root, project_path))
+}
+
+/// Cut a project owner's scratch directory at `root` again when it is gone.
+/// The directory is Build's own and the owner is not: retiring the owner
+/// over it would retire its pinned coordinator with it, so every path that
+/// finds the scratch missing — a boot, the vanished-run sweep — cuts it
+/// instead, and one that cannot leaves the owner standing with the reason.
+pub(in crate::app) fn recut_project_scratch(root: &Path) -> Result<(), String> {
+    if root.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(root).map_err(|error| {
+        format!(
+            "could not cut project scratch at {}: {error}",
+            root.display()
+        )
+    })
+}
+
 fn scratch_key(project_path: &Path) -> String {
     let name = project_path
         .file_name()
@@ -67,6 +97,10 @@ impl AppState {
         let project_name = project.name.clone();
         let scratch = scratch_dir(&self.state_root, &project.repo_path);
         if let Some(run_id) = self.project_conversation_owner(&project_id, &scratch) {
+            // An owner a boot restored while the project's folder was away
+            // is bound to no project; the project it stands for is this one.
+            self.projects
+                .bind_entity(run_id.clone(), project_id.clone());
             self.ensure_project_pin(&run_id, None)?;
             return Ok(conversation(&project_id, &run_id));
         }
@@ -149,31 +183,31 @@ impl AppState {
         }
     }
 
-    /// Whether `run_id` is the conversation owner of a project: the run bound
-    /// to a project that stands in that project's scratch directory. Derived
-    /// from the record rather than stored, so it still answers for an owner a
-    /// restart restored.
+    /// Whether `run_id` is the conversation owner of a project: the run that
+    /// stands in its project's scratch directory. Derived from the record
+    /// rather than stored, so it still answers for an owner a restart
+    /// restored — and for one a boot could bind to no project because the
+    /// project's folder was away, by the project path its record names.
     pub(in crate::app) fn is_project_conversation_owner(&self, run_id: &str) -> bool {
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };
-        let Some(project) = self
+        let project_path = match self
             .projects
             .project_id_of(run_id)
             .and_then(|project_id| self.projects.get(project_id))
-        else {
-            return false;
+        {
+            Some(project) => project.repo_path.clone(),
+            None => PathBuf::from(self.projects.project_path_for(run_id)),
         };
-        crate::app::workspaces::same_path(
-            &active.worktree.path,
-            &scratch_dir(&self.state_root, &project.repo_path),
-        )
+        is_project_scratch(&self.state_root, &project_path, &active.worktree.path)
     }
 
     /// The live run that owns this project's scratch root. Read by path rather
     /// than by a stored id, so a boot that re-minted `proj-N` still finds the
-    /// owner the last boot left — and only a live run wins, so a terminal one
-    /// never keeps a project from starting over.
+    /// owner the last boot left, as does one that could bind it to no project
+    /// at all — and only a live run wins, so a terminal one never keeps a
+    /// project from starting over.
     pub(in crate::app) fn project_conversation_owner(
         &self,
         project_id: &str,
@@ -183,7 +217,10 @@ impl AppState {
             .iter()
             .find(|(run_id, active)| {
                 !active.run.state.is_terminal()
-                    && self.projects.project_id_of(run_id) == Some(project_id)
+                    && self
+                        .projects
+                        .project_id_of(run_id)
+                        .is_none_or(|bound| bound == project_id)
                     && crate::app::workspaces::same_path(&active.worktree.path, scratch)
             })
             .map(|(run_id, _)| run_id.clone())

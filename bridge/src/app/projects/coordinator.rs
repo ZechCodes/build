@@ -28,12 +28,11 @@ const NO_PROJECT_ROLE_HERE: &str =
     "agent.add: project_role must only name an agent of a project's conversation.";
 
 impl AppState {
-    /// The pinned coordinator of `owner`, when it is a project's conversation
-    /// owner and its recorded pin is on its roster as the coordinator.
+    /// The pinned coordinator of `owner`: its recorded pin, while that agent
+    /// is on its roster as the coordinator. Read off the record alone — only
+    /// a project's owner is ever given a pin — so no state of the project's
+    /// folder can take the pin's purpose away.
     pub(in crate::app) fn project_pin(&self, owner: &str) -> Option<&str> {
-        if !self.is_project_conversation_owner(owner) {
-            return None;
-        }
         let active = self.runs.get(owner)?;
         let pinned = active.pinned_agent_id.as_deref()?;
         active
@@ -187,19 +186,14 @@ impl AppState {
         {
             return Ok(());
         }
-        let Some(project) = self
-            .projects
-            .project_id_of(owner)
-            .and_then(|project_id| self.projects.get(project_id))
-        else {
-            return Ok(());
-        };
-        if project.repo_path.is_dir() {
+        // The record's path when no project is bound: a boot that could not
+        // reach the folder bound none, and the folder is still missing.
+        let project_path = self.projects.project_path_for(owner);
+        if std::path::Path::new(&project_path).is_dir() {
             return Ok(());
         }
         Err(format!(
-            "Build cannot start this agent: the project folder {} is missing.",
-            project.repo_path.display()
+            "Build cannot start this agent: the project folder {project_path} is missing."
         ))
     }
 

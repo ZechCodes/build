@@ -148,8 +148,10 @@ export const updateUiState = (address, update, active) => updateUiRecord(address
 
 /** Watch one local record. `ready` is the mount's cache read; `write` waits for
  * the committed write and its announced readback. Drafts use `schedule`, then
- * `flush` on send or teardown so the last keystroke cannot be stranded. */
-export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
+ * `flush` on send or teardown so the last keystroke cannot be stranded.
+ * `active` fences reads, queued writes and page-exit replay after ownership
+ * changes, without altering the persisted address. */
+export function watchUiState(address, paint, { debounceMs = 0, active = () => true } = {}) {
   const source = uiWriterId();
   let disposed = false;
   let discarded = false;
@@ -162,11 +164,12 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   let dirty = false;
   let unresolved;
   let unresolvedAt;
+  const writerActive = () => !discarded && active();
 
   const read = (mountedRevision = revision) => {
     const next = reads.then(async () => {
       const record = await readUiRecord(address);
-      if (!disposed && !dirty && mountedRevision === revision && record) paint(record.value);
+      if (!disposed && active() && !dirty && mountedRevision === revision && record) paint(record.value);
       return record?.value;
     });
     reads = next.catch(() => {});
@@ -176,16 +179,16 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
   const journaled = pendingFor(address, debounceMs);
 
   const commit = (value, editAt = Date.now()) => {
-    if (discarded) return Promise.resolve();
+    if (!writerActive()) return Promise.resolve();
     revision += 1;
     dirty = true;
     unresolved = value;
     unresolvedAt = editAt;
     const committedRevision = revision;
     const next = writes.then(async () => {
-      if (discarded) return;
-      await writeUiRecord(address, value, { source, sequence: committedRevision });
-      if (discarded) return;
+      if (!writerActive()) return;
+      await writeUiRecord(address, value, { source, sequence: committedRevision, active });
+      if (!writerActive()) return;
       await reads;
       // Announcements from earlier writes can arrive after a newer local edit.
       // Only the newest committed value may repaint the active control.
@@ -219,7 +222,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     return commit(value, editAt);
   };
   const schedule = (value) => {
-    if (discarded) return;
+    if (!writerActive()) return;
     pending = value;
     pendingAt = Date.now();
     revision += 1; // an in-flight mount read must not erase active typing
@@ -228,6 +231,7 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
     timer = setTimeout(() => { void flush(); }, debounceMs);
   };
   const flushOnPageExit = () => {
+    if (!active()) return;
     const unfinished = pending === undefined ? unresolved : pending;
     const editAt = pending === undefined ? unresolvedAt : pendingAt;
     if (unfinished !== undefined) holdPending(address, unfinished, source, revision, editAt);
@@ -264,8 +268,8 @@ export function watchUiState(address, paint, { debounceMs = 0 } = {}) {
       writer.discard();
       return undefined;
     }
-    if (journaled !== undefined && !discarded) {
-      await writeUiRecordIfNewer(address, journaled.value, journaled);
+    if (journaled !== undefined && !discarded && active()) {
+      await writeUiRecordIfNewer(address, journaled.value, { ...journaled, active });
       releasePending(address);
     }
     return discarded ? undefined : read();

@@ -125,6 +125,10 @@ pub struct AgentSpawnPlan {
     pub recorded_resume_id: Option<String>,
     pub probes: SessionProbes,
     pub session_token: String,
+    /// The Build MCP surface the agent's persisted purpose grants
+    /// ([`crate::mcp::McpSurface`]): what its launch declares, where that is
+    /// narrower than its id names.
+    pub mcp_surface: crate::mcp::McpSurface,
     /// What the installed CLIs said, which a spawn on a model the CLI cannot
     /// run is refused on.
     pub cli_readings: Arc<Readings>,
@@ -183,7 +187,10 @@ impl AgentSpawnPlan {
                 &self.model_choice,
                 pickup.continue_session,
                 pickup.resume_session_id,
-                &self.session_token,
+                crate::orchestrator::McpGrant {
+                    token: &self.session_token,
+                    surface: Some(self.mcp_surface),
+                },
             )
             .map_err(|refusal| refusal.to_string())?;
         Ok(ReadyToSpawn {

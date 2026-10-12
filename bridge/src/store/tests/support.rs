@@ -67,6 +67,7 @@ pub(super) fn run_record(id: &str, plan_id: Option<&str>, created_at: &str) -> P
             .agents()
             .to_vec(),
         legacy_thread: Default::default(),
+        pinned_agent_id: None,
         last_summary: None,
         last_error: None,
         created_at: created_at.into(),

@@ -220,12 +220,11 @@ fn a_project_owners_agents_are_project_agents_and_a_workspaces_are_not() {
     );
 }
 
-/// Abandoning the owner ends the conversation, never the directory it was
-/// held in. The scratch is the project's, not the run's — it outlives every
-/// session that works in it — so abandon lets go of the checkout the way it
-/// does for a run standing in the project's repository.
+/// A project's conversation owner holds the project's pinned agent, which
+/// only deleting the project retires: abandoning the owner is refused, and
+/// the owner, its scratch and what was written there all stay.
 #[test]
-fn abandoning_a_project_conversation_owner_keeps_its_scratch() {
+fn abandoning_a_project_conversation_owner_is_refused_and_keeps_its_scratch() {
     let (_repo_home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -242,19 +241,15 @@ fn abandoning_a_project_conversation_owner_keeps_its_scratch() {
 
     let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
 
-    assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+    assert_eq!(abandoned["ok"], false, "{abandoned:?}");
+    assert_eq!(abandoned["error_code"], "conflict", "{abandoned:?}");
     assert!(scratch.is_dir(), "{}", scratch.display());
     assert_eq!(
         std::fs::read_to_string(scratch.join("NOTES.md")).unwrap(),
         "what the project agent wrote",
-        "abandon took the project's durable scratch with it"
     );
-    // And the next conversation is handed the same directory back.
     let again = ensure(&mut state, &project_id);
-    assert_eq!(again["ok"], true, "{again:?}");
-    let next = again["result"]["run_id"].as_str().unwrap();
-    assert_ne!(next, run_id, "the abandoned owner is gone: {again:?}");
-    assert_eq!(state.runs[next].worktree.path, scratch);
+    assert_eq!(again["result"]["run_id"], json!(run_id), "{again:?}");
 }
 
 /// Nothing may read a project's conversation owner by minting one: a rail that
@@ -288,13 +283,6 @@ fn project_list_names_the_conversation_owner_and_mints_none_to_find_it() {
     assert_eq!(row["entity_id"], owner, "{row:?}");
     assert_eq!(row["run_id"], owner, "{row:?}");
     assert_eq!(state.runs.len(), 1, "the list minted a second owner");
-
-    // Abandoned, the project is untouched again — the owner the list names is
-    // the live one, the same one `project.ensure_conversation` would answer.
-    let abandoned = state.handle(req("run.abandon", json!({ "run_id": owner })));
-    assert_eq!(abandoned["ok"], true, "{abandoned:?}");
-    let listed = state.handle(req("project.list", json!({})));
-    assert_eq!(listed["result"]["projects"][0]["entity_id"], Value::Null);
 }
 
 /// What a project's agent starts on is the device's answer, not the client's.

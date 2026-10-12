@@ -199,7 +199,7 @@ impl Harness for ClaudeHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        Ok(spec
+        let spec = spec
             .compaction_sidecar(compaction_log.clone())
             .env(
                 "BUILD_COMPACTION_LOG",
@@ -209,7 +209,8 @@ impl Harness for ClaudeHarness {
                 "BRIDGE_MCP_SOCKET",
                 context.mcp_socket.to_string_lossy().into_owned(),
             )
-            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token))
+            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token);
+        Ok(crate::harness::declare_mcp_surface(spec, options))
     }
 
     fn prepare_workspace(&self, cwd: &Path) {

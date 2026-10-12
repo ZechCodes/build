@@ -337,6 +337,8 @@ pub(super) struct CodexMcpConfig {
     socket: String,
     token: String,
     tools: String,
+    /// The surface the launch declares to the server, for a project worker.
+    surface: Option<String>,
 }
 
 impl CodexMcpConfig {
@@ -347,13 +349,18 @@ impl CodexMcpConfig {
                 .expect("MCP args serialize"),
             socket: serde_json::to_string(&context.mcp_socket).expect("socket serializes"),
             token: serde_json::to_string(&options.mcp_session_token).expect("MCP token serializes"),
-            tools: serde_json::to_string(&mcp_tool_names(&options.owner_id))
-                .expect("tool names serialize"),
+            tools: serde_json::to_string(&crate::mcp::DoneServer::tool_names_of(
+                options.mcp_surface(),
+            ))
+            .expect("tool names serialize"),
+            surface: options.declared_mcp_surface().map(|surface| {
+                serde_json::to_string(surface.as_str()).expect("a surface name serializes")
+            }),
         }
     }
 
     pub(super) fn overrides(&self) -> Vec<String> {
-        vec![
+        let mut overrides = vec![
             format!("mcp_servers.build.command={}", self.command),
             format!("mcp_servers.build.args={}", self.args),
             format!("mcp_servers.build.env.BRIDGE_MCP_SOCKET={}", self.socket),
@@ -361,7 +368,14 @@ impl CodexMcpConfig {
             "mcp_servers.build.required=true".to_string(),
             format!("mcp_servers.build.enabled_tools={}", self.tools),
             "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
-        ]
+        ];
+        if let Some(surface) = &self.surface {
+            overrides.push(format!(
+                "mcp_servers.build.env.{}={surface}",
+                crate::mcp::MCP_SURFACE_ENV
+            ));
+        }
+        overrides
     }
 }
 
@@ -610,10 +624,6 @@ fn uuid_in_rollout_name(path: &Path) -> Option<String> {
 /// the one source for it, and the inventory that surface advertises is the one
 /// list — written once, in `mcp.rs`, so a tool a surface gains is a tool a
 /// Codex session on it can call.
-fn mcp_tool_names(owner_id: &str) -> Vec<String> {
-    crate::mcp::DoneServer::tool_names_of(crate::mcp::McpSurface::for_owner(owner_id))
-}
-
 /// Codex stores dated JSONL rollouts. The first line is session metadata with
 /// the canonical cwd; scanning that small header is enough to decide whether
 /// `codex resume --last` has a cwd-scoped conversation to continue.
@@ -928,7 +938,15 @@ mod tests {
         ] {
             let advertised = crate::mcp::DoneServer::tool_names_of(surface);
             assert!(!advertised.is_empty(), "{surface:?}");
-            assert_eq!(mcp_tool_names(owner), advertised, "{surface:?}");
+            let options = SpawnOptions {
+                owner_id: owner.to_string(),
+                ..SpawnOptions::default()
+            };
+            assert_eq!(
+                crate::mcp::DoneServer::tool_names_of(options.mcp_surface()),
+                advertised,
+                "{surface:?}"
+            );
         }
     }
 }

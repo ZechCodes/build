@@ -272,6 +272,14 @@ pub struct Agent {
     /// device's, `Some(0)` never compacts, `Some(n)` compacts at `n` tokens.
     #[serde(default)]
     pub max_context_tokens: Option<u64>,
+    /// What this agent is FOR on a project's conversation owner: the one
+    /// pinned coordinator, or a worker that writes the project's sources.
+    /// `None` on every other owner's agents, and on a project agent written
+    /// before purposes existed until the boot settlement names it
+    /// ([`crate::project_roster`]). Distinct from the model-selection role a
+    /// creation may ask for: this one decides prompts and tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_role: Option<crate::project_roster::ProjectRole>,
 }
 
 /// Conversations are watched unless somebody says otherwise — see
@@ -363,6 +371,7 @@ impl Agent {
             created_by: None,
             watched: true,
             watch_started_after: 0,
+            project_role: None,
             last_context_tokens: None,
             last_context_at: None,
             session_cache_read_tokens: None,
@@ -734,6 +743,18 @@ impl AgentRoster {
                 .clone(),
             true,
         ))
+    }
+
+    /// Put `agent_id` first in rail order, the primary every verb that names no
+    /// agent reaches. False when it is not on the roster. Ordinals are labels,
+    /// not positions, so none of them move.
+    pub fn move_to_front(&mut self, agent_id: &str) -> bool {
+        let Some(index) = self.agents.iter().position(|agent| agent.id == agent_id) else {
+            return false;
+        };
+        let agent = self.agents.remove(index);
+        self.agents.insert(0, agent);
+        true
     }
 
     /// Take an agent off the entity, handing back the record that was removed

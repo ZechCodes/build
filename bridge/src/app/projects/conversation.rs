@@ -56,7 +56,8 @@ impl AppState {
     ///
     /// Idempotent, across a restart as well as within one boot: the owner is
     /// found again by the root it works in, and that root is derived from the
-    /// project's canonical path.
+    /// project's canonical path. Either way the owner answers with exactly
+    /// one pinned coordinator ([`AppState::ensure_project_pin`]).
     pub(crate) fn project_ensure_conversation(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let project = self
@@ -66,6 +67,7 @@ impl AppState {
         let project_name = project.name.clone();
         let scratch = scratch_dir(&self.state_root, &project.repo_path);
         if let Some(run_id) = self.project_conversation_owner(&project_id, &scratch) {
+            self.ensure_project_pin(&run_id, None)?;
             return Ok(conversation(&project_id, &run_id));
         }
 
@@ -77,12 +79,15 @@ impl AppState {
             )
         })?;
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        let active = ActiveRun::workspace_conversation(
+        let mut active = ActiveRun::workspace_conversation(
             crate::run::RunId::new(&run_id),
             project_name,
             scratch,
-            model_choice,
+            model_choice.clone(),
         );
+        // The owner is born with its one pinned coordinator, so no later call
+        // has a roster position to guess it from.
+        super::coordinator::pin_new_owner(&run_id, &mut active, model_choice);
         self.projects
             .bind_entity(run_id.clone(), project_id.clone());
         if let Err(error) = self.finish_run_mutation(run_id.clone(), active) {

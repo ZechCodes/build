@@ -26,5 +26,10 @@
       }
     ]
   },
+  "pinned_coordinator": {
+    "since": "3.21.0",
+    "capability": "agents.projectWorkers",
+    "note": "A project's pinned coordinator is never removed: the refusal is conflict, \"Build keeps the project's agent for as long as the project exists. Delete the project to retire it.\" Removing one of its workers answers the pinned-only projection; agent.list with include_project_workers reads the rest."
+  },
   "errors": ["not_found", "invalid_params", "conflict", "internal"]
 }

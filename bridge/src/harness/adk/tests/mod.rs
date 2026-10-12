@@ -322,6 +322,7 @@ fn spawn_options() -> SpawnOptions {
         mcp_session_token: "token-42".to_string(),
         cwd: PathBuf::from("/tmp/worktree"),
         scaffold: None,
+        mcp_surface: None,
     }
 }
 

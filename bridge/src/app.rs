@@ -178,6 +178,7 @@ use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
 pub(crate) use fs::MOVED_SOURCE;
+pub(crate) use projects::PINNED_AGENT_STAYS;
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 use projects::{
     default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,

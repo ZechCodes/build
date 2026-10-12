@@ -111,6 +111,7 @@ impl AppState {
             effort: active.model_choice.effort.clone(),
             agents: active.agents.agents().to_vec(),
             legacy_thread: crate::thread::Thread::default(),
+            pinned_agent_id: active.pinned_agent_id.clone(),
             last_summary: active.last_summary.clone(),
             last_error: active.last_error.clone(),
             created_at,

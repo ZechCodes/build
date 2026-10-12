@@ -707,11 +707,12 @@ impl AppState {
         agent_id: &str,
         action: BridgeAction,
     ) -> Result<Value, String> {
-        // The surface a session is on is a property of the SESSION — its agent
-        // id says which one — and the gate is here as well as in the tool
-        // inventory each surface is shown: a harness that writes its own frames
-        // must not reach past the surface it was opened on.
-        let surface = crate::mcp::McpSurface::for_owner(agent_id);
+        // The surface a session is on is a property of the SESSION — its
+        // agent's persisted purpose says which one, never its id's prefix or
+        // anything its launch declared — and the gate is here as well as in
+        // the tool inventory each surface is shown: a harness that writes its
+        // own frames must not reach past the surface it was opened on.
+        let surface = self.agent_mcp_surface(entity_id, agent_id);
         if !action.allowed_on(surface) {
             return Err(format!(
                 "{} is a {} tool; this session is on the {} surface",

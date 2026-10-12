@@ -252,6 +252,7 @@ impl AppState {
         );
         self.recover_captures(captures)?;
         self.restore_plans_before_runs(plans, runs)?;
+        self.settle_project_rosters();
         self.rebuild_session_summaries()?;
         self.rebuild_user_session()?;
         self.restore_workspace_lifecycle()?;

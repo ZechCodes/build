@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.20.0");
+    assert_eq!(API_VERSION, "3.21.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -361,7 +361,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.20.0");
+    assert_eq!(API_VERSION, "3.21.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1267,7 +1267,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.20.0");
+    assert_eq!(API_VERSION, "3.21.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");

@@ -637,7 +637,8 @@ impl AppState {
         let operation_prompt = receipt.and_then(|receipt| {
             delivery.payload.as_ref().map(|payload| {
                 let payload = OperationPayload {
-                    tells_sender_context: crate::agent::is_project_agent(&delivery.agent_id),
+                    tells_sender_context: self
+                        .is_project_coordinator(&delivery.owner_id, &delivery.agent_id),
                     ..self.payload_for_reader(&delivery.owner_id, payload.clone())
                 };
                 TurnText {

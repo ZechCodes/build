@@ -538,6 +538,11 @@ impl AppState {
         entity_id: &str,
         asked: Option<ModelChoice>,
     ) -> Result<String, String> {
+        // A project's owner speaks through its pinned coordinator, never
+        // through whichever agent sits first.
+        if self.is_project_conversation_owner(entity_id) {
+            return self.ensure_project_pin(entity_id, asked);
+        }
         if let Some(primary) = self.entity_agents(entity_id)?.primary() {
             return Ok(primary.id.clone());
         }
@@ -1011,6 +1016,11 @@ impl AppState {
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.add: unknown entity {entity_id}"));
         }
+        // A project's owner gains workers below the pin it already has.
+        let project_role = self.added_project_role(&entity_id, params)?;
+        if project_role.is_some() {
+            self.ensure_project_pin(&entity_id, None)?;
+        }
         // The provider is parsed before anything is touched, so an unrunnable
         // one refuses instead of leaving an agent nothing can start.
         let existing_creation = creation_id.as_deref().and_then(|creation_id| {
@@ -1122,6 +1132,7 @@ impl AppState {
                 .get("created_by")
                 .and_then(Value::as_str)
                 .map(str::to_string);
+            agent.project_role = project_role;
         }
         let added = active
             .agents
@@ -1302,6 +1313,7 @@ impl AppState {
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));
         }
+        self.refuse_retiring_pin(&entity_id, &agent_id)?;
         let address = self.resolve_conversation_params(&entity_id, params)?;
         self.guard_conversation_reservation(&address)?;
         let root = self.entity_agent_root(&entity_id)?;
@@ -1409,36 +1421,50 @@ impl AppState {
 
     /// The entity's agents, in rail order: what `list_workspace_agents` and a
     /// workspace's detail read.
+    ///
+    /// `include_project_workers` (announced as `agents.projectWorkers`) asks
+    /// for a project owner's whole roster; without it a project owner lists
+    /// its pinned coordinator alone, the shape a client that predates workers
+    /// paints. A project owner's answer names its pin.
     pub(crate) fn agent_list(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
-        Ok(json!({
-            "entity_id": entity_id,
-            "agents": self.agent_digests(&entity_id, DigestScope::List),
-        }))
+        self.entity_agents(&entity_id)
+            .map_err(|_| format!("agent.list: unknown entity {entity_id}"))?;
+        let include_workers = params
+            .get("include_project_workers")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let root = self.entity_agent_root(&entity_id).ok();
+        let agents: Vec<Value> = self
+            .listed_agents(&entity_id, include_workers)
+            .into_iter()
+            .map(|agent| self.agent_digest(&entity_id, agent, root.as_deref(), DigestScope::List))
+            .collect();
+        let mut listed = json!({ "entity_id": entity_id, "agents": agents });
+        if let Some(pin) = self.project_pin(&entity_id) {
+            listed["pinned_agent_id"] = json!(pin);
+        }
+        Ok(listed)
     }
 
     /// What the rail's bubble strip renders for one entity: one digest per
-    /// agent, in rail order.
+    /// agent, in rail order. A project owner's is its pin alone
+    /// ([`AppState::listed_agents`]); `agent.list` is where its workers are.
     pub(in crate::app) fn agent_digests(&self, entity_id: &str, scope: DigestScope) -> Vec<Value> {
-        let Ok(roster) = self.entity_agents(entity_id) else {
-            return Vec::new();
-        };
         let root = self.entity_agent_root(entity_id).ok();
-        roster
-            .iter()
+        self.listed_agents(entity_id, false)
+            .into_iter()
             .map(|agent| self.agent_digest(entity_id, agent, root.as_deref(), scope))
             .collect()
     }
 
     /// Conversation identities for rail navigation; inbox sessions live on
-    /// workspace and project rows, pooling messages from all their agents.
+    /// workspace and project rows, pooling messages from all their agents —
+    /// a project's being its pin's, as its rows list it.
     pub(in crate::app) fn conversation_activity_rows(&self, entity_id: &str) -> Vec<Value> {
-        let Ok(roster) = self.entity_agents(entity_id) else {
-            return Vec::new();
-        };
         let mut seen = std::collections::HashSet::new();
-        roster
-            .iter()
+        self.listed_agents(entity_id, false)
+            .into_iter()
             .filter_map(|agent| {
                 let conversation_id = agent.conversation_id();
                 if !seen.insert(conversation_id.to_string()) {
@@ -1566,6 +1592,11 @@ impl AppState {
         });
         if let Some(surfaces) = tab.and_then(|tab| tab.surfaces) {
             digest["surfaces"] = surfaces;
+        }
+        // What a project's agent is for (`agents.projectWorkers`): its pinned
+        // coordinator, or a worker. Absent on every other owner's agents.
+        if let Some(role) = agent.project_role {
+            digest["project_role"] = json!(role);
         }
         digest
     }

@@ -53,7 +53,7 @@ use std::collections::BTreeSet;
 /// and the `harnesses.changed` push (#434).
 /// 3.19.0 scopes unread to watched conversations and news after watch start (#474).
 /// 3.20.0 adds newest-only thread page activity with exact digests (#496).
-pub const API_VERSION: &str = "3.20.0";
+pub const API_VERSION: &str = "3.21.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -85,6 +85,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "unread.watchScoped", // Since 3.19.0: watched-only unread after the persisted watch baseline (#474).
     "agents.createdBy",   // Since 3.1.0: created_by on an agent's digest (#216).
     "agents.names",
+    "agents.projectWorkers", // Since 3.21.0: project_role, pinned_agent_id, include_project_workers (#532).
     "board.conversationSessions", // Since 1.28.0: a conversation row's own session_started_ms/last_activity_ms.
     "board.usageLimits",
     "bodies.pages", // Since 1.26.0: range on fs.read, git.diff, git.show, git.changeset_diff.
@@ -410,6 +411,7 @@ impl ApiError {
         if sentence.starts_with("stale thread_id")
             || sentence.starts_with("stale unversioned mutation")
             || sentence == crate::app::MOVED_SOURCE
+            || sentence == crate::app::PINNED_AGENT_STAYS
         {
             return ApiError::conflict(message, None);
         }

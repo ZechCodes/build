@@ -131,8 +131,8 @@ impl AppState {
             .as_ref()
             .is_some_and(|intent| intent.state != "delivered")
         {
-            let holder = task.assignee.as_ref().and_then(Assignee::agent_id);
-            recipients.retain(|agent| Some(agent.as_str()) != holder);
+            let holder = self.pending_delivery_holder(project, task, intent.as_ref().unwrap());
+            recipients.retain(|agent| Some(agent.as_str()) != holder.as_deref());
             return Ok(recipients);
         }
         if let Some(Assignee::Agent { agent_id }) = &task.assignee {
@@ -150,11 +150,30 @@ impl AppState {
         Ok(recipients)
     }
 
+    fn pending_delivery_holder(
+        &self,
+        project: &str,
+        task: &Task,
+        intent: &crate::store::DeliveryIntent,
+    ) -> Option<String> {
+        if let Some(agent) = intent.reservation["agent_id"].as_str() {
+            return Some(agent.to_string());
+        }
+        if let Some(agent) = task.assignee.as_ref().and_then(Assignee::agent_id) {
+            return Some(agent.to_string());
+        }
+        if intent.target["kind"] == "project_agent" {
+            let entity = self.project_conversation_run(project)?;
+            return self.project_pin(&entity).map(str::to_string);
+        }
+        None
+    }
+
     fn task_delivery_notice_body(&self, task: &Task, event: &TaskEvent) -> Result<String, String> {
         let mut body = match event.kind {
             TaskEventKind::Unblocked => format!("Task #{} — {} ({}) has no unresolved prerequisites. Decide who should take it; read the current task with get_task.", task.number, task.title, task.id),
             TaskEventKind::DispatchFailed => format!("Task #{} — {} ({}) could not be delivered: {}. Read the task with get_task and decide how to recover the saved assignment.", task.number, task.title, task.id, event.payload["error"].as_str().unwrap_or("delivery failed")),
-            _ => format!("Task #{} — {} ({}) is blocked again by prerequisites {}. This is informational; the existing assignment is consumed and is not dispatched again. Read the current task with get_task.", task.number, task.title, task.id, event.payload["unresolved_task_ids"]),
+            _ => format!("Task #{} — {} ({}) is blocked again by prerequisites {}. This is informational; it does not dispatch another assignment. Read the current task with get_task.", task.number, task.title, task.id, event.payload["unresolved_task_ids"]),
         };
         if event.kind == TaskEventKind::Unblocked {
             let context = self.assignment_closure_context(task)?;

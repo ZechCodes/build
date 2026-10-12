@@ -274,6 +274,26 @@ export function writeUiRecord(address, value, { source, sequence } = {}) {
   });
 }
 
+/** Merge interaction state in one transaction so concurrent tabs cannot
+ * replace each other's edits. An account reset fences queued updates. */
+export async function updateUiRecord(address, update, active = () => true) {
+  const started = wipes;
+  await adoptCachedUiRecords();
+  const key = recordKey(address);
+  let applied = false;
+  await database.write((store) => {
+    applied = false;
+    const current = store.get(key);
+    current.onsuccess = () => {
+      if (started !== wipes || !active()) return;
+      const value = update(current.result?.value);
+      applied = putOrAbort(store, { ...writeStamp(), value }, key);
+    };
+    return null;
+  });
+  if (applied) announce(partsOfKey(key));
+}
+
 /** Clear a sent draft only while the write captured before sending is still
  * current. Another tab's edit is protected by the comparison in this same
  * readwrite transaction. */

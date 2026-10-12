@@ -18,6 +18,7 @@ import { askToOpenLinkedAgent, standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { wipeUiRecords } from "./core/localUiStore.js";
+import { resetNavigationVisits } from "./core/navigationVisits.js";
 import { routeChanged } from "./core/cacheSync.js";
 import { canAnswer, contextFor, deviceContextIdentity, onDeviceStateChanged, resetDeviceContexts } from "./core/deviceContexts.js";
 import { App, SELECTED_DEVICE_KEY } from "./appState.js";
@@ -56,6 +57,7 @@ export const DEVICE_FILTER_KEY = "build.deviceFilter";
  */
 export function resetApplication() {
   App.accountEpoch += 1;
+  resetNavigationVisits();
   trackBridgeUpdateDevices([]);
   settingsReturnRoute = { name: "inbox" };
   modalDispose?.();

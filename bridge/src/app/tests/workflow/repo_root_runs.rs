@@ -149,6 +149,7 @@ fn legacy_repo_root_run(root: &str) -> crate::store::PersistedRun {
         effort: None,
         agents: Vec::new(),
         legacy_thread: Default::default(),
+        pinned_agent_id: None,
         last_summary: None,
         last_error: None,
         created_at: crate::store::now_rfc3339(),

@@ -9,7 +9,7 @@ use super::*;
 
 /// Put the project's agents on a harness that prints where it was started and
 /// stays up, and keep every [`SpawnOptions`] a spawn was built from.
-fn record_spawns(state: &Arc<Mutex<AppState>>) -> Arc<Mutex<Vec<SpawnOptions>>> {
+pub(super) fn record_spawns(state: &Arc<Mutex<AppState>>) -> Arc<Mutex<Vec<SpawnOptions>>> {
     record_spawns_of(state, || {
         HarnessSpec::new("bash")
             .arg("-c")
@@ -44,7 +44,7 @@ fn record_spawns_of(
     spawns
 }
 
-fn only_spawn(spawns: &Arc<Mutex<Vec<SpawnOptions>>>) -> SpawnOptions {
+pub(super) fn only_spawn(spawns: &Arc<Mutex<Vec<SpawnOptions>>>) -> SpawnOptions {
     let spawns = spawns.lock().unwrap();
     assert_eq!(spawns.len(), 1, "{spawns:?}");
     spawns[0].clone()

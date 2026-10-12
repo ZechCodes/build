@@ -389,16 +389,25 @@ runtime that starts them.
   source row carried when the client opened it. If the source has since moved,
   the bridge refuses the call with `conflict` instead of reaching the new
   folder. Beside any other scope it is `invalid_params`.
-  3.21.0 adds `git.projectSources` and `changes.projectSources` (#529):
-  the `git.*` verbs take `project_id` + `source_id` + a required
-  `source_path` for one original project source, and `changes.subscribe`
-  takes scope `{kind: "project_source", project_id, source_id, source_path}`,
-  whose items carry `project_source`. See Projects and sources.
   3.20.0 adds `threads.leanActivity` (#496): optional `activity: "newest"`
   on `thread.page` ships one newest item per activity run, including the live
   tail, beside an exact full-run digest. Omitting `activity` keeps the bounded
   default. The mode applies to backward pages, forward deltas and newest
   deltas; `thread.activity` still reads the digest's span on demand.
+  3.21.0 adds `git.projectSources` and `changes.projectSources` (#529):
+  the `git.*` verbs take `project_id` + `source_id` + a required
+  `source_path` for one original project source, and `changes.subscribe`
+  takes scope `{kind: "project_source", project_id, source_id, source_path}`,
+  whose items carry `project_source`. See Projects and sources.
+  3.21.0 adds `agents.projectWorkers` (#532): `agent.list {entity_id,
+  include_project_workers}` (a verb again, after 3.0 retired the old one),
+  `project_role` (`coordinator` or `worker`) on a project owner's agent
+  digests, `pinned_agent_id` on its `agent.list` answer, and `project_role`
+  on `agent.add`, which accepts only `"worker"` and only on a project's
+  conversation owner. Every roster read that predates workers (board rows,
+  the project list's conversations, `agent.remove`, and `agent.list` without
+  the flag) carries a project owner's pinned coordinator alone. See MCP
+  tools.
   3.19.0 adds `unread.watchScoped` (#474): conversation and task unread
   counts exclude unwatched conversations and news from before the current
   watch began. Watch baselines persist separately from read cursors.
@@ -1371,13 +1380,41 @@ and forwards each call to the daemon's Unix socket (`BRIDGE_MCP_SOCKET`, default
 the handlers in `bridge/src/app/mcp.rs`.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
-`Project`). Each action is a `BridgeAction` variant. The tool lists are
+`Project`), which a project's agents take from their persisted purpose (see
+A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
 `coding_tools()`, `router_tools()`, `project_tools()`, `workspace_tools()` and
 `task_tools()`. They cover conversation tools (`post_thread_message`,
 `message_agent`, `set_topic`, `compact_self`, …; compaction in
 `bridge/src/mcp/compaction.rs`), workspace tools (`create_workspace`,
 `add_workspace_agent`, …) and the tracker (`get_task`, `comment_task`,
 `move_task`, `label_task`, …).
+
+**A project's agents.** A project's conversation owner (the run
+`project.ensure_conversation` mints over the project's scratch directory)
+holds exactly one pinned coordinator and any number of workers
+(`bridge/src/project_roster.rs`, `bridge/src/app/projects/coordinator.rs`).
+The owner persists `pinned_agent_id` and each agent its `project_role`; every
+one of them still carries the `project-` id prefix, so nothing reads purpose
+off the id. The owner is born with its pin; boot and every ensure settle an
+older roster (its coordinator, else its primary, becomes the pin, and every
+other agent a worker with its id, history and settings) and mint a pin only
+where none can be kept, never by roster position. The pin is first in rail
+order, so every verb that names no agent reaches it. `agent.remove` and
+`run.abandon` refuse the pin and its owner with `conflict`; `agent.add` makes
+only workers there. Recovery never retires the owner either. A boot or the
+vanished-run sweep that finds the scratch directory gone creates it again
+instead of abandoning or archiving the owner. A boot that cannot reach the
+project's folder keeps the owner live, recognised by the project path on its
+record, so the pin keeps its purpose and refusals. The same owner answers
+once the folder is back. Only `project.delete` retires the pin. The coordinator is on the `Project` surface with the
+`project_agent` prompt; a worker is on the `Coding` surface with the
+`project_worker` prompt (`bridge/templates/project_worker.md`): it starts in
+the project's folder, may write every source, and is refused a start while
+that folder is missing. The daemon authorizes every call by the persisted
+purpose (`AppState::agent_mcp_surface`). A worker's launch also declares the
+coding surface to its MCP server in `BRIDGE_MCP_SURFACE` (codex through its
+server `env` and `enabled_tools`), which `McpSurface::launched` only ever
+narrows, so a copied value grants nothing.
 
 **Tracking.** A task's `trackers` are the agents told about each change to it
 (`bridge/src/app/tracker/notices.rs`; never the agent that made the change).
@@ -1822,6 +1859,15 @@ a sibling `build-secure-transport` checkout (`spa/package.json`).
 | `spa/public/` | `theme-boot.js`, service worker, manifest, icons |
 
 ### Files
+
+Workspace directory edits publish their completed workspace result to the
+shared `workspaces` cache list as well as the settings sheet's detail record.
+The mounted workspace view listens to that list: Files reconciles its roots
+in place, and Changes reconciles its tabs and kept directory surfaces. A
+pending directory is listed immediately and loads its tree or Git surface
+when the cache says it is ready. Removing a directory disposes its readers;
+other roots, the open file, the selected surviving tab and the console retain
+their state.
 
 The Files explorer shares directory upload and New folder actions across
 workspace sources, project sources and checkouts. `spa/src/core/filesUploads.js`
@@ -2375,6 +2421,32 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
+
+Add project (`spa/src/sheets/newRepo.js`) replaces its form with the quiet
+source list in `newRepoProgress.js` while `project.create` runs. Creation's
+internal pending row is not published and the bridge has no per-source
+creation events, so all lines run and settle together. Escape and scrim
+dismissal are blocked only until the request settles. Failure keeps the
+source errors visible; Back restores the draft and focus to Create. Transport
+loss or either RPC deadline shows an unknown outcome and Close, explaining
+that the project may still be being created and will appear in the Projects
+list if it succeeds. The existing transport-error predicate distinguishes
+these from bridge refusals, including uncoded ones. A stable live summary is
+outside the busy actions and atomic announcements exclude the source list. Success
+writes and rereads the project cache before opening it. Dismissing the settled
+sheet prevents a delayed cache write from navigating afterwards. An opening
+or cache failure after successful creation keeps source lines Done and reports
+the opening error separately without repainting the unchanged source list or
+offering another creation attempt. The settled success action is Close.
+
+Agent name badges use the family rule beside `shortModelName` in
+`spa/src/core/agentChoice.js` and the shared painter in `agentModelBadge.js`.
+They describe the current cached roster model (active model before the next
+choice); task and message identities do not record the model at write time.
+The family is dim monospace, with the short versioned name and known effort in
+its native tooltip. Unknown model families leave no badge. Task headers and
+agent-message attribution read the already held feed, and changes to cached
+roster models or efforts also invalidate the thread paint.
 
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence

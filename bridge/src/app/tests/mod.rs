@@ -221,6 +221,7 @@ mod pr_review_tools;
 mod project_agent;
 mod project_agent_base;
 mod project_conversation;
+mod project_coordinator;
 mod protocol;
 mod push;
 mod push_keys;

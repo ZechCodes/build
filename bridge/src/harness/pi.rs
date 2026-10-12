@@ -88,7 +88,7 @@ impl Harness for PiHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        Ok(spec
+        let spec = spec
             .known_session_id(&options.owner_id)
             .env(
                 "BRIDGE_MCP_SOCKET",
@@ -99,7 +99,10 @@ impl Harness for PiHarness {
                 "BUILD_PI_MCP_COMMAND",
                 context.bridge_exe.to_string_lossy().into_owned(),
             )
-            .env("BUILD_PI_MCP_OWNER", &options.owner_id))
+            .env("BUILD_PI_MCP_OWNER", &options.owner_id);
+        // The extension spawns the MCP server with its own environment, so
+        // the declaration reaches the server the way the token does.
+        Ok(crate::harness::declare_mcp_surface(spec, options))
     }
 
     fn routes_captures(&self) -> bool {
@@ -545,6 +548,7 @@ mod tests {
             continue_session: true,
             resume_session_id: Some("ignored-session".to_string()),
             scaffold: None,
+            mcp_surface: None,
         }
     }
 

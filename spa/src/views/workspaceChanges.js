@@ -33,6 +33,12 @@ export { directoryTabsHtml, wireDirectoryTabs } from "../core/workspaceDirectory
  *  one without. */
 export const directoryHasGit = (directory) => directory?.is_git !== false;
 
+const directoryReady = (directory) => !directory.status || directory.status === "ready";
+const surfacePaintKey = (directory) => directoryReady(directory) && directoryHasGit(directory)
+  ? JSON.stringify(["git", directory.scope]) : JSON.stringify([directory.status, directory.is_git, directory.label, directory.error]);
+const directoryStatusHtml = (directory) =>
+  `<div class="workspace-directory-status" role="status">${esc(directory.error || directory.status)}<div class="workspace-directory-offer"></div></div>`;
+
 /** A successful branch checkout invalidates the previous branch's mutable
  *  records. The remounted pane fills these misses; immutable patches stay. */
 const invalidateCheckout = (scope, cacheScope) => {
@@ -150,11 +156,20 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
   const paintSurface = (surface, sourceId) => {
     const directory = directoryOf(sourceId);
     if (!directory) return;
-    if (directoryHasGit(directory)) {
+    const actionHost = surface.element.querySelector(".workspace-action-host");
+    surface.paintKey = surfacePaintKey(directory);
+    if (!directoryReady(directory)) surface.element.innerHTML = directoryStatusHtml(directory);
+    else if (directoryHasGit(directory)) {
       surface.pane = mountChanges(surface.element, git(sourceId, surface.gate.context));
       surface.pane.setVisible(!surface.element.hidden);
     }
     else surface.element.innerHTML = noGitHtml(directory);
+    // Retry is one workspace action across kept surfaces. Carry its host
+    // through readiness changes so hidden surfaces keep the action's result.
+    if (actionHost) {
+      const offer = surface.element.querySelector(".workspace-gitinit-offer, .workspace-directory-offer, .crail-host");
+      (offer || surface.element).appendChild(actionHost);
+    }
   };
   const surfaceFor = (sourceId) => {
     if (surfaces.has(sourceId)) return surfaces.get(sourceId);
@@ -205,15 +220,32 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
     shown.pane?.setVisible(true);
   }
   wireDirectoryTabs(body.querySelector(".workspace-dirtabs"), select);
-  surfaceFor(standing);
+  if (directoryOf(standing)) surfaceFor(standing);
+  const dropSurface = (sourceId, surface) => {
+    surface.gate.hide();
+    surface.pane?.dispose();
+    surface.element.remove();
+    surfaces.delete(sourceId);
+  };
+  const reconcileSurfaces = () => {
+    for (const [sourceId, surface] of surfaces) {
+      const directory = directoryOf(sourceId);
+      if (!directory) { dropSurface(sourceId, surface); continue; }
+      if (surface.paintKey === surfacePaintKey(directory)) continue;
+      surface.pane?.dispose();
+      surface.pane = null;
+      paintSurface(surface, sourceId);
+    }
+  };
   return {
     workspaceMoved(next) {
-      const hadGit = new Map([...surfaces.keys()].map((sourceId) => [sourceId, directoryHasGit(directoryOf(sourceId))]));
       directories = next;
-      paintRow();
-      for (const [sourceId, surface] of surfaces) {
-        if (!hadGit.get(sourceId) && directoryHasGit(directoryOf(sourceId))) paintSurface(surface, sourceId);
+      reconcileSurfaces();
+      if (!directoryOf(standing)) {
+        if (directories.length) select(directories[0].sourceId);
+        else { standing = null; onSelectDirectory(null); }
       }
+      paintRow();
     },
     dispose() { reviewEntry?.dispose(); surfaces.forEach((surface) => surface.pane?.dispose()); },
   };

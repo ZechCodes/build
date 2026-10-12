@@ -27,6 +27,9 @@
   /* Keep the collapsed toolbar's content at its existing inset, clear of the
      floating toggle and its badge. The toggle aligns to --dir-rail below. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
+  --inbox-rest-fill:var(--panel); --inbox-row-fill:var(--panel);
+  --inbox-row-inset-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-inset-right:10px;
+  --inbox-hover-shade:color-mix(in srgb, var(--inbox-hover-ink) var(--inbox-hover-weight), transparent);
   --chat-glass-opacity:72%;
   --chat-glass-blur:6px;
 }
@@ -315,28 +318,25 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    so the inbox's text column stands on the same left edge as the commit and
    file rails beside it — a rail that indents differently reads as a third
    margin rather than as the same list at a narrower width. */
-/* Rows own their current fill; their resting tone is the rail's background.
-   Both right-edge overlays inherit this value, including on keyboard focus. */
-.inbox-entry { --inbox-row-fill:var(--panel);
-  background:var(--inbox-row-fill); align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
-.inbox-entry:hover { --inbox-row-fill:var(--row-hover); background:var(--inbox-row-fill); }
-.inbox-entry.active { --inbox-row-fill:var(--accent-soft); background:var(--inbox-row-fill); }
+/* Resting rows borrow the enclosing fill. Hover darkens it translucently;
+   masks use the composited tone so they cover, rather than double tint, it. */
+.inbox-entry { background:var(--inbox-row-background, var(--inbox-rest-fill));
+  align-items:flex-start; gap:8px; padding:10px 13px; margin-bottom:0; }
+.srow.inbox-entry.active { background:var(--inbox-standing-fill, var(--accent-soft));
+  --inbox-rest-fill:var(--inbox-standing-fill, var(--accent-soft));
+  --inbox-row-fill:var(--inbox-rest-fill); --inbox-row-background:var(--inbox-rest-fill); }
+.srow.inbox-entry:hover { --inbox-row-fill:color-mix(in srgb, var(--inbox-hover-ink) var(--inbox-hover-weight), var(--inbox-rest-fill));
+  background:linear-gradient(var(--inbox-hover-shade), var(--inbox-hover-shade))
+    var(--inbox-row-background, var(--inbox-rest-fill)); }
 .inbox-entry.active::before { content:""; position:absolute; left:0; top:6px; bottom:6px;
   width:3px; border-radius:0 3px 3px 0; background:var(--accent-fill, var(--accent)); }
-/* A row's fill runs the full width of the rail: the hover and the standing
-   fill reach the rail's own edges, not a card's edges a few pixels in from
-   them. The row pays its container's side padding back as its own, so its
-   text column stays exactly where it stood; only the fill grows. Outside a
-   band that padding is the list's; inside one it is the band's. */
-.inbox-entry { --inbox-row-bleed-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-bleed-right:10px;
-  border-radius:0;
-  margin-left:calc(-1 * var(--inbox-row-bleed-left)); margin-right:calc(-1 * var(--inbox-row-bleed-right));
-  padding-left:calc(13px + var(--inbox-row-bleed-left)); padding-right:calc(13px + var(--inbox-row-bleed-right)); }
-.inbox-project, .inbox-project .inbox-entry {
-  --inbox-row-bleed-left:calc(var(--inbox-band-bleed) + 5px); --inbox-row-bleed-right:15px; }
+/* Ungrouped rows repay the list gutter; project children are already full width. */
+.inbox-entry { border-radius:0;
+  margin-left:calc(-1 * var(--inbox-row-inset-left)); margin-right:calc(-1 * var(--inbox-row-inset-right));
+  padding-left:calc(13px + var(--inbox-row-inset-left)); padding-right:calc(13px + var(--inbox-row-inset-right)); }
 /* The overlays that sit on the row's right edge keep to the column the words
    use, not the gutter the fill now covers. */
-.inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
+.inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-inset-right)); }
 .inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
 .inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .inbox-line .stitle { font-size:13px; }
@@ -361,7 +361,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    down to nothing, before the name loses a letter (#516). The facts' gap is
    a pseudo-element inside their own box, so at nothing it is nothing too. */
 .inbox-quiet:not(.inbox-quiet-task) { gap:0; align-items:center;
-  padding:8px calc(var(--inbox-actions-room) - var(--inbox-actions-fade) + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); }
+  padding:8px calc(var(--inbox-actions-room) - var(--inbox-actions-fade) + var(--inbox-row-inset-right)) 8px calc(26px + var(--inbox-row-inset-left)); }
 .inbox-quiet:not(.inbox-quiet-task) > .inbox-body { flex:none; max-width:100%; }
 .inbox-quiet:not(.inbox-quiet-task) > .inbox-body > .inbox-line:first-child { padding-right:0; }
 .inbox-quiet:not(.inbox-quiet-task) .inbox-line .stitle { font-size:12.5px; }
@@ -506,25 +506,22 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* Empty, it leaves the list's flow: a 0px child still costs the list a gap,
    which landed as 4px of nothing above the first band. */
 .inbox-unsorted:empty { display:none; }
-/* Project heads and rows sit on the rail with spacing between blocks. Keep
-   their existing bleed and insets so controls and rows retain their columns.
-   Only the active head and individual selected rows carry an accent fill. */
+/* One block bleeds to the rail edges and owns the inset and active fill.
+   Children stand full width inside it; their padding keeps the content columns. */
 .inbox-projects { display:flex; flex-direction:column; gap:8px; }
 .inbox-project { position:relative; border:0; border-radius:0; background:transparent; box-shadow:none;
   --inbox-band-bleed:calc(10px + env(safe-area-inset-left, 0px));
-  margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
-  padding:5px var(--inbox-row-bleed-right) 6px calc(var(--inbox-band-bleed) + 5px); }
-/* Keep the final dot's slot even when it is absent, so the name and hover
-   controls keep their width as activity changes; the controls end on the
-   column the rows' Done and eye end on (#516). The head uses the rows' bleed
-   and pays it back in padding. Its vertical fill takes 4px from the space on
-   either side, keeping the name, controls, dot and following rows in place. */
+  --inbox-row-inset-left:calc(var(--inbox-band-bleed) + 5px); --inbox-row-inset-right:15px;
+  --inbox-content-indent:26px;
+  margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1); padding:1px 0 6px; }
+.inbox-project.active { --inbox-rest-fill:var(--accent-soft); --inbox-row-fill:var(--accent-soft);
+  --inbox-row-background:transparent;
+  --inbox-standing-fill:color-mix(in srgb, var(--accent-soft) 90%, var(--accent-ink));
+  background:var(--inbox-row-fill); }
+/* Keep the status slot even when absent: head and row controls end together. */
 .inbox-project-head { position:relative; display:flex; align-items:center; gap:2px;
-  margin:-4px calc(-1 * var(--inbox-row-bleed-right)) -4px calc(-1 * var(--inbox-row-bleed-left));
-  padding:5px calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-bleed-right)) 5px var(--inbox-row-bleed-left); }
-.inbox-project-head:hover { background:var(--row-hover); }
-/* Selected rows keep their accent fill on hover; their project head does too. */
-.inbox-project.active > .inbox-project-head { background:var(--accent-soft); }
+  padding:5px calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-inset-right)) 5px var(--inbox-row-inset-left); }
+.inbox-project-head:hover { background-image:linear-gradient(var(--inbox-hover-shade), var(--inbox-hover-shade)); }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
 .inbox-project-hide svg { width:16px; height:16px; display:block; }
 /* The fold chevron centers 12px into the band. */
@@ -539,7 +536,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   color:var(--ink2); }
 .inbox-project-name:hover { color:var(--ink); }
 .inbox-project-head > .inbox-status-dot { position:absolute;
-  right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); top:50%; transform:translateY(-50%); }
+  right:calc(var(--inbox-actions-inset) + var(--inbox-row-inset-right)); top:50%; transform:translateY(-50%); }
 .inbox-project-tools { flex:none; display:grid; align-items:center; justify-items:end; margin-left:auto; }
 .inbox-project-device, .inbox-project-actions { grid-area:1 / 1; }
 /* Which machine a block is on is a secondary tag, not a second name: it reads
@@ -561,25 +558,15 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   .inbox-project-device { opacity:0; }
   .inbox-project-actions { opacity:1; pointer-events:auto; }
 }
-.inbox-project-rows { display:flex; flex-direction:column; gap:4px; padding:4px 0 0; }
+.inbox-project-rows { display:flex; flex-direction:column; gap:4px; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
 .inbox-project .inbox-recent { margin:6px 0 0; padding-top:0; }
-/* One content column under a project head (#516): the Recent caret and every
-   row's name — live, quiet workspace or quiet task — start where the project's
-   name does, so nothing in a block stands outside its own heading. */
-.inbox-project { --inbox-content-indent:26px; }
-.inbox-project .inbox-entry { padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-bleed-left)); }
-/* Recent's heading is a row of the block: it bleeds to the rail's edges as
-   the head does, its count ends on the controls' column, and in the active
-   block it wears the head's fill, so the head and its Recent read as one
-   active region. The rows under it keep their own fills, so the standing
-   row's accent and a hover read exactly as they do anywhere else. */
+/* Recent caret and every row name stand on the project-name column. */
+.inbox-project .inbox-entry { margin:0;
+  padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-inset-left)); }
 .inbox-project .inbox-recent-toggle {
-  width:calc(100% + var(--inbox-row-bleed-left) + var(--inbox-row-bleed-right));
-  margin:0 calc(-1 * var(--inbox-row-bleed-right)) 0 calc(-1 * var(--inbox-row-bleed-left));
-  padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-bleed-left));
-  padding-right:calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-bleed-right)); }
-.inbox-project.active .inbox-recent-toggle { background:var(--accent-soft); }
+  padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-inset-left));
+  padding-right:calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-inset-right)); }
 /* Edge to edge, the shared ring's outward offset falls outside the list that
    clips it; this heading draws its ring inside its own box. */
 #inbox-list .inbox-project .inbox-recent-toggle:focus-visible { outline-offset:-2px; }
@@ -905,10 +892,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-overview-who { grid-row:1; display:flex; align-items:baseline; gap:6px; min-width:0; line-height:1.25; }
 .rail-overview-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   font-size:13px; font-weight:650; }
-/* The model's short name, whole (#257): the agent's name gives way. */
-.rail-overview-model { flex:none; white-space:nowrap;
-  color:var(--dim); font-size:11px; font-weight:500; }
-.rail-overview-model-raw { flex:0 1 auto; min-width:0; white-space:normal; overflow-wrap:anywhere; }
+/* The model family badge stays whole; the agent's name gives way. */
+.agent-model-badge { display:inline-block; flex:none; white-space:nowrap;
+  color:var(--dim); font-family:var(--mono); font-size:10px; font-weight:500; line-height:1.3; }
+.rail-overview-model { font-size:10px; }
 .rail-overview-state { grid-row:1; color:var(--dim); font-size:11px; font-weight:650; line-height:1.25; white-space:nowrap; }
 .rail-overview-row[data-state="working"] .rail-overview-state,
 .rail-overview-row[data-state="waiting"] .rail-overview-state { color:var(--accent); }
@@ -1398,10 +1385,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:10.5px; }
 .surface-row-line { display:flex; align-items:baseline; gap:6px; min-width:0; }
 .surface-row-model, .surface-row-effort { flex:none; }
-/* A row's model is its short name, whole (#257): the label beside it gives way. */
+/* A row's model family badge stays whole; the label beside it gives way. */
 .surface-row-head-model { flex-shrink:0; white-space:nowrap; }
-/* A model no rule shortens is its whole raw id: it wraps, and the row grows. */
-.surface-row-head-model.surface-row-model-raw { flex-shrink:1; min-width:0; white-space:normal; overflow-wrap:anywhere; }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }

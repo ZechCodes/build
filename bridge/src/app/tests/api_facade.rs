@@ -39,7 +39,6 @@ fn a_verb_cut_before_release_is_an_unknown_method() {
         "tasks.link",
         "tasks.for_agent",
         "archive.list",
-        "agent.list",
         "changes.list",
         "git.checkout",
         "project.add",

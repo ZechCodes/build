@@ -1,5 +1,23 @@
 # Changes View Spec
 
+## Project source Changes — #522 planning amendment (2026-10-12)
+
+Proposed extension: [Project workspace](Project%20Workspace%20Spec.md) specifies
+Changes over each original project source using the existing Git pane. Scope
+is project + registered source + captured location; this is additional Git
+support, not implied by the existing Files capability. Current checkout HEAD
+and configured sync/cut base are distinct. Sync base remains safe fast-forward
+only and preserves dirty trees and local commits; explicit Pull is separate.
+
+Per-source cache identities, source-qualified pushes and stale-location guards
+are part of the feature. Keep keyed diff/scroll/draft behavior across faces and
+sources. Diff-to-Files carries source, path and line in the existing route
+shape; the historical one-shot handoff limitation below does not prevent this.
+Source workers share the checkout; Changes shows its complete state and does
+not claim to attribute edits to individual workers. See the amendment for
+verbs, tests, source-sync decisions and the bridge-before-SPA sequence.
+
+
 > **Amendment (2026-09-18):** `post_thread_message` takes only `status`,
 > `body` and `options`. There is no `phase`, `outputs`, `anchor` or `links`:
 > Build knows which phase a report closes from the session that sent it, and a

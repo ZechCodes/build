@@ -17,7 +17,8 @@ import { workspaceDisplayName } from "./workspaceModel.js";
 import { tasksAddress } from "./trackerCache.js";
 import { assignedTo, isFinished } from "./trackerAgentTasks.js";
 import { markdownHtml } from "./markdown.js";
-import { hasShortModelName, shortModelLabel } from "./agentChoice.js";
+import { shortModelLabel } from "./agentChoice.js";
+import { agentModelBadgeHtml } from "./agentModelBadge.js";
 import { ICON_CHEVRON_RIGHT, ICON_EYE_OFF } from "./icons.js";
 import { conversationUnreadCount } from "./conversationUnread.js";
 
@@ -131,9 +132,8 @@ export function overviewRows(entries, threads) {
       sectionName: entries[index].sectionName || "Agents",
       name: agentDisplayName(agent),
       model: modelWord(state),
-      modelName: modelIdOf(state) || modelWord(state),
-      modelRaw: !!modelIdOf(state) && !hasShortModelName(modelIdOf(state)),
-      effort: String(state.effort || ""),
+      modelId: modelIdOf(state),
+      effort: String(state.active_effort || state.effort || ""),
       snippet: overviewSnippet(state, threads[index]),
       lastAgentMessageAt: agentMessageTime(threads[index]),
       working: agentIsRunning(state),
@@ -171,11 +171,9 @@ const watchHtml = (row) => (isUnwatched(row)
 
 const rowHtml = (row) => {
   const classes = ["rail-overview-row", isUnwatched(row) ? "rail-overview-row-unwatched" : ""].filter(Boolean).join(" ");
-  const modelName = row.modelName || row.model;
-  const modelTitle = row.effort ? `${modelName} · ${row.effort}` : modelName;
   return `<button type="button" class="${classes}" data-state="${esc(row.state)}" data-overview-agent="${esc(row.id)}" data-overview-source="${esc(row.source)}" data-overview-workspace="${esc(row.workspaceId)}">
     <span class="rail-overview-dot" aria-hidden="true"></span>
-    <span class="rail-overview-who"><span class="rail-overview-name">${esc(row.name)}</span><span class="rail-overview-model${row.modelRaw ? " rail-overview-model-raw" : ""}" title="${esc(modelTitle)}">${esc(row.model)}</span></span>
+    <span class="rail-overview-who"><span class="rail-overview-name">${esc(row.name)}</span>${agentModelBadgeHtml({ model: row.modelId || row.model, effort: row.effort }, { className: "rail-overview-model" })}</span>
     <span class="rail-overview-state" title="${esc(row.stateDetail)}">${esc(row.stateWord)}</span>${watchHtml(row)}
     <span class="rail-overview-snippet">${esc(row.snippet)}</span>
   </button>`;

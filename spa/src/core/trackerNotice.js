@@ -1,3 +1,4 @@
+import { agentModelBadgeHtml } from "./agentModelBadge.js";
 // A tracking notice, as one line in the conversation it lands in.
 //
 // The maintainer, with a screenshot of a project-agent conversation: "Tracking
@@ -197,11 +198,11 @@ const noticeActorMarkHtml = (actor, projectName) => {
 
 /** One name: the harness mark, then the agent's own name, its whole name as
  *  hover text. One name, one link. */
-const namePartsHtml = (name, mark) =>
-  `${mark}<span class="thread-task-agent-name" title="${esc(name)}">${esc(shownName(name))}</span>`;
-const nameHtml = (name, mark, href) => (href
-  ? `<a class="thread-task-name" href="${esc(href)}">${namePartsHtml(name, mark)}</a>`
-  : `<span class="thread-task-name">${namePartsHtml(name, mark)}</span>`);
+const namePartsHtml = (name, mark, agent) =>
+  `${mark}<span class="thread-task-agent-name" title="${esc(name)}">${esc(shownName(name))}</span>${agentModelBadgeHtml(agent)}`;
+const nameHtml = (name, mark, href, agent) => (href
+  ? `<a class="thread-task-name" href="${esc(href)}">${namePartsHtml(name, mark, agent)}</a>`
+  : `<span class="thread-task-name">${namePartsHtml(name, mark, agent)}</span>`);
 
 /** One name on the line — the assignee, who did it — with the word that
  *  introduces it ("to", "by", "from"). */
@@ -226,13 +227,13 @@ const noticeNumberHtml = (notice, taskHref) => {
 const noticeAssigneeHtml = (notice, reading, linkContext) => {
   const assignee = actorName(notice.assignee, noticeReading(notice, reading));
   const mark = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
-  return sectionHtml("to", "to", nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext)));
+  return sectionHtml("to", "to", nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext), reading.agentModels?.[notice.assignee?.agent_id]));
 };
 
 const noticeByHtml = (notice, word, who, reading, linkContext) => {
   if (!who) return "";
   const mark = noticeActorMarkHtml(notice.actor, reading.projectName);
-  return sectionHtml("by", word, nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext)));
+  return sectionHtml("by", word, nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext), reading.agentModels?.[notice.actor?.agent_id]));
 };
 
 const noticeSpansHtml = (notice, did, who, reading, taskHref = "", linkContext = null) => {
@@ -277,9 +278,9 @@ const noticeWrapHtml = (notice, said, href, hover, split) => {
  * happened, where it went, and who did it. The title is not on the line (#49):
  * it is the heading of the page the link opens, and it stays as hover text.
  */
-export function taskNoticeLineHtml(notice, { place = null, agentLabels = {}, projectName = "", workspaces } = {}) {
+export function taskNoticeLineHtml(notice, { place = null, agentLabels = {}, agentModels = {}, projectName = "", workspaces } = {}) {
   if (!notice?.task_id) return "";
-  const reading = { agentLabels, projectName };
+  const reading = { agentLabels, agentModels, projectName };
   const did = noticeAction(notice, reading);
   const who = actorName(notice.actor, reading);
   const hover = ` title="${esc([noticeLineText(notice, reading), notice.title].filter(Boolean).join(" — "))}"`;

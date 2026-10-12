@@ -165,15 +165,17 @@ describe("mountSurfaceViewer", () => {
     viewer.dispose();
   });
 
-  it("names a model through the label its caller hands it, and by its id without one", () => {
+  it("omits unknown families from the head and retains the caller's label or id in expanded details", () => {
     const named = mount(WORKFLOW_ENTRY_KIND, { modelLabel: (id) => `Local ${id}` });
     named.set(withModel("house-model"));
-    expect(document.querySelector(".surface-row-model").textContent).toBe("Local house-model");
+    expect(document.querySelector(".surface-agent-summary .agent-model-badge")).toBeNull();
+    expect(document.querySelector(".surface-agent-facts .surface-row-model").textContent).toBe("Local house-model");
     named.dispose();
 
     const raw = mount(WORKFLOW_ENTRY_KIND);
     raw.set(withModel("house-model"));
-    expect(document.querySelector(".surface-row-model").textContent).toBe("house-model");
+    expect(document.querySelector(".surface-agent-summary .agent-model-badge")).toBeNull();
+    expect(document.querySelector(".surface-agent-facts .surface-row-model").textContent).toBe("house-model");
     raw.dispose();
   });
 

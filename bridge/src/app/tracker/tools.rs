@@ -368,7 +368,7 @@ impl AppState {
         comment: &crate::tracker::TaskComment,
     ) -> Option<String> {
         let reader = scope.actor.agent_id()?;
-        if !crate::agent::is_project_agent(reader) {
+        if !self.is_pinned_coordinator(reader) {
             return None;
         }
         let reading = comment.author_context.as_ref()?;

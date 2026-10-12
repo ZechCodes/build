@@ -72,6 +72,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         ),
         v1_method!("agent.add", agent_add, AgentAddParams, AgentAdded),
         v1_method!("agent.choose", agent_choose, AgentChooseParams, AgentChoice),
+        v1_method!("agent.list", agent_list, AgentListParams, AgentList),
         v1_method!("agent.remove", agent_remove, AgentRemoveParams, AgentRoster),
         v1_method!(
             "conversation.watch",
@@ -330,8 +331,25 @@ pub struct AgentAddParams {
     /// agent saying "you will want to see this one".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_user: Option<bool>,
+    /// What the agent is FOR on a project's conversation owner (since
+    /// 3.21.0, announced as `agents.projectWorkers`). Only `"worker"`: the
+    /// bridge alone makes a project's pinned coordinator, and a purpose on any
+    /// other owner is refused. Omitted, a project owner gains a worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_role: Option<String>,
     #[serde(flatten)]
     pub choice: ModelChoiceParams,
+}
+
+/// `agent.list` (since 3.21.0): one entity's agents in rail order.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AgentListParams {
+    pub entity_id: String,
+    /// A project owner's whole roster, workers included (announced as
+    /// `agents.projectWorkers`). Without it a project owner lists only its
+    /// pinned coordinator, the shape a client that predates workers paints.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_project_workers: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -642,6 +660,11 @@ pub struct AgentDigest {
     pub compact_at_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surfaces: Option<AgentSurfaces>,
+    /// What a project's agent is for: `coordinator` (its one pinned agent) or
+    /// `worker` (since 3.21.0, announced as `agents.projectWorkers`). Absent on
+    /// every other owner's agents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_role: Option<String>,
 }
 
 /// One conversation's bounded message sessions on a workspace or project
@@ -697,6 +720,16 @@ pub struct AgentChoice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     pub choice_revision: u64,
+}
+
+/// `agent.list`: the entity's agents in rail order, and a project owner's
+/// pinned coordinator by id.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct AgentList {
+    pub entity_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_agent_id: Option<String>,
+    pub agents: Vec<AgentDigest>,
 }
 
 /// The entity's agents in rail order: what `agent.remove` answers with,
@@ -833,6 +866,10 @@ fn agent_add(app: &mut AppState, params: AgentAddParams) -> Result<Answer<AgentA
     answer(app.agent_add(&params.wire())).map_err(refine)
 }
 
+fn agent_list(app: &mut AppState, params: AgentListParams) -> Result<Answer<AgentList>, ApiError> {
+    answer(app.agent_list(&params.wire())).map_err(refine)
+}
+
 fn agent_choose(
     app: &mut AppState,
     params: AgentChooseParams,
@@ -899,6 +936,11 @@ mod tests {
 
     fn round_trips(method: &str) {
         crate::api::v1::testing::fixture_round_trips(methods(), method);
+    }
+
+    #[test]
+    fn the_agent_list_fixture_round_trips() {
+        round_trips("agent.list");
     }
 
     #[test]

@@ -50,6 +50,7 @@ import {
   agentHeading,
   agentRemovalWho,
   agentWho,
+  agentModelsSignature,
   canRemoveAgent,
   providerLabel,
   railBubbles,
@@ -61,6 +62,7 @@ import {
   selectAgentId,
   startFailuresLearned,
 } from "./agentRailModel.js";
+import { agentModelBadgeHtml, agentModelsFromFeed } from "./agentModelBadge.js";
 import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRailRender.js";
 import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { watchTimeUpdates } from "./timeUpdates.js";
@@ -690,6 +692,7 @@ export function panelHeadHtml(who, mode, given = {}) {
   return `<div class="rail-head">
     ${head.showHarnessIcon ? harnessIconHtml(head.provider) : ""}
     ${railWhoHtml(who, head.heading)}
+    ${agentModelBadgeHtml(head.agent)}
     ${railTuiButtonHtml(mode, head.hasTerminal)}
     ${railRemoveButtonHtml(head.removalWho || who, head.removable)}
     ${railWatchButtonHtml(head.watch)}
@@ -2291,7 +2294,7 @@ function mountRailOnContext(host, context, swap) {
     // a strip of two unnamed Claude Codes has one fingerprint, and switching
     // between them would leave the first one's head standing.
     const chip = projectChip();
-    const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal, chipMark(chip)]);
+    const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal, chipMark(chip), agentModelBadgeHtml(agent)]);
     const wantedTitle = JSON.stringify([who, heading.text, heading.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
@@ -2304,7 +2307,7 @@ function mountRailOnContext(host, context, swap) {
       disposeTitleMotion();
       disposeTui();
       releaseConversationChrome();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { provider, removable, hasTerminal, menuGroups: surfaceMenuGroupsInFocus(), heading, pinned, removalWho, projectChip: chip, watch: watchState })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { agent, provider, removable, hasTerminal, menuGroups: surfaceMenuGroupsInFocus(), heading, pinned, removalWho, projectChip: chip, watch: watchState })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat"
           ? `${rememberedConversationIsLoading() || entity.chatCapable === false ? "" : composerRowHtml()}`
@@ -2332,6 +2335,7 @@ function mountRailOnContext(host, context, swap) {
       disposeTitleMotion();
       panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
         watch: watchState,
+        agent,
         provider,
         removable,
         hasTerminal,
@@ -2774,9 +2778,13 @@ function mountRailOnContext(host, context, swap) {
     return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
   };
 
-  /** The names as the paint sees them. In the fingerprint because a feed that
-   *  renames an agent has to repaint a line already on screen, and out of it
-   *  nothing else would notice. */
+  /** Current cached models for message attribution. The fingerprint below
+   *  includes only their rendered badges, independent of roster activity. */
+  const conversationAgentModels = () => {
+    const place = conversationPlace();
+    return agentModelsFromFeed(feedView, deviceKey(place.deviceId, place.projectId));
+  };
+
   const agentLabelsSignature = () =>
     Object.entries(conversationAgentLabels())
       .sort(([left], [right]) => (left < right ? -1 : 1))
@@ -2796,7 +2804,7 @@ function mountRailOnContext(host, context, swap) {
       agentLabel,
       unreadFrom,
       detailLevel: detailLevel(),
-      agentLabels: agentLabelsSignature(),
+      agentLabels: `${agentLabelsSignature()}:${agentModelsSignature(conversationAgentModels())}`,
       slice: `${timelineSlice.signature()}:${threadCache.hasOlderItems()}`,
       ...threadOfferState(threadState),
     });
@@ -2811,7 +2819,9 @@ function mountRailOnContext(host, context, swap) {
     // A partial history window only offers a provisional unread anchor. Move
     // it back as pages arrive until the cached window covers the read cursor.
     const waitingForHistory = openingNeedsHistory(thread);
-    if (waitingForHistory && chatLanding.active()) unreadMarker?.leave();
+    // Recompute on the paint that completes coverage too: its first unread
+    // message can precede the provisional line held by the partial window.
+    if (chatLanding.active()) unreadMarker?.leave();
     unreadFrom = unreadLineFor(thread);
     const landing = chatLanding.prepare(body, {
       hasItems: threadItems(thread).length > 0,
@@ -2855,6 +2865,7 @@ function mountRailOnContext(host, context, swap) {
       workspaces: (feedView?.workspaces || []).filter((workspace) =>
         workspace.projectKey === deviceKey(conversationPlace().deviceId, conversationPlace().projectId)),
       agentLabels: conversationAgentLabels(),
+      agentModels: conversationAgentModels(),
       // So a timeline the level emptied says so, rather than claiming the
       // conversation has nothing on the record.
       hiddenByLevel: held.length - shown.length,

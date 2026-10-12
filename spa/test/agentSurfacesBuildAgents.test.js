@@ -192,35 +192,38 @@ describe("a press on a Build agent", () => {
   });
 });
 
-// #226: each Build agent row says what model it runs, labelled the way the
-// rail labels a model: by the harness that agent runs on.
+// Each Build agent row carries its known model family, with the versioned
+// short name in the tooltip. Unknown families leave the row's head clear.
 describe("the model on a Build agent's row", () => {
   const modelLabel = (modelId, providerId) => `${modelId} on ${providerId}`;
   const modelOf = (row) => row.querySelector(".surface-row-model")?.textContent;
 
-  it("is the agent's model by its short name, the full label for its own harness in its title", () => {
+  it("shows the agent's model family with its versioned short name in the tooltip", () => {
     mount({ onOpenBuildAgent: () => {}, modelLabel }).set({ [BUILD_AGENTS_KEY]: [
       buildAgent("b1", "idle", { model: "gpt-6-astra", provider: "codex_app_server" }),
     ] });
-    expect(modelOf(buildRows()[0])).toBe("6 Astra");
-    expect(buildRows()[0].querySelector(".surface-row-model").classList.contains("surface-row-model-raw")).toBe(false);
-    expect(buildRows()[0].querySelector(".surface-row-model").title).toBe("gpt-6-astra on codex_app_server");
+    expect(modelOf(buildRows()[0])).toBe("Astra");
+    expect(buildRows()[0].querySelector(".agent-model-badge").title).toBe("6 Astra");
   });
 
-  it("keeps the full label for a model no short name is known for", () => {
-    mount({ onOpenBuildAgent: () => {}, modelLabel }).set({ [BUILD_AGENTS_KEY]: [
-      buildAgent("b1", "idle", { model: "llama-3", provider: "pi" }),
-    ] });
-    expect(modelOf(buildRows()[0])).toBe("llama-3 on pi");
-    // #257: only a model with no short name may wrap; a short one stays on one line.
-    expect(buildRows()[0].querySelector(".surface-row-model").classList.contains("surface-row-model-raw")).toBe(true);
+  it("omits an unknown model family while preserving a sub-agent's expanded model details", () => {
+    const unknown = { model: "llama-3", provider: "pi" };
+    mount({ onOpenBuildAgent: () => {}, modelLabel }).set({
+      [BUILD_AGENTS_KEY]: [buildAgent("b1", "idle", unknown)],
+      subagents: [{ ...subagent("s1", "running"), ...unknown }],
+    });
+    expect(buildRows()[0].querySelector(".agent-model-badge")).toBeNull();
+    const delegated = group("subagents").querySelector(".surface-agent");
+    expect(delegated.querySelector("summary .surface-row-model")).toBeNull();
+    expect(delegated.querySelector(".surface-agent-facts .surface-row-model").textContent).toBe("llama-3 on pi");
   });
 
   it("shows on a row nothing opens, too", () => {
     mount({ modelLabel }).set({ [BUILD_AGENTS_KEY]: [
       buildAgent("b1", "idle", { kind: "branch", workspace_id: null, model: "claude-opus-5-5", provider: "claude" }),
     ] });
-    expect(modelOf(buildRows()[0])).toBe("Opus 5.5");
+    expect(modelOf(buildRows()[0])).toBe("Opus");
+    expect(buildRows()[0].querySelector(".agent-model-badge").title).toBe("Opus 5.5");
   });
 
   it("is absent for an agent whose digest names no model", () => {

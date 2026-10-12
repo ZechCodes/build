@@ -88,6 +88,62 @@ impl AppState {
         )
     }
 
+    /// What a project WORKER is told it is, on a cold start: the project, the
+    /// folder it starts in, every source by label and path, and that those
+    /// checkouts are shared rather than its own.
+    pub(in crate::app) fn project_worker_prompt(&self, owner_id: &str) -> String {
+        let project = self
+            .projects
+            .project_id_of(owner_id)
+            .and_then(|project_id| self.projects.get(project_id));
+        let name = project
+            .map(|project| project.name.clone())
+            .unwrap_or_default();
+        let base = project
+            .map(|project| project.repo_path.display().to_string())
+            .unwrap_or_default();
+        let sources = project
+            .map(|project| {
+                project
+                    .sources
+                    .iter()
+                    .map(|source| format!("`{}` at {}", source.name, source.path.display()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let sources = match sources.as_slice() {
+            [] => String::new(),
+            listed => format!(" The project's sources are {}.", listed.join(", ")),
+        };
+        crate::templates::render(
+            &crate::templates::Templates::default().project_worker,
+            &crate::templates::Vars {
+                project_name: &name,
+                project_base: &base,
+                project_sources: &sources,
+                ..crate::templates::Vars::default()
+            },
+        )
+    }
+
+    /// The cold prompt an agent of a project's conversation owner is given in
+    /// place of the coding protocol, chosen by its persisted purpose: the
+    /// coordinator's, or a worker's. `None` for every other agent.
+    pub(in crate::app) fn project_surface_prompt(
+        &self,
+        owner_id: &str,
+        agent_id: &str,
+    ) -> Option<String> {
+        if self.is_project_coordinator(owner_id, agent_id) {
+            return Some(self.project_agent_prompt(owner_id));
+        }
+        let on_roster = self
+            .entity_agents(owner_id)
+            .is_ok_and(|roster| roster.by_id(agent_id).is_some());
+        (on_roster && self.is_project_conversation_owner(owner_id))
+            .then(|| self.project_worker_prompt(owner_id))
+    }
+
     /// The project an agent's owner is bound to: the binding
     /// `project.ensure_conversation` wrote for a project agent, and the one
     /// `workspace.ensure_conversation` (or a run's dispatch) wrote for an agent

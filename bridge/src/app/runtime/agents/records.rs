@@ -573,9 +573,10 @@ impl AppState {
     }
 
     /// Reserve the one request to name an unnamed coding agent as its turn is
-    /// being sent. The project's agent has no set_name tool and is exempt.
+    /// being sent. The project's pinned agent is exempt; its workers are
+    /// named like any other agent.
     pub(in crate::app) fn claim_agent_name_request(&mut self, owner: &str, agent_id: &str) -> bool {
-        if crate::agent::is_project_agent(agent_id) {
+        if self.is_project_coordinator(owner, agent_id) {
             return false;
         }
         let needs_name = self

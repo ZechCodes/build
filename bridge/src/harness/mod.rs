@@ -37,6 +37,8 @@ pub(crate) mod codex_app_server;
 mod identity_env_tests;
 pub mod installed;
 pub mod inventory;
+#[cfg(test)]
+mod mcp_surface_tests;
 pub(crate) mod pi;
 mod session;
 pub mod shell_tail;
@@ -385,6 +387,16 @@ pub enum SessionIdentitySource {
     Known(String),
     /// Durable provider state identifies the conversation after spawn.
     Located(Box<dyn SessionLocator>),
+}
+
+/// Hand a launch's Build MCP server the surface the agent's persisted purpose
+/// declares ([`SpawnOptions::declared_mcp_surface`]): a project worker's
+/// coding surface. Every other launch is left exactly as it was.
+pub(crate) fn declare_mcp_surface(spec: HarnessSpec, options: &SpawnOptions) -> HarnessSpec {
+    match options.declared_mcp_surface() {
+        Some(surface) => spec.env(crate::mcp::MCP_SURFACE_ENV, surface.as_str()),
+        None => spec,
+    }
 }
 
 /// Whether `id` is a name a transcript file can be looked up by.

@@ -88,13 +88,18 @@ function stampedBoard(record) {
 }
 
 function feedSnapshot(record, view, live) {
-  if (!record && !view.items.length && !view.projects.length && !view.workspaces.length) return null;
+  const resolutionReady = Boolean(record) || [view.items, view.projects, view.workspaces].some((rows) => rows.length);
+  const listsPresent = Object.values(view.listKnowledge).some((list) => list.present);
+  if (!resolutionReady && !listsPresent) return null;
   const board = stampedBoard(record);
   return {
     ...board,
     items: rowsOverBoard(board.items, view.items),
     projects: view.projects,
     workspaces: view.workspaces,
+    listKnowledge: view.listKnowledge,
+    // An observed empty roster can precede the board that answers a deep link.
+    resolutionReady,
     pending: live ? board.pending || [] : [],
     cached: !live,
   };

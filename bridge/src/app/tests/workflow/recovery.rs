@@ -95,6 +95,7 @@ pub(in crate::app::tests) fn building_run(
         effort: None,
         agents: crate::agent::stored_agents(id),
         legacy_thread: crate::thread::Thread::default(),
+        pinned_agent_id: None,
         last_summary: None,
         last_error: None,
         created_at: "2026-07-01T10:00:00Z".into(),

@@ -239,6 +239,22 @@ describe("paintKeepingPlace", () => {
       expect(scroller.scrollTop).toBe(800);
     });
 
+    it("reads current header clearance on every unread landing", () => {
+      const { scroller, paint } = conversation([
+        { key: "a", height: 400 },
+        { key: "line", height: 20, line: true },
+        { key: "b", height: 400 },
+      ]);
+      const policy = followUnread();
+      scroller.style.scrollPaddingTop = "46px";
+      paintKeepingPlace(scroller, paint, { opening, policy });
+      expect(scroller.scrollTop).toBe(342);
+      // A usage banner moves the body below the header and clears its padding.
+      scroller.style.scrollPaddingTop = "0px";
+      paintKeepingPlace(scroller, paint, { opening: () => true, policy });
+      expect(scroller.scrollTop).toBe(388);
+    });
+
     // Following means the end: what arrived is drawn under what they were
     // reading, and the line is where the panel OPENS, not where each paint
     // drags them back to.

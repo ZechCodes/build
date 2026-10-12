@@ -304,6 +304,7 @@ pub(in crate::app) fn reserve_agent_spawn(
     if !s.agent_target_exists(owner, agent_id, conversation_id, &key.root) {
         return Err(format!("agent {agent_id} is no longer attached to {owner}"));
     }
+    s.refuse_worker_without_sources(owner, agent_id)?;
     // A router session belongs to no project — deciding which one
     // the capture belongs to is its job. Any project's
     // orchestrator builds the same harness spec for it, since the
@@ -385,6 +386,7 @@ pub(in crate::app) fn reserve_agent_spawn(
             recorded_resume_id,
             probes: s.session_probes(),
             session_token: session_token.clone(),
+            mcp_surface: s.agent_mcp_surface(owner, agent_id),
             cli_readings: Arc::clone(&s.cli_readings),
         },
         role: TabRole::Agent {

@@ -1021,6 +1021,7 @@ fn real_claude_session_receives_the_whole_multiline_prompt() {
         mcp_session_token: "e2e-session-token".into(),
         cwd: workspace.clone(),
         scaffold: None,
+        mcp_surface: None,
     };
     // Building the spec is what pre-trusts the workspace — the dialog this
     // guards against fires precisely because the directory is brand new.

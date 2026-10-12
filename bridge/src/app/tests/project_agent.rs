@@ -28,7 +28,8 @@ pub(super) fn added_project(state: &mut AppState, repo: &Path) -> String {
         .to_string()
 }
 
-/// A project's conversation owner and the project agent on it.
+/// A project's conversation owner and the project agent on it: the pinned
+/// coordinator the owner is born with.
 pub(super) fn project_agent(state: &mut AppState, project_id: &str) -> (String, String) {
     let ensured = state.handle(req(
         "project.ensure_conversation",
@@ -36,8 +37,10 @@ pub(super) fn project_agent(state: &mut AppState, project_id: &str) -> (String, 
     ));
     assert_eq!(ensured["ok"], true, "{ensured:?}");
     let owner = ensured["result"]["run_id"].as_str().unwrap().to_string();
-    let added = state.handle(req("agent.add", json!({ "entity_id": owner })));
-    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    let agent_id = state
+        .project_pin(&owner)
+        .expect("a project owner is born with its pin")
+        .to_string();
     assert!(crate::agent::is_project_agent(&agent_id), "{agent_id}");
     (owner, agent_id)
 }

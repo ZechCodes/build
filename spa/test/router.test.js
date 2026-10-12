@@ -1,4 +1,33 @@
 import { describe, it, expect } from "vitest";
+import { navigationCatalog } from "../src/core/navigationModel.js";
+
+describe("shared destination route links", () => {
+  it("round-trips duplicate device-qualified workspace IDs with encoded source IDs", () => {
+    const projects = ["one", "two"].map((deviceId) => ({ id: "proj-1", deviceId, name: "Build" }));
+    const workspaces = ["one", "two"].map((deviceId) => ({ id: "ws-1", deviceId, project_id: "proj-1", name: "工作 / 🦊",
+      directories: [{ id: "directory", source_id: "源码 / 🦊", is_git: true }] }));
+    const catalog = navigationCatalog({ projects, workspaces });
+    for (const destination of catalog.destinations) {
+      expect(routeFromHash(destination.hash)).toEqual({ ...destination.route, tab: destination.route.tab || "tasks" });
+      expect(destination.hash).toContain(`/device/${destination.deviceId}/`);
+    }
+  });
+
+  it.each([
+    "#/device/d/project/p/workspace/w/directory/s/files?path=a%2Fb&line=9&agent=a",
+    "#/device/d/project/p/workspace/w/directory/s/changes?commit=deadbeef&agent=a",
+    "#/device/d/project/p/workspace/w/tasks/task-7?view=board&agent=a",
+    "#/device/d/project/p/tasks/task-7/c/tc-9",
+    "#/device/d/project/p/files?source=s&path=a%2Fb&line=9&agent=a",
+  ])("preserves Current link %s", (currentHash) => {
+    const route = routeFromHash(currentHash);
+    const catalog = navigationCatalog({ projects: [{ id: "p", deviceId: "d" }], workspaces: [{ id: "w", deviceId: "d", project_id: "p" }] },
+      { route, currentHash });
+    const current = catalog.destinations.find((destination) => destination.current);
+    expect(current.route).toBe(route);
+    expect(current.hash).toBe(currentHash);
+  });
+});
 import { conversationRoute, routeFromHash, hashFromRoute, takePushOpenMark, withDeviceOrResolve } from "../src/core/router.js";
 
 // A work URL that names no device names no machine: every device mints a

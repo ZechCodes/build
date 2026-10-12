@@ -37,3 +37,16 @@ This checklist covers the security boundary changed by the Task final-repair wor
 | 10 | Repository scanners are clean | 10/10 | `semgrep --config auto .` (0 blocking findings); Gitleaks full-history scan (0 leaks) |
 
 **Total: 100/100.**
+
+
+## #522 planned extension — not yet verified
+
+These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
+Existing scores above cover their original implemented scope only. Each owning
+child must supply passing regression/gate evidence before its new rows can
+count toward 100/100; planning does not satisfy these controls.
+
+| ID | Pending control | Required evidence |
+| --- | --- | --- |
+| TS522-1 | Existing/new project worker assignment and MCP tools are same-project scoped, idempotent and purpose-authorized; clients cannot mint or demote the pin. | C4/C5/C8: assign_project_worker_is_idempotent; cross-project, forged-purpose, removal and task-assignee tests. |
+| TS522-2 | Task links preserve exact worker identity without a fake workspace; worker removal and project deletion retire pending delivery/tracking consistently without rewriting history. | C5/C10: assignment/link/cleanup and stale-generation lifecycle tests. |

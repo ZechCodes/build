@@ -176,9 +176,16 @@ async fn assert_seen_pushes_conversation_badges(workspace: bool) {
     let ensured = call(&handler, method, params);
     assert_eq!(ensured["ok"], true, "{ensured:?}");
     let entity_id = ensured["result"]["entity_id"].as_str().unwrap().to_string();
-    let added = call(&handler, "agent.add", json!({ "entity_id": entity_id }));
-    assert_eq!(added["ok"], true, "{added:?}");
-    let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+    // A workspace gains an agent; a project's conversation is its pinned
+    // coordinator's, the one agent its row lists.
+    let agent_id = if workspace {
+        let added = call(&handler, "agent.add", json!({ "entity_id": entity_id }));
+        assert_eq!(added["ok"], true, "{added:?}");
+        added["result"]["agent"]["id"].as_str().unwrap().to_string()
+    } else {
+        let app = state.lock().unwrap();
+        app.project_pin(&entity_id).unwrap().to_string()
+    };
     {
         let mut app = state.lock().unwrap();
         app.edit_agent_conversation(&entity_id, &agent_id, |thread, _| {

@@ -56,6 +56,9 @@ pub struct ActiveRun {
     /// This entity's agents — see [`ActivePlan::agents`]. A branch carries as
     /// many as the human adds; they share the one worktree.
     pub agents: AgentRoster,
+    /// The pinned coordinator of a project's conversation owner, by id; `None`
+    /// on every other run (see [`crate::project_roster`]).
+    pub pinned_agent_id: Option<String>,
     /// The most recent `done` summary, surfaced on cards.
     pub last_summary: Option<String>,
     /// The most recent failure surfaced to the reviewer (merge failure,
@@ -97,6 +100,7 @@ impl ActiveRun {
             publication_attempt: None,
             model_choice,
             agents: AgentRoster::empty(),
+            pinned_agent_id: None,
             last_summary: None,
             last_error: None,
         }
@@ -131,6 +135,7 @@ impl ActiveRun {
             publication_attempt: record.publication_attempt.clone(),
             model_choice: record.model_choice(),
             agents: record.roster(),
+            pinned_agent_id: record.pinned_agent_id.clone(),
             last_summary: record.last_summary.clone(),
             last_error: record.last_error.clone(),
         }
@@ -312,6 +317,7 @@ impl Orchestrator {
             publication_attempt: None,
             model_choice,
             agents,
+            pinned_agent_id: None,
             last_summary: None,
             last_error: None,
         };

@@ -1,5 +1,29 @@
 # Build v1 — UI Design Brief & User Stories
 
+## Workspace views — #522 planning amendment (2026-10-12)
+
+Proposed design, pending the decisions in [Project workspace](Project%20Workspace%20Spec.md).
+“Workspace” names the rail-based view: Tasks, Changes, Files, attached agents
+and a terminal console. The project workspace uses the original sources and
+adds Workspaces, the management face for its named child checkouts. Project
+Tasks stays project-wide. Branch pages remain checkout views; tasks remain
+pages within their route's Tasks face. Exactly one pinned project coordinator
+is available throughout the project; source-writing workers appear only in
+the project workspace (including its task pages).
+
+The terminal is a console opened by a rail action, never the default face or
+an automatically started process. It belongs to an explicit source, not to
+whichever agent happens to be selected. The original source trees are shared;
+Changes makes the work visible, without promising worker isolation.
+
+The linked amendment supplies the copy/route inventory, code contradictions,
+open decisions and child acceptance tests. It supersedes the early Information
+Architecture, Task view and Terminal descriptions below within this scope.
+#523 owns navigation and breadcrumbs; its sibling picker shares cached
+workspace identities with the Workspaces face and does not duplicate its
+management controls.
+
+
 **Product:** Build (getbuild.ing)
 **Companion to:** Build v1 Scope Document
 **Status:** Draft for design

@@ -60,7 +60,7 @@ describe("watched conversation unread (#474)", () => {
       read_through_sequence: 0, working, provider: "codex", active_model: "gpt-6-astra", effort: "xhigh" };
     const [entry] = overviewRows([{ agent: roster, state: { ...roster, ...execution }, source: "current" }], [null]);
     expect(entry).toMatchObject({ id: "task-agent", watching: true, unread: true, unreadCount: 2,
-      working, model: "6 Astra", modelName: "gpt-6-astra", effort: "xhigh",
+      working, model: "6 Astra", modelId: "gpt-6-astra", effort: "xhigh",
       state: working ? "working" : "waiting", stateWord: working ? "Working" : "Unread" });
   });
 

@@ -150,12 +150,11 @@ for (const [name, viewport] of VIEWPORTS) {
       assert.equal(read.subagentRow.model, "");
       assert.equal(read.subagentRow.modelBox, null);
       assert.ok(read.subagentRow.name.width >= MIN_NAME_WIDTH);
-      // #257: each row wears its model's short name, whole, and no longer
-      // names its workspace; the agent's name is what gives way (#226).
+      // Each row keeps its model family whole; the agent's name gives way.
       assert.deepEqual(read.buildRows.map((row) => row.model), ["Opus", "", "Astra"]);
-      // A short name stays on one line; only the raw id wraps.
+      // Known model family badges stay on one line.
       for (const { modelBox, modelLineHeight } of [read.buildRows[0], read.buildRows[2]]) {
-        assert.ok(modelBox.height < modelLineHeight * 1.5, `a short name keeps one line: ${JSON.stringify(modelBox)}`);
+        assert.ok(modelBox.height < modelLineHeight * 1.5, `a family badge keeps one line: ${JSON.stringify(modelBox)}`);
       }
       for (const { row, head, name: label, parts, text, modelFits, modelBox, clock } of read.buildRows) {
         if (modelFits) assert.ok(modelFits.scrollWidth <= modelFits.clientWidth, `the model is not clipped: ${JSON.stringify(modelFits)}`);

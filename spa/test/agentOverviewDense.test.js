@@ -90,9 +90,9 @@ describe("the agents overview (#186)", () => {
     expect(row("fix-reviewer").querySelector(".rail-overview-state").title).toContain("not a model id");
     expect(shown("pr-reviewer")).toEqual({ model: "Sol", state: "idle", word: "Idle" });
     expect(shown("critical-review")).toEqual({ model: "Astra", state: "idle", word: "Idle" });
-    // The row wears the short name (#257); its title names the model whole.
+    // The row wears the family; its tooltip keeps the version and effort.
     expect(row("critical-review").querySelector(".rail-overview-model").title).toBe("6 Astra · xhigh");
-    expect(row("critical-review").querySelector(".rail-overview-model").classList.contains("rail-overview-model-raw")).toBe(false);
+    expect(row("critical-review").querySelector(".rail-overview-model").classList.contains("agent-model-badge")).toBe(true);
     expect(shown("auditor")).toEqual({ model: "Sol", state: "idle", word: "Idle" });
 
     const summary = (name) => sectionNamed(name).querySelector(".rail-overview-sum");

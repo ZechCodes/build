@@ -181,14 +181,12 @@ describe("agentRowHtml", () => {
     expect(factValue(row, "Tool calls")).toBe("0");
   });
 
-  it("prints the model name the row arrived with", () => {
+  it("prints the family derived from the model label the row arrived with", () => {
     const named = agentRows([readerEntry], { modelLabel: (id) => `Local ${id}` })[0];
     expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Haiku");
   });
 
-  // #257: the summary wears the short name; its title and the details keep
-  // the full label, where there is room for it.
-  it("shortens the model in the summary and names it whole in its title and details", () => {
+  it("shows the family in the summary, the version in its tooltip and the full label in details", () => {
     const named = agentRows([{ ...readerEntry, model: "claude-haiku-4-5-20251001" }], { modelLabel: () => "Claude Haiku 4.5" })[0];
     const row = parseHtml(agentRowHtml(named)).firstElementChild;
     const summaryModel = row.querySelector(".surface-agent-summary > .surface-row-model");

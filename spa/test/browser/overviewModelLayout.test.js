@@ -44,7 +44,7 @@ for (const [name, viewport, listWidth] of VIEWPORTS) {
       assert.equal(await page.locator('[data-overview-agent="a4"] .agent-model-badge').count(), 0);
       for (const model of read) {
         assert.ok(model.nameClipped, `the long name is what gives way: ${JSON.stringify(model)}`);
-        assert.ok(model.height < model.lineHeight * 1.5, `a short name keeps one line: ${JSON.stringify(model)}`);
+        assert.ok(model.height < model.lineHeight * 1.5, `a family badge keeps one line: ${JSON.stringify(model)}`);
       }
       for (const model of read) {
         assert.ok(model.scrollWidth <= model.clientWidth, `the model is not clipped: ${JSON.stringify(model)}`);

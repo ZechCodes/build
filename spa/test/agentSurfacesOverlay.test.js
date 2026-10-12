@@ -266,7 +266,7 @@ describe("openSurfaceOverlay", () => {
     held.close();
   });
 
-  it("paints rows with the width it has, naming models through the label it was handed", () => {
+  it("paints family badges with the width it has, retaining the caller's label in expanded details", () => {
     const held = openSurfaceOverlay(AGENT_ENTRY_KIND, {
       onOpenThreadItem: () => {},
       modelLabel: (modelId) => `Local ${modelId}`,
@@ -276,7 +276,9 @@ describe("openSurfaceOverlay", () => {
     });
 
     const row = overlayRows()[0];
-    expect(row.querySelector(".surface-row-model").textContent).toBe("Local opus");
+    expect(row.querySelector(".agent-model-badge").textContent).toBe("Opus");
+    expect(row.querySelector(".agent-model-badge").title).toBe("Local opus");
+    expect(row.querySelector(".surface-agent-facts .surface-row-model").textContent).toBe("Local opus");
     expect(row.querySelector(".surface-agent-facts").textContent).toContain("Tokens");
     expect(row.querySelector(".surface-agent-facts").textContent).toContain("1200");
     held.close();
@@ -481,7 +483,7 @@ describe("the agent's goal and observed checklist", () => {
 });
 
 describe("the model a surface row names", () => {
-  it("says what the account's catalog calls it, and the raw id when it knows none", async () => {
+  it("shows the family and versioned tooltip while retaining the catalog label in expanded details", async () => {
     catalog = {
       default_provider: "claude",
       providers: [
@@ -497,12 +499,12 @@ describe("the model a surface row names", () => {
     menuItem(WORKFLOW_ENTRY_KIND).click();
     await flush();
 
-    // The row wears the short name (#257); its title keeps the catalog's label.
-    const model = document.querySelector(".modal-surface .surface-row-model");
-    expect([model.textContent, model.title]).toEqual(["Opus 5", "Opus 5 · 1m"]);
+    const model = document.querySelector(".modal-surface .agent-model-badge");
+    expect([model.textContent, model.title]).toEqual(["Opus", "Opus 5"]);
+    expect(document.querySelector(".modal-surface .surface-agent-facts .surface-row-model").textContent).toBe("Opus 5 · 1m");
   });
 
-  it("falls back to the id itself while the catalog holds no such model", async () => {
+  it("omits an unknown family from the head and retains its id in expanded details", async () => {
     const named = surfaces();
     named.workflows[0].phases[0].agents[0].model = "some-unlisted-model";
     payload = branchRow({ surfaces: named });
@@ -512,7 +514,8 @@ describe("the model a surface row names", () => {
     menuItem(WORKFLOW_ENTRY_KIND).click();
     await flush();
 
-    expect(document.querySelector(".modal-surface .surface-row-model").textContent).toBe("some-unlisted-model");
+    expect(document.querySelector(".modal-surface .surface-agent-summary .agent-model-badge")).toBeNull();
+    expect(document.querySelector(".modal-surface .surface-agent-facts .surface-row-model").textContent).toBe("some-unlisted-model");
   });
 });
 
@@ -759,9 +762,7 @@ describe("a Build agent on the rail's own branch", () => {
     const expanded = (id) => document.querySelector(`.rail-bubble[data-agent="${id}"]`).getAttribute("aria-expanded");
     expect([expanded("ag-1"), expanded("ag-2")]).toEqual(["false", "true"]);
   });
-  // #226: the row names the Build agent's model as the catalog names it for
-  // that agent's own harness, not the harness of the agent in the panel.
-  it("names the agent's model for the harness it runs on", async () => {
+  it("shows the Build agent's model family and versioned tooltip", async () => {
     catalog = {
       default_provider: "claude",
       providers: [
@@ -774,7 +775,7 @@ describe("a Build agent on the rail's own branch", () => {
     await mount();
     await rememberAgentLineageSupport("dev-1", { agents: { createdBy: true } });
     await openAgents();
-    await painted(() => buildAgentRows()[0].querySelector(".surface-row-model")?.title === "GPT-6 Astra");
-    expect(buildAgentRows()[0].querySelector(".surface-row-model").textContent).toBe("6 Astra");
+    await painted(() => buildAgentRows()[0].querySelector(".agent-model-badge")?.title === "6 Astra");
+    expect(buildAgentRows()[0].querySelector(".agent-model-badge").textContent).toBe("Astra");
   });
 });

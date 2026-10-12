@@ -845,7 +845,15 @@ struct Subscription {
     /// Bumped whenever the scope changes. A frame remembers the epoch it was
     /// taken in and is dropped at send time if the scope has moved since.
     scope_epoch: u64,
+    /// Which subscription this is, unique for the life of the process. A
+    /// client may unsubscribe an id and subscribe it again over another
+    /// scope; the new one starts at epoch zero too, so the epoch alone would
+    /// let a frame the old one took go out under the new one's id.
+    instance: u64,
 }
+
+/// Where [`Subscription::instance`] is minted from.
+static NEXT_SUBSCRIPTION_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 impl Subscription {
     fn new(spec: SubscriptionSpec, session: SessionSender, now: Instant) -> Subscription {
@@ -862,6 +870,7 @@ impl Subscription {
             pending_lists: BoardLists::default(),
             covered_last: None,
             scope_epoch: 0,
+            instance: NEXT_SUBSCRIPTION_INSTANCE.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -1167,6 +1176,9 @@ struct DueFrame {
     /// The subscription's scope epoch when this frame was taken: a re-scope
     /// while the frame is in flight keeps it from going out.
     scope_epoch: u64,
+    /// The subscription instance that took this frame: one recreated under
+    /// the same id while the frame is in flight is not sent it.
+    instance: u64,
 }
 
 impl DueFrame {
@@ -1823,6 +1835,7 @@ impl ChangeBus {
                     _ => None,
                 },
                 scope_epoch: sub.scope_epoch,
+                instance: sub.instance,
             });
         }
         drop(subscriptions);
@@ -1872,8 +1885,8 @@ impl ChangeBus {
         frames
     }
 
-    /// Send a sealed frame unless its subscription was re-scoped or dropped
-    /// since the frame was taken. The check and the send share the
+    /// Send a sealed frame unless its subscription was re-scoped, dropped or
+    /// recreated since the frame was taken. The check and the send share the
     /// subscriptions lock that [`ChangeBus::subscribe`] takes, so once a
     /// re-scope returns no frame of the old scope can follow it.
     ///
@@ -1881,10 +1894,7 @@ impl ChangeBus {
     /// lists, go back on the subscription for its next frame.
     fn send_if_current(&self, frame: &DueFrame, sealed: crate::carrier::OutboundEnvelope) -> Sent {
         let mut subscriptions = self.subscriptions.lock().unwrap();
-        let Some(sub) = subscriptions
-            .iter_mut()
-            .find(|sub| sub.is(frame.session.session_id(), &frame.subscription_id))
-        else {
+        let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) else {
             return Sent::Stale;
         };
         if sub.scope_epoch != frame.scope_epoch {
@@ -1918,10 +1928,7 @@ impl ChangeBus {
             return;
         }
         let mut subscriptions = self.subscriptions.lock().unwrap();
-        if let Some(sub) = subscriptions
-            .iter_mut()
-            .find(|sub| sub.is(frame.session.session_id(), &frame.subscription_id))
-        {
+        if let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) {
             sub.pending_lists.merge(missing);
         }
     }
@@ -1945,10 +1952,7 @@ impl ChangeBus {
         }
         let now = Instant::now();
         let mut subscriptions = self.subscriptions.lock().unwrap();
-        let Some(sub) = subscriptions
-            .iter_mut()
-            .find(|sub| sub.is(frame.session.session_id(), &frame.subscription_id))
-        else {
+        let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) else {
             return;
         };
         for (entity_id, tips) in sent {
@@ -2048,6 +2052,13 @@ impl ChangeBus {
 impl Subscription {
     fn is(&self, session_id: &str, sub_id: &str) -> bool {
         self.session.session_id() == session_id && self.spec.id == sub_id
+    }
+
+    /// Whether this is the very subscription that took `frame`, and not one
+    /// recreated under its id since.
+    fn took(&self, frame: &DueFrame) -> bool {
+        self.instance == frame.instance
+            && self.is(frame.session.session_id(), &frame.subscription_id)
     }
 }
 
@@ -2204,6 +2215,61 @@ mod subscriptions {
         assert!(
             received.is_empty(),
             "old frame arrived after repoint: {received:?}"
+        );
+    }
+
+    #[test]
+    fn review_550_recreated_subscription_drops_old_frame() {
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let released = Arc::new(std::sync::Barrier::new(2));
+        let lookup_entered = Arc::clone(&entered);
+        let lookup_released = Arc::clone(&released);
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(move |requests| {
+                let facts = vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    root_listing: Some(json!({"entries": [{"name": "old.txt"}]})),
+                    ..EntityFacts::default()
+                }];
+                lookup_entered.wait();
+                lookup_released.wait();
+                facts
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("review-550");
+        let at =
+            |path: &str| ProjectSourceScope::new("proj-1".into(), "source-2".into(), path.into());
+        let old = at("/old");
+        let held = SubscriptionSpec {
+            kinds: [Kind::Files].into_iter().collect(),
+            ..spec(
+                "s-source",
+                Scope::ProjectSource(old.clone()),
+                Mode::Realtime,
+                Priority::Foreground,
+            )
+        };
+        bus.subscribe(&sender, held.clone());
+        bus.note_files(old.entity_id(), &["old.txt".to_string()]);
+        let flushing = Arc::clone(&bus);
+        let worker = std::thread::spawn(move || flushing.flush());
+        entered.wait();
+        bus.unsubscribe_one("review-550", "s-source");
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                scope: Scope::ProjectSource(at("/new")),
+                ..held
+            },
+        );
+        released.wait();
+        worker.join().unwrap();
+        let received = frames(drained(&mut rx, &key));
+        assert!(
+            received.is_empty(),
+            "old frame arrived after the id was recreated: {received:?}"
         );
     }
 

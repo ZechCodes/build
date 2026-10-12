@@ -580,8 +580,10 @@ items carry `project_source` and the keys its own Git verbs answer. Scope
 `all` never covers those entities, so an older client hears exactly what it
 did. A subscription given a new scope (another folder, `all`, an entity, the
 board) drops what it held for the old one. A frame already taken is sealed
-off-lock and sent under the bus lock only if the subscription's scope epoch
-still matches. So once the re-scoping `changes.subscribe` is applied, no
+off-lock and sent under the bus lock only if the very subscription that
+took it is still there (an instance minted per subscribe, so an id
+unsubscribed and subscribed again is a new one) and its scope epoch still
+matches. So once the re-scoping `changes.subscribe` is applied, no
 old-scope frame follows it. A source moved or removed in settings leaves the
 roots snapshot and its watcher stops. Reconcile passes apply their snapshots
 in the order they read them, so a stale pass cannot restart that watcher.

@@ -158,6 +158,23 @@ impl DispatchedTask {
         assert!(owner.agents.by_id(&self.agent_id).is_some());
     }
 
+    fn reset_target(&mut self) -> String {
+        let address = self.app.resolve_conversation_address(&self.entity_id, Some(&self.agent_id)).unwrap();
+        let old_thread = self.app.conversation_at(&address).unwrap().id.clone();
+        let reset = self.app.handle(req("conversation.reset", json!({
+            "project_id":self.project_id,"entity_id":self.entity_id,"agent_id":self.agent_id,
+            "conversation_id":address.conversation_id,"expected_thread_id":old_thread,
+        })));
+        assert_eq!(reset["ok"], true, "{reset}");
+        let current = self.app.resolve_conversation_address(&self.entity_id, Some(&self.agent_id)).unwrap();
+        assert_eq!(current.conversation_id, address.conversation_id);
+        let new_thread = self.app.conversation_at(&current).unwrap().id.clone();
+        assert_ne!(new_thread, old_thread);
+        assert!(!self.app.task_completion_authority.contains_key(&self.agent_id));
+        assert!(!self.app.pending_task_completion_authority.contains_key(&self.agent_id));
+        new_thread
+    }
+
     fn assign_another_task(&mut self, title: &str) -> String {
         let id = filed(&mut self.app, &self.project_id, title)["id"]
             .as_str()
@@ -172,6 +189,39 @@ impl DispatchedTask {
         assert_eq!(assigned["ok"], true, "{assigned}");
         id
     }
+}
+
+#[test]
+fn completion_fence_rejects_pre_reset_receipt_reconstruction() {
+    let mut task = DispatchedTask::new();
+    // Keep the second assignment admitted but unsettled, as at a recovery
+    // boundary. The receipt can survive independently of the resident marker.
+    task.app.stop_task_delivery_after_for_test(crate::app::tracker::DeferredDeliveryBoundary::Posted);
+    task.call("tasks.assign", json!({"assignee":{"kind":"agent","agent_id":task.agent_id}}));
+    let operation = task.operation_id();
+    let receipt = task.app.tracker_store().unwrap().operation(&operation).unwrap().unwrap();
+    let new_thread = task.reset_target();
+    assert!(task.app.operation_receipt(&operation).unwrap().is_none());
+    let agents = task.app.entity_agents(&task.entity_id).unwrap().iter().cloned().collect::<Vec<_>>();
+    task.app.tracker_store().unwrap().accept_thread_post(&task.entity_id, &agents, &receipt).unwrap();
+    let address = task.app.resolve_conversation_address(&task.entity_id, Some(&task.agent_id)).unwrap();
+    assert_eq!(task.app.conversation_at(&address).unwrap().id, new_thread);
+    task.app.record_native_operation_seen(&task.entity_id, &task.agent_id, &operation).unwrap();
+    task.assert_complete_leaves_task("in_progress");
+    task.call("tasks.assign", json!({"assignee":{"kind":"agent","agent_id":task.agent_id}}));
+    task.consume_turn();
+    task.assert_complete_reviews_task();
+}
+
+#[test]
+fn completion_fence_rechecks_reset_generation_of_captured_turn() {
+    let mut task = DispatchedTask::new();
+    task.consume_turn();
+    let captured = task.app.task_completion_authority.remove(&task.agent_id).unwrap();
+    task.reset_target();
+    // A callback holding the preceding turn's marker must not restore it.
+    task.app.task_completion_authority.insert(task.agent_id.clone(), captured);
+    task.assert_complete_leaves_task("in_progress");
 }
 
 #[test]

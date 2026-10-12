@@ -1945,8 +1945,11 @@ signing config. None of this changes Git configuration for `cargo run`.
 Vanilla JavaScript ES modules with no framework, bundled by Vite
 (`spa/vite.config.js`, `base: "/app/static/"`). The build output goes to
 `skriftapp/buildapp/static/`, which skriftapp serves at `/app/`. Every
-dependency is self-hosted. `@build/secure-transport` is a `file:` dependency on
-a sibling `build-secure-transport` checkout (`spa/package.json`).
+dependency is self-hosted. `@build/secure-transport` is a `file:../transport/js`
+dependency within this checkout (`spa/package.json`). SPA and web commit their
+portable npm locks; install `transport/js` from its own lock before either
+consumer. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
+transport lock; Node resolves the binding's dependencies from `transport/js`.
 
 ### Module layout
 

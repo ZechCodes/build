@@ -29,14 +29,40 @@ checkout invalidation refreshes when that directory is shown.
 
 ## Prereqs
 
-`@build/secure-transport` resolves as `file:../../build-secure-transport/js` —
-a sibling checkout of <https://github.com/ZechCodes/build-secure-transport>
-next to this repo (same convention as `web/` and CI).
+Use Node 22.23.3 (`.nvmrc`) and npm 12.0.2 (`packageManager`).
+`@build/secure-transport` resolves as `file:../transport/js` inside this checkout.
+Install that package's own locked dependencies first, from the repo root:
+
+```bash
+nice -n 10 npm ci --prefix transport/js --ignore-scripts
+```
+
+SPA's `package-lock.json` is committed and portable. Use `npm ci
+--legacy-peer-deps` for a fresh install. When editing dependencies, run
+`npm install --legacy-peer-deps` and commit the updated lock with the manifest.
+`.npmrc` preserves the peer-resolution policy and disables install scripts.
+New registry resolutions must be at least seven days old; locked installs retain
+the committed dependency versions.
+
+If a reviewed fix must use a release younger than seven days, make a one-command
+exception for that exact package (replace `package-name` and `x.y.z`):
+
+```bash
+nice -n 10 npm install package-name@x.y.z --save-exact --legacy-peer-deps --ignore-scripts --min-release-age-exclude=package-name
+```
+
+The package-name exception leaves the seven-day rule active for every other
+package, including its transitive dependencies, and keeps lifecycle scripts
+disabled. Record the reason and exact version with the manifest/lock review;
+do not add the exception to `.npmrc` or use a wildcard. A younger transitive
+fix needs its own explicit package exception. Ordinary installs use the commands
+above again.
+
 
 ## Commands
 
 ```bash
-nice -n 10 npm install
+nice -n 10 npm ci --legacy-peer-deps
 nice -n 10 npm run lint       # eslint: one rule — no function over complexity 10
 nice -n 10 npm test           # vitest: session core, diff, markdown, notes, router, terminal
 nice -n 10 npm run test:browser # Chromium layout regressions, also included in npm test

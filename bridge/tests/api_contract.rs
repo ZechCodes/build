@@ -1351,3 +1351,30 @@ fn lean_activity_fixture_examples_match_reachable_pages() {
         }
     }
 }
+
+/// Project workers ride one capability: the roster read that asks for them,
+/// each agent's purpose, the pin by id, and the only purpose `agent.add`
+/// accepts. The legacy shape is the pinned coordinator alone.
+#[test]
+fn project_workers_are_announced_with_their_roster_read_and_purposes() {
+    assert_eq!(API_VERSION, "3.21.0");
+    let advertised = capabilities(false);
+    assert!(advertised.contains(&"agents.projectWorkers"));
+    assert!(advertised.contains(&"agent.list"));
+    let list = read_json(&fixtures_root().join("v1/agent.list.json"));
+    assert_eq!(list["since"], "3.21.0");
+    assert_eq!(list["project_workers"]["capability"], "agents.projectWorkers");
+    assert_eq!(list["params"]["include_project_workers"], true);
+    let agents = list["result"]["agents"].as_array().unwrap();
+    assert_eq!(agents[0]["id"], list["result"]["pinned_agent_id"]);
+    let purposes: Vec<&str> = agents
+        .iter()
+        .map(|agent| agent["project_role"].as_str().unwrap())
+        .collect();
+    assert_eq!(purposes, ["coordinator", "worker"]);
+    let add = read_json(&fixtures_root().join("v1/agent.add.json"));
+    assert_eq!(add["project_workers"]["since"], "3.21.0");
+    assert_eq!(add["project_workers"]["params"][0], "project_role");
+    let remove = read_json(&fixtures_root().join("v1/agent.remove.json"));
+    assert_eq!(remove["pinned_coordinator"]["since"], "3.21.0");
+}

@@ -290,7 +290,7 @@ impl AppState {
                 let workspace = self
                     .workspaces
                     .get(workspace_id)
-                    .ok_or("task delivery workspace was removed")?;
+                    .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
                 if workspace.project_id != project {
                     return Err("task delivery workspace is in another project".into());
                 }
@@ -354,7 +354,11 @@ impl AppState {
             agent_id: saved["agent_id"].as_str().unwrap(),
         });
         let mut body = assignment_notice(task, &self.assigner_name(sender), intent.note.as_deref());
-        body.push_str("\n\nRead the current task with get_task before acting.");
+        let released = self.task_dependency_release_context(task)?;
+        if !released.is_empty() {
+            body.push_str("\n\n");
+            body.push_str(&released);
+        }
         let closure = self.assignment_closure_context(task)?;
         if !closure.is_empty() {
             body.push_str("\n\n");
@@ -391,13 +395,14 @@ impl AppState {
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(intent.actor.clone(), task);
         self.settle_assignment(&mut write, &target, &Some(delivered), &intent.actor, &now)?;
-        // The creating target resolves only at settlement. Concrete targets
-        // were already assigned when authority was accepted.
-        if target.settled_assignee().is_some() {
-            write
-                .events
-                .retain(|e| e.kind != crate::tracker::TaskEventKind::Assigned);
-        }
+        // Acceptance already recorded assignment. Keep the resolved event
+        // for post-commit notices, but append only delivery activity to history.
+        let activity = write
+            .events
+            .iter()
+            .filter(|event| event.kind != crate::tracker::TaskEventKind::Assigned)
+            .cloned()
+            .collect::<Vec<_>>();
         write.task.updated_at = now;
         self.capture_task_identities(
             &mut write.task,
@@ -410,10 +415,9 @@ impl AppState {
         );
         if self
             .tracker_store()?
-            .settle_delivery_intent(&intent.id, intent.generation, &write.task, &write.events)
+            .settle_delivery_intent(&intent.id, intent.generation, &write.task, &activity)
             .stored()?
         {
-            self.note_tasks_changed(&project, &intent.task_id);
             self.capture_task_completion_authority(
                 entity,
                 agent,
@@ -421,6 +425,10 @@ impl AppState {
                 &intent.id,
                 intent.generation,
             );
+            // The brief already reached this recipient. Other trackers still
+            // get ordinary assignment news and the assigner gets its own line.
+            write.task.trackers.retain(|tracker| tracker != agent);
+            self.publish_task_write(&project, &write);
         }
         Ok(())
     }

@@ -207,7 +207,10 @@ fn deferred_dispatch_restart_boundaries() {
 
 fn restart_at(boundary: crate::app::tracker::DeferredDeliveryBoundary) {
     let root = tempfile::tempdir().unwrap();
-    let (_repo, mut app, project) = tracked(root.path());
+    let (_repo, app, project) = tracked(root.path());
+    let config = root.path().join("config.json");
+    let mut app = app.with_config(&config).unwrap();
+    app.persist();
     let (id, blocker) = waiting_task(&mut app, &project);
     let answer = assign_waiting(
         &mut app,
@@ -226,6 +229,8 @@ fn restart_at(boundary: crate::app::tracker::DeferredDeliveryBoundary) {
     assert!(app.pump_task_deliveries_for_test().unwrap());
     drop(app);
     let mut app = super::project_agent::rooted(root.path())
+        .with_config(&config)
+        .unwrap()
         .with_task_store(root.path().join("store"))
         .unwrap();
     pump(&mut app);

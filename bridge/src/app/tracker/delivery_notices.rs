@@ -169,6 +169,44 @@ impl AppState {
         None
     }
 
+    pub(super) fn task_dependency_release_context(&self, task: &Task) -> Result<String, String> {
+        let timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&task.id)
+            .stored()?;
+        let release = timeline.iter().rev()
+            .take_while(|entry| !matches!(entry, crate::tracker::TimelineEntry::Event(event) if event.kind == TaskEventKind::Assigned))
+            .find_map(|entry| match entry {
+                crate::tracker::TimelineEntry::Event(event) if event.kind == TaskEventKind::Unblocked => Some(event),
+                _ => None,
+            });
+        match release {
+            Some(event) => self.removed_prerequisite_context(event),
+            None => Ok(String::new()),
+        }
+    }
+
+    fn removed_prerequisite_context(&self, event: &TaskEvent) -> Result<String, String> {
+        let Some(ids) = event.payload["removed_task_ids"].as_array() else {
+            return Ok(String::new());
+        };
+        let mut names = Vec::new();
+        for id in ids.iter().filter_map(Value::as_str) {
+            let name = match self.tracker_store()?.load_tracker_task(id).stored()? {
+                Some(task) => format!("#{} — {} ({})", task.number, task.title, id),
+                None => id.to_string(),
+            };
+            names.push(name);
+        }
+        if names.is_empty() {
+            return Ok(String::new());
+        }
+        Ok(format!(
+            "Prerequisite edges were removed: {}. Removing an edge does not mark its task Done.",
+            names.join(", ")
+        ))
+    }
+
     fn task_delivery_notice_body(&self, task: &Task, event: &TaskEvent) -> Result<String, String> {
         let mut body = match event.kind {
             TaskEventKind::Unblocked => format!("Task #{} — {} ({}) has no unresolved prerequisites. Decide who should take it; read the current task with get_task.", task.number, task.title, task.id),
@@ -176,6 +214,11 @@ impl AppState {
             _ => format!("Task #{} — {} ({}) is blocked again by prerequisites {}. This is informational; it does not dispatch another assignment. Read the current task with get_task.", task.number, task.title, task.id, event.payload["unresolved_task_ids"]),
         };
         if event.kind == TaskEventKind::Unblocked {
+            let removed = self.removed_prerequisite_context(event)?;
+            if !removed.is_empty() {
+                body.push_str("\n\n");
+                body.push_str(&removed);
+            }
             let context = self.assignment_closure_context(task)?;
             if !context.is_empty() {
                 body.push_str("\n\n");

@@ -107,6 +107,9 @@ export async function openLayoutSession({ plugins = [] } = {}) {
       // proxy or retained APIResponse bodies. Host network notifications can
       // cancel Chromium's loopback module graph even when the server is healthy.
       await page.context().route(`http://127.0.0.1:${port}/**`, async (route) => {
+        if (route.request().resourceType() === "document") {
+          return route.fulfill({ contentType: "text/html; charset=utf-8", body: '<!doctype html><meta charset="utf-8">' });
+        }
         if (route.request().resourceType() !== "script") return route.continue();
         let result;
         try {
@@ -116,8 +119,8 @@ export async function openLayoutSession({ plugins = [] } = {}) {
         }
         return route.fulfill({ status: result ? 200 : 404, contentType: "text/javascript", body: result?.code || "Module not found" });
       });
-      // A CSS URL gives the page Vite's origin without booting the SPA. That lets
-      // a test mount just the production renderer it needs into a stable shell.
+      // A UTF-8 blank document gives the page Vite's origin without booting the
+      // SPA, matching its encoding for CSS glyphs and fixture-rendered text.
       await page.goto(`http://127.0.0.1:${port}${basePath}src/styles.css`);
       return await check({ page, basePath, cacheDir: server.config.cacheDir });
     } finally {
@@ -159,7 +162,7 @@ async function replaceLayoutBody(page, markup, styles, basePath) {
 export async function mountLayout(page, markup, { styles = "", basePath = "/app/static/", preserveDocument = false } = {}) {
   if (preserveDocument) await replaceLayoutBody(page, markup, styles, basePath);
   else {
-    await page.setContent(`<html><head><link rel="stylesheet" href="${basePath}src/styles.css">
+    await page.setContent(`<html><head><meta charset="utf-8"><link rel="stylesheet" href="${basePath}src/styles.css">
       <link rel="stylesheet" href="${basePath}src/styles/shell.css">
       <style>${styles}</style></head><body>${markup}</body></html>`, { waitUntil: "load" });
   }

@@ -188,6 +188,7 @@ for (const width of [390, 1280]) {
     it(`shows project workspace Changes at ${width}px in ${theme}`, async () => {
       await session.withPage(async ({ page, basePath }) => {
         await mountProject(page, basePath, { theme });
+        expect(await page.evaluate(() => document.characterSet)).toBe("UTF-8");
         await page.locator('[data-directory="code"]').waitFor({ timeout: 3000 });
         expect(await page.locator('[data-directory]').count()).toBe(3);
         expect(await page.locator('[data-tab="changes"]').getAttribute("aria-selected")).toBe("true");

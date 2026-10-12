@@ -797,7 +797,7 @@ impl AppState {
     #[cfg(test)]
     pub(in crate::app) fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
         self.with_inline_deferred(|app| {
-            let agent_id = self
+            let agent_id = app
                 .entity_agents(entity_id)
                 .ok()
                 .and_then(|agents| agents.primary())

@@ -110,25 +110,39 @@
   .composer { position: absolute; bottom: 16px; left: 14px; right: 14px; height: 65px; border: 1px solid #38535e; border-radius: 11px; padding: 14px; color: #698b9b; font-size: 12px; }
   .more-room { color: #7fcaa9; font-size: 11px; margin-top: 30px; padding: 14px 0; border-top: 1px dashed #3a6a57; }
   @media (max-width: 800px) { .page { width: 100%; padding: 24px 18px; } .frames { display: flex; overflow-x: auto; gap: 24px; padding: 2px 1px 18px; } .frame { flex: 0 0 390px; } nav { flex-wrap: wrap; } .mast { align-items: start; } .tag { max-width: 130px; text-align: right; } .story-title { align-items: start; flex-wrap: wrap; } .budget { margin-left: 0; } .explanation { flex: 0 0 280px; } }
+  /* Revised direction from Zech, 2026-10-12. */
+  .bar { height:44px; }
+  .bar + .body { height:688px; }
+  .project { flex:0 1 auto; width:auto; min-width:0; max-width:25%; padding:0; }
+  .project.solo { flex:0 1 auto; font-size:13px; }
+  .up { flex:0 0 44px; width:44px; height:44px; border:0; border-radius:7px; color:#a5c5bb; background:transparent; font-size:21px; display:grid; place-items:center; }
+  .sheet { top:112px; bottom:238px; }
+  .search { border:2px solid #66d6a8; color:#d2e9df; background:#0b2229; display:flex; align-items:center; padding:10px; }
+  .cursor { height:18px; border-left:1px solid #9bffd1; margin-left:2px; }
+  .sheet-foot { position:static; margin-top:22px; font-size:11px; }
+  .sheet-foot .foot-link { min-height:29px; }
+  .keyboard { position:absolute; bottom:0; left:0; right:0; height:238px; background:#263741; padding:12px 5px 24px; border-top:1px solid #53616a; }
+  .keyrow { display:flex; justify-content:center; gap:5px; margin-bottom:9px; }
+  .key { height:36px; min-width:32px; border-radius:5px; background:#45555e; color:#edf1f3; display:grid; place-items:center; font-size:16px; box-shadow:0 1px #142229; }
+  .key.wide { min-width:49px; background:#35444d; }
+  .key.space { width:180px; font-size:12px; }
+  .key.go { background:#256746; min-width:70px; font-size:12px; }
+  .keyboard-note { color:#8ea1ab; text-align:center; font-size:9px; margin-top:10px; }
 </style>
 <main class="page">
-  <div class="mast"><span class="eyebrow">Build / Navigation study</span><span class="tag">#523 · Proposed storyboard · Illustrative content</span></div>
+  <div class="mast"><span class="eyebrow">Build / Navigation study</span><span class="tag">#523 · Revised direction · Illustrative content</span></div>
   <h1>Go up. Go sideways. Go anywhere.</h1>
-  <p class="intro">Three separate controls. Your project is always a link; your workspace has siblings; Switch reaches every project.</p>
+  <p class="intro">One 44px row. Up opens the project switcher; the project link fits its text; either switcher focuses search.</p>
   <nav aria-label="Storyboard scenes">
-    <a href="#up">1 · Up to project</a><a href="#siblings">2 · Sibling workspace</a><a href="#across">3 · Across projects</a><a href="#options">4 · Phone toolbar options</a>
+    <a href="#up">1 · Up to project</a><a href="#siblings">2 · Sibling workspace</a><a href="#across">3 · Across projects</a><a href="#options">4 · Revised bar detail</a>
   </nav>
   <div id="scenes"></div>
 </main>
 <script>
   const lock = '<svg width="18" height="21" viewBox="0 0 18 21" fill="none" aria-hidden="true"><rect x="3" y="9" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 9V5a3 3 0 0 1 6 0" stroke="currentColor" stroke-width="1.5"/></svg>';
   const hot = (a, b) => a === b ? ' hot' : '';
-  function bar({project='Build', workspace='navigation-plan', target='', compact=false, projectPage=false, long=false}={}) {
-    return `<div class="bar${compact?' compact':''}"><div class="inbox" aria-label="Inbox">☰</div><div class="bar-row">
-      <button class="crumb project${projectPage?' solo':''}${hot(target,'project')}"><span>${long?'Build platform':project}</span></button>
-      ${projectPage?'':`<span class="sep">/</span><button class="crumb workspace${hot(target,'workspace')}"><span>${long?'navigation-design-review':workspace}</span><b class="caret">▾</b></button>`}
-      ${compact?(projectPage?'<button class="lock" aria-label="Workspaces">▾</button>':`<button class="lock" aria-label="Workspace unlocked">${lock}</button>`):''}</div>
-      ${compact?'':`<div class="bar-row">${projectPage?'<button class="workspaces">Workspaces ▾</button>':''}<span class="spacer"></span>${projectPage?'':`<button class="lock" aria-label="Workspace unlocked">${lock}</button>`}<button class="switch${hot(target,'switch')}">Switch</button></div>`}</div>`;
+  function bar({project='Build', workspace='navigation-plan', target='', projectPage=false, long=false}={}) {
+    return `<div class="bar"><div class="inbox" aria-label="Inbox">☰</div><div class="bar-row"><button class="up${hot(target,'switch')}" aria-label="Switch project or workspace">↑</button><button class="crumb project${hot(target,'project')}"><span>${long?'Build platform':project}</span></button>${projectPage?'<button class="workspaces">Workspaces ▾</button>':`<span class="sep">/</span><button class="crumb workspace${hot(target,'workspace')}"><span>${long?'navigation-design-review':workspace}</span><b class="caret">▾</b></button><button class="lock" aria-label="Workspace unlocked">${lock}</button>`}</div></div>`;
   }
   function work({project='Build', workspace='navigation-plan', projectPage=false}={}) {
     const files = project==='Docs' ? ['release-notes.md','getting-started.md'] : workspace==='toolbar-fix' ? ['toolbarRender.js','shell.css'] : ['Navigation Spec.md','UI Design Brief.md'];
@@ -142,41 +156,37 @@
   function row(name, {meta='',badge='',current=false,active=false}={}) {
     return `<div class="dest${active?' hot':''}"><span class="name">${name}${meta?`<small>${meta}</small>`:''}</span>${current?'<span class="current">Current</span>':''}${badge?`<span class="badge">${badge}</span>`:''}</div>`;
   }
-  function sheet(kind,compact=false) {
+  function keyboard() {
+    return `<div class="keyboard">${['qwertyuiop','asdfghjkl','zxcvbnm'].map((letters,i)=>`<div class="keyrow">${i===2?'<span class="key wide">⇧</span>':''}${[...letters].map(k=>`<span class="key">${k}</span>`).join('')}${i===2?'<span class="key wide">⌫</span>':''}</div>`).join('')}<div class="keyrow"><span class="key wide">123</span><span class="key space">space</span><span class="key go">Search</span></div><div class="keyboard-note">Illustrated software keyboard · Search receives focus on open</div></div>`;
+  }
+  function sheet(kind) {
     const sibling=kind==='siblings';
-    return `<div class="scrim"></div><div class="sheet"><div class="handle"></div><div class="sheet-head"><strong>${sibling?'Workspaces in Build':'Switch to'}</strong><span class="close">Close</span></div><div class="search">⌕ &nbsp; ${sibling?'Search workspaces':'Search projects or workspaces'}</div><div class="scope"><span>${sibling?'Build':'All projects · All devices'}</span>${sibling?'<b>All projects</b>':''}</div>
-    ${sibling?`${row('Project workspace',{meta:'Return to Build'})}${row('navigation-plan',{current:true})}${row('source-cleanup')}${row('toolbar-fix',{badge:'3',active:true})}`:
-    `<div class="group quiet">Last visited</div>${row('Docs / release-notes',{badge:'2'})}${row('Build / navigation-plan',{current:true})}<div class="group">Build <span class="badge">4</span></div>${row('Project workspace',{badge:'1'})}${row('navigation-plan',{current:true})}${row('toolbar-fix',{badge:'3'})}<div class="group">Docs <span class="badge">2</span></div>${row('Project workspace')}${row('release-notes',{badge:'2',active:true})}`}
-    ${sibling?`<div class="sheet-foot">${compact?'<div class="foot-link">Switch projects… →</div>':''}<div class="foot-link">Manage workspaces →</div><div class="foot-link">New workspace…</div><div class="foot-link">Open review</div></div>`:''}</div>`;
+    return `<div class="scrim"></div><div class="sheet"><div class="handle"></div><div class="sheet-head"><strong>${sibling?'Workspaces in Build':'Switch to'}</strong><span class="close">Close</span></div><div class="search">${sibling?'tool':'release'}<span class="cursor"></span></div><div class="scope"><span>${sibling?'Build':'All projects · All devices'}</span>${sibling?'<b>All projects</b>':''}</div>${sibling?row('toolbar-fix',{badge:'3',active:true}):`<div class="group">Docs</div>${row('release-notes',{badge:'2',active:true})}`}<div class="scope">Search was focused immediately; typing filtered these results.</div>${sibling?'<div class="sheet-foot"><div class="foot-link">Manage workspaces →</div><div class="foot-link">New workspace…</div><div class="foot-link">Open review</div></div>':''}</div>${keyboard()}`;
   }
-  function chat(compact) {
-    return `<div class="chat${compact?' single':''}"><div class="chat-head"><div class="avatar dim">N</div><strong>Navigation planner</strong><span class="spacer"></span><span>×</span></div><div class="chat-text"><p>The navigation plan is ready for review.</p><div class="message">Show me a storyboard of what this flow would look like.</div><p style="margin-top:24px">Here are the three moves: return to the project, select a sibling, or jump directly to another project's workspace.</p><p>The project name remains a separate link in both toolbar options.</p>${compact?'<div class="more-room">44px more conversation fits above the composer.</div>':''}</div><div class="composer">Message the agent…</div></div>`;
+  function chat() {
+    return `<div class="chat single"><div class="chat-head"><div class="avatar dim">N</div><strong>Navigation planner</strong><span class="spacer"></span><span>×</span></div><div class="chat-text"><p>The bar stays on one 44px row.</p><div class="message">The up-arrow opens the project switcher. The project name takes only the space its text needs.</div><p style="margin-top:24px">Opening either switcher focuses search immediately, including on a phone.</p><p>The lock stays visible. There is no separate row for a Switch button.</p></div><div class="composer">Message the agent…</div></div>`;
   }
-  function frame(n,title,desc,opts) {
-    const alternative={...opts,compact:true,target:opts.target==='switch'?'workspace':opts.target};
-    const altCaption=opts.sheet==='across'?'B · 44px — workspace → Switch projects… → this list':'B · 44px — Switch is in the workspace menu';
-    return `<article class="frame"><div class="frame-caption"><span class="step">${n}</span><h3>${title}</h3><p>${desc}</p></div><div class="variant">A · 88px — Switch is always visible</div>${phone(opts)}<div class="variant alternate">${altCaption}</div>${phone(alternative)}</article>`;
-  }
-  function singleFrame(n,title,desc,opts) { return `<article class="frame"><div class="frame-caption"><span class="step">${n}</span><h3>${title}</h3><p>${desc}</p></div>${phone(opts)}</article>`; }
+  function frame(n,title,desc,opts) { return `<article class="frame"><div class="frame-caption"><span class="step">${n}</span><h3>${title}</h3><p>${desc}</p></div>${phone(opts)}</article>`; }
   const scenes = {
-    up: { title:'Go up to the project', budget:'1 tap in either option · Browser Back returns', frames:
+    up: { title:'Go up to the project', budget:'1 tap · Browser Back returns', frames:
       frame(1,'Start in navigation-plan','Your project and workspace have separate targets.',{})+
       frame(2,'Tap the project name','The green outline marks the control you touch.',{target:'project'})+
-      frame(3,'Arrive at the project workspace','Its last face returns. Here, that is Tasks.',{projectPage:true}), note:'The project link is a return, not a menu. Browser Back restores the original workspace and exact place. A costs 44px more than B; both keep the project link.' },
-    siblings: {title:'Move sideways within the project',budget:'2 taps · No project-page detour',frames:
+      frame(3,'Arrive at the project workspace','Its last face returns. Here, that is Tasks.',{projectPage:true}), note:'The project link is a return, not a menu. Browser Back restores the original workspace and exact place. The up-arrow and project link are separate targets.' },
+    siblings: {title:'Move sideways within the project',budget:'2 taps + typing · No project-page detour',frames:
       frame(1,'Tap the workspace name','The name and caret open this project’s siblings.',{target:'workspace'})+
-      frame(2,'Choose toolbar-fix','Current is marked. Unread counts do not reorder rows.',{sheet:'siblings'})+
+      frame(2,'Choose toolbar-fix','Search is focused. Type “tool”, then choose the result.',{sheet:'siblings'})+
       frame(3,'Continue in toolbar-fix','The project stays Build; the workspace changes.',{workspace:'toolbar-fix'}),note:'Project workspace returns up. Manage workspaces opens the management face. This chooser also includes unwatched workspaces.'},
-    across: {title:'Jump straight into another project’s workspace',budget:'A: 2 taps · B: 3 taps · No intermediate page',frames:
-      frame(1,'Tap Switch','A dedicated control reaches all projects and devices.',{target:'switch'})+
-      frame(2,'Choose Docs / release-notes','Search or select the row beneath its project heading.',{sheet:'across'})+
+    across: {title:'Jump straight into another project’s workspace',budget:'2 taps + typing · No intermediate page',frames:
+      frame(1,'Tap the up-arrow','The leading action opens all project destinations.',{target:'switch'})+
+      frame(2,'Choose Docs / release-notes','Search is focused. Type “release”, then choose.',{sheet:'across'})+
       frame(3,'Arrive directly in release-notes','Both breadcrumb names change. Back still returns to Build.',{project:'Docs',workspace:'release-notes'}),note:'Last visited is navigation history. The rail’s Recent still means quiet work. Choosing a project’s own row opens its project workspace.'},
-    options: {title:'Decision: always-visible Switch or more chat space?',budget:'Both preserve a real project link',frames:
-      singleFrame('A','Recommended · 88px toolbar','Project/workspace above; lock and Switch below.',{long:true,chat:true})+
-      singleFrame('B','Alternative · 44px toolbar','Keep the lock; move Switch into the workspace menu.',{long:true,compact:true,chat:true})+
-      `<aside class="explanation"><h3>A · Easier to discover</h3><p>All three navigation controls stay visible. Cross-project moves take <strong>two taps</strong>. Long names shorten independently; the caret and lock remain usable.</p><div class="cost">+44px</div><p>Compared with option B.<br>+50px over today’s 38px toolbar.<br>That space comes out of chat and console height.</p><h3>B · More room to read</h3><p>Tap workspace → Switch projects… → destination. Cross-project moves take <strong>three taps</strong> on phone. The desktop Switch and keyboard shortcut stay direct.</p><p>Both examples use long names at the same 390px phone width.</p></aside>`,note:'These are proposed layouts, not screenshots of shipped behavior. Tasks can add a second ancestry row even in option B; neither option hides the project parent.'}
+    options: {title:'One row, a text-width project, and immediate search',budget:'44px high · Both switches remain direct',frames:
+      frame(1,'Short project name','Build occupies its text width, not a reserved slot.',{target:'project'})+
+      frame(2,'Long names yield independently','The arrow, caret and lock remain visible.',{long:true})+
+      frame(3,'Chat keeps the recovered space','No fixed second toolbar row sits above the conversation.',{long:true,chat:true}),note:'This replaces the earlier A/B proposal. The ordinary toolbar is one 44px row. Task ancestry or large-text constraints may wrap without hiding parents.'}
+
   };
-  document.querySelector('#scenes').innerHTML=Object.entries(scenes).map(([id,s])=>`<section class="scene" id="scene-${id}" hidden><div class="story-title"><h2>${s.title}</h2><span class="budget">${s.budget}</span></div><div class="frames${id==='options'?' options':''}">${s.frames}</div><p class="note"><strong>Behavior:</strong> ${s.note}</p></section>`).join('');
+  document.querySelector('#scenes').innerHTML=Object.entries(scenes).map(([id,s])=>`<section class="scene" id="scene-${id}" hidden><div class="story-title"><h2>${s.title}</h2><span class="budget">${s.budget}</span></div><div class="frames">${s.frames}</div><p class="note"><strong>Behavior:</strong> ${s.note}</p></section>`).join('');
   function showScene() {
     const requested=location.hash.slice(1);
     const selected=Object.hasOwn(scenes,requested)?requested:'up';

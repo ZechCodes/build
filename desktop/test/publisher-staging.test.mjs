@@ -92,7 +92,7 @@ function fixture(t, options = {}) {
     "secrets.RELEASES_TOKEN": "offline-fixture",
   };
   const env = {
-    ...process.env, PATH: `${bin}:${process.env.PATH}`, GITHUB_WORKSPACE: checkout,
+    ...process.env, PATH: `${bin}:${process.env.PATH}`, GITHUB_WORKSPACE: checkout, RUNNER_TEMP: runnerTemp,
     CALLS: join(root, "calls.jsonl"), STATE: join(root, "state.json"), UPLOADS: join(root, "uploads"),
     FAIL_VERIFY: options.failVerify ? "1" : "0", FAIL_DOWNLOAD: options.failDownload ? "1" : "0",
   };

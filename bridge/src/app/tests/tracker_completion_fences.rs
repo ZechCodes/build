@@ -17,6 +17,10 @@ struct DispatchedTask {
 
 impl DispatchedTask {
     fn new() -> Self {
+        Self::prepared(false).0
+    }
+
+    fn prepared(with_finished_prerequisite: bool) -> (Self, Option<String>) {
         let root = tempfile::tempdir().unwrap();
         let (home, mut app, project_id) = tracked(root.path());
         let ws = workspace(&mut app, &project_id, "completion-fence");
@@ -24,13 +28,15 @@ impl DispatchedTask {
             .as_str()
             .unwrap()
             .to_string();
+        let prerequisite = with_finished_prerequisite
+            .then(|| Self::finished_prerequisite(&mut app, &project_id, &task_id));
         let assigned = app.handle(req(
             "tasks.assign",
             json!({"task_id":task_id,"assignee":{"kind":"new_agent","workspace_id":ws}}),
         ));
         assert_eq!(assigned["ok"], true, "{assigned}");
         let dispatch = &assigned["result"]["dispatch"];
-        Self {
+        let dispatched = Self {
             _root: root,
             _home: home,
             app,
@@ -38,7 +44,30 @@ impl DispatchedTask {
             task_id,
             entity_id: dispatch["entity_id"].as_str().unwrap().to_string(),
             agent_id: dispatch["agent_id"].as_str().unwrap().to_string(),
-        }
+        };
+        (dispatched, prerequisite)
+    }
+
+    fn finished_prerequisite(app: &mut AppState, project_id: &str, task_id: &str) -> String {
+        let prerequisite = filed(app, project_id, "finished prerequisite")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let closed = app.handle(req("tasks.close", json!({"task_id":prerequisite})));
+        assert_eq!(closed["ok"], true, "{closed}");
+        let project = app.tracker_project_path(project_id).unwrap();
+        app.tracker_store()
+            .unwrap()
+            .edit_waiting_on(
+                &project,
+                task_id,
+                std::slice::from_ref(&prerequisite),
+                &[],
+                &Actor::User,
+                &crate::store::now_rfc3339(),
+            )
+            .unwrap();
+        prerequisite
     }
 
     fn call(&mut self, method: &str, mut params: Value) {
@@ -212,10 +241,23 @@ fn completion_fence_promotes_seen_pending_on_next_working_boundary() {
 }
 
 #[test]
-fn completion_fence_cannot_review_consumed_work_with_new_prerequisite() {
-    let mut task = DispatchedTask::new();
+fn completion_fence_cannot_review_consumed_work_with_reopened_prerequisite() {
+    let (mut task, prerequisite) = DispatchedTask::prepared(true);
     task.consume_turn();
-    task.add_blocker();
+    let reopened = task.app.handle(req(
+        "tasks.reopen",
+        json!({"task_id":prerequisite.unwrap()}),
+    ));
+    assert_eq!(reopened["ok"], true, "{reopened}");
+    let project = task.app.tracker_project_path(&task.project_id).unwrap();
+    assert!(
+        task.app
+            .tracker_store()
+            .unwrap()
+            .waiting_on_summary(&project, &task.task_id)
+            .unwrap()
+            .blocked
+    );
     task.assert_complete_leaves_task("in_progress");
 }
 

@@ -51,6 +51,7 @@ async function readRunningAgents(project) {
   return {
     runningAgentIds: new Set(members.filter(({ agent }) => lineage.rollup(agent.id).running).map(({ agent }) => agent.id)),
     projectAgentId: projectAgentIdOf(project, feed),
+    workspaces: feed.workspaces,
   };
 }
 
@@ -68,6 +69,7 @@ function followProject(project, onChange) {
   let askedOnly = false;
   let runningAgentIds = new Set();
   let projectAgentId = null;
+  let workspaces = [];
   let reads = 0;
   let disposed = false;
   const details = createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc: callOn(deviceId), onChange });
@@ -82,6 +84,7 @@ function followProject(project, onChange) {
     askedOnly = rule;
     runningAgentIds = running.runningAgentIds;
     projectAgentId = running.projectAgentId;
+    workspaces = running.workspaces;
     onChange();
     await details.updateTasks(tasks.filter(followsDetail));
   }
@@ -95,7 +98,7 @@ function followProject(project, onChange) {
   return {
     // A reconnect is a new session: reads the old one refused are asked again.
     session: contextFor(deviceId)?.session || null,
-    source: () => ({ project, tasks, details: details.read(), askedOnly, runningAgentIds, projectAgentId }),
+    source: () => ({ project, tasks, details: details.read(), askedOnly, runningAgentIds, projectAgentId, workspaces }),
     dispose() {
       disposed = true;
       unsubscribe();

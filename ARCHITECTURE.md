@@ -2384,8 +2384,11 @@ Recent state. Projects never enter a top-level Recent. The ungrouped Inbox
 face keeps its own Recent disclosure.
 
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
-`spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`. Every watched
-open task outside Done stays visible, even after its attention is read. Rows
+`spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`.
+An inbox task opens in its assigned available agent's workspace Tasks tab with
+that agent's conversation, falling back to the project task page when no cached
+live workspace is known.
+Every watched open task outside Done stays visible, even after its attention is read. Rows
 interleave with captures, workspaces and project-agent rows in one list ordered
 by oldest anchor (#481). A task without a bridge anchor uses its creation time;
 its latest cached update, comment or event supplies activity for Recent. Assignment,

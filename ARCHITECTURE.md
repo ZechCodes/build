@@ -1991,6 +1991,17 @@ a source gives it a new location namespace. Face changes retain the shell's
 conversation and console. Project source terminal selection (#535) and the
 project-worker rail (#536) have separate implementations.
 
+Commit drafts keep device and account-epoch ownership in the in-memory stash
+as well as their device-scoped `build-ui` records. Old account panes cannot
+publish or clear a replacement account's draft after reset. A moved or removed
+source's saved commit message remains under its old project/source/location
+address. `projectChangesDrafts.js` exposes those messages in read-only recovery
+fields labelled with the old path, for explicit copying; it never attaches them
+to a replacement source's commit action. Recovery listens to UI-store writes so
+a draft flushed during reconciliation becomes visible, and a restored exact
+source/location resumes normal draft ownership. A commit-only Changes deep link
+waits for the default source to resolve from the project cache.
+
 Source Git records use `directoryCacheId`'s project/source/captured-location
 entity inside the device cache scope; status keys alone never select a source.
 `cacheSync.js` verifies the source against cached project membership

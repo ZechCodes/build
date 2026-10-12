@@ -207,7 +207,7 @@ describe("current breadcrumb and picker destinations", () => {
       await vi.waitFor(() => expect(returned.getAttribute("href")).toBe(hashFromRoute(saved)));
     } else {
       returned.click();
-      await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith(saved, { newEntry: true }));
+      await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith(saved, { newEntry: true, beforeCommit: expect.any(Function) }));
       expect(menu()).toBeNull();
     }
     expect(state.openCreateWork).not.toHaveBeenCalled();
@@ -278,7 +278,7 @@ describe("current breadcrumb and picker destinations", () => {
     filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith({
       name: "workspace", deviceId: "device", projectId: "project", workspaceId: "sibling", tab: "changes",
-    }, { newEntry: true }));
+    }, { newEntry: true, beforeCommit: expect.any(Function) }));
     expect(menu()).toBeNull();
   });
 

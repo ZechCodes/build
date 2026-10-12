@@ -351,6 +351,25 @@ export function mergePendingRows(items = [], pending = []) {
 /// that would otherwise share a word and a row.
 export const TRACKER_TASK = "tracker_task";
 
+/** Inbox tasks open beside their holder, using only the cached identity and
+ *  workspace list carried by the feed. A cold or unavailable holder leaves
+ *  the task beside the project's conversation. */
+function trackerTaskRoute(item) {
+  if (!item.task_id) return null;
+  const task = { deviceId: item.deviceId, projectId: item.project_id, taskId: item.task_id };
+  const agentId = item.assignee?.kind === "agent" ? item.assignee.agent_id : null;
+  const identity = item.identities?.[agentId];
+  const workspaceId = identity?.available === true ? identity.workspace_id : null;
+  if (workspaceId && taskWorkspaceIsListed(item.workspaces, workspaceId)) {
+    return { name: "workspace", ...task, workspaceId, tab: "tasks", agent: agentId };
+  }
+  return { name: "trackerTask", ...task };
+}
+
+const taskWorkspaceIsListed = (workspaces, workspaceId) =>
+  !Array.isArray(workspaces) || workspaces.some((workspace) =>
+    (workspace.id || workspace.workspace_id) === workspaceId && workspace.status !== "finished");
+
 const OPENS_AT = {
   capture: (item) => {
     if (item.routing) return entryRoute({ ...item, kind: item.routing.kind === "task" ? "task" : "branch" });
@@ -358,10 +377,7 @@ const OPENS_AT = {
   },
   task: (item) =>
     item.task_id ? { name: "task", deviceId: item.deviceId, projectId: item.project_id, id: item.task_id } : null,
-  [TRACKER_TASK]: (item) =>
-    item.task_id
-      ? { name: "trackerTask", deviceId: item.deviceId, projectId: item.project_id, taskId: item.task_id }
-      : null,
+  [TRACKER_TASK]: trackerTaskRoute,
   branch: (item) =>
     item.branch ? { name: "branch", deviceId: item.deviceId, projectId: item.project_id, branch: item.branch, tab: "changes" } : null,
 };
@@ -793,7 +809,11 @@ function projectConversationId(route, view) {
 export function activeEntryKey(route, entries) {
   const standsOn = route && STANDS_ON[route.name];
   if (!standsOn) return null;
-  const match = entries.find(standsOn(route, null));
+  // Prefer an open task's own row, but a task that is not watched still
+  // stands in its workspace and should leave that row current.
+  const task = route.name === "workspace" && route.taskId
+    ? entries.find(STANDS_ON.trackerTask(route)) : null;
+  const match = task || entries.find(standsOn(route, null));
   return match ? match.key : null;
 }
 
@@ -823,7 +843,10 @@ export function routedEntry(route, view = {}) {
   if (!standsOn) return null;
   const items = view.items || [];
   const rows = [...items.filter(isListed).map(toEntry), ...workspaceEntries(view.workspaces, view.projects, items)];
-  return rows.find(standsOn(route, view)) || null;
+  // Current-row marking follows the open task, while cache subscriptions and
+  // conversation reads still follow the workspace owner underneath it.
+  const standing = route.name === "workspace" ? { ...route, taskId: null } : route;
+  return rows.find(standsOn(standing, view)) || null;
 }
 
 /** The row's action cluster: one quiet ⋯, and behind it the row's menu — Done

@@ -9,10 +9,11 @@
 // No DOM, no app imports — the wiring (core/watchedTaskFollower.js) reads the
 // cache and core/inboxView.js paints these beside the workspace rows.
 
-import { TRACKER_TASK, byAnchor, entryKeyOf } from "./inbox.js";
+import { TRACKER_TASK, byAnchor, entryKeyOf, entryRoute } from "./inbox.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { taskUnreadCount } from "./taskUnread.js";
 import { ATTENTION_REASONS, watchedTaskReasons } from "./trackerAttentionModel.js";
+import { changedSince } from "./trackerModel.js";
 
 /** Why the row is there, in the inbox's words. */
 const REASON_WORDS = Object.freeze({
@@ -60,7 +61,16 @@ export function taskAgentIsRunning(task, runningAgentIds, projectAgentId = null)
   return runningAgentIds.has(agentId);
 }
 
-function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId) {
+function inboxTaskRoute(project, task, detail, workspaces) {
+  // The list owns assignment and any identities it supplies, including an
+  // availability change that does not advance the task's update stamp.
+  const identities = changedSince(task, detail) ? task.identities
+    : { ...detail.task.identities, ...task.identities };
+  return entryRoute({ ...task, kind: TRACKER_TASK, task_id: task.id,
+    deviceId: project.deviceId, project_id: project.id, identities, workspaces });
+}
+
+function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces) {
   const facts = reasons.map((reason) => reasonWord(reason, askedOnly)).join(" · ");
   const unreadCount = taskUnreadCount(task, detail);
   const working = taskAgentIsRunning(task, runningAgentIds, projectAgentId);
@@ -89,30 +99,31 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
     unreadCount,
     // Watch confirmation follows record updates, independently of row order.
     updatedMs: ms(task.updated_at),
-    route: { name: "trackerTask", deviceId: project.deviceId, projectId: project.id, taskId: task.id },
+    route: inboxTaskRoute(project, task, detail, workspaces),
     ...taskTimes(task, detail),
   };
 }
 
-function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null }) {
+function entriesFromSource({ project, tasks = [], details = new Map(), askedOnly = false, runningAgentIds = new Set(), projectAgentId = null, workspaces }) {
   const entries = [];
   for (const task of tasks) {
     if (task.watched !== true || isFinished(task)) continue;
     const detail = details.get(task.id) || null;
     const reasons = watchedTaskReasons(task, detail, askedOnly);
-    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId));
+    entries.push(toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces));
   }
   return entries;
 }
 
 /**
  * The rows, from each followed project's cached records: `sources` is
- * `[{ project, tasks, details, askedOnly, runningAgentIds, projectAgentId }]`.
+ * `[{ project, tasks, details, askedOnly, runningAgentIds, projectAgentId, workspaces }]`.
  * `project` is the feed's project (`id`, `deviceId`, `projectKey`, `name`), `tasks` the cached
  * `tasks.list`, `details` the cached `tasks.get` answers by task id, and
  * `askedOnly` the machine's cached Needs you rule (core/needsYouRule.js), and
  * `runningAgentIds` the cached agent lineage's running members, and
  * `projectAgentId` the cached project owner's holder for legacy assignments.
+ * `workspaces` is the device's cached workspace list, used only for inbox destinations.
  */
 export function watchedTaskEntries(sources = []) {
   return sources.flatMap(entriesFromSource).sort(byAnchor);

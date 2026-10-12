@@ -68,6 +68,11 @@ describe("inbox standing on a workspace task", () => {
     expect(activeEntryKey({ ...destination, taskId: undefined }, [workspace, entry])).toBe(workspace.key);
   });
 
+  it("marks the workspace current when the open task has no inbox row", () => {
+    expect(activeEntryKey(destination, [workspace])).toBe(workspace.key);
+    expect(activeEntryKey(destination, [workspace, { ...entry, taskId: "unrelated" }])).toBe(workspace.key);
+  });
+
   it("keeps the workspace conversation as the routed entity for cache subscriptions", () => {
     const view = { projects: [project], items: [], workspaces: [{ id: "w1", deviceId: "d1", project_id: "p1",
       projectKey: project.projectKey, workspaceKey: "d1/w1", entity_id: "run1", status: "ready" }] };

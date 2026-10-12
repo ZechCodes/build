@@ -56,6 +56,27 @@ impl DispatchedTask {
         assert_eq!(after["result"]["timeline"], before["result"]["timeline"]);
         assert!(!self.app.dispatched_task.contains_key(&self.agent_id));
     }
+
+    fn add_blocker(&mut self) -> String {
+        let blocker = filed(&mut self.app, &self.project_id, "new prerequisite")["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let project = self.app.tracker_project_path(&self.project_id).unwrap();
+        self.app
+            .tracker_store()
+            .unwrap()
+            .edit_waiting_on(
+                &project,
+                &self.task_id,
+                &[blocker],
+                &[],
+                &Actor::User,
+                &crate::store::now_rfc3339(),
+            )
+            .unwrap();
+        project
+    }
 }
 
 #[test]
@@ -85,23 +106,7 @@ fn completion_fence_survives_close_then_reopen() {
 fn completion_fence_keeps_new_wait_in_ready() {
     let mut task = DispatchedTask::new();
     task.call("tasks.update", json!({"status":"ready"}));
-    let blocker = filed(&mut task.app, &task.project_id, "new prerequisite")["id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let project = task.app.tracker_project_path(&task.project_id).unwrap();
-    task.app
-        .tracker_store()
-        .unwrap()
-        .edit_waiting_on(
-            &project,
-            &task.task_id,
-            &[blocker],
-            &[],
-            &Actor::User,
-            &crate::store::now_rfc3339(),
-        )
-        .unwrap();
+    let project = task.add_blocker();
     task.assert_complete_leaves_task("ready");
     assert!(task
         .app
@@ -110,4 +115,33 @@ fn completion_fence_keeps_new_wait_in_ready() {
         .waiting_on_summary(&project, &task.task_id)
         .unwrap()
         .blocked);
+}
+
+#[test]
+fn completion_fence_survives_same_agent_reassignment_waiting_after_consumed_turn() {
+    let mut task = DispatchedTask::new();
+    let mut pending = task.app.take_pending_turns();
+    let mut consumed = false;
+    while let Some((turn, mark)) = pending.next_turn() {
+        if turn.agent_id == task.agent_id {
+            assert!(turn.operation_id.is_some(), "the original assignment has a receipt");
+            consumed = true;
+        }
+        mark.settle(&mut task.app);
+    }
+    assert!(consumed, "the dispatched turn was consumed");
+    task.app.record_agent_working_since(
+        &task.entity_id,
+        &task.agent_id,
+        Some(crate::store::now_rfc3339()),
+    );
+    task.call("tasks.update", json!({"status":"ready"}));
+    task.add_blocker();
+    let reassigned = task.app.handle(req(
+        "tasks.assign",
+        json!({"task_id":task.task_id,"assignee":{"kind":"agent","agent_id":task.agent_id}}),
+    ));
+    assert_eq!(reassigned["ok"], true, "{reassigned}");
+    assert_eq!(reassigned["result"]["dispatch"], Value::Null, "{reassigned}");
+    task.assert_complete_leaves_task("ready");
 }

@@ -199,6 +199,35 @@ it("shows the cached surviving file when removing the active file's directory", 
   });
 }, 60_000);
 
+it("pulls the surviving file without adopting another root's cached body on rebind", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkspace(page, basePath, "files", [
+      { id: "dir-a", source_id: "a", name: "Alpha", is_git: true, status: "ready" },
+      { ...added, is_git: true, status: "ready" },
+    ]);
+    await page.evaluate(() => { window.__holdFileReads = true; });
+    await page.locator('[data-root="a"] [data-path="readme.txt"]').dblclick();
+    await page.waitForFunction(() => window.__heldReads.length === 1);
+    await page.evaluate(() => window.__heldReads[0].resolve({ mime: "text/plain", content_b64: btoa("Alpha contents"), size: 14 }));
+    await page.waitForFunction(() => document.querySelector(".fpdoc")?.textContent.includes("Alpha contents"));
+    await page.locator('[data-root="b"] [data-path="readme.txt"]').dblclick();
+    await page.waitForFunction(() => window.__heldReads.length === 2);
+    await page.evaluate(() => window.__heldReads[1].resolve({ mime: "text/plain", content_b64: btoa("Beta contents"), size: 13 }));
+    await page.waitForFunction(() => document.querySelector(".fpdoc")?.textContent.includes("Beta contents"));
+    await page.evaluate(() => { window.__preview = document.querySelector(".fpdoc").firstElementChild; });
+    await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));
+    await page.waitForFunction(() => window.__heldReads.length === 3 || document.querySelector(".fpdoc")?.textContent.includes("Alpha contents"));
+    expect(await page.locator(".fpdoc").textContent()).toContain("Beta contents");
+    expect(await page.evaluate(() => window.__preview === document.querySelector(".fpdoc").firstElementChild)).toBe(true);
+    expect(await page.evaluate(() => window.__heldReads.length)).toBe(3);
+    expect(await page.evaluate(() => window.__heldReads[2].params)).toMatchObject({ entity_id: "workspace-run", source_id: "b", path: "readme.txt" });
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route.sourceId)).toBe("b");
+    await page.evaluate(() => window.__heldReads[2].resolve({ mime: "text/plain", content_b64: btoa("Beta refreshed"), size: 14 }));
+    await page.waitForFunction(() => document.querySelector(".fpdoc")?.textContent.includes("Beta refreshed"));
+    expect(await page.locator('.fpdoc [aria-label="loading"]').count()).toBe(0);
+  });
+}, 60_000);
+
 it("restarts a loading surviving file after its root changes cache scope", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountWorkspace(page, basePath, "files", [

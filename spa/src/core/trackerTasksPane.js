@@ -1,3 +1,4 @@
+import { agentModelsFromFeed } from "./agentModelBadge.js";
 // The Tasks tab, mounted: the list and the board over one set of tasks, the
 // filters that narrow them, and the two presses that change something.
 //
@@ -192,6 +193,7 @@ export function mountTasksPane(host, options) {
     deviceId: state.deviceId,
     projectId: state.projectId,
     agentGroups: groups(),
+    agentModels: agentModelsFromFeed(state.feed(), state.projectKey),
     workspaces: (state.feed()?.workspaces || []).filter((workspace) => workspace.projectKey === state.projectKey),
     ...reading(),
     filters: state.filters,

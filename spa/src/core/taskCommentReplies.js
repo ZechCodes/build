@@ -5,6 +5,11 @@ import { markdownHtml } from "./markdown.js";
 import { actorName } from "./trackerLineWords.js";
 import { taskAvatarHtml } from "./taskAvatar.js";
 import { ageText } from "./trackerChips.js";
+import { agentFromGroups, agentModelBadgeHtml } from "./agentModelBadge.js";
+
+const replyModelBadgeHtml = (actor, context) => agentModelBadgeHtml(
+  context.agentModels?.[actor?.agent_id] || agentFromGroups(context.agentGroups, actor?.agent_id),
+);
 
 export function commentReplyIndex(rows) {
   const comments = new Map();
@@ -34,7 +39,7 @@ export function commentReplyHtml(row, context) {
   const name = actorName(parent.actor, context);
   const when = parent.at ? `<span class="task-when" title="${esc(parent.at)}">${esc(ageText(parent.at))}</span>` : "";
   return `<button class="tracker-task-comment-reply" type="button" data-comment-jump="${esc(parent.key)}" aria-label="${esc(`Go to the comment by ${name}`)}">
-    <span class="task-reply-head">${taskAvatarHtml(parent.actor, context)}<strong class="task-reply-author">${esc(name)}</strong>${when}</span>
+    <span class="task-reply-head">${taskAvatarHtml(parent.actor, context)}<strong class="task-reply-author">${esc(name)}</strong>${replyModelBadgeHtml(parent.actor, context)}${when}</span>
     <span class="task-reply-excerpt">${esc(commentReplyExcerpt(parent, context))}</span>
   </button>`;
 }

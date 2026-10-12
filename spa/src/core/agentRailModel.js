@@ -1,3 +1,4 @@
+import { agentModelBadge } from "./agentModelBadge.js";
 // The agent rail's pure model: who the agents are, what the bubble strip says
 // about each of them, which conversation is open, and how a completion report
 // reads.
@@ -185,7 +186,9 @@ export function bubbleTip(agent) {
   // A named agent leads with its name and keeps what it is doing after it:
   // the reader hovering a bubble is asking which agent this is first.
   const name = agentName(agent);
-  const title = name ? `${name} · ${said}` : said;
+  const badge = agentModelBadge(agent);
+  const model = badge ? ` · ${badge.family} (${badge.title})` : "";
+  const title = `${name ? `${name} · ${said}` : said}${model}`;
   const news = bubbleNews(agent, heading);
   return news ? `${title} — ${news}` : title;
 }

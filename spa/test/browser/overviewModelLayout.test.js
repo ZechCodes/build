@@ -1,4 +1,4 @@
-// #257 in a real browser: an agent overview row wears its model's short name
+// #539 in a real browser: an agent overview row wears its model family
 // whole, at every width; the agent's name is what gives way.
 import assert from "node:assert/strict";
 import { it } from "vitest";
@@ -40,8 +40,9 @@ for (const [name, viewport, listWidth] of VIEWPORTS) {
         });
       }, { longName: LONG_NAME, rawModelId: RAW_MODEL_ID });
       await captureLayout(page, `overview-models-${name}.png`);
-      assert.deepEqual(read.map((model) => model.text), ["Opus 5.5", "6 Astra", "Haiku 4.5", RAW_MODEL_ID]);
-      for (const model of read.slice(0, 3)) {
+      assert.deepEqual(read.map((model) => model.text), ["Opus", "Astra", "Haiku"]);
+      assert.equal(await page.locator('[data-overview-agent="a4"] .agent-model-badge').count(), 0);
+      for (const model of read) {
         assert.ok(model.nameClipped, `the long name is what gives way: ${JSON.stringify(model)}`);
         assert.ok(model.height < model.lineHeight * 1.5, `a short name keeps one line: ${JSON.stringify(model)}`);
       }

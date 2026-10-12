@@ -2392,6 +2392,15 @@ before first paint.
 
 ### SPA tests
 
+Agent name badges use the family rule beside `shortModelName` in
+`spa/src/core/agentChoice.js` and the shared painter in `agentModelBadge.js`.
+They describe the current cached roster model (active model before the next
+choice); task and message identities do not record the model at write time.
+The family is dim monospace, with the short versioned name and known effort in
+its native tooltip. Unknown model families leave no badge. Task headers and
+agent-message attribution read the already held feed, and cached roster changes
+also invalidate the thread paint.
+
 Vitest is configured in the `test` block of `spa/vite.config.js`, with two
 projects:
 

@@ -84,16 +84,16 @@ describe("the agents overview (#186)", () => {
       state: row(agentId).dataset.state,
       word: row(agentId).querySelector(".rail-overview-state").textContent,
     });
-    expect(shown("project-agent")).toEqual({ model: "Fable 5.1", state: "idle", word: "Idle" });
-    expect(shown("fixer")).toEqual({ model: "Opus 5", state: "working", word: "Working" });
-    expect(shown("fix-reviewer")).toEqual({ model: "6 Sol", state: "error", word: "Failed to start" });
+    expect(shown("project-agent")).toEqual({ model: "Fable", state: "idle", word: "Idle" });
+    expect(shown("fixer")).toEqual({ model: "Opus", state: "working", word: "Working" });
+    expect(shown("fix-reviewer")).toEqual({ model: "Sol", state: "error", word: "Failed to start" });
     expect(row("fix-reviewer").querySelector(".rail-overview-state").title).toContain("not a model id");
-    expect(shown("pr-reviewer")).toEqual({ model: "6 Sol", state: "idle", word: "Idle" });
-    expect(shown("critical-review")).toEqual({ model: "6 Astra", state: "idle", word: "Idle" });
+    expect(shown("pr-reviewer")).toEqual({ model: "Sol", state: "idle", word: "Idle" });
+    expect(shown("critical-review")).toEqual({ model: "Astra", state: "idle", word: "Idle" });
     // The row wears the short name (#257); its title names the model whole.
-    expect(row("critical-review").querySelector(".rail-overview-model").title).toBe("gpt-6-astra · xhigh");
+    expect(row("critical-review").querySelector(".rail-overview-model").title).toBe("6 Astra · xhigh");
     expect(row("critical-review").querySelector(".rail-overview-model").classList.contains("rail-overview-model-raw")).toBe(false);
-    expect(shown("auditor")).toEqual({ model: "6 Sol", state: "idle", word: "Idle" });
+    expect(shown("auditor")).toEqual({ model: "Sol", state: "idle", word: "Idle" });
 
     const summary = (name) => sectionNamed(name).querySelector(".rail-overview-sum");
     expect(summary("skrift-fixes").querySelector(".rail-overview-live")).toBeTruthy();

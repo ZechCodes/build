@@ -49,8 +49,7 @@ async function mountSeededRail(page, basePath) {
           working: true, working_time: { since }, unread_count: 0 },
         { id: "helper", ordinal: 2, provider: "codex", state: "idle", name: "Docs helper for every sign-on provider", created_by: "boss",
           model: "gpt-6-astra", working: false, unread_count: 0 },
-        // A model no rule knows keeps its whole raw id, wrapping rather than
-        // clipped or pushing the row past its edge (#226, #257).
+        // Unknown families keep their model in expanded details, without a badge (#539).
         { id: "tinkerer", ordinal: 4, provider: "claude_adk", state: "live", name: "Model tinkerer", created_by: "boss",
           model: RAW_MODEL_ID, working: true, working_time: { since }, unread_count: 0 },
         { id: "bystander", ordinal: 3, provider: "claude_adk", state: "idle", name: "Not mine", working: false, unread_count: 0 },
@@ -115,9 +114,9 @@ for (const [name, viewport] of VIEWPORTS) {
           subagentRow: {
             row: box(subagent),
             name: box(subagent.querySelector(".surface-row-label")),
-            model: subagentModel.textContent,
+            model: subagentModel?.textContent || "",
             modelBox: box(subagentModel),
-            modelFits: { scrollWidth: subagentModel.scrollWidth, clientWidth: subagentModel.clientWidth },
+            modelFits: subagentModel && { scrollWidth: subagentModel.scrollWidth, clientWidth: subagentModel.clientWidth },
           },
           builds: [...group("build_agents").querySelectorAll(".surface-build-agent")].map((row) => row.dataset.buildAgent),
           firstBuild: box(group("build_agents").querySelector(".surface-build-agent")),
@@ -127,10 +126,10 @@ for (const [name, viewport] of VIEWPORTS) {
             head: box(row.querySelector(".surface-row-head")),
             parts: [...row.querySelectorAll(".surface-row-head > *")].map(box),
             text: row.textContent,
-            model: row.querySelector(".surface-row-model")?.textContent || "",
-            modelFits: (({ scrollWidth, clientWidth }) => ({ scrollWidth, clientWidth }))(row.querySelector(".surface-row-model")),
-            modelBox: box(row.querySelector(".surface-row-model")),
-            modelLineHeight: parseFloat(getComputedStyle(row.querySelector(".surface-row-model")).lineHeight),
+            model: row.querySelector(".surface-row-head-model")?.textContent || "",
+            modelFits: row.querySelector(".surface-row-head-model") && (({ scrollWidth, clientWidth }) => ({ scrollWidth, clientWidth }))(row.querySelector(".surface-row-head-model")),
+            modelBox: box(row.querySelector(".surface-row-head-model")),
+            modelLineHeight: row.querySelector(".surface-row-head-model") && parseFloat(getComputedStyle(row.querySelector(".surface-row-head-model")).lineHeight),
             clock: box(row.querySelector(".surface-row-clock")),
           })),
           overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -147,26 +146,22 @@ for (const [name, viewport] of VIEWPORTS) {
       await page.evaluate(() => { delete document.documentElement.dataset.theme; });
       assert.ok(inViewport(read.firstBuild, viewport), `the first Build agent is on screen: ${JSON.stringify(read.firstBuild)}`);
       assert.ok(read.overflow <= 0, `nothing scrolls sideways (${read.overflow}px)`);
-      // #261: a raw model wraps without squeezing the sub-agent's name away.
-      const { row: subagent, name: subagentName, model, modelBox, modelFits } = read.subagentRow;
-      assert.equal(model, RAW_MODEL_ID);
-      assert.ok(subagentName.width >= MIN_NAME_WIDTH, `the sub-agent name keeps a readable width: ${subagentName.width}px`);
-      assert.ok(modelFits.scrollWidth <= modelFits.clientWidth, `the sub-agent model is not clipped: ${JSON.stringify(modelFits)}`);
-      assert.ok(modelBox.x >= subagent.x && modelBox.x + modelBox.width <= subagent.x + subagent.width + 1
-        && modelBox.y >= subagent.y && modelBox.y + modelBox.height <= subagent.y + subagent.height + 1,
-      `the sub-agent model stays inside its row: ${JSON.stringify({ modelBox, subagent })}`);
+      // Unknown families are absent from the summary badge (#539).
+      assert.equal(read.subagentRow.model, "");
+      assert.equal(read.subagentRow.modelBox, null);
+      assert.ok(read.subagentRow.name.width >= MIN_NAME_WIDTH);
       // #257: each row wears its model's short name, whole, and no longer
       // names its workspace; the agent's name is what gives way (#226).
-      assert.deepEqual(read.buildRows.map((row) => row.model), ["Opus 5.5", RAW_MODEL_ID, "6 Astra"]);
+      assert.deepEqual(read.buildRows.map((row) => row.model), ["Opus", "", "Astra"]);
       // A short name stays on one line; only the raw id wraps.
       for (const { modelBox, modelLineHeight } of [read.buildRows[0], read.buildRows[2]]) {
         assert.ok(modelBox.height < modelLineHeight * 1.5, `a short name keeps one line: ${JSON.stringify(modelBox)}`);
       }
       for (const { row, head, name: label, parts, text, modelFits, modelBox, clock } of read.buildRows) {
-        assert.ok(modelFits.scrollWidth <= modelFits.clientWidth, `the model is not clipped: ${JSON.stringify(modelFits)}`);
+        if (modelFits) assert.ok(modelFits.scrollWidth <= modelFits.clientWidth, `the model is not clipped: ${JSON.stringify(modelFits)}`);
         // The row does not clip it either: the model ends inside the row.
-        assert.ok(modelBox.x + modelBox.width <= row.x + row.width + 1, `the model ends inside its row: ${JSON.stringify({ modelBox, row })}`);
-        assert.ok(clock || text.includes("6 Astra"), `a working row shows its clock: ${text}`);
+        if (modelBox) assert.ok(modelBox.x + modelBox.width <= row.x + row.width + 1, `the model ends inside its row: ${JSON.stringify({ modelBox, row })}`);
+        assert.ok(clock || text.includes("Astra"), `a working row shows its clock: ${text}`);
         if (clock) {
           assert.ok(clock.x + clock.width <= row.x + row.width + 1 && inViewport(clock, viewport),
             `the clock stays inside its row: ${JSON.stringify({ clock, row })}`);

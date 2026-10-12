@@ -122,7 +122,7 @@ describe("agentRowHtml", () => {
       "surface-agent-details",
     ]);
     expect(row.querySelector(".surface-row-label").textContent).toBe("Reader");
-    expect(row.querySelector(".surface-agent-summary > .surface-row-model").textContent).toBe("haiku");
+    expect(row.querySelector(".surface-agent-summary > .surface-row-model").textContent).toBe("Haiku");
     expect(factValue(row, "Model")).toBe("haiku");
     expect(factValue(row, "Current activity")).toBe("Read bridge/src/app.rs");
     expect(factValue(row, "Tokens")).toBe("1200");
@@ -149,8 +149,8 @@ describe("agentRowHtml", () => {
 
     expect([...summary.children].slice(1).map((child) => child.className)).toEqual([
       "surface-clip surface-row-label",
-      // Never clipped (#257): "haiku" has no short name, so it may wrap.
-      "surface-row-model surface-row-head-model surface-row-model-raw",
+      // Known family badges stay beside the clipped name.
+      "agent-model-badge surface-row-model surface-row-head-model",
       "surface-row-clock",
     ]);
     expect(summary.querySelector(".surface-row-head-model").title).toBe("haiku");
@@ -183,7 +183,7 @@ describe("agentRowHtml", () => {
 
   it("prints the model name the row arrived with", () => {
     const named = agentRows([readerEntry], { modelLabel: (id) => `Local ${id}` })[0];
-    expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Local haiku");
+    expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Haiku");
   });
 
   // #257: the summary wears the short name; its title and the details keep
@@ -192,7 +192,7 @@ describe("agentRowHtml", () => {
     const named = agentRows([{ ...readerEntry, model: "claude-haiku-4-5-20251001" }], { modelLabel: () => "Claude Haiku 4.5" })[0];
     const row = parseHtml(agentRowHtml(named)).firstElementChild;
     const summaryModel = row.querySelector(".surface-agent-summary > .surface-row-model");
-    expect([summaryModel.textContent, summaryModel.title]).toEqual(["Haiku 4.5", "Claude Haiku 4.5"]);
+    expect([summaryModel.textContent, summaryModel.title]).toEqual(["Haiku", "Haiku 4.5"]);
     expect(factValue(row, "Model")).toBe("Claude Haiku 4.5");
   });
 
@@ -211,7 +211,7 @@ describe("agentRowHtml", () => {
 
     expect(row.querySelector(".surface-row-label").textContent).toBe("/root/tool_display");
     expect(factValue(row, "Description")).toBe("Explain tool activity in the timeline");
-    expect(row.querySelector(".surface-row-model").textContent).toBe("5.6 Sol");
+    expect(row.querySelector(".surface-row-model").textContent).toBe("Sol");
     expect(row.querySelector(".surface-row-effort").textContent).toBe("high");
     expect(factValue(row, "State")).toBe("Running");
   });

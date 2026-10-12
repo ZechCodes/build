@@ -91,11 +91,55 @@ describe("the banner at the top of a conversation", () => {
     return document.querySelector("#rail-panel");
   };
 
+  it.each(["codex_app_server", "codex", "pi", "other", ""]) (
+    "hides cached Claude limits on a %s conversation without discarding them", (provider) => {
+      setUsageLimits("dev-1", [limit()]);
+      const host = panel();
+      const banner = mountUsageLimitBanner(() => host, "dev-1", () => provider);
+      expect(host.querySelector(".usage-limit-banner")).toBeNull();
+      expect(usageLimitsOf("dev-1")).toEqual([limit()]);
+      banner.dispose();
+    },
+  );
+
+  it.each(["claude_adk", "claude"])("matches %s sessions to either Claude carrier", (provider) => {
+    setUsageLimits("dev-1", [limit(), limit({ harness: "claude" }), limit({ harness: "codex_app_server" })]);
+    const host = panel();
+    const banner = mountUsageLimitBanner(() => host, "dev-1", () => provider);
+    expect([...host.querySelectorAll(".usage-limit-banner")].map((line) => line.dataset.harness))
+      .toEqual(["claude_adk", "claude"]);
+    banner.dispose();
+  });
+
+  it("rechecks the active harness on switches, cache changes, and countdown ticks", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    setUsageLimits("dev-1", [limit(), limit({ harness: "codex" })]);
+    const host = panel();
+    let provider = "claude";
+    const banner = mountUsageLimitBanner(() => host, "dev-1", () => provider);
+    expect(host.querySelector(".usage-limit-text").textContent).toContain("Claude");
+    provider = "codex_app_server";
+    banner.sync();
+    expect(host.querySelectorAll(".usage-limit-banner")).toHaveLength(1);
+    expect(host.querySelector(".usage-limit-text").textContent).toContain("Codex");
+    provider = "pi";
+    vi.advanceTimersByTime(60_000);
+    expect(host.querySelector(".usage-limit-banners")).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    setUsageLimits("dev-1", [limit()]);
+    expect(host.querySelector(".usage-limit-banners")).toBeNull();
+    provider = "claude_adk";
+    banner.sync();
+    expect(host.querySelector(".usage-limit-text").textContent).toContain("Claude");
+    banner.dispose();
+  });
+
   it("appears from the push, counts down each minute, and goes when the bridge clears it", () => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
     const host = panel();
-    const banner = mountUsageLimitBanner(() => host, "dev-1");
+    const banner = mountUsageLimitBanner(() => host, "dev-1", () => "claude_adk");
     expect(host.querySelector(".usage-limit-banner")).toBeNull();
 
     setUsageLimits("dev-1", [limit()]);
@@ -116,7 +160,7 @@ describe("the banner at the top of a conversation", () => {
   it("keeps the harness's own words behind a press", () => {
     setUsageLimits("dev-1", [limit()]);
     const host = panel();
-    const banner = mountUsageLimitBanner(() => host, "dev-1");
+    const banner = mountUsageLimitBanner(() => host, "dev-1", () => "claude_adk");
     const details = host.querySelector("details.usage-limit-banner");
     expect(details.open).toBe(false);
     expect(details.querySelector(".usage-limit-said").textContent).toBe(SAID);
@@ -130,7 +174,7 @@ describe("the banner at the top of a conversation", () => {
   it("shows another device's limit nowhere", () => {
     setUsageLimits("dev-2", [limit()]);
     const host = panel();
-    const banner = mountUsageLimitBanner(() => host, "dev-1");
+    const banner = mountUsageLimitBanner(() => host, "dev-1", () => "claude_adk");
     expect(host.querySelector(".usage-limit-banner")).toBeNull();
     banner.dispose();
   });
@@ -138,7 +182,7 @@ describe("the banner at the top of a conversation", () => {
   it("comes back after the panel is rebuilt under it", () => {
     setUsageLimits("dev-1", [limit()]);
     let host = panel();
-    const banner = mountUsageLimitBanner(() => host, "dev-1");
+    const banner = mountUsageLimitBanner(() => host, "dev-1", () => "claude_adk");
     host = panel();
     expect(host.querySelector(".usage-limit-banner")).toBeNull();
     banner.sync();

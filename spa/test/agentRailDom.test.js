@@ -319,6 +319,61 @@ afterEach(async () => {
   }, () => null)));
 });
 
+describe("selected session usage limits (#573)", () => {
+  const heldLimit = { harness: "claude_adk", said: "You've hit your session limit", resets_at: null };
+  const banner = () => panel()?.querySelector(".usage-limit-banner");
+  beforeEach(() => resetUsageLimits());
+  afterEach(() => resetUsageLimits());
+
+  it("hides the screenshot's Claude banner on Astra and reevaluates bubble switches", async () => {
+    setUsageLimits("dev-1", [heldLimit]);
+    payload = branchRow({ agents: [agent({ provider: "codex_app_server", active_model: "gpt-6-astra" }),
+      agent({ id: "ag-2", ordinal: 2, provider: "claude" })] });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    expect(banner()).toBeNull();
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+    await vi.waitFor(() => expect(banner()?.textContent).toContain("Claude"));
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await vi.waitFor(() => expect(banner()).toBeNull());
+    await pushRow(branchRow({ agents: [agent({ provider: "claude_adk" })] }));
+    expect(banner()?.textContent).toContain("Claude");
+  });
+
+  it("hides limits on the overview and provisional chooser even with a Claude bubble retained", async () => {
+    setUsageLimits("dev-1", [heldLimit]);
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    expect(banner()).not.toBeNull();
+    railHost().querySelector(".rail-overview-toggle").click();
+    await vi.waitFor(() => expect(panel()?.querySelector(".rail-overview-list")).toBeTruthy());
+    expect(banner()).toBeNull();
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(banner()).toBeNull();
+  });
+
+  it("uses the selected project agent rather than the workspace worker's provider", async () => {
+    setUsageLimits("dev-1", [heldLimit]);
+    payload = { kind: "workspace", workspace_id: "ws-one", entity_id: "run-one", project_id: "p1",
+      agents: [agent({ id: "ag-one", provider: "codex_app_server", topic: "Workspace worker" })] };
+    await writeRailBoard({
+      projects: [{ project_id: "p1", name: "build", entity_id: "run-project" }],
+      workspaces: [{ id: "ws-one", project_id: "p1", name: "First workspace", entity_id: "run-one" }],
+      items: [payload, { kind: "project", project_id: "p1", entity_id: "run-project",
+        agents: [agent({ id: "ag-project", provider: "claude", topic: "Project coordinator", pinned: true })] }],
+    });
+    await mountOverviewReady({ kind: "workspace", workspaceId: "ws-one", openAgentId: "ag-one",
+      projectAgent: { projectId: "p1", entityId: "run-project" } });
+    expect(banner()).toBeNull();
+    await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="project"]')).toBeTruthy());
+    railHost().querySelector('[data-bubble="project"]').click();
+    await vi.waitFor(() => expect(headWho()).toBe("Project coordinator"));
+    expect(banner()?.textContent).toContain("Claude");
+    railHost().querySelector('[data-bubble="workspace"][data-agent="ag-one"]').click();
+    await vi.waitFor(() => expect(headWho()).toBe("Workspace worker"));
+    expect(banner()).toBeNull();
+  });
+});
+
 // On a phone the panel is not a column beside the work, it is laid over it
 // (styles/shell.css, `@media (max-width: 760px)`). A workspace opened at
 // 390x844 therefore showed the conversation and nothing else — no Files, no

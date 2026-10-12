@@ -1,8 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { python } from "../testing/python.mjs";
 
 import {
   buildCloseFrame,
@@ -18,10 +16,6 @@ import {
   verifySignedTransportKey
 } from "../src/index.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(__dirname, "..", "..");
-const pythonExe = path.join(repoRoot, ".venv", "bin", "python");
-
 test("verified-device helpers round-trip", async () => {
   await ready();
   const identity = await generateIdentityKeypair();
@@ -34,21 +28,10 @@ test("deterministic fingerprint matches python", async () => {
   await ready();
   const identity = await generateIdentityKeypair();
 
-  const pythonFingerprint = spawnSync(
-    pythonExe,
-    [path.join(repoRoot, "python", "tests", "interop_helper.py")],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: path.join(repoRoot, "python", "src") },
-      input: JSON.stringify({
-        action: "fingerprint_identity_key",
-        identity_public_key_b64: identity.publicKeyB64
-      }),
-      encoding: "utf8"
-    }
-  );
-  assert.equal(pythonFingerprint.status, 0, pythonFingerprint.stderr);
-  const expected = JSON.parse(pythonFingerprint.stdout);
+  const expected = python({
+    action: "fingerprint_identity_key",
+    identity_public_key_b64: identity.publicKeyB64
+  });
   assert.equal(await fingerprintIdentityKey(identity.publicKeyB64), expected.fingerprint);
 });
 
@@ -77,18 +60,7 @@ test("js encryption round-trip works", async () => {
 test("cross-language bootstrap and messaging interop", async () => {
   await ready();
 
-  const pythonProbe = spawnSync(
-    pythonExe,
-    [path.join(repoRoot, "python", "tests", "interop_helper.py")],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: path.join(repoRoot, "python", "src") },
-      input: JSON.stringify({ action: "generate_transport_bundle" }),
-      encoding: "utf8"
-    }
-  );
-  assert.equal(pythonProbe.status, 0, pythonProbe.stderr);
-  const transportBundle = JSON.parse(pythonProbe.stdout);
+  const transportBundle = python({ action: "generate_transport_bundle" });
 
   await verifySignedTransportKey({
     identityPublicKeyB64: transportBundle.identity_public_key_b64,
@@ -102,41 +74,19 @@ test("cross-language bootstrap and messaging interop", async () => {
     deviceTransportPublicKeyB64: transportBundle.transport_public_key_b64
   });
 
-  const pythonBootstrap = spawnSync(
-    pythonExe,
-    [path.join(repoRoot, "python", "tests", "interop_helper.py")],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: path.join(repoRoot, "python", "src") },
-      input: JSON.stringify({
-        action: "open_session_init",
-        transport_private_key_b64: transportBundle.transport_private_key_b64,
-        session_init: sessionInit
-      }),
-      encoding: "utf8"
-    }
-  );
-  assert.equal(pythonBootstrap.status, 0, pythonBootstrap.stderr);
-  const bootstrap = JSON.parse(pythonBootstrap.stdout);
+  const bootstrap = python({
+    action: "open_session_init",
+    transport_private_key_b64: transportBundle.transport_private_key_b64,
+    session_init: sessionInit
+  });
   assert.equal(bootstrap.session_key_b64, sessionKeyB64);
 
-  const pythonAccept = spawnSync(
-    pythonExe,
-    [path.join(repoRoot, "python", "tests", "interop_helper.py")],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: path.join(repoRoot, "python", "src") },
-      input: JSON.stringify({
-        action: "build_session_accept",
-        session_key_b64: sessionKeyB64,
-        session_id: "sess-cross",
-        route_to: "client-cross"
-      }),
-      encoding: "utf8"
-    }
-  );
-  assert.equal(pythonAccept.status, 0, pythonAccept.stderr);
-  const sessionAccept = JSON.parse(pythonAccept.stdout);
+  const sessionAccept = python({
+    action: "build_session_accept",
+    session_key_b64: sessionKeyB64,
+    session_id: "sess-cross",
+    route_to: "client-cross"
+  });
   const openedAccept = await openSessionAccept({ sessionKeyB64, envelope: sessionAccept });
   assert.equal(openedAccept.sessionId, "sess-cross");
 
@@ -146,43 +96,22 @@ test("cross-language bootstrap and messaging interop", async () => {
     frameFields: { frame_type: "data", sender: "client", payload: { hello: "python" } }
   });
 
-  const pythonDecrypt = spawnSync(
-    pythonExe,
-    [path.join(repoRoot, "python", "tests", "interop_helper.py")],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: path.join(repoRoot, "python", "src") },
-      input: JSON.stringify({
-        action: "decrypt_envelope",
-        session_key_b64: sessionKeyB64,
-        envelope: clientEnvelope
-      }),
-      encoding: "utf8"
-    }
-  );
-  assert.equal(pythonDecrypt.status, 0, pythonDecrypt.stderr);
-  const decryptedByPython = JSON.parse(pythonDecrypt.stdout);
+  const decryptedByPython = python({
+    action: "decrypt_envelope",
+    session_key_b64: sessionKeyB64,
+    envelope: clientEnvelope
+  });
   assert.deepEqual(decryptedByPython.payload, { hello: "python" });
 
-  const pythonReply = spawnSync(
-    pythonExe,
-    [path.join(repoRoot, "python", "tests", "interop_helper.py")],
-    {
-      cwd: repoRoot,
-      env: { ...process.env, PYTHONPATH: path.join(repoRoot, "python", "src") },
-      input: JSON.stringify({
-        action: "encrypt_frame",
-        session_key_b64: sessionKeyB64,
-        outer_fields: { session_id: "sess-cross", route_to: "client-cross" },
-        frame_fields: { frame_type: "data", sender: "device", payload: { hello: "js" } }
-      }),
-      encoding: "utf8"
-    }
-  );
-  assert.equal(pythonReply.status, 0, pythonReply.stderr);
+  const pythonReply = python({
+    action: "encrypt_frame",
+    session_key_b64: sessionKeyB64,
+    outer_fields: { session_id: "sess-cross", route_to: "client-cross" },
+    frame_fields: { frame_type: "data", sender: "device", payload: { hello: "js" } }
+  });
   const decryptedByJs = await decryptEnvelope({
     sessionKeyB64,
-    envelope: JSON.parse(pythonReply.stdout)
+    envelope: pythonReply
   });
   assert.deepEqual(decryptedByJs.payload, { hello: "js" });
 });

@@ -2,7 +2,8 @@
 
 Companion to [the #572 migration plan](Secure%20Transport%20Consolidation%20Plan.md).
 Inspection date: 2026-10-12. The original #572 planning inventory is retained;
-#575 local receipts below cover only import/package evidence P1/P2.
+#575 local receipts below cover import/package evidence P1/P2; #576 receipts
+cover compatibility evidence C1–C3. The remaining migration evidence is pending.
 Paths below are relative to Build unless prefixed `upstream:`.
 
 ## Inspected baseline
@@ -114,9 +115,9 @@ reporting the implementation's security checklist complete.
 | --- | --- | --- | --- |
 | P1 | Imported canonical file hashes match pinned source; exclusions verified | #575 | locally verified; #575 receipts below |
 | P2 | Scoped BSL notice retained; npm tarball and Python sdist/wheel include correct source/license; no generated duplicate sources | #575 | locally verified; #575 receipts below |
-| C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | pending |
-| C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | pending |
-| C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | pending |
+| C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | locally verified; #576 receipts below |
+| C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | locally verified; #576 receipts below |
+| C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | locally verified; #576 receipts below |
 | D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | pending |
 | D2 | Node and Vite libsodium resolution; SPA lint/focused tests/build; web unit tests | #577 | pending |
 | B1 | App and QA images build from clean repository context without external transport access; final contents/notices reviewed | #578 | pending |
@@ -142,9 +143,9 @@ instead of launching full suites from each planning or review conversation.
 
 ## #575 local import/package receipts (2026-10-12)
 
-Only P1/P2 are verified here. C1–R2 remain pending; this is neither runtime
-compatibility evidence nor the final migration security checklist/integration.
-Independent exact-head review is still required.
+At the #575 checkpoint only P1/P2 were verified; C1–R2 remained pending. These
+import/package receipts are not runtime compatibility evidence or the final
+migration security checklist/integration. #576 compatibility receipts follow.
 
 - Base: `215bc79c7e91c4319f10b0c7f9dd2969030df794` after fetching origin/main
   and fast-forwarding the clean managed `build/transport-import` branch.
@@ -201,3 +202,71 @@ metadata interface before February 2027. The local artifacts include the full
 unchanged notice in metadata and as a license file today; a future packaging
 backend/metadata modernization must preserve the custom terms. No runtime
 requirement or lock resolution was upgraded to suppress that warning.
+
+## #576 local compatibility receipts (2026-10-12)
+
+C1–C3 are locally verified. D1–R2 remain pending for their assigned children;
+this is not final migration approval or integration. Full logs and command,
+head/base, PID, environment and exit receipts are attached on #576.
+
+- Base: `99eaab748857a552a5fc30384ba848c5d1e47f13`.
+- JS/Python and old/new directional receipts are frozen at
+  `1f7db8234664b3425b6d5116566dbe50cfb16659` on
+  #576/c/tc-01M4RYEJ8G9JPVHKKVF7FCFY61. Their source and dependency bytes
+  remain unchanged by the Rust completion.
+- Completed Rust source: `4445f2203d8613fe54c07fdd258876dff0220b57`.
+  The final receipt/scan amendments change only this evidence document and
+  two exact historical public-fixture fingerprints in `.gitleaksignore`; the
+  attached equality proof binds the review head to this validated source tree.
+- Gates ran serially under `nice -n 10`, with two Cargo build jobs. Final Rust
+  runs used two test threads; the initial red/first full run used one. uv is the
+  already-installed 0.12.13 selected explicitly through `BST_UV`; Python runs
+  and both subprocess launchers use frozen resolution.
+- Rust discovers `transport/python` from `CARGO_MANIFEST_DIR`, validates the
+  required reference files, and exercises the existing bidirectional exchange.
+  A deliberate reference override remains available. Missing reference or uv
+  fails the actual round-trip test clearly, with no passing skip.
+
+| Receipt | Command / scope | PID | Exit / result |
+| --- | --- | --- | --- |
+| rust-red | `cargo test --no-run -j2` at the checkpoint | 450216 | 101; four undefined-helper errors |
+| rust-vectors-red | `cargo test --locked -j2 --test transport_vectors -- --nocapture` | 1245075 | 101; incorrect padded-Base64 baseline expectation |
+| cargo-clippy | `cargo clippy -j2 --all-targets -- -D warnings` before splitting vector checks | 1650479 | 101; existing vector test scored 16/15 |
+| cargo-test-r3 | `cargo test -j2` | 1729698 | 0; full suite, including 16 transport units, Rust/Python 3 and vectors 3 |
+| cargo-clippy-r2 | `cargo clippy -j2 --all-targets -- -D warnings` | 2107078 | 0; no new ratchet annotation |
+| cargo-fmt | `cargo fmt --check` | 2111708 | 0 |
+| vendor-test | `cargo test --locked -j2 --manifest-path vendor/Cargo.toml --lib` | 2114340 | 0 |
+| isolated-rust | root invocation with `--manifest-path bridge/Cargo.toml --test interop_python --test transport_vectors` | 2153014 | 0; six tests, default in-tree reference |
+| isolated-missing-reference / isolated-missing-tool | actual required Rust round trip with deliberately absent reference / uv | 2241862 / 2241984 | 101 / 101; clear prerequisite errors |
+| isolated-uv-sync / isolated-npm-ci | frozen uv sync / `npm ci --prefix transport/js --ignore-scripts` | 2242137 / 2242237 | 0 / 0 |
+| isolated-python-five / isolated-python-vectors | frozen unittest discovery | 2242502 / 2242717 | 0 / 0; original five plus four added vector cases |
+| isolated-js-eight | `npm test --prefix transport/js -- --test-concurrency=2` | 2242778 | 0; original four plus four added vector cases, including JS/Python |
+| isolated-contracts | stdlib unittest discovery under `transport/tests` | 2243341 | 0; 19 import/package/launcher contracts |
+
+The supplied unrelated checkout at
+`/tmp/transport-576-receipts/isolated-checkout/Build` was clean at the completed
+source head and required no sibling source. Cargo reused a build cache, then
+recompiled the interop harness for that checkout's manifest directory. The
+Python/JS installs and reference source are local to the isolated checkout.
+
+Pinned old-source consumers accept the stored fixtures, and both old-source
+consumers also accept newly generated vectors. Deterministic fields match the
+pin in both directions. Randomized sealed wraps are excluded from producer
+equality and verified by decryption. Distinct plaintext/producer variants use
+distinct fixed nonces. Fixture bytes and their digest remain unchanged.
+
+Rust's existing decoder accepts padded Base64 by stripping trailing `=`;
+the first Rust vector run exposed the checkpoint's incorrect rejection claim.
+The test and baseline table now record that acceptance, alongside the existing
+version/JSON differences. Crypto/runtime sources, original Python helper/tests,
+manifests and locks remain byte-identical to base. There is no direct JS/Rust
+runtime exchange claim. #577 consumer policy, #578 containers/CI, #579 operational
+documentation and #580 independent review remain outside this child's scope.
+
+The initial final-head Gitleaks run exited 1 on two generic-key detections in
+the fixture's introducing commit: captured sealed-box ciphertext (line 308) and
+the deliberately public session key bytes 64..95 (line 310). The redacted
+finding report is retained. Only those two commit/file/line fingerprints are
+excluded; no fixture path or rule is suppressed. Fixture bytes stay immutable,
+and complexity ratchet annotations remain unchanged. Final scans and their
+exact-head logs are attached to the task handoff.

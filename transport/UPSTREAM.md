@@ -8,7 +8,8 @@ Working-tree bytes, symlinks and directories are never copied from the sibling.
 
 Each upstream path maps to `transport/<path>`. Source SHA is the unmodified
 pinned blob; current SHA records separately reviewed metadata/doc amendments.
-Executable sources, baseline tests and LICENSE.md must keep the source digest.
+Crypto/runtime sources and LICENSE.md must keep the source digest. Explicit
+harness amendments retain the original digest and record their current digest.
 
 | Upstream path | Source SHA-256 | Current SHA-256 |
 | --- | --- | --- |
@@ -19,7 +20,7 @@ Executable sources, baseline tests and LICENSE.md must keep the source digest.
 | `js/package-lock.json` | `fe06ddb52117f0767fba5e613167a446a13879ff07bfd5417a4c317dd3ebba5f` | `709c8ce1b4e4b13507a87cb8df4c5dba046f15122a530adaed73eda1bb074b21` |
 | `js/package.json` | `17ad3fb3cf0874c4c640295620113ad167741ce1d9a910f5d7519492c85a4208` | `5527f61d426144c6858879ae2fe0f35f96a94481766f722b3b1af44b5f2cbce4` |
 | `js/src/index.js` | `55f85d864691aa4915a32876ff1511af2d24083adeba744d9935a834b64dc443` | `55f85d864691aa4915a32876ff1511af2d24083adeba744d9935a834b64dc443` |
-| `js/test/index.test.js` | `5dfd2c9fbe0a6eec6edb625821a2c350513e0e940d6c5177d2bb6404b8954ef4` | `5dfd2c9fbe0a6eec6edb625821a2c350513e0e940d6c5177d2bb6404b8954ef4` |
+| `js/test/index.test.js` | `5dfd2c9fbe0a6eec6edb625821a2c350513e0e940d6c5177d2bb6404b8954ef4` | `36f81390638dd83b5afd48d016332a8c7df382cfd6055b5a45169f683d004cbc` |
 | `python/README.md` | `d7f6e12fd9feb8e7472c1cd013c91eedbe3a894401309eee407689ece0d9e8fd` | `d7f6e12fd9feb8e7472c1cd013c91eedbe3a894401309eee407689ece0d9e8fd` |
 | `python/pyproject.toml` | `e7ad92d3d1bcf82ee7176b9d9a23568be303fdb5d1fa9e68ae26f70082e888a6` | `25066f60497ba6f2c889199c9cfa8d3c15931609e4cc7da981ccbc39b40e3202` |
 | `python/src/build_secure_transport/__init__.py` | `0cc488cf4f82833d6fe7547773eed70f3f9b1281b73f155b70141ac7817c3a19` | `0cc488cf4f82833d6fe7547773eed70f3f9b1281b73f155b70141ac7817c3a19` |
@@ -73,3 +74,23 @@ it does not replace Build's root ignores. Local import/package checks and their
 regression tests are Build-owned additions. Root README records the license
 exception; it does not overwrite the AGPL root LICENSE or the existing Rust
 transport's license scope.
+
+## #576 harness and compatibility amendments
+
+- `js/test/index.test.js`: retain the same four cases and assertions; replace
+  the transport-root `.venv/bin/python` assumption with the explicit frozen
+  `js/testing/python.mjs` launcher. The default Python reference is in-tree;
+  `BUILD_SECURE_TRANSPORT_PY` and `BST_UV` are deliberate test overrides.
+- Rust's `bridge/tests/interop_python.rs` is a Build-owned harness amendment,
+  independent of this upstream import. `bridge/src/transport.rs` stays unchanged.
+- Added `compatibility/test_vectors.py`, JS vector consumers/generators and immutable non-secret `fixtures/v1.json`
+  are test material, documented and hashed in `fixtures/README.md`/`SHA256SUMS`.
+  They are not runtime package exports. The five original Python cases and
+  original `interop_helper.py` remain byte-identical.
+- The import checker now permits only the named test additions/amendment. In a
+  Git checkout it enumerates tracked plus unignored files, excluding installed
+  ignored environments; an exported tree is still inspected in full.
+  Crypto/runtime source and notice drift remain errors.
+
+Dependency manifests/locks are unchanged by #576, including resolved sodium
+0.7.16, PyNaCl 1.6.2, cffi 2.0.0 and pycparser 3.0.

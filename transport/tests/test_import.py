@@ -24,7 +24,7 @@ class ImportContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             shutil.copytree(ROOT / 'transport', root / 'transport',
-                            ignore=shutil.ignore_patterns('__pycache__'))
+                            ignore=shutil.ignore_patterns('__pycache__', '.venv', 'node_modules', '*.egg-info'))
             path = root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
@@ -49,7 +49,7 @@ class ImportContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             shutil.copytree(ROOT / 'transport', root / 'transport',
-                            ignore=shutil.ignore_patterns('__pycache__'))
+                            ignore=shutil.ignore_patterns('__pycache__', '.venv', 'node_modules', '*.egg-info'))
             path = root / 'transport/js/src/index.js'
             data = path.read_bytes()
             path.unlink()

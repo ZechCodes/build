@@ -1,7 +1,7 @@
-# Verified false positives only. Every entry below is a fabricated example
-# token (secret-DETECTION test fixtures and API-doc placeholders) in v1-era
-# files — most of them deleted from the tree by the v2 wipe (4bc5355). None is
-# or ever was a live credential. Real findings must be rotated, never ignored.
+# Verified false positives only: fabricated example tokens, public content
+# hashes and deliberately public cryptographic test material. Most v1 examples
+# were deleted by the v2 wipe (4bc5355). None is or ever was a live credential.
+# Real findings must be rotated, never ignored.
 
 # v1 history (files no longer in the tree)
 d857668a2b15200f112d26b21da572609bdfd065:snapshot-manager/docs/API_REFERENCE.md:generic-api-key:34
@@ -53,3 +53,10 @@ fixtures/api/v1/run.diff.json:generic-api-key:10
 fixtures/api/v1/worktree.diff.json:generic-api-key:7
 fixtures/api/v1/worktree.diff.json:generic-api-key:35
 fixtures/api/v1/git.unpushed.json:generic-api-key:6
+
+# #576 immutable public transport vectors: line 308 is captured sealed-box
+# ciphertext; line 310 is the deliberately public session key bytes 64..95,
+# produced by transport/testing/generate_vectors.py. Neither is a credential.
+# Scope these exceptions to the introducing commit, file and exact lines.
+1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:308
+1f7db8234664b3425b6d5116566dbe50cfb16659:transport/fixtures/v1.json:generic-api-key:310

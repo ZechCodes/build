@@ -76,6 +76,7 @@ export async function commentGeometry(page, selector) {
       pageHead: box(document.querySelector(".task-page-head")),
       actor: box(header.querySelector("strong")),
       card: box(row.querySelector(".task-comment-card")),
+      cardBorderLeft: Number.parseFloat(getComputedStyle(row.querySelector(".task-comment-card")).borderLeftWidth),
       body: box(row.querySelector(".task-comment-body")), buttonInHeader: header.contains(button),
       icon: !!button?.querySelector("svg"), visibleText: button?.textContent.trim(),
       accessibleLabel: button?.getAttribute("aria-label"), viewport: { width: innerWidth, height: innerHeight },
@@ -101,5 +102,15 @@ export async function updateCommentTaskIdentity(page, name) {
     await window.__layoutModules.cache.writeTaskRecord("sticky-device", "proj-1", record.task.id, record);
   }, name);
   await page.waitForFunction(({ selector, name }) => document.querySelector(`${selector} .task-entry-head strong`)?.textContent.includes(name), { selector: LONG, name: name.trim() });
+  await settleHeader(page);
+}
+
+export async function markLongCommentMentioned(page) {
+  await page.evaluate(async () => {
+    const record = window.__stickyRecord;
+    record.timeline.find((entry) => entry.id === "tc-sticky-long").mentions_user = true;
+    await window.__layoutModules.cache.writeTaskRecord("sticky-device", "proj-1", record.task.id, record);
+  });
+  await page.locator(`${LONG}.task-comment-mentioned`).waitFor();
   await settleHeader(page);
 }

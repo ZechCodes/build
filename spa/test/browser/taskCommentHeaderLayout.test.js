@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { captureLayout, openLayoutSession } from "./layoutHarness.mjs";
 import { deviceShim } from "./taskIdentityHarness.mjs";
-import { LONG, SHORT, commentGeometry, modes, mountCommentHeaderPage, parkComment, updateCommentTaskIdentity, updateCommentTaskTitle } from "./taskCommentHeaderFixture.mjs";
+import { LONG, SHORT, commentGeometry, markLongCommentMentioned, modes, mountCommentHeaderPage, parkComment, updateCommentTaskIdentity, updateCommentTaskTitle } from "./taskCommentHeaderFixture.mjs";
 
 let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [deviceShim] }); }, 30_000);
@@ -90,6 +90,12 @@ for (const mode of modes) {
       await updateCommentTaskIdentity(page, "Agent with a deliberately long display name ".repeat(8));
       await parkComment(page, LONG, 900);
       expectPinned(await commentGeometry(page, LONG));
+      await markLongCommentMentioned(page);
+      await parkComment(page, LONG, 900);
+      const mentioned = await commentGeometry(page, LONG);
+      expectPinned(mentioned);
+      expect(mentioned.header.left, "sticky header preserves the entire mention accent border").toBeGreaterThanOrEqual(mentioned.card.left + mentioned.cardBorderLeft);
+      expect(mentioned.actor.left, "mentioned header identity lines up with the comment body").toBeCloseTo(mentioned.body.left, 1);
       expect(errors).toEqual([]);
       await page.evaluate(() => window.__stickyPage.dispose());
     }, mode);

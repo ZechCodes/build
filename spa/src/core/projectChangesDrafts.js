@@ -2,6 +2,7 @@
 // recovery without attaching it to a replacement source's commit action.
 import { App } from "../appState.js";
 import { subscribeUiRecords, uiDraftRecords } from "./localUiStore.js";
+import { applyFieldTraits } from "./fieldTraits.js";
 
 const validSourceAddress = ([owner, sourceId, path, extra], projectId) => owner === projectId
   && extra === undefined && typeof sourceId === "string" && typeof path === "string" && sourceId && path;
@@ -30,6 +31,7 @@ function draftRow(draft, project) {
   const caption = document.createElement("span");
   caption.textContent = `${source?.name || draft.sourceId} · ${draft.path} · source ${source ? "moved" : "removed"}`;
   const field = document.createElement("textarea");
+  applyFieldTraits(field, "prose");
   field.className = "csinput";
   field.readOnly = true;
   field.value = draft.text;

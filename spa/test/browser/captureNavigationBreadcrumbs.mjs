@@ -14,7 +14,7 @@ try {
       for (const longNames of [false, true]) {
         await mountNavigationBreadcrumbs(page, basePath, { theme, longNames });
         const stem = `${phase}-${width}px-${theme}-${longNames ? "long-names" : "short-names"}`;
-        await page.screenshot({ path: `${output}/${stem}-workspace.png` });
+        await page.screenshot({ animations: "disabled", caret: "initial", path: `${output}/${stem}-workspace.png` });
         for (const select of ["workspace", "project"]) {
           const control = page.locator(`[data-select="${select}"]`);
           if (phase === "before" && select === "project" && await control.count() === 0) {
@@ -22,14 +22,14 @@ try {
           } else if (width < 900) await control.tap(); else await control.click();
           await page.locator(".tb-filter").waitFor();
           await page.waitForFunction(() => document.activeElement?.matches(".tb-filter"));
-          await page.screenshot({ path: `${output}/${stem}-${select}-switcher-search-focused.png` });
+          await page.screenshot({ animations: "disabled", caret: "initial", path: `${output}/${stem}-${select}-switcher-search-focused.png` });
           manifest.push({ phase, width, theme, longNames, switcher: select, focused: true, synchronousFocus: await page.evaluate(() => window.__navigationHarness.focusInGesture) });
           await page.keyboard.press("Escape"); await page.locator(".tbmenu").waitFor({ state: "detached" });
         }
       }
       for (const kind of ["workspaceTask", "projectTask"]) {
         await mountNavigationBreadcrumbs(page, basePath, { theme, kind });
-        await page.screenshot({ path: `${output}/${phase}-${width}px-${theme}-${kind}-route.png` });
+        await page.screenshot({ animations: "disabled", caret: "initial", path: `${output}/${phase}-${width}px-${theme}-${kind}-route.png` });
       }
     }, { width, height: width === 1280 ? 800 : width === 390 ? 844 : 740, hasTouch: width < 900 });
   }
@@ -65,7 +65,7 @@ async function captureComparisonSheets(session) {
     await writeFile(`${output}/comparison-${width}px-${theme}.html`, html);
     await session.withPage(async ({ page }) => {
       await page.setContent(html);
-      await page.screenshot({ path: `${output}/comparison-${width}px-${theme}.png`, fullPage: true });
+      await page.screenshot({ animations: "disabled", caret: "initial", path: `${output}/comparison-${width}px-${theme}.png`, fullPage: true });
     }, { width: width * 2 + 48, height: 800 });
   }
 }

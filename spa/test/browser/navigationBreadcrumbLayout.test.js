@@ -70,6 +70,7 @@ for (const width of [1280, 390, 320]) for (const theme of ["light", "dark"]) {
         expect(dimensions.padding).toBe("0px");
         if (!longNames) expect(Math.abs(dimensions.project.width - dimensions.textWidth)).toBeLessThanOrEqual(1);
         expect(dimensions.arrow.height).toBe(44); expect(dimensions.workspace.height).toBe(44); expect(dimensions.lock.height).toBe(44);
+        expect(dimensions.workspace.width).toBeGreaterThanOrEqual(44); expect(dimensions.lock.width).toBe(44);
         expect(dimensions.caret.width).toBeGreaterThan(0);
         expect(dimensions.arrow.right).toBeLessThanOrEqual(dimensions.project.x);
         expect(dimensions.workspace.right).toBeLessThanOrEqual(dimensions.lock.x);
@@ -161,4 +162,27 @@ it("B3 branch verb remains reachable beside the current branch breadcrumb", asyn
     expect(await page.locator(".tb-leaf").getAttribute("aria-current")).toBe("page");
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(320);
   }, { width: 320, height: 740, hasTouch: true });
+}, 30_000);
+
+
+it("B4 constrained 280px toolbar wraps before controls overlap", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountNavigationBreadcrumbs(page, basePath, { longNames: true });
+    const dimensions = await page.evaluate(() => {
+      const rect = (element) => { const { x, y, width, height, right, bottom } = element.getBoundingClientRect(); return { x, y, width, height, right, bottom }; };
+      return { toolbar: rect(document.querySelector("#toolbar")),
+        controls: [...document.querySelectorAll(".tb-switch, .tb-project, .tb-workspace, [data-workspace-lock]")].map((control) => ({ selector: control.className, ...rect(control) })),
+        scrollWidth: document.documentElement.scrollWidth };
+    });
+    for (const control of dimensions.controls) {
+      expect(control.x, JSON.stringify(dimensions)).toBeGreaterThanOrEqual(dimensions.toolbar.x);
+      expect(control.right, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.toolbar.right);
+    }
+    for (let index = 0; index < dimensions.controls.length - 1; index++) {
+      const left = dimensions.controls[index]; const right = dimensions.controls[index + 1];
+      const overlaps = left.right > right.x && right.right > left.x && left.bottom > right.y && right.bottom > left.y;
+      expect(overlaps, JSON.stringify(dimensions)).toBe(false);
+    }
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(280);
+  }, { width: 280, height: 740, hasTouch: true });
 }, 30_000);

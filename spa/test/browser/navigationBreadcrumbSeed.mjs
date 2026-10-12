@@ -78,4 +78,10 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
   await page.locator(".toolbar").waitFor();
   if (kind === "workspace") await page.locator("[data-workspace-lock]").waitFor();
   await page.evaluate(() => document.fonts.ready);
+  if (["workspaceTask", "projectTask"].includes(kind)) {
+    await page.waitForFunction(() => {
+      const leaf = document.querySelector(".tb-leaf");
+      return !leaf || leaf.textContent.includes("542");
+    });
+  }
 }

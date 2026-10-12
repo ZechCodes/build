@@ -12,6 +12,8 @@ Wire 3.19.0.
 
 ### Fixed
 
+- Claude headless agents show as working when the child resumes a turn itself
+  after a result, including the elapsed clock and interrupt control (#553).
 - Centre the collapsed inbox popover and hover-peek carets beneath the inbox
   toggle on phone and desktop layouts, including left safe-area insets. Keep
   the card attached by sharing the standing directory rail's inset policy (#482).

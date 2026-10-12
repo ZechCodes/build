@@ -1,5 +1,13 @@
 use super::*;
 
+struct EndSessionOnDrop<'a>(&'a AdkSession);
+
+impl Drop for EndSessionOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.end();
+    }
+}
+
 #[test]
 fn self_started_top_level_activity_opens_a_turn_until_its_result() {
     for activity in [NARRATION, THINKING, TOOL_USE, TOOL_RESULT] {
@@ -33,6 +41,9 @@ fn child_activity_outside_the_parent_turn_does_not_open_it() {
     reader.read_line(RESULT);
     for passive in [
         SUBAGENT_TEXT_WITH_USAGE,
+        r#"{"type":"assistant","parent_tool_use_id":"parent","message":{"content":[{"type":"tool_use","id":"nested","name":"Read","input":{}}]}}"#,
+        r#"{"type":"user","parent_tool_use_id":"parent","message":{"content":[{"type":"tool_result","tool_use_id":"nested","content":"done"}]}}"#,
+        r#"{"type":"assistant","message":{"content":[]}}"#,
         TASK_ROSTER_EMPTY,
         TASK_NOTIFICATION,
         r#"{"type":"user","message":{"content":[{"type":"text","text":"echoed prompt"}]}}"#,
@@ -83,6 +94,8 @@ fn self_started_turn_success_and_usage_limit_are_counted_once_per_turn() {
     reader.read_line(NARRATION);
     assert_eq!(status.borrow().status, AgentStatus::Working);
     assert_eq!(status.borrow().successful_response_count, 2);
+    reader.read_line(NARRATION);
+    assert_eq!(status.borrow().successful_response_count, 2);
     reader.read_line(RESULT);
     assert_eq!(status.borrow().successful_response_count, 2);
 
@@ -104,6 +117,7 @@ async fn self_started_turn_can_be_interrupted_without_a_crash_epitaph() {
         &adk_choice(),
     )
     .unwrap();
+    let _cleanup = EndSessionOnDrop(&session);
     session.send_turn(&Turn::new("start")).unwrap();
     assert!(matches!(
         next_activity(&mut activity).await,
@@ -114,7 +128,6 @@ async fn self_started_turn_can_be_interrupted_without_a_crash_epitaph() {
     session.interrupt().unwrap();
     wait_for_status(&session, AgentStatus::Waiting);
     assert!(session.epitaph().is_none());
-    session.end();
 }
 
 #[test]
@@ -144,4 +157,14 @@ fn self_started_turn_hands_working_to_a_steering_turn() {
         reader.state.lock().unwrap().live_status(),
         AgentStatus::Waiting
     );
+}
+
+#[test]
+fn buffered_activity_does_not_reopen_a_session_build_ended() {
+    let mut reader = reader_over_a_silent_session();
+    reader.read_line(INIT);
+    reader.read_line(RESULT);
+    reader.state.lock().unwrap().closed = true;
+    reader.read_line(THINKING);
+    assert!(!reader.state.lock().unwrap().turn_open);
 }

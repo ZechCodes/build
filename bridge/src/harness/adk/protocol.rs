@@ -59,7 +59,7 @@ pub(super) struct ProtocolState {
     /// Whether the child has announced itself (`system` / `init`). Until it
     /// does, the session is starting and cannot take a turn.
     pub(super) announced: bool,
-    /// Whether a turn Build handed over is still unanswered.
+    /// Whether a turn Build handed over or the child started is still unanswered.
     ///
     /// A flag rather than a count of turns against results, and the protocol is
     /// why: a message written while the child is mid-turn is absorbed into the
@@ -146,6 +146,15 @@ pub(super) struct ProtocolState {
 }
 
 impl ProtocolState {
+    /// Open a parent turn, whether handed over or reported by the child.
+    /// Further messages belong to the same turn until its result arrives.
+    pub(super) fn open_turn(&mut self) {
+        if !self.turn_open {
+            self.turn_had_success = false;
+        }
+        self.turn_open = true;
+    }
+
     pub(super) fn new(choice: &ModelChoice) -> ProtocolState {
         ProtocolState {
             announced: false,

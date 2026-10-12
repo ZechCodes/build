@@ -186,7 +186,7 @@ impl Drop for EndRegisteredSession {
         let session = self
             .state
             .lock()
-            .unwrap()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .session_registry
             .test_tab(&self.key)
             .map(|tab| Arc::clone(&tab.session));

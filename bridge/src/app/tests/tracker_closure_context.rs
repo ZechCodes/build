@@ -76,30 +76,7 @@ fn closed_blockers_delivery_context() {
         .collect();
     assert_eq!(messages.len(), 1, "{messages:?}");
     let body = messages[0]["body"].as_str().unwrap();
-    for (task, title) in [
-        (&closed, "current prerequisite title"),
-        (&also_closed, "other abandoned prerequisite"),
-    ] {
-        assert!(body.contains(id(task)), "{body}");
-        assert!(body.contains(title), "{body}");
-        assert!(body.contains(&format!("#{}", task["number"])), "{body}");
-    }
-    assert!(!body.contains("old prerequisite title"), "{body}");
-    assert!(!body.contains(id(&done)), "{body}");
-    assert!(!body.contains("completed prerequisite"), "{body}");
-    for instruction in [
-        "closed without Done",
-        "Read",
-        "assess",
-        "proceed",
-        "comment_task",
-        "mention_user: true",
-        "uncertain prerequisites",
-        "decision needed",
-        id(&dependent),
-    ] {
-        assert!(body.contains(instruction), "missing {instruction}: {body}");
-    }
+    assert_assignment_closure_context(body, &dependent, &closed, &also_closed, &done);
 }
 
 #[test]
@@ -183,4 +160,37 @@ fn closed_blockers_coordinator_notice_context() {
     assert!(saved.assignee.is_none());
     assert_eq!(saved.status, "backlog");
     assert!(saved.links.workspace_ids.is_empty());
+}
+
+fn assert_assignment_closure_context(
+    body: &str,
+    dependent: &Value,
+    closed: &Value,
+    also_closed: &Value,
+    done: &Value,
+) {
+    for (task, title) in [
+        (closed, "current prerequisite title"),
+        (also_closed, "other abandoned prerequisite"),
+    ] {
+        assert!(body.contains(id(task)), "{body}");
+        assert!(body.contains(title), "{body}");
+        assert!(body.contains(&format!("#{}", task["number"])), "{body}");
+    }
+    assert!(!body.contains("old prerequisite title"), "{body}");
+    assert!(!body.contains(id(done)), "{body}");
+    assert!(!body.contains("completed prerequisite"), "{body}");
+    for instruction in [
+        "closed without Done",
+        "Read",
+        "assess",
+        "proceed",
+        "comment_task",
+        "mention_user: true",
+        "uncertain prerequisites",
+        "decision needed",
+        id(dependent),
+    ] {
+        assert!(body.contains(instruction), "missing {instruction}: {body}");
+    }
 }

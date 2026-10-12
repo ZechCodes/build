@@ -155,7 +155,7 @@ fn durable_delivery_generation_and_live_graph_fence_saved_work() {
         .edit_waiting_on(
             PROJECT,
             &task.id,
-            &[blocker.id.clone()],
+            std::slice::from_ref(&blocker.id),
             &[],
             &Actor::User,
             NOW,
@@ -267,7 +267,7 @@ fn delivery_admission_fences_graph_writes_and_failed_retry() {
         .edit_waiting_on(
             PROJECT,
             &task.id,
-            &[blocker.id.clone()],
+            std::slice::from_ref(&blocker.id),
             &[],
             &Actor::User,
             NOW,
@@ -391,56 +391,7 @@ fn forge_message_origin(receipt: &mut crate::operation::OperationReceipt, change
 fn moving_waiting_creating_assignment_to_ready_preserves_armed_generation() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
-    let mut task = store
-        .create_tracker_task(
-            Task::drafted(PROJECT, "waiting for an agent", Actor::User, NOW),
-            &[],
-        )
-        .unwrap();
-    let mut blocker = store
-        .create_tracker_task(
-            Task::drafted(PROJECT, "prerequisite", Actor::User, NOW),
-            &[],
-        )
-        .unwrap();
-    store
-        .edit_waiting_on(
-            PROJECT,
-            &task.id,
-            std::slice::from_ref(&blocker.id),
-            &[],
-            &Actor::User,
-            NOW,
-        )
-        .unwrap();
-    let assigned = TaskEvent::new(
-        &task.id,
-        Actor::User,
-        TaskEventKind::Assigned,
-        json!({}),
-        NOW,
-    );
-    let intent = store
-        .accept_delivery_intent(
-            &task,
-            &[assigned],
-            DeliveryIntent {
-                id: String::new(),
-                task_id: task.id.clone(),
-                project_path: PROJECT.into(),
-                generation: 0,
-                target: json!({"kind":"new_agent","workspace_id":"existing-workspace"}),
-                actor: Actor::User,
-                sender: None,
-                note: None,
-                operation_id: String::new(),
-                state: String::new(),
-                reservation: serde_json::Value::Null,
-                admitted: None,
-                error: None,
-            },
-        )
-        .unwrap();
+    let (mut task, mut blocker, intent) = waiting_creating_assignment(&store);
     assert_eq!(intent.state, "waiting");
     assert!(task.assignee.is_none());
     task.status = "ready".into();
@@ -487,4 +438,58 @@ fn moving_waiting_creating_assignment_to_ready_preserves_armed_generation() {
         store.load_tracker_task(&task.id).unwrap().unwrap().status,
         "ready"
     );
+}
+
+fn waiting_creating_assignment(store: &Store) -> (Task, Task, DeliveryIntent) {
+    let task = store
+        .create_tracker_task(
+            Task::drafted(PROJECT, "waiting for an agent", Actor::User, NOW),
+            &[],
+        )
+        .unwrap();
+    let blocker = store
+        .create_tracker_task(
+            Task::drafted(PROJECT, "prerequisite", Actor::User, NOW),
+            &[],
+        )
+        .unwrap();
+    store
+        .edit_waiting_on(
+            PROJECT,
+            &task.id,
+            std::slice::from_ref(&blocker.id),
+            &[],
+            &Actor::User,
+            NOW,
+        )
+        .unwrap();
+    let assigned = TaskEvent::new(
+        &task.id,
+        Actor::User,
+        TaskEventKind::Assigned,
+        json!({}),
+        NOW,
+    );
+    let intent = store
+        .accept_delivery_intent(
+            &task,
+            &[assigned],
+            DeliveryIntent {
+                id: String::new(),
+                task_id: task.id.clone(),
+                project_path: PROJECT.into(),
+                generation: 0,
+                target: json!({"kind":"new_agent","workspace_id":"existing-workspace"}),
+                actor: Actor::User,
+                sender: None,
+                note: None,
+                operation_id: String::new(),
+                state: String::new(),
+                reservation: serde_json::Value::Null,
+                admitted: None,
+                error: None,
+            },
+        )
+        .unwrap();
+    (task, blocker, intent)
 }

@@ -144,7 +144,7 @@ mod tests {
             .reserve_delivery_workspace(
                 "project",
                 "checkpoint gap",
-                &[source.clone()],
+                std::slice::from_ref(&source),
                 Isolation::Worktree,
             )
             .unwrap();

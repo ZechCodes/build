@@ -11,8 +11,8 @@ const CONTENT_X = { desktop: 51, phone: 64 };
 async function blockColumnPixels(page) {
   const geometry = await page.locator(".inbox-project.active").evaluate((block) => {
     const head = block.getBoundingClientRect();
-    return { clip: { x: Math.floor(head.x), y: Math.floor(head.y), width: Math.ceil(head.width),
-      height: Math.ceil(head.bottom) - Math.floor(head.y) },
+    return { clip: { x: Math.floor(head.x), y: Math.ceil(head.y), width: Math.ceil(head.width),
+      height: Math.floor(head.bottom) - Math.ceil(head.y) },
       columns: [block.querySelector(".inbox-fold svg"), block.querySelector(".inbox-project-name")]
         .map((element) => Math.round(element.getBoundingClientRect().x) - Math.floor(head.x)) };
   });

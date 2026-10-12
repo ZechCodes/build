@@ -147,6 +147,72 @@ impl DispatchedTask {
             .handle(req("tasks.get", json!({"task_id":self.task_id})));
         assert_eq!(after["result"]["task"]["status"], "in_review", "{after}");
     }
+
+    fn abandon_owner(&mut self) {
+        let abandoned = self
+            .app
+            .handle(req("run.abandon", json!({"run_id":self.entity_id})));
+        assert_eq!(abandoned["ok"], true, "{abandoned}");
+        let owner = self.app.runs.get(&self.entity_id).unwrap();
+        assert!(owner.run.state.is_terminal());
+        assert!(owner.agents.by_id(&self.agent_id).is_some());
+    }
+
+    fn assign_another_task(&mut self, title: &str) -> String {
+        let id = filed(&mut self.app, &self.project_id, title)["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let assigned = self.app.handle(req(
+            "tasks.assign",
+            json!({
+                "task_id":id,"assignee":{"kind":"agent","agent_id":self.agent_id},
+            }),
+        ));
+        assert_eq!(assigned["ok"], true, "{assigned}");
+        id
+    }
+}
+
+#[test]
+fn completion_fence_rejects_late_complete_from_abandoned_owner() {
+    let mut task = DispatchedTask::new();
+    task.consume_turn();
+    task.abandon_owner();
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
+fn completion_fence_rejects_native_reconstruction_on_abandoned_owner() {
+    let mut task = DispatchedTask::new();
+    let operation = task.operation_id();
+    task.abandon_owner();
+    task.app
+        .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
+        .unwrap();
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
+fn completion_fence_keeps_consumed_pending_task_when_another_assignment_is_accepted() {
+    let mut task = DispatchedTask::new();
+    task.consume_turn();
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, Some("task A".into()));
+    let second = task.assign_another_task("task B already consumed");
+    task.consume_turn();
+    let third = task.assign_another_task("task C still unconsumed");
+    task.assert_complete_reviews_task();
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, None);
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, Some("task B".into()));
+    task.app
+        .move_held_task_on_complete(&task.entity_id, &task.agent_id);
+    let second = task.app.handle(req("tasks.get", json!({"task_id":second})));
+    let third = task.app.handle(req("tasks.get", json!({"task_id":third})));
+    assert_eq!(second["result"]["task"]["status"], "in_review", "{second}");
+    assert_eq!(third["result"]["task"]["status"], "in_progress", "{third}");
 }
 
 #[test]

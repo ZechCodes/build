@@ -31,7 +31,9 @@ class ConsumerDependencies(unittest.TestCase):
                 self.assertEqual(binding, {'resolved': '../transport/js', 'link': True})
                 for path, entry in lock['packages'].items():
                     self.assertFalse(path.startswith(('/', '../../')))
-                    resolved = entry.get('resolved', '')
+                    if 'resolved' not in entry:
+                        continue
+                    resolved = entry['resolved']
                     self.assertTrue(resolved.startswith('https://registry.npmjs.org/')
                                     or resolved == '../transport/js', resolved)
 

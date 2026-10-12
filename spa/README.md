@@ -29,14 +29,23 @@ checkout invalidation refreshes when that directory is shown.
 
 ## Prereqs
 
-`@build/secure-transport` resolves as `file:../../build-secure-transport/js` —
-a sibling checkout of <https://github.com/ZechCodes/build-secure-transport>
-next to this repo (same convention as `web/` and CI).
+Use Node 22.23.3 (`.nvmrc`) and npm 12.0.2 (`packageManager`).
+`@build/secure-transport` resolves as `file:../transport/js` inside this checkout.
+Install that package's own locked dependencies first, from the repo root:
+
+```bash
+nice -n 10 npm ci --prefix transport/js --ignore-scripts
+```
+
+SPA's `package-lock.json` is committed and portable. Use `npm ci
+--legacy-peer-deps` for a fresh install. When editing dependencies, run
+`npm install --legacy-peer-deps` and commit the updated lock with the manifest.
+`.npmrc` preserves the peer-resolution policy and disables install scripts.
 
 ## Commands
 
 ```bash
-nice -n 10 npm install
+nice -n 10 npm ci --legacy-peer-deps
 nice -n 10 npm run lint       # eslint: one rule — no function over complexity 10
 nice -n 10 npm test           # vitest: session core, diff, markdown, notes, router, terminal
 nice -n 10 npm run test:browser # Chromium layout regressions, also included in npm test

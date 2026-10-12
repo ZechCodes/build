@@ -5,7 +5,7 @@ runs — find the device, mint its sessions on the relay, negotiate the peer
 connection, **close the relay socket** — and `peer.mjs` holds the WebRTC half:
 the two negotiated DataChannels, the chunked envelope carrier, and one E2EE
 session per carrier. The crypto comes from the audited
-[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
+[`transport/js`](../transport/js/)
 JS binding; the WebRTC from
 [`node-datachannel`](https://github.com/murat-dogan/node-datachannel)'s
 standard-interface polyfill, so `peer.mjs` is written against the same DOM API
@@ -15,12 +15,12 @@ first and got as far as DTLS; its SCTP association never completed against the
 bridge's webrtc-rs.) `web/` is dev-only, which is why a dependency here costs
 nothing shipped.
 
-It depends on the binding as a sibling checkout:
+It depends on the binding within the same checkout:
 
 ```
-<parent>/
-  Build/                     ← this repo (web/ lives here)
-  build-secure-transport/    ← the audited E2EE binding (js/)
+Build/
+  web/             ← the QA harness
+  transport/js/    ← the E2EE binding
 ```
 
 ## How the harness connects
@@ -72,13 +72,16 @@ this frame.
 ## The suites
 
 ```bash
-# 1. Install (the binding resolves to ../../build-secure-transport/js)
-cd web && npm install
-#    and install the binding's own deps once:
-( cd ../../build-secure-transport/js && npm install )
+# 1. From the repo root, using Node 22.23.3 and npm 12.0.2:
+nice -n 10 npm ci --prefix transport/js --ignore-scripts
+cd web && nice -n 10 npm ci
 
 npm test           # the chunker, against the wire shape the bridge writes — no stack needed
 ```
+
+`web/package-lock.json` is committed and portable. `.nvmrc` and `packageManager`
+pin the supported tools; `.npmrc` disables install scripts. When editing
+dependencies, run `npm install` and commit the updated lock with the manifest.
 
 The rest need the real stack (`deploy/compose.real.yml`), because the peer
 connection needs a real bridge on the other end of it:

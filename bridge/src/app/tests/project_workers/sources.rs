@@ -359,10 +359,15 @@ fn a_rejected_duplicate_update_keeps_the_admitted_move_hold() {
         } else {
             json!({ "project_id": f.project_id, "source_id": "source-2", "name": "Docs" })
         };
-        let refused = f.state.handle(req("project.update_source", retry));
+        let refused = f.state.project_update_source(&retry).unwrap_err();
         // Moving retries reach the shell Updating barrier; label-only retries
-        // reach defer_project. Both refuse busy without owning a move count.
-        refused_with(&refused, "busy");
+        // retain defer_project's existing refusal. Neither owns a move count.
+        let expected = if retry_moves {
+            "source location is being changed"
+        } else {
+            "already updating"
+        };
+        assert!(refused.contains(expected), "{refused}");
         f.assert_worker_starts_blocked();
 
         f.state

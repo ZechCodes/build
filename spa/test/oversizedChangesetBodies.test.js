@@ -58,6 +58,48 @@ const pagingBridge = (calls) =>
     return { ...pagedAnswer(B_WHOLE, range.offset, { version: "v-b", pageBytes: 30 }), files: [{ path: "b.txt", content_key: "kb" }] };
   });
 
+it("leaves unreached aggregate paths uncached until their own wire bodies and page heads land", async () => {
+  const paths = ["a.txt", "b.txt", "c.txt", "d.txt"];
+  const files = paths.map((path) => ({ path, content_key: `k:${path}` }));
+  const fetchFiles = vi.fn(async (wanted, { range } = {}) => {
+    const text = wanted.map((path) => patch(path, "own body")).join("");
+    if (range) return { ...pagedAnswer(text, range.offset, { version: `v:${wanted[0]}`, pageBytes: 30 }), files };
+    return { files, patch: text, truncated: true };
+  });
+  const bodies = createChangesetBodies({ addressOf: address, keyFor: (path) => `k:${path}`, fetchFiles, canPage: () => true });
+  await bodies.seed({ files, patch: patch("a.txt", "whole") + patch("b.txt", "cut"), truncated: true }, paths);
+
+  expect(await cache.readCached(address("c.txt"))).toBeUndefined();
+  expect(await cache.readCached(address("d.txt"))).toBeUndefined();
+  const views = files.map((file) => ({ path: file.path, contentKey: file.content_key }));
+  await bodies.sync(views, allOpen(views));
+  await bodies.sync(views, allOpen(views));
+
+  expect(fetchFiles.mock.calls.filter(([, options]) => !options?.range)).toEqual([[["c.txt", "d.txt"]]]);
+  expect(bodies.bodyOf("c.txt").patch).toContain("+own body");
+  expect((await cache.readCached(address("d.txt"))).value).toMatchObject({ paged: true, of: "v:d.txt" });
+  while (await bodies.more("d.txt"));
+  expect(bodies.bodyOf("d.txt")).toMatchObject({ patch: patch("d.txt", "own body"), pages: { complete: true } });
+  bodies.dispose();
+});
+
+it("retries a rejected oversized fill and keeps the recovered page head", async () => {
+  const fetchFiles = vi.fn().mockRejectedValueOnce(new Error("transport hiccup"))
+    .mockImplementation(async (_paths, { range } = {}) => range
+      ? { ...pagedAnswer(B_WHOLE, range.offset, { version: "v-b", pageBytes: 30 }), files: cutAnswer.files }
+      : cutAnswer);
+  const bodies = createChangesetBodies({ addressOf: address, keyFor: () => "kb", fetchFiles, canPage: () => true });
+  const views = [{ path: "b.txt", contentKey: "kb" }];
+  await expect(bodies.sync(views, allOpen(views))).rejects.toThrow("transport hiccup");
+  expect(await cache.readCached(address("b.txt"))).toBeUndefined();
+  await bodies.sync(views, allOpen(views));
+  await bodies.sync(views, allOpen(views));
+
+  expect(fetchFiles).toHaveBeenCalledTimes(3);
+  expect((await cache.readCached(address("b.txt"))).value).toMatchObject({ paged: true, of: "v-b" });
+  bodies.dispose();
+});
+
 it("marks only the file the bridge's cut fell in, and keeps it in the bridge's own pages", async () => {
   const calls = [];
   const bodies = createChangesetBodies({ addressOf: address, keyFor: () => undefined, fetchFiles: pagingBridge(calls), canPage: () => true });

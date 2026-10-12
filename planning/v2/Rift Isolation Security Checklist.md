@@ -44,3 +44,16 @@ experimental CLI, including its private `--database` option, is an external
 compatibility dependency. An interrupted provider operation can require manual
 recovery; Build reports cleanup errors and never falls back to deleting an
 unowned directory.
+
+
+## #522 planned extension — not yet verified
+
+These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
+Existing scores above cover their original implemented scope only. Each owning
+child must supply passing regression/gate evidence before its new rows can
+count toward 100/100; planning does not satisfy these controls.
+
+| ID | Pending control | Required evidence |
+| --- | --- | --- |
+| RI522-1 | Project workers are explicitly unisolated; creating an isolated workspace preserves configured-base/local-commit and existing provider copy rules, never silently switches to current source HEAD. | C2/C10: workspace_cut_preserves_local_base_commits; existing Rift/worktree cut regressions. |
+| RI522-2 | Project scratch owner and original sources never enter workspace reclaim; worker removal and whole-project deletion remove only owned artifacts and preserve source trees. | C5/C10: workspace_reclaim_never_reclaims_project_agents; project deletion with workers and shells. |

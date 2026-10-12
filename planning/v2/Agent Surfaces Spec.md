@@ -1,5 +1,28 @@
 # Agent Surfaces Spec
 
+## Pinned coordinator and project workers — #522 planning amendment (2026-10-12)
+
+Proposed extension: [Project workspace](Project%20Workspace%20Spec.md).
+The project conversation already supports several roster agents. Persist one
+pinned coordinator and distinguish ordinary project workers by purpose, without
+changing owner IDs or inventing workspace records. The coordinator retains its
+read-only-by-instruction source policy and orchestration tools. Workers receive
+a source-writing prompt and the coding/workspace tool set, work in original
+sources and appear below the pin only on the project workspace and its Tasks
+pages. They are Build agents, separate from harness subagents in this spec.
+
+Exactly one pinned identity remains reachable across the project; bridge guards
+protect it from removal/reassignment. Reset changes its conversation/session,
+not its identity. Project deletion retires the whole project and preserves its
+sources. Worker cleanup must use exact conversation/session lineage even when
+all agents share a cwd. The amendment names migration, MCP authority, task
+assignment, cache and security tests. This is planned scope, not a shipped claim.
+
+Historical `entity.changed`, `branch.get` and `plan.get` references below were
+removed in wire 3.0; use current `changes` and conversation APIs. Do not restore
+removed verbs to implement worker activity surfaces.
+
+
 Status: locked design, 2026-09-01. Implementation tracked on this branch.
 
 ## What this is

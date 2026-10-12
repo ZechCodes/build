@@ -559,9 +559,15 @@ membership and the moved-source check come from one resolver shared with
 Files (`resolve_project_source`, `bridge/src/app/projects/source_scope.rs`).
 A moved source answers `conflict`; a plain folder answers `invalid_params`
 ("not a Git repository"), so no Git verb reaches some enclosing repository.
-The scope's `status_key` and `content_key`s are namespaced by project, source
-and captured path, so two sources with identical paths and status never share
-a cache key, and a moved source starts a new namespace. History marks nothing,
+Every key a source scope answers is namespaced by project, source and
+captured path: `status_key` and each status file's `content_key` (`git.status`,
+the status every mutation answers, and the pushed `git` item), the
+`content_key`s of `git.diff`, `git.changeset_diff` and `git.unpushed`, and
+`git.unpushed`'s `diff_key` and the pushed `unpushed.diff_key`. No other Git
+answer carries a key. So two sources with identical changes never share a
+cache key, and a moved source starts a new namespace. A workspace directory's
+unpublished keys stay raw, because its narrowed `git.changeset_diff` has to
+agree with them. History marks nothing,
 as the primary checkout's does; `GitScope::marks_unpushed` chooses a
 workspace directory's publication marking explicitly. `git.changeset_diff`
 reads a source's uncommitted work, like the primary checkout's. Legacy
@@ -572,8 +578,19 @@ watched entity keyed `project-source:` + a digest of project, source and
 captured path (`project_source_entity_id`, `bridge/src/changes.rs`); its
 items carry `project_source` and the keys its own Git verbs answer. Scope
 `all` never covers those entities, so an older client hears exactly what it
-did. A moved or removed source leaves the roots snapshot, its watcher stops,
-and its old subscription goes quiet. `project.sync_source` does not yet take
+did. A subscription given a new scope (another folder, `all`, an entity, the
+board) drops what it held for the old one. A frame already taken is sealed
+off-lock and sent under the bus lock only if the subscription's scope epoch
+still matches. So once the re-scoping `changes.subscribe` is applied, no
+old-scope frame follows it. A source moved or removed in settings leaves the
+roots snapshot and its watcher stops. Reconcile passes apply their snapshots
+in the order they read them, so a stale pass cannot restart that watcher.
+After its off-lock reads, the facts source re-checks the sources under the
+app lock: a source moved or removed by then comes back `withdrawn`, and its
+item is dropped. A frame whose facts passed that check just before the move
+can still go out just after it. It carries what the old folder held before
+the move, under the old `project_source`. Nothing collected after the move
+goes out for the old folder. `project.sync_source` does not yet take
 `source_path`; that precondition, with the sync lock, is #530.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:

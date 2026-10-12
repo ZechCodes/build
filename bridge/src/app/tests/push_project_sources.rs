@@ -260,7 +260,8 @@ async fn project_source_changes_keep_secondary_and_plain_roots_distinct() {
 
 /// A source subscription names a registered source where the client opened
 /// it, and asks only for what that folder has. Once the source moves the old
-/// subscription goes quiet, and one naming the new folder hears it.
+/// subscription hears none of the old folder's later writes, and one naming
+/// the new folder hears it.
 #[tokio::test]
 async fn project_source_subscriptions_refuse_stale_or_unknown_sources() {
     let (dir, repo) = init_repo();

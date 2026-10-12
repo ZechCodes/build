@@ -2324,6 +2324,15 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
 
+Add project (`spa/src/sheets/newRepo.js`) replaces its form with the quiet
+source list in `newRepoProgress.js` while `project.create` runs. Creation's
+internal pending row is not published and the bridge has no per-source
+creation events, so all lines run and settle together. Escape and scrim
+dismissal are blocked only until the request settles. Failure keeps the
+source errors visible; Back restores the draft and focus to Create. Success
+writes and rereads the project cache before opening it. Dismissing the settled
+sheet prevents a delayed cache write from navigating afterwards.
+
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence
 baseline on the agent; task watches persist a timeline entry baseline

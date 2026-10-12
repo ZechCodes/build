@@ -197,7 +197,7 @@ it("shows the message its machine's caller refuses with", async () => {
   document.querySelector("[data-source-value]").dispatchEvent(new Event("input"));
   callRpc.mockRejectedValueOnce(new Error("Device offline"));
   document.querySelector("#nrdo").click(); await flush();
-  expect(document.querySelector("#nrerr").textContent).toBe("Device offline");
+  expect(document.querySelector('#nrprogress [data-source-state="failed"] .adderr').textContent).toBe("Device offline");
 });
 
 // Zech, Sep 27: "show only the device selector then once the device is chosen
@@ -316,7 +316,7 @@ it("never caches a stale projects folder after returning and switching devices",
   expect(openBrowser.mock.calls[1][0].startPath).toBe("/lap-projects");
 });
 
-it("disables device selection while project creation is in flight", async () => {
+it("replaces device selection while project creation is in flight", async () => {
   let finishCreate;
   const lap = vi.fn((method) => method === "project.create"
     ? new Promise((resolve) => { finishCreate = resolve; })
@@ -328,7 +328,8 @@ it("disables device selection while project creation is in flight", async () => 
   remote.value = "https://example.com/docs.git"; remote.dispatchEvent(new Event("input"));
 
   document.querySelector("#nrdo").click();
-  expect(document.querySelector("#nrdevice").disabled).toBe(true);
+  expect(document.querySelector("#nrdevice")).toBeNull();
+  expect(document.querySelector("#nrprogress").getAttribute("aria-busy")).toBe("true");
   finishCreate({ project_id: "p1" }); await flush();
 });
 

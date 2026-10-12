@@ -857,6 +857,20 @@ impl Subscription {
         }
     }
 
+    /// A source subscription re-pointed at the folder its source moved to
+    /// forgets what it held for the old folder, so a late item can never
+    /// restore the old scope under this subscription's id.
+    fn rescope(&mut self, scope: &Scope) {
+        if !matches!(scope, Scope::ProjectSource(_)) || *scope == self.spec.scope {
+            return;
+        }
+        self.pending
+            .retain(|id, _| id == BOARD_ITEM_ID || scope.covers(id));
+        if self.pending.is_empty() {
+            self.first_pending_at = None;
+        }
+    }
+
     fn wants(&self, entity_id: &str, kind: Kind) -> bool {
         self.spec.scope.covers(entity_id) && self.spec.kinds.contains(kind)
     }
@@ -1487,6 +1501,7 @@ impl ChangeBus {
             .find(|existing| existing.is(session.session_id(), &sub.id))
         {
             Some(existing) => {
+                existing.rescope(&sub.scope);
                 existing.spec = sub;
                 existing.session = session.clone();
             }
@@ -3749,5 +3764,54 @@ mod subscriptions {
             "subscription frames were encrypted on {workers:?} instead of the push runtime"
         );
         push.stop();
+    }
+
+    /// Re-pointing a source subscription at the folder its source moved to
+    /// drops what it held for the old folder: a late item must not restore
+    /// the old scope under the subscription's id (#529).
+    #[tokio::test(start_paused = true)]
+    async fn a_source_subscription_moved_to_a_new_folder_drops_the_old_folders_items() {
+        let (bus, sender, mut rx, key) = bench();
+        let at =
+            |path: &str| ProjectSourceScope::new("proj-1".into(), "source-2".into(), path.into());
+        let (old, new) = (at("/home/me/old"), at("/home/me/new"));
+        let held = SubscriptionSpec {
+            kinds: [Kind::Files].into_iter().collect(),
+            ..spec(
+                "s-source",
+                Scope::ProjectSource(old.clone()),
+                Mode::Off,
+                Priority::Foreground,
+            )
+        };
+        bus.subscribe(&sender, held.clone());
+        bus.note_files(old.entity_id(), &["old.txt".to_string()]);
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                scope: Scope::ProjectSource(new.clone()),
+                mode: Mode::Realtime,
+                ..held
+            },
+        );
+        bus.note_files(new.entity_id(), &["new.txt".to_string()]);
+        settle(Duration::from_millis(30)).await;
+
+        assert_eq!(
+            frames(drained(&mut rx, &key)),
+            vec![json!({
+                "type": "changes",
+                "subscription_id": "s-source",
+                "items": [{
+                    "entity_id": new.entity_id(),
+                    "project_source": {
+                        "project_id": "proj-1",
+                        "source_id": "source-2",
+                        "source_path": "/home/me/new",
+                    },
+                    "files": { "paths": ["new.txt"], "truncated": false },
+                }],
+            })]
+        );
     }
 }

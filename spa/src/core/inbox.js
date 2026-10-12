@@ -774,7 +774,7 @@ const STANDS_ON = {
   trackerTask: (route) => (entry) =>
     entry.kind === TRACKER_TASK && entry.deviceId === route.deviceId && entry.taskId === route.taskId,
   // A workspace is named by its machine too: a workspace id is one bridge's.
-  workspace: (route) => route.taskId ? STANDS_ON.trackerTask(route) : (entry) =>
+  workspace: (route) => (entry) =>
     entry.kind === "workspace" && entry.deviceId === route.deviceId && entry.workspaceId === route.workspaceId,
   capture: (route) => (entry) => entry.kind === "capture" && entry.captureId === route.id,
   // A project's page stands on the conversation that project holds — the row
@@ -809,7 +809,11 @@ function projectConversationId(route, view) {
 export function activeEntryKey(route, entries) {
   const standsOn = route && STANDS_ON[route.name];
   if (!standsOn) return null;
-  const match = entries.find(standsOn(route, null));
+  // Prefer an open task's own row, but a task that is not watched still
+  // stands in its workspace and should leave that row current.
+  const task = route.name === "workspace" && route.taskId
+    ? entries.find(STANDS_ON.trackerTask(route)) : null;
+  const match = task || entries.find(standsOn(route, null));
   return match ? match.key : null;
 }
 

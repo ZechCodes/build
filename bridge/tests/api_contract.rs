@@ -1363,7 +1363,10 @@ fn project_workers_are_announced_with_their_roster_read_and_purposes() {
     assert!(advertised.contains(&"agent.list"));
     let list = read_json(&fixtures_root().join("v1/agent.list.json"));
     assert_eq!(list["since"], "3.21.0");
-    assert_eq!(list["project_workers"]["capability"], "agents.projectWorkers");
+    assert_eq!(
+        list["project_workers"]["capability"],
+        "agents.projectWorkers"
+    );
     assert_eq!(list["params"]["include_project_workers"], true);
     let agents = list["result"]["agents"].as_array().unwrap();
     assert_eq!(agents[0]["id"], list["result"]["pinned_agent_id"]);

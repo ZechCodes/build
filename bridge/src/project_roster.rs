@@ -137,7 +137,11 @@ mod tests {
     fn roster_of(count: usize) -> AgentRoster {
         let mut roster = AgentRoster::empty();
         for _ in 0..count {
-            roster.add(AgentOwner::project("run-project"), ModelChoice::default(), NOW);
+            roster.add(
+                AgentOwner::project("run-project"),
+                ModelChoice::default(),
+                NOW,
+            );
         }
         roster
     }
@@ -227,7 +231,11 @@ mod tests {
         assert_eq!(pinned, None);
 
         let minted = roster
-            .add(AgentOwner::project("run-project"), ModelChoice::default(), NOW)
+            .add(
+                AgentOwner::project("run-project"),
+                ModelChoice::default(),
+                NOW,
+            )
             .id
             .clone();
         ProjectRoster::new(&mut pinned, &mut roster).pin_minted(&minted);

@@ -101,7 +101,12 @@ impl AppState {
             }
             return Ok(pin);
         }
-        let pin = mint_pin(&mut active.pinned_agent_id, &mut active.agents, kind, choice);
+        let pin = mint_pin(
+            &mut active.pinned_agent_id,
+            &mut active.agents,
+            kind,
+            choice,
+        );
         self.finish_run_mutation(owner.to_string(), active)?;
         Ok(pin)
     }
@@ -134,7 +139,10 @@ impl AppState {
     ) -> Result<Option<ProjectRole>, String> {
         let asked = params.get("project_role").filter(|value| !value.is_null());
         let on_project = self.is_project_conversation_owner(entity_id);
-        match (asked.map(|value| value.as_str().and_then(ProjectRole::from_wire)), on_project) {
+        match (
+            asked.map(|value| value.as_str().and_then(ProjectRole::from_wire)),
+            on_project,
+        ) {
             (None, true) | (Some(Some(ProjectRole::Worker)), true) => Ok(Some(ProjectRole::Worker)),
             (None, false) => Ok(None),
             (Some(_), false) => Err(NO_PROJECT_ROLE_HERE.to_string()),
@@ -174,7 +182,9 @@ impl AppState {
         owner: &str,
         agent_id: &str,
     ) -> Result<(), String> {
-        if !self.is_project_conversation_owner(owner) || self.is_project_coordinator(owner, agent_id) {
+        if !self.is_project_conversation_owner(owner)
+            || self.is_project_coordinator(owner, agent_id)
+        {
             return Ok(());
         }
         let Some(project) = self

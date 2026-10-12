@@ -35,10 +35,10 @@ pub(crate) mod codex;
 pub(crate) mod codex_app_server;
 #[cfg(test)]
 mod identity_env_tests;
-#[cfg(test)]
-mod mcp_surface_tests;
 pub mod installed;
 pub mod inventory;
+#[cfg(test)]
+mod mcp_surface_tests;
 pub(crate) mod pi;
 mod session;
 pub mod shell_tail;

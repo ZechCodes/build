@@ -91,10 +91,10 @@ pub(in crate::app) use agent_writes::{
 };
 mod conversation;
 mod coordinator;
-pub(crate) use coordinator::PINNED_AGENT_STAYS;
 pub(in crate::app) use conversation::scratch_dir;
 #[cfg(test)]
 pub(in crate::app) use conversation::PROJECT_SCRATCH_DIR_NAME;
+pub(crate) use coordinator::PINNED_AGENT_STAYS;
 mod deletion;
 mod lifecycle;
 mod list;

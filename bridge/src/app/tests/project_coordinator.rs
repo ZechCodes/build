@@ -38,7 +38,10 @@ fn add_worker(state: &mut AppState, owner: &str, params: Value) -> String {
     params["entity_id"] = json!(owner);
     let added = state.handle(req("agent.add", params));
     assert_eq!(added["ok"], true, "{added:?}");
-    assert_eq!(added["result"]["agent"]["project_role"], "worker", "{added:?}");
+    assert_eq!(
+        added["result"]["agent"]["project_role"], "worker",
+        "{added:?}"
+    );
     added["result"]["agent"]["id"].as_str().unwrap().to_string()
 }
 
@@ -175,6 +178,59 @@ fn an_empty_legacy_project_roster_gains_a_single_pin() {
     assert_eq!(coordinators(&state, &owner), vec![pin]);
 }
 
+/// Assert `answer` refused with `code`.
+fn refused_with(answer: &Value, code: &str) {
+    assert_eq!(answer["ok"], false, "{answer:?}");
+    assert_eq!(answer["error_code"], code, "{answer:?}");
+}
+
+/// A client cannot mint a coordinator, nor ask for a purpose on an owner
+/// that is not a project's.
+fn no_client_mints_a_coordinator(state: &mut AppState, project_id: &str, owner: &str) {
+    for forged in ["coordinator", "pinned", ""] {
+        let minted = state.handle(req(
+            "agent.add",
+            json!({ "entity_id": owner, "project_role": forged }),
+        ));
+        refused_with(&minted, "invalid_params");
+    }
+    let workspace_id = workspace(state, project_id, "elsewhere");
+    let workspace_owner = state.handle(req(
+        "workspace.ensure_conversation",
+        json!({ "workspace_id": workspace_id }),
+    ))["result"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let elsewhere = state.handle(req(
+        "agent.add",
+        json!({ "entity_id": workspace_owner, "project_role": "worker" }),
+    ));
+    refused_with(&elsewhere, "invalid_params");
+}
+
+/// Clearing the pin's conversation replaces its history, never its place.
+fn a_reset_keeps_the_pin(state: &mut AppState, project_id: &str, owner: &str, pin: &str) {
+    let thread_id = state
+        .agent_conversation(owner, Some(pin))
+        .unwrap()
+        .id
+        .clone();
+    let reset = state.handle(req(
+        "conversation.reset",
+        json!({
+            "project_id": project_id, "entity_id": owner, "agent_id": pin,
+            "conversation_id": pin, "expected_thread_id": thread_id,
+        }),
+    ));
+    assert_eq!(reset["ok"], true, "{reset:?}");
+    assert_ne!(
+        state.agent_conversation(owner, Some(pin)).unwrap().id,
+        thread_id
+    );
+    assert_eq!(state.project_pin(owner), Some(pin));
+}
+
 /// No request may take the pin away or hand its purpose elsewhere: removing
 /// it and ending its owner are refused, a client cannot mint a coordinator,
 /// and the work a request names no agent for still reaches the pin. A worker
@@ -193,36 +249,12 @@ fn project_coordinator_cannot_be_removed_or_reassigned() {
         "agent.remove",
         json!({ "entity_id": owner, "agent_id": pin }),
     ));
-    assert_eq!(removed["ok"], false, "{removed:?}");
-    assert_eq!(removed["error_code"], "conflict", "{removed:?}");
+    refused_with(&removed, "conflict");
     assert_eq!(removed["error"], crate::app::PINNED_AGENT_STAYS);
-
     let abandoned = state.handle(req("run.abandon", json!({ "run_id": owner })));
-    assert_eq!(abandoned["ok"], false, "{abandoned:?}");
-    assert_eq!(abandoned["error_code"], "conflict", "{abandoned:?}");
+    refused_with(&abandoned, "conflict");
     assert!(!state.runs[&owner].run.state.is_terminal());
-
-    for forged in ["coordinator", "pinned", ""] {
-        let minted = state.handle(req(
-            "agent.add",
-            json!({ "entity_id": owner, "project_role": forged }),
-        ));
-        assert_eq!(minted["ok"], false, "{forged}: {minted:?}");
-        assert_eq!(minted["error_code"], "invalid_params", "{minted:?}");
-    }
-    let workspace_id = workspace(&mut state, &project_id, "elsewhere");
-    let workspace_owner = state.handle(req(
-        "workspace.ensure_conversation",
-        json!({ "workspace_id": workspace_id }),
-    ))["result"]["run_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let elsewhere = state.handle(req(
-        "agent.add",
-        json!({ "entity_id": workspace_owner, "project_role": "worker" }),
-    ));
-    assert_eq!(elsewhere["error_code"], "invalid_params", "{elsewhere:?}");
+    no_client_mints_a_coordinator(&mut state, &project_id, &owner);
     assert_eq!(coordinators(&state, &owner), vec![pin.clone()]);
     assert_eq!(state.entity_agents(&owner).unwrap().len(), 2);
 
@@ -237,32 +269,16 @@ fn project_coordinator_cannot_be_removed_or_reassigned() {
     assert_eq!(state.ensure_primary_agent(&owner).unwrap(), pin);
     assert_eq!(state.runs[&owner].agents.primary().unwrap().id, pin);
 
-    // Clearing the pin's conversation replaces its history, never its place.
-    let thread_id = state
-        .agent_conversation(&owner, Some(&pin))
-        .unwrap()
-        .id
-        .clone();
-    let reset = state.handle(req(
-        "conversation.reset",
-        json!({
-            "project_id": project_id, "entity_id": owner, "agent_id": pin,
-            "conversation_id": pin, "expected_thread_id": thread_id,
-        }),
-    ));
-    assert_eq!(reset["ok"], true, "{reset:?}");
-    assert_ne!(
-        state.agent_conversation(&owner, Some(&pin)).unwrap().id,
-        thread_id
-    );
-    assert_eq!(state.project_pin(&owner), Some(pin.as_str()));
-
+    a_reset_keeps_the_pin(&mut state, &project_id, &owner, &pin);
     let gone = state.handle(req(
         "agent.remove",
         json!({ "entity_id": owner, "agent_id": worker }),
     ));
     assert_eq!(gone["ok"], true, "{gone:?}");
-    assert_eq!(roles(&state, &owner), vec![(pin.clone(), Some(ProjectRole::Coordinator))]);
+    assert_eq!(
+        roles(&state, &owner),
+        vec![(pin.clone(), Some(ProjectRole::Coordinator))]
+    );
 
     // And all of it was written down: a restart answers the same pin.
     drop(state);
@@ -293,7 +309,10 @@ async fn stale_project_sessions_cannot_act_for_the_pin_or_a_removed_worker() {
     ));
     assert_eq!(removed["ok"], true, "{removed:?}");
     let late = json!({ "task_id": worker, "session_token": "worker-token" });
-    assert_eq!(authenticated_mcp_owner(&late, &state.session_registry), None);
+    assert_eq!(
+        authenticated_mcp_owner(&late, &state.session_registry),
+        None
+    );
 
     state
         .session_registry
@@ -331,7 +350,12 @@ async fn stale_project_sessions_cannot_act_for_the_pin_or_a_removed_worker() {
     assert_eq!(answered.unwrap()["ok"], false);
     let state = shared.lock().unwrap();
     assert_eq!(state.project_pin(&owner), Some(pin.as_str()));
-    let topic = &state.entity_agents(&owner).unwrap().by_id(&pin).unwrap().topic;
+    let topic = &state
+        .entity_agents(&owner)
+        .unwrap()
+        .by_id(&pin)
+        .unwrap()
+        .topic;
     assert_eq!(topic.as_deref(), None, "the stale frame wrote nothing");
 }
 
@@ -366,7 +390,10 @@ async fn project_worker_tools_follow_persisted_purpose() {
     let by_pin = state
         .on_agent_mcp_action(&owner, &pin, source_admin())
         .unwrap_err();
-    assert!(!by_pin.contains("surface"), "the pin holds the tool: {by_pin}");
+    assert!(
+        !by_pin.contains("surface"),
+        "the pin holds the tool: {by_pin}"
+    );
     let staffing = state
         .on_agent_mcp_action(
             &owner,
@@ -384,9 +411,15 @@ async fn project_worker_tools_follow_persisted_purpose() {
 
     // The prompt each is started on.
     let worker_prompt = state.project_surface_prompt(&owner, &worker).unwrap();
-    assert!(worker_prompt.contains("original sources"), "{worker_prompt}");
+    assert!(
+        worker_prompt.contains("original sources"),
+        "{worker_prompt}"
+    );
     assert!(worker_prompt.contains(&repo.display().to_string()));
-    assert!(!worker_prompt.contains("Never change it"), "{worker_prompt}");
+    assert!(
+        !worker_prompt.contains("Never change it"),
+        "{worker_prompt}"
+    );
     let pin_prompt = state.project_surface_prompt(&owner, &pin).unwrap();
     assert!(pin_prompt.contains("Never change it"), "{pin_prompt}");
     assert!(state.claim_agent_name_request(&owner, &worker));
@@ -532,6 +565,9 @@ fn old_clients_see_only_the_pinned_coordinator() {
     }
     let listed = state.handle(req("agent.list", json!({ "entity_id": workspace_owner })));
     assert_eq!(listed["result"]["agents"].as_array().unwrap().len(), 2);
-    assert!(listed["result"].get("pinned_agent_id").is_none(), "{listed:?}");
+    assert!(
+        listed["result"].get("pinned_agent_id").is_none(),
+        "{listed:?}"
+    );
     assert!(listed["result"]["agents"][0].get("project_role").is_none());
 }

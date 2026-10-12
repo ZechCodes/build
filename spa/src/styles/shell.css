@@ -517,7 +517,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project.active > .inbox-project-head { background:var(--accent-soft); }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg,
 .inbox-project-hide svg { width:16px; height:16px; display:block; }
-/* The fold and Recent caret center 12px into the band. */
+/* The fold chevron centers 12px into the band. */
 .inbox-fold { flex:none; padding:3px 4px; }
 /* Nothing to fold: no chevron at all. A dimmed "open" chevron said the block
    was open when it had nothing to be open; the button keeps its column so the
@@ -554,7 +554,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-rows { display:flex; flex-direction:column; gap:4px; padding:4px 0 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
 .inbox-project .inbox-recent { margin:6px 0 0; padding-top:0; }
-.inbox-project .inbox-recent-toggle { padding-left:4px; }
+/* Recent's caret starts in the project name and quiet rows' content column. */
+.inbox-project .inbox-recent-toggle { padding-left:26px; }
 
 /* ---- view column (centre) ---- */
 /* Positioned, because the console's full size is an overlay over this column

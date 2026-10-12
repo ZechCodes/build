@@ -47,8 +47,13 @@ fn captured_accept_and_frame_payloads() {
     transport::verify_session_accept(key, &accept, "vector-session").unwrap();
     assert_eq!(
         serde_json::to_value(
-            transport::build_session_accept(key, "vector-session", "client:fixture", Some(&accept.nonce))
-                .unwrap()
+            transport::build_session_accept(
+                key,
+                "vector-session",
+                "client:fixture",
+                Some(&accept.nonce)
+            )
+            .unwrap()
         )
         .unwrap(),
         v["accept"]
@@ -83,10 +88,13 @@ fn captured_accept_and_frame_payloads() {
             message_id: Some(string(&fixture["fields"], "message_id").into()),
             created_at: Some(string(&fixture["fields"], "created_at").into()),
         };
-        let envelope = transport::encrypt_frame(key, &outer, &fields, Some(string(fixture, "nonce")))
-            .unwrap();
+        let envelope =
+            transport::encrypt_frame(key, &outer, &fields, Some(string(fixture, "nonce"))).unwrap();
         // Compare Rust against Python only where canonical plaintext is identical.
-        assert_eq!(serde_json::to_value(envelope).unwrap(), fixture["envelopes"]["python"]);
+        assert_eq!(
+            serde_json::to_value(envelope).unwrap(),
+            fixture["envelopes"]["python"]
+        );
     }
 }
 

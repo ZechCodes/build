@@ -13,7 +13,7 @@ import { projectAgentEntries } from "../src/core/inboxProjectAgent.js";
 import { watchedWorkspaceEntries } from "../src/core/inbox.js";
 
 const syncDevice = vi.fn(async () => true);
-vi.mock("../src/core/cacheSync.js", () => ({ syncDevice: (deviceId) => syncDevice(deviceId) }));
+vi.mock("../src/core/cacheSync.js", () => ({ syncDevice: (deviceId) => syncDevice(deviceId), routeChanged: () => {} }));
 
 let App;
 let subscribeFeed, refreshFeed, startFeed, stopFeed, joinFeed, dropFeedDevice, dropFeedProject;
@@ -37,6 +37,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  App.viewDispose?.();
+  App.viewDispose = null;
   stopFeed();
   resetDeviceContexts();
   App.devices = [];
@@ -85,6 +87,42 @@ const settle = async () => {
 };
 
 describe("destination roster knowledge on the shared feed", () => {
+  it.each([[false, true], [true, true], [false, false]])(
+    "waits for the board after an empty live workspace reply (other device: %s, matching board: %s)", async (otherDevice, matchingBoard) => {
+      device("dev-1");
+      App.selectedDeviceId = "dev-1";
+      if (otherDevice) device("dev-2");
+      let snapshot;
+      subscribeFeed((next) => { snapshot = next; });
+      await startFeed();
+      if (otherDevice) {
+        await writeDevice("dev-2", { items: [branchRow({ deviceId: "dev-2", branch: "their-main", worktree_id: "wt-1" })] });
+        await vi.waitFor(() => expect(snapshot?.devices["dev-2"].cached).toBe(false));
+      }
+      document.body.innerHTML = '<main id="root"></main>';
+      location.hash = "";
+      const reference = { name: "resolve", kind: "worktree", projectId: "proj-1", id: "wt-1", tab: "changes" };
+      App.route = reference;
+      const { renderResolving } = await import("../src/views/resolving.js");
+      renderResolving();
+      expect(App.route).toBe(reference);
+
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "workspaces" }, []);
+      await vi.waitFor(() => expect(snapshot?.devices["dev-1"].listKnowledge.workspaces.present).toBe(true));
+      expect(snapshot.devices["dev-1"].cached).toBe(false);
+      expect(snapshot.devices["dev-1"].items).toEqual([]);
+      expect(App.route).toBe(reference);
+
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "feed" }, {
+        items: matchingBoard ? [branchRow({ worktree_id: "wt-1", branch: "main" })] : [],
+      });
+      await vi.waitFor(() => expect(App.route).toEqual(matchingBoard ? {
+        name: "branch", deviceId: "dev-1", projectId: "proj-1", branch: "main", tab: "changes",
+      } : { name: "inbox" }));
+      expect(syncDevice).not.toHaveBeenCalled();
+    },
+  );
+
   it("publishes unknown then confirmed empty independently of a board record", async () => {
     const project = { id: "proj-1", deviceId: "dev-1", projectKey: "dev-1/proj-1" };
     await writeCached(DEVICES_ADDRESS, [{ id: "dev-1" }]);

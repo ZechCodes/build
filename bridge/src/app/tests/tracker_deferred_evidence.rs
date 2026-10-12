@@ -187,6 +187,9 @@ impl WaitingDelivery {
 #[test]
 fn app_deferred_dispatch_retry_freezes_mutable_message_and_context() {
     let mut fixture = WaitingDelivery::new();
+    let config = fixture.root.path().join("config.json");
+    fixture.app = fixture.app.with_config(&config).unwrap();
+    fixture.app.persist();
     let closed = filed(
         &mut fixture.app,
         &fixture.project,
@@ -227,7 +230,11 @@ fn app_deferred_dispatch_retry_freezes_mutable_message_and_context() {
     assert_eq!(fixture.load(&frozen.id).admitted, Some(admitted.clone()));
     let root = fixture.root.path().to_path_buf();
     drop(fixture.app);
-    fixture.app = rooted(&root).with_task_store(root.join("store")).unwrap();
+    fixture.app = rooted(&root)
+        .with_config(&config)
+        .unwrap()
+        .with_task_store(root.join("store"))
+        .unwrap();
     fixture.pump();
     let delivered = fixture.load(&frozen.id);
     assert_eq!(delivered.state, "delivered");

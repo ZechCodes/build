@@ -187,11 +187,13 @@ pub(in crate::app) struct SyncSubject {
     enabled: bool,
 }
 
-/// Who ran a sync: the service (the timer or Sync now), or a workspace cut.
+/// Who ran a sync, and whether its inputs belong to today's project or a
+/// workspace's saved manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::app) enum SyncOrigin {
     Service,
     Cut,
+    Retry,
 }
 
 /// One source's sync, to be written under the mutex.
@@ -216,7 +218,7 @@ impl Synced {
             })
         );
         self.subject.enabled
-            && !(self.subject.origin == SyncOrigin::Cut && ran_out)
+            && !(self.subject.origin != SyncOrigin::Service && ran_out)
             && !self.left_the_checkout()
     }
 
@@ -227,8 +229,8 @@ impl Synced {
 
 /// The commit a cut branches `source` from in place of its base branch: the
 /// one its base is moving to, when the sync left the source's checkout to
-/// the service with nothing in the way (#271). `None` cuts from the base as
-/// it stands.
+/// the service with nothing in the way (#271), otherwise the pinned local
+/// base. `None` means no matching pin exists; Git materialization must refuse.
 pub(in crate::app) fn cut_start(synced: &[Synced], source: &WorkspaceSource) -> Option<String> {
     synced.iter().find_map(|synced| {
         let subject = &synced.subject;
@@ -295,11 +297,7 @@ fn sync_for_a_cut(
     deadline: Instant,
     state: Option<&std::sync::Weak<Mutex<AppState>>>,
 ) -> Result<Synced, String> {
-    if let Some(state) = state.and_then(std::sync::Weak::upgrade) {
-        if !subject.is_current(&state.lock().unwrap()) {
-            return Err(super::MOVED_GIT_SOURCE.to_string());
-        }
-    }
+    subject.validate_cut(state)?;
     let mut report = if subject.enabled {
         let fetch = match subject.fetch {
             Fetch::Within(limit) => {
@@ -337,6 +335,22 @@ fn sync_for_a_cut(
 }
 
 impl SyncSubject {
+    fn validate_cut(&self, state: Option<&std::sync::Weak<Mutex<AppState>>>) -> Result<(), String> {
+        // Saved inputs remain valid after project source edits/removal. Their
+        // repository and base are checked while holding the shared Git lock.
+        if self.origin == SyncOrigin::Retry {
+            return Ok(());
+        }
+        let Some(state) = state.and_then(std::sync::Weak::upgrade) else {
+            return Ok(());
+        };
+        if self.is_current(&state.lock().unwrap()) {
+            Ok(())
+        } else {
+            Err(super::MOVED_GIT_SOURCE.to_string())
+        }
+    }
+
     fn is_current(&self, app: &AppState) -> bool {
         app.projects
             .get(&self.project_id)
@@ -548,22 +562,43 @@ impl AppState {
     /// The sources a workspace cut in `project_id` syncs first, each fetching
     /// unless it fetched a moment ago.
     pub(in crate::app) fn cut_sync_subjects(&self, project_id: &str) -> Vec<SyncSubject> {
-        let fresh_since = now_ms() - FRESH_FETCH.as_millis() as i64;
         self.sources_for(project_id)
             .unwrap_or_default()
             .iter()
             .filter(|source| source.is_git)
-            .map(|source| {
-                let fresh = source
-                    .sync_status
-                    .as_ref()
-                    .is_some_and(|status| status.fetched_since(fresh_since));
-                let fetch = if fresh {
-                    Fetch::Skip
-                } else {
-                    Fetch::Within(CUT_FETCH_DEADLINE)
-                };
-                subject(project_id, source, fetch, SyncOrigin::Cut)
+            .map(|source| subject(project_id, source, fetch_for_cut(source), SyncOrigin::Cut))
+            .collect()
+    }
+
+    /// Prepare exactly the unfinished saved inputs. Today's sync policy only
+    /// applies if the saved repository/base still identifies that source;
+    /// detached inputs are pinned locally without syncing a different source.
+    pub(in crate::app) fn retry_sync_subjects(
+        &self,
+        project_id: &str,
+        sources: &[WorkspaceSource],
+    ) -> Vec<SyncSubject> {
+        let current = self.sources_for(project_id).unwrap_or_default();
+        sources
+            .iter()
+            .filter(|saved| saved.is_git)
+            .map(|saved| {
+                let policy = current.iter().find(|source| {
+                    source.id == saved.id
+                        && source.path == saved.path
+                        && source.base_branch == saved.base_branch
+                        && source.is_git
+                });
+                SyncSubject {
+                    project_id: project_id.to_string(),
+                    source_id: saved.id.clone(),
+                    label: saved.name.clone(),
+                    path: saved.path.clone(),
+                    base_branch: saved.base_branch.clone(),
+                    fetch: policy.map_or(Fetch::Skip, fetch_for_cut),
+                    origin: SyncOrigin::Retry,
+                    enabled: policy.is_some_and(super::ProjectSource::syncs_base),
+                }
             })
             .collect()
     }
@@ -574,10 +609,12 @@ impl AppState {
     /// service.
     pub(in crate::app) fn settle_source_syncs(&mut self, synced: Vec<Synced>, now_ms: i64) {
         for left in synced.iter().filter(|synced| synced.left_the_checkout()) {
-            self.request_source_sync(
-                left.subject.project_id.clone(),
-                left.subject.source_id.clone(),
-            );
+            if left.subject.is_current(self) {
+                self.request_source_sync(
+                    left.subject.project_id.clone(),
+                    left.subject.source_id.clone(),
+                );
+            }
         }
         let mut wrote = false;
         for Synced {
@@ -714,6 +751,19 @@ fn subject(
         fetch,
         origin,
         enabled: origin == SyncOrigin::Service || source.syncs_base(),
+    }
+}
+
+fn fetch_for_cut(source: &super::ProjectSource) -> Fetch {
+    let fresh_since = now_ms() - FRESH_FETCH.as_millis() as i64;
+    if source
+        .sync_status
+        .as_ref()
+        .is_some_and(|status| status.fetched_since(fresh_since))
+    {
+        Fetch::Skip
+    } else {
+        Fetch::Within(CUT_FETCH_DEADLINE)
     }
 }
 

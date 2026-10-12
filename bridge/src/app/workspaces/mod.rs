@@ -151,6 +151,14 @@ pub(super) fn materialize_source(
     start: Option<&str>,
 ) -> Result<(Option<String>, Isolation), String> {
     if source.is_git {
+        let start = start.ok_or_else(|| {
+            format!(
+                "cannot pin workspace base: no prepared OID for Git source {}",
+                source.id
+            )
+        })?;
+        git2::Oid::from_str(start)
+            .map_err(|error| format!("cannot pin workspace base: {error}"))?;
         let manager =
             WorktreeManager::new(&source.path, destination.parent().unwrap_or(destination))
                 .with_rift_registry_root(rift_root);
@@ -163,7 +171,7 @@ pub(super) fn materialize_source(
             .create_workspace_checkout_from(
                 workspace_name,
                 &source.base_branch,
-                start,
+                Some(start),
                 destination,
                 effective,
             )
@@ -806,6 +814,7 @@ impl AppState {
             return Err("workspace.retry: adopted workspaces require no provisioning".to_string());
         }
         let sources = WorkspaceRegistry::retry_sources(&workspace);
+        let base_syncs = self.retry_sync_subjects(&workspace.project_id, &sources);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
@@ -821,7 +830,7 @@ impl AppState {
                 unpublished: false,
                 sources,
                 isolation: workspace.isolation,
-                base_syncs: self.cut_sync_subjects(&workspace.project_id),
+                base_syncs,
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
                 #[cfg(test)]

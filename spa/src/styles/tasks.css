@@ -466,6 +466,23 @@
    neighbours'. */
 .task-comment-mentioned .task-comment-card { border-left:2px solid var(--accent); padding-left:11px; }
 .task-entry-head { display:flex; align-items:baseline; gap:8px; margin-bottom:4px; font-size:12px; color:var(--ink2); }
+/* The card bounds its floating identity. Sticky offsets start inside the
+   surface's top padding, as for the page head above; its measured height also
+   follows wrapped titles and labels. Bleed sideways without moving the text. */
+.task-comment-card > .task-entry-head {
+  position:sticky; top:calc(var(--task-page-head-height, 0px) - var(--pane-top)); z-index:3;
+  margin-left:-12px; margin-right:-12px; padding-left:12px; padding-right:12px;
+  background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
+  -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur));
+}
+.task-comment-reply {
+  flex:none; align-self:center; margin-left:auto; width:28px; height:28px; padding:0;
+  display:flex; align-items:center; justify-content:center;
+  border:0; border-radius:5px; background:none; color:var(--ink2); cursor:pointer;
+}
+.task-comment-reply svg { display:block; width:16px; height:16px; }
+.task-comment-reply:hover { background:var(--panel2); color:var(--ink); }
+.task-comment-reply:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .task-entry-head > strong { min-width:0; }
 .task-entry-head .task-actor-link { display:block; min-width:0; }
 .task-actor-identity { display:inline-flex; align-items:baseline; gap:5px; max-width:100%; min-width:0; vertical-align:bottom; }

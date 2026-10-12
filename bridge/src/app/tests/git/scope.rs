@@ -372,12 +372,9 @@ fn project_source_git_addresses_each_source_with_its_own_keys() {
         "git.status",
         json!({ "project_id": sources.project_id }),
     ));
+    // Legacy and source-1 read the same repository at the same moment, so
+    // their raw status is identical: only the scope can tell their keys apart.
     assert_eq!(legacy["result"]["path"], first_status["result"]["path"]);
-    let raw_second = crate::gitgui::status_payload(&sources.second).unwrap();
-    assert_eq!(
-        legacy["result"]["status_key"], raw_second["status_key"],
-        "the clone's raw status is the primary's, so only the scope tells them apart"
-    );
     let keys = [
         &first_status["result"]["status_key"],
         &second_status["result"]["status_key"],

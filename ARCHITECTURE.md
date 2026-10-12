@@ -114,13 +114,21 @@ belongs in the SPA. Logic that must run while no client is connected (agents,
 watchers, presence, updates) belongs in the bridge as services isolated from
 the RPC and event layer. New work should move toward that.
 
-**Today the code does not fully follow the rule.** Some verbs still carry domain
-logic in the request path. For example, `tasks.assign`
-(`bridge/src/api/v1/tasks.rs`) calls `AppState::tasks_assign`, and
-`bridge/src/app/tracker/dispatch.rs` then applies the assignment policy: it
-watches a task assigned to the user, tracks the receiving agent, and links
-the dispatch result, all inside the call. Read the handler before assuming a
-verb is a thin read or write.
+**Task assignment** records durable authority in schema-17 delivery intents
+before provisioning or admitting a message. The saved target, actor, note,
+operation identity and generation survive restart. Waiting assignments create
+no worker or workspace. `app/tracker/delivery_service.rs` runs from shared
+startup without a client, claims bounded work, runs checkout work off the app
+lock, and revalidates scope and generation before admission. Explicit immediate
+assignments use the same delivery steps. Frozen message parameters and origin
+land before receipt admission, whose transaction checks current graph and
+authority. Recovery settles an existing receipt without rebuilding its message.
+The durable notice outbox tells the coordinator about unassigned releases and
+holders about reblocking. Assignment and coordinator briefs list every retained
+prerequisite closed without Done and direct assessment and user escalation.
+`completion_authority.rs` binds Complete to the assignment operation actually
+consumed through Sent/Seen; a queued replacement cannot authorize an older
+turn's report. The RPC and push layer remains separate from this service.
 
 **Frames.** A request is `{id, method, params}`; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
@@ -1465,8 +1473,9 @@ administration, reclaim and `compact_agent` stay the pin's. `assign_task` and
 on the task's project's owner, handed the task, linking no workspace
 (`bridge/src/app/tracker/dispatch.rs`). `tasks.assign` takes the client's
 `operation_id`; the delivery is queued under it, and asking again with the
-same id answers the `dispatched` event the task already records instead of
-delivering again or making a second worker (`bridge/src/app/tracker/handoff.rs`).
+same id validates the saved assignment target, actor, sender and note and
+answers its durable delivery state instead of delivering again or making a
+second worker (`bridge/src/app/tracker/delivery_acceptance.rs`).
 Removing a worker retires its session, token and queued turns alone, and
 resetting one replaces its own history and session: siblings and the pin keep
 theirs though they share its folder, and the task it held keeps its record. A live worker — a session running, being

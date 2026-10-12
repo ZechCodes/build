@@ -193,7 +193,10 @@ fn locked_facts(
 
 /// Answer a flush's lookups. The mutex is held for the thread tails and the
 /// roots only; every status walk runs with it released.
-fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFacts> {
+pub(in crate::app) fn entity_facts(
+    handle: &FactsHandle,
+    requests: &[FactsRequest],
+) -> Vec<EntityFacts> {
     let Some(state) = handle.get().and_then(Weak::upgrade) else {
         return Vec::new();
     };
@@ -239,6 +242,7 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
             fact.root_listing = super::fs::directory_listing(&subject.root, "").ok();
         }
     }
+    withdraw_gone_sources(&state, &mut facts);
     // A run whose git moved has a row whose stat moved with it, and a
     // workspace conversation's workspace has a work summary that moved too.
     // Both walks ran with the mutex released; what they found is stored here
@@ -278,6 +282,30 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
         }
     }
     facts
+}
+
+/// Empty and mark withdrawn the facts of every project source that is no
+/// longer one — moved or removed in settings — now that the off-lock reads
+/// are done, so nothing they read of the old folder goes out under it.
+fn withdraw_gone_sources(state: &Mutex<AppState>, facts: &mut [EntityFacts]) {
+    let asks_sources = facts
+        .iter()
+        .any(|fact| crate::changes::is_project_source_entity(&fact.entity_id));
+    if !asks_sources {
+        return;
+    }
+    let live = state.lock().unwrap().project_source_entities();
+    for fact in facts
+        .iter_mut()
+        .filter(|fact| crate::changes::is_project_source_entity(&fact.entity_id))
+        .filter(|fact| !live.contains(&fact.entity_id))
+    {
+        *fact = EntityFacts {
+            entity_id: std::mem::take(&mut fact.entity_id),
+            withdrawn: true,
+            ..EntityFacts::default()
+        };
+    }
 }
 
 /// A run's diffstat, walked off the app lock; `None` for a subject that is
@@ -351,6 +379,14 @@ impl AppState {
                 );
                 (entity_id, CheckoutSubject::of_project_source(resolved))
             })
+            .collect()
+    }
+
+    /// The entity id of every original project source where it stands now.
+    fn project_source_entities(&self) -> std::collections::BTreeSet<String> {
+        self.project_source_subjects()
+            .into_iter()
+            .map(|(entity_id, _)| entity_id)
             .collect()
     }
 

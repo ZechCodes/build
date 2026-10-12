@@ -726,6 +726,10 @@ pub struct EntityFacts {
     /// Deeper directories are re-listed by the client: the bridge cannot know
     /// which ones a reader has walked into.
     pub root_listing: Option<Value>,
+    /// The entity stopped being one while its facts were read: a project
+    /// source moved or removed in settings. Its item is dropped from the
+    /// frame instead of going out under a folder the source no longer is.
+    pub withdrawn: bool,
 }
 
 /// How a flush answers a batch of [`FactsRequest`]s. Runs on the flusher's
@@ -838,6 +842,9 @@ struct Subscription {
     /// `None` until the first board item goes out: a subscription with no
     /// before has nothing to say about what left.
     covered_last: Option<BTreeSet<String>>,
+    /// Bumped whenever the scope changes. A frame remembers the epoch it was
+    /// taken in and is dropped at send time if the scope has moved since.
+    scope_epoch: u64,
 }
 
 impl Subscription {
@@ -854,20 +861,49 @@ impl Subscription {
             emitted_tips: HashMap::new(),
             pending_lists: BoardLists::default(),
             covered_last: None,
+            scope_epoch: 0,
         }
     }
 
-    /// A source subscription re-pointed at the folder its source moved to
-    /// forgets what it held for the old folder, so a late item can never
-    /// restore the old scope under this subscription's id.
+    /// A subscription given a new scope forgets what it held for the old
+    /// one: a source re-pointed at the folder its source moved to, or moved
+    /// to `all`, must never send an old folder's item under its id. A frame
+    /// already taken is fenced by `scope_epoch` instead.
     fn rescope(&mut self, scope: &Scope) {
-        if !matches!(scope, Scope::ProjectSource(_)) || *scope == self.spec.scope {
+        if *scope == self.spec.scope {
             return;
         }
+        self.scope_epoch += 1;
         self.pending
             .retain(|id, _| id == BOARD_ITEM_ID || scope.covers(id));
         if self.pending.is_empty() {
             self.first_pending_at = None;
+        }
+    }
+
+    /// Take back a frame fenced by a re-scope: what the new scope still
+    /// covers is noted again, and the board lists it was to carry stay owed.
+    fn requeue(&mut self, frame: &DueFrame, now: Instant) {
+        self.pending_lists.merge(frame.lists);
+        let covered = frame
+            .items
+            .iter()
+            .filter(|(id, _)| *id == BOARD_ITEM_ID || self.spec.scope.covers(id))
+            .collect::<Vec<_>>();
+        for (id, item) in covered {
+            for kind in item.kinds.iter() {
+                let names = match kind {
+                    Kind::Files => &item.files,
+                    Kind::Tasks => &item.tasks,
+                    _ => &NameSet::default(),
+                };
+                let names = names.names.iter().cloned().collect::<Vec<_>>();
+                self.note(id, kind, &names, now);
+            }
+            if let Some(held) = self.pending.get_mut(id) {
+                held.files.truncated |= item.files.truncated;
+                held.tasks.truncated |= item.tasks.truncated;
+            }
         }
     }
 
@@ -1128,6 +1164,9 @@ struct DueFrame {
     /// The project source this subscription names, which its source's item
     /// carries back as `project_source`.
     source: Option<ProjectSourceScope>,
+    /// The subscription's scope epoch when this frame was taken: a re-scope
+    /// while the frame is in flight keeps it from going out.
+    scope_epoch: u64,
 }
 
 impl DueFrame {
@@ -1138,10 +1177,13 @@ impl DueFrame {
             .map_or(&[][..], Vec::as_slice)
     }
 
-    fn payload(&self, facts: &BTreeMap<&str, &EntityFacts>, board_revision: u64) -> Value {
+    /// The frame's wire payload, less every item the facts source withdrew;
+    /// `None` when none is left to send.
+    fn payload(&self, facts: &BTreeMap<&str, &EntityFacts>, board_revision: u64) -> Option<Value> {
         let items: Vec<Value> = self
             .items
             .iter()
+            .filter(|(id, _)| !facts.get(id.as_str()).is_some_and(|fact| fact.withdrawn))
             .map(|(id, item)| {
                 item_payload(
                     id,
@@ -1152,10 +1194,12 @@ impl DueFrame {
                 )
             })
             .collect();
-        json!({
-            "type": CHANGES_EVENT,
-            "subscription_id": self.subscription_id,
-            "items": items,
+        (!items.is_empty()).then(|| {
+            json!({
+                "type": CHANGES_EVENT,
+                "subscription_id": self.subscription_id,
+                "items": items,
+            })
         })
     }
 }
@@ -1360,6 +1404,15 @@ fn git_payload(facts: Option<&EntityFacts>) -> Value {
         git.insert("diff_bytes".into(), json!(bytes));
     }
     Value::Object(git)
+}
+
+/// What became of one frame at send time.
+enum Sent {
+    Delivered,
+    /// Its subscription was re-scoped or dropped after the frame was taken.
+    Stale,
+    /// The session's carrier is gone.
+    Gone,
 }
 
 /// Everything one flush turn will send, taken under the locks and sent with
@@ -1769,6 +1822,7 @@ impl ChangeBus {
                     Scope::ProjectSource(source) => Some(source.clone()),
                     _ => None,
                 },
+                scope_epoch: sub.scope_epoch,
             });
         }
         drop(subscriptions);
@@ -1791,22 +1845,56 @@ impl ChangeBus {
         let mut dead: Vec<String> = Vec::new();
         let mut frames = 0;
         for frame in &due.frames {
-            if frame.session.push(frame.payload(&by_entity, revision)) {
-                frames += 1;
-                #[cfg(test)]
-                if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
-                    let _ = observe.send(std::thread::current().name().map(str::to_owned));
+            let Some(payload) = frame.payload(&by_entity, revision) else {
+                continue;
+            };
+            let sent = frame
+                .session
+                .seal(payload)
+                .map(|sealed| self.send_if_current(frame, sealed));
+            match sent {
+                Some(Sent::Delivered) => {
+                    frames += 1;
+                    #[cfg(test)]
+                    if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
+                        let _ = observe.send(std::thread::current().name().map(str::to_owned));
+                    }
+                    self.stamp_thread_tips(frame, &by_entity);
+                    self.rearm_unanswered_lists(frame, &by_entity);
                 }
-                self.stamp_thread_tips(frame, &by_entity);
-                self.rearm_unanswered_lists(frame, &by_entity);
-            } else {
-                dead.push(frame.session.session_id().to_string());
+                Some(Sent::Stale) => {}
+                Some(Sent::Gone) | None => dead.push(frame.session.session_id().to_string()),
             }
         }
         for session_id in dead {
             self.unsubscribe(&session_id);
         }
         frames
+    }
+
+    /// Send a sealed frame unless its subscription was re-scoped or dropped
+    /// since the frame was taken. The check and the send share the
+    /// subscriptions lock that [`ChangeBus::subscribe`] takes, so once a
+    /// re-scope returns no frame of the old scope can follow it.
+    ///
+    /// A stale frame's items the new scope still covers, and its board
+    /// lists, go back on the subscription for its next frame.
+    fn send_if_current(&self, frame: &DueFrame, sealed: crate::carrier::OutboundEnvelope) -> Sent {
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let Some(sub) = subscriptions
+            .iter_mut()
+            .find(|sub| sub.is(frame.session.session_id(), &frame.subscription_id))
+        else {
+            return Sent::Stale;
+        };
+        if sub.scope_epoch != frame.scope_epoch {
+            sub.requeue(frame, Instant::now());
+            return Sent::Stale;
+        }
+        match frame.session.send_sealed(sealed) {
+            true => Sent::Delivered,
+            false => Sent::Gone,
+        }
     }
 
     /// Put back what this frame was owed and could not carry.
@@ -2032,6 +2120,92 @@ fn fact_requests(frames: &[DueFrame]) -> Vec<FactsRequest> {
 #[cfg(test)]
 mod subscriptions {
     use super::*;
+
+    #[test]
+    fn review_550_source_to_all_drops_source_items() {
+        let bus = ChangeBus::new(DEFAULT_COALESCE_WINDOW);
+        let (sender, mut rx, key) = SessionSender::observable("review-550-all");
+        let source = ProjectSourceScope::new("proj-1".into(), "source-2".into(), "/old".into());
+        let held = SubscriptionSpec {
+            kinds: [Kind::Files].into_iter().collect(),
+            ..spec(
+                "s-source",
+                Scope::ProjectSource(source.clone()),
+                Mode::Off,
+                Priority::Foreground,
+            )
+        };
+        bus.subscribe(&sender, held.clone());
+        bus.note_files(source.entity_id(), &["old.txt".to_string()]);
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                scope: Scope::All,
+                mode: Mode::Realtime,
+                ..held
+            },
+        );
+        bus.flush();
+        let received = frames(drained(&mut rx, &key));
+        assert!(
+            received.is_empty(),
+            "all scope received project source items: {received:?}"
+        );
+    }
+
+    #[test]
+    fn review_550_inflight_source_repoint_drops_old_frame() {
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let released = Arc::new(std::sync::Barrier::new(2));
+        let lookup_entered = Arc::clone(&entered);
+        let lookup_released = Arc::clone(&released);
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(move |requests| {
+                let facts = vec![EntityFacts {
+                    entity_id: requests[0].entity_id.clone(),
+                    root_listing: Some(json!({"entries": [{"name": "old.txt"}]})),
+                    ..EntityFacts::default()
+                }];
+                lookup_entered.wait();
+                lookup_released.wait();
+                facts
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("review-550");
+        let at =
+            |path: &str| ProjectSourceScope::new("proj-1".into(), "source-2".into(), path.into());
+        let old = at("/old");
+        let held = SubscriptionSpec {
+            kinds: [Kind::Files].into_iter().collect(),
+            ..spec(
+                "s-source",
+                Scope::ProjectSource(old.clone()),
+                Mode::Realtime,
+                Priority::Foreground,
+            )
+        };
+        bus.subscribe(&sender, held.clone());
+        bus.note_files(old.entity_id(), &["old.txt".to_string()]);
+        let flushing = Arc::clone(&bus);
+        let worker = std::thread::spawn(move || flushing.flush());
+        entered.wait();
+        bus.subscribe(
+            &sender,
+            SubscriptionSpec {
+                scope: Scope::ProjectSource(at("/new")),
+                ..held
+            },
+        );
+        released.wait();
+        worker.join().unwrap();
+        let received = frames(drained(&mut rx, &key));
+        assert!(
+            received.is_empty(),
+            "old frame arrived after repoint: {received:?}"
+        );
+    }
 
     /// Move a paused clock forward by `step` and let the flusher act on it.
     ///
@@ -3810,6 +3984,54 @@ mod subscriptions {
                         "source_path": "/home/me/new",
                     },
                     "files": { "paths": ["new.txt"], "truncated": false },
+                }],
+            })]
+        );
+    }
+
+    /// A source the facts source withdrew — moved or removed while its facts
+    /// were read — is dropped from the frame, and a frame left with nothing
+    /// is not sent at all (#550).
+    #[test]
+    fn a_withdrawn_source_item_is_not_sent() {
+        let source = ProjectSourceScope::new("proj-1".into(), "source-2".into(), "/old".into());
+        let withdrawn = source.entity_id().to_string();
+        let bus = ChangeBus::with_sources(
+            DEFAULT_COALESCE_WINDOW,
+            Arc::new(Vec::new),
+            Arc::new(move |requests: &[FactsRequest]| {
+                requests
+                    .iter()
+                    .map(|request| EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        withdrawn: request.entity_id == withdrawn,
+                        ..EntityFacts::default()
+                    })
+                    .collect()
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("s-1");
+        let files = |id: &str, scope: Scope| SubscriptionSpec {
+            kinds: [Kind::Files].into_iter().collect(),
+            ..spec(id, scope, Mode::Realtime, Priority::Foreground)
+        };
+        bus.subscribe(
+            &sender,
+            files("s-source", Scope::ProjectSource(source.clone())),
+        );
+        bus.subscribe(&sender, files("s-all", Scope::All));
+        bus.note_files(source.entity_id(), &["old.txt".to_string()]);
+        bus.note_files("run-7", &["lib.rs".to_string()]);
+
+        assert_eq!(bus.flush(), 1, "only the frame with a live item is sent");
+        assert_eq!(
+            frames(drained(&mut rx, &key)),
+            vec![json!({
+                "type": "changes",
+                "subscription_id": "s-all",
+                "items": [{
+                    "entity_id": "run-7",
+                    "files": { "paths": ["lib.rs"], "truncated": false },
                 }],
             })]
         );

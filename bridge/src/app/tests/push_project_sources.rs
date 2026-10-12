@@ -346,3 +346,71 @@ async fn a_removed_source_stops_being_watched() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// Facts read for a source that moved or was removed by the time its facts
+/// were collected come back withdrawn and empty, so nothing read from the old
+/// folder goes out under its descriptor. The check runs after the off-lock
+/// reads, against the sources as they stand then (#550).
+#[tokio::test]
+async fn facts_for_a_moved_or_removed_source_are_withdrawn() {
+    let (dir, repo) = init_repo();
+    let (state, handler, _sender, _rx, _key) = greeted_push_session(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+    let entity_of = |source_id: &str| {
+        let scope = source_scope(&state, &project_id, source_id);
+        crate::changes::project_source_entity_id(
+            &project_id,
+            source_id,
+            scope["source_path"].as_str().unwrap(),
+        )
+    };
+    let entities = [entity_of("source-2"), entity_of("source-3")];
+    let handle: crate::app::facts::FactsHandle = Arc::new(std::sync::OnceLock::new());
+    assert!(handle.set(Arc::downgrade(&state)).is_ok());
+    let ask = || {
+        entities
+            .iter()
+            .map(|entity_id| crate::changes::FactsRequest {
+                entity_id: entity_id.clone(),
+                git: true,
+                files: true,
+                terminals: true,
+                ..crate::changes::FactsRequest::default()
+            })
+            .collect::<Vec<_>>()
+    };
+    let live = crate::app::facts::entity_facts(&handle, &ask());
+    assert!(live.iter().all(|fact| !fact.withdrawn), "{live:?}");
+    assert!(live[0].status_key.is_some() && live[1].root_listing.is_some());
+
+    let moved = dir.path().join("moved");
+    git_in(
+        dir.path(),
+        &["clone", "-q", sourced.second.to_str().unwrap(), "moved"],
+    );
+    for (method, params) in [
+        (
+            "project.update_source",
+            json!({ "project_id": project_id, "source_id": "source-2", "path": moved }),
+        ),
+        (
+            "project.remove_source",
+            json!({ "project_id": project_id, "source_id": "source-3" }),
+        ),
+    ] {
+        let changed = call(&handler, method, params);
+        assert_eq!(changed["ok"], true, "{method}: {changed:?}");
+    }
+    let gone = crate::app::facts::entity_facts(&handle, &ask());
+    for (entity_id, fact) in entities.iter().zip(&gone) {
+        assert_eq!(
+            fact,
+            &crate::changes::EntityFacts {
+                entity_id: entity_id.clone(),
+                withdrawn: true,
+                ..crate::changes::EntityFacts::default()
+            },
+        );
+    }
+}

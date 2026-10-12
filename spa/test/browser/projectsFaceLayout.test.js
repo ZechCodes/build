@@ -1,24 +1,49 @@
 import { expect, it } from "vitest";
 import { withLayoutPage } from "./layoutHarness.mjs";
-import { inspectProjectsFace, inspectActiveBlock, mountProjectsFace, openRecent } from "./projectsFaceSeed.mjs";
+import { inspectProjectsFace, inspectActiveBlock, mountProjectsFace, openRecent, settleTheme, hoverRecentRow } from "./projectsFaceSeed.mjs";
 
 // The project name's left edge, as #514 measured it: every child of a block
 // stands on it (#516).
 const CONTENT_X = { desktop: 51, phone: 64 };
 
+
+/** Decode real screenshot pixels at the fold and project-name columns. */
+async function blockColumnPixels(page) {
+  const geometry = await page.locator(".inbox-project.active").evaluate((block) => {
+    const head = block.querySelector(".inbox-project-head").getBoundingClientRect();
+    const last = [...block.querySelectorAll(".inbox-entry")].at(-1).getBoundingClientRect();
+    return { clip: { x: Math.floor(head.x), y: Math.floor(head.y), width: Math.ceil(head.width),
+      height: Math.ceil(last.bottom) - Math.floor(head.y) },
+      columns: [block.querySelector(".inbox-fold svg"), block.querySelector(".inbox-project-name")]
+        .map((element) => Math.round(element.getBoundingClientRect().x) - Math.floor(head.x)) };
+  });
+  const png = await page.screenshot({ clip: geometry.clip, type: "png" });
+  return page.evaluate(async ({ base64, columns }) => {
+    const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const context = canvas.getContext("2d");
+    context.drawImage(bitmap, 0, 0);
+    const pixels = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
+    return columns.map((x) => Array.from({ length: bitmap.height }, (_, y) => {
+      const offset = (y * bitmap.width + x) * 4;
+      return `rgb(${pixels[offset]}, ${pixels[offset + 1]}, ${pixels[offset + 2]})`;
+    }));
+  }, { base64: png.toString("base64"), columns: geometry.columns });
+}
+
 for (const { label, width, height, hasTouch } of [
   { label: "desktop", width: 1280, height: 800, hasTouch: false },
   { label: "phone", width: 390, height: 844, hasTouch: true },
 ]) {
-  it(`lists quiet projects alphabetically on transparent blocks on ${label}`, async () => {
+  it(`lists quiet projects alphabetically with only the active block filled on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountProjectsFace(page, basePath);
       for (const theme of ["light", "dark"]) {
-        await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+        await settleTheme(page, theme);
         const blocks = await inspectProjectsFace(page);
         expect(blocks.some((block) => block.active)).toBe(true);
         for (const block of blocks) {
-          expect(block.background).toBe("rgba(0, 0, 0, 0)");
+          expect(block.background).toBe(block.active ? block.accentSoft : "rgba(0, 0, 0, 0)");
           expect(block.border).toBe("0px");
           expect(block.shadow).toBe("none");
         }
@@ -52,7 +77,7 @@ for (const { label, width, height, hasTouch } of [
       expect(await toggles.count()).toBe(2);
       for (const expanded of [false, true]) {
         for (const theme of ["light", "dark"]) {
-          await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+          await settleTheme(page, theme);
           for (const toggle of await toggles.all()) {
             const block = toggle.locator("..").locator("..");
             const caret = await toggle.locator(".inbox-recent-caret").boundingBox();
@@ -118,7 +143,7 @@ for (const { label, width, height, hasTouch } of [
     }, { width, height, hasTouch });
   }, 60_000);
 
-  it(`fills the active block's Recent heading like its head on ${label} (#516)`, async () => {
+  it(`lets the active block own its head, Recent and resting rows on ${label} (#516)`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await page.emulateMedia({ reducedMotion: "reduce" });
       await mountProjectsFace(page, basePath);
@@ -129,18 +154,47 @@ for (const { label, width, height, hasTouch } of [
           for (const animation of document.getAnimations()) if (animation instanceof CSSTransition) animation.finish();
         }, theme);
         const block = await inspectActiveBlock(page);
-        expect(block.headFill, theme).toBe(block.accentSoft);
-        expect(block.toggleFill, theme).toBe(block.accentSoft);
+        expect(block.background, theme).toBe(block.accentSoft);
+        expect(block.headFill, theme).toBe("rgba(0, 0, 0, 0)");
+        expect(block.toggleFill, theme).toBe("rgba(0, 0, 0, 0)");
         expect(block.toggle.x, theme).toBe(block.head.x);
         expect(block.toggle.right, theme).toBe(block.head.right);
-        // The rows keep their own fills: the standing row's accent and hover read as before.
-        for (const row of block.rows) expect(row.fill, `${theme} ${row.key}`).toBe(block.panel);
+        // Resting rows inherit the block fill for their masks and paint no fill themselves.
+        for (const row of block.rows) {
+          expect(row.inheritedFill, `${theme} ${row.key}`).toBe(block.accentSoft);
+          expect(row.actionsFill, `${theme} ${row.key}`).toBe(block.accentSoft);
+          expect(row.fill, `${theme} ${row.key}`).toBe("rgba(0, 0, 0, 0)");
+        }
         const inactive = await page.locator('[data-recent-toggle="projects-review/alpha"]')
           .evaluate((toggle) => getComputedStyle(toggle).backgroundColor);
         expect(inactive, theme).toBe("rgba(0, 0, 0, 0)");
       }
     }, { width, height, hasTouch });
   }, 60_000);
+
+  for (const theme of ["light", "dark"]) {
+    for (const emptyLive of [false, true]) {
+      it(`has no rail or panel seam through the active block on ${label} ${theme}, empty live=${emptyLive} (#540)`, async () => {
+        await withLayoutPage(async ({ page, basePath }) => {
+          await page.emulateMedia({ reducedMotion: "reduce" });
+          await mountProjectsFace(page, basePath, { standing: true, emptyLive });
+          await openRecent(page, "projects-review/build");
+          await settleTheme(page, theme);
+          await hoverRecentRow(page);
+          expect(await page.locator(".inbox-project.active .inbox-recent .inbox-entry.active").count()).toBe(1);
+          const block = await inspectActiveBlock(page);
+          const columns = await blockColumnPixels(page);
+          for (const [column, pixels] of columns.entries()) {
+            expect(pixels.filter((pixel) => pixel === block.panel), `column ${column}`).toEqual([]);
+          }
+          if (emptyLive) {
+            const rows = await page.locator(".inbox-project.active .inbox-project-rows").boundingBox();
+            expect(rows.height).toBe(0);
+          }
+        }, { width, height, hasTouch });
+      }, 60_000);
+    }
+  }
 
   it(`keeps the full-width Recent heading's focus ring inside the rail on ${label} (#516)`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {

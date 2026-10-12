@@ -54,6 +54,8 @@ struct AddWorkspaceDirectory {
     directory_id: String,
     seed: DirectorySeed,
     isolation: Isolation,
+    captured_source: Option<crate::app::projects::ResolvedProjectSource>,
+    source_state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
 }
 
 impl DeferredGitWork for AddWorkspaceDirectory {
@@ -84,16 +86,47 @@ impl DeferredGitWork for AddWorkspaceDirectory {
 }
 
 impl AddWorkspaceDirectory {
+    /// An added local directory is another cut. Resolve its base OID once,
+    /// while source Git and settings updates cannot change the captured root.
+    fn pin_local_base(&self, source: &WorkspaceSource) -> Result<Option<String>, String> {
+        if !source.is_git {
+            return Ok(None);
+        }
+        let (_held, _) = crate::source_sync::SyncLock::acquire(
+            &source.path,
+            crate::source_sync::CUT_FETCH_DEADLINE,
+        )
+        .ok_or_else(|| {
+            "Another source operation is still running; try adding the directory again.".to_string()
+        })?;
+        if let (Some(captured), Some(state)) = (
+            &self.captured_source,
+            self.source_state
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade),
+        ) {
+            state.lock().unwrap().validate_source_location(captured)?;
+        }
+        git2::Repository::open(&source.path)
+            .and_then(|repo| {
+                repo.revparse_single(&source.base_branch)?
+                    .peel_to_commit()
+                    .map(|commit| Some(commit.id().to_string()))
+            })
+            .map_err(|error| format!("cannot pin workspace base: {error}"))
+    }
+
     fn make(&self, directory: &WorkspaceDirectory) -> Result<MaterializedDirectory, String> {
         match &self.seed {
             DirectorySeed::Local(source) => {
+                let start = self.pin_local_base(source)?;
                 let (branch, isolation) = materialize_source(
                     source,
                     &directory.path,
                     &self.workspace_name,
                     self.isolation,
                     &self.rift_root,
-                    None,
+                    start.as_deref(),
                 )?;
                 Ok(MaterializedDirectory {
                     branch,
@@ -232,6 +265,26 @@ impl AppState {
     pub(crate) fn workspace_add_directory(&mut self, params: &Value) -> Result<Value, String> {
         let workspace = self.workspace_to_change(params)?;
         let seed = self.directory_seed(&workspace, params)?;
+        let captured_source = match &seed {
+            DirectorySeed::Local(source)
+                if self
+                    .projects
+                    .get(&workspace.project_id)
+                    .is_some_and(|project| {
+                        project.sources.iter().any(|registered| {
+                            registered.id == source.id && registered.path == source.path
+                        })
+                    }) =>
+            {
+                Some(self.resolve_project_source(
+                    &workspace.project_id,
+                    &source.id,
+                    None,
+                    crate::app::projects::MOVED_GIT_SOURCE,
+                )?)
+            }
+            _ => None,
+        };
         let directory = self
             .workspaces
             .begin_directory(&workspace.id, seed.source())?;
@@ -249,6 +302,8 @@ impl AppState {
                 directory_id: directory.id,
                 isolation: workspace.isolation,
                 seed,
+                captured_source,
+                source_state: self.source_validation_handle(),
             }),
             params: params.clone(),
             invalidates: true,

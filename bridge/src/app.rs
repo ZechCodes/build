@@ -364,6 +364,13 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    /// Test-only pause after workspace OID preparation, before materialization.
+    #[cfg(test)]
+    off_lock_workspace_prepared_gate: Option<OffLockGate>,
+    /// Test-only synchronous drains own AppState directly, even when the
+    /// test holds it through an Arc. Their source preflights cannot relock it.
+    #[cfg(test)]
+    inline_deferred: bool,
     /// Project-list-only gate, kept separate so a lifecycle test's global git
     /// gate does not also stop the unrelated project.list probe it uses to
     /// prove the mutex is free.
@@ -472,7 +479,8 @@ pub struct AppState {
     reclaim_nudge: std::sync::Arc<tokio::sync::Notify>,
     /// Sources somebody asked to sync now (#267), by project and source id,
     /// until the source sync service takes them.
-    source_sync_requested: std::collections::HashSet<(String, String)>,
+    source_sync_requested:
+        std::collections::HashMap<(String, String), self::projects::base_sync::SyncSubject>,
     /// Wakes the source sync service for `source_sync_requested`.
     source_sync_nudge: std::sync::Arc<tokio::sync::Notify>,
     source_sync_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -670,6 +678,10 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            off_lock_workspace_prepared_gate: None,
+            #[cfg(test)]
+            inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
             deferred_work: None,

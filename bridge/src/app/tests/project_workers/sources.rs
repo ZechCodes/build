@@ -4,6 +4,9 @@
 use super::super::project_agent_base::record_spawns;
 use super::super::project_coordinator::refused_with;
 use super::*;
+use crate::app::tests::workflow::lifecycle_offlock::frame_on_a_thread;
+use crate::source_sync::SyncLock;
+use std::time::Duration;
 
 /// A project over two git sources, `code` (its home) and `docs`, with its
 /// owner and one worker.
@@ -398,4 +401,154 @@ fn overlapping_source_moves_hold_workers_until_both_settle() {
             f.assert_worker_starts_allowed();
         }
     }
+}
+
+/// Counted worker-start holds span the off-mutex Git-lock wait, and the old
+/// and new repository locks span settlement, including a stale-record refusal.
+#[test]
+fn source_move_keeps_sync_locks_and_worker_hold_through_settlement() {
+    for stale_record in [false, true] {
+        let f = TwoSources::new();
+        let params = f.move_params();
+        let old = f.root.join("docs");
+        let new = f.root.join("docs-moved");
+        let replacement = init_repo_named(&f.root, "replacement");
+        let shared = f.state.shared();
+        let (held, _) = SyncLock::acquire(&old, Duration::ZERO).unwrap();
+        let pending = {
+            let mut app = shared.lock().unwrap();
+            app.project_update_source(&params).unwrap();
+            app.take_deferred().unwrap()
+        };
+        let (answered, answers) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = answered.send(pending.run());
+        });
+        assert!(
+            answers.recv_timeout(Duration::from_millis(400)).is_err(),
+            "the move must wait for sync before touching either repository"
+        );
+        assert!(shared.try_lock().is_ok());
+        assert!(shared
+            .lock()
+            .unwrap()
+            .refuse_worker_during_source_move(&f.owner, &f.worker)
+            .is_err());
+        let listed = frame_on_a_thread(&shared, "list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(listed["ok"], true, "{listed}");
+        drop(held);
+
+        let done = answers.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(SyncLock::acquire(&old, Duration::ZERO).is_none());
+        assert!(SyncLock::acquire(&new, Duration::ZERO).is_none());
+        {
+            let mut app = shared.lock().unwrap();
+            assert!(app
+                .refuse_worker_during_source_move(&f.owner, &f.worker)
+                .is_err());
+            if stale_record {
+                app.projects
+                    .source_mut(&f.project_id, "source-2")
+                    .unwrap()
+                    .path = replacement.clone();
+            }
+            let settled = app.apply_deferred("project.update_source", &params, done);
+            assert_eq!(settled.is_err(), stale_record, "{settled:?}");
+            app.refuse_worker_during_source_move(&f.owner, &f.worker)
+                .expect("this move releases its hold even when settlement refuses");
+            let path = &app.projects.get(&f.project_id).unwrap().sources[1].path;
+            assert_eq!(path, if stale_record { &replacement } else { &new });
+        }
+        assert!(SyncLock::acquire(&old, Duration::ZERO).is_some());
+        assert!(SyncLock::acquire(&new, Duration::ZERO).is_some());
+    }
+}
+
+/// Worker holds prevent relocation, while service sync still takes the
+/// canonical Git lock and updates the same source with the app mutex free.
+#[test]
+fn a_worker_held_source_syncs_without_releasing_its_location_hold() {
+    let mut f = TwoSources::new();
+    let docs = f.root.join("docs");
+    let upstream = f.root.join("docs-upstream");
+    git_in(
+        &f.root,
+        &[
+            "clone",
+            "-q",
+            docs.to_str().unwrap(),
+            upstream.to_str().unwrap(),
+        ],
+    );
+    crate::git_fixture::configure_repo(&upstream);
+    git_in(
+        &docs,
+        &["remote", "add", "origin", upstream.to_str().unwrap()],
+    );
+    std::fs::write(upstream.join("news.txt"), "incoming\n").unwrap();
+    git_in(&upstream, &["add", "."]);
+    git_in(&upstream, &["commit", "-q", "-m", "incoming"]);
+    let expected = git2::Repository::open(&upstream)
+        .unwrap()
+        .head()
+        .unwrap()
+        .target()
+        .unwrap();
+    let posted = f.state.handle(req(
+        "thread.post",
+        json!({"entity_id": f.owner, "agent_id": f.worker, "body": "edit docs"}),
+    ));
+    assert_eq!(posted["ok"], true, "{posted}");
+    let move_params = f.move_params();
+    let asked = f.state.handle(req(
+        "project.sync_source",
+        json!({"project_id": f.project_id, "source_id": "source-2", "source_path": docs}),
+    ));
+    assert_eq!(asked["ok"], true, "{asked}");
+    let shared = f.state.shared();
+    let (held, _) = SyncLock::acquire(&docs, Duration::ZERO).unwrap();
+    let syncing = Arc::clone(&shared);
+    let (answered, answers) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        AppState::sync_sources(&syncing, crate::app::SyncPass::Requested, 1_000);
+        let _ = answered.send(());
+    });
+    assert!(answers.recv_timeout(Duration::from_millis(400)).is_err());
+    assert!(shared.try_lock().is_ok());
+    let refused = frame_on_a_thread(&shared, "move", "project.update_source", move_params)
+        .recv_timeout(Duration::from_secs(30))
+        .unwrap();
+    refused_with(&refused, "conflict");
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("Stop Editor first"));
+    assert!(!docs.join("news.txt").exists());
+    drop(held);
+    answers.recv_timeout(Duration::from_secs(30)).unwrap();
+
+    assert_eq!(
+        git2::Repository::open(&docs)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target(),
+        Some(expected)
+    );
+    assert_eq!(
+        std::fs::read_to_string(docs.join("news.txt")).unwrap(),
+        "incoming\n"
+    );
+    let mut app = shared.lock().unwrap();
+    let removed = app.handle(req(
+        "project.remove_source",
+        json!({"project_id": f.project_id, "source_id": "source-2"}),
+    ));
+    refused_with(&removed, "conflict");
+    assert_eq!(
+        app.projects.get(&f.project_id).unwrap().sources[1].path,
+        docs
+    );
 }

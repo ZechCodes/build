@@ -75,6 +75,10 @@ Design rules:
   resolving new dependencies; existing locked resolutions remain frozen.
   When changing dependencies, use `npm install --legacy-peer-deps` in SPA or
   `npm install` in web and commit the corresponding lock with the manifest.
+  A deliberately reviewed younger release may use a one-command exact-package
+  `--min-release-age-exclude=package-name` exception with `--ignore-scripts`;
+  the SPA/web READMEs show the command. Never persist an exception or wildcard
+  in `.npmrc`; record the reason and exact version in the dependency review.
   Keep transport's own locked dependencies installed: npm links the local
   binding to `transport/js`, whose dependencies resolve from that directory.
   (`landing/` and `desktop/` retain their own committed locks and install policy.)

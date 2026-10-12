@@ -44,6 +44,21 @@ SPA's `package-lock.json` is committed and portable. Use `npm ci
 New registry resolutions must be at least seven days old; locked installs retain
 the committed dependency versions.
 
+If a reviewed fix must use a release younger than seven days, make a one-command
+exception for that exact package (replace `package-name` and `x.y.z`):
+
+```bash
+nice -n 10 npm install package-name@x.y.z --save-exact --legacy-peer-deps --ignore-scripts --min-release-age-exclude=package-name
+```
+
+The package-name exception leaves the seven-day rule active for every other
+package, including its transitive dependencies, and keeps lifecycle scripts
+disabled. Record the reason and exact version with the manifest/lock review;
+do not add the exception to `.npmrc` or use a wildcard. A younger transitive
+fix needs its own explicit package exception. Ordinary installs use the commands
+above again.
+
+
 ## Commands
 
 ```bash

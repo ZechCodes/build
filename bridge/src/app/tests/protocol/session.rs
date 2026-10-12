@@ -176,6 +176,114 @@ async fn the_idle_sweep_spares_an_agent_holding_a_background_task_and_no_other()
     assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
 }
 
+struct EndRegisteredSession {
+    state: Arc<Mutex<AppState>>,
+    key: TabKey,
+}
+
+impl Drop for EndRegisteredSession {
+    fn drop(&mut self) {
+        let session = self
+            .state
+            .lock()
+            .unwrap()
+            .session_registry
+            .test_tab(&self.key)
+            .map(|tab| Arc::clone(&tab.session));
+        if let Some(session) = session {
+            session.end();
+        }
+    }
+}
+
+#[tokio::test]
+async fn self_started_adk_turn_updates_the_registry_digest_and_working_clock() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let run_id = "run-self-started";
+    let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), run_id);
+    let key = derived_agent_key(&root, run_id);
+    let _cleanup = EndRegisteredSession {
+        state: Arc::clone(&state),
+        key: key.clone(),
+    };
+    use crate::harness::adk::fake;
+    let start = dir.path().join("resume-child");
+    let finish = dir.path().join("finish-child");
+    let script = format!(
+        "sleep 0.2\nprintf '%s\\n' '{init}'\nread -r turn\nprintf '%s\\n' '{result}'\n\
+         while [ ! -f '{start}' ]; do sleep 0.01; done\n\
+         printf '%s\\n' '{thinking}'\n\
+         while [ ! -f '{finish}' ]; do sleep 0.01; done\n\
+         printf '%s\\n' '{result}'\nwhile IFS= read -r turn; do :; done\n",
+        init = fake::INIT,
+        result = fake::RESULT,
+        thinking = fake::THINKING,
+        start = start.display(),
+        finish = finish.display(),
+    );
+    run_on_a_headless_provider(
+        &state,
+        &repo,
+        run_id,
+        HarnessSpec::new("sh").arg("-c").arg(script),
+    );
+    let posted = call(
+        &handler,
+        "thread.post",
+        json!({ "entity_id": run_id, "body": "start" }),
+    );
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    let digest = || {
+        agent_roster(&mut state.lock().unwrap(), json!({ "entity_id": run_id }))["result"]["agents"]
+            [0]
+        .clone()
+    };
+    wait_for(Duration::from_secs(10), || {
+        let row = digest();
+        (row["state"] == "live" && row["working"] == false && row["working_time"].is_null())
+            .then_some(())
+    })
+    .await
+    .expect("the delivered turn closes before the child resumes");
+
+    std::fs::write(&start, "resume").unwrap();
+    wait_for(Duration::from_secs(10), || {
+        (reasoning_count(&state, run_id) == 1).then_some(())
+    })
+    .await
+    .expect("the child streams unsolicited activity");
+    let row = wait_for(Duration::from_secs(5), || {
+        let row = digest();
+        (row["working"] == true && row["working_time"].is_object()).then_some(row)
+    })
+    .await
+    .expect("the self-started turn opens the working clock");
+    assert_eq!(row["can_interrupt"], true, "{row:?}");
+    age_past_the_idle_threshold(&state, &key);
+    assert!(state
+        .lock()
+        .unwrap()
+        .mark_idle_tasks(Duration::from_secs(300))
+        .is_empty());
+
+    std::fs::write(&finish, "finish").unwrap();
+    wait_for(Duration::from_secs(5), || {
+        let row = digest();
+        (row["working"] == false && row["working_time"].is_null()).then_some(())
+    })
+    .await
+    .expect("the child's result closes its turn and clock");
+    age_past_the_idle_threshold(&state, &key);
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .mark_idle_tasks(Duration::from_secs(300)),
+        vec![run_id.to_string()]
+    );
+}
+
 /// The digest pair this step makes reachable on a headless provider, pinned:
 /// `working: true` with `can_interrupt: false`.
 ///

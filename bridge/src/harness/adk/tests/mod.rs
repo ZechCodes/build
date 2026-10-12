@@ -337,6 +337,7 @@ mod activity;
 
 mod protocol_reader;
 mod provider;
+mod self_started;
 mod session;
 mod translation;
 mod turn_context;

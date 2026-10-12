@@ -177,7 +177,7 @@ class TransportWorkflow(unittest.TestCase):
             block = self.job(name)
             self.assertIn("transport", needs(block))
             expression = job_condition(block)
-            for result in ("success", "failure", "cancelled", "skipped"):
+            for result in ("success", "failure", "cancelled", "skipped", ""):
                 with self.subTest(job=name, owed=True, result=result):
                     context = self.image_context(block, "true", result)
                     self.assertEqual(evaluate_condition(expression, context), result == "success")

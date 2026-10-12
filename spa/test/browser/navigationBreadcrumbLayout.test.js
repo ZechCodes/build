@@ -175,6 +175,7 @@ it("B4 constrained 280px toolbar wraps before controls overlap", async () => {
         controls: [...document.querySelectorAll(".tb-switch, .tb-project, .tb-workspace, [data-workspace-lock]")].map((control) => ({ selector: control.className, ...rect(control) })),
         scrollWidth: document.documentElement.scrollWidth };
     });
+    expect(dimensions.toolbar.height, JSON.stringify(dimensions)).toBeGreaterThan(44);
     for (const control of dimensions.controls) {
       expect(control.x, JSON.stringify(dimensions)).toBeGreaterThanOrEqual(dimensions.toolbar.x);
       expect(control.right, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.toolbar.right);
@@ -186,4 +187,40 @@ it("B4 constrained 280px toolbar wraps before controls overlap", async () => {
     }
     expect(dimensions.scrollWidth).toBeLessThanOrEqual(280);
   }, { width: 280, height: 740, hasTouch: true });
+}, 30_000);
+
+it.each(["light", "dark"])("B4 pinned_inbox_resize_keeps_ordinary_toolbar_one_row %s", async (theme) => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountNavigationBreadcrumbs(page, basePath, { longNames: true, theme, inboxPinned: true });
+    expect(await page.locator("body").evaluate((body) => body.classList.contains("inbox-collapsed"))).toBe(false);
+    expect((await page.locator("#toolbar").boundingBox()).height).toBe(44);
+    await page.setViewportSize({ width: 320, height: 740 });
+    await page.waitForFunction(() => document.querySelector("#toolbar").getBoundingClientRect().width === 290);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const dimensions = await page.evaluate(() => {
+      const rect = (selector) => {
+        const { x, y, width, height, right, bottom } = document.querySelector(selector).getBoundingClientRect();
+        return { x, y, width, height, right, bottom };
+      };
+      return { toolbar: rect("#toolbar"), workspace: rect('[data-select="workspace"]'), caret: rect(".tb-workspace .tb-caret"), lock: rect("[data-workspace-lock]"), toolbarHeight: getComputedStyle(document.querySelector("#view")).getPropertyValue("--toolbar-h").trim(), inboxCollapsed: document.body.classList.contains("inbox-collapsed"), scrollWidth: document.documentElement.scrollWidth };
+    });
+    expect(dimensions.inboxCollapsed).toBe(false);
+    expect(dimensions.toolbar.width).toBe(290);
+    expect(dimensions.toolbar.height, JSON.stringify(dimensions)).toBe(44);
+    expect(dimensions.toolbarHeight).toBe("44px");
+    expect(dimensions.workspace.height).toBe(44);
+    expect(dimensions.workspace.width).toBeGreaterThanOrEqual(44);
+    expect(dimensions.lock.width).toBe(44);
+    expect(dimensions.lock.height).toBe(44);
+    expect(dimensions.caret.width).toBeGreaterThan(0);
+    for (const control of [dimensions.caret, dimensions.lock]) {
+      expect(control.x).toBeGreaterThanOrEqual(dimensions.toolbar.x);
+      expect(control.right).toBeLessThanOrEqual(dimensions.toolbar.right);
+      expect(control.y).toBeGreaterThanOrEqual(dimensions.toolbar.y);
+      expect(control.bottom).toBeLessThanOrEqual(dimensions.toolbar.bottom);
+    }
+    expect(dimensions.caret.right).toBeLessThanOrEqual(dimensions.workspace.right);
+    expect(dimensions.workspace.right).toBeLessThanOrEqual(dimensions.lock.x);
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(320);
+  }, { width: 1280, height: 800 });
 }, 30_000);

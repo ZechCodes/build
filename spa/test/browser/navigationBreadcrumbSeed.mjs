@@ -15,7 +15,7 @@ export const navigationAppShim = {
       export function render() {} export function rememberSelectedDevice() {}`;
   },
 };
-export async function mountNavigationBreadcrumbs(page, basePath, { theme = "light", longNames = false, kind = "workspace", duplicateNames = false } = {}) {
+export async function mountNavigationBreadcrumbs(page, basePath, { theme = "light", longNames = false, kind = "workspace", duplicateNames = false, inboxPinned = false } = {}) {
   if (await page.evaluate(() => !!window.__navigationHarness)) {
     await page.evaluate(async () => { await window.__layoutModules.toolbar.stopToolbar(); window.__layoutModules.feed.stopFeed(); });
   }
@@ -27,11 +27,11 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
     app: "src/appState.js", cache: "src/core/localCache.js", feed: "src/core/taskFeed.js", toolbar: "src/core/toolbar.js",
     router: "src/core/router.js", projectState: "src/core/projectRailState.js", lock: "src/core/workspaceLockSupport.js", tracker: "src/core/trackerCache.js", directoryRail: "src/core/directoryRail.js",
   }, basePath);
-  await page.evaluate(async ({ theme, longNames, kind, duplicateNames }) => {
+  await page.evaluate(async ({ theme, longNames, kind, duplicateNames, inboxPinned }) => {
     const { app, cache, feed, toolbar, router, projectState, lock, tracker, directoryRail } = window.__layoutModules;
     const deviceId = "nav-device";
     document.documentElement.dataset.theme = theme;
-    if (innerWidth < 900) document.body.classList.add("inbox-collapsed");
+    document.body.classList.toggle("inbox-collapsed", innerWidth < 900 && !inboxPinned);
     const projectName = longNames ? "Navigation evidence with an unusually long project name for independent ellipsis!" : "Build";
     const workspaceName = longNames ? "An unusually long workspace name with enough text to stress the narrow toolbar row" : "navigation-plan";
     const projects = [{ id: "build", name: projectName, deviceId, projectKey: `${deviceId}/build`, sources: [{ id: "source", path: "/fixture/build" }] }, { id: "docs", name: "Docs", deviceId, projectKey: `${deviceId}/docs` }];
@@ -74,7 +74,7 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
     document.querySelectorAll("[data-select]").forEach((control) => control.addEventListener("click", () => {
       window.__navigationHarness.focusInGesture = document.activeElement?.matches(".tb-filter") === true;
     }));
-  }, { theme, longNames, kind, duplicateNames });
+  }, { theme, longNames, kind, duplicateNames, inboxPinned });
   await page.locator(".toolbar").waitFor();
   if (kind === "workspace") await page.locator("[data-workspace-lock]").waitFor();
   await page.evaluate(() => document.fonts.ready);

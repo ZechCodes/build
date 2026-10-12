@@ -168,7 +168,7 @@ pub(super) fn resolve_terminal_scope(
             .filter(|id| !id.is_empty())
         {
             return Ok(TerminalScope {
-                root: state.workspace_root(&workspace_id)?,
+                root: state.workspace_root(workspace_id)?,
                 source: None,
             });
         }

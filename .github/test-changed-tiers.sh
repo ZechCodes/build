@@ -222,6 +222,10 @@ change_case "JS documentation alone does not rebuild the app" \
     transport/js/README.md "$MOVED_TRANSPORT" js-docs
 change_case "the transport runner checks itself" \
     scripts/test-transport.sh "app=false relay=false bridge=false e2e=false desktop=false scripts=true shell=true transport=true" runner
+change_case "the canonical transport notice ships with the app" \
+    transport/LICENSE.md "$MOVED_JS" canonical-license
+change_case "transport provenance gates its source contract" \
+    transport/UPSTREAM.md "$MOVED_TRANSPORT" provenance
 change_case "transport documentation alone deploys and checks no code" \
     transport/README.md "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=false" transport-docs
 

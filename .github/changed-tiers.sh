@@ -28,7 +28,7 @@ set -eu
 REPO="${1:-.}"
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
-APP_PATHS='^(spa|skriftapp|landing)/|^transport/js/(src/|test/|testing/|package(-lock)?\.json$|\.npmrc$|LICENSE\.md$)|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$|^\.(dockerignore|containerignore)$'
+APP_PATHS='^(spa|skriftapp|landing)/|^transport/js/(src/|test/|testing/|package(-lock)?\.json$|\.npmrc$|LICENSE\.md$)|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$|^\.(dockerignore|containerignore)$|^transport/LICENSE\.md$'
 # relay-sources as one anchored pattern, each path's metacharacters escaped. A
 # list with no paths yields an empty pattern, which matches every change.
 RELAY_PATHS="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" \
@@ -38,7 +38,7 @@ BRIDGE_PATHS='^bridge/|^\.github/relay-sources$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'
 # Transport evidence may ship in neither image. Its checks cannot borrow the
 # bridge tier's forgiveness of an unchanged relay (see transport_base below).
-TRANSPORT_PATHS='^transport/(js|python|tests|fixtures|compatibility|testing)/'
+TRANSPORT_PATHS='^transport/(js|python|tests|fixtures|compatibility|testing)/|^transport/(LICENSE|UPSTREAM)\.md$'
 TRANSPORT_PATHS="$TRANSPORT_PATHS|"'^bridge/(src/(transport|lib)\.rs|Cargo\.(toml|lock)|tests/(interop_python|transport_[^/]+)\.rs)$'
 TRANSPORT_PATHS="$TRANSPORT_PATHS|"'^scripts/(test-transport\.sh|transport_(import|packages)\.py)$'
 TRANSPORT_PATHS="$TRANSPORT_PATHS|"'^\.github/(changed-tiers\.sh|test-changed-tiers\.sh|test-transport-workflow\.py|workflows/(ci|timing)\.yml)$'

@@ -359,8 +359,10 @@ fn a_rejected_duplicate_update_keeps_the_admitted_move_hold() {
         } else {
             json!({ "project_id": f.project_id, "source_id": "source-2", "name": "Docs" })
         };
-        let refused = f.state.project_update_source(&retry).unwrap_err();
-        assert!(refused.contains("already updating"), "{refused}");
+        let refused = f.state.handle(req("project.update_source", retry));
+        // Moving retries reach the shell Updating barrier; label-only retries
+        // reach defer_project. Both refuse busy without owning a move count.
+        refused_with(&refused, "busy");
         f.assert_worker_starts_blocked();
 
         f.state
@@ -591,8 +593,14 @@ async fn a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds() 
     let id = opened["term_id"].as_str().unwrap();
     let mut addressed = scope.clone();
     addressed["term_id"] = json!(id);
-    let listed = terminal_ok(&handler, "term.list", scope.clone());
-    assert_eq!(listed["terminals"][0]["term_id"], id);
+    // Routed reads drain delivery. Keep this fixture's worker turn queued,
+    // so releasing that queued hold at the end does not leave a live worker.
+    let listed = shared
+        .lock()
+        .unwrap()
+        .handle(req("term.list", scope.clone()));
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert_eq!(listed["result"]["terminals"][0]["term_id"], id);
     assert_eq!(
         terminal_ok(&handler, "term.attach", addressed.clone())["live"],
         true
@@ -629,7 +637,8 @@ async fn a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds() 
             assert!(refused["error"].as_str().unwrap().contains(id), "{refused}");
         }
     }
-    terminal_ok(&handler, "term.close", addressed);
+    let closed = shared.lock().unwrap().handle(req("term.close", addressed));
+    assert_eq!(closed["ok"], true, "{closed}");
     let mut app = shared.lock().unwrap();
     let removed = app.handle(req(
         "project.remove_source",

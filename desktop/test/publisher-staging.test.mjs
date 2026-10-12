@@ -17,8 +17,11 @@ const expected = desktopReleaseAssets(version);
 const publisher = workflow.split("  publish:\n")[1];
 const steps = publisher.split(/^      - /m).slice(1);
 function property(step, key) {
-  return step.match(new RegExp(`^\\s+(?:${key}): (.+)$`, "m"))?.[1];
+  for (const [, name, value] of step.matchAll(/^\s+([\w-]+): (.+)$/gm)) {
+    if (name === key) return value;
+  }
 }
+
 function script(step) {
   const block = step.match(/^        run: \|\n((?:          .*\n|\n)*)/m)?.[1];
   return block?.replace(/^          /gm, "");

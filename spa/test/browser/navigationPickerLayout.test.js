@@ -7,7 +7,7 @@ beforeAll(async () => { session = await openLayoutSession({ plugins: [navigation
 afterAll(async () => { await session?.close(); });
 const grouped = '.tbmenu-list a[data-destination]:not([data-visit])';
 
-it("P1 production_router_adds_one_entry_and_restores_exact_route_on_Back_and_Forward", async () => {
+it.each(["global", "local project return"])("P1 production_router_adds_one_entry_and_restores_exact_route_on_Back_and_Forward %s", async (scope) => {
   await session.withPage(async ({ page, basePath }) => {
     await mountNavigationPicker(page, basePath, { observeHash: false });
     await page.evaluate(() => { window.__realRouterBaseModules = window.__layoutModules; });
@@ -22,15 +22,18 @@ it("P1 production_router_adds_one_entry_and_restores_exact_route_on_Back_and_For
       window.__navigationHarness.navigate = function(next, options) { this.navigations.push(next); return realApp.go(next, options); };
     });
     const before = await page.evaluate(() => ({ hash: location.hash, entries: history.length }));
-    await page.locator('[data-select="project"]').click();
-    await page.locator(`${grouped}[data-workspace="away-device/release"]`).click();
-    await page.waitForFunction(() => window.__layoutModules.app.App.route.workspaceId === "release");
+    await page.locator(`[data-select="${scope === "global" ? "project" : "workspace"}"]`).click();
+    const destination = page.locator(scope === "global" ? `${grouped}[data-workspace="away-device/release"]` : "[data-project-page]");
+    if (scope !== "global") await page.waitForFunction(() => document.querySelector("[data-project-page]")?.getAttribute("href")?.includes("README.md"));
+    const hash = await destination.getAttribute("href");
+    await destination.click();
+    await page.waitForFunction((hash) => location.hash === hash, hash);
     expect(await page.evaluate(() => history.length)).toBe(before.entries + 1);
     await page.goBack();
     await page.waitForFunction(() => window.__layoutModules.app.App.route.workspaceId === "current");
     expect(await page.evaluate(() => location.hash)).toBe(before.hash);
     await page.goForward();
-    await page.waitForFunction(() => window.__layoutModules.app.App.route.workspaceId === "release");
+    await page.waitForFunction((hash) => location.hash === hash, hash);
     expect(await page.evaluate(() => window.__navigationHarness.navigations.length)).toBe(1);
   }, { width: 390, height: 844, hasTouch: true });
 }, 40_000);

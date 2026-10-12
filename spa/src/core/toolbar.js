@@ -407,12 +407,14 @@ function updateProjectReturnLink(host) {
 }
 
 /** Explicit project ancestry returns to its saved face; a self-link does nothing. */
-async function openProjectPage(project = returnProject()) {
+async function openProjectPage(project = returnProject(), { newEntry = false } = {}) {
   const standing = App.route;
   closeMenu();
   if (!project) return;
   const target = await projectReturnTarget(project, { route: standing, currentHash: currentHash() });
-  if (App.route === standing && !target.current) go(target.route);
+  if (App.route !== standing || target.current) return;
+  if (newEntry) void navigateDestination(target.route);
+  else go(target.route);
 }
 
 // ---- the menu each selector opens -------------------------------------------
@@ -766,7 +768,7 @@ const MENU_ACTIONS = [
   ["[data-menu-close]", () => closeMenu({ restoreFocus: true })],
   ["[data-manage-workspaces]", manageWorkspaces],
   ["[data-projects]", () => showList("projects")],
-  ["[data-project-page]", () => openProjectPage()],
+  ["[data-project-page]", () => openProjectPage(returnProject(), { newEntry: true })],
   ["[data-workspace-review]", openStandingReview],
   ["[data-create]", openCreate],
 ];

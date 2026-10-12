@@ -207,7 +207,7 @@ describe("current breadcrumb and picker destinations", () => {
       await vi.waitFor(() => expect(returned.getAttribute("href")).toBe(hashFromRoute(saved)));
     } else {
       returned.click();
-      await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith(saved));
+      await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith(saved, { newEntry: true }));
       expect(menu()).toBeNull();
     }
     expect(state.openCreateWork).not.toHaveBeenCalled();

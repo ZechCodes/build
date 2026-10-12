@@ -94,7 +94,7 @@ export const INPUT_SURFACES = [
   { name: "device label", selectors: ["#device-label"] },
   { name: "filter menu", selectors: [".fmenu-search"] },
   { name: "workspace refs", selectors: [".workspace-refsearch"] },
-  { name: "toolbar projects", selectors: ['.tb-filter[aria-label="Filter projects"]'] },
+  { name: "toolbar projects", selectors: ['.tb-filter[aria-label="Search projects or workspaces"]'] },
   { name: "toolbar workspaces", selectors: ['.tb-filter[aria-label="Filter workspaces"]'] },
   { name: "reroute", selectors: ["[data-reroute-branch]"] },
   { name: "task composer", selectors: [".task-compose-title", ".task-compose-body textarea", ".fmenu-search"] },

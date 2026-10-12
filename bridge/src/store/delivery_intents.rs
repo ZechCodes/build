@@ -31,6 +31,10 @@ pub struct DeliveryIntent {
 }
 
 impl Store {
+    pub(crate) fn retire_task_deliveries_of_project(&self, project: &str) -> Result<(), StoreError> {
+        self.in_transaction(|tx| cancel_project(tx, project))
+    }
+
     pub fn load_delivery_intent(&self, id: &str) -> Result<Option<DeliveryIntent>, StoreError> {
         load(&self.connection(), id)
     }

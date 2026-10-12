@@ -299,6 +299,14 @@ fn deferred_delivery_operation_id_cannot_admit_a_forged_payload_or_foreign_owner
     let mut changed_owner = admitted["params"].clone();
     changed_owner["entity_id"] = json!(foreign_owner);
     changed_owner["agent_id"] = json!(foreign_pin);
+    let address = fixture
+        .app
+        .resolve_conversation_address(&foreign_owner, Some(&foreign_pin))
+        .unwrap();
+    changed_owner["conversation_id"] = json!(address.conversation_id);
+    // A fresh foreign conversation permits an unversioned mutation; keeping
+    // the original generation would merely test the normal thread-id guard.
+    changed_owner.as_object_mut().unwrap().remove("thread_id");
     for params in [changed_body, changed_owner] {
         let answer = fixture.app.handle(req("thread.post", params));
         assert_eq!(answer["ok"], false, "{answer}");

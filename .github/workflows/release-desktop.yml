@@ -238,7 +238,8 @@ jobs:
         id: staging
         run: |
           set -euo pipefail
-          printf 'path=%s\n' "$(mktemp -d "$RUNNER_TEMP/desktop-release.XXXXXX")" >> "$GITHUB_OUTPUT"
+          stage="$(mktemp -d "$RUNNER_TEMP/desktop-release.XXXXXX")"
+          printf 'path=%s\n' "$stage" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:

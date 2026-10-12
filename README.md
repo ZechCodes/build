@@ -187,6 +187,7 @@ it or establish that a change date has elapsed. Package-local copies of that
 notice carry the same terms. [Provenance](transport/UPSTREAM.md) records the
 pinned source and amendments. The existing Rust transport remains in the
 AGPL-licensed bridge.
-Contributions are accepted under the AGPL and a signed
+
+Outside that transport scope, contributions are accepted under the AGPL and a signed
 [Contributor License Agreement](CLA.md), as described in
 [CONTRIBUTING.md](CONTRIBUTING.md).

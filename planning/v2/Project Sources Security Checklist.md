@@ -63,3 +63,32 @@ threat is git reading the text as something other than a location.
 | User destinations cannot use the reserved staging filename namespace, including case variants on case-insensitive filesystems, so boot cleanup cannot delete a successful upload. | `fs_upload_startup_sweep_reserves_staging_names_for_internal_files` (uploads, directories and files); creation and cleanup share one UUIDv4 matcher. |
 
 **Status: 100/100.** All scoped upload, directory and file creation controls above are verified by the linked tests.
+
+
+## #522 planned extension — not yet verified
+
+These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
+Existing scores above cover their original implemented scope only. Each owning
+child must supply passing regression/gate evidence before its new rows can
+count toward 100/100; planning does not satisfy these controls.
+
+| ID | Pending control | Required evidence |
+| --- | --- | --- |
+| PS522-1 | Resolve exact registered project/source scope; refuse foreign, malformed, mixed selectors and caller roots before Git/PTY work. | C1/C3: project_source_git_refuses_mixed_or_moved_scope; project_source_terminal_cannot_attach_sibling; API contracts. |
+| PS522-2 | Captured source location is a precondition, rechecked after waits; moved/removed sources never redirect Git, Sync base, terminal create/attach or delayed worker starts. | C1–C5: moved-source lock/startup races; lifecycle holds; existing Files precondition regressions. |
+| PS522-3 | Source cache/diff/draft identity includes device/project/source/location; late replies and pushes cannot merge sibling or moved roots. | C1/C6: identical-path/status-key sources; projectChanges and cache race tests. |
+| PS522-4 | Build-managed source mutations serialize with base sync without holding the app mutex; dirty/local commits and cut semantics remain intact. Shell commands are outside this lock. | C2: project_source_mutation_serializes_with_base_sync; workspace_cut_preserves_local_base_commits; source_sync suites. |
+| PS522-5 | Terminal ownership/input never follows selection or path changes; source removal/movement holds for live sessions; explicit close/EOF/reconnect preserves exact identity. | C3/C7: terminal lifecycle, sibling-attach, reconnect/authority and projectWorkspaceTerminal browser tests. |
+| PS522-6 | Secondary Git and plain sources emit correctly addressed file/terminal facts; plain Git refusal/unborn Git behavior is honest and new params are capability-gated. | C1/C3/C6/C7: source facts, old/new contract matrix and browser tests. |
+
+### #529 (C1) evidence — original-source Git scope, source facts and subscriptions
+
+C1 supplies its share of these rows; each row stays pending until every
+owning child has added its evidence.
+
+| ID | C1 control | Passing evidence (#529) |
+| --- | --- | --- |
+| PS522-1 | Every `git.*` verb and `project_source` subscription resolves `project_id` + `source_id` from server records through the resolver Files uses; unknown or foreign sources are `not_found`, mixed or malformed selectors and a `source_path` outside a project source scope `invalid_params`, before any Git runs. Terminal selectors are C3. | `project_source_git_refuses_mixed_or_moved_scope`, `project_source_git_refuses_a_plain_folder`, `project_source_subscriptions_refuse_stale_or_unknown_sources`; `project_source_git_is_announced_on_every_git_verb_with_an_example` and `project_source_changes_are_announced_with_a_scope_and_an_item` (API contracts). |
+| PS522-2 | `source_path` is required on source Git scopes and on source subscriptions; a source moved after the caller captured it refuses `git.status`, `git.stage`, `git.commit` and `git.discard` with `conflict`, and neither folder changes. A moved or removed source's subscription goes quiet. Revalidation after a sync-lock wait, Sync base, terminals and worker starts are C2–C5. | `project_source_git_refuses_mixed_or_moved_scope`, `project_source_subscriptions_refuse_stale_or_unknown_sources`, `a_removed_source_stops_being_watched`, `original_project_sources_drive_git_and_pushes_end_to_end` (integration). |
+| PS522-3 | Source `status_key` and `content_key`s are namespaced by project, source and captured path, so identical paths and status in two sources never share a key and a moved source starts a new namespace; a source item's entity is minted from the same three and carries them as `project_source`. SPA cache and draft identity are C6. | `project_source_git_addresses_each_source_with_its_own_keys`, `project_source_changes_keep_secondary_and_plain_roots_distinct`, `original_project_sources_drive_git_and_pushes_end_to_end`. |
+| PS522-6 | Secondary Git and plain sources push correctly addressed git, files and terminal facts to the subscription that names them; a plain folder refuses Git verbs and `git` subscriptions honestly; an unborn repository stages and commits its first commit with empty history; scope `all` (every older client) hears no source item; new params are gated by `git.projectSources` and `changes.projectSources`. Terminal scopes and browser coverage are C3, C6 and C7. | `project_source_changes_keep_secondary_and_plain_roots_distinct`, `project_source_git_serves_an_unborn_repository`, `project_source_git_refuses_a_plain_folder`, `original_project_sources_drive_git_and_pushes_end_to_end`; SPA `gates project source Git and change subscriptions by capability name`. |

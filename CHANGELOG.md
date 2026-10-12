@@ -8,7 +8,7 @@ protocol versions; see
 
 ## [0.2.13] - Unreleased
 
-Wire 3.19.0.
+Wire 3.21.0.
 
 ### Fixed
 
@@ -22,6 +22,14 @@ Wire 3.19.0.
 
 ### Added
 
+- Project sources in Git and pushes (wire 3.21.0, #529): every Git verb
+  project Changes uses addresses one original source by `project_id`,
+  `source_id` and its captured `source_path` (`git.projectSources`), with
+  per-source cache keys; a moved source is refused with `conflict` and a plain
+  folder says it is not a Git repository. `changes.subscribe` takes a
+  `project_source` scope (`changes.projectSources`) whose git, files and
+  terminal items carry the source's identity, for plain folders too. Clients
+  that do not ask hear nothing new.
 - Harness inventory reports installation, CLI/session versions and saved sign-in
   status for Claude, Codex and Pi (`harnesses.list`, `harnesses.refresh`, #434).
 - PR task pages show snapshots and opinions, with Merge, Close, Reopen and

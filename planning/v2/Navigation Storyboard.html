@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build — navigation storyboard #523</title>
+<style>
+  * { box-sizing: border-box; }
+  :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e5edf0; background: #0b1115; }
+  body { margin: 0; }
+  button, input { font: inherit; }
+  button { cursor: pointer; }
+  .page { width: 1320px; padding: 28px 39px 24px; margin: auto; }
+  .mast { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; }
+  .eyebrow { font-size: 12px; color: #69e4b2; letter-spacing: .12em; text-transform: uppercase; font-weight: 650; }
+  .tag { color: #92a6b0; font-size: 12px; }
+  h1 { font-size: 30px; letter-spacing: -.8px; margin: 12px 0 8px; font-weight: 650; }
+  .intro { color: #a3b3bb; font-size: 15px; margin: 0; line-height: 1.5; }
+  nav { display: flex; gap: 8px; margin: 20px 0; }
+  nav a { color: #b7c7ce; text-decoration: none; border: 1px solid #2a3b44; padding: 8px 14px; border-radius: 24px; font-size: 13px; }
+  nav a.active { color: #8decc5; border-color: #58c69b; background: #112e26; }
+  .scene[hidden] { display: none; }
+  .story-title { display: flex; gap: 12px; align-items: baseline; margin: 16px 0 20px; }
+  h2 { margin: 0; font-size: 21px; font-weight: 600; }
+  .budget { font-size: 13px; color: #8decc5; margin-left: auto; }
+  .frames { display: grid; grid-template-columns: repeat(3, 390px); gap: 36px; }
+  .frame-caption { height: 72px; }
+  .step { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-right: 7px; border-radius: 50%; background: #2c5144; color: #a9f5d6; font-size: 12px; font-weight: 700; }
+  h3 { display: inline; font-size: 15px; font-weight: 600; }
+  .frame-caption p { color: #9dabb3; font-size: 13px; margin: 8px 0 0; line-height: 1.4; }
+  .variant { color: #97b8aa; font-size: 12px; padding: 0 0 12px; height: 30px; }
+  .variant.alternate { color: #a9bdce; margin-top: 30px; height: 49px; }
+  .phone { width: 390px; height: 844px; border-radius: 24px; overflow: hidden; background: #0b1c23; position: relative; outline: 1px solid #34454f; box-shadow: 0 12px 32px #0004; }
+  .status { height: 32px; padding: 9px 22px 0; display: flex; justify-content: space-between; color: #8a9fa8; font-size: 10px; letter-spacing: 1px; }
+  .status span:last-child { letter-spacing: 2px; }
+  .shell { margin: 10px; position: relative; }
+  .bar { position: relative; background: #10252d; border-radius: 10px 10px 0 0; height: 88px; padding-left: 48px; padding-right: 10px; }
+  .bar.compact { height: 44px; }
+  .inbox { position: absolute; top: 0; left: 0; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; color: #9db7c1; font-size: 21px; }
+  .bar-row { display: flex; align-items: center; height: 44px; gap: 4px; }
+  .crumb { min-width: 0; height: 44px; border: none; color: #c1d1d7; padding: 0 8px; background: transparent; text-align: left; display: flex; align-items: center; gap: 4px; border-radius: 7px; }
+  .project { flex: 0 0 80px; font-size: 13px; }
+  .workspace { flex: 1 1 auto; font-size: 13px; font-weight: 650; }
+  .crumb span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sep { width: 12px; flex: none; text-align: center; color: #546f7b; }
+  .caret { width: 12px; flex: none; color: #8aa5b0; }
+  .spacer { flex: 1; }
+  .lock { flex: 0 0 44px; height: 44px; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: #8daab6; border-radius: 7px; }
+  .switch { height: 44px; width: 80px; border: 0; border-radius: 7px; background: transparent; color: #b8d8cd; font-size: 13px; flex: none; }
+  .workspaces { height: 44px; background: transparent; color: #b8d8cd; border: 0; font-size: 13px; padding: 0 8px; }
+  .solo { flex: 1; font-size: 15px; font-weight: 600; }
+  .hot { background: #163f34 !important; outline: 2px solid #66e7b1; outline-offset: -2px; color: #b7ffe0 !important; }
+  .body { height: 644px; border-radius: 0 0 10px 10px; background: #10252d; display: flex; }
+  .bar.compact + .body { height: 688px; }
+  .rail { width: 40px; flex: none; padding-top: 12px; display: flex; align-items: center; flex-direction: column; gap: 8px; color: #68848f; }
+  .rail-icon { width: 32px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 6px; font-size: 17px; }
+  .rail-icon.active { background: #1b3c34; color: #73e2b3; }
+  .rail-icon.bottom { margin-top: auto; margin-bottom: 20px; }
+  .content { padding: 20px 18px 12px 8px; min-width: 0; flex: 1; }
+  .content h4 { font-size: 23px; margin: 0 0 18px; font-weight: 650; }
+  .sub { color: #83a0ab; font-size: 11px; margin-top: -10px; margin-bottom: 24px; }
+  .source { display: inline-flex; border-bottom: 2px solid #66dba8; padding: 0 3px 10px; font-size: 12px; color: #bfd5de; }
+  .branch { font-size: 12px; color: #809ca8; margin: 17px 0; }
+  .stats { font-size: 11px; color: #809ca8; margin-bottom: 18px; }
+  .green { color: #74dbaa; }
+  .red { color: #d29795; }
+  .file { padding: 13px 0; border-top: 1px solid #233e48; display: flex; align-items: center; gap: 8px; font-size: 12px; }
+  .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b9cdd5; }
+  .code { margin-top: 16px; background: #0d2028; border-radius: 7px; padding: 15px 10px; font: 11px/2 ui-monospace, monospace; color: #809fa8; }
+  .code .add { display: block; color: #97d5ad; background: #17382b; margin: 0 -10px; padding: 0 10px; }
+  .agents { height: 46px; position: absolute; bottom: 16px; left: 10px; right: 10px; display: flex; align-items: center; gap: 12px; padding: 0 16px; background: #112830; border-radius: 10px; color: #93aeb7; }
+  .avatar { width: 27px; height: 27px; border-radius: 50%; display: grid; place-items: center; background: #294d43; color: #a9e5ce; font-size: 10px; border: 1px solid #427461; }
+  .avatar.dim { background: #243c47; border-color: #3c5766; color: #9cbdcf; }
+  .home { position: absolute; bottom: 5px; width: 110px; height: 3px; border-radius: 4px; background: #64818d; left: 140px; }
+  .task-tile { padding: 14px 12px; background: #142d36; border-radius: 8px; margin: 10px 0; font-size: 12px; color: #b5cbd4; line-height: 1.5; }
+  .task-tile small { display: block; color: #7897a4; font-size: 10px; margin-top: 6px; }
+  .tiles { display: flex; gap: 8px; margin-bottom: 24px; }
+  .metric { flex: 1; background: #142f36; border-radius: 8px; padding: 14px 8px; color: #94b1bd; font-size: 10px; }
+  .metric strong { display: block; color: #bde7d7; font-size: 24px; margin-bottom: 6px; }
+  .scrim { position: absolute; inset: 32px 0 0; background: #031014b8; }
+  .sheet { position: absolute; left: 0; right: 0; top: 112px; bottom: 0; border-radius: 18px 18px 0 0; border-top: 1px solid #3c5965; background: #142a33; padding: 12px 16px 24px; }
+  .handle { width: 36px; height: 4px; background: #4d6672; border-radius: 10px; margin: 0 auto 16px; }
+  .sheet-head { display: flex; align-items: center; margin-bottom: 14px; gap: 10px; }
+  .sheet-head strong { font-size: 19px; font-weight: 600; }
+  .close { margin-left: auto; color: #abc3ce; font-size: 12px; padding: 8px; }
+  .search { height: 44px; border: 1px solid #3a5663; border-radius: 8px; color: #8aa5b0; padding: 12px; font-size: 13px; margin-bottom: 10px; }
+  .scope { font-size: 11px; color: #87a6b2; display: flex; justify-content: space-between; margin: 16px 0 12px; }
+  .scope b { color: #8ee4bf; font-weight: 500; }
+  .group { margin: 22px 0 7px; color: #b6ccd5; font-size: 12px; font-weight: 600; display: flex; justify-content: space-between; padding: 0 10px; }
+  .group.quiet { color: #86a0ac; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; }
+  .dest { min-height: 48px; padding: 11px 10px; color: #c5d8e0; font-size: 13px; border-radius: 7px; display: flex; gap: 9px; align-items: center; }
+  .dest small { color: #86a3b0; font-size: 10px; display: block; margin-top: 4px; }
+  .dest .name { flex: 1; min-width: 0; }
+  .badge { font-size: 10px; min-width: 18px; height: 18px; border-radius: 9px; background: #284d3e; color: #9befc9; display: grid; place-items: center; padding: 0 5px; }
+  .current { font-size: 10px; color: #8eafa1; }
+  .sheet-foot { position: absolute; bottom: 35px; left: 16px; right: 16px; border-top: 1px solid #304853; padding-top: 10px; color: #94b6c5; font-size: 12px; }
+  .foot-link { display: flex; min-height: 36px; align-items: center; padding: 4px 10px; }
+  .note { color: #96acb6; font-size: 13px; line-height: 1.5; margin: 22px 0 0; }
+  .note strong { color: #c2d8d0; font-weight: 500; }
+  .options { grid-template-columns: 390px 390px 1fr; }
+  .explanation { padding: 84px 6px 0; }
+  .explanation h3 { font-size: 19px; }
+  .explanation p { color: #9eb1ba; font-size: 14px; line-height: 1.65; margin-bottom: 28px; }
+  .cost { border-top: 1px solid #2b3e46; padding-top: 20px; color: #a6ebcf; font-size: 25px; }
+  .chat { position: absolute; left: 10px; right: 10px; top: 130px; bottom: 66px; background: #102630; border-top: 1px solid #33515d; padding: 18px 18px 90px; }
+  .chat.single { top: 86px; }
+  .chat-head { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid #2b424e; padding-bottom: 18px; color: #bdd3dd; font-size: 13px; }
+  .chat-text { font-size: 13px; line-height: 1.8; color: #a8c0cd; padding-top: 20px; }
+  .chat-text p { margin: 0 0 22px; }
+  .message { border-left: 2px solid #426f62; padding: 8px 12px; background: #18322f; border-radius: 0 6px 6px 0; }
+  .composer { position: absolute; bottom: 16px; left: 14px; right: 14px; height: 65px; border: 1px solid #38535e; border-radius: 11px; padding: 14px; color: #698b9b; font-size: 12px; }
+  .more-room { color: #7fcaa9; font-size: 11px; margin-top: 30px; padding: 14px 0; border-top: 1px dashed #3a6a57; }
+  @media (max-width: 800px) { .page { width: 100%; padding: 24px 18px; } .frames { display: flex; overflow-x: auto; gap: 24px; padding: 2px 1px 18px; } .frame { flex: 0 0 390px; } nav { flex-wrap: wrap; } .mast { align-items: start; } .tag { max-width: 130px; text-align: right; } .story-title { align-items: start; flex-wrap: wrap; } .budget { margin-left: 0; } .explanation { flex: 0 0 280px; } }
+</style>
+<main class="page">
+  <div class="mast"><span class="eyebrow">Build / Navigation study</span><span class="tag">#523 · Proposed storyboard · Illustrative content</span></div>
+  <h1>Go up. Go sideways. Go anywhere.</h1>
+  <p class="intro">Three separate controls. Your project is always a link; your workspace has siblings; Switch reaches every project.</p>
+  <nav aria-label="Storyboard scenes">
+    <a href="#up">1 · Up to project</a><a href="#siblings">2 · Sibling workspace</a><a href="#across">3 · Across projects</a><a href="#options">4 · Phone toolbar options</a>
+  </nav>
+  <div id="scenes"></div>
+</main>
+<script>
+  const lock = '<svg width="18" height="21" viewBox="0 0 18 21" fill="none" aria-hidden="true"><rect x="3" y="9" width="12" height="10" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 9V5a3 3 0 0 1 6 0" stroke="currentColor" stroke-width="1.5"/></svg>';
+  const hot = (a, b) => a === b ? ' hot' : '';
+  function bar({project='Build', workspace='navigation-plan', target='', compact=false, projectPage=false, long=false}={}) {
+    return `<div class="bar${compact?' compact':''}"><div class="inbox" aria-label="Inbox">☰</div><div class="bar-row">
+      <button class="crumb project${projectPage?' solo':''}${hot(target,'project')}"><span>${long?'Build platform':project}</span></button>
+      ${projectPage?'':`<span class="sep">/</span><button class="crumb workspace${hot(target,'workspace')}"><span>${long?'navigation-design-review':workspace}</span><b class="caret">▾</b></button>`}
+      ${compact?(projectPage?'<button class="lock" aria-label="Workspaces">▾</button>':`<button class="lock" aria-label="Workspace unlocked">${lock}</button>`):''}</div>
+      ${compact?'':`<div class="bar-row">${projectPage?'<button class="workspaces">Workspaces ▾</button>':''}<span class="spacer"></span>${projectPage?'':`<button class="lock" aria-label="Workspace unlocked">${lock}</button>`}<button class="switch${hot(target,'switch')}">Switch</button></div>`}</div>`;
+  }
+  function work({project='Build', workspace='navigation-plan', projectPage=false}={}) {
+    const files = project==='Docs' ? ['release-notes.md','getting-started.md'] : workspace==='toolbar-fix' ? ['toolbarRender.js','shell.css'] : ['Navigation Spec.md','UI Design Brief.md'];
+    return `<div class="body"><div class="rail"><div class="rail-icon${projectPage?' active':''}">▤</div><div class="rail-icon${projectPage?'':' active'}">±</div><div class="rail-icon">▱</div>${projectPage?'<div class="rail-icon">▦</div>':''}<div class="rail-icon bottom">⚙</div></div><div class="content">
+    ${projectPage?`<h4>Tasks</h4><div class="sub">Project workspace · Original sources</div><div class="tiles"><div class="metric"><strong>2</strong>Needs you</div><div class="metric"><strong>4</strong>In progress</div></div><div class="sub">IN REVIEW</div><div class="task-tile">#523 · Navigation design<small>Planning · Ready for your decisions</small></div><div class="task-tile">#522 · Project workspace<small>Planning · Ready for your decisions</small></div><div class="sub" style="margin-top:28px">WORKING</div><div class="task-tile">Improve workspace toolbar<small>Agent working</small></div>`:
+    `<h4>Changes</h4><div class="source">${project}</div><div class="branch">⑂ build/${workspace}</div><div class="stats">2 changed files &nbsp; <span class="green">+24</span> &nbsp; <span class="red">−8</span></div>${files.map(name=>`<div class="file"><span class="green">M</span><span class="file-name">${name}</span><span class="green">+12</span></div>`).join('')}<div class="code">Review changes in this workspace.<br><span class="add">+ Keep the next destination clear.</span><span class="add">+ Keep the project within reach.</span></div>`}</div></div>`;
+  }
+  function phone(opts={}) {
+    return `<div class="phone"><div class="status"><span>9:41</span><span>▮▮▮ ▰</span></div><div class="shell">${bar(opts)}${work(opts)}</div><div class="agents"><div class="avatar">P</div><span style="opacity:.3">│</span><div class="avatar dim">N</div><span style="font-size:11px">${opts.projectPage?'Project agent':'Workspace agents'}</span></div><div class="home"></div>${opts.sheet?sheet(opts.sheet,opts.compact):''}${opts.chat?chat(opts.compact):''}</div>`;
+  }
+  function row(name, {meta='',badge='',current=false,active=false}={}) {
+    return `<div class="dest${active?' hot':''}"><span class="name">${name}${meta?`<small>${meta}</small>`:''}</span>${current?'<span class="current">Current</span>':''}${badge?`<span class="badge">${badge}</span>`:''}</div>`;
+  }
+  function sheet(kind,compact=false) {
+    const sibling=kind==='siblings';
+    return `<div class="scrim"></div><div class="sheet"><div class="handle"></div><div class="sheet-head"><strong>${sibling?'Workspaces in Build':'Switch to'}</strong><span class="close">Close</span></div><div class="search">⌕ &nbsp; ${sibling?'Search workspaces':'Search projects or workspaces'}</div><div class="scope"><span>${sibling?'Build':'All projects · All devices'}</span>${sibling?'<b>All projects</b>':''}</div>
+    ${sibling?`${row('Project workspace',{meta:'Return to Build'})}${row('navigation-plan',{current:true})}${row('source-cleanup')}${row('toolbar-fix',{badge:'3',active:true})}`:
+    `<div class="group quiet">Last visited</div>${row('Docs / release-notes',{badge:'2'})}${row('Build / navigation-plan',{current:true})}<div class="group">Build <span class="badge">4</span></div>${row('Project workspace',{badge:'1'})}${row('navigation-plan',{current:true})}${row('toolbar-fix',{badge:'3'})}<div class="group">Docs <span class="badge">2</span></div>${row('Project workspace')}${row('release-notes',{badge:'2',active:true})}`}
+    ${sibling?`<div class="sheet-foot">${compact?'<div class="foot-link">Switch projects… →</div>':''}<div class="foot-link">Manage workspaces →</div><div class="foot-link">New workspace…</div><div class="foot-link">Open review</div></div>`:''}</div>`;
+  }
+  function chat(compact) {
+    return `<div class="chat${compact?' single':''}"><div class="chat-head"><div class="avatar dim">N</div><strong>Navigation planner</strong><span class="spacer"></span><span>×</span></div><div class="chat-text"><p>The navigation plan is ready for review.</p><div class="message">Show me a storyboard of what this flow would look like.</div><p style="margin-top:24px">Here are the three moves: return to the project, select a sibling, or jump directly to another project's workspace.</p><p>The project name remains a separate link in both toolbar options.</p>${compact?'<div class="more-room">44px more conversation fits above the composer.</div>':''}</div><div class="composer">Message the agent…</div></div>`;
+  }
+  function frame(n,title,desc,opts) {
+    const alternative={...opts,compact:true,target:opts.target==='switch'?'workspace':opts.target};
+    const altCaption=opts.sheet==='across'?'B · 44px — workspace → Switch projects… → this list':'B · 44px — Switch is in the workspace menu';
+    return `<article class="frame"><div class="frame-caption"><span class="step">${n}</span><h3>${title}</h3><p>${desc}</p></div><div class="variant">A · 88px — Switch is always visible</div>${phone(opts)}<div class="variant alternate">${altCaption}</div>${phone(alternative)}</article>`;
+  }
+  function singleFrame(n,title,desc,opts) { return `<article class="frame"><div class="frame-caption"><span class="step">${n}</span><h3>${title}</h3><p>${desc}</p></div>${phone(opts)}</article>`; }
+  const scenes = {
+    up: { title:'Go up to the project', budget:'1 tap in either option · Browser Back returns', frames:
+      frame(1,'Start in navigation-plan','Your project and workspace have separate targets.',{})+
+      frame(2,'Tap the project name','The green outline marks the control you touch.',{target:'project'})+
+      frame(3,'Arrive at the project workspace','Its last face returns. Here, that is Tasks.',{projectPage:true}), note:'The project link is a return, not a menu. Browser Back restores the original workspace and exact place. A costs 44px more than B; both keep the project link.' },
+    siblings: {title:'Move sideways within the project',budget:'2 taps · No project-page detour',frames:
+      frame(1,'Tap the workspace name','The name and caret open this project’s siblings.',{target:'workspace'})+
+      frame(2,'Choose toolbar-fix','Current is marked. Unread counts do not reorder rows.',{sheet:'siblings'})+
+      frame(3,'Continue in toolbar-fix','The project stays Build; the workspace changes.',{workspace:'toolbar-fix'}),note:'Project workspace returns up. Manage workspaces opens the management face. This chooser also includes unwatched workspaces.'},
+    across: {title:'Jump straight into another project’s workspace',budget:'A: 2 taps · B: 3 taps · No intermediate page',frames:
+      frame(1,'Tap Switch','A dedicated control reaches all projects and devices.',{target:'switch'})+
+      frame(2,'Choose Docs / release-notes','Search or select the row beneath its project heading.',{sheet:'across'})+
+      frame(3,'Arrive directly in release-notes','Both breadcrumb names change. Back still returns to Build.',{project:'Docs',workspace:'release-notes'}),note:'Last visited is navigation history. The rail’s Recent still means quiet work. Choosing a project’s own row opens its project workspace.'},
+    options: {title:'Decision: always-visible Switch or more chat space?',budget:'Both preserve a real project link',frames:
+      singleFrame('A','Recommended · 88px toolbar','Project/workspace above; lock and Switch below.',{long:true,chat:true})+
+      singleFrame('B','Alternative · 44px toolbar','Keep the lock; move Switch into the workspace menu.',{long:true,compact:true,chat:true})+
+      `<aside class="explanation"><h3>A · Easier to discover</h3><p>All three navigation controls stay visible. Cross-project moves take <strong>two taps</strong>. Long names shorten independently; the caret and lock remain usable.</p><div class="cost">+44px</div><p>Compared with option B.<br>+50px over today’s 38px toolbar.<br>That space comes out of chat and console height.</p><h3>B · More room to read</h3><p>Tap workspace → Switch projects… → destination. Cross-project moves take <strong>three taps</strong> on phone. The desktop Switch and keyboard shortcut stay direct.</p><p>Both examples use long names at the same 390px phone width.</p></aside>`,note:'These are proposed layouts, not screenshots of shipped behavior. Tasks can add a second ancestry row even in option B; neither option hides the project parent.'}
+  };
+  document.querySelector('#scenes').innerHTML=Object.entries(scenes).map(([id,s])=>`<section class="scene" id="scene-${id}" hidden><div class="story-title"><h2>${s.title}</h2><span class="budget">${s.budget}</span></div><div class="frames${id==='options'?' options':''}">${s.frames}</div><p class="note"><strong>Behavior:</strong> ${s.note}</p></section>`).join('');
+  function showScene() {
+    const requested=location.hash.slice(1);
+    const selected=Object.hasOwn(scenes,requested)?requested:'up';
+    document.querySelectorAll('.scene').forEach(el=>el.hidden=el.id!==`scene-${selected}`);
+    document.querySelectorAll('nav a').forEach(el=>{ const active=el.hash===`#${selected}`; el.classList.toggle('active',active); if(active) el.setAttribute('aria-current','page'); else el.removeAttribute('aria-current'); });
+  }
+  window.addEventListener('hashchange',showScene);
+  showScene();
+</script>
+</html>

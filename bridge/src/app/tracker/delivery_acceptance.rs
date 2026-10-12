@@ -170,7 +170,7 @@ impl AppState {
                 || existing.actor != *actor
                 || existing.sender != *sender
             {
-                return Err("operation_id already used with different assignment".into());
+                return Err("conflict: operation_id already used with different assignment".into());
             }
         }
         Ok(existing)
@@ -244,6 +244,9 @@ impl AppState {
             None
         };
         answer["dispatch"] = json!(dispatch);
+        if let Some(warnings) = intent.reservation.get("warnings") {
+            answer["warnings"] = warnings.clone();
+        }
         if matches!(
             intent.state.as_str(),
             "waiting" | "queued" | "provisioning" | "failed"

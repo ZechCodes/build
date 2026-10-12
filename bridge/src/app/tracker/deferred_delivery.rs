@@ -165,7 +165,10 @@ impl AppState {
             if git.invalidates || git.call.invalidates_on_error() {
                 git.call.invalidate(self);
             }
-            settled?;
+            let settled = settled?;
+            if let Some(warnings) = settled.get("warnings") {
+                intent.reservation["warnings"] = warnings.clone();
+            }
             if !self
                 .tracker_store()?
                 .delivery_authority_current(&intent.id, intent.generation)

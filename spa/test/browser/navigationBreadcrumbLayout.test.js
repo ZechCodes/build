@@ -104,6 +104,7 @@ it.each(["workspace", "workspaceTask"])("B4 overlay offsets follow measured %s t
   await session.withPage(async ({ page, basePath }) => {
     await mountNavigationBreadcrumbs(page, basePath, { kind });
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (kind === "workspaceTask") expect((await page.locator("#toolbar").boundingBox()).height).toBe(88);
     const agent = await page.evaluate(() => ({ toolbarBottom: document.querySelector("#toolbar").getBoundingClientRect().bottom, overlayTop: document.querySelector(".rail-panel").getBoundingClientRect().top }));
     expect(Math.abs(agent.overlayTop - agent.toolbarBottom), JSON.stringify(agent)).toBeLessThanOrEqual(1);
     await page.evaluate(() => {

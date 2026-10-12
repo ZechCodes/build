@@ -1,0 +1,11 @@
+# Local dependency/environment/artifact trees are not source.
+node_modules/
+.venv/
+.rift/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.egg-info/
+*.tgz
+*.whl

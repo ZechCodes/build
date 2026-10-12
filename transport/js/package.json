@@ -11,5 +11,11 @@
   },
   "dependencies": {
     "libsodium-wrappers": "^0.7.15"
-  }
+  },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE.md"
+  ]
 }

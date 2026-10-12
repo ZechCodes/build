@@ -1,3 +1,10 @@
+> Historical protocol document imported from the pinned upstream commit in
+> [UPSTREAM.md](UPSTREAM.md). Its relay data plane and relay-owned public-key
+> description predate Build's current topology. See
+> [ARCHITECTURE.md](../ARCHITECTURE.md#system-topology): the API owns
+> presence/device keys, the relay handles signaling, and application traffic
+> uses WebRTC data channels. This annotation changes no crypto behavior.
+
 # E2E Encrypted Messaging - MVP v2
 
 An end-to-end encryption protocol for authenticated message passing between a client session and a device through a zero-trust relay.

@@ -825,6 +825,23 @@ dim dash there rather than a spinner.
 
 ### Task reviews
 
+Task prerequisite storage (#560) lives in `store/waiting_on/`, separate from
+parent links. Schema 16 adds the normalized directed graph, readiness state,
+durable reconciliation cursors, transition receipts and task invalidations.
+Edges are same-project, bounded at 20, and checked for cycles under the store's
+IMMEDIATE write transaction, including edges already resolved by Done or close.
+Forward summaries are batched; reverse reads seek by immutable task number
+with a project/blocker/store-bound cursor.
+
+The common tracker writer journals status, state and title changes, so ordinary
+updates, review lifecycle writes and workspace finish all reach the same
+reconciliation rule. `app/tracker/waiting_on.rs` drains bounded pages at startup
+and after committed writes, off tokio workers, and invalidates affected task
+summaries through the existing change bus. Readiness events preserve Done/close
+provenance and have durable outbox receipts. This storage slice grants no
+assignment delivery authority; durable assignments are the following #561
+slice, and the waiting-on capability remains absent until #562.
+
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
 strict wire selections; `app/tracker/reviews/` resolves project, workspace,

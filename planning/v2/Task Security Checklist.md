@@ -63,6 +63,29 @@ remain scoped to implemented controls. W1–W5 are the children in that plan;
 each supplies regression and gate evidence before its rows count as verified.
 Planning does not earn a security score.
 
+W1 / #560 evidence (2026-10-12): the focused `cargo test -j2 --lib waiting_on
+-- --test-threads=2` run passes. TS558-1's store boundary is covered by
+`waiting_on_same_project_dag_is_atomic` and
+`waiting_on_mixed_link_write_and_reconciliation_page_roll_back`: foreign and
+missing endpoints refuse without task, link or timeline partial writes;
+reverse reads refuse foreign projects and mismatched cursors. TS558-5's store
+boundary is covered by the same DAG test and
+`waiting_on_concurrent_opposite_edges_cannot_cycle`, with distinct SQLite
+connections, resolved-edge cycles, deduplication and the 20-edge bound.
+
+TS558-3's W1 provenance evidence is `waiting_on_close_resolution_reasons`,
+`waiting_on_pending_fan_in_preserves_the_final_cause`,
+`waiting_on_a_readded_edge_is_retained_at_unblock`,
+`waiting_on_fan_out_resumes_after_restart_and_invalidates_titles`, and
+`waiting_on_reconciles_at_startup_without_a_client`. Ordinary moves, explicit
+review completion and workspace finish share the writer in
+`waiting_on_manual_review_completion_and_workspace_finish_share_transitions`.
+`waiting_on_migration_defaults` opens a schema-15 database with old assignments
+and no dependency tables; migration adds no waits, transitions or delivery
+authority. These are W1 proofs only: TS558-1/3/5 still require their W2/W3
+authority and RPC/MCP evidence before the extension is fully verified. W1
+announces no waiting-on capability and provisions no assignment resources.
+
 | ID | Pending control | Required evidence |
 | --- | --- | --- |
 | TS558-1 | Dependency create/add/remove and reverse reads stay within the caller's project; mixed valid/foreign writes fail atomically without exposing foreign titles or identities. | W1/W3: `waiting_on_same_project_dag_is_atomic`, RPC/MCP cross-project create, add, remove, read and partial-write refusal tests. |

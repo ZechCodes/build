@@ -29,17 +29,33 @@ fn change(store: &Store, task: &mut Task, status: &str, state: TaskState) -> Tas
         serde_json::json!({"from":task.status,"to":status}),
         NOW,
     );
+    let mut activity = Vec::new();
+    if task.state != state {
+        activity.push(TaskEvent::new(
+            &task.id,
+            Actor::User,
+            if state == TaskState::Closed {
+                TaskEventKind::Closed
+            } else {
+                TaskEventKind::Reopened
+            },
+            serde_json::json!({}),
+            NOW,
+        ));
+    }
+    activity.push(event.clone());
     task.status = status.into();
     task.state = state;
+    task.closed_at = (state == TaskState::Closed).then(|| NOW.to_string());
     store
-        .save_tracker_task_activity(task, &[], std::slice::from_ref(&event))
+        .save_tracker_task_activity(task, &[], &activity)
         .unwrap();
     drain(store);
     event
 }
 
 fn events(store: &Store, task: &Task, kind: TaskEventKind) -> Vec<TaskEvent> {
-    store
+    let mut events: Vec<_> = store
         .load_tracker_timeline(&task.id)
         .unwrap()
         .into_iter()
@@ -47,7 +63,11 @@ fn events(store: &Store, task: &Task, kind: TaskEventKind) -> Vec<TaskEvent> {
             TimelineEntry::Event(event) if event.kind == kind => Some(event),
             _ => None,
         })
-        .collect()
+        .collect();
+    // Fixtures use historical write timestamps; reconciliation uses the
+    // current clock. Monotonic server ids identify transition order here.
+    events.sort_by(|a, b| a.id.cmp(&b.id));
+    events
 }
 
 #[test]
@@ -211,6 +231,14 @@ fn waiting_on_migration_defaults() {
     old.assignee = Some(crate::tracker::Assignee::ProjectAgent);
     store.save_tracker_task_activity(&old, &[], &[]).unwrap();
     store.set_schema_version(15);
+    store
+        .connection()
+        .execute_batch(
+            "DROP TABLE tracker_dependency_outbox;
+        DROP TABLE tracker_dependency_changes; DROP TABLE tracker_dependency_reconcile;
+        DROP TABLE tracker_dependency_readiness; DROP TABLE tracker_task_dependencies;",
+        )
+        .unwrap();
     drop(store);
     let store = Store::new(dir.path()).unwrap();
     let summary = store.waiting_on_summary(PROJECT, &old.id).unwrap();
@@ -236,14 +264,28 @@ fn waiting_on_concurrent_opposite_edges_cannot_cycle() {
         let barrier = barrier.clone();
         std::thread::spawn(move || {
             barrier.wait();
-            store.edit_waiting_on(PROJECT, &from, &[to], &[], &Actor::User, NOW).is_ok()
+            store
+                .edit_waiting_on(PROJECT, &from, &[to], &[], &Actor::User, NOW)
+                .is_ok()
         })
     };
     let first = thread(store.clone(), a.id.clone(), b.id.clone());
     let second = thread(other, b.id.clone(), a.id.clone());
-    assert_ne!(first.join().unwrap(), second.join().unwrap(), "exactly one opposite edge commits");
-    let count = store.waiting_on_summary(PROJECT, &a.id).unwrap().waiting_on.len()
-        + store.waiting_on_summary(PROJECT, &b.id).unwrap().waiting_on.len();
+    assert_ne!(
+        first.join().unwrap(),
+        second.join().unwrap(),
+        "exactly one opposite edge commits"
+    );
+    let count = store
+        .waiting_on_summary(PROJECT, &a.id)
+        .unwrap()
+        .waiting_on
+        .len()
+        + store
+            .waiting_on_summary(PROJECT, &b.id)
+            .unwrap()
+            .waiting_on
+            .len();
     assert_eq!(count, 1);
 }
 
@@ -252,37 +294,75 @@ fn waiting_on_fan_out_resumes_after_restart_and_invalidates_titles() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let mut blocker = filed(&store, "before");
-    let tasks: Vec<_> = (0..11).map(|n| {
-        let task = filed(&store, &format!("dependent {n}"));
-        add(&store, &task, &[blocker.id.clone()]);
-        task
-    }).collect();
+    let tasks: Vec<_> = (0..11)
+        .map(|n| {
+            let task = filed(&store, &format!("dependent {n}"));
+            add(&store, &task, &[blocker.id.clone()]);
+            task
+        })
+        .collect();
     store.take_waiting_on_changes(100).unwrap();
     blocker.title = "renamed".into();
     blocker.status = "done".into();
-    store.save_tracker_task_activity(&blocker, &[], &[]).unwrap();
+    store
+        .save_tracker_task_activity(&blocker, &[], &[])
+        .unwrap();
     assert!(store.reconcile_waiting_on(2).unwrap().pending);
     assert_eq!(events(&store, &tasks[0], TaskEventKind::Unblocked).len(), 1);
-    assert_eq!(events(&store, &tasks[10], TaskEventKind::Unblocked).len(), 0);
+    assert_eq!(
+        events(&store, &tasks[10], TaskEventKind::Unblocked).len(),
+        0
+    );
     drop(store);
     let store = Store::new(dir.path()).unwrap();
     drain(&store);
     let changes = store.take_waiting_on_changes(100).unwrap();
     for task in &tasks {
         assert_eq!(events(&store, task, TaskEventKind::Unblocked).len(), 1);
-        assert_eq!(store.waiting_on_summary(PROJECT, &task.id).unwrap().waiting_on[0].title, "renamed");
+        assert_eq!(
+            store
+                .waiting_on_summary(PROJECT, &task.id)
+                .unwrap()
+                .waiting_on[0]
+                .title,
+            "renamed"
+        );
         assert!(changes.iter().any(|(_, id)| id == &task.id));
     }
-    let page = store.waiting_on_blocks(PROJECT, &blocker.id, 3, None).unwrap();
-    assert_eq!(page.blocks.iter().map(|d| d.number).collect::<Vec<_>>(), vec![2,3,4]);
+    let page = store
+        .waiting_on_blocks(PROJECT, &blocker.id, 3, None)
+        .unwrap();
+    assert_eq!(
+        page.blocks.iter().map(|d| d.number).collect::<Vec<_>>(),
+        vec![2, 3, 4]
+    );
     let cursor = page.next_cursor.unwrap();
-    let next = store.waiting_on_blocks(PROJECT, &blocker.id, 100, Some(&cursor)).unwrap();
+    let next = store
+        .waiting_on_blocks(PROJECT, &blocker.id, 100, Some(&cursor))
+        .unwrap();
     assert_eq!(next.blocks.len(), 8);
-    assert!(store.waiting_on_blocks(PROJECT, &tasks[0].id, 3, Some(&cursor)).is_err());
-    assert!(store.waiting_on_blocks("/foreign", &blocker.id, 3, None).is_err());
-    let summaries = store.waiting_on_summaries(PROJECT, &tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>()).unwrap();
-    assert!(summaries.values().all(|s| !s.blocked && s.waiting_on.len() == 1));
-    assert_eq!(store.waiting_on_summary(PROJECT, &blocker.id).unwrap().blocks_count, 11);
+    assert!(store
+        .waiting_on_blocks(PROJECT, &tasks[0].id, 3, Some(&cursor))
+        .is_err());
+    assert!(store
+        .waiting_on_blocks("/foreign", &blocker.id, 3, None)
+        .is_err());
+    let summaries = store
+        .waiting_on_summaries(
+            PROJECT,
+            &tasks.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+    assert!(summaries
+        .values()
+        .all(|s| !s.blocked && s.waiting_on.len() == 1));
+    assert_eq!(
+        store
+            .waiting_on_summary(PROJECT, &blocker.id)
+            .unwrap()
+            .blocks_count,
+        11
+    );
 }
 
 #[test]
@@ -291,11 +371,22 @@ fn waiting_on_mixed_link_write_and_reconciliation_page_roll_back() {
     let store = Store::new(dir.path()).unwrap();
     let a = filed(&store, "original");
     let mut b = filed(&store, "blocker");
-    let foreign = store.create_tracker_task(Task::drafted("/foreign", "secret", Actor::User, NOW), &[]).unwrap();
+    let foreign = store
+        .create_tracker_task(Task::drafted("/foreign", "secret", Actor::User, NOW), &[])
+        .unwrap();
     let mut changed = a.clone();
     changed.title = "must roll back".into();
     changed.links.branches.push("new-link".into());
-    assert!(store.save_tracker_task_waiting_on(&changed, &[], &[], &[b.id.clone(), foreign.id], &[], &Actor::User).is_err());
+    assert!(store
+        .save_tracker_task_waiting_on(
+            &changed,
+            &[],
+            &[],
+            &[b.id.clone(), foreign.id],
+            &[],
+            &Actor::User
+        )
+        .is_err());
     assert_eq!(store.load_tracker_task(&a.id).unwrap().unwrap(), a);
     add(&store, &a, &[b.id.clone()]);
     b.status = "done".into();
@@ -303,7 +394,64 @@ fn waiting_on_mixed_link_write_and_reconciliation_page_roll_back() {
     store.connection().execute_batch("CREATE TRIGGER refuse_unblock BEFORE INSERT ON tracker_dependency_outbox BEGIN SELECT RAISE(ABORT, 'fault'); END;").unwrap();
     assert!(store.reconcile_waiting_on(2).is_err());
     assert!(events(&store, &a, TaskEventKind::Unblocked).is_empty());
-    store.connection().execute_batch("DROP TRIGGER refuse_unblock;").unwrap();
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER refuse_unblock;")
+        .unwrap();
     drain(&store);
     assert_eq!(events(&store, &a, TaskEventKind::Unblocked).len(), 1);
+}
+
+#[test]
+fn waiting_on_pending_fan_in_preserves_the_final_cause() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let a = filed(&store, "dependent");
+    let mut b = filed(&store, "first");
+    let mut c = filed(&store, "last");
+    add(&store, &a, &[b.id.clone(), c.id.clone()]);
+    let mut causes = Vec::new();
+    for task in [&mut b, &mut c] {
+        let event = TaskEvent::new(
+            &task.id,
+            Actor::User,
+            TaskEventKind::Moved,
+            serde_json::json!({"from":"backlog", "to":"done"}),
+            NOW,
+        );
+        task.status = "done".into();
+        store
+            .save_tracker_task_activity(task, &[], std::slice::from_ref(&event))
+            .unwrap();
+        causes.push(event.id);
+    }
+    drain(&store);
+    let unblocked = events(&store, &a, TaskEventKind::Unblocked);
+    assert_eq!(unblocked.len(), 1);
+    let admitted = unblocked[0].payload["cause_event_ids"].as_array().unwrap();
+    assert!(
+        admitted.contains(&serde_json::json!(causes[1])),
+        "delayed reconciliation must retain the event that released the final blocker"
+    );
+}
+
+#[test]
+fn waiting_on_a_readded_edge_is_retained_at_unblock() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let a = filed(&store, "dependent");
+    let mut b = filed(&store, "temporarily removed");
+    let mut c = filed(&store, "last");
+    add(&store, &a, &[b.id.clone(), c.id.clone()]);
+    store
+        .edit_waiting_on(PROJECT, &a.id, &[], &[b.id.clone()], &Actor::User, NOW)
+        .unwrap();
+    add(&store, &a, &[b.id.clone()]);
+    change(&store, &mut b, "done", TaskState::Open);
+    change(&store, &mut c, "done", TaskState::Open);
+    let unblocked = events(&store, &a, TaskEventKind::Unblocked);
+    assert_eq!(
+        unblocked[0].payload["removed_task_ids"],
+        serde_json::json!([])
+    );
 }

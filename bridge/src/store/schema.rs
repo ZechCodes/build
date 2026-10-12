@@ -248,6 +248,44 @@ CREATE TABLE IF NOT EXISTS tracker_events (
 CREATE INDEX IF NOT EXISTS tracker_events_by_task
     ON tracker_events(task_id, at, id);
 
+-- W1: the relation is the sole writable dependency authority. Old tasks
+-- acquire neither edges nor dispatch authority when these empty tables land.
+CREATE TABLE IF NOT EXISTS tracker_task_dependencies (
+    task_id TEXT NOT NULL REFERENCES tracker_tasks(id) ON DELETE CASCADE,
+    waiting_on_task_id TEXT NOT NULL REFERENCES tracker_tasks(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    task_number INTEGER NOT NULL,
+    PRIMARY KEY(task_id, waiting_on_task_id),
+    CHECK(task_id <> waiting_on_task_id)
+);
+CREATE INDEX IF NOT EXISTS tracker_dependencies_reverse
+    ON tracker_task_dependencies(waiting_on_task_id, task_number);
+CREATE TABLE IF NOT EXISTS tracker_dependency_readiness (
+    task_id TEXT PRIMARY KEY REFERENCES tracker_tasks(id) ON DELETE CASCADE,
+    blocked INTEGER NOT NULL DEFAULT 0,
+    removed_task_ids TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS tracker_dependency_reconcile (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_task_id TEXT NOT NULL REFERENCES tracker_tasks(id) ON DELETE CASCADE,
+    after_number INTEGER NOT NULL DEFAULT 0,
+    self_done INTEGER NOT NULL DEFAULT 0,
+    fanout INTEGER NOT NULL DEFAULT 1,
+    at TEXT NOT NULL,
+    cause_event_ids TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS tracker_reconcile_by_source
+    ON tracker_dependency_reconcile(source_task_id, id DESC);
+-- Transition receipts are retained for W2 to admit notices/delivery. A read
+-- or an old assignment can never create one.
+CREATE TABLE IF NOT EXISTS tracker_dependency_outbox (
+    event_id TEXT PRIMARY KEY REFERENCES tracker_events(id) ON DELETE CASCADE,
+    task_id TEXT NOT NULL REFERENCES tracker_tasks(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS tracker_dependency_changes (
+    task_id TEXT PRIMARY KEY REFERENCES tracker_tasks(id) ON DELETE CASCADE
+);
+
 -- One task review names one workspace. Snapshots are separate rows so adding
 -- one never rewrites older metadata. Git bodies and patches stay in Git.
 CREATE TABLE IF NOT EXISTS reviews (

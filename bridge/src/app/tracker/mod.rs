@@ -31,6 +31,7 @@ mod said;
 mod tools;
 mod tracking;
 mod views;
+mod waiting_on;
 
 #[cfg(test)]
 pub(in crate::app) use agent_files::between_check_and_copy;

@@ -866,6 +866,7 @@ impl AppState {
         // runs off this mutex.
         ChangeBus::spawn_flusher_on(Arc::clone(&changes), push_runtime);
         WorktreeWatchers::spawn_reconciler(watchers, changes);
+        Self::spawn_waiting_on_service(&state);
         state
     }
 

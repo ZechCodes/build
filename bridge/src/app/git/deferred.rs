@@ -22,10 +22,10 @@ pub(in crate::app) struct DeferredGit {
 
 impl GitCallScope for GitScope {
     fn mutation_path(&self) -> Option<&std::path::Path> {
-        // Legacy project-only scope reaches the same original source.
-        (self.source.is_some()
-            || (self.project_id.is_some() && self.run.is_none() && self.worktree.is_none()))
-        .then_some(self.repo_path.as_path())
+        // Selector identity does not determine repository identity: adopted
+        // workspace aliases can reach the original source, and linked worktrees
+        // share refs. SyncLock canonicalizes the resolved common Git directory.
+        Some(self.repo_path.as_path())
     }
 
     fn validate(&self, app: &AppState) -> Result<(), String> {

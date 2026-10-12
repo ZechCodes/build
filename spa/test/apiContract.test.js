@@ -31,6 +31,7 @@ describe("the v1 adapter against fixtures/api/v1", () => {
   it("announces terminal source selectors independently of Git and Files", () => {
     const greeting = methodFixtures.find(({ body }) => body.method === "session.hello").body;
     expect(greeting.result.capabilities).toContain("term.projectSources");
+    expect(v1.capabilitiesOf(greeting.result).term.projectSources).toBe(true);
     for (const method of ["term.create", "term.list", "term.attach", "term.close"]) {
       const fixture = methodFixtures.find(({ body }) => body.method === method)?.body;
       expect(fixture.project_sources).toMatchObject({

@@ -154,6 +154,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       projectSources: names.has("changes.projectSources"),
     },
     git: { projectSources: names.has("git.projectSources") },
+    term: { projectSources: names.has("term.projectSources") },
     fs: {
       projectSources: names.has("fs.projectSources"),
       projectSourcePath: names.has("fs.projectSourcePath"),

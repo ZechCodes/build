@@ -159,6 +159,7 @@ impl GitScope {
     fn source_changeset(self) -> ReadSubject {
         match self.source {
             Some(source) => ReadSubject::Project {
+                key_namespace: Some(project_source_namespace(&source)),
                 project_id: source.project_id,
                 repo_path: self.repo_path,
             },
@@ -184,6 +185,30 @@ impl GitScope {
         } else {
             Ok(payload)
         }
+    }
+
+    /// `git.unpushed` for this scope. A project source answers its
+    /// `diff_key` and every `content_key` in its namespace, as the pushed
+    /// summary does; a workspace directory keeps the raw keys its narrowed
+    /// `git.changeset_diff` agrees with.
+    fn unpushed_payload(
+        &self,
+        if_diff_key: Option<&str>,
+        with_patch: bool,
+    ) -> Result<Value, String> {
+        let Some(namespace) = self.source.as_ref().map(project_source_namespace) else {
+            return crate::gitgui::unpushed_payload(&self.repo_path, if_diff_key, with_patch);
+        };
+        let key = namespaced_key(&namespace, &crate::gitgui::unpushed_key(&self.repo_path)?);
+        if if_diff_key == Some(key.as_str()) {
+            return Ok(json!({ "unchanged": true, "diff_key": key }));
+        }
+        let mut payload = namespace_payload_keys(
+            &namespace,
+            crate::gitgui::unpushed_payload(&self.repo_path, None, with_patch)?,
+        );
+        payload["diff_key"] = json!(key);
+        Ok(payload)
     }
 
     fn file_patches(&self, paths: &[String]) -> Result<Value, String> {
@@ -296,6 +321,7 @@ impl AppState {
         Ok(ReadSubject::Project {
             project_id,
             repo_path,
+            key_namespace: None,
         })
     }
 
@@ -644,8 +670,7 @@ impl AppState {
     /// Every local change not represented by the checkout's push destination.
     pub(crate) fn git_unpushed(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
-            crate::gitgui::unpushed_payload(
-                &scope.repo_path,
+            scope.unpushed_payload(
                 params.get("if_diff_key").and_then(Value::as_str),
                 // Absent means yes: a client that has not heard of the flag
                 // is answered exactly as it always was.

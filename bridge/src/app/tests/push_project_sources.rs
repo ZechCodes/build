@@ -177,6 +177,18 @@ async fn project_source_changes_keep_secondary_and_plain_roots_distinct() {
         "a pushed key is the key the source's own git.status answers"
     );
     assert_eq!(git_item["git"]["status"]["path"], status["result"]["path"]);
+    let unpushed = call(
+        &handler,
+        "git.unpushed",
+        json!({
+            "project_id": project_id, "source_id": "source-2",
+            "source_path": second_scope["source_path"], "patch": false,
+        }),
+    );
+    assert_eq!(
+        git_item["git"]["unpushed"]["diff_key"], unpushed["result"]["diff_key"],
+        "a pushed unpublished key is the key the source's own git.unpushed answers"
+    );
     let file_item = second_items
         .iter()
         .find(|item| names_path(item, "second.txt"))

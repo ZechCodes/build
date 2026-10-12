@@ -43,6 +43,7 @@ impl CheckoutSubject {
         let diff = source.is_git.then(|| ReadSubject::Project {
             project_id: source.project_id,
             repo_path: source.root.clone(),
+            key_namespace: Some(namespace.clone()),
         });
         Self {
             root: source.root,
@@ -85,7 +86,12 @@ fn read_git(subject: &CheckoutSubject, diff: &ReadSubject, fact: &mut EntityFact
         None,
     )
     .ok();
-    fact.unpushed = unpushed_summary(&subject.root).ok();
+    fact.unpushed = unpushed_summary(&subject.root).ok().map(|mut summary| {
+        if let (Some(namespace), Some(key)) = (&subject.namespace, summary["diff_key"].as_str()) {
+            summary["diff_key"] = json!(namespaced_key(namespace, key));
+        }
+        summary
+    });
     (fact.diff, fact.diff_bytes) = read_worktree_diff(diff);
 }
 
@@ -422,6 +428,7 @@ impl AppState {
                     diff: Some(ReadSubject::Project {
                         project_id: project.id.clone(),
                         repo_path: project.repo_path.clone(),
+                        key_namespace: None,
                     }),
                     namespace: None,
                 },

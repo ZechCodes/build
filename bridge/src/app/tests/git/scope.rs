@@ -577,3 +577,104 @@ fn project_source_git_serves_an_unborn_repository() {
         "{log:?}"
     );
 }
+
+#[test]
+fn review_550_equivalent_source_spellings_preserve_scope() {
+    let mut sources = project_sources();
+    let scope = sources.scope("source-2");
+    let alias = sources.dir.path().join("second-alias");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&sources.second, &alias).unwrap();
+    let spellings = [
+        sources.second.join(".").display().to_string(),
+        format!("{}/", sources.second.display()),
+        alias.display().to_string(),
+    ];
+    for spelling in spellings {
+        let update = sources.state.handle(req(
+            "project.update_source",
+            json!({"project_id": sources.project_id, "source_id": "source-2", "path": spelling}),
+        ));
+        assert_eq!(update["ok"], true, "{update}");
+        assert_eq!(sources.scope("source-2"), scope);
+        assert_eq!(sources.call("git.status", &scope, json!({}))["ok"], true);
+    }
+}
+
+#[test]
+fn review_550_changeset_content_keys_are_source_qualified() {
+    let (mut sources, first, second) = same_edit_in_both();
+    let first_diff = sources.call("git.changeset_diff", &first, json!({"paths": ["same.txt"]}));
+    let second_diff = sources.call(
+        "git.changeset_diff",
+        &second,
+        json!({"paths": ["same.txt"]}),
+    );
+    assert_eq!(first_diff["ok"], true, "{first_diff}");
+    assert_eq!(second_diff["ok"], true, "{second_diff}");
+    let a = &first_diff["result"]["files"][0]["content_key"];
+    let b = &second_diff["result"]["files"][0]["content_key"];
+    assert!(a.is_string() && b.is_string());
+    assert_ne!(a, b, "source changeset keys must include source identity");
+}
+
+/// `git.unpushed` answers a project source's keys in its namespace too: the
+/// same unpublished edit in two sources shares neither a `diff_key` nor a
+/// `content_key`, and a source's own key still reads as unchanged (#550).
+#[test]
+fn project_source_unpushed_keys_are_source_qualified() {
+    let (mut sources, first, second) = same_edit_in_both();
+    let [first_read, second_read] = [&first, &second].map(|scope| {
+        let read = sources.call("git.unpushed", scope, json!({ "patch": false }));
+        assert_eq!(read["ok"], true, "{read:?}");
+        read["result"].clone()
+    });
+    assert!(first_read["diff_key"].is_string(), "{first_read:?}");
+    assert_ne!(first_read["diff_key"], second_read["diff_key"]);
+    let content_key = |read: &Value| read["files"][0]["content_key"].clone();
+    assert!(content_key(&first_read).is_string(), "{first_read:?}");
+    assert_ne!(content_key(&first_read), content_key(&second_read));
+    let held = sources.call(
+        "git.unpushed",
+        &second,
+        json!({ "if_diff_key": second_read["diff_key"] }),
+    );
+    assert_eq!(
+        held["result"],
+        json!({ "unchanged": true, "diff_key": second_read["diff_key"] }),
+        "{held:?}"
+    );
+}
+
+#[test]
+fn review_550_same_root_aliases_keep_distinct_status_keys() {
+    let mut sources = project_sources();
+    let mut rows = sources.state.project_at(0).sources.clone();
+    rows[1].path = sources.primary.clone();
+    assert!(sources
+        .state
+        .projects
+        .set_sources(&sources.project_id, rows));
+    let first = sources.scope("source-1");
+    let second = sources.scope("source-2");
+    let a = sources.call("git.status", &first, json!({}));
+    let b = sources.call("git.status", &second, json!({}));
+    assert_eq!(a["ok"], true);
+    assert_eq!(b["ok"], true);
+    assert_eq!(a["result"]["path"], b["result"]["path"]);
+    assert_ne!(a["result"]["status_key"], b["result"]["status_key"]);
+}
+
+#[test]
+fn review_550_malformed_selectors_refuse() {
+    let mut sources = project_sources();
+    let second = sources.scope("source-2");
+    for field in ["project_id", "source_id", "source_path"] {
+        for value in [json!(""), json!(false), json!(17), json!([]), json!({})] {
+            let mut bad = second.clone();
+            bad[field] = value;
+            let reply = sources.call("git.status", &bad, json!({}));
+            assert_eq!(reply["error_code"], "invalid_params", "{bad}: {reply}");
+        }
+    }
+}

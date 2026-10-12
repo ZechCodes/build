@@ -1064,6 +1064,7 @@ async fn a_git_item_carries_the_shapes_the_client_would_have_pulled() {
     let diff = crate::app::ReadSubject::Project {
         project_id: project_id.clone(),
         repo_path,
+        key_namespace: None,
     }
     .render(crate::diff::DiffPaths::All)
     .expect("the project's working diff renders");

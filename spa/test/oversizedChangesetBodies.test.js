@@ -83,6 +83,28 @@ it("leaves unreached aggregate paths uncached until their own wire bodies and pa
   bodies.dispose();
 });
 
+it("refetches an empty incomplete body left in the cache by an older truncated aggregate", async () => {
+  const path = "unreached.txt";
+  const currentKey = "current";
+  const recoveredPatch = patch(path, "recovered body");
+  await pages.writeBodyPages(address(path), pages.textPagesOf("", { of: "whole", cut: true }));
+  await cache.writeCached(address(path), { content_key: currentKey, paged: true, of: "whole", truncated: true });
+  expect(await pages.readBodyPages(address(path), "whole")).toMatchObject({ end: 0, total: null, complete: false });
+  const fetchFiles = vi.fn(async () => ({ files: [{ path, content_key: currentKey }], patch: recoveredPatch }));
+  const bodies = createChangesetBodies({ addressOf: address, keyFor: () => currentKey, fetchFiles });
+  const views = [{ path, contentKey: currentKey }];
+  try {
+    await bodies.sync(views, allOpen(views));
+    await bodies.sync(views, allOpen(views));
+
+    expect(fetchFiles).toHaveBeenCalledExactlyOnceWith([path]);
+    expect(bodies.bodyOf(path)).toMatchObject({ content_key: currentKey, patch: recoveredPatch });
+    expect((await cache.readCached(address(path))).value.paged).toBeUndefined();
+  } finally {
+    bodies.dispose();
+  }
+});
+
 it("retries a rejected oversized fill and keeps the recovered page head", async () => {
   const fetchFiles = vi.fn().mockRejectedValueOnce(new Error("transport hiccup"))
     .mockImplementation(async (_paths, { range } = {}) => range

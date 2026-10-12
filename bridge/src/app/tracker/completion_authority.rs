@@ -8,6 +8,7 @@ pub(in crate::app) struct TaskCompletionAuthority {
     task_id: String,
     entity_id: String,
     conversation_id: String,
+    thread_id: String,
     intent_id: String,
     generation: u64,
     operation_id: String,
@@ -47,7 +48,9 @@ impl AppState {
         if self
             .pending_task_completion_authority
             .get(agent_id)
-            .is_some_and(|pending| pending.authority.operation_id == authority.operation_id)
+            .is_some_and(|pending| {
+                pending.authority.operation_id == authority.operation_id || pending.consumed
+            })
         {
             return;
         }
@@ -78,6 +81,13 @@ impl AppState {
         {
             return;
         }
+        if self
+            .task_completion_authority
+            .get(agent_id)
+            .is_some_and(|active| active.operation_id == operation_id)
+        {
+            return;
+        }
         let intent = self.store.as_ref().and_then(|store| {
             store
                 .delivery_intent_for_operation(operation_id)
@@ -90,6 +100,15 @@ impl AppState {
             .is_none()
         {
             return;
+        }
+        // Only actual consumption may replace a different consumed pending
+        // turn. Merely accepting another assignment cannot overwrite it.
+        if self
+            .pending_task_completion_authority
+            .get(agent_id)
+            .is_some_and(|pending| pending.authority.operation_id != operation_id)
+        {
+            self.pending_task_completion_authority.remove(agent_id);
         }
         let reconstructing = !self
             .pending_task_completion_authority
@@ -156,9 +175,15 @@ impl AppState {
         agent_id: &str,
         intent_id: &str,
     ) -> Option<TaskCompletionAuthority> {
-        self.entity_agents(entity_id).ok()?.by_id(agent_id)?;
+        let project = self.project_of(entity_id).ok()?;
+        if self.live_task_delivery_agent(&project, agent_id).ok()? != entity_id {
+            return None;
+        }
         let store = self.store.as_ref()?;
         let intent = store.load_delivery_intent(intent_id).ok()??;
+        if self.tracker_project_path(&project).ok()? != intent.project_path {
+            return None;
+        }
         if !store
             .delivery_authority_current(intent_id, intent.generation)
             .ok()?
@@ -170,10 +195,12 @@ impl AppState {
         let address = self
             .resolve_conversation_address(entity_id, Some(agent_id))
             .ok()?;
+        let thread_id = intent.admitted.as_ref()?["params"]["thread_id"].as_str()?;
         if receipt.method != crate::operation::THREAD_POST_METHOD
             || delivery.owner_id != entity_id
             || delivery.agent_id != agent_id
             || receipt.conversation_id != address.conversation_id
+            || self.conversation_at(&address).ok()?.id != thread_id
             || delivery.payload.is_none()
         {
             return None;
@@ -182,6 +209,7 @@ impl AppState {
             task_id: intent.task_id,
             entity_id: entity_id.to_string(),
             conversation_id: receipt.conversation_id,
+            thread_id: thread_id.to_string(),
             intent_id: intent.id,
             generation: intent.generation,
             operation_id: intent.operation_id,
@@ -204,11 +232,16 @@ impl AppState {
         if authority.entity_id != entity_id {
             return None;
         }
-        self.entity_agents(entity_id).ok()?.by_id(agent_id)?;
+        let project = self.project_of(entity_id).ok()?;
+        if self.live_task_delivery_agent(&project, agent_id).ok()? != entity_id {
+            return None;
+        }
         let address = self
             .resolve_conversation_address(entity_id, Some(agent_id))
             .ok()?;
-        if authority.conversation_id != address.conversation_id {
+        if authority.conversation_id != address.conversation_id
+            || authority.thread_id != self.conversation_at(&address).ok()?.id
+        {
             return None;
         }
         let store = self.store.as_ref()?;

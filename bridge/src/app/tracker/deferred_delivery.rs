@@ -397,7 +397,11 @@ impl AppState {
         entity: &str,
         agent: &str,
     ) -> Result<(), String> {
-        if !self.tracker_store()?.delivery_authority_current(&intent.id, intent.generation).stored()? {
+        if !self
+            .tracker_store()?
+            .delivery_authority_current(&intent.id, intent.generation)
+            .stored()?
+        {
             return Ok(());
         }
         let (project, task) = self.tracker_task(&intent.task_id)?;
@@ -481,9 +485,13 @@ impl AppState {
         error: &str,
     ) -> Result<(), String> {
         let store = self.tracker_store()?;
-        let authorized = store.delivery_intent_is_current(&intent.id, intent.generation).stored()?
+        let authorized = store
+            .delivery_intent_is_current(&intent.id, intent.generation)
+            .stored()?
             || (self.operation_receipt(&intent.operation_id)?.is_some()
-                && store.delivery_authority_current(&intent.id, intent.generation).stored()?);
+                && store
+                    .delivery_authority_current(&intent.id, intent.generation)
+                    .stored()?);
         if !authorized {
             return Ok(());
         }

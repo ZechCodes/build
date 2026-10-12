@@ -44,6 +44,9 @@ pub(in crate::app) struct ProjectRegistry {
     entity_project: HashMap<String, String>,
     entity_project_path: HashMap<String, String>,
     next_project: u64,
+    /// The configuration of each project whose folder was away when it was
+    /// loaded, kept verbatim so every save writes it back until it returns.
+    parked: Vec<serde_json::Value>,
 }
 
 impl ProjectRegistry {
@@ -53,6 +56,45 @@ impl ProjectRegistry {
             entity_project: HashMap::new(),
             entity_project_path: HashMap::new(),
             next_project: 1,
+            parked: Vec::new(),
+        }
+    }
+
+    /// Keep one project's configuration while its folder is away.
+    pub(in crate::app) fn park(&mut self, entry: serde_json::Value) {
+        self.parked.push(entry);
+    }
+
+    /// The configuration of every project whose folder is away.
+    pub(in crate::app) fn parked(&self) -> &[serde_json::Value] {
+        &self.parked
+    }
+
+    /// Take the parked configurations `returned` says are back.
+    pub(in crate::app) fn take_returned(
+        &mut self,
+        returned: impl Fn(&serde_json::Value) -> bool,
+    ) -> Vec<serde_json::Value> {
+        let (back, away) = std::mem::take(&mut self.parked)
+            .into_iter()
+            .partition(|entry| returned(entry));
+        self.parked = away;
+        back
+    }
+
+    /// Bind every entity a boot could bind to no project, because the
+    /// folder its record names was away, to `project_id` standing at `repo`.
+    pub(in crate::app) fn bind_retained_entities(&mut self, project_id: &str, repo: &Path) {
+        let unbound: Vec<String> = self
+            .entity_project_path
+            .iter()
+            .filter(|(entity_id, _)| !self.entity_project.contains_key(*entity_id))
+            .filter(|(_, path)| std::fs::canonicalize(path).is_ok_and(|path| path == repo))
+            .map(|(entity_id, _)| entity_id.clone())
+            .collect();
+        for entity_id in unbound {
+            self.entity_project
+                .insert(entity_id, project_id.to_string());
         }
     }
 

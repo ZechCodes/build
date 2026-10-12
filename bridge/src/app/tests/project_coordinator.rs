@@ -628,8 +628,8 @@ fn a_missing_project_scratch_is_recreated_and_keeps_the_pin() {
 /// primary source neither retires the owner nor forgets which agent is its
 /// coordinator. The pin keeps the project surface and every refusal, a worker
 /// still cannot start without the sources, and once the folder is back —
-/// added again within the boot, or found at the next — the project answers
-/// the same owner and the same pin.
+/// found again within the boot, or at the next — the project answers the
+/// same owner and the same pin.
 #[tokio::test]
 async fn a_boot_without_the_primary_source_keeps_the_pins_purpose() {
     let (_home, repo) = a_repo();
@@ -647,7 +647,10 @@ async fn a_boot_without_the_primary_source_keeps_the_pins_purpose() {
     {
         let mut state = booted(&state_root);
         std::fs::rename(&away, &repo).unwrap();
-        let project_id = added_project(&mut state, &repo);
+        // Nothing is added again: the list finds the folder back (#533).
+        let listed = state.handle(req("project.list", json!({})));
+        assert_eq!(listed["ok"], true, "{listed:?}");
+        let project_id = state.projects.project_id_of(&owner).unwrap().to_string();
         assert_eq!(ensure(&mut state, &project_id), owner);
         assert_eq!(state.project_pin(&owner), Some(pin.as_str()));
     }

@@ -316,6 +316,8 @@ fn session_scoped(
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
+            #[cfg(test)]
+            pause_terminal_create_after_admission(state, timer);
             let created = term_create(state, params, timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
@@ -433,6 +435,14 @@ pub(in crate::app) fn missing_param(key: &str) -> String {
 
 const PROJECT_DELETION_IN_PROGRESS: &str =
     "a project is being deleted; retry after deletion completes";
+
+#[cfg(test)]
+fn pause_terminal_create_after_admission(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
+    let gate = timer.lock(state).terminal_create_admission_gate.clone();
+    if let Some(gate) = gate {
+        gate.arrive();
+    }
+}
 
 /// Keep observations and session subscriptions available during filesystem cleanup.
 /// New verbs default to blocked until their read-only behavior is established.

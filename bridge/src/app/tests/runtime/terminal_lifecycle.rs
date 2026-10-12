@@ -1287,3 +1287,48 @@ async fn a_source_move_in_flight_holds_new_shells_back() {
     let reopened = call(&handler, "term.create", renewed);
     assert_eq!(reopened["ok"], true, "{reopened:?}");
 }
+
+/// RPC admission passed before deletion collected its retirements. The source
+/// stays on disk after deletion, so missing-root reaping cannot rescue a shell
+/// spawned after that collection. Pause at the actual dispatch boundary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_admitted_source_terminal_create_cannot_outlive_project_deletion() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let selector = source_selector(&state, &sourced.project_id, "source-2");
+    let (gate, paused) = OffLockGate::new();
+    state.lock().unwrap().terminal_create_admission_gate = Some(gate);
+    let creating = {
+        let handler = handler.clone();
+        std::thread::spawn(move || call(&handler, "term.create", selector))
+    };
+    paused.wait_for_arrival();
+
+    let deletion = json!({ "project_id": sourced.project_id, "confirm": true });
+    let cleanup = {
+        let mut app = state.lock().unwrap();
+        assert_eq!(app.shell_tab_count(), 0);
+        app.project_delete(&deletion).unwrap();
+        assert!(app.project_deletion_in_progress);
+        app.take_deferred().unwrap()
+    };
+    paused.release();
+    let created = creating.join().unwrap();
+    let during_count = state.lock().unwrap().shell_tab_count();
+    let done = cleanup.run();
+    let after_count = {
+        let mut app = state.lock().unwrap();
+        app.apply_deferred("project.delete", &deletion, done).unwrap();
+        assert!(app.project(&sourced.project_id).is_none());
+        app.shell_tab_count()
+    };
+    // Clean up the orphan even when demonstrating the unfixed race.
+    if let Some(term_id) = created["result"]["term_id"].as_str() {
+        call(&handler, "term.close", json!({ "term_id": term_id }));
+    }
+    assert!(sourced.second.exists(), "deletion preserves original sources");
+    assert_eq!(after_count, 0, "deletion orphaned a source PTY: {created:?}");
+    assert_eq!(during_count, 0);
+    assert_eq!(created["error_code"], "unavailable", "{created:?}");
+}

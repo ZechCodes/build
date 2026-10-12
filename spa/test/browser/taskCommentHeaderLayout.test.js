@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { captureLayout, openLayoutSession } from "./layoutHarness.mjs";
 import { deviceShim } from "./taskIdentityHarness.mjs";
-import { LONG, SHORT, commentGeometry, modes, mountCommentHeaderPage, parkComment } from "./taskCommentHeaderFixture.mjs";
+import { LONG, SHORT, commentGeometry, modes, mountCommentHeaderPage, parkComment, updateCommentTaskIdentity, updateCommentTaskTitle } from "./taskCommentHeaderFixture.mjs";
 
 let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [deviceShim] }); }, 30_000);
@@ -16,10 +16,12 @@ function expectReplyHeader(geometry) {
   expect(geometry.accessibleLabel).toBe("Reply");
   expect(geometry.card.right - geometry.button.right, "reply occupies the right edge of its card").toBeLessThanOrEqual(16);
   expect(geometry.button.left).toBeGreaterThanOrEqual(geometry.header.left);
+  expect(geometry.actor.right, "actor identity leaves room for the reply icon").toBeLessThanOrEqual(geometry.button.left);
   expect(geometry.button.right).toBeLessThanOrEqual(geometry.viewport.width);
   expect(geometry.button.top).toBeGreaterThanOrEqual(geometry.header.top - 1);
   expect(geometry.button.bottom).toBeLessThanOrEqual(geometry.header.bottom + 1);
   expect(geometry.documentWidth, "comments must not widen the phone viewport").toBeLessThanOrEqual(geometry.viewport.width + 1);
+  expect(geometry.paneScrollLeft, "the task pane must not scroll horizontally").toBe(0);
 }
 
 function expectPinned(geometry) {
@@ -72,6 +74,22 @@ for (const mode of modes) {
       await parkComment(page, SHORT, 100);
       const passed = await commentGeometry(page, LONG);
       expect(passed.header.bottom, "the long comment header is no longer visible").toBeLessThan(passed.pageHead.bottom);
+
+      await parkComment(page, LONG, 900);
+      const initialHead = (await commentGeometry(page, LONG)).pageHead.height;
+      await updateCommentTaskTitle(page, "Comment header measurement follows a wrapped cached task title. ".repeat(4));
+      await parkComment(page, LONG, 900);
+      const wrapped = await commentGeometry(page, LONG);
+      expect(wrapped.pageHead.height, "cached title changes the measured task head height").toBeGreaterThan(initialHead + 20);
+      expectPinned(wrapped);
+      await page.setViewportSize({ width: mode.width === 390 ? 1280 : 390, height: mode.height });
+      await parkComment(page, LONG, 900);
+      const resized = await commentGeometry(page, LONG);
+      expect(Math.abs(resized.pageHead.height - wrapped.pageHead.height), "viewport wrapping changes the task head height").toBeGreaterThan(20);
+      expectPinned(resized);
+      await updateCommentTaskIdentity(page, "Agent with a deliberately long display name ".repeat(8));
+      await parkComment(page, LONG, 900);
+      expectPinned(await commentGeometry(page, LONG));
       expect(errors).toEqual([]);
       await page.evaluate(() => window.__stickyPage.dispose());
     }, mode);

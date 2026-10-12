@@ -41,6 +41,7 @@ export async function mountCommentHeaderPage(page, basePath, theme) {
   await loadBrowserModules(page, { cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js" }, basePath);
   await page.evaluate(async (record) => {
     const { cache, taskPage } = window.__layoutModules;
+    window.__stickyRecord = record;
     await cache.writeTasksRecord("sticky-device", "proj-1", { tasks: [record.task], columns: [] });
     await cache.writeTaskRecord("sticky-device", "proj-1", record.task.id, record);
     window.__stickyPage = taskPage.mountTaskPage(document.querySelector("#task-pane"), {
@@ -73,10 +74,32 @@ export async function commentGeometry(page, selector) {
     const button = row.querySelector("[data-review-reply]");
     return { row: box(row), header: box(header), button: box(button),
       pageHead: box(document.querySelector(".task-page-head")),
+      actor: box(header.querySelector("strong")),
       card: box(row.querySelector(".task-comment-card")),
       body: box(row.querySelector(".task-comment-body")), buttonInHeader: header.contains(button),
       icon: !!button?.querySelector("svg"), visibleText: button?.textContent.trim(),
       accessibleLabel: button?.getAttribute("aria-label"), viewport: { width: innerWidth, height: innerHeight },
-      documentWidth: document.documentElement.scrollWidth };
+      documentWidth: document.documentElement.scrollWidth,
+      paneScrollLeft: document.querySelector("#task-pane").scrollLeft };
   });
+}
+
+export async function updateCommentTaskTitle(page, title) {
+  await page.evaluate(async (title) => {
+    const record = window.__stickyRecord;
+    record.task.title = title;
+    await window.__layoutModules.cache.writeTaskRecord("sticky-device", "proj-1", record.task.id, record);
+  }, title);
+  await page.waitForFunction((title) => document.querySelector(".task-page-title")?.textContent === title, title);
+  await settleHeader(page);
+}
+
+export async function updateCommentTaskIdentity(page, name) {
+  await page.evaluate(async (name) => {
+    const record = window.__stickyRecord;
+    record.task.identities[record.task.assignee.agent_id].name = name;
+    await window.__layoutModules.cache.writeTaskRecord("sticky-device", "proj-1", record.task.id, record);
+  }, name);
+  await page.waitForFunction(({ selector, name }) => document.querySelector(`${selector} .task-entry-head strong`)?.textContent.includes(name), { selector: LONG, name: name.trim() });
+  await settleHeader(page);
 }

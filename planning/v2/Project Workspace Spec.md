@@ -1,38 +1,40 @@
 # Project workspace
 
-Planning amendment for **#522**, 2026-10-12. **Proposed, not implemented.**
+Planning amendment for **#522**, 2026-10-12. **Decided, implementation on #529–#538.**
 Code audit baseline: `d4bd92fd2ed2cbfc8b0ae02648e6e8d601d7f1c4`.
-Implementation is on separately reviewed child branches, after the decisions
+Implementation is on separately reviewed child branches under the decided rules
 below. Opus implements; the #522 planner reviews every child. Filed children are
-#529–#538, linked to #522 and left unassigned in Backlog. This document
+#529–#538, linked to #522 and dispatched in dependency order. This document
 supersedes the older planning documents only for the scope it describes.
 `ARCHITECTURE.md` and the code still describe what ships today.
 
-## Decisions for Zech
+## Decided rules — 2026-10-12
 
-1. **Dirty or locally committed base:** recommend retaining #267's `sync_base`
+Zech approved all five recommendations on #522; each recommendation below is adopted.
+
+1. **Dirty or locally committed base:** retain #267's `sync_base`
    setting and defaults. Fetch and safe fast-forward remain automatic; dirty,
    ahead, diverged or in-progress bases are skipped with a visible reason.
    Never silently stash, reset, rebase, discard, or disable the setting. Manual
    **Sync base** has the same safety rules. Build-managed Git mutations share
    the sync lock; a user's terminal or an agent's shell is not controlled by it.
-2. **Worker commits:** recommend allowing direct commits on the source's current
+2. **Worker commits:** allow direct commits on the source's current
    branch, including the configured base. This is the requested shared working
    place. Branch-first in the same checkout would change every worker's branch
    and would not isolate them. For independent work, create an isolated workspace.
    Neither the prompt nor a Git guard is an OS sandbox. The project Changes face
    is the observable record; it cannot attribute a shared working-tree edit to
    an individual agent with certainty.
-3. **Everyday names:** recommend **Project workspace** for the original-source
+3. **Everyday names:** use **Project workspace** for the original-source
    destination in a navigation menu and explanatory text; keep the project name
    on its bar/inbox head. Named checkout rows and bars use their given names;
    creation says **New workspace**, collection says **Workspaces**. “Isolated
    workspace” is a spec distinction, not a mandatory prefix in every label.
-4. **Terminal placement:** recommend the existing console with a **Terminal**
+4. **Terminal placement:** use the existing console with a **Terminal**
    rail action (a toggle outside the face tablist), not a new full-page face.
    It is available on every project face and project-hosted task, never opens
    or starts a process by default. Source choice applies to new tabs only.
-5. **Source movement with live processes:** recommend refusing source move/remove
+5. **Source movement with live processes:** refuse source move/remove
    while a source shell or project worker session is live, naming what must be
    closed. Do not kill a user shell as a side effect or retarget it to a new
    folder. Project deletion is the explicit operation that retires the whole
@@ -42,7 +44,7 @@ The project agent has agreed the owner design: reuse the project roster,
 exactly one persisted pinned coordinator, source-writing workers below it,
 coding/workspace tools for workers, coordinator orchestration tools unchanged,
 bridge protection of the pin, and project deletion as the whole-project exit.
-These are settled implementation constraints, separate from Zech's decisions.
+These are settled implementation constraints alongside the five adopted rules.
 
 ## Vocabulary, page shape and navigation boundary
 
@@ -396,7 +398,10 @@ must never delete sibling or coordinator history merely because they share cwd.
 
 ## Sequenced child tasks
 
-All children are **backlog until Zech settles the relevant decisions**. One task,
+Every child ships a browser or Rust integration test that drives its behaviour
+end to end on fixtures, with #538 covering the combined journey.
+
+All five decisions are settled; children proceed in dependency order. One task,
 one branch from main, one review. Dependencies mean merged/reviewed contracts,
 not unreviewed stacked implementation. Size is engineering half-days, including
 focused tests and review fixes; estimates are not calendar commitments.

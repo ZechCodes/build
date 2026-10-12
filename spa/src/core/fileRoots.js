@@ -39,6 +39,8 @@ export function locateRooted(roots, key) {
   }
 }
 
+const rootReady = (root) => !root.status || root.status === "ready";
+
 const readCollapsed = (value, roots) =>
   new Set((Array.isArray(value?.collapsed) ? value.collapsed : []).filter((id) => roots.some((root) => root.id === id)));
 
@@ -92,7 +94,7 @@ export function mountFileRoots(listEl, { roots, collapsedAddress = null, treeFor
   };
 
   const mountTree = (root) => {
-    if (trees.has(root.id)) return;
+    if (trees.has(root.id) || !rootReady(root)) return;
     const tree = mountFileTree(sectionOf(root).querySelector(".froot-list"), {
       ...treeFor(root),
       baseDepth: 1,
@@ -110,6 +112,7 @@ export function mountFileRoots(listEl, { roots, collapsedAddress = null, treeFor
       headOf(root).setAttribute("aria-expanded", String(open));
       sectionOf(root).querySelector(".froot-list").hidden = !open;
       if (open) mountTree(root);
+      if (!rootReady(root)) sectionOf(root).querySelector(".froot-list").textContent = root.status;
     }
   };
 
@@ -153,8 +156,45 @@ export function mountFileRoots(listEl, { roots, collapsedAddress = null, treeFor
   listEl.addEventListener("click", onClick);
   listEl.addEventListener("keydown", onKeyDown);
 
+  const dropTree = (id) => {
+    trees.get(id)?.dispose();
+    trees.delete(id);
+  };
+  const reconcileRoot = (next) => {
+    const held = roots.find((root) => root.id === next.id);
+    if (!held) {
+      listEl.insertAdjacentHTML("beforeend", rootHtml(next));
+      return next;
+    }
+    const changedScope = JSON.stringify(held.scope) !== JSON.stringify(next.scope);
+    if (changedScope || rootReady(held) !== rootReady(next)) {
+      dropTree(held.id);
+      sectionOf(held).querySelector(".froot-list").replaceChildren();
+    }
+    Object.assign(held, next);
+    headOf(held).querySelector(".fname").textContent = held.label;
+    return held;
+  };
+
   return {
     ready,
+    /** Keep existing trees and their focus, folds and open-file marks. The
+     * shared roots array also keeps file lookup and upload actions current. */
+    updateRoots(next) {
+      if (disposed) return;
+      for (const root of roots) {
+        if (next.some((candidate) => candidate.id === root.id)) continue;
+        dropTree(root.id);
+        sectionOf(root).remove();
+      }
+      const reconciled = next.map(reconcileRoot);
+      roots.splice(0, roots.length, ...reconciled);
+      roots.forEach((root, index) => {
+        const section = sectionOf(root);
+        if (listEl.children[index] !== section) listEl.insertBefore(section, listEl.children[index] || null);
+      });
+      apply(collapsed);
+    },
     /** The file in the preview, highlighted in its root and nowhere else. */
     setOpenPath(key) {
       openKey = key;

@@ -116,6 +116,30 @@ fn completion_fence_survives_close_then_reopen() {
 }
 
 #[test]
+fn completion_fence_survives_unassignment_then_same_agent_assignment_waiting() {
+    let mut task = DispatchedTask::new();
+    task.call("tasks.assign", json!({"assignee":null}));
+    task.call("tasks.update", json!({"status":"ready"}));
+    task.add_blocker();
+    task.call(
+        "tasks.assign",
+        json!({"assignee":{"kind":"agent","agent_id":task.agent_id}}),
+    );
+    task.assert_complete_leaves_task("ready");
+}
+
+#[test]
+fn completion_fence_survives_target_removal() {
+    let mut task = DispatchedTask::new();
+    let removed = task.app.handle(req(
+        "agent.remove",
+        json!({"entity_id":task.entity_id,"agent_id":task.agent_id}),
+    ));
+    assert_eq!(removed["ok"], true, "{removed}");
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
 fn completion_fence_keeps_new_wait_in_ready() {
     let mut task = DispatchedTask::new();
     task.call("tasks.update", json!({"status":"ready"}));

@@ -106,6 +106,14 @@ const releasePending = (address) => {
 };
 
 const liveWriters = new Set();
+
+/** Account reset retires pending writers before the UI store is wiped. A
+ * journal already saved for page exit belongs to that account too. */
+export function resetUiWriters() {
+  for (const writer of [...liveWriters]) writer.discard();
+  try { clearJournal(globalThis.sessionStorage); } catch { /* Storage may be refused. */ }
+}
+
 const pendingAddress = (key) => {
   try {
     const [deviceId, entityId, kind, sub] = JSON.parse(key.slice(PENDING_PREFIX.length));
@@ -187,7 +195,7 @@ export function watchUiState(address, paint, { debounceMs = 0, active = () => tr
     const committedRevision = revision;
     const next = writes.then(async () => {
       if (!writerActive()) return;
-      await writeUiRecord(address, value, { source, sequence: committedRevision, active });
+      await writeUiRecord(address, value, { source, sequence: committedRevision, active: writerActive });
       if (!writerActive()) return;
       await reads;
       // Announcements from earlier writes can arrive after a newer local edit.
@@ -269,7 +277,7 @@ export function watchUiState(address, paint, { debounceMs = 0, active = () => tr
       return undefined;
     }
     if (journaled !== undefined && !discarded && active()) {
-      await writeUiRecordIfNewer(address, journaled.value, { ...journaled, active });
+      await writeUiRecordIfNewer(address, journaled.value, { ...journaled, active: writerActive });
       releasePending(address);
     }
     return discarded ? undefined : read();

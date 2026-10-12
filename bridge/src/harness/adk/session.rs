@@ -251,10 +251,7 @@ impl AdkSession {
             let mut state = self.state.lock().unwrap();
             match pipe.write(b"\n") {
                 Ok(1) => {
-                    if !state.turn_open {
-                        state.turn_had_success = false;
-                    }
-                    state.turn_open = true;
+                    state.open_turn();
                     state.first_turn_at.get_or_insert_with(Instant::now);
                     // A queued steering turn inherits the interrupt's result boundary.
                     if let Some(pending) = state.pending_interrupt.as_mut() {

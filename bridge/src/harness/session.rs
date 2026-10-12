@@ -237,7 +237,7 @@ impl SessionStatusSnapshot {
     }
 
     /// Evidence that the harness answered a request. This is separate from
-    /// `Working`, which only means Build sent a turn to the process.
+    /// `Working`, which reports active work without proving a model answered.
     pub fn successful_response(&self) -> Self {
         Self {
             status: self.status,

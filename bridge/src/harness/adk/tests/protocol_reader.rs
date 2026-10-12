@@ -515,6 +515,7 @@ async fn a_terminal_task_update_fails_the_task_once() {
         TASK_ROSTER_EMPTY,
         RESULT,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);
@@ -562,6 +563,7 @@ async fn a_task_notification_is_minted_and_a_progress_patch_is_not() {
         TASK_NOTIFICATION_MULTILINE,
         RESULT,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);
@@ -623,6 +625,7 @@ async fn a_failed_foreground_notification_fails_and_a_stopped_one_finishes() {
         FOREGROUND_TASK_NOTIFICATION_STOPPED,
         RESULT,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);
@@ -677,6 +680,7 @@ async fn the_probes_own_order_mints_one_row_per_transition() {
         TASK_UPDATED_DONE,
         TASK_NOTIFICATION,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);

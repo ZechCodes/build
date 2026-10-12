@@ -1145,6 +1145,16 @@ remain viewed across snapshots.
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
+ADK reports `Working` while a parent turn is open or its background-task roster
+is nonempty. A delivered turn opens when its final newline is written. The
+child can also start a turn itself: top-level assistant text, thinking or tool
+calls, and top-level user tool results open it until the next `result`. Nested
+subagent activity, echoed prompts and passive task/control events do not open
+a parent turn. Both starts share interrupt and steering semantics; an
+interrupted result hands the open turn to any queued steering message. The
+reader publishes `Working` before success or activity updates, so the registry
+starts the working clock and the idle sweep protects the resumed turn.
+
 Agent harnesses and the user's terminals are placed through
 `bridge/src/priority.rs` as a `ChildKind` (`Agent` or `Terminal`). That covers
 PTY children in `bridge/src/pty.rs` and the piped headless harnesses

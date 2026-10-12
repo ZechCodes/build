@@ -615,6 +615,7 @@ impl ProtocolReader {
     /// message carrying text is Build's own turn echoed back, and minting that
     /// would put the human's words in the timeline a second time as narration.
     fn read_message(&mut self, event: &Value, voice: Voice) {
+        self.open_reported_turn(event, voice);
         let parent_call_id = event["parent_tool_use_id"].as_str();
         if voice == Voice::Assistant {
             if parent_call_id.is_none() {
@@ -658,6 +659,21 @@ impl ProtocolReader {
                 _ => {}
             }
         }
+    }
+
+    /// Claude can resume on a task notification without a turn from Build.
+    /// Publish that boundary before success snapshots or activity: observers
+    /// must not release deferred work over a turn already running in the child.
+    fn open_reported_turn(&self, event: &Value, voice: Voice) {
+        if event["parent_tool_use_id"].as_str().is_some() || !has_turn_activity(event, voice) {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return;
+        }
+        state.open_turn();
+        publish_status(&self.status_updates, state.live_status());
     }
 
     /// The context one top-level request held: everything it sent, fresh or
@@ -813,25 +829,31 @@ pub(super) fn runs_the_model_asked(asked: &str, running: &str) -> bool {
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
 }
 
-/// Every text block of one message, in order: what a message the CLI wrote
-/// itself says, whole.
+/// Content that proves a parent turn is running, including refusal messages.
+fn has_turn_activity(event: &Value, voice: Voice) -> bool {
+    event["message"]["content"]
+        .as_array()
+        .is_some_and(|blocks| {
+            blocks.iter().any(|block| {
+                matches!(
+                    (voice, block["type"].as_str()),
+                    (Voice::Assistant, Some("thinking" | "text" | "tool_use"))
+                        | (Voice::User, Some("tool_result"))
+                )
+            })
+        })
+}
+
 fn is_model_response(event: &Value) -> bool {
     event["error"].is_null()
         && event["isApiErrorMessage"] != true
         && event["message"]["isApiErrorMessage"] != true
         && event["message"]["model"] != "<synthetic>"
-        && event["message"]["content"]
-            .as_array()
-            .is_some_and(|blocks| {
-                blocks.iter().any(|block| {
-                    matches!(
-                        block["type"].as_str(),
-                        Some("thinking" | "text" | "tool_use")
-                    )
-                })
-            })
+        && has_turn_activity(event, Voice::Assistant)
 }
 
+/// Every text block of one message, in order: what a message the CLI wrote
+/// itself says, whole.
 fn assistant_text(message: &Value) -> String {
     message["content"]
         .as_array()

@@ -339,6 +339,7 @@ async fn a_started_task_mints_once_and_keeps_a_turnless_session_working() {
         TASK_ROSTER,
         RESULT,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);
@@ -358,11 +359,10 @@ async fn a_started_task_mints_once_and_keeps_a_turnless_session_working() {
         "the roster listing a task already live moved nothing, so it minted nothing"
     );
 
-    // The narration arrived after the result, so the turn is closed — said
-    // through the control the composer reads, which is tied to an open turn
-    // and to nothing else.
+    // The narration fence opens another parent turn. Once its result closes
+    // it, only the background task remains, so there is no turn to interrupt.
     assert!(
-        !session.can_interrupt(),
+        becomes_true_within(Duration::from_secs(5), || !session.can_interrupt()),
         "a background task is not a turn, and the interrupt stops a turn"
     );
     assert_eq!(
@@ -383,6 +383,7 @@ async fn a_roster_that_drops_a_task_closes_it_once_and_the_session_waits_again()
         RESULT,
         TASK_ROSTER_EMPTY,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);
@@ -434,6 +435,7 @@ async fn a_foreground_tasks_notification_closes_it_and_the_session_waits_again()
         FOREGROUND_TASK_NOTIFICATION,
         RESULT,
         NARRATION,
+        RESULT, // The narration fence opens its own turn; close it too.
     ]));
     let mut activity = session.activity().expect("a reporting session");
     wait_for_status(&session, AgentStatus::Waiting);

@@ -63,6 +63,10 @@ export function workspaceAgents(feed, projectKey) {
           label: agentLabel(name, agent, index),
           name: agent.name || "",
           provider: agent.provider || "",
+          model: agent.model || "",
+          active_model: agent.active_model || "",
+          effort: agent.effort || "",
+          active_effort: agent.active_effort || "",
         })),
       };
     });

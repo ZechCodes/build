@@ -12,6 +12,7 @@ import {
   agentHeading,
   agentPattern,
   agentWho,
+  agentModelsSignature,
   bubbleTip,
   canRemoveAgent,
   providerLabel,
@@ -42,6 +43,37 @@ const agent = (over = {}) => ({
   unread_reason: null,
   working: false,
   ...over,
+});
+
+describe("the conversation's cached model signature", () => {
+  const sender = agent({ model: "gpt-6-astra", effort: "low" });
+  const other = agent({ id: "ag-2", model: "claude-opus-5-5" });
+  const models = { "ag-1": sender, "ag-2": other };
+
+  it("ignores roster order, clocks, context and status", () => {
+    const signature = agentModelsSignature(models);
+    expect(agentModelsSignature({
+      "ag-2": { ...other, working_time: { seconds: 42 }, last_context_tokens: 500, working: true, state: "live" },
+      "ag-1": sender,
+    })).toBe(signature);
+  });
+
+  it("changes when the rendered model or effort changes", () => {
+    const signature = agentModelsSignature(models);
+    for (const update of [{ model: "gpt-6-sol" }, { effort: "high" }, { active_model: "gpt-6-sol" }, { active_effort: "high" }]) {
+      expect(agentModelsSignature({ ...models, "ag-1": { ...sender, ...update } })).not.toBe(signature);
+    }
+  });
+
+  it("follows active badge values and omits unrendered model changes", () => {
+    const active = { ...sender, active_model: "gpt-6-astra", active_effort: "high" };
+    expect(agentModelsSignature({ "ag-1": active })).toBe(agentModelsSignature({
+      "ag-1": { ...active, model: "gpt-6-sol", effort: "low" },
+    }));
+    expect(agentModelsSignature({ "ag-1": { model: "unknown", effort: "low" } }))
+      .toBe(agentModelsSignature({ "ag-1": { model: "other-unknown", effort: "high" } }));
+    expect(agentModelsSignature({ "ag-1": sender })).not.toBe(agentModelsSignature({ "ag-2": sender }));
+  });
 });
 
 describe("what the conversation is called", () => {

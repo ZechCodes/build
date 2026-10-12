@@ -199,6 +199,10 @@ const versionOf = (major, minor) => (minor ? `${major}.${minor}` : major);
  *  date after it ("-20251001") is never read as one. */
 const SHORT_MODEL_RULES = [
   {
+    pattern: /\b(grok)[-\s]+(\d{1,2})(?:[-.\s](\d{1,2}))?(?!\d)/i,
+    name: ([, family, major, minor]) => `${capitalized(family)} ${versionOf(major, minor)}`,
+  },
+  {
     pattern: /\b(opus|sonnet|haiku|fable)[-\s]+(\d{1,2})(?:[-.\s](\d{1,2}))?(?!\d)/i,
     name: ([, family, major, minor]) => `${capitalized(family)} ${versionOf(major, minor)}`,
   },
@@ -217,6 +221,12 @@ export function shortModelName(text) {
     if (match) return rule.name(match);
   }
   return "";
+}
+
+/** A known model family for the quiet badge; unknown families stay absent. */
+export function modelFamilyName(text) {
+  const match = String(text || "").match(/\b(astra|sol|terra|luna|fable|opus|sonnet|haiku|grok)\b/i);
+  return match ? capitalized(match[1]) : "";
 }
 
 /** Whether a rule knows a short name for this model, by its id or its label:

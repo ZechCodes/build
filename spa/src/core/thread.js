@@ -1,3 +1,4 @@
+import { agentModelBadgeHtml } from "./agentModelBadge.js";
 import { agentName } from "./agentName.js";
 import { isAgentMessage } from "./unreadAnchor.js";
 import { esc } from "./text.js";
@@ -808,10 +809,10 @@ const senderChipHtml = (id, prefix) =>
 /// A conversation elsewhere, named as two links: the workspace or project it
 /// belongs to, and the conversation on it. One writer, so a message that
 /// arrived and a message that was sent say where they point the same way.
-function conversationLinksHtml(reference, place, prefix) {
+function conversationLinksHtml(reference, place, prefix, agentModels = {}) {
   const links = conversationLinks(reference, place);
   if (!links) return senderChipHtml(reference.id, prefix);
-  return `<a class="${prefix}-owner" href="${esc(links.ownerHref)}">${esc(links.name)}</a><span class="${prefix}-sep" aria-hidden="true"> › </span><a class="${prefix}-topic" href="${esc(links.topicHref)}">${esc(topicLabel(reference))}</a>`;
+  return `<a class="${prefix}-owner" href="${esc(links.ownerHref)}">${esc(links.name)}</a><span class="${prefix}-sep" aria-hidden="true"> › </span><a class="${prefix}-topic" href="${esc(links.topicHref)}"><span class="thread-agent-name">${esc(topicLabel(reference))}</span>${agentModelBadgeHtml(agentModels[reference.id])}</a>`;
 }
 
 /// Everything inside a message's card. Shared by the reader's own bubble and by
@@ -939,7 +940,7 @@ function arrivedMessageHtml(message, agentLabel, context) {
   const long = arrivalRunsLong(message);
   const open = !long || context.threadState.arrivalIsOpen(key);
   return `<article class="thread-message thread-comment from-agent"${sequenceAttribute(message)}>
-    <div class="thread-from">${conversationLinksHtml(message.from_agent, context.place, "thread-from")}</div>
+    <div class="thread-from">${conversationLinksHtml(message.from_agent, context.place, "thread-from", context.agentModels)}</div>
     <div class="thread-comment-card${open ? "" : " thread-arrival-folded"}" id="${cardId}">${messageCardHtml(message, agentLabel, context)}</div>
     ${long ? arrivalPressHtml(key, cardId, open) : ""}
   </article>`;
@@ -965,7 +966,7 @@ const sentPressHtml = (key, bodyId, open, preview) =>
 ///
 /// Open, the second line is the press that shuts it again rather than the first
 /// line a second time: the body underneath already starts with those words.
-function sentMessageHtml(message, { place, threadState }) {
+function sentMessageHtml(message, { place, threadState, agentModels }) {
   const key = messageKey(message);
   const bodyId = `thread-sent-${esc(key)}`;
   const open = threadState.sentIsOpen(key);
@@ -973,7 +974,7 @@ function sentMessageHtml(message, { place, threadState }) {
   // markdownHtml escapes all input before adding its fixed safe tag set.
   return `<article class="thread-message thread-sent"${sequenceAttribute(message)}>
     <div class="thread-sent-head">
-      <span class="thread-sent-label">Sent a message to ${conversationLinksHtml(message.sent_to, place, "thread-sent")}</span>
+      <span class="thread-sent-label">Sent a message to ${conversationLinksHtml(message.sent_to, place, "thread-sent", agentModels)}</span>
       ${timeHtml(message.created_at)}
     </div>
     ${sentPressHtml(key, bodyId, open, firstLine(body).trim())}
@@ -1006,6 +1007,7 @@ function noticeMessageHtml(message, context) {
       place: context.place,
       workspaces: context.workspaces,
       agentLabels: context.agentLabels,
+      agentModels: context.agentModels,
       projectName: context.place?.projectName || "",
     }));
   }
@@ -1043,6 +1045,7 @@ function taskActionMessageHtml(message, context) {
       // The same labels the notice line reads, so an agent named once is
       // named the same way in both.
       agentLabels: context.agentLabels,
+      agentModels: context.agentModels,
       projectName: context.place?.projectName || "",
     })}
   </article>`;
@@ -1720,12 +1723,12 @@ const drawsNoRow = (message) =>
   // would be the same words a second time.
   || !!message.answers_options_of;
 
-function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels }) {
+function messageRow(item, index, agentLabel, { threadId, spoken, threadState, place, agentLabels, agentModels }) {
   const message = item.data || {};
   if (drawsNoRow(message)) return [];
   const offer = offerKey(threadId, message.id);
   const live = spoken && !threadState.isSending(offer);
-  const context = { live, offer, threadState, place, agentLabels };
+  const context = { live, offer, threadState, place, agentLabels, agentModels };
   return [withLazyHtml({ key: rowKey(message, index), item }, () => messageHtml(message, agentLabel, context))];
 }
 
@@ -1758,11 +1761,11 @@ function timelineOf(sourceItems, agentLabel, place) {
 /// each item sits in the whole timeline, so a row drawn from a slice is the row
 /// the whole would have drawn.
 function rowsOfTimeline({ agentLabel, folding, topLevelItems, lastSpoken }, from, threadId, view) {
-  const { threadState, place, agentLabels } = view;
+  const { threadState, place, agentLabels, agentModels } = view;
   return topLevelItems.slice(from).flatMap((item, offset) => {
     const index = from + offset;
     return item.type === "message"
-      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels })
+      ? messageRow(item, index, agentLabel, { threadId, spoken: index === lastSpoken, threadState, place, agentLabels, agentModels })
       : [activityRow(item, index, agentLabel, folding)];
   });
 }
@@ -1862,6 +1865,7 @@ export function timelineEntries(
     // What this project's agents are called. Only one row reads them — a
     // tracking notice's "X did Y" — and X has to be a name the reader knows.
     agentLabels = {},
+    agentModels = {},
     workspaces,
     hiddenByLevel = 0,
     // How much of the conversation to draw (core/timelineSlice.js): none draws
@@ -1876,6 +1880,7 @@ export function timelineEntries(
     sourceItems,
     agentLabel,
     agentLabels,
+    agentModels,
     workspaces,
     threadId,
     threadState,

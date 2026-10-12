@@ -502,8 +502,7 @@ describe("agentRows", () => {
     expect(agentRows([{ id: "a1", state: "running" }])[0].model).toBe("");
   });
 
-  // #257: a row wears the short name; the full label rides along for its title.
-  it("shortens the model a row wears, and keeps the full label beside it", () => {
+  it("derives the short model label for a badge and keeps the full label for expanded details", () => {
     const agents = [{ id: "a1", model: "claude-opus-5-5", state: "running" }];
     const [row] = agentRows(agents, { modelLabel: () => "Claude Opus 5.5" });
     expect([row.model, row.modelName]).toEqual(["Opus 5.5", "Claude Opus 5.5"]);

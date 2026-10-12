@@ -62,6 +62,10 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mount
 // no 2D context to draw into, and what the rail owes the painter is a lifecycle
 // — one per bubble, told what it should be doing, let go when its agent leaves.
 const painters = [];
+vi.mock("../src/core/thread.js", async (importOriginal) => {
+  const thread = await importOriginal();
+  return { ...thread, timelineEntries: vi.fn(thread.timelineEntries) };
+});
 vi.mock("../src/core/agentCanvas.js", () => ({
   createPatternRenderer: (options) => {
     const painter = {
@@ -108,7 +112,7 @@ const { SURFACE_PILL_GRACE_MS } = await import("../src/core/agentSurfacesModel.j
 const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfacesCache.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
-const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
+const { FIRST_PAGE_ITEMS, timelineEntries } = await import("../src/core/thread.js");
 const { LATEST_THREAD_ITEMS } = await import("../src/core/cacheThresholds.js");
 const { resetUsageLimits, setUsageLimitsForTest: setUsageLimits } = await import("../src/core/usageLimits.js");
 const { ACTIVITY_RECORD_KIND } = await import("../src/core/activityRuns.js");
@@ -5982,6 +5986,47 @@ describe("a chat paint with nothing to say", () => {
     await pushRow();
 
     expect(markSurvived()).toBe(true);
+  });
+
+  it("skips timeline rebuilding for unrelated roster activity but repaints model and effort changes", async () => {
+    const sender = agent({ id: "sender", name: "Planner", model: "gpt-6-astra", effort: "low" });
+    const other = agent({ id: "other", model: "claude-opus-5-5", working_time: { seconds: 1 } });
+    const feed = (agents) => ({ items: [{ projectKey: "dev-1/p1", entity_id: "run-other", agents }], projects: [] });
+    feedSnapshot = feed([sender, other]);
+    const message = said(1, "**Ready for review**");
+    message.data.role = "user";
+    message.data.from_agent = { id: sender.id, name: sender.name, owner: { kind: "workspace", id: "ws-other" } };
+    payload = conversationOf([message]);
+    await mount();
+    const badge = () => railHost().querySelector(".thread-items .agent-model-badge");
+    expect(badge().title).toBe("6 Astra · low");
+    timelineEntries.mockClear();
+    markTheFirstRow();
+
+    for (const update of [
+      { working_time: { seconds: 2 } },
+      { last_context_tokens: 100 },
+      { working: true, state: "idle" },
+    ]) {
+      await pushFeed(feed([sender, { ...other, ...update }]));
+      expect(timelineEntries).not.toHaveBeenCalled();
+      expect(markSurvived()).toBe(true);
+    }
+
+    await pushFeed(feed([other, sender]));
+    expect(timelineEntries).not.toHaveBeenCalled();
+    expect(markSurvived()).toBe(true);
+
+    await pushFeed(feed([other, { ...sender, active_model: "gpt-6-sol" }]));
+    expect(timelineEntries).toHaveBeenCalledTimes(1);
+    expect(markSurvived()).toBe(false);
+    expect(badge().textContent).toBe("Sol");
+    expect(badge().title).toBe("6 Sol · low");
+    timelineEntries.mockClear();
+
+    await pushFeed(feed([other, { ...sender, active_model: "gpt-6-sol", active_effort: "high" }]));
+    expect(timelineEntries).toHaveBeenCalledTimes(1);
+    expect(badge().title).toBe("6 Sol · high");
   });
 
   it("paints again the moment one of them does", async () => {

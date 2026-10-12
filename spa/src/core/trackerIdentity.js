@@ -5,6 +5,7 @@ import { hashFromRoute } from "./router.js";
 import { actorName } from "./trackerLineWords.js";
 import { harnessIconHtml } from "./harnessIcon.js";
 import { isProjectActor, taskAvatarHtml } from "./taskAvatar.js";
+import { agentFromGroups, agentModelBadgeHtml } from "./agentModelBadge.js";
 
 const agentIdOf = (actor) => typeof actor === "string" ? actor : actor?.agent_id || "";
 const projectActor = (actor, id) => isProjectActor(typeof actor === "string" ? { agent_id: id } : actor);
@@ -47,7 +48,9 @@ export function actorIdentityHtml(actor, context = {}, { icon = false } = {}) {
   const id = agentIdOf(actor);
   const artwork = icon ? actorMarkHtml(actor, context, id) : "";
   const mark = artwork ? `<span class="task-actor-icon" aria-hidden="true">${artwork}</span>` : "";
-  const label = `${mark}${name}`;
+  const agent = context.agentModels?.[id] || agentFromGroups(context.agentGroups, id);
+  const badge = agentModelBadgeHtml(agent);
+  const label = `<span class="task-actor-identity">${mark}<span class="task-actor-name">${name}</span>${badge}</span>`;
   const href = actorHref(actor, context);
   return href ? `<a class="task-actor-link" href="${esc(href)}">${label}</a>` : label;
 }

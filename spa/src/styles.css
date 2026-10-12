@@ -2304,6 +2304,8 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
   color:var(--ink2); text-decoration:none; }
 .thread-from a:hover { color:var(--accent); text-decoration:underline; }
 .thread-from-topic { flex:0 1 auto; }
+.thread-from .thread-from-topic, .thread-sent-topic { display:inline-flex; align-items:baseline; gap:5px; min-width:0; }
+.thread-agent-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .thread-from-sep, .thread-sent-sep { flex:none; }
 .thread-from-chip { font-family:var(--mono); letter-spacing:0.02em; }
 /* Build's own words — the restart notice. It wears the bubble an instruction

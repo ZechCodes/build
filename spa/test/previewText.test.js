@@ -76,13 +76,12 @@ describe("plainPreview (#186)", () => {
 });
 
 describe("modelWord", () => {
-  it("says the model the way a row can wear it", () => {
+  it("keeps the versioned model label used to derive a badge and tooltip", () => {
     expect(modelWord({ active_model: "claude-opus-5" })).toBe("Opus 5");
     expect(modelWord({ model: "claude-fable-5-1" })).toBe("Fable 5.1");
     expect(modelWord({ active_model: "claude-haiku-4-5-20251001" })).toBe("Haiku 4.5");
     expect(modelWord({ active_model: "gpt-6-astra" })).toBe("6 Astra");
-    // #257: one rule table for every compact row; what it does not know is
-    // shown as it is.
+    // The label helper retains unknown ids; the badge renderer omits them.
     expect(modelWord({ active_model: "llama-3-70b" })).toBe("llama-3-70b");
     expect(modelWord({ active_model: "", model: "", provider: "codex" })).toBe("Codex TUI");
     expect(modelWord({ provider: "claude_adk" })).toBe("Claude Code");
@@ -91,9 +90,17 @@ describe("modelWord", () => {
 
 describe("an overview row's model", () => {
   const html = (model) => overviewHtml(overviewRows([{ agent: { id: "a1", active_model: model }, source: "project" }], [null]), { showProjectAgents: true });
-  it("may wrap only when it has no short name (#257)", () => {
-    expect(html("house-research-model")).toContain("rail-overview-model-raw");
-    expect(html("claude-opus-5-5")).not.toContain("rail-overview-model-raw");
+  it.each([
+    ["claude-opus-5-5", "Opus", "Opus 5.5"],
+    ["gpt-6-astra", "Astra", "6 Astra"],
+  ])("shows only the family for %s with its versioned tooltip", (model, family, title) => {
+    expect(html(model)).toContain(`class="agent-model-badge rail-overview-model" title="${title}">${family}</span>`);
+  });
+
+  it("omits an unknown family without an empty badge or tooltip", () => {
+    const unknown = html("house-research-model");
+    expect(unknown).not.toContain("agent-model-badge");
+    expect(unknown).not.toContain("rail-overview-model");
   });
 });
 

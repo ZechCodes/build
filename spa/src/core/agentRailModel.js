@@ -1,3 +1,4 @@
+import { agentModelBadge } from "./agentModelBadge.js";
 // The agent rail's pure model: who the agents are, what the bubble strip says
 // about each of them, which conversation is open, and how a completion report
 // reads.
@@ -28,6 +29,14 @@ import { conversationIsWatched, conversationUnreadCount, rosterUnreadCount } fro
 // cards, the Account select and the rail's bubbles all say the same word for
 // the same harness.
 export { providerLabel };
+
+/** Only the cached badge values can change model attribution in the timeline.
+ *  Roster activity and ordering must not make it rebuild Markdown. */
+export const agentModelsSignature = (models) => JSON.stringify(
+  Object.entries(models)
+    .sort(([left], [right]) => (left < right ? -1 : 1))
+    .map(([id, agent]) => [id, agentModelBadge(agent)]),
+);
 
 /** What the header over the conversation says: the topic the agent named its
  *  work with (`set_topic`, 2-4 words), or "Starting" until it has — flagged so
@@ -185,7 +194,9 @@ export function bubbleTip(agent) {
   // A named agent leads with its name and keeps what it is doing after it:
   // the reader hovering a bubble is asking which agent this is first.
   const name = agentName(agent);
-  const title = name ? `${name} · ${said}` : said;
+  const badge = agentModelBadge(agent);
+  const model = badge ? ` · ${badge.family} (${badge.title})` : "";
+  const title = `${name ? `${name} · ${said}` : said}${model}`;
   const news = bubbleNews(agent, heading);
   return news ? `${title} — ${news}` : title;
 }

@@ -2,6 +2,7 @@ import { esc } from "./text.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
+import { agentModelBadgeHtml } from "./agentModelBadge.js";
 import {
   AGENT_ENTRY_KIND,
   BUILD_AGENTS_KEY,
@@ -157,12 +158,10 @@ function agentDetailsHtml(row) {
   </div>`;
 }
 
-/** The model on a row's head (#257): its short name, whole, never clipped;
- *  the full label in its title. One with no short name wraps instead. */
+/** The model family on a row's head, with its version and effort in the
+ *  tooltip. Unknown families leave no badge. */
 function headModelHtml(row) {
-  if (!row.model) return "";
-  const raw = row.modelRaw ? " surface-row-model-raw" : "";
-  return `<span class="surface-row-model surface-row-head-model${raw}" title="${esc(row.modelName || row.model)}">${esc(row.model)}</span>`;
+  return agentModelBadgeHtml(row, { className: "surface-row-model surface-row-head-model" });
 }
 
 export function agentRowHtml(row, { openedAgentKeys = new Set() } = {}) {

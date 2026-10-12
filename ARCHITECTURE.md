@@ -2350,6 +2350,15 @@ or cache failure after successful creation keeps source lines Done and reports
 the opening error separately without repainting the unchanged source list or
 offering another creation attempt. The settled success action is Close.
 
+Agent name badges use the family rule beside `shortModelName` in
+`spa/src/core/agentChoice.js` and the shared painter in `agentModelBadge.js`.
+They describe the current cached roster model (active model before the next
+choice); task and message identities do not record the model at write time.
+The family is dim monospace, with the short versioned name and known effort in
+its native tooltip. Unknown model families leave no badge. Task headers and
+agent-message attribution read the already held feed, and changes to cached
+roster models or efforts also invalidate the thread paint.
+
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence
 baseline on the agent; task watches persist a timeline entry baseline

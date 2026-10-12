@@ -2,7 +2,7 @@
 // and codename for GPT — so it fits whole beside the agent's name. Anything the
 // rules do not know keeps the catalog's full label, and nothing is ever blank.
 import { describe, expect, it } from "vitest";
-import { shortModelLabel, shortModelName } from "../src/core/agentChoice.js";
+import { modelFamilyName, shortModelLabel, shortModelName } from "../src/core/agentChoice.js";
 
 describe("shortModelName", () => {
   it.each([
@@ -17,6 +17,8 @@ describe("shortModelName", () => {
     ["gpt-6.1-sol", "6.1 Sol"],
     ["gpt-5.6-sol", "5.6 Sol"],
     ["gpt-6-luna", "6 Luna"],
+    ["grok-4-7", "Grok 4.7"],
+    ["Grok 4.7", "Grok 4.7"],
   ])("names the model id %s as %s", (id, expected) => {
     expect(shortModelName(id)).toBe(expected);
   });
@@ -39,6 +41,21 @@ describe("shortModelName", () => {
     ["no id at all", undefined],
   ])("knows nothing of %s", (_, id) => {
     expect(shortModelName(id)).toBe("");
+  });
+});
+
+describe("modelFamilyName", () => {
+  it.each([
+    ["gpt-6-astra", "Astra"], ["gpt-6.1-sol", "Sol"],
+    ["gpt-6-terra", "Terra"], ["gpt-6-luna", "Luna"],
+    ["claude-fable-5-1", "Fable"], ["claude-opus-5-5", "Opus"],
+    ["claude-sonnet-5-5", "Sonnet"], ["claude-haiku-4-5", "Haiku"],
+    ["grok-4.7", "Grok"], ["6 Astra", "Astra"],
+  ])("names %s as %s", (model, family) => {
+    expect(modelFamilyName(model)).toBe(family);
+  });
+  it.each(["", undefined, "llama-3-70b", "gpt-6-unknown", "astral-6"])("omits unknown %s", (model) => {
+    expect(modelFamilyName(model)).toBe("");
   });
 });
 

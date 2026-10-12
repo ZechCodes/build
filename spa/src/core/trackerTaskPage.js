@@ -34,6 +34,7 @@ import { onReaderReturns, readerIsHere } from "./readerPresence.js";
 import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { taskLinkRows } from "./trackerLinks.js";
+import { agentModelsFromFeed } from "./agentModelBadge.js";
 import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
 import {
   canComment,
@@ -278,6 +279,7 @@ export function mountTaskPage(host, options) {
     agentLabels: agentLabels(groups()),
     agentProviders: agentProviders(groups()),
     agentGroups: groups(),
+    agentModels: agentModelsFromFeed(state.feed(), state.projectKey),
     workspaces: projectWorkspaces(),
     identities: state.task.identities || {},
     deviceId: state.deviceId,

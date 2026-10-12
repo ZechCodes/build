@@ -38,13 +38,18 @@ pub(in crate::app) struct WorktreeWatchers {
     /// The board's worktree entities, as of the last board change.
     roots: Mutex<WorktreeRoots>,
     /// The watchers alive right now, by entity id. Held only by
-    /// [`reconcile`](Self::reconcile), which is the one writer.
+    /// [`reconcile`](Self::reconcile), which is the one writer, for the whole
+    /// pass. Lock order: `running`, then `roots` or the bus's subscriptions.
     running: Mutex<BTreeMap<String, WorktreeWatcher>>,
     /// Worktrees whose start failed and was logged. Once per worktree, for
     /// as long as it is on the board.
     warned: Mutex<BTreeSet<String>>,
     /// The reconciler task's doorbell.
     wake: tokio::sync::Notify,
+    /// Runs inside [`reconcile`](Self::reconcile) between reading its inputs
+    /// and applying them, so a test can hold one pass there.
+    #[cfg(test)]
+    after_snapshot: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl WorktreeWatchers {
@@ -98,7 +103,12 @@ impl WorktreeWatchers {
     /// Bring the running set in line with what is covered and on the board.
     /// BLOCKING: starting a watcher registers a watch per directory. Runs on
     /// the off-lock drain or on `spawn_blocking`, never under the app mutex.
+    ///
+    /// The running set is locked BEFORE the inputs are read, so passes apply
+    /// in the order they read: a pass holding an older snapshot can never
+    /// apply it after a newer one and restart a watcher that one stopped.
     pub(in crate::app) fn reconcile(&self, bus: &Arc<ChangeBus>) {
+        let mut running = self.running.lock().unwrap();
         let roots = self.roots.lock().unwrap().clone();
         let covered = bus.covered_worktrees();
         let wanted: BTreeMap<&str, &PathBuf> = roots
@@ -106,7 +116,13 @@ impl WorktreeWatchers {
             .filter(|(id, _)| covered.contains(*id))
             .map(|(id, root)| (id.as_str(), root))
             .collect();
-        let mut running = self.running.lock().unwrap();
+        #[cfg(test)]
+        {
+            let hold = self.after_snapshot.lock().unwrap().clone();
+            if let Some(hold) = hold {
+                hold();
+            }
+        }
         running.retain(|id, _| wanted.contains_key(id.as_str()));
         self.forget_uncovered(bus, &roots, &wanted);
         for (id, root) in wanted {
@@ -306,5 +322,55 @@ mod tests {
         watchers.reconcile(&bus);
         assert!(watchers.warned().is_empty());
         assert_eq!(bus.watch_state(&spec), WatchState::Live);
+    }
+
+    /// Two racing passes never leave an old roots snapshot applied last. A
+    /// pass that read the roots before a source was removed holds the running
+    /// set until it has applied them, so the pass that read the removal goes
+    /// after it and stops the watcher (#550).
+    #[test]
+    fn a_stale_reconcile_cannot_restart_a_removed_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let watchers = WorktreeWatchers::new();
+        let bus = bus_over(&watchers);
+        watchers.set_roots(roots_of(&[("run-7", dir.path())]));
+        bus.subscribe(
+            &SessionSender::detached("s-1"),
+            worktree_spec("s-a", Scope::Entity("run-7".into())),
+        );
+        watchers.reconcile(&bus);
+        assert!(watchers.is_watching("run-7"));
+
+        let (snapshotted, has_snapshot) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let released = Mutex::new(Some(released));
+        *watchers.after_snapshot.lock().unwrap() = Some(Arc::new(move || {
+            let first = released.lock().unwrap().take();
+            if let Some(released) = first {
+                snapshotted.send(()).unwrap();
+                released.recv().unwrap();
+            }
+        }));
+        let pass = |watchers: &Arc<WorktreeWatchers>| {
+            let (watchers, bus) = (Arc::clone(watchers), Arc::clone(&bus));
+            std::thread::spawn(move || watchers.reconcile(&bus))
+        };
+        let stale = pass(&watchers);
+        has_snapshot.recv().unwrap();
+        watchers.set_roots(WorktreeRoots::new());
+        let fresh = pass(&watchers);
+        // Before the fix the fresh pass finished here, and the stale one then
+        // restarted the watcher it had read. Now it waits for the stale pass.
+        let waited = std::time::Instant::now();
+        while !fresh.is_finished() && waited.elapsed() < Duration::from_millis(200) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        release.send(()).unwrap();
+        stale.join().unwrap();
+        fresh.join().unwrap();
+        assert!(
+            !watchers.is_watching("run-7"),
+            "the removed root is watched"
+        );
     }
 }

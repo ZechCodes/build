@@ -1,6 +1,12 @@
 # Secure transport consolidation
 
-Planning deliverable for #572, 2026-10-12. Proposed migration, not shipped.
+Planning deliverable for #572, 2026-10-12. Retained decision and original
+sequencing; #575/#576/#607 and the #577/#578 cohort are now landed, through
+main `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f`. #579 documentation and
+#580 final independent review/handoff follow. The
+[evidence ledger](Secure%20Transport%20Consolidation%20Evidence.md#landed-plan-items)
+records exact implementation and landing commits; future-tense requirements
+below describe the original migration contract, not current setup instructions.
 
 Zech authorized keeping the required first-party code in Build on
 #348/c/tc-01M4BN9YTE943BXC71MTDARJEK. This plan carries that decision forward.

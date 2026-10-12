@@ -240,6 +240,7 @@ mod tracker_activity;
 mod tracker_agent_files;
 mod tracker_completion_fences;
 mod tracker_dispatch;
+mod tracker_closure_context;
 mod tracker_deferred_delivery;
 mod tracker_finished;
 mod tracker_identity_removal;

@@ -86,6 +86,20 @@ impl AppState {
         self.post_to_thread(&params, origin)
     }
 
+    /// Admit a deferred task using its persisted conversation generation and origin.
+    pub(in crate::app) fn thread_post_frozen_task(
+        &mut self,
+        frozen: &Value,
+    ) -> Result<Value, String> {
+        let origin = PostOrigin {
+            operation_id: None,
+            from_task: Some(serde_json::from_value(frozen["envelope"].clone()).map_err(|e| e.to_string())?),
+            from_agent: serde_json::from_value(frozen["sender"].clone()).map_err(|e| e.to_string())?,
+            requested_by: serde_json::from_value(frozen["requester"].clone()).map_err(|e| e.to_string())?,
+        };
+        self.post_to_thread(&frozen["params"], origin)
+    }
+
     fn post_to_thread(&mut self, params: &Value, origin: PostOrigin) -> Result<Value, String> {
         let normalized_params = normalize_post_viewing_contexts(params)?;
         let params = &normalized_params;

@@ -88,7 +88,7 @@ pub(in crate::app) struct OwnedChoice {
 }
 
 impl OwnedChoice {
-    fn args(&self) -> AgentChoiceArgs<'_> {
+    pub(super) fn args(&self) -> AgentChoiceArgs<'_> {
         AgentChoiceArgs {
             harness: self.provider.as_deref(),
             model: self.model.as_deref(),
@@ -190,7 +190,7 @@ impl AssignTarget {
     /// What is stored on the task for the kinds that name an assignee
     /// outright. The two creating kinds answer `None`: what they resolve to is
     /// only known once the agent exists.
-    fn settled_assignee(&self) -> Option<Option<Assignee>> {
+    pub(super) fn settled_assignee(&self) -> Option<Option<Assignee>> {
         match self {
             AssignTarget::Nobody => Some(None),
             AssignTarget::User => Some(Some(Assignee::User)),
@@ -212,7 +212,7 @@ pub(in crate::app) struct Delivered {
 }
 
 impl Delivered {
-    fn wire(&self, kind: &str) -> Value {
+    pub(super) fn wire(&self, kind: &str) -> Value {
         json!({
             "kind": kind,
             "workspace_id": self.workspace_id,
@@ -297,7 +297,7 @@ impl AppState {
 
     /// Write the assignment down: who holds it, where the work went, and the
     /// column it moved to.
-    fn settle_assignment(
+    pub(super) fn settle_assignment(
         &mut self,
         write: &mut TaskWrite,
         target: &AssignTarget,
@@ -953,7 +953,7 @@ impl AppState {
     /// name the owner, which is the same fallback a client makes.
     ///
     /// `None` is the human, who the bridge knows no other name for.
-    fn assigner_name(&self, sender: Option<crate::app::AgentSender<'_>>) -> String {
+    pub(super) fn assigner_name(&self, sender: Option<crate::app::AgentSender<'_>>) -> String {
         let Some(sender) = sender else {
             return "The user".to_string();
         };
@@ -978,6 +978,12 @@ impl AppState {
         sender: Option<crate::app::AgentSender<'_>>,
     ) -> Result<String, String> {
         let assigner = self.assigner_name(sender);
+        let context = self.assignment_closure_context(task)?;
+        let mut body = assignment_notice(task, &assigner, note);
+        if !context.is_empty() {
+            body.push_str("\n\n");
+            body.push_str(&context);
+        }
         let requester = match sender {
             Some(sender) => Some(self.agent_requester(sender)?),
             None => None,
@@ -986,7 +992,7 @@ impl AppState {
             &json!({
                 "entity_id": entity_id,
                 "agent_id": agent_id,
-                "body": assignment_notice(task, &assigner, note),
+                "body": body,
                 "operation_id": operation_id,
             }),
             envelope_of(task),

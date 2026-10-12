@@ -14,8 +14,13 @@
 mod activity;
 mod agent_files;
 mod attachments;
+mod closure_context;
 mod comments;
 mod dispatch;
+mod deferred_delivery;
+mod deferred_resources;
+#[cfg(test)]
+pub(in crate::app) use deferred_delivery::DeferredDeliveryBoundary;
 mod edits;
 mod handoff;
 mod identities;

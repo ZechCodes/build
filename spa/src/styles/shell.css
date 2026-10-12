@@ -827,7 +827,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   .tbmenu { left:0!important; right:0; width:100%; border-radius:10px 10px 0 0;
     padding:6px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .tbmenu .mi { min-height:44px; justify-content:center; }
-  .tb-filter { min-height:44px; font-size:16px; }
 }
 
 

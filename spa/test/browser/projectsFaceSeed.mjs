@@ -10,9 +10,10 @@ export async function mountProjectsFace(page, basePath) {
   await loadBrowserModules(page, {
     app: "src/app.js", cache: "src/core/localCache.js", feed: "src/core/taskFeed.js",
     inbox: "src/core/inboxShell.js", view: "src/core/inboxView.js", contexts: "src/core/deviceContexts.js",
+    tracker: "src/core/trackerCache.js",
   }, basePath);
   await page.evaluate(async () => {
-    const { app, cache, feed, inbox, view, contexts } = window.__layoutModules;
+    const { app, cache, feed, inbox, view, contexts, tracker } = window.__layoutModules;
     const deviceId = "projects-review";
     app.App.devices = [{ id: deviceId, name: "Workshop", status: "online" }];
     app.App.selectedDeviceId = deviceId;
@@ -38,6 +39,15 @@ export async function mountProjectsFace(page, basePath) {
     await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, projects);
     await cache.writeCached({ deviceId, entityId: "", kind: "workspaces" }, workspaces);
     await cache.writeCached({ deviceId, entityId: "", kind: "feed" }, { projects, workspaces, items, runs: items });
+    // Two watched tasks gone quiet under Build (#516): one with a reason line.
+    const quietAt = new Date(now - hour * 72).toISOString();
+    const task = (id, number, title, over = {}) => ({ id, number, title, project_id: "build", state: "open",
+      status: "in_progress", watched: true, assignee: null, unread_count: 0, created_at: quietAt,
+      updated_at: quietAt, ...over });
+    const tasks = [task("land-tracker", 25, "Land the issue tracker in the rail"),
+      task("release-check", 348, "Release checklist for the public launch", { assignee: { kind: "user" } })];
+    await tracker.writeTasksRecord(deviceId, "build", tracker.tasksRecord(tasks, []));
+    for (const one of tasks) await tracker.writeTaskRecord(deviceId, "build", one.id, { task: one, timeline: [] });
     contexts.adoptDeviceSession({ deviceId, call: async () => ({}), close() {}, peer() {}, onCarrier() {}, onPush() {} });
     await inbox.initInboxRail();
     await feed.startFeed();
@@ -56,4 +66,54 @@ export async function inspectProjectsFace(page) {
       active: block.classList.contains("active"), background: style.backgroundColor,
       border: style.borderWidth, shadow: style.boxShadow };
   }));
+}
+
+/** Open one block's Recent and wait for its quiet rows. */
+export async function openRecent(page, projectKey) {
+  await page.locator(`[data-recent-toggle="${projectKey}"]`).click();
+  await page.locator(`.inbox-project[data-project="${projectKey}"] .inbox-recent .inbox-entry`).first().waitFor();
+  await page.locator(`.inbox-project[data-project="${projectKey}"] .inbox-recent .inbox-quiet-task`).first().waitFor();
+  await page.mouse.move(0, 0);
+}
+
+/** The active block's geometry and fills: head, Recent heading, and each row's
+ *  title, facts and right-edge controls, in CSS pixels. */
+export async function inspectActiveBlock(page) {
+  return page.locator(".inbox-project.active").evaluate((block) => {
+    const box = (element) => {
+      if (!element) return null;
+      const { x, right, width } = element.getBoundingClientRect();
+      return { x, right, width };
+    };
+    const fill = (element) => getComputedStyle(element).backgroundColor;
+    const resolved = (value) => {
+      const probe = block.appendChild(document.createElement("span"));
+      probe.style.background = value;
+      const colour = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return colour;
+    };
+    const toggle = block.querySelector(".inbox-recent-toggle");
+    const head = block.querySelector(".inbox-project-head");
+    return {
+      head: box(head), headFill: fill(head), name: box(block.querySelector(".inbox-project-name")),
+      create: box(block.querySelector(".inbox-project-create")),
+      createGlyph: box(block.querySelector(".inbox-project-create svg")),
+      toggle: box(toggle), toggleFill: fill(toggle), caret: box(toggle.querySelector(".inbox-recent-caret")),
+      count: box(toggle.querySelector(".inbox-recent-count")),
+      accentSoft: resolved("var(--accent-soft)"), panel: resolved("var(--panel)"),
+      rows: [...block.querySelectorAll(".inbox-entry")].map((row) => {
+        const title = row.querySelector(".stitle");
+        const titleBox = box(title);
+        const facts = box(row.querySelector(".inbox-facts-float"));
+        const middle = titleBox && document.elementFromPoint(titleBox.x + 2,
+          title.getBoundingClientRect().top + title.getBoundingClientRect().height / 2);
+        return { key: row.dataset.key, row: box(row), fill: fill(row), title: titleBox, facts,
+          text: title.textContent, clipped: title.scrollWidth > title.clientWidth,
+          at: Boolean(middle && title.contains(middle)),
+          done: box(row.querySelector(".inbox-workspace-done")), watch: box(row.querySelector(".inbox-watch")),
+          watchGlyph: box(row.querySelector(".inbox-watch svg")) };
+      }),
+    };
+  });
 }

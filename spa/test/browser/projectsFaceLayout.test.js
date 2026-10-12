@@ -141,4 +141,32 @@ for (const { label, width, height, hasTouch } of [
       }
     }, { width, height, hasTouch });
   }, 60_000);
+
+  it(`keeps the full-width Recent heading's focus ring inside the rail on ${label} (#516)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      const toggle = page.locator('[data-recent-toggle="projects-review/build"]');
+      await toggle.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      const ring = await toggle.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const grow = parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth);
+        const box = element.getBoundingClientRect();
+        const list = document.querySelector("#inbox-list").getBoundingClientRect();
+        return { focused: element.matches(":focus-visible"), drawn: style.outlineStyle !== "none" && grow > -box.width / 2,
+          left: box.left - grow, right: box.right + grow, top: box.top - grow, bottom: box.bottom + grow,
+          width: box.width, list: { left: list.left, right: list.right, top: list.top, bottom: list.bottom } };
+      });
+      expect(ring.focused).toBe(true);
+      expect(ring.drawn).toBe(true);
+      expect(ring.left).toBeGreaterThanOrEqual(ring.list.left);
+      expect(ring.right).toBeLessThanOrEqual(ring.list.right);
+      expect(ring.top).toBeGreaterThanOrEqual(ring.list.top);
+      expect(ring.bottom).toBeLessThanOrEqual(ring.list.bottom);
+      // The fill still spans the rail.
+      expect(ring.width).toBe(ring.list.right - ring.list.left);
+    }, { width, height, hasTouch });
+  }, 60_000);
 }

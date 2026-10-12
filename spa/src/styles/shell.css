@@ -580,6 +580,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-bleed-left));
   padding-right:calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-bleed-right)); }
 .inbox-project.active .inbox-recent-toggle { background:var(--accent-soft); }
+/* Edge to edge, the shared ring's outward offset falls outside the list that
+   clips it; this heading draws its ring inside its own box. */
+#inbox-list .inbox-project .inbox-recent-toggle:focus-visible { outline-offset:-2px; }
 
 /* ---- view column (centre) ---- */
 /* Positioned, because the console's full size is an overlay over this column

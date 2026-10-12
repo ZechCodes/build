@@ -171,9 +171,11 @@ describe("comment header reply", () => {
     { opinion: { snapshot_id: "snap-1", verdict: "approve" } },
     { reply_to: "tc-1" },
   ])("puts an eligible comment's icon last in its header: %j", async (metadata) => {
-    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({}, [
+    const answer = answerFor({}, [
       comment({ id: "tc-icon", ...metadata }), comment({ id: "tc-plain" }),
-    ]));
+    ]);
+    call = vi.fn(async (method) => method === "tasks.get" ? answer : {});
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answer);
     await mount({}, { waitForPaint: false });
     await vi.waitFor(() => expect(host.querySelector('[data-review-reply="tc-icon"]')).not.toBeNull());
     const button = host.querySelector('[data-review-reply="tc-icon"]');

@@ -29,6 +29,7 @@ import { wipeUiRecords } from "../src/core/localUiStore.js";
 import { rememberReviewSupport } from "../src/core/taskReviewSupport.js";
 import { rememberWorkspaceLockSupport } from "../src/core/workspaceLockSupport.js";
 import { stampWorkspace } from "../src/core/feedMerge.js";
+import { hashFromRoute } from "../src/core/router.js";
 
 const route = (extra = {}) => ({ name: "workspace", deviceId: "device", projectId: "project", workspaceId: "workspace", ...extra });
 const workspace = (extra = {}) => ({ id: "workspace", project_id: "project", name: "Feature work", status: "ready", locked: false, ...extra });
@@ -43,6 +44,7 @@ const deliver = (workspaces) => {
 };
 const openJump = async () => {
   document.querySelector('[data-select="workspace"]').click();
+  expect(document.activeElement).toBe(menu()?.querySelector(".tb-filter"));
   await vi.waitFor(() => expect(menu()?.dataset.list).toBe("workspaces"));
 };
 const mount = async (reviews = { pullRequests: true, open: true, get: true }) => {
@@ -77,6 +79,21 @@ beforeEach(async () => {
 afterEach(async () => { await stopToolbar(); });
 
 describe("workspace jump-menu review entry", () => {
+  it("keeps review and New workspace in the local actions footer only", async () => {
+    await mount();
+    await vi.waitFor(() => expect(reviewButton()).not.toBeNull());
+    expect(menu().querySelector('[data-create="workspace"]')).not.toBeNull();
+    expect(menu().textContent).toContain("Workspace actions");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await vi.waitFor(() => expect(menu()).toBeNull());
+    document.querySelector('[data-select="project"]').click();
+    expect(document.activeElement).toBe(menu()?.querySelector(".tb-filter"));
+    await vi.waitFor(() => expect(menu()?.dataset.list).toBe("projects"));
+    expect(reviewButton()).toBeNull();
+    expect(menu().querySelector('[data-create="workspace"]')).toBeNull();
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+
   it.each([
     {}, { get: true, snapshot: true }, { pullRequests: true }, { open: true },
     { pullRequests: true, update: true },
@@ -165,5 +182,48 @@ describe("workspace jump-menu review entry", () => {
     toolbarRouteChanged();
     await vi.waitFor(() => expect(reviewButton()).toBeNull());
     expect(state.rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe("current breadcrumb and picker destinations", () => {
+  it.each([
+    { name: "workspace", deviceId: "device", projectId: "project", workspaceId: "workspace", tab: "files", sourceId: "docs", file: "README.md", line: 12 },
+    { name: "workspace", deviceId: "device", projectId: "project", workspaceId: "workspace", tab: "tasks", taskId: "task", view: "board" },
+    { name: "project", deviceId: "device", projectId: "project", tab: "files", sourceId: "docs", file: "README.md", line: 12 },
+  ])("closes a Current picker row without navigating or dropping context (%j)", async (standing) => {
+    state.App.route = standing;
+    const hash = hashFromRoute(standing);
+    history.replaceState(null, "", hash);
+    await initToolbar();
+    await openJump();
+    const current = menu().querySelector(standing.name === "workspace" ? '[data-workspace="device/workspace"]' : "[data-project-page]");
+    expect(current.classList.contains("current")).toBe(true);
+    current.click();
+    await vi.waitFor(() => expect(menu()).toBeNull());
+    expect(state.go).not.toHaveBeenCalled();
+    expect(state.App.route).toBe(standing);
+    expect(location.hash).toBe(hash);
+    expect(state.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "project", deviceId: "device", projectId: "project", tab: "files", sourceId: "docs", file: "README.md", line: 12 },
+    { name: "trackerTask", deviceId: "device", projectId: "project", taskId: "task", commentId: "comment" },
+    { name: "workspace", deviceId: "device", projectId: "project", workspaceId: "workspace", tab: "tasks", taskId: "task", view: "board" },
+    { name: "branch", deviceId: "device", projectId: "project", branch: "build/fix/navigation", tab: "files", file: "README.md", line: 12 },
+  ])("makes the current leaf an exact self-link and skips go (%j)", async (standing) => {
+    state.App.route = standing;
+    const hash = hashFromRoute(standing);
+    history.replaceState(null, "", hash);
+    await initToolbar();
+    const current = document.querySelector('#toolbar a[aria-current="page"]');
+    expect(current).not.toBeNull();
+    expect(current.getAttribute("href")).toBe(hash);
+    current.click();
+    await Promise.resolve();
+    expect(state.go).not.toHaveBeenCalled();
+    expect(location.hash).toBe(hash);
+    expect(state.rpc).not.toHaveBeenCalled();
+    if (standing.name === "branch") expect(current.textContent).toBe("build/fix/navigation");
   });
 });

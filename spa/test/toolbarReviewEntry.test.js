@@ -278,7 +278,7 @@ describe("current breadcrumb and picker destinations", () => {
     filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     await vi.waitFor(() => expect(state.go).toHaveBeenCalledExactlyOnceWith({
       name: "workspace", deviceId: "device", projectId: "project", workspaceId: "sibling", tab: "changes",
-    }));
+    }, { newEntry: true }));
     expect(menu()).toBeNull();
   });
 

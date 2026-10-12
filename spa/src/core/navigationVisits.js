@@ -6,6 +6,9 @@ export const navigationVisitAddress = uiAddress({ view: "navigation", kind: "his
 const TAB_KEY = "build.navigation.previous";
 const trackers = new Set();
 let generation = 0;
+let enteredDocument = false;
+const firstDocumentMount = () => { const first = !enteredDocument; enteredDocument = true; return first; };
+const documentNavigationType = () => globalThis.performance?.getEntriesByType?.("navigation")?.[0]?.type;
 const validVisits = (value) => Array.isArray(value) ? value.filter((row) =>
   ["project", "workspace"].includes(row?.kind) && typeof row.key === "string" && Number.isFinite(row.at)) : [];
 const readPrevious = (storage) => { try { return storage?.getItem(TAB_KEY) || null; } catch { return null; } };
@@ -21,10 +24,17 @@ function mergeVisit(value, visit) {
   return [newer || visit, ...held.filter((row) => destinationIdentity(row) !== identity)].sort(byVisitTime).slice(0, 20);
 }
 
-export function mountNavigationVisits({ storage = tabStorage(), now = Date.now, onChange = () => {} } = {}) {
+export function mountNavigationVisits({ storage = tabStorage(), now = Date.now, onChange = () => {},
+  firstMount = firstDocumentMount(), navigationType = documentNavigationType() } = {}) {
   let started = generation;
   let disposed = false;
   let previous = readPrevious(storage);
+  // Browsers clone sessionStorage into a newly opened tab. A fresh document
+  // counts its initial visit; a reload retains this tab's previous destination.
+  if (firstMount && navigationType === "navigate") {
+    previous = null;
+    savePrevious(storage, null);
+  }
   let pending = Promise.resolve();
   const record = watchUiState(navigationVisitAddress, (value) => {
     if (started === generation) onChange(validVisits(value));

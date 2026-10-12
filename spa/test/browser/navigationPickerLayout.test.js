@@ -1,11 +1,39 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { openLayoutSession } from "./layoutHarness.mjs";
+import { openLayoutSession, loadBrowserModules } from "./layoutHarness.mjs";
 import { navigationAppShim } from "./navigationBreadcrumbSeed.mjs";
 import { mountNavigationPicker, tickNavigationPicker } from "./navigationPickerSeed.mjs";
 let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [navigationAppShim] }); }, 30_000);
 afterAll(async () => { await session?.close(); });
 const grouped = '.tbmenu-list a[data-destination]:not([data-visit])';
+
+it("P1 production_router_adds_one_entry_and_restores_exact_route_on_Back_and_Forward", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountNavigationPicker(page, basePath, { observeHash: false });
+    await page.evaluate(() => { window.__realRouterBaseModules = window.__layoutModules; });
+    // The query bypasses the fixture's app.js resolver. Actual go/initRouter
+    // execute; gating prevents mounting a live surface or creating a session.
+    await loadBrowserModules(page, { realApp: "src/app.js?navigation-real-router" }, basePath);
+    await page.evaluate(() => {
+      Object.assign(window.__layoutModules, window.__realRouterBaseModules);
+      const { realApp, app } = window.__layoutModules;
+      app.App.gated = true;
+      realApp.initRouter();
+      window.__navigationHarness.navigate = function(next, options) { this.navigations.push(next); return realApp.go(next, options); };
+    });
+    const before = await page.evaluate(() => ({ hash: location.hash, entries: history.length }));
+    await page.locator('[data-select="project"]').click();
+    await page.locator(`${grouped}[data-workspace="away-device/release"]`).click();
+    await page.waitForFunction(() => window.__layoutModules.app.App.route.workspaceId === "release");
+    expect(await page.evaluate(() => history.length)).toBe(before.entries + 1);
+    await page.goBack();
+    await page.waitForFunction(() => window.__layoutModules.app.App.route.workspaceId === "current");
+    expect(await page.evaluate(() => location.hash)).toBe(before.hash);
+    await page.goForward();
+    await page.waitForFunction(() => window.__layoutModules.app.App.route.workspaceId === "release");
+    expect(await page.evaluate(() => window.__navigationHarness.navigations.length)).toBe(1);
+  }, { width: 390, height: 844, hasTouch: true });
+}, 40_000);
 
 for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
   it(`P1 across_projects_two_activations ${width} ${theme}`, async () => {

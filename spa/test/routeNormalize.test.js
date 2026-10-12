@@ -40,6 +40,35 @@ describe("a route that names no device", () => {
 });
 
 describe("a route that names its device", () => {
+  it("adds exactly one history entry when a destination picker opts in", () => {
+    const entries = history.length;
+    const destination = { name: "workspace", deviceId: "dev-2", projectId: "p2", workspaceId: "w2", tab: "files" };
+    expect(go(destination, { newEntry: true })).toBe(true);
+    expect(history.length).toBe(entries + 1);
+    expect(App.route).toEqual(destination);
+  });
+
+  it("adds no history entry when a guarded picker selection is rejected", async () => {
+    const entries = history.length;
+    App.routeLeaveGuard = vi.fn(async () => false);
+    expect(await go({ name: "project", deviceId: "dev-2", projectId: "p2" }, { newEntry: true })).toBe(false);
+    expect(history.length).toBe(entries);
+    expect(location.hash).toBe("#/inbox");
+  });
+
+  it("adds one entry for only the winning guarded picker selection", async () => {
+    const entries = history.length;
+    let decide;
+    App.routeLeaveGuard = () => new Promise((resolve) => { decide = resolve; });
+    const first = go({ name: "project", deviceId: "dev-2", projectId: "p2" }, { newEntry: true });
+    const latest = go({ name: "project", deviceId: "dev-2", projectId: "p3" }, { newEntry: true });
+    decide(true);
+    expect(await first).toBe(false);
+    expect(await latest).toBe(true);
+    expect(history.length).toBe(entries + 1);
+    expect(App.route.projectId).toBe("p3");
+  });
+
   it("replaces the current history entry when navigating between surfaces", () => {
     const entries = history.length;
     go({ name: "account" });

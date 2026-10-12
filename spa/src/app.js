@@ -139,29 +139,31 @@ function standOn(route) {
   return hashFromRoute(route);
 }
 
-function applyRoute(route) {
+function applyRoute(route, { newEntry = false } = {}) {
   App.routeLeaveGuard = null;
   const hash = standOn(route);
   if (location.hash !== hash) {
-    // Replace keeps reloads and shared URLs useful without accumulating history.
+    // Ordinary app moves keep their replacement contract. A destination picker
+    // explicitly adds one entry so Back restores the work it switched away from.
     acceptedHash = hash;
-    location.replace(hash); // hashchange re-enters render after this view settles
+    if (newEntry) location.hash = hash;
+    else location.replace(hash); // hashchange re-enters render after this view settles
   } else {
     acceptedHash = null;
     render();
   }
 }
 
-export function go(route) {
+export function go(route, options) {
   const attempt = ++routeAttempt;
   const guard = App.routeLeaveGuard;
   if (!guard) {
-    applyRoute(route);
+    applyRoute(route, options);
     return true;
   }
   return mayLeaveRoute().then((allowed) => {
     const current = allowed && attempt === routeAttempt;
-    if (current) applyRoute(route);
+    if (current) applyRoute(route, options);
     return current;
   });
 }

@@ -717,7 +717,7 @@ function pickDestination(element) {
 }
 
 async function navigateDestination(route) {
-  const accepted = await go(route);
+  const accepted = await go(route, { newEntry: true });
   if (accepted === false) return;
   const hash = hashFromRoute(route);
   requestAnimationFrame(() => {

@@ -80,6 +80,19 @@ it("P5 visit_history_not_quiet_recent retains newer visit times when another tab
   expect((await readUiRecord(navigationVisitAddress)).value[0].at).toBe(20);
   await Promise.all([newer.dispose(), older.dispose()]);
 });
+it("P5 visit_history_not_quiet_recent counts a new tab with cloned session storage while suppressing reload", async () => {
+  const originalStorage = storage();
+  const original = mountNavigationVisits({ storage: originalStorage, now: () => 10 });
+  await original.ready; await original.visit(route()); await original.dispose();
+  const clonedStorage = storage();
+  clonedStorage.setItem("build.navigation.previous", originalStorage.getItem("build.navigation.previous"));
+  const newTab = mountNavigationVisits({ storage: clonedStorage, now: () => 20, firstMount: true, navigationType: "navigate" });
+  await newTab.ready; await newTab.visit(route()); await newTab.dispose();
+  expect((await readUiRecord(navigationVisitAddress)).value[0].at).toBe(20);
+  const reloaded = mountNavigationVisits({ storage: clonedStorage, now: () => 30, firstMount: true, navigationType: "reload" });
+  await reloaded.ready; await reloaded.visit(route()); await reloaded.dispose();
+  expect((await readUiRecord(navigationVisitAddress)).value[0].at).toBe(20);
+});
 it("P5 visit_history_not_quiet_recent reset clears tab history and fences pending old-account writes", async () => {
   const session = storage();
   const visits = mountNavigationVisits({ storage: session });

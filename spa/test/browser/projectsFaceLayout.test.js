@@ -183,6 +183,12 @@ for (const { label, width, height, hasTouch } of [
           await hoverRecentRow(page);
           expect(await page.locator(".inbox-project.active .inbox-recent .inbox-entry.active").count()).toBe(1);
           const block = await inspectActiveBlock(page);
+          const standing = await page.locator(".inbox-project.active .inbox-entry.active").evaluate((element) => ({
+            background: getComputedStyle(element).backgroundColor,
+            bar: getComputedStyle(element, "::before").width,
+          }));
+          expect(standing.background).not.toBe(block.accentSoft);
+          expect(standing.bar).toBe("3px");
           const columns = await blockColumnPixels(page);
           for (const [column, pixels] of columns.entries()) {
             expect(pixels.filter((pixel) => pixel === block.panel), `column ${column}`).toEqual([]);
@@ -195,6 +201,25 @@ for (const { label, width, height, hasTouch } of [
       }, 60_000);
     }
   }
+
+  it(`keeps all block insets in padding and a folded block filled on ${label} (#540)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      const margins = await page.locator(".inbox-project.active")
+        .locator(".inbox-project-head, .inbox-recent-toggle, .inbox-entry").evaluateAll((elements) =>
+          elements.map((element) => {
+            const style = getComputedStyle(element);
+            return [style.marginLeft, style.marginRight, style.marginTop, style.marginBottom];
+          }));
+      for (const margin of margins) expect(margin).toEqual(["0px", "0px", "0px", "0px"]);
+      await page.locator('[data-project-fold="projects-review/build"]').click();
+      expect(await page.locator(".inbox-project.active .inbox-recent").isVisible()).toBe(false);
+      const folded = await inspectActiveBlock(page);
+      expect(folded.background).toBe(folded.accentSoft);
+      expect(folded.headFill).toBe("rgba(0, 0, 0, 0)");
+    }, { width, height, hasTouch });
+  }, 60_000);
 
   it(`keeps the full-width Recent heading's focus ring inside the rail on ${label} (#516)`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
@@ -224,3 +249,19 @@ for (const { label, width, height, hasTouch } of [
     }, { width, height, hasTouch });
   }, 60_000);
 }
+
+it("includes the phone safe area in the block's single inset (#540)", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    const session = await page.context().newCDPSession(page);
+    await session.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 20 } });
+    await mountProjectsFace(page, basePath);
+    await openRecent(page, "projects-review/build");
+    const block = await inspectActiveBlock(page);
+    expect(block.name.x).toBe(CONTENT_X.phone + 20);
+    expect(block.caret.x).toBe(block.name.x);
+    for (const row of block.rows) expect(row.title.x).toBe(block.name.x);
+    const list = await page.locator("#inbox-list").boundingBox();
+    expect(block.head.x).toBe(list.x);
+    expect(block.head.right).toBe(list.x + list.width);
+  }, { width: 390, height: 844, hasTouch: true });
+}, 60_000);

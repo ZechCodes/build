@@ -22,8 +22,8 @@ const states = [
   { label: "menu open", menu: true },
 ];
 
-async function rowFill(row, token, state) {
-  return row.evaluate(async (element, { token, state }) => {
+async function rowFill(row, expectedFill, state) {
+  return row.evaluate(async (element, { expectedFill, state }) => {
     // This checks state colours, not motion. Reduced motion still leaves
     // .01ms transitions on the row and overlays that can start after frame callbacks.
     document.activeElement?.blur();
@@ -39,7 +39,7 @@ async function rowFill(row, token, state) {
       return transition.finished;
     }));
     const probe = document.createElement("span");
-    probe.style.background = `var(${token})`;
+    probe.style.background = expectedFill;
     element.append(probe);
     const expected = getComputedStyle(probe).backgroundColor;
     probe.remove();
@@ -48,6 +48,8 @@ async function rowFill(row, token, state) {
       active: element.classList.contains("active"),
       hovered: element.matches(":hover"),
       background: getComputedStyle(element).backgroundColor,
+      paint: getComputedStyle(element).backgroundImage,
+      transparentRest: Boolean(element.closest(".inbox-project.active") && !state.active),
       expected,
       overlays: [...element.querySelectorAll(".inbox-actions, .inbox-facts-float")].map((overlay) => ({
         className: overlay.className,
@@ -58,14 +60,15 @@ async function rowFill(row, token, state) {
       })),
       focused: element.matches(":focus-within"),
     };
-  }, { token, state });
+  }, { expectedFill, state });
 }
 
-function expectedToken(context, state) {
-  if (context.projectPage && state.hover) return "--line2";
-  if (state.active) return "--accent-soft";
-  if (state.hover) return "--row-hover";
-  return "--panel";
+function expectedFill(context, state) {
+  if (context.projectPage && state.hover) return "var(--line2)";
+  const inActiveBlock = context.grouped && context.activeProject;
+  const standing = inActiveBlock ? "color-mix(in srgb, var(--accent-soft) 90%, var(--accent-ink))" : "var(--accent-soft)";
+  const base = state.active ? standing : inActiveBlock ? "var(--accent-soft)" : "var(--panel)";
+  return state.hover ? `color-mix(in srgb, var(--bg) 12%, ${base})` : base;
 }
 
 it("samples final row and overlay fills while their colour transitions are pending", async () => {
@@ -87,7 +90,7 @@ it("samples final row and overlay fills while their colour transitions are pendi
     });
     expect(pending[0]).toBe(true);
     expect(pending[1]).toBe(true);
-    const fill = await rowFill(row, "--accent-soft", { active: true });
+    const fill = await rowFill(row, "var(--accent-soft)", { active: true });
     expect(fill.connected).toBe(true);
     expect(fill.active).toBe(true);
     expect(fill.background).toBe(fill.expected);
@@ -134,18 +137,20 @@ for (const theme of ["light", "dark"]) {
             for (const state of states) {
               await session.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: state.hover ? ["hover"] : [] });
               const label = `${context.label}: ${key}, ${state.label}`;
-              const fill = await rowFill(row, expectedToken(context, state), state);
+              const fill = await rowFill(row, expectedFill(context, state), state);
               expect(fill.connected, label).toBe(true);
               expect(fill.active, label).toBe(Boolean(state.active));
               expect(fill.hovered, label).toBe(Boolean(state.hover));
               expect(fill.focused, label).toBe(Boolean(state.focus));
               expect(fill.overlays.length, label).toBe(key === "branch:quiet" ? 2 : 1);
               for (const overlay of fill.overlays) {
-                expect(overlay.background, `${label}: ${overlay.className}`).toBe(fill.background);
+                expect(overlay.background, `${label}: ${overlay.className}`).toBe(fill.expected);
                 expect(overlay.shadow, `${label}: ${overlay.className} fade`)
-                  .toBe(overlay.fade ? `${fill.background} ${overlay.fade}` : "none");
+                  .toBe(overlay.fade ? `${fill.expected} ${overlay.fade}` : "none");
               }
-              expect(fill.background, `${label}: row colour`).toBe(fill.expected);
+              if (fill.transparentRest && !context.projectPage) expect(fill.background, label).toBe("rgba(0, 0, 0, 0)");
+              if (state.hover && !context.projectPage) expect(fill.paint, label).toContain("linear-gradient");
+              if (!state.hover && !fill.transparentRest) expect(fill.background, label).toBe(fill.expected);
             }
             await session.send("CSS.forcePseudoState", { nodeId, forcedPseudoClasses: [] });
             await row.dispose();

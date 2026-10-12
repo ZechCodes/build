@@ -118,8 +118,8 @@ reporting the implementation's security checklist complete.
 | C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | locally verified; #576 receipts below |
 | C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | locally verified; #576 receipts below |
 | C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | locally verified; #576 receipts below |
-| D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | pending |
-| D2 | Node and Vite libsodium resolution; SPA lint/focused tests/build; web unit tests | #577 | pending |
+| D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | locally verified; #577 receipts below |
+| D2 | Node and Vite libsodium resolution; SPA lint/focused tests/build; web unit tests | #577 | locally verified; #577 receipts below |
 | B1 | App and QA images build from clean repository context without external transport access; final contents/notices reviewed | #578 | pending |
 | B2 | Root Docker/Podman ignores and narrow COPY rules exclude environments/private files and retain necessary locks | #578 | pending |
 | G1 | JS-only, Python-only, Rust, fixture, workflow/selector and unrelated-doc path cases select intended checks/images | #578 | pending |
@@ -270,3 +270,65 @@ finding report is retained. Only those two commit/file/line fingerprints are
 excluded; no fixture path or rule is suppressed. Fixture bytes stay immutable,
 and complexity ratchet annotations remain unchanged. Final scans and their
 exact-head logs are attached to the task handoff.
+
+
+## #577 local consumer/lock receipts (2026-10-12)
+
+D1–D2 are locally verified. Container/CI, operational documentation, independent
+review and integration evidence B1–R2 remain with their assigned children.
+This consumer cutover must integrate with #578's container/CI cutover.
+
+- Base: `6335adbe0aeab4b60cb6bdf16cfb790321d44351`.
+- Consumer source/lock commit: `bab587d279f47f38c3eb16148d9b361e16fb0191`.
+  The following evidence-only commit leaves all executable/config/lock bytes
+  and file modes unchanged; the final #577 handoff attaches that equality proof.
+- Tested tools: Node 22.23.3, npm 12.0.2, Chromium `/usr/bin/chromium`.
+  npm was installed only into a disposable tool directory with scripts disabled;
+  no global tool or host configuration was changed. All gates ran at nice 10.
+- Both consumers now resolve `file:../transport/js`. Their new committed locks
+  contain registry URLs and the relative in-tree link, with no absolute or
+  external transport paths. Dependency ranges/overrides retain main's values.
+  A fresh, scripts-disabled lock-only resolution of main's manifests in a
+  disposable fixture layout matches every registry version, resolution and
+  integrity in the new consumer locks. This compares contemporaneous main
+  resolution, not an untracked historical developer environment.
+- Transport source/manifests/locks, Rust crypto, the Vite shim and both complexity
+  ratchet tests remain byte-identical to base. SPA libsodium and wrappers match
+  transport's retained 0.7.16 version/resolution/integrity exactly. Node initializes
+  sodium from the linked package's own installed dependencies; Vite bundles the
+  in-tree binding through the existing SPA-local sodium shim.
+- SPA/web `.nvmrc`, `engines` and `packageManager` record the tested tools.
+  `.npmrc` disables install scripts in each consumer and persists SPA's
+  `legacy-peer-deps=true`. `AGENTS.md` changes the lockfile prohibition atomically
+  with the portable locks. From the root, install transport first with
+  `npm ci --prefix transport/js --ignore-scripts`; then use SPA
+  `npm ci --legacy-peer-deps` or web `npm ci`. For dependency edits use SPA
+  `npm install --legacy-peer-deps` or web `npm install`, committing the lock.
+
+| Receipt | Command/scope | Exit/result |
+| --- | --- | --- |
+| consumer-red | stdlib consumer dependency contracts before cutover | 1; old paths, missing locks/policy and ignored locks |
+| node-resolution-red | `node --test web/transportDependency.test.mjs` before install | 1; binding unavailable |
+| transport-ci | `npm ci --prefix transport/js --ignore-scripts` | 0; retained lock |
+| spa-install / web-install | `npm install --legacy-peer-deps` / `npm install` in consumer | 0 / 0; scripts disabled |
+| consumer-green / contracts-all | consumer contracts / all transport contracts | 0 / 0; five / 24 cases |
+| spa-focused / spa-lint / web-test | focused in-tree/sodium test / lint / unit tests | 0 / 0 / 0; one / clean / 23 cases |
+| import-check / source-proof / baseline-graph | import digests / immutable sources and ranges / main resolution comparison | 0 / 0 / 0 |
+| first-* / second-* | fresh checkout frozen installs, contracts, focused SPA, web unit tests, Vite build and clean tree | all 0 |
+
+The two unrelated Git checkouts are
+`/tmp/build-577-first-wdsu1wpn/checkout` and
+`/var/tmp/build-577-second-45uwzt89/checkout`, each with its own initially empty
+npm cache and no prior dependency tree or external sibling source. Git objects
+are shared solely for checkout creation; dependency installs fetch registry
+artifacts independently. Transport dependencies are installed first, then SPA
+with `--legacy-peer-deps`, then web. Both checkouts resolve the exact local source,
+initialize sodium, pass web's 23 unit cases and Vite builds, and leave tracked
+files unchanged. No cache or sibling-link prerequisite remains.
+
+The final #577 task comment attaches the complete command/head/exit manifest,
+logs for every required full SPA/capture/build and security gate, and final-head
+source equality. These local D1/D2 receipts do not claim container builds, CI
+routing, live QA, bridge execution, pairing, network changes, publication or
+migration-wide approval. #578 owns container/CI wiring; #579 owns the remaining
+operational/reference audit.

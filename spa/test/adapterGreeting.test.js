@@ -8,7 +8,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, subscriptionsActive, watchChanges;
 
 const NONE = {
-  changes: { subscriptions: false, kinds: [] },
+  changes: { subscriptions: false, kinds: [], projectSources: false },
+  git: { projectSources: false },
   fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
   requests: { priority: false },
   rtc: { clientLanCache: false },
@@ -68,7 +69,8 @@ describe("the adapter a greeting selects", () => {
     expect(bridgeCapabilities()).toEqual({
       // The kinds ride through as the greeting states them, so a caller can ask
       // whether this bridge carries the one it is about to subscribe to.
-      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"] },
+      changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
+      git: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },

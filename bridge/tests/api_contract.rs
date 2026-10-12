@@ -1008,7 +1008,8 @@ fn check_state(entity_id: &str, state: &Value) {
     }
 }
 
-/// Every key beside `entity_id` is named after a [`changes::Kind`].
+/// Every key beside `entity_id` (and a source item's `project_source`) is
+/// named after a [`changes::Kind`].
 fn check_item_keys(entity_id: &str, item: &serde_json::Map<String, Value>) {
     let kinds: Vec<&str> = changes::KindSet::all()
         .iter()
@@ -1016,10 +1017,34 @@ fn check_item_keys(entity_id: &str, item: &serde_json::Map<String, Value>) {
         .collect();
     for key in item.keys() {
         assert!(
-            key == "entity_id" || kinds.contains(&key.as_str()),
+            key == "entity_id" || key == "project_source" || kinds.contains(&key.as_str()),
             "{entity_id}: {key} is not a kind"
         );
     }
+}
+
+/// A source item names its project, source and captured folder, and its
+/// entity is the one those three mint (`changes.projectSources`).
+fn check_project_source(entity_id: &str, source: &Value) {
+    let field = |name: &str| {
+        source[name]
+            .as_str()
+            .unwrap_or_else(|| panic!("{entity_id}: project_source.{name} is a string"))
+    };
+    assert_eq!(
+        entity_id,
+        changes::project_source_entity_id(
+            field("project_id"),
+            field("source_id"),
+            field("source_path")
+        ),
+        "a source item's entity is its project, source and captured folder"
+    );
+    assert_eq!(
+        source.as_object().unwrap().len(),
+        3,
+        "{entity_id}: {source}"
+    );
 }
 
 /// One item of a `changes` frame: `entity_id`, and beside it only the kinds
@@ -1028,6 +1053,9 @@ fn check_changes_item(item: &Value) {
     let object = item.as_object().expect("an item is an object");
     let entity_id = object["entity_id"].as_str().expect("entity_id is a string");
     check_item_keys(entity_id, object);
+    if let Some(source) = object.get("project_source") {
+        check_project_source(entity_id, source);
+    }
     if let Some(state) = object.get("state") {
         check_state(entity_id, state);
     }
@@ -1348,6 +1376,99 @@ fn lean_activity_fixture_examples_match_reachable_pages() {
             "has_more",
         ] {
             assert_eq!(actual[field], example["result"][field], "{params}: {field}");
+        }
+    }
+}
+
+/// The seventeen Git verbs a project source's Changes uses, each of which
+/// takes `project_id` + `source_id` + `source_path` since 3.21.0 (#529).
+const PROJECT_SOURCE_GIT_VERBS: [&str; 17] = [
+    "git.status",
+    "git.diff",
+    "git.changeset_diff",
+    "git.log",
+    "git.show",
+    "git.unpushed",
+    "git.refs",
+    "git.stage",
+    "git.discard",
+    "git.commit",
+    "git.fetch",
+    "git.pull",
+    "git.push",
+    "git.stash",
+    "git.stash_pop",
+    "git.merge_abort",
+    "git.checkout_ref",
+];
+
+#[test]
+fn project_source_git_is_announced_on_every_git_verb_with_an_example() {
+    assert!(capabilities(false).contains(&"git.projectSources"));
+    for method in PROJECT_SOURCE_GIT_VERBS {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["project_sources"]["since"], "3.21.0", "{method}");
+        assert_eq!(
+            fixture["project_sources"]["capability"], "git.projectSources",
+            "{method}"
+        );
+        assert_eq!(
+            fixture["project_sources"]["refused_with"]["moved"], "conflict",
+            "{method}"
+        );
+        assert!(
+            fixture["errors"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("conflict")),
+            "{method}: a moved source is refused with conflict"
+        );
+        let example = fixture["examples"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|example| example["params"]["source_path"].is_string())
+            .unwrap_or_else(|| panic!("{method}: no project source example"));
+        assert_eq!(example["params"]["source_id"], "source-2", "{method}");
+        let handler = &v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        handler.parse_params(&example["params"]).unwrap();
+        assert_eq!(
+            handler.round_trip_result(&example["result"]).unwrap(),
+            example["result"],
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn project_source_changes_are_announced_with_a_scope_and_an_item() {
+    assert!(capabilities(false).contains(&"changes.projectSources"));
+    let fixture = read_json(&fixtures_root().join("v1/changes.subscribe.json"));
+    let sources = &fixture["project_sources"];
+    assert_eq!(sources["since"], "3.21.0");
+    assert_eq!(sources["capability"], "changes.projectSources");
+    let handler = &v1::methods()
+        .iter()
+        .find(|(name, _)| *name == "changes.subscribe")
+        .unwrap()
+        .1;
+    handler.parse_params(&sources["params"]).unwrap();
+    assert_eq!(sources["params"]["scope"]["kind"], "project_source");
+
+    let source_items: Vec<Value> = event_examples()
+        .into_iter()
+        .filter(|event| event["subscription_id"] == sources["params"]["subscription_id"])
+        .flat_map(|event| event["items"].as_array().cloned().unwrap_or_default())
+        .collect();
+    assert!(!source_items.is_empty(), "events.json has a source frame");
+    for item in &source_items {
+        let scope = &sources["params"]["scope"];
+        for field in ["project_id", "source_id", "source_path"] {
+            assert_eq!(item["project_source"][field], scope[field], "{item}");
         }
     }
 }

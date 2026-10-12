@@ -1,6 +1,6 @@
 {
   "name": "build-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Build desktop client",
@@ -61,8 +61,8 @@
       "hardenedRuntime": true,
       "icon": "assets/icon.icns",
       "target": [
-        "dmg",
-        "zip"
+        { "target": "dmg", "arch": ["arm64"] },
+        { "target": "zip", "arch": ["arm64"] }
       ]
     },
     "win": {

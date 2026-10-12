@@ -12,6 +12,34 @@
   "errors": [
     "not_found",
     "invalid_params",
+    "conflict",
     "internal"
+  ],
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "git.projectSources",
+    "params": [
+      "project_id",
+      "source_id",
+      "source_path"
+    ],
+    "refused_with": {
+      "moved": "conflict",
+      "plain_folder": "invalid_params"
+    }
+  },
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs",
+        "if_status_key": "9f3c1a0b7e2d4c55"
+      },
+      "result": {
+        "unchanged": true,
+        "status_key": "9f3c1a0b7e2d4c55"
+      }
+    }
   ]
 }

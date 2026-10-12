@@ -321,12 +321,14 @@ only a draft is published).
 
 `.github/workflows/release-desktop.yml` runs on `desktop-vX.Y.Z` tags matching
 `desktop/package.json` and `desktop/package-lock.json`. It builds Linux x86_64
-and ARM64 AppImage/DEB packages and macOS Intel/Apple Silicon DMG/ZIP packages.
+and ARM64 AppImage/DEB packages and macOS Apple Silicon (ARM64) DMG/ZIP packages.
+Intel Macs can use the browser client; the desktop installer refuses Intel
+macOS before downloading or changing an installation.
 Mac signing and notarization are required; use the same Apple secrets and
 `RELEASES_TOKEN` as the bridge workflow. Missing credentials fail the release.
 
 The public release also contains stable installer archive names:
-`build-desktop-macos-{arm64,x86_64}.zip` and
+`build-desktop-macos-arm64.zip` and
 `build-desktop-linux-{x86_64,aarch64}.tar.gz`, plus `SHA256SUMS` and
 `SHA256SUMS.sigstore.json`. The checksum signature pins
 `…/build-web/.github/workflows/release-desktop.yml@refs/tags/desktop-vX.Y.Z`

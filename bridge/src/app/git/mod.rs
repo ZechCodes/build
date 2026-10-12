@@ -4,6 +4,7 @@ pub(in crate::app) mod deferred;
 
 use serde_json::{json, Value};
 
+use super::projects::{ResolvedProjectSource, MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 use super::{require_str, AppState, ReadSubject};
 
 /// A resolved `git.*` scope: the repository directory the RPC operates on,
@@ -11,15 +12,50 @@ use super::{require_str, AppState, ReadSubject};
 /// and `git.commit` needs to invalidate afterwards.
 pub(in crate::app) struct GitScope {
     pub(in crate::app) repo_path: std::path::PathBuf,
-    /// Names browser cache entries for a source within a workspace. Legacy
-    /// scopes keep their established keys; workspace directories need the
-    /// enclosing id because different directories can contain identical Git
-    /// state and identical relative paths.
+    /// Names browser cache entries for a source within a workspace or a
+    /// project. Legacy scopes keep their established keys; sources need the
+    /// enclosing identity because different directories can contain
+    /// identical Git state and identical relative paths.
     cache_namespace: Option<String>,
+    /// Whether history marks the commits its push destination lacks: a
+    /// workspace directory's review semantics, chosen per scope rather than
+    /// implied by having a cache namespace.
+    marks_unpushed: bool,
     /// Set for project scope: the project whose repository this is.
     pub(in crate::app) project_id: Option<String>,
     pub(in crate::app) run: Option<GitScopeRun>,
     pub(in crate::app) worktree: Option<GitScopeWorktree>,
+    /// Set for an original project source named by id (`git.projectSources`).
+    pub(in crate::app) source: Option<ResolvedProjectSource>,
+}
+
+/// The cache namespace of one original project source: its project, its id
+/// and the folder the caller captured, so a source moved to another folder
+/// starts a new namespace rather than inheriting the old folder's records.
+pub(in crate::app) fn project_source_namespace(source: &ResolvedProjectSource) -> String {
+    format!(
+        "project:{}:source:{}:path:{}",
+        source.project_id, source.source_id, source.source_path
+    )
+}
+
+/// One key as a source scope answers it.
+pub(in crate::app) fn namespaced_key(namespace: &str, key: &str) -> String {
+    crate::diff::fnv1a64_hex(&format!("{namespace}\0{key}"))
+}
+
+/// Re-key a payload's `status_key` and per-file `content_key`s under
+/// `namespace`, as every source-scoped read and push answers them.
+pub(in crate::app) fn namespace_payload_keys(namespace: &str, mut payload: Value) -> Value {
+    if let Some(key) = payload.get("status_key").and_then(Value::as_str) {
+        payload["status_key"] = json!(namespaced_key(namespace, key));
+    }
+    for file in payload["files"].as_array_mut().into_iter().flatten() {
+        if let Some(key) = file.get("content_key").and_then(Value::as_str) {
+            file["content_key"] = json!(namespaced_key(namespace, key));
+        }
+    }
+    payload
 }
 
 pub(in crate::app) struct GitScopeRun {
@@ -97,7 +133,7 @@ impl GitScope {
     /// marks the exact commits included by All changes; run/worktree history
     /// retains its base-branch marker; primary project history marks nothing.
     pub(in crate::app) fn log_highlight(&self) -> Option<crate::gitgui::LogHighlight<'_>> {
-        if self.cache_namespace.is_some() {
+        if self.marks_unpushed {
             return Some(crate::gitgui::LogHighlight::Unpushed);
         }
         self.run
@@ -110,34 +146,27 @@ impl GitScope {
             })
     }
 
-    fn namespace_key(&self, key: &str) -> String {
-        self.cache_namespace.as_ref().map_or_else(
-            || key.to_string(),
-            |namespace| crate::diff::fnv1a64_hex(&format!("{namespace}\0{key}")),
-        )
+    fn namespace_payload_keys(&self, payload: Value) -> Value {
+        match &self.cache_namespace {
+            Some(namespace) => namespace_payload_keys(namespace, payload),
+            None => payload,
+        }
     }
 
-    fn namespace_payload_keys(&self, mut payload: Value) -> Value {
-        if self.cache_namespace.is_none() {
-            return payload;
+    /// The changeset `git.changeset_diff` reads for a source scope: a
+    /// workspace directory's unpublished work, or a project source's
+    /// uncommitted work exactly as the primary checkout's is read.
+    fn source_changeset(self) -> ReadSubject {
+        match self.source {
+            Some(source) => ReadSubject::Project {
+                key_namespace: Some(project_source_namespace(&source)),
+                project_id: source.project_id,
+                repo_path: self.repo_path,
+            },
+            None => ReadSubject::Unpublished {
+                repo_path: self.repo_path,
+            },
         }
-        if let Some(key) = payload
-            .get("status_key")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-        {
-            payload["status_key"] = json!(self.namespace_key(&key));
-        }
-        for file in payload["files"].as_array_mut().into_iter().flatten() {
-            if let Some(key) = file
-                .get("content_key")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-            {
-                file["content_key"] = json!(self.namespace_key(&key));
-            }
-        }
-        payload
     }
 
     fn status_payload(&self) -> Result<Value, String> {
@@ -156,6 +185,30 @@ impl GitScope {
         } else {
             Ok(payload)
         }
+    }
+
+    /// `git.unpushed` for this scope. A project source answers its
+    /// `diff_key` and every `content_key` in its namespace, as the pushed
+    /// summary does; a workspace directory keeps the raw keys its narrowed
+    /// `git.changeset_diff` agrees with.
+    fn unpushed_payload(
+        &self,
+        if_diff_key: Option<&str>,
+        with_patch: bool,
+    ) -> Result<Value, String> {
+        let Some(namespace) = self.source.as_ref().map(project_source_namespace) else {
+            return crate::gitgui::unpushed_payload(&self.repo_path, if_diff_key, with_patch);
+        };
+        let key = namespaced_key(&namespace, &crate::gitgui::unpushed_key(&self.repo_path)?);
+        if if_diff_key == Some(key.as_str()) {
+            return Ok(json!({ "unchanged": true, "diff_key": key }));
+        }
+        let mut payload = namespace_payload_keys(
+            &namespace,
+            crate::gitgui::unpushed_payload(&self.repo_path, None, with_patch)?,
+        );
+        payload["diff_key"] = json!(key);
+        Ok(payload)
     }
 
     fn file_patches(&self, paths: &[String]) -> Result<Value, String> {
@@ -241,10 +294,8 @@ impl AppState {
         // A workspace source's changeset is its unpublished work — the same
         // delta `git.unpushed` describes, which is the only one measured
         // against a publication rather than a branch.
-        if let Some(scope) = self.resolve_workspace_git_scope(params)? {
-            return Ok(ReadSubject::Unpublished {
-                repo_path: scope.repo_path,
-            });
+        if let Some(scope) = self.resolve_source_git_scope(params)? {
+            return Ok(scope.source_changeset());
         }
         if let Some(run_id) = optional_scope_id(params, "run_id")? {
             self.project_of(&run_id)?;
@@ -270,15 +321,38 @@ impl AppState {
         Ok(ReadSubject::Project {
             project_id,
             repo_path,
+            key_namespace: None,
         })
     }
 
-    fn resolve_workspace_git_scope(&mut self, params: &Value) -> Result<Option<GitScope>, String> {
+    /// The scopes that name one source by id: a workspace directory
+    /// (`workspace_id` + `source_id`) or an original project source
+    /// (`project_id` + `source_id` + `source_path`). `None` for the legacy
+    /// scopes, which name no source.
+    fn resolve_source_git_scope(&mut self, params: &Value) -> Result<Option<GitScope>, String> {
         let workspace_id = optional_scope_id(params, "workspace_id")?;
         let source_id = optional_scope_id(params, "source_id")?;
-        if workspace_id.is_none() && source_id.is_none() {
-            return Ok(None);
+        let source_path = optional_scope_id(params, "source_path")?;
+        match (workspace_id, source_id) {
+            (None, Some(source_id)) if params.get("project_id").is_some() => self
+                .project_source_git_scope(params, &source_id, source_path)
+                .map(Some),
+            _ if source_path.is_some() => {
+                Err("source_path must name a project source scope".to_string())
+            }
+            (None, None) => Ok(None),
+            (workspace_id, source_id) => self
+                .workspace_git_scope(params, workspace_id, source_id)
+                .map(Some),
         }
+    }
+
+    fn workspace_git_scope(
+        &mut self,
+        params: &Value,
+        workspace_id: Option<String>,
+        source_id: Option<String>,
+    ) -> Result<GitScope, String> {
         let workspace_id =
             workspace_id.ok_or_else(|| "missing required param: workspace_id".to_string())?;
         let source_id = source_id.ok_or_else(|| "missing required param: source_id".to_string())?;
@@ -294,26 +368,72 @@ impl AppState {
         if !directory.is_git {
             return Err("workspace source is not a git repository".to_string());
         }
-        Ok(Some(GitScope {
+        Ok(GitScope {
             repo_path: directory.path,
             cache_namespace: Some(format!(
                 "workspace:{workspace_id}:directory:{}",
                 directory.id
             )),
+            marks_unpushed: true,
             project_id: None,
             run: None,
             worktree: None,
-        }))
+            source: None,
+        })
+    }
+
+    /// One original source of a project, by its registered id. The caller's
+    /// `source_path` is required: it is where the caller opened the source,
+    /// and a source since moved is refused rather than reached at its new
+    /// folder. History marks nothing, as the primary checkout's does.
+    fn project_source_git_scope(
+        &self,
+        params: &Value,
+        source_id: &str,
+        source_path: Option<String>,
+    ) -> Result<GitScope, String> {
+        if ["run_id", "worktree_id", "task_id"]
+            .iter()
+            .any(|field| params.get(field).is_some())
+        {
+            return Err(
+                "project source scope cannot be combined with run or worktree scope ids"
+                    .to_string(),
+            );
+        }
+        let project_id = optional_scope_id(params, "project_id")?
+            .ok_or_else(|| "missing required param: project_id".to_string())?;
+        let source_path =
+            source_path.ok_or_else(|| "missing required param: source_path".to_string())?;
+        let source = self.resolve_project_source(
+            &project_id,
+            source_id,
+            Some(&source_path),
+            MOVED_GIT_SOURCE,
+        )?;
+        if !source.is_git {
+            return Err(NOT_GIT_SOURCE.to_string());
+        }
+        Ok(GitScope {
+            repo_path: source.root.clone(),
+            cache_namespace: Some(project_source_namespace(&source)),
+            marks_unpushed: false,
+            project_id: Some(project_id),
+            run: None,
+            worktree: None,
+            source: Some(source),
+        })
     }
 
     /// Resolve the shared `git.*` scope: one source in a workspace
-    /// (`workspace_id` + `source_id`), the project's primary checkout
+    /// (`workspace_id` + `source_id`), one original project source
+    /// (`project_id` + `source_id` + `source_path`), the project's primary checkout
     /// (`project_id` alone), a run's worktree (`run_id`), or one of the
     /// project's external worktrees (`project_id` + `worktree_id`). The repo
     /// path always comes from server state — a client can never name a
     /// filesystem path directly.
     pub(in crate::app) fn resolve_git_scope(&mut self, params: &Value) -> Result<GitScope, String> {
-        if let Some(scope) = self.resolve_workspace_git_scope(params)? {
+        if let Some(scope) = self.resolve_source_git_scope(params)? {
             return Ok(scope);
         }
         let project_id = params
@@ -338,12 +458,14 @@ impl AppState {
                 Ok(GitScope {
                     repo_path: external.path,
                     cache_namespace: None,
+                    marks_unpushed: false,
                     project_id: None,
                     run: None,
                     worktree: Some(GitScopeWorktree {
                         project_id,
                         base_branch,
                     }),
+                    source: None,
                 })
             }
             (Some(project_id), None, None) => {
@@ -358,9 +480,11 @@ impl AppState {
                 Ok(GitScope {
                     repo_path: project.repo_path.clone(),
                     cache_namespace: None,
+                    marks_unpushed: false,
                     project_id: Some(project.id.clone()),
                     run: None,
                     worktree: None,
+                    source: None,
                 })
             }
             (None, Some(run_id), None) => {
@@ -373,12 +497,14 @@ impl AppState {
                 Ok(GitScope {
                     repo_path,
                     cache_namespace: None,
+                    marks_unpushed: false,
                     project_id: None,
                     run: Some(GitScopeRun {
                         run_id,
                         base_branch,
                     }),
                     worktree: None,
+                    source: None,
                 })
             }
             _ => Err(
@@ -544,8 +670,7 @@ impl AppState {
     /// Every local change not represented by the checkout's push destination.
     pub(crate) fn git_unpushed(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_git(params, false, |scope, params| {
-            crate::gitgui::unpushed_payload(
-                &scope.repo_path,
+            scope.unpushed_payload(
                 params.get("if_diff_key").and_then(Value::as_str),
                 // Absent means yes: a client that has not heard of the flag
                 // is answered exactly as it always was.
@@ -610,6 +735,11 @@ impl AppState {
         if let Some(worktree) = &scope.worktree {
             let project_id = worktree.project_id.clone();
             self.rescan_external_worktrees(&project_id);
+        }
+        // A source names no entity in its params, so the verb's own change
+        // note reaches nobody: tell every subscription on that folder.
+        if let Some(source) = &scope.source {
+            self.note_git_at(&source.root);
         }
     }
 

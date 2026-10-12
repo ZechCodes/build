@@ -76,6 +76,26 @@ impl TwoSources {
             .collect()
     }
 
+    fn git(&mut self, method: &str, source_id: &str, extra: Value) -> Value {
+        let source = self
+            .state
+            .projects
+            .get(&self.project_id)
+            .unwrap()
+            .sources
+            .iter()
+            .find(|source| source.id == source_id)
+            .unwrap();
+        let mut params = json!({
+            "project_id": self.project_id, "source_id": source_id, "source_path": source.path,
+        });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        self.state.handle(req(method, params))
+    }
+
     fn assert_worker_starts_blocked(&self) {
         let refused = self
             .state
@@ -152,6 +172,77 @@ fn a_queued_worker_turn_holds_every_source() {
     assert_eq!(moved["ok"], true, "{moved:?}");
     let removed = f.remove_docs();
     assert_eq!(removed["ok"], true, "{removed:?}");
+}
+
+/// A worker hold prevents relocating a source, while Git verbs still read
+/// and commit that exact original repository, without reaching its sibling.
+#[test]
+fn a_held_source_keeps_git_writes_on_its_original_repository() {
+    let mut f = TwoSources::new();
+    let paths = f.sources();
+    let heads: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            git2::Repository::open(path)
+                .unwrap()
+                .head()
+                .unwrap()
+                .target()
+                .unwrap()
+        })
+        .collect();
+    let posted = f.state.handle(req(
+        "thread.post",
+        json!({ "entity_id": f.owner, "agent_id": f.worker, "body": "edit the docs" }),
+    ));
+    assert_eq!(posted["ok"], true, "{posted:?}");
+    refused_with(&f.move_docs(), "conflict");
+    refused_with(&f.remove_docs(), "conflict");
+    assert_eq!(f.sources(), paths);
+
+    for path in &paths {
+        std::fs::write(Path::new(path).join("same.txt"), "same\n").unwrap();
+    }
+    for (source_id, path) in [("source-1", &paths[0]), ("source-2", &paths[1])] {
+        let status = f.git("git.status", source_id, json!({}));
+        assert_eq!(status["ok"], true, "{status:?}");
+        assert_eq!(status["result"]["path"], *path);
+    }
+    let staged = f.git("git.stage", "source-2", json!({ "paths": ["same.txt"] }));
+    assert_eq!(staged["ok"], true, "{staged:?}");
+    let committed = f.git(
+        "git.commit",
+        "source-2",
+        json!({ "message": "held docs only" }),
+    );
+    assert_eq!(committed["ok"], true, "{committed:?}");
+    let code = git2::Repository::open(&paths[0]).unwrap();
+    let docs = git2::Repository::open(&paths[1]).unwrap();
+    assert_eq!(code.head().unwrap().target().unwrap(), heads[0]);
+    assert_ne!(docs.head().unwrap().target().unwrap(), heads[1]);
+    assert!(code
+        .statuses(None)
+        .unwrap()
+        .iter()
+        .any(|entry| entry.path() == Some("same.txt")));
+    assert!(docs.statuses(None).unwrap().is_empty());
+
+    let worker = f.worker.clone();
+    f.state
+        .delivery_queue
+        .retain_queued(|turn| turn.agent_id != worker);
+    let moved = f.move_docs();
+    assert_eq!(moved["ok"], true, "{moved:?}");
+    let stale = f.state.handle(req(
+        "git.status",
+        json!({
+            "project_id": f.project_id, "source_id": "source-2", "source_path": paths[1],
+        }),
+    ));
+    refused_with(&stale, "conflict");
+    let current = f.git("git.status", "source-2", json!({}));
+    assert_eq!(current["ok"], true, "{current:?}");
+    assert_eq!(current["result"]["path"], f.sources()[1]);
 }
 
 /// A running worker holds the sources; the pin, which only reads, does not

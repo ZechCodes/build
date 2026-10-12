@@ -1,68 +1,51 @@
-// The view-area toolbar's markup: where you are standing, said as one
-// breadcrumb.
-//
-// Pure — names come from repos, agents and the user, so every one of them is
-// escaped. core/toolbar.js holds the state and does the wiring; this file only
-// says what the bar looks like for one identity.
-
+// Cache supplies names; URL supplies ancestry. Every segment has its own target.
 import { workspaceLockHtml } from "./workspaceLock.js";
 import { esc } from "./text.js";
+import { toolbarBreadcrumbs } from "./toolbarBreadcrumbs.js";
 
-/** One of the bar's popup triggers. The workspace picker and the project
- *  selector are the same control wearing a different name, so the button is
- *  written once; `lead` is markup said inside it before the name. */
-const selectorHtml = ({ select, className = `tb-${select}`, name, lead = "" }) =>
-  `<button class="tb-sel ${className}" data-select="${select}" type="button" aria-haspopup="menu" aria-expanded="false">
-     ${lead}<span class="tb-name">${esc(name)}</span><span class="tb-caret disclosure-caret" aria-hidden="true">▾</span>
+const selectorHtml = (name, label, current = false) =>
+  `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="dialog" aria-expanded="false"
+     aria-label="${esc(label)}" title="${esc(label)}"${current ? ' aria-current="page"' : ""}>
+     <span class="tb-name">${esc(name)}</span><span class="tb-caret disclosure-caret" aria-hidden="true">▾</span>
    </button>`;
 
-const projectSelectorHtml = (project) => selectorHtml({ select: "project", name: project || "Projects" });
+const switcherHtml = () =>
+  `<button class="tb-switch" data-select="project" type="button" aria-haspopup="dialog" aria-expanded="false"
+     aria-label="Switch project or workspace" title="Switch project or workspace"><span aria-hidden="true">↑</span></button>`;
 
-/** A branch or a task hangs off the project selector and says its own name
- *  after it; a branch name is a wire string, so it wears the mono face. */
-const legacyIdentityHtml = (mono) => ({ project, label }) =>
-  `${projectSelectorHtml(project)}
-     <span class="tb-sep">/</span><span class="tb-legacy-item"><span class="tb-name${mono ? " mono" : ""}">${esc(label)}</span></span>`;
+const linkHtml = (entry, className, attribute = "") =>
+  `<a class="${className}" href="${esc(entry.hash || "#/inbox")}" ${attribute}${entry.current ? ' aria-current="page"' : ""}
+     title="${esc(entry.label)}"><span class="tb-name">${esc(entry.label)}</span></a>`;
+const itemHtml = (html, className, separated = true) =>
+  `<li class="${className}">${separated ? '<span class="tb-sep" aria-hidden="true">/</span>' : ""}${html}</li>`;
 
-/** A workspace is one picker reading `project / workspace`: one control, one
- *  breadcrumb, the project said quietly before the workspace it holds. Its menu
- *  moves between workspaces and reaches the project's own page. The project half
- *  is only said when there is a name to say. */
-const workspacePickerHtml = ({ project, label }) =>
-  selectorHtml({
-    select: "workspace",
-    name: label,
-    lead: project ? `<span class="tb-crumb">${esc(project)}</span><span class="tb-sep">/</span>` : "",
-  });
-
-/** What the bar stands you in, one writer per kind of route. A workspace names
- *  itself through its picker; a route that is no work item at all is the
- *  project selector and nothing else. */
-const IDENTITIES = {
-  workspace: workspacePickerHtml,
-  branch: legacyIdentityHtml(true),
-  task: legacyIdentityHtml(false),
-};
-
-const identityHtml = (shown) => (IDENTITIES[shown.kind] || (() => projectSelectorHtml(shown.project)))(shown);
-
-/** The verb slot a standing view writes into (core/toolbar.js setToolbarVerb)
- *  — Done on a branch. A workspace's bar is its picker and nothing else (#174):
- *  what a workspace can do is on its own surface. */
-const verbSlotHtml = (kind) =>
-  kind === "workspace" ? "" : '<div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>';
-
-/** Pure: the toolbar's markup for one identity. Names come from repos, agents
- *  and the user, so every one of them is escaped. */
-export function toolbarHtml({ project, kind, label, workspaceLock }) {
-  return `<div class="toolbar">
-    ${identityHtml({ project, kind, label })}${workspaceLockHtml(workspaceLock)}
-    ${verbSlotHtml(kind)}
-  </div>`;
+function ancestryHtml(shown) {
+  const { project, workspace, tasks, leaf } = toolbarBreadcrumbs(shown);
+  const qualifier = shown.deviceTag ? ` · ${shown.deviceTag}` : "";
+  const projectLink = linkHtml({ ...project, label: project.label + qualifier }, "tb-project",
+    `data-project-return aria-label="${esc(`Open project workspace ${project.label}${qualifier}`)}"`);
+  const items = [itemHtml(projectLink, "tb-project-item", false)];
+  if (workspace) items.push(itemHtml(selectorHtml(workspace.label,
+    `Switch workspace in ${shown.project}; current: ${workspace.label}`, workspace.current), "tb-workspace-item"));
+  if (tasks) items.push(itemHtml(linkHtml(tasks, "tb-tasks", "data-tasks-parent"), "tb-tasks-item"));
+  if (leaf) items.push(itemHtml(linkHtml(leaf, `tb-leaf${shown.kind === "branch" ? " mono" : ""}`), "tb-leaf-item"));
+  return `<nav class="tb-breadcrumbs${tasks ? " tb-task-ancestry" : ""}" aria-label="Breadcrumb"><ol>${items.join("")}</ol></nav>`;
 }
 
-/** The counter a menu row wears: what is waiting inside it, and nothing at all
- *  when nothing is. Same badge the inbox rows use. */
+const surfaceName = (name) => ({ inbox: "Inbox", account: "Settings", device: "Device settings", settings: "Settings" }[name] || "Build");
+
+/** Existing renderer-only fixtures may supply kind without a complete route. */
+export function toolbarHtml(shown) {
+  const route = shown.route || { name: shown.kind };
+  const identity = shown.kind ? ancestryHtml({ ...shown, route })
+    : `<span class="tb-surface-title">${surfaceName(route.name)}</span>`;
+  const localShortcut = shown.kind && shown.kind !== "workspace"
+    ? selectorHtml("Workspaces", `Switch workspace in ${shown.project}`) : "";
+  const verb = shown.kind === "workspace" ? "" : '<div class="tb-right"><span class="tb-verb" id="tb-verb"></span></div>';
+  return `<div class="toolbar">${switcherHtml()}${identity}${localShortcut}${workspaceLockHtml(shown.workspaceLock)}${verb}</div>`;
+}
+
+/** Shared badge vocabulary, quiet when there is nothing unread. */
 export function unreadBadgeHtml(count, what) {
   if (!count) return "";
   return `<span class="badge" title="${count} unread in ${esc(what)}">${count}</span>`;

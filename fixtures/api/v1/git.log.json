@@ -28,6 +28,50 @@
   "errors": [
     "not_found",
     "invalid_params",
+    "conflict",
     "internal"
+  ],
+  "project_sources": {
+    "since": "3.21.0",
+    "capability": "git.projectSources",
+    "params": [
+      "project_id",
+      "source_id",
+      "source_path"
+    ],
+    "refused_with": {
+      "moved": "conflict",
+      "plain_folder": "invalid_params"
+    }
+  },
+  "examples": [
+    {
+      "params": {
+        "project_id": "proj-1",
+        "source_id": "source-2",
+        "source_path": "/home/me/src/docs",
+        "limit": 30,
+        "skip": 0,
+        "since": "1f0c9a7"
+      },
+      "result": {
+        "branch": "build/wire",
+        "more": false,
+        "reset": false,
+        "newest": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
+        "highlight_key": "0000000000000001",
+        "commits": [
+          {
+            "short": "1f0c9a7",
+            "hash": "1f0c9a7b5e2d4c5566778899aabbccddeeff0011",
+            "subject": "Add the api/v1 facade",
+            "author": "Dev",
+            "email": "dev@example.com",
+            "time": 1789012345,
+            "ahead_of_base": true
+          }
+        ]
+      }
+    }
   ]
 }

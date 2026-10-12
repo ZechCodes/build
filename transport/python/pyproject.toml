@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "build-secure-transport"
+version = "0.1.0"
+description = "Python device-side E2EE protocol helpers for Build secure transport"
+readme = "README.md"
+license = { file = "LICENSE.md" }
+requires-python = ">=3.10"
+dependencies = ["PyNaCl>=1.5,<2"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+license-files = ["LICENSE.md"]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -75,7 +75,8 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 // each asked in turn at the line it stands on.
 // 37 since the inbox's capture painter shares its activity reader with the
 // status dot instead of deriving a routing spinner in its markup.
-const RATCHETED_FUNCTIONS = 37;
+// 36 since toolbar painting delegates DOM wiring and measurement to its own step.
+const RATCHETED_FUNCTIONS = 36;
 
 const DISABLE = "eslint-disable-next-line complexity";
 // A block or file-level disable would switch the rule off for everything

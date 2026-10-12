@@ -34,8 +34,10 @@ curl -fsSL https://getbuild.ing/install.sh | sh
 curl -fsSL https://getbuild.ing/install-desktop.sh | sh
 ```
 
-Public installers detect macOS or Linux and select the Intel/x86_64 or ARM64
-release. No website login or download token is required. The bridge goes in
+The bridge installer supports macOS and Linux on Intel/x86_64 and ARM64.
+Build Desktop supports Apple Silicon Macs and Linux on x86_64 and ARM64;
+Intel Macs can use the browser client. No website login or download token is
+required. The bridge goes in
 `~/.local/bin`. The desktop app goes in `~/Applications/Build.app` on macOS, or
 `~/.local/share/build-desktop` on Linux, with a launcher in `~/.local/bin` and
 an application-menu entry. Run the desktop installer again to update.
@@ -52,7 +54,7 @@ To select a version, set `BUILD_BRIDGE_VERSION` or `BUILD_DESKTOP_VERSION` on
 the shell receiving the script, for example:
 
 ```sh
-curl -fsSL https://getbuild.ing/install-desktop.sh | BUILD_DESKTOP_VERSION=0.1.0 sh
+curl -fsSL https://getbuild.ing/install-desktop.sh | BUILD_DESKTOP_VERSION=0.1.1 sh
 ```
 
 ### Pairing
@@ -177,9 +179,17 @@ Build is licensed under the [GNU Affero General Public License v3.0
 only](LICENSE) (`AGPL-3.0-only`). You are free to use, modify and self-host it.
 If you run a modified version as a network service, you must offer its source
 to the service's users under the same license. Commercial licensing is
-available from the maintainer. The E2EE transport is published separately for
-auditability, under its own license (see its
-[LICENSE.md](https://github.com/ZechCodes/build-secure-transport/blob/main/LICENSE.md)).
-Contributions are accepted under the AGPL and a signed
+available from the maintainer.
+
+The imported JS/Python secure transport under `transport/` is an explicit
+exception to the root AGPL scope. It retains its own
+[Business Source License 1.1 notice](transport/LICENSE.md), including the
+four-year change period and MIT change license; importing it does not relicense
+it or establish that a change date has elapsed. Package-local copies of that
+notice carry the same terms. [Provenance](transport/UPSTREAM.md) records the
+pinned source and amendments. The existing Rust transport remains in the
+AGPL-licensed bridge.
+
+Outside that transport scope, contributions are accepted under the AGPL and a signed
 [Contributor License Agreement](CLA.md), as described in
 [CONTRIBUTING.md](CONTRIBUTING.md).

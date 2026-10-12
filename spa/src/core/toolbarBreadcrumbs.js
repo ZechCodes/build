@@ -16,13 +16,14 @@ function currentLeaf(route, label, task, hash) {
   return ["branch", "task"].includes(route.name) ? link(label, route, true, hash) : null;
 }
 
+const isTaskPage = (route) => route.name === "trackerTask" || (route.name === "workspace" && route.tab === "tasks" && !!route.taskId);
+const projectLink = (route, name, hash) => route.name === "project" ? link(name, route, true, hash)
+  : link(name, { name: "project", deviceId: route.deviceId, projectId: route.projectId });
+
 export function toolbarBreadcrumbs({ route = {}, currentHash = null, project = "", label = "", task = null } = {}) {
-  const projectRoute = route.name === "project" ? route
-    : { name: "project", deviceId: route.deviceId, projectId: route.projectId };
-  const currentProject = route.name === "project";
-  const taskPage = route.name === "trackerTask" || (route.name === "workspace" && route.tab === "tasks" && !!route.taskId);
+  const taskPage = isTaskPage(route);
   return {
-    project: link(project, projectRoute, currentProject, currentProject ? currentHash : null),
+    project: projectLink(route, project, currentHash),
     workspace: route.name === "workspace" ? { label, current: !taskPage } : null,
     tasks: taskPage ? link("Tasks", tasksParent(route)) : null,
     leaf: currentLeaf(route, label, task, currentHash),

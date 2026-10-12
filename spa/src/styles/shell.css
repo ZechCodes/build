@@ -16,7 +16,7 @@
   --dir-rail:40px;
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
-  --toolbar-h:38px;     /* the view column's top row — what a full console clears */
+  --toolbar-h:44px;     /* the view column's top row — what a full console clears */
   /* The row below it: the ref picker, the git action bar and the conversation
      panel's head sit side by side across the work surface, one per column, and
      read as one line only if all three stop on the same number. Stated here
@@ -731,33 +731,47 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    The project name is the surface's text column (styles.css, --pane-gutter):
    the bar pays the gutter LESS the button's own inset, so the name itself lands
    on the column the tab labels and the panes below it stand on. */
-.toolbar { display:flex; align-items:center; gap:4px;
-  padding:0 10px 0 var(--toolbar-gutter);
-  height:var(--toolbar-h); min-width:0;
+.toolbar { display:flex; flex-wrap:wrap; align-items:flex-start; gap:0 4px;
+  padding:0 10px 0 var(--toolbar-gutter); min-height:44px; min-width:0;
+  --tb-project-cap:min(96px, calc((100cqw - var(--toolbar-gutter) - 10px) / 4));
   transition:padding-left 240ms cubic-bezier(.2,.8,.2,1); }
-/* With the inbox rail away, its floating reopen toggle (shell.css above)
-   floats over exactly where the project name starts — give the bar enough
-   left padding to clear it instead. */
-body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
+body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
+  --tb-project-cap:min(96px, calc((100cqw - var(--inbox-open-clear) - 10px) / 4)); }
 @media (prefers-reduced-motion: reduce) { .toolbar { transition:none; } }
-.tb-sel { display:flex; align-items:center; gap:5px; min-width:0; max-width:42%;
-  font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
-  border-radius:6px; padding:4px var(--tbsel-inset); cursor:pointer; }
-.tb-sel:hover { background:var(--panel2); }
-/* The workspace picker is the bar's one control on a workspace, and reads as a
-   breadcrumb: the project said quietly, then the workspace. Long names yield
-   before the action cluster, the project's first. */
-.tb-workspace { flex:0 1 auto; max-width:55%; font-weight:600; }
-.tb-crumb { flex:0 3 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-  font-weight:400; color:var(--ink2); }
-.tb-project .tb-name { font-weight:600; }
-.tb-legacy-item { display:flex; align-items:center; min-width:0; padding:4px var(--tbsel-inset);
-  font-size:13px; color:var(--ink); }
-.tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tb-switch { display:flex; align-items:center; justify-content:center; flex:none;
+  width:44px; height:44px; padding:0; border:0; border-radius:6px;
+  background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }
+.tb-breadcrumbs { flex:0 1 auto; min-width:0; max-width:calc(100% - 96px); }
+.tb-breadcrumbs ol { display:flex; align-items:flex-start; gap:4px;
+  list-style:none; padding:0; margin:0; min-width:0; }
+.tb-breadcrumbs li { display:flex; align-items:center; gap:4px; min-width:0; }
+.tb-project-item { flex:none; max-width:var(--tb-project-cap); }
+.tb-workspace-item { flex:0 1 auto; }
+.tb-project { display:flex; align-items:center; flex:0 1 auto; min-width:0;
+  height:44px; padding:0; font-size:13px; color:var(--ink2); text-decoration:none; }
+.tb-sel { display:flex; align-items:center; gap:4px; flex:0 1 auto;
+  min-width:44px; height:44px; padding:0 8px; border:0; border-radius:6px;
+  font:inherit; font-size:13px; color:var(--ink); background:none; cursor:pointer; }
+.tb-workspace { font-weight:600; }
+.tb-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-workspace .tb-name { white-space:pre; }
-.tb-caret { flex:none; color:var(--dim); }
-.tb-sep { color:var(--line); flex:none; }
-.tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+.tb-caret { flex:none; width:12px; color:var(--dim); }
+.tb-sep { flex:none; width:12px; text-align:center; color:var(--dim); }
+.tb-switch:hover, .tb-sel:hover { background:var(--panel2); }
+.tb-project:hover, .tb-leaf:hover, .tb-tasks:hover { color:var(--accent); }
+.tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
+  outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
+.tb-task-ancestry ol { flex-wrap:wrap; row-gap:0; }
+.tb-tasks-item { flex:none; }
+.tb-leaf-item { flex:0 1 auto; }
+.tb-tasks, .tb-leaf { display:flex; align-items:center; min-width:0;
+  min-height:44px; font-size:13px; color:var(--ink); text-decoration:none; }
+.tb-tasks { min-width:44px; justify-content:center; }
+.tb-leaf { overflow:hidden; }
+.tb-surface-title { display:flex; align-items:center; min-height:44px;
+  font-size:13px; color:var(--ink2); }
+.toolbar > .workspace-lock-toggle { width:44px; height:44px; }
+.tb-right { margin-left:auto; min-height:44px; display:flex; align-items:center; gap:10px; flex:none; }
 /* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
    branch. Empty and collapses to nothing when no view has claimed it. Sized
    down from the surface's old primary-button treatment: this is a fact in a
@@ -771,10 +785,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    the toolbar is a short row and would clip a child popup. The item shape
    (.mi > .mt + .md) is the shared menu vocabulary in styles.css. */
 .tbmenu { z-index:60; width:min(340px, calc(100vw - 16px));
-  max-height:min(70vh, 520px); display:flex; flex-direction:column;
+  max-height:min(70dvh, 520px); display:flex; flex-direction:column;
   background:var(--panel); border:1px solid var(--line); border-radius:10px;
   box-shadow:0 10px 30px var(--shadow); padding:6px; overflow:hidden; }
-.tbmenu .mi { display:flex; flex-direction:column; gap:1px; width:100%;
+.tbmenu .mi { text-decoration:none; display:flex; flex-direction:column; gap:1px; width:100%;
   text-align:left; padding:6px 8px; border:none; border-radius:6px;
   background:none; font:inherit; color:var(--ink); cursor:pointer; }
 .tbmenu .mi:hover, .tbmenu .mi:focus-visible { background:var(--accent-soft); }
@@ -802,6 +816,16 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-scope-switch:hover { text-decoration:underline; }
 .tb-none { font-size:12px; padding:2px 8px 6px; }
 .tbmenu-foot { flex:none; padding-top:4px; margin-top:8px; }
+.tbmenu-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:0 8px; }
+.tbmenu-head strong { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.tbmenu-head button { flex:none; min-height:44px; border:0; padding:0 8px;
+  background:none; color:var(--accent); font:inherit; cursor:pointer; }
+@media (max-width:760px) {
+  .tbmenu { left:0!important; right:0; width:100%; border-radius:10px 10px 0 0;
+    padding:6px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
+  .tbmenu .mi { min-height:44px; justify-content:center; }
+  .tb-filter { min-height:44px; font-size:16px; }
+}
 
 
 /* ---- agent rail (right edge of the view body) ----

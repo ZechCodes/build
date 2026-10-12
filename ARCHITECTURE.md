@@ -2329,11 +2329,17 @@ source list in `newRepoProgress.js` while `project.create` runs. Creation's
 internal pending row is not published and the bridge has no per-source
 creation events, so all lines run and settle together. Escape and scrim
 dismissal are blocked only until the request settles. Failure keeps the
-source errors visible; Back restores the draft and focus to Create. Success
+source errors visible; Back restores the draft and focus to Create. Transport
+loss or either RPC deadline shows an unknown outcome and Close, explaining
+that the project may still be being created and will appear in the Projects
+list if it succeeds. The existing transport-error predicate distinguishes
+these from bridge refusals, including uncoded ones. A stable live summary is
+outside the busy actions and atomic announcements exclude the source list. Success
 writes and rereads the project cache before opening it. Dismissing the settled
 sheet prevents a delayed cache write from navigating afterwards. An opening
 or cache failure after successful creation keeps source lines Done and reports
-the opening error separately, without offering another creation attempt.
+the opening error separately without repainting the unchanged source list or
+offering another creation attempt. The settled success action is Close.
 
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence

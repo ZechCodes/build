@@ -8,6 +8,20 @@ import { fieldTraits } from "../core/fieldTraits.js";
 import { refreshGithubRepos } from "../core/githubRepos.js";
 import { attachRepoPicker, disposeRepoPickers } from "./repoPicker.js";
 import { mountNewRepoProgress } from "./newRepoProgress.js";
+import { isTransientTransportError } from "../core/transientRead.js";
+import { UNKNOWN_CODE } from "../core/bridgeApi/index.js";
+
+function hasRefusalCode(error) {
+  const code = error?.code || error?.error_code;
+  return typeof code === "string" && code !== UNKNOWN_CODE;
+}
+
+function creationOutcomeUnknown(error) {
+  // A bridge code settles the outcome even when its message happens to match
+  // a carrier's wording. Uncoded refusals still keep Back unless transport
+  // evidence says the request's outcome is unknown.
+  return !hasRefusalCode(error) && isTransientTransportError(error);
+}
 
 const inferredName = (value) => (value.trim().replace(/[\\/]+$/, "").replace(/\.git$/i, "").split(/[\\/:]/).pop() || "folder").replace(/[^a-zA-Z0-9._-]+/g, "-");
 
@@ -130,7 +144,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     busy = true;
     saveDraft();
     disposeRepoPickers(sheet);
-    creationView = mountNewRepoProgress(sheet, params, { onBack: backToForm, onClose: close });
+    creationView = mountNewRepoProgress(sheet, params, { onBack: backToForm, onClose: close, deviceName: target.name });
     const progress = creationView;
     try {
       const project = await targetCall("project.create", params);
@@ -140,7 +154,8 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     } catch (error) {
       if (visible(progress.root)) {
         saveDraft();
-        progress.fail(messageOf(error));
+        if (creationOutcomeUnknown(error)) progress.unknown(messageOf(error));
+        else progress.fail(messageOf(error));
       }
     }
     finally { busy = false; }

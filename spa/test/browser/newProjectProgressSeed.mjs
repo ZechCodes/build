@@ -41,9 +41,10 @@ export async function mountNewProject(page, basePath, { local = false } = {}) {
     newRepo: "src/sheets/newRepo.js", dismiss: "src/core/sheetDismiss.js",
     ui: "src/core/localUiState.js", store: "src/core/localUiStore.js",
     cache: "src/core/localCache.js", settings: "src/core/settingsRecords.js",
+    api: "src/core/bridgeApi/index.js",
   }, basePath);
   await page.evaluate(async ({ local }) => {
-    const { newRepo, dismiss, ui, store } = window.__layoutModules;
+    const { newRepo, dismiss, ui, store, api } = window.__layoutModules;
     window.__projectDraftAddress = ui.uiAddress({ view: "new-project", kind: "draft" });
     if (local) await store.writeUiRecord(window.__projectDraftAddress, {
       name: "", nameAutomatic: true, selectedDeviceId: "beast",
@@ -55,7 +56,10 @@ export async function mountNewProject(page, basePath, { local = false } = {}) {
     const call = (method, params) => {
       if (method !== "project.create") return Promise.resolve({});
       window.__projectRequests.push(params);
-      return new Promise((resolve, reject) => { window.__resolveProject = resolve; window.__rejectProject = (message) => reject(new Error(message)); });
+      return new Promise((resolve, reject) => {
+        window.__resolveProject = resolve;
+        window.__rejectProject = (message, fields = {}) => reject(api.normalizeError(Object.assign(new Error(message), { error_code: "internal" }, fields)));
+      });
     };
     const sheet = newRepo.openNewRepo((project, target) => { window.__openedProject = { project, target }; }, {
       devices: [{ id: "beast", name: "The Beast" }], callRpcFor: () => call,

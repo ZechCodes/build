@@ -7,8 +7,8 @@ async function assertProgress(page, count) {
   expect(await page.locator("#sheet input, #sheet select, #nrdo, #nrcancel, #nrform").count()).toBe(0);
   expect(await page.locator("[data-source-state='in_progress']").count()).toBe(count);
   expect(await page.locator("#nrprogress h3").textContent()).toBe("Zimmerman Web Works");
-  expect(await page.locator("#nrprogress").getAttribute("role")).toBe("status");
-  expect(await page.locator("#nrprogress").getAttribute("aria-live")).toBe("polite");
+  expect(await page.locator("#nrprogress-status").getAttribute("role")).toBe("status");
+  expect(await page.locator("#nrprogress-status").getAttribute("aria-live")).toBe("polite");
   expect(await page.locator("#nrprogress").evaluate((node) => node.contains(document.activeElement))).toBe(true);
   expect(await page.locator("#nrprogress").textContent()).toContain(`Cloning ${remote} as zimmerman-web-works`);
 }
@@ -18,14 +18,82 @@ const dismissalRoutes = {
   scrim: (page) => page.locator("#scrim").click({ position: { x: 1, y: 1 } }),
   Cancel: (page) => page.locator("#nrcancel").click(),
 };
+it("announces pending and settled states without a busy live region", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountNewProject(page, basePath);
+    await page.locator("#nrdo").click();
+    expect(await page.locator('#nrprogress-status').evaluate((node) => node.closest('[aria-busy="true"]') !== null)).toBe(false);
+    expect(await page.locator('#sheet [role="status"][aria-live="polite"]').count()).toBe(1);
+    await page.evaluate((message) => window.__rejectProject(message), failure);
+    await page.waitForSelector("[data-source-state='failed']");
+    expect(await page.locator('#nrprogress-status').evaluate((node) => node.closest('[aria-busy="true"]') !== null)).toBe(false);
+    expect(await page.locator('#sheet [role="status"][aria-live="polite"]').count()).toBe(1);
+  }, { plugins: [deviceShim, holdProjectCache] });
+});
+
+for (const { label, width, height } of [
+  { label: "phone", width: 390, height: 844 },
+  { label: "desktop", width: 1280, height: 800 },
+]) {
+  for (const { name, message, fields } of [
+    { name: "delivery timeout", message: "project.create timed out", fields: { error_code: undefined, timedOut: true, uncertain: true, deadline: "path" } },
+    { name: "answer timeout", message: "project.create timed out", fields: { error_code: undefined, timedOut: true, uncertain: true, deadline: "answer" } },
+    { name: "session loss after send", message: "your device went offline", fields: { error_code: undefined, uncertain: true } },
+    { name: "carrier loss", message: "the relay socket closed", fields: { error_code: undefined } },
+  ]) {
+    it(`shows an unknown creation outcome after ${name} on ${label}`, async () => {
+      await withLayoutPage(async ({ page, basePath }) => {
+        await mountNewProject(page, basePath);
+        await page.locator("#nrdo").click();
+        await page.evaluate(({ message, fields }) => window.__rejectProject(message, fields), { message, fields });
+        // Cancel appears after any settlement in both the old and new views.
+        await page.waitForSelector("#nrcancel");
+        expect(await page.locator("[data-source-state='failed'], #nrback, #nrdo").count()).toBe(0);
+        expect(await page.locator("[data-source-state='unknown']").count()).toBe(1);
+        expect(await page.locator("#nrprogress").textContent()).toContain("request was lost");
+        expect(await page.locator("#nrprogress").textContent()).toContain("may still be being created");
+        expect(await page.locator("#nrprogress").textContent()).toContain("Projects");
+        expect(await page.locator("#nrprogress").textContent()).toContain("The Beast");
+        expect(await page.locator("#nrprogress").textContent()).not.toContain("try again");
+        expect(await page.locator("#sheet").evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+        await page.locator("#nrcancel").click();
+        expect(await page.locator("#scrim").getAttribute("class")).not.toContain("show");
+      }, { width, height, plugins: [deviceShim, holdProjectCache] });
+    });
+  }
+  it(`keeps coded and uncoded bridge refusals definite with Back on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountNewProject(page, basePath);
+      for (const { message, fields } of [
+        { message: failure, fields: { error_code: "internal" } },
+        { message: failure, fields: { error_code: undefined } },
+        { message: "Device offline", fields: { error_code: "unavailable" } },
+      ]) {
+        await page.locator("#nrdo").click();
+        await page.evaluate(({ message, fields }) => window.__rejectProject(message, fields), { message, fields });
+        await page.waitForSelector("#nrcancel");
+        expect(await page.locator("[data-source-state='failed']").count()).toBe(1);
+        expect(await page.locator("[data-source-state='unknown']").count()).toBe(0);
+        expect(await page.locator("[data-source-state='failed']").textContent()).toContain(message);
+        expect(await page.locator("#nrback").count()).toBe(1);
+        await page.locator("#nrback").click();
+        expect(await page.locator("[data-source-value]").inputValue()).toBe(remote);
+      }
+    }, { width, height, plugins: [deviceShim, holdProjectCache] });
+  });
+}
 it("keeps successful source states when the created project cannot be cached", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountNewProject(page, basePath);
     await page.evaluate(() => { window.__projectCacheError = "Local cache unavailable"; });
     await page.locator("#nrdo").click();
     await resolveProject(page);
+    await page.waitForSelector("[data-source-state='done']");
+    const sources = await page.locator(".nr-progress-sources").elementHandle();
     await page.evaluate(() => window.__releaseProjectCache());
     await page.waitForSelector("#nropenerr");
+    expect(await sources.evaluate((node) => node.isConnected && node === document.querySelector(".nr-progress-sources"))).toBe(true);
+    expect(await page.locator("#nrcancel").textContent()).toBe("Close");
     expect(await page.locator("#nropenerr").textContent()).toBe("Local cache unavailable");
     expect(await page.locator("[data-source-state='done']").count()).toBe(1);
     expect(await page.locator("[data-source-state='failed'], #nrback, #nrdo").count()).toBe(0);
@@ -62,15 +130,15 @@ it("does not navigate or hide a replacement sheet when dismissed during the draf
   }, { plugins: [deviceShim, holdProjectCache] });
 });
 for (const [route, dismiss] of Object.entries(dismissalRoutes)) {
-  it(`releases ${route} dismissal when creation times out or succeeds`, async () => {
-    for (const success of [false, true]) {
+  for (const success of [false, true]) {
+    it(`releases ${route} dismissal when creation ${success ? "succeeds" : "times out"}`, async () => {
       await withLayoutPage(async ({ page, basePath }) => {
         await mountNewProject(page, basePath);
         await page.locator("#nrdo").click();
         if (success) await resolveProject(page);
-        else await page.evaluate(() => window.__rejectProject("Request timed out"));
-        await page.waitForSelector(`[data-source-state='${success ? "done" : "failed"}']`);
-        expect(await page.locator("#nrprogress").getAttribute("aria-busy")).toBe("false");
+        else await page.evaluate(() => window.__rejectProject("Request timed out", { error_code: undefined, timedOut: true, uncertain: true }));
+        await page.waitForSelector(`[data-source-state='${success ? "done" : "unknown"}']`);
+        expect(await page.locator("#nrprogress-actions").getAttribute("aria-busy")).toBe("false");
         await dismiss(page);
         expect(await page.locator("#scrim").getAttribute("class")).not.toContain("show");
         await page.evaluate(() => window.__releaseProjectCache());
@@ -81,8 +149,8 @@ for (const [route, dismiss] of Object.entries(dismissalRoutes)) {
         if (success) expect(await page.evaluate(async () =>
           (await window.__layoutModules.store.readUiRecord(window.__projectDraftAddress)).value.sources)).toEqual([]);
       }, { plugins: [deviceShim, holdProjectCache] });
-    }
-  });
+    });
+  }
 }
 
 for (const { label, width, height } of [
@@ -142,6 +210,7 @@ for (const { label, width, height } of [
       await resolveProject(page);
       await page.waitForSelector("[data-source-state='done']");
       expect(await page.locator("[data-source-state='done']").count()).toBe(2);
+      expect(await page.locator("#nrcancel").textContent()).toBe("Close");
       expect(await page.locator("#sheet").evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
       await page.evaluate(() => window.__releaseProjectCache());
       await page.waitForFunction(() => window.__openedProject);

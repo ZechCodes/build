@@ -82,9 +82,14 @@ export function filePatchesByPath(patch) {
 export function pathsToFetch(views, { openPaths, bodyOf }) {
   return (views || [])
     .filter((view) => !view.rows && openPaths.has(view.path))
-    .filter((view) => !bodyMatches(bodyOf(view.path), view.contentKey))
+    .filter((view) => !hasAnsweredBody(bodyOf(view.path)) || !bodyMatches(bodyOf(view.path), view.contentKey))
     .map((view) => view.path);
 }
+
+/** Older truncated aggregates kept empty pages for paths the patch never
+ *  reached. They carry a content key but still owe the reader a body. Empty
+ *  complete replies remain valid, including binary and unchanged files. */
+const hasAnsweredBody = (body) => Boolean(body && (!body.truncated || body.patch));
 
 /** The paths one call at a time, in request order. */
 export function batchPaths(paths, max = CHANGESET_DIFF_MAX_PATHS) {
@@ -193,7 +198,7 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
   });
 
   const bodyOf = (path) => bodies.read(path);
-  const wasAnswered = (path, key) => Boolean(bodyOf(path) && answered.has(path) && answered.get(path) === key);
+  const wasAnswered = (path, key) => Boolean(hasAnsweredBody(bodyOf(path)) && answered.has(path) && answered.get(path) === key);
 
   async function fill(views, openPaths, budget) {
     const keyOf = new Map((views || []).map((view) => [view.path, view.contentKey]));
@@ -208,7 +213,7 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
       for (const path of batch) {
         // ensure can return fewer bodies than asked for. Only a held body
         // settles this list key, even when the wire already names a newer one.
-        if (bodyOf(path)) answered.set(path, keyOf.get(path));
+        if (hasAnsweredBody(bodyOf(path))) answered.set(path, keyOf.get(path));
       }
     }
     return filled;

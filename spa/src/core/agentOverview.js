@@ -17,7 +17,7 @@ import { workspaceDisplayName } from "./workspaceModel.js";
 import { tasksAddress } from "./trackerCache.js";
 import { assignedTo, isFinished } from "./trackerAgentTasks.js";
 import { markdownHtml } from "./markdown.js";
-import { hasShortModelName, shortModelLabel } from "./agentChoice.js";
+import { shortModelLabel } from "./agentChoice.js";
 import { agentModelBadgeHtml } from "./agentModelBadge.js";
 import { ICON_CHEVRON_RIGHT, ICON_EYE_OFF } from "./icons.js";
 import { conversationUnreadCount } from "./conversationUnread.js";
@@ -132,8 +132,6 @@ export function overviewRows(entries, threads) {
       sectionName: entries[index].sectionName || "Agents",
       name: agentDisplayName(agent),
       model: modelWord(state),
-      modelName: modelIdOf(state) || modelWord(state),
-      modelRaw: !!modelIdOf(state) && !hasShortModelName(modelIdOf(state)),
       modelId: modelIdOf(state),
       effort: String(state.active_effort || state.effort || ""),
       snippet: overviewSnippet(state, threads[index]),

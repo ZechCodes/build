@@ -158,8 +158,8 @@ function agentDetailsHtml(row) {
   </div>`;
 }
 
-/** The model on a row's head (#257): its short name, whole, never clipped;
- *  the full label in its title. One with no short name wraps instead. */
+/** The model family on a row's head, with its version and effort in the
+ *  tooltip. Unknown families leave no badge. */
 function headModelHtml(row) {
   return agentModelBadgeHtml(row, { className: "surface-row-model surface-row-head-model" });
 }

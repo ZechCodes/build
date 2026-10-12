@@ -519,6 +519,17 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     showFileResult(path, request, result);
   };
 
+  /** A directory moved to a different cache namespace. Keep a loaded viewer,
+   * but replace a loading read whose reply now belongs to the old namespace. */
+  const rebindSelectedFile = async (path) => {
+    const request = ++fileRequest;
+    watchFile(path, request);
+    const record = await rereadSelectedFile(path, request);
+    if (!stillSelected(request, path) || record?.value?.file) return;
+    const result = await pullFile(path, request, recordWriteOf(record));
+    showFileResult(path, request, result);
+  };
+
   // Reveal/hide is EPHEMERAL: a fresh renderPreview re-derives the secrets and
   // starts fully masked, so any repaint/navigation resets to the hidden state.
   const wireDotenvSpoilers = (secrets) => {
@@ -916,10 +927,12 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
       if (disposed || !roots) return;
       const previousAddress = selectedPath ? fileAddress(selectedPath) : null;
       tree.updateRoots(next);
-      tabs.reconcile();
-      if (selectedPath && JSON.stringify(previousAddress) !== JSON.stringify(fileAddress(selectedPath))) {
-        watchFile(selectedPath, ++fileRequest);
+      // Rebind only the surviving selection, before tabs may select another
+      // file. Its new selection owns its own request counter and cache read.
+      if (selectedPath && locate(selectedPath) && JSON.stringify(previousAddress) !== JSON.stringify(fileAddress(selectedPath))) {
+        void rebindSelectedFile(selectedPath);
       }
+      tabs.reconcile();
     },
     canLeave: discardDirty,
     hasUnsavedChanges: () => dirtyPaths().size > 0,

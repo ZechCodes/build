@@ -93,12 +93,28 @@ async function cachedWorkspaceResult(state) {
     : null;
 }
 
+function retireRemovedDirectoryControllers(state) {
+  const held = new Set((state.workspace.directories || []).map(directoryId));
+  for (const [sourceId, entry] of state.gitInitialization) {
+    if (held.has(sourceId)) continue;
+    entry.controller.dispose();
+    state.gitInitialization.delete(sourceId);
+  }
+  for (const sourceId of state.gitInit.keys()) {
+    if (held.has(sourceId)) continue;
+    state.gitInit.delete(sourceId);
+    // An options probe already in flight belongs to the removed incarnation.
+    state.gitOptionsRevision.set(sourceId, (state.gitOptionsRevision.get(sourceId) || 0) + 1);
+  }
+}
+
 async function readWorkspaceResult(state) {
   const workspace = await cachedWorkspaceResult(state);
   if (!routeHoldsWorkspace(state)) return;
   if (!workspace || !state.workspace) return;
   const refresh = selectedNeedsRetryRefresh(state);
   state.workspace = workspace;
+  retireRemovedDirectoryControllers(state);
   state.retryRefreshPending = false;
   if (refresh) state.refreshPane?.(workspace);
   // Changes redraws its tab row, and turns a directory's offer into its commit

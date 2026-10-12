@@ -1,7 +1,8 @@
 # Secure transport inventory and evidence
 
 Companion to [the #572 migration plan](Secure%20Transport%20Consolidation%20Plan.md).
-Inspection date: 2026-10-12. This is a planning inventory, not a test pass report.
+Inspection date: 2026-10-12. The original #572 planning inventory is retained;
+#575 local receipts below cover only import/package evidence P1/P2.
 Paths below are relative to Build unless prefixed `upstream:`.
 
 ## Inspected baseline
@@ -102,7 +103,7 @@ rather than mechanically rewriting every occurrence. Search tracked hidden
 files as well as ordinary source files. External clone instructions and active
 out-of-tree paths must have no surviving operational use.
 
-## Acceptance evidence ledger (pending implementation)
+## Acceptance evidence ledger (implementation in progress)
 
 Each item must name exact commit, command/environment, exit status and attached
 log or artifact when completed. No row is marked passed from source inspection.
@@ -111,8 +112,8 @@ reporting the implementation's security checklist complete.
 
 | ID | Required evidence | Owner | Planning status |
 | --- | --- | --- | --- |
-| P1 | Imported canonical file hashes match pinned source; exclusions verified | #575 | pending |
-| P2 | Scoped BSL notice retained; npm tarball and Python sdist/wheel include correct source/license; no generated duplicate sources | #575 | pending |
+| P1 | Imported canonical file hashes match pinned source; exclusions verified | #575 | locally verified; #575 receipts below |
+| P2 | Scoped BSL notice retained; npm tarball and Python sdist/wheel include correct source/license; no generated duplicate sources | #575 | locally verified; #575 receipts below |
 | C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | pending |
 | C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | pending |
 | C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | pending |
@@ -138,3 +139,65 @@ Final implementation validation adds existing candidate gates (bridge tests,
 clippy, fmt and vendored tests; SPA lint, full test/capture/build; relevant
 packaging, shell/tier and security scans). Coordinate their timing through #569
 instead of launching full suites from each planning or review conversation.
+
+## #575 local import/package receipts (2026-10-12)
+
+Only P1/P2 are verified here. C1–R2 remain pending; this is neither runtime
+compatibility evidence nor the final migration security checklist/integration.
+Independent exact-head review is still required.
+
+- Base: `215bc79c7e91c4319f10b0c7f9dd2969030df794` after fetching origin/main
+  and fast-forwarding the clean managed `build/transport-import` branch.
+- Initial import: `496716692caa3a711a7f627952d711adfa52ac73`.
+- Package/code validation tree: `20ccc2edcaecba6a2c640013cef98bf3502a10a7`.
+  Later receipt/root-scope prose changes do not change any package/checker bytes.
+- Pin: `4bce3aacebd66a9674aaa96c6ec0d97ab4bcd793`; 17 original SHA-256
+  digests checked, with direct byte comparison of all unamended files. The
+  current digests and five separately recorded doc/metadata amendments are in
+  `transport/UPSTREAM.md`. Ten tracked exclusions comprise upstream `.gitignore`
+  and nine generated Python outputs. The sibling remains at that pin with only
+  its pre-existing untracked recursive symlink; no source writes were made.
+- Environment: Linux x86_64; stdlib checks Python 3.14.7; npm 11.19.0 on Node
+  26.8.1; uv 0.12.13 auto-selected Python 3.13.15 for packaging; wheel reports
+  setuptools 84.0.0. Consumer/CI Node/npm policy is unchanged by this child.
+- Granted #569 packaging slot: serial jobs at nice 10, uv concurrent builds 1;
+  no Rust, SPA, browser or full suite. Artifacts are from `git archive` of the
+  committed validation tree, in disposable `/tmp/transport-575-receipts/final/`.
+  No package publication or live service action occurred.
+
+| Receipt | Command (from Build root unless noted) | PID | Exit/result |
+| --- | --- | --- | --- |
+| import-red.log | `nice -n 10 python -m unittest discover -s transport/tests -v` before import/checker | 3871380 | 1, required import absent |
+| import-green.log | same, after initial import | 3873366 | 0, five cases |
+| package-red.log | `nice -n 10 python -m unittest discover -s transport/tests -p test_package_contract.py -v` before license amendment | 3875378 | 1, notices/metadata absent |
+| artifact-red.log | `nice -n 10 python scripts/transport_packages.py --npm <baseline.tgz> --sdist <baseline.tar.gz> --wheel <baseline.whl>` | 3880556 | 1, missing npm notice and unwanted test member |
+| checks-green.log | `nice -n 10 python -m unittest discover -s transport/tests -v` | 3900184 | 0, 15 import/metadata/archive cases |
+| import-final.log | `nice -n 10 python scripts/transport_import.py check --upstream <read-only-sibling>` | 3949864 | 0, pin/digests/bytes/exclusions |
+| npm-pack.log | `nice -n 10 npm pack <export>/js --ignore-scripts --json --pack-destination <artifacts>` | 3902218 | 0 |
+| python-build.log | `UV_CONCURRENT_BUILDS=1 nice -n 10 uv build <export>/python --out-dir <artifacts>` | 3902357 | 0, sdist then wheel from sdist |
+| artifact-check.log | `nice -n 10 python scripts/transport_packages.py --npm <tgz> --sdist <tar.gz> --wheel <whl>` | 3906213 | 0, 4/18/9 file members checked |
+| semgrep-all.log | `nice -n 10 semgrep --config auto --error --jobs 1 --x-ignore-semgrepignore-files <13 changed executable/test files>` | 3929472 | 0, 442 rules, no findings |
+| gitleaks.log | `nice -n 10 gitleaks git --no-banner --redact --log-opts='215bc79c7e91c4319f10b0c7f9dd2969030df794..HEAD' .` | 3924172 | 0, no leaks |
+
+The default Semgrep pass also exited 0 but excluded five tests via repository
+ignore rules; the recorded all-files pass explicitly included them. Import and
+archive checks reject source/license drift, unexpected generated source,
+missing canonical files, misleading license metadata, duplicate archive paths,
+traversal and symlink members. Archive members are read without extraction.
+The sdist's generated egg-info contains only metadata; no `build/lib` source
+copies, dependency tree, environment or caches appear in any artifact.
+
+Artifact SHA-256 (file listings are in attached `artifact-check.log` on #575):
+
+| Local artifact | SHA-256 |
+| --- | --- |
+| `build-secure-transport-0.1.0.tgz` | `56e6a765e90359d5e775167b1c5a428dc52320e383e70b0d6eb38c8004438a1e` |
+| `build_secure_transport-0.1.0.tar.gz` | `19350afd5b6842120c913373d47674e82f2618e4ead5b6c932f63bfdded83e2e` |
+| `build_secure_transport-0.1.0-py3-none-any.whl` | `78c1b22366a849d673a9b19bfc63d1a726e6c2a12ed27bd57337c212bb24b430` |
+
+The preserved setuptools >=69 requirement supports file-based license metadata.
+Setuptools 84 emits deprecation warnings recommending its >=77 SPDX-expression
+metadata interface before February 2027. The local artifacts include the full
+unchanged notice in metadata and as a license file today; a future packaging
+backend/metadata modernization must preserve the custom terms. No runtime
+requirement or lock resolution was upgraded to suppress that warning.

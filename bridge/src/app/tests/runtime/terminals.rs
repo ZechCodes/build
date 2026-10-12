@@ -771,7 +771,7 @@ async fn project_source_terminals_open_list_attach_and_close_per_source() {
         let listed = call(&handler, "term.list", selector(source_id));
         assert_eq!(
             listed_ids(&listed).as_slice(),
-            std::slice::from_ref(&term_id),
+            std::slice::from_ref(term_id),
             "{source_id}"
         );
     }

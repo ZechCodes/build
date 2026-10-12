@@ -433,7 +433,7 @@ pub(in crate::app) fn missing_param(key: &str) -> String {
     format!("missing required param: {key}")
 }
 
-const PROJECT_DELETION_IN_PROGRESS: &str =
+pub(in crate::app) const PROJECT_DELETION_IN_PROGRESS: &str =
     "a project is being deleted; retry after deletion completes";
 
 #[cfg(test)]

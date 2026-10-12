@@ -226,6 +226,11 @@ pub(in crate::app) fn term_create(
 
     let (key, pumps) = {
         let mut s = timer.lock(state);
+        // RPC admission can precede deletion's retirement collection. Recheck
+        // under the spawn guard so a shell cannot appear after that collection.
+        if s.project_deletion_in_progress {
+            return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
+        }
         let scope = resolve_terminal_scope(&mut s, params)?;
         let root = scope.root;
         s.refuse_source_shell_start_at(&root)?;

@@ -621,7 +621,11 @@ closure lifecycle. Source move/remove refuses while shells stand in that
 source folder, naming their IDs. Create and move/remove admission run under
 the app lock; shell spawn stays under that guard, and the existing Updating
 reservation blocks shell starts and source removal throughout deferred source
-update work and settlement. Label changes leave live shells alone. These holds
+update work and settlement. The spawn guard also rechecks project deletion:
+a create admitted earlier refuses before opening a PTY if deletion has already
+collected retirements. A create that spawns first is included in that collection,
+even when its original source folder survives deletion.
+Label changes leave live shells alone. These holds
 keep the source's membership/location consistent; they do not restrict shell
 commands or serialize them with Git/base sync. Project worker holds are #533.
 

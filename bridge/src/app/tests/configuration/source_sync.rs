@@ -778,3 +778,29 @@ fn manual_sync_does_not_follow_a_source_moved_before_queue_drain() {
     assert_eq!(head(&fixture.docs, "origin/main"), before);
     assert!(fixture.row_source("source-2")["sync"].is_null());
 }
+
+/// Waiting for a source Git mutation is not evidence that anybody fetched.
+/// A clean source behind its upstream must still cut from the fetched commit.
+#[test]
+fn workspace_cut_fetches_after_waiting_for_a_source_mutation() {
+    let fixture = fixture();
+    advance(&fixture.code_upstream, "incoming.txt");
+    let shared = fixture.state.shared();
+    let (held, _) = SyncLock::acquire(&fixture.code, Duration::ZERO).unwrap();
+    let cutting = frame_on_a_thread(
+        &shared,
+        "cut",
+        "workspace.create",
+        json!({"project_id": fixture.project_id, "name": "waited", "isolation": "worktree"}),
+    );
+    assert!(cutting.recv_timeout(STILL_WAITING).is_err());
+    drop(held); // A mutation's turn ended, without a fetch.
+    let reply = cutting.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(
+        checkout_of(&reply["result"], "code")
+            .join("incoming.txt")
+            .exists(),
+        "a waited source mutation must not suppress the cut's fetch: {reply}"
+    );
+}

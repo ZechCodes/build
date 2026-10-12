@@ -680,3 +680,225 @@ async fn pump_eof_reaps_the_terminal_and_pushes_exited() {
     assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
     assert!(process_reaped(pid), "an exited shell must still be reaped");
 }
+
+// ---- terminals on one original project source (#531) ----------------------
+
+use crate::app::tests::push_project_sources::{add_sources, source_selector};
+
+/// `params` beside one source's selector.
+fn on_source(selector: &Value, params: Value) -> Value {
+    let mut merged = selector.clone();
+    for (key, value) in params.as_object().expect("params are an object") {
+        merged[key] = value.clone();
+    }
+    merged
+}
+
+/// The term ids one `term.list` answer carries, in order.
+fn listed_ids(listed: &Value) -> Vec<String> {
+    listed["result"]["terminals"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no terminals: {listed:?}"))
+        .iter()
+        .map(|row| row["term_id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Attach to `term_id` under `selector` and wait for its shell to print
+/// `folder` as its working directory.
+async fn shell_prints_its_folder(
+    handler: &FrameHandler,
+    selector: &Value,
+    term_id: &str,
+    folder: &Path,
+) {
+    let (sender, mut pushes, key) = SessionSender::observable("cwd");
+    let attached = handler.call(
+        sender,
+        req("term.attach", on_source(selector, json!({ "term_id": term_id }))),
+    );
+    assert_eq!(attached["ok"], true, "{attached:?}");
+    let wrote = handler.call(
+        SessionSender::detached("cwd"),
+        req(
+            "term.input",
+            json!({ "term_id": term_id, "data": b64encode(b"pwd\r") }),
+        ),
+    );
+    assert_eq!(wrote["ok"], true, "{wrote:?}");
+    let folder = folder.to_string_lossy().into_owned();
+    wait_for_pushes(&mut pushes, &key, |seen| {
+        output_text(seen, term_id).contains(&folder)
+    })
+    .await;
+}
+
+/// Each original source, plain folder included, opens, lists, attaches and
+/// closes its own shells: a shell starts in its source's folder and appears
+/// in that source's tab row alone. A shell an older client opened with the
+/// legacy `{project_id}` scope is still one of the home source's tabs.
+#[tokio::test]
+async fn project_source_terminals_open_list_attach_and_close_per_source() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+    let home = std::fs::canonicalize(&repo).unwrap();
+    let sources = [
+        ("source-1", home.clone()),
+        ("source-2", sourced.second.clone()),
+        ("source-3", sourced.plain.clone()),
+    ];
+    let selector = |source_id: &str| source_selector(&state, &project_id, source_id);
+
+    let mut opened = Vec::new();
+    for (source_id, folder) in &sources {
+        let created = call(
+            &handler,
+            "term.create",
+            on_source(&selector(source_id), json!({ "cols": 80, "rows": 24 })),
+        );
+        assert_eq!(created["ok"], true, "{source_id}: {created:?}");
+        assert_eq!(created["result"]["kind"], "shell");
+        let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+        shell_prints_its_folder(&handler, &selector(source_id), &term_id, folder).await;
+        opened.push(term_id);
+    }
+    for ((source_id, _), term_id) in sources.iter().zip(&opened) {
+        let listed = call(&handler, "term.list", selector(source_id));
+        assert_eq!(listed_ids(&listed), [term_id.clone()], "{source_id}");
+    }
+
+    let legacy = call(&handler, "term.create", json!({ "project_id": project_id }));
+    assert_eq!(legacy["ok"], true, "{legacy:?}");
+    let legacy_id = legacy["result"]["term_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        listed_ids(&call(&handler, "term.list", selector("source-1"))),
+        [opened[0].clone(), legacy_id.clone()],
+        "the home folder's legacy shell is one of its source's tabs"
+    );
+    assert_eq!(
+        listed_ids(&call(
+            &handler,
+            "term.list",
+            json!({ "project_id": project_id })
+        )),
+        [opened[0].clone(), legacy_id],
+        "an older client still lists every shell in the home folder"
+    );
+
+    for ((source_id, _), term_id) in sources.iter().zip(&opened) {
+        let closed = call(
+            &handler,
+            "term.close",
+            on_source(&selector(source_id), json!({ "term_id": term_id })),
+        );
+        assert_eq!(closed["ok"], true, "{source_id}: {closed:?}");
+    }
+    for source_id in ["source-2", "source-3"] {
+        let listed = call(&handler, "term.list", selector(source_id));
+        assert!(listed_ids(&listed).is_empty(), "{source_id}: {listed:?}");
+    }
+    assert_eq!(state.lock().unwrap().shell_tab_count(), 1);
+}
+
+/// A shell belongs to the source it was opened on. Naming any other source
+/// — a sibling folder, or a second source registered on the same folder —
+/// neither lists, attaches nor closes it, and a selector that is mixed,
+/// malformed, foreign or names a moved folder opens nothing at all.
+#[tokio::test]
+async fn project_source_terminal_cannot_attach_sibling() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+    {
+        // A fourth source registered on the home folder: same root, other id.
+        let mut app = state.lock().unwrap();
+        let mut rows = app.project_at(0).sources.clone();
+        let mut alias = rows[0].clone();
+        alias.id = "source-4".into();
+        rows.push(alias);
+        assert!(app.projects.set_sources(&project_id, rows));
+    }
+    let selector = |source_id: &str| source_selector(&state, &project_id, source_id);
+
+    let second = call(&handler, "term.create", selector("source-2"));
+    assert_eq!(second["ok"], true, "{second:?}");
+    let second_id = second["result"]["term_id"].as_str().unwrap().to_string();
+    let home = call(&handler, "term.create", selector("source-1"));
+    let home_id = home["result"]["term_id"].as_str().unwrap().to_string();
+
+    for (term_id, foreign) in [
+        (&second_id, "source-1"),
+        (&second_id, "source-3"),
+        (&home_id, "source-2"),
+        (&home_id, "source-4"),
+    ] {
+        let attached = call(
+            &handler,
+            "term.attach",
+            on_source(&selector(foreign), json!({ "term_id": term_id })),
+        );
+        assert_eq!(
+            attached["error_code"], "not_found",
+            "{foreign} attached {term_id}: {attached:?}"
+        );
+        let closed = call(
+            &handler,
+            "term.close",
+            on_source(&selector(foreign), json!({ "term_id": term_id })),
+        );
+        assert_eq!(
+            closed["error_code"], "not_found",
+            "{foreign} closed {term_id}: {closed:?}"
+        );
+    }
+    assert!(listed_ids(&call(&handler, "term.list", selector("source-4"))).is_empty());
+    assert_eq!(
+        listed_ids(&call(&handler, "term.list", selector("source-2"))),
+        [second_id.clone()]
+    );
+    let owned = call(
+        &handler,
+        "term.attach",
+        on_source(&selector("source-2"), json!({ "term_id": second_id })),
+    );
+    assert_eq!(owned["ok"], true, "{owned:?}");
+
+    let second_path = selector("source-2")["source_path"].clone();
+    let plain_path = selector("source-3")["source_path"].clone();
+    let refused = [
+        (on_source(&selector("source-2"), json!({ "workspace_id": "legacy-x" })), "invalid_params"),
+        (on_source(&selector("source-2"), json!({ "run_id": "run-1" })), "invalid_params"),
+        (on_source(&selector("source-2"), json!({ "worktree_id": "wt-1" })), "invalid_params"),
+        (json!({ "workspace_id": "legacy-x", "source_id": "source-2", "source_path": second_path }), "invalid_params"),
+        (json!({ "project_id": project_id, "source_id": "source-2" }), "invalid_params"),
+        (json!({ "project_id": project_id, "source_path": second_path }), "invalid_params"),
+        (on_source(&selector("source-2"), json!({ "source_path": "" })), "invalid_params"),
+        (on_source(&selector("source-2"), json!({ "source_id": 2 })), "invalid_params"),
+        (on_source(&selector("source-2"), json!({ "project_id": [] })), "invalid_params"),
+        (on_source(&selector("source-2"), json!({ "source_id": "source-9" })), "not_found"),
+        (on_source(&selector("source-2"), json!({ "project_id": "proj-elsewhere" })), "not_found"),
+        (on_source(&selector("source-2"), json!({ "source_path": plain_path })), "conflict"),
+        (on_source(&selector("source-2"), json!({ "source_path": dir.path().join("gone") })), "conflict"),
+    ];
+    let shells = state.lock().unwrap().shell_tab_count();
+    for (params, code) in &refused {
+        for method in ["term.create", "term.list"] {
+            let reply = call(&handler, method, params.clone());
+            assert_eq!(reply["error_code"], *code, "{method} {params}: {reply:?}");
+        }
+        let attached = call(
+            &handler,
+            "term.attach",
+            on_source(params, json!({ "term_id": second_id })),
+        );
+        assert_eq!(attached["error_code"], *code, "term.attach {params}: {attached:?}");
+    }
+    assert_eq!(
+        state.lock().unwrap().shell_tab_count(),
+        shells,
+        "a refused selector opened a shell"
+    );
+}

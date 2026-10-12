@@ -812,7 +812,7 @@ impl AppState {
 
 /// Parse an optional scope id without letting malformed workspace fields fall
 /// through to one of the legacy scope shapes.
-fn optional_scope_id(params: &Value, name: &str) -> Result<Option<String>, String> {
+pub(in crate::app) fn optional_scope_id(params: &Value, name: &str) -> Result<Option<String>, String> {
     match params.get(name) {
         None => Ok(None),
         Some(Value::String(value)) if value.is_empty() => Err(format!("{name} cannot be empty")),

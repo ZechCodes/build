@@ -1073,3 +1073,181 @@ fn term_scope_parses_run_project_and_external() {
     ));
     assert!(TermScope::parse(&json!({})).is_err());
 }
+
+// ---- terminals on one original project source (#531) ----------------------
+
+use crate::app::tests::push_project_sources::{add_sources, source_selector};
+
+/// `params` beside one source's selector.
+fn on_source(selector: &Value, params: Value) -> Value {
+    let mut merged = selector.clone();
+    for (key, value) in params.as_object().expect("params are an object") {
+        merged[key] = value.clone();
+    }
+    merged
+}
+
+/// A clone of `source` beside it, for a Git source to move to.
+fn clone_beside(dir: &Path, source: &Path, name: &str) -> PathBuf {
+    git_in(dir, &["clone", "-q", source.to_str().unwrap(), name]);
+    std::fs::canonicalize(dir.join(name)).unwrap()
+}
+
+/// A source shell outlives every client that watched it: a client that
+/// leaves and one that comes back find the same id and the same screen.
+/// What it never follows is its source. While it is open the source cannot
+/// move or leave the project, and the refusal names the shell to close;
+/// once it is closed the source moves, the old folder's selector is refused
+/// and nothing opened there turns up under the new one.
+#[tokio::test]
+async fn project_source_terminal_survives_detach_not_source_retarget() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+    let opened_at = source_selector(&state, &project_id, "source-2");
+
+    let created = call(&handler, "term.create", opened_at.clone());
+    assert_eq!(created["ok"], true, "{created:?}");
+    let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
+    let (first, mut first_pushes, first_key) = SessionSender::observable("first");
+    let attached = handler.call(
+        first,
+        req("term.attach", on_source(&opened_at, json!({ "term_id": term_id }))),
+    );
+    assert_eq!(attached["ok"], true, "{attached:?}");
+    call(
+        &handler,
+        "term.input",
+        json!({ "term_id": term_id, "data": b64encode(b"echo before-detach\r") }),
+    );
+    wait_for_pushes(&mut first_pushes, &first_key, |seen| {
+        output_text(seen, &term_id).contains("before-detach")
+    })
+    .await;
+
+    state.lock().unwrap().drop_session("first");
+    let (second, _second_pushes, _) = SessionSender::observable("second");
+    let reattached = handler.call(
+        second,
+        req("term.attach", on_source(&opened_at, json!({ "term_id": term_id }))),
+    );
+    assert_eq!(reattached["ok"], true, "{reattached:?}");
+    assert_eq!(reattached["result"]["term_id"], term_id.as_str());
+    assert_eq!(reattached["result"]["live"], true);
+    let screen = b64decode(reattached["result"]["snapshot"].as_str().unwrap()).unwrap();
+    assert!(
+        String::from_utf8_lossy(&screen).contains("before-detach"),
+        "the returning client sees the screen it left: {reattached:?}"
+    );
+
+    let moved = clone_beside(dir.path(), &sourced.second, "moved");
+    let move_to = json!({ "project_id": project_id, "source_id": "source-2", "path": moved });
+    let refused_move = call(&handler, "project.update_source", move_to.clone());
+    assert_eq!(refused_move["error_code"], "conflict", "{refused_move:?}");
+    assert!(
+        refused_move["error"].as_str().unwrap().contains(&term_id),
+        "the refusal names the shell to close: {refused_move:?}"
+    );
+    let refused_removal = call(
+        &handler,
+        "project.remove_source",
+        json!({ "project_id": project_id, "source_id": "source-2" }),
+    );
+    assert_eq!(refused_removal["error_code"], "conflict", "{refused_removal:?}");
+    assert!(refused_removal["error"].as_str().unwrap().contains(&term_id));
+    assert_eq!(
+        source_selector(&state, &project_id, "source-2"),
+        opened_at,
+        "a refused move leaves the source where it was"
+    );
+    let relabelled = call(
+        &handler,
+        "project.update_source",
+        json!({ "project_id": project_id, "source_id": "source-2", "name": "Docs" }),
+    );
+    assert_eq!(relabelled["ok"], true, "a new label moves nothing: {relabelled:?}");
+
+    let closed = call(
+        &handler,
+        "term.close",
+        on_source(&opened_at, json!({ "term_id": term_id })),
+    );
+    assert_eq!(closed["ok"], true, "{closed:?}");
+    let moved_now = call(&handler, "project.update_source", move_to);
+    assert_eq!(moved_now["ok"], true, "{moved_now:?}");
+
+    let stale = call(&handler, "term.list", opened_at.clone());
+    assert_eq!(stale["error_code"], "conflict", "{stale:?}");
+    let stale_create = call(&handler, "term.create", opened_at);
+    assert_eq!(stale_create["error_code"], "conflict", "{stale_create:?}");
+    let renewed = source_selector(&state, &project_id, "source-2");
+    let listed = call(&handler, "term.list", renewed.clone());
+    assert_eq!(listed["result"]["terminals"], json!([]), "{listed:?}");
+    let reopened = call(&handler, "term.create", renewed);
+    assert_eq!(reopened["ok"], true, "{reopened:?}");
+    let key = state
+        .lock()
+        .unwrap()
+        .tab_key_of_wire_id(reopened["result"]["term_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(key.root, moved, "a new shell opens in the new folder");
+}
+
+/// A shell opened by an older client in a source's folder holds that source
+/// as well: whoever opened it, it is a process standing in the folder.
+#[tokio::test]
+async fn a_legacy_shell_in_a_source_folder_holds_the_source() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+
+    let legacy = call(&handler, "term.create", json!({ "project_id": project_id }));
+    assert_eq!(legacy["ok"], true, "{legacy:?}");
+    let refused = call(
+        &handler,
+        "project.remove_source",
+        json!({ "project_id": project_id, "source_id": "source-1" }),
+    );
+    assert_eq!(refused["error_code"], "conflict", "{refused:?}");
+    let removed = call(
+        &handler,
+        "project.remove_source",
+        json!({ "project_id": project_id, "source_id": "source-3" }),
+    );
+    assert_eq!(removed["ok"], true, "a source with no shell leaves: {removed:?}");
+}
+
+/// A move is admitted with no shell open and settles after its Git ran off
+/// the lock. Until it settles the folder is still changing hands, so a shell
+/// asked for there in the meantime is refused rather than left standing in
+/// the folder the source is leaving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_source_move_in_flight_holds_new_shells_back() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+    let opened_at = source_selector(&state, &project_id, "source-2");
+    let moved = clone_beside(dir.path(), &sourced.second, "moved");
+
+    let (gate, held) = OffLockGate::new();
+    state.lock().unwrap().off_lock_gate = Some(gate);
+    let moving = {
+        let handler = handler.clone();
+        let params = json!({ "project_id": project_id, "source_id": "source-2", "path": moved });
+        std::thread::spawn(move || call(&handler, "project.update_source", params))
+    };
+    held.wait_for_arrival();
+    let during = call(&handler, "term.create", opened_at.clone());
+    assert_eq!(during["error_code"], "busy", "{during:?}");
+    assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
+    held.release();
+    let settled = moving.join().unwrap();
+    assert_eq!(settled["ok"], true, "{settled:?}");
+
+    let renewed = source_selector(&state, &project_id, "source-2");
+    let reopened = call(&handler, "term.create", renewed);
+    assert_eq!(reopened["ok"], true, "{reopened:?}");
+}

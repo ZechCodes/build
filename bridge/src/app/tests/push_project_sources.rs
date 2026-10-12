@@ -8,13 +8,13 @@ use super::*;
 
 /// The project the push session's QA daemon opened, given two more original
 /// sources: a Git clone with no remote and a plain folder.
-struct SourcedProject {
-    project_id: String,
-    second: PathBuf,
-    plain: PathBuf,
+pub(in crate::app::tests) struct SourcedProject {
+    pub(in crate::app::tests) project_id: String,
+    pub(in crate::app::tests) second: PathBuf,
+    pub(in crate::app::tests) plain: PathBuf,
 }
 
-fn add_sources(state: &Arc<Mutex<AppState>>, dir: &Path, repo: &Path) -> SourcedProject {
+pub(in crate::app::tests) fn add_sources(state: &Arc<Mutex<AppState>>, dir: &Path, repo: &Path) -> SourcedProject {
     let second = dir.join("second");
     git_in(dir, &["clone", "-q", repo.to_str().unwrap(), "second"]);
     git_in(&second, &["remote", "remove", "origin"]);
@@ -50,7 +50,11 @@ fn add_sources(state: &Arc<Mutex<AppState>>, dir: &Path, repo: &Path) -> Sourced
     }
 }
 
-fn source_path(state: &Arc<Mutex<AppState>>, project_id: &str, source_id: &str) -> String {
+pub(in crate::app::tests) fn source_path(
+    state: &Arc<Mutex<AppState>>,
+    project_id: &str,
+    source_id: &str,
+) -> String {
     let app = state.lock().unwrap();
     let project = app.projects.get(project_id).unwrap();
     let source = project.sources.iter().find(|s| s.id == source_id).unwrap();
@@ -58,8 +62,19 @@ fn source_path(state: &Arc<Mutex<AppState>>, project_id: &str, source_id: &str) 
 }
 
 fn source_scope(state: &Arc<Mutex<AppState>>, project_id: &str, source_id: &str) -> Value {
+    let mut scope = source_selector(state, project_id, source_id);
+    scope["kind"] = json!("project_source");
+    scope
+}
+
+/// One original source as a verb names it: its project, its id and the
+/// folder it stands at now.
+pub(in crate::app::tests) fn source_selector(
+    state: &Arc<Mutex<AppState>>,
+    project_id: &str,
+    source_id: &str,
+) -> Value {
     json!({
-        "kind": "project_source",
         "project_id": project_id,
         "source_id": source_id,
         "source_path": source_path(state, project_id, source_id),
@@ -426,4 +441,121 @@ async fn facts_for_a_moved_or_removed_source_are_withdrawn() {
             },
         );
     }
+}
+
+/// The tab rows one subscription's terminal items carried, in order.
+fn tab_rows(pushes: &[Value], subscription_id: &str) -> Vec<Vec<String>> {
+    items_of(pushes, subscription_id)
+        .iter()
+        .filter_map(|item| item["terminals"]["tabs"].as_array().cloned())
+        .map(|tabs| {
+            tabs.iter()
+                .map(|tab| tab["term_id"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .collect()
+}
+
+/// A shell opened on a source is pushed to that source's subscription alone,
+/// and its end — an `exit` in a plain folder, an explicit close in a Git
+/// source — pushes the emptied tab row there too. A second source registered
+/// on the home folder hears the home folder's row without the home source's
+/// own shell in it.
+#[tokio::test]
+async fn project_source_shells_push_their_opening_exit_and_close_to_their_own_source() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
+    let sourced = add_sources(&state, dir.path(), &repo);
+    let project_id = sourced.project_id.clone();
+    {
+        let mut app = state.lock().unwrap();
+        let mut rows = app.project_at(0).sources.clone();
+        let mut alias = rows[0].clone();
+        alias.id = "source-4".into();
+        rows.push(alias);
+        assert!(app.projects.set_sources(&project_id, rows));
+    }
+    for (id, source_id) in [
+        ("s-home", "source-1"),
+        ("s-second", "source-2"),
+        ("s-plain", "source-3"),
+        ("s-alias", "source-4"),
+    ] {
+        let scope = source_scope(&state, &project_id, source_id);
+        let subscribed = subscribe(&handler, &sender, id, scope, json!(["terminals"]));
+        assert_eq!(subscribed["ok"], true, "{id}: {subscribed:?}");
+    }
+    settled_pushes(&mut rx, &key).await;
+    let open = |source_id: &str| {
+        let created = call(
+            &handler,
+            "term.create",
+            source_selector(&state, &project_id, source_id),
+        );
+        assert_eq!(created["ok"], true, "{source_id}: {created:?}");
+        created["result"]["term_id"].as_str().unwrap().to_string()
+    };
+
+    let plain_shell = open("source-3");
+    let second_shell = open("source-2");
+    let home_shell = open("source-1");
+    let opened = pushes_until(&mut rx, &key, |pushes| {
+        [
+            ("s-plain", &plain_shell),
+            ("s-second", &second_shell),
+            ("s-home", &home_shell),
+        ]
+        .iter()
+        .all(|(id, shell)| tab_rows(pushes, id).contains(&vec![(*shell).clone()]))
+    })
+    .await;
+
+    call(
+        &handler,
+        "term.input",
+        json!({ "term_id": plain_shell, "data": b64encode(b"exit\r") }),
+    );
+    let closed = call(
+        &handler,
+        "term.close",
+        on_selector(
+            source_selector(&state, &project_id, "source-2"),
+            json!({ "term_id": second_shell }),
+        ),
+    );
+    assert_eq!(closed["ok"], true, "{closed:?}");
+    let ended = pushes_until(&mut rx, &key, |pushes| {
+        ["s-plain", "s-second"]
+            .iter()
+            .all(|id| tab_rows(pushes, id).last().is_some_and(Vec::is_empty))
+    })
+    .await;
+    let quiet = settled_pushes(&mut rx, &key).await;
+    let everything = [opened, ended, quiet].concat();
+
+    for (id, own) in [
+        ("s-plain", &plain_shell),
+        ("s-second", &second_shell),
+        ("s-home", &home_shell),
+    ] {
+        for row in tab_rows(&everything, id) {
+            assert!(
+                row.iter().all(|shell| shell == own),
+                "{id} heard another source's shell: {row:?}"
+            );
+        }
+    }
+    assert!(
+        tab_rows(&everything, "s-alias").iter().all(Vec::is_empty),
+        "a source on the same folder never lists the home source's shell: {everything:?}"
+    );
+    assert_eq!(tab_rows(&everything, "s-plain").last(), Some(&vec![]));
+}
+
+/// `params` beside a source selector.
+fn on_selector(mut selector: Value, params: Value) -> Value {
+    for (key, value) in params.as_object().expect("params are an object") {
+        selector[key] = value.clone();
+    }
+    selector
 }

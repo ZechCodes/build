@@ -1319,7 +1319,8 @@ async fn an_admitted_source_terminal_create_cannot_outlive_project_deletion() {
     let done = cleanup.run();
     let after_count = {
         let mut app = state.lock().unwrap();
-        app.apply_deferred("project.delete", &deletion, done).unwrap();
+        app.apply_deferred("project.delete", &deletion, done)
+            .unwrap();
         assert!(app.project(&sourced.project_id).is_none());
         app.shell_tab_count()
     };
@@ -1327,8 +1328,14 @@ async fn an_admitted_source_terminal_create_cannot_outlive_project_deletion() {
     if let Some(term_id) = created["result"]["term_id"].as_str() {
         call(&handler, "term.close", json!({ "term_id": term_id }));
     }
-    assert!(sourced.second.exists(), "deletion preserves original sources");
-    assert_eq!(after_count, 0, "deletion orphaned a source PTY: {created:?}");
+    assert!(
+        sourced.second.exists(),
+        "deletion preserves original sources"
+    );
+    assert_eq!(
+        after_count, 0,
+        "deletion orphaned a source PTY: {created:?}"
+    );
     assert_eq!(during_count, 0);
     assert_eq!(created["error_code"], "unavailable", "{created:?}");
 }

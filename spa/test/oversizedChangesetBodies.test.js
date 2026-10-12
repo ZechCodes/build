@@ -105,6 +105,25 @@ it("refetches an empty incomplete body left in the cache by an older truncated a
   }
 });
 
+it("keeps an empty complete paged body without refetching its truncated head", async () => {
+  const path = "empty.txt";
+  const currentKey = "current";
+  await pages.writeBodyPages(address(path), pages.textPagesOf("", { of: "v-empty", cut: false }));
+  await cache.writeCached(address(path), { content_key: currentKey, paged: true, of: "v-empty", truncated: true });
+  const fetchFiles = vi.fn(async () => ({ files: [], patch: "" }));
+  const bodies = createChangesetBodies({ addressOf: address, keyFor: () => currentKey, fetchFiles });
+  const views = [{ path, contentKey: currentKey }];
+  try {
+    await bodies.sync(views, allOpen(views));
+    await bodies.sync(views, allOpen(views));
+
+    expect(fetchFiles).not.toHaveBeenCalled();
+    expect(bodies.bodyOf(path)).toMatchObject({ patch: "", pages: { end: 0, total: 0, complete: true } });
+  } finally {
+    bodies.dispose();
+  }
+});
+
 it("retries a rejected oversized fill and keeps the recovered page head", async () => {
   const fetchFiles = vi.fn().mockRejectedValueOnce(new Error("transport hiccup"))
     .mockImplementation(async (_paths, { range } = {}) => range

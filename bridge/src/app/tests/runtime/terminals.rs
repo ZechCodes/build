@@ -769,7 +769,11 @@ async fn project_source_terminals_open_list_attach_and_close_per_source() {
     }
     for ((source_id, _), term_id) in sources.iter().zip(&opened) {
         let listed = call(&handler, "term.list", selector(source_id));
-        assert_eq!(listed_ids(&listed), [term_id.clone()], "{source_id}");
+        assert_eq!(
+            listed_ids(&listed).as_slice(),
+            std::slice::from_ref(&term_id),
+            "{source_id}"
+        );
     }
 
     let legacy = call(&handler, "term.create", json!({ "project_id": project_id }));
@@ -859,8 +863,8 @@ async fn project_source_terminal_cannot_attach_sibling() {
     }
     assert!(listed_ids(&call(&handler, "term.list", selector("source-4"))).is_empty());
     assert_eq!(
-        listed_ids(&call(&handler, "term.list", selector("source-2"))),
-        [second_id.clone()]
+        listed_ids(&call(&handler, "term.list", selector("source-2"))).as_slice(),
+        std::slice::from_ref(&second_id)
     );
     let owned = call(
         &handler,

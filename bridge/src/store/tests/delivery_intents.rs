@@ -41,6 +41,57 @@ fn assignment(store: &Store) -> (Task, DeliveryIntent) {
     (task, intent)
 }
 
+fn freeze_post(
+    store: &Store,
+    task: &Task,
+    intent: &DeliveryIntent,
+    owner: &str,
+) -> (PersistedPlan, crate::operation::OperationReceipt) {
+    let mut plan = super::support::plan_record(owner);
+    let agent = &mut plan.agents[0];
+    agent.thread.post_user("frozen assignment", None, NOW);
+    let envelope = crate::thread::TaskEnvelope {
+        task_id: task.id.clone(),
+        number: task.number,
+        title: task.title.clone(),
+        links: task.links.clone(),
+    };
+    let crate::thread::ThreadItem::Message(message) = agent.thread.items.last_mut().unwrap() else {
+        panic!("fixture posted a message");
+    };
+    message.from_task = Some(Box::new(envelope.clone()));
+    let message = message.clone();
+    let mut receipt = super::support::queued_operation(&intent.operation_id, 1);
+    receipt.entity_id = owner.into();
+    receipt.agent_id = agent.id.clone();
+    receipt.conversation_id = agent.conversation_id().into();
+    let params = json!({"entity_id":owner,"agent_id":receipt.agent_id,
+        "conversation_id":receipt.conversation_id,"thread_id":agent.thread.id,
+        "body":"frozen assignment","operation_id":intent.operation_id});
+    receipt.request_hash = crate::operation::thread_post_request_hash(
+        &params,
+        owner,
+        &receipt.agent_id,
+        &receipt.conversation_id,
+    );
+    let delivery = receipt.delivery.as_mut().unwrap();
+    delivery.owner_id = owner.into();
+    delivery.agent_id = receipt.agent_id.clone();
+    delivery.payload.as_mut().unwrap().messages = vec![message];
+    store
+        .checkpoint_delivery_intent(
+            &intent.id,
+            intent.generation,
+            json!({}),
+            Some(json!({
+                "params":params,"envelope":envelope,"sender":null,"requester":null,
+                "intent_id":intent.id,"generation":intent.generation,
+            })),
+        )
+        .unwrap();
+    (plan, receipt)
+}
+
 #[test]
 fn deferred_dispatch_retry_freezes_message() {
     let dir = tempfile::tempdir().unwrap();
@@ -155,18 +206,7 @@ fn delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline() {
     store
         .claim_delivery_intent(&intent.id, intent.generation)
         .unwrap();
-    store
-        .checkpoint_delivery_intent(
-            &intent.id,
-            intent.generation,
-            json!({}),
-            Some(json!({"body":"frozen"})),
-        )
-        .unwrap();
-    let mut plan = super::support::plan_record("owner-delivery");
-    plan.agents[0].thread.post_user("frozen", None, NOW);
-    let mut receipt = super::support::queued_operation(&intent.operation_id, 1);
-    receipt.entity_id = "owner-delivery".into();
+    let (plan, receipt) = freeze_post(&store, &task, &intent, "owner-delivery");
     store
         .accept_thread_post("owner-delivery", &plan.agents, &receipt)
         .unwrap();
@@ -219,14 +259,7 @@ fn delivery_admission_fences_graph_writes_and_failed_retry() {
     store
         .claim_delivery_intent(&intent.id, intent.generation)
         .unwrap();
-    store
-        .checkpoint_delivery_intent(
-            &intent.id,
-            intent.generation,
-            json!({}),
-            Some(json!({"body":"saved"})),
-        )
-        .unwrap();
+    let (plan, receipt) = freeze_post(&store, &task, &intent, "owner-fenced");
     let blocker = store
         .create_tracker_task(Task::drafted(PROJECT, "new blocker", Actor::User, NOW), &[])
         .unwrap();
@@ -240,9 +273,6 @@ fn delivery_admission_fences_graph_writes_and_failed_retry() {
             NOW,
         )
         .unwrap();
-    let mut plan = super::support::plan_record("owner-fenced");
-    plan.agents[0].thread.post_user("saved", None, NOW);
-    let receipt = super::support::queued_operation(&intent.operation_id, 1);
     assert!(store
         .accept_thread_post("owner-fenced", &plan.agents, &receipt)
         .is_err());
@@ -274,4 +304,85 @@ fn delivery_admission_fences_graph_writes_and_failed_retry() {
         receipt,
         "a revoked generation can reconcile its prior receipt without posting again"
     );
+}
+
+#[test]
+fn delivery_admission_binds_frozen_payload_address_and_origin() {
+    for changed in [
+        "body",
+        "owner",
+        "agent",
+        "conversation",
+        "method",
+        "requester",
+        "envelope",
+        "sender",
+    ] {
+        refused_frozen_change(changed);
+    }
+}
+
+fn refused_frozen_change(changed: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let (task, intent) = assignment(&store);
+    store
+        .claim_delivery_intent(&intent.id, intent.generation)
+        .unwrap();
+    let (plan, original) = freeze_post(&store, &task, &intent, "owner-origin");
+    let mut forged = original.clone();
+    forge_frozen_receipt(&mut forged, changed);
+    assert!(
+        store
+            .accept_thread_post("owner-origin", &plan.agents, &forged)
+            .is_err(),
+        "{changed} bypassed immutable admission"
+    );
+    assert!(store.operation(&intent.operation_id).unwrap().is_none());
+    assert!(store.thread_items(&plan.agents[0].id).unwrap().is_empty());
+    store
+        .accept_thread_post("owner-origin", &plan.agents, &original)
+        .unwrap();
+    assert_eq!(
+        store.operation(&intent.operation_id).unwrap().unwrap(),
+        original
+    );
+}
+
+fn forge_frozen_receipt(receipt: &mut crate::operation::OperationReceipt, changed: &str) {
+    match changed {
+        "body" => receipt.request_hash = "hash of caller substituted body".into(),
+        "owner" => receipt.entity_id = "foreign-owner".into(),
+        "agent" => receipt.agent_id = "foreign-agent".into(),
+        "conversation" => receipt.conversation_id = "foreign-conversation".into(),
+        "method" => receipt.method = "forged.method".into(),
+        "requester" => {
+            receipt.requested_by = Some(crate::operation::OperationRequester {
+                entity_id: "foreign-sender-owner".into(),
+                agent_id: "foreign-sender".into(),
+                conversation_id: "foreign-sender-conversation".into(),
+            })
+        }
+        other => forge_message_origin(receipt, other),
+    }
+}
+
+fn forge_message_origin(receipt: &mut crate::operation::OperationReceipt, changed: &str) {
+    let message = &mut receipt
+        .delivery
+        .as_mut()
+        .unwrap()
+        .payload
+        .as_mut()
+        .unwrap()
+        .messages[0];
+    match changed {
+        "envelope" => {
+            message.from_task.as_mut().unwrap().title = "substituted task envelope".into()
+        }
+        "sender" => {
+            message.from_agent = Some(Box::new(crate::thread::AgentIdentity::new("forged-sender")))
+        }
+        _ => unreachable!("unknown forged field"),
+    }
 }

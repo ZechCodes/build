@@ -1,14 +1,22 @@
-// Isolated Projects face evidence (#480, #510). Run from spa/ with CAPTURE_PHASE=before|after.
+// Isolated Projects face evidence (#480, #510, #516). Run from spa/ with CAPTURE_PHASE=before|after.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { withLayoutPage } from "./layoutHarness.mjs";
-import { inspectProjectsFace, mountProjectsFace } from "./projectsFaceSeed.mjs";
+import { inspectProjectsFace, mountProjectsFace, openRecent } from "./projectsFaceSeed.mjs";
 
 const phase = process.env.CAPTURE_PHASE || "after";
 const directory = process.env.CAPTURE_DIR || "/tmp/projects-face-480";
 await mkdir(directory, { recursive: true });
 const evidence = {};
+// Switch theme and finish the fills' transitions, so a capture shows one theme.
+async function settleTheme(page, theme) {
+  await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+  await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => {
+    if (animation instanceof CSSTransition) animation.finish();
+    return animation instanceof CSSTransition ? animation.finished : Promise.resolve();
+  })));
+}
 for (const { label, width, height, hasTouch } of [
   { label: "desktop", width: 1280, height: 800, hasTouch: false },
   { label: "phone", width: 390, height: 844, hasTouch: true },
@@ -17,11 +25,7 @@ for (const { label, width, height, hasTouch } of [
     await page.emulateMedia({ reducedMotion: "reduce" });
     await mountProjectsFace(page, basePath);
     for (const theme of ["light", "dark"]) {
-      await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
-      await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => {
-        if (animation instanceof CSSTransition) animation.finish();
-        return animation instanceof CSSTransition ? animation.finished : Promise.resolve();
-      })));
+      await settleTheme(page, theme);
       const blocks = await inspectProjectsFace(page);
       evidence[`${label}-${theme}`] = blocks;
       if (phase === "after") {
@@ -38,6 +42,12 @@ for (const { label, width, height, hasTouch } of [
         assert.equal(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count(), 0);
       }
       await page.locator("#inbox-rail").screenshot({ path: join(directory, `${phase}-${label}-${theme}.png`) });
+    }
+    // The active block with its Recent open: one content column, its heading filled (#516).
+    await openRecent(page, "projects-review/build");
+    for (const theme of ["light", "dark"]) {
+      await settleTheme(page, theme);
+      await page.locator("#inbox-rail").screenshot({ path: join(directory, `${phase}-${label}-${theme}-recent.png`) });
     }
   }, { width, height, hasTouch });
 }

@@ -1472,7 +1472,10 @@ describe("the inbox row's actions", () => {
     expect(declaration(row.body, "--inbox-actions-room")).toBe(
       "calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-control-width) + var(--inbox-status-room))",
     );
-    expect(declaration(row.body, "--inbox-status-room")).toBe("12px");
+    // The dot's slot is the project head's too, so it lives where the inset does (#516).
+    const statusRoom = cssRules().filter((rule) => declaration(rule.body, "--inbox-status-room"));
+    expect(statusRoom.map((rule) => rule.selector)).toEqual([".inbox-entry, .inbox-project"]);
+    expect(declaration(statusRoom[0].body, "--inbox-status-room")).toBe("12px");
     expect(declaration(withMenu.body, "--inbox-control-width")).toBe("var(--inbox-menu-width)");
     expect(declaration(withDone.body, "--inbox-control-width")).toBe("var(--inbox-done-width)");
 

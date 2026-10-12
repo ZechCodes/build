@@ -53,7 +53,8 @@ async function rowFill(row, token, state) {
         className: overlay.className,
         background: getComputedStyle(overlay).backgroundColor,
         shadow: getComputedStyle(overlay).boxShadow,
-        fade: overlay.classList.contains("inbox-actions") ? "-8px 0px 8px -6px" : "-10px 0px 10px -6px",
+        // The facts stand beside the name now, not over it, so only the actions fade (#516).
+        fade: overlay.classList.contains("inbox-actions") ? "-8px 0px 8px -6px" : null,
       })),
       focused: element.matches(":focus-within"),
     };
@@ -141,7 +142,8 @@ for (const theme of ["light", "dark"]) {
               expect(fill.overlays.length, label).toBe(key === "branch:quiet" ? 2 : 1);
               for (const overlay of fill.overlays) {
                 expect(overlay.background, `${label}: ${overlay.className}`).toBe(fill.background);
-                expect(overlay.shadow, `${label}: ${overlay.className} fade`).toBe(`${fill.background} ${overlay.fade}`);
+                expect(overlay.shadow, `${label}: ${overlay.className} fade`)
+                  .toBe(overlay.fade ? `${fill.background} ${overlay.fade}` : "none");
               }
               expect(fill.background, `${label}: row colour`).toBe(fill.expected);
             }

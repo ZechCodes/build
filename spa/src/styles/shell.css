@@ -337,7 +337,6 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* The overlays that sit on the row's right edge keep to the column the words
    use, not the gutter the fill now covers. */
 .inbox-entry .inbox-actions { right:calc(var(--inbox-actions-inset) + var(--inbox-row-bleed-right)); }
-.inbox-entry .inbox-facts-float { right:calc(10px + var(--inbox-row-bleed-right)); }
 .inbox-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
 .inbox-line { display:flex; align-items:center; gap:6px; min-width:0; }
 .inbox-line .stitle { font-size:13px; }
@@ -355,14 +354,20 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    +/−, and that is the half that says how big this has got. */
 .inbox-facts { font-size:11.5px; color:var(--dim); font-family:var(--mono);
   overflow-wrap:anywhere; }
-/* A quiet row (Recent), except tasks: one line, and what it weighs floating
-   over the line's right edge with the row's own background behind it, so a
-   long name runs under it rather than wrapping. */
-.inbox-quiet:not(.inbox-quiet-task) { padding:8px calc(10px + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); align-items:center; }
+/* A quiet row (Recent), except tasks: one line — the name, then what it
+   weighs at the line's right edge, ending where its controls begin (on the
+   controls' column when it has none; the dot's slot stays reserved after it). The name wins the line: it never shrinks
+   while the facts have width to give, and the facts give it as an ellipsis,
+   down to nothing, before the name loses a letter (#516). The facts' gap is
+   a pseudo-element inside their own box, so at nothing it is nothing too. */
+.inbox-quiet:not(.inbox-quiet-task) { gap:0; align-items:center;
+  padding:8px calc(var(--inbox-actions-room) - var(--inbox-actions-fade) + var(--inbox-row-bleed-right)) 8px calc(26px + var(--inbox-row-bleed-left)); }
+.inbox-quiet:not(.inbox-quiet-task) > .inbox-body { flex:none; max-width:100%; }
+.inbox-quiet:not(.inbox-quiet-task) > .inbox-body > .inbox-line:first-child { padding-right:0; }
 .inbox-quiet:not(.inbox-quiet-task) .inbox-line .stitle { font-size:12.5px; }
-.inbox-facts-float { position:absolute; right:10px; top:50%; transform:translateY(-50%);
-  padding-left:10px; background:var(--inbox-row-fill); box-shadow:-10px 0 10px -6px var(--inbox-row-fill);
-  pointer-events:none; white-space:nowrap; }
+.inbox-facts-float { flex:0 1 auto; min-width:0; margin-left:auto; overflow:hidden; text-overflow:ellipsis;
+  background:var(--inbox-row-fill); pointer-events:none; white-space:nowrap; overflow-wrap:normal; }
+.inbox-facts-float::before { content:""; display:inline-block; width:10px; }
 /* A muted entry keeps its place and its live status, and stops shouting. */
 .inbox-muted .inbox-reason { color:var(--dim); }
 /* A device the page cannot reach right now. Its work has not gone anywhere, so
@@ -409,13 +414,13 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* Reserve the controls' width even while they are hidden. Keeping them in the
    flex layout also keeps the final dot fixed on hover. */
 /* The project head and its rows share the status column's inset. */
-.inbox-entry, .inbox-project { --inbox-actions-inset:4px; }
+.inbox-entry, .inbox-project { --inbox-actions-inset:4px;
+  --inbox-status-room:12px; /* the dot's slot stays reserved when read and idle */ }
 .inbox-entry { position:relative;
   --inbox-actions-fade:6px;   /* the fade it stands on, before its first control */
   --inbox-menu-width:24px;    /* the ⋯ */
   --inbox-done-width:56px;    /* Done, and Done… while it is being done */
   --inbox-control-width:0px;
-  --inbox-status-room:12px; /* the dot's slot stays reserved when read and idle */
   --inbox-actions-room:calc(var(--inbox-actions-inset) + var(--inbox-actions-fade) + var(--inbox-control-width) + var(--inbox-status-room)); }
 .inbox-entry:has(.inbox-actions > .inbox-more) { --inbox-control-width:var(--inbox-menu-width); }
 .inbox-entry:has(.inbox-actions > .inbox-watch) { --inbox-control-width:calc(32px + 4px + var(--inbox-menu-width)); }
@@ -446,8 +451,10 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
 /* The dot stays visible while controls wait for hover or keyboard focus. */
 .inbox-actions:has(> .inbox-status-dot) { opacity:1; }
+/* Without a dot its slot stays empty, so the last control — Done, the eye —
+   ends on the same column whether or not the row has news (#516). */
+.inbox-actions:not(:has(> .inbox-status-dot)) { padding-right:var(--inbox-status-room); }
 .inbox-project-agent .inbox-actions, .inbox-quiet:not(.inbox-quiet-task) .inbox-actions { top:50%; transform:translateY(-50%); }
-.inbox-entry.inbox-quiet .inbox-facts-float { right:calc(var(--inbox-actions-room) + var(--inbox-row-bleed-right)); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
 .inbox-workspace-done { min-width:var(--inbox-done-width); }
 /* No hover on touch: the selected row shows its actions, one tap behind. */
@@ -467,7 +474,9 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 }
 @media (pointer:coarse) {
   .inbox-entry:has(.inbox-actions > .inbox-watch) { --inbox-control-width:calc(44px + 4px + var(--inbox-menu-width)); min-height:52px; }
-  .inbox-actions > .inbox-watch { width:44px; height:44px; padding:12px; }
+  /* The touch target grows leftward: the glyph keeps the 7px from the
+     column that the head's + keeps (#516). */
+  .inbox-actions > .inbox-watch { width:44px; height:44px; padding:12px 7px 12px 20px; }
 }
 /* The rail's rows are near the top of the viewport, so the menu drops rather
    than rises, and stays on the row's right edge at every width. */
@@ -506,12 +515,13 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   margin:0 -10px 0 calc(var(--inbox-band-bleed) * -1);
   padding:5px var(--inbox-row-bleed-right) 6px calc(var(--inbox-band-bleed) + 5px); }
 /* Keep the final dot's slot even when it is absent, so the name and hover
-   controls keep their width as activity changes. The head uses the rows' bleed
+   controls keep their width as activity changes; the controls end on the
+   column the rows' Done and eye end on (#516). The head uses the rows' bleed
    and pays it back in padding. Its vertical fill takes 4px from the space on
    either side, keeping the name, controls, dot and following rows in place. */
 .inbox-project-head { position:relative; display:flex; align-items:center; gap:2px;
   margin:-4px calc(-1 * var(--inbox-row-bleed-right)) -4px calc(-1 * var(--inbox-row-bleed-left));
-  padding:5px calc(14px + var(--inbox-row-bleed-right)) 5px var(--inbox-row-bleed-left); }
+  padding:5px calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-bleed-right)) 5px var(--inbox-row-bleed-left); }
 .inbox-project-head:hover { background:var(--row-hover); }
 /* Selected rows keep their accent fill on hover; their project head does too. */
 .inbox-project.active > .inbox-project-head { background:var(--accent-soft); }
@@ -554,8 +564,22 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-project-rows { display:flex; flex-direction:column; gap:4px; padding:4px 0 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
 .inbox-project .inbox-recent { margin:6px 0 0; padding-top:0; }
-/* Recent's caret starts in the project name and quiet rows' content column. */
-.inbox-project .inbox-recent-toggle { padding-left:26px; }
+/* One content column under a project head (#516): the Recent caret and every
+   row's name — live, quiet workspace or quiet task — start where the project's
+   name does, so nothing in a block stands outside its own heading. */
+.inbox-project { --inbox-content-indent:26px; }
+.inbox-project .inbox-entry { padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-bleed-left)); }
+/* Recent's heading is a row of the block: it bleeds to the rail's edges as
+   the head does, its count ends on the controls' column, and in the active
+   block it wears the head's fill, so the head and its Recent read as one
+   active region. The rows under it keep their own fills, so the standing
+   row's accent and a hover read exactly as they do anywhere else. */
+.inbox-project .inbox-recent-toggle {
+  width:calc(100% + var(--inbox-row-bleed-left) + var(--inbox-row-bleed-right));
+  margin:0 calc(-1 * var(--inbox-row-bleed-right)) 0 calc(-1 * var(--inbox-row-bleed-left));
+  padding-left:calc(var(--inbox-content-indent) + var(--inbox-row-bleed-left));
+  padding-right:calc(var(--inbox-actions-inset) + var(--inbox-status-room) + var(--inbox-row-bleed-right)); }
+.inbox-project.active .inbox-recent-toggle { background:var(--accent-soft); }
 
 /* ---- view column (centre) ---- */
 /* Positioned, because the console's full size is an overlay over this column

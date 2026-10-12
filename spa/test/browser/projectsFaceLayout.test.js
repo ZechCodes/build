@@ -124,7 +124,10 @@ for (const { label, width, height, hasTouch } of [
       await mountProjectsFace(page, basePath);
       await openRecent(page, "projects-review/build");
       for (const theme of ["light", "dark"]) {
-        await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+        await page.evaluate((theme) => {
+          document.documentElement.dataset.theme = theme;
+          for (const animation of document.getAnimations()) if (animation instanceof CSSTransition) animation.finish();
+        }, theme);
         const block = await inspectActiveBlock(page);
         expect(block.headFill, theme).toBe(block.accentSoft);
         expect(block.toggleFill, theme).toBe(block.accentSoft);

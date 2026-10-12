@@ -75,6 +75,7 @@ import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
+import { rememberProjectChangesSupport } from "./projectChangesSupport.js";
 import { rememberFileUploadSupport } from "./fileUploadSupport.js";
 import { rememberWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
@@ -262,7 +263,17 @@ function setSubscriptionsMode(state, active) {
 
 /** One subscription per scope a watcher stands for: an entity-scoped surface
  *  showing two ids wants two, and the ids are read now, not at mount. */
+function projectSourceScopeOf(watcher) {
+  const scope = typeof watcher.scope === "function" ? watcher.scope() : watcher.scope;
+  if (scope?.kind !== "project_source") return null;
+  const fields = ["project_id", "source_id", "source_path"];
+  if (!fields.every((field) => typeof scope[field] === "string" && scope[field].length)) return null;
+  return { kind: "project_source", ...Object.fromEntries(fields.map((field) => [field, scope[field]])) };
+}
+
 function scopesOf(watcher) {
+  const source = projectSourceScopeOf(watcher);
+  if (source) return [{ id: watcher.id, scope: source }];
   if (watcher.scope === "all") return [{ id: watcher.id, scope: { kind: "all" } }];
   if (watcher.boardScoped) return [{ id: watcher.id, scope: { kind: "board" } }];
   return entityIdsOf(watcher).map((entityId) => ({
@@ -290,6 +301,7 @@ function desiredSubscriptions(deviceId) {
   const desired = new Map();
   for (const watcher of watchers) {
     if (!watcher.hears(deviceId)) continue;
+    if (projectSourceScopeOf(watcher) && !bridgeCapabilities(deviceId).changes.projectSources) continue;
     for (const spec of specsOf(watcher)) desired.set(spec.subscription_id, spec);
   }
   return desired;
@@ -557,7 +569,10 @@ function withDefaults(registration, defaults) {
  * that names none asks for no subscription and hears whatever arrives. `mode`
  * is `"realtime"` for a mounted surface or `{ batch_ms: N }` for a background
  * tier, `priority` orders the flush and the pulls it causes, and `scope: "all"`
- * is the background tier's whole-board watch. `onChanges(items)` receives the
+ * is the background tier's whole-board watch. A project source names `scope`
+ * as `{kind: "project_source", project_id, source_id, source_path}` or a getter
+ * returning it; subscriptions and delivery require the current greeting's
+ * `changes.projectSources`. `onChanges(items)` receives the
  * items for the entities this surface stands for; without one, an item runs
  * `refresh` instead.
  *
@@ -580,7 +595,7 @@ export function watchChanges(registration) {
     hears: hearsFor(spec.deviceId),
     // A surface that named no entity is the feed, whatever its entity getter
     // would answer later.
-    boardScoped: spec.scope !== "all" && spec.entity === null,
+    boardScoped: spec.scope === null && spec.entity === null,
     missed: false,
   };
   watchers.add(watcher);
@@ -620,6 +635,10 @@ const KIND_FIELDS = ["state", "thread", "git", "files", "terminals"];
  *  item for a whole-board watcher, and the ones naming an id a surface is
  *  showing for everyone else. */
 function coveredBy(watcher, items) {
+  const source = projectSourceScopeOf(watcher);
+  if (source) return items.filter((item) => ["project_id", "source_id", "source_path"]
+    .every((field) => item.project_source?.[field] === source[field]));
+  items = items.filter((item) => !item.project_source);
   if (watcher.scope === "all") {
     return wantsBoardItem(watcher) ? items : items.filter((item) => !isBoardItem(item));
   }
@@ -731,7 +750,8 @@ function audienceFor(subscriptionId, deviceId) {
 }
 
 function dispatchItems(payload, deviceId) {
-  const list = Array.isArray(payload.items) ? payload.items.filter(Boolean) : [];
+  const list = (Array.isArray(payload.items) ? payload.items.filter(Boolean) : [])
+    .filter((item) => !item.project_source || bridgeCapabilities(deviceId).changes.projectSources);
   if (!list.length) return false;
   const boardIsNews = boardItemIsNews(list, bridgeFor(deviceId));
   for (const watcher of audienceFor(payload.subscription_id, deviceId)) {
@@ -933,6 +953,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
   void rememberWorkspaceLockSupport(deviceId, state.adapter.capabilities);
   void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
+  void rememberProjectChangesSupport(deviceId, state.adapter.capabilities);
   void rememberFileUploadSupport(deviceId, state.adapter.capabilities);
   // And whether task body writes compare their original hash (#347).
   void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);

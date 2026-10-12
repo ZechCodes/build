@@ -223,7 +223,9 @@ impl AppState {
     fn retire_project_task_deliveries(&self, project_id: &str) -> Result<(), String> {
         if let Some(store) = &self.store {
             let path = self.tracker_project_path(project_id)?;
-            store.retire_task_deliveries_of_project(&path).map_err(|error| error.to_string())?;
+            store
+                .retire_task_deliveries_of_project(&path)
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }

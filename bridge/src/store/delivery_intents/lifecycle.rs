@@ -17,7 +17,8 @@ pub(in crate::store) fn note_task_write(tx: &Transaction, after: &Task) -> Resul
     let Some(before) = task(tx, &intent)? else {
         return Ok(());
     };
-    let returned_to_ready = after.status == "ready" && matches!(before.status.as_str(), "in_progress" | "in_review");
+    let returned_to_ready =
+        after.status == "ready" && matches!(before.status.as_str(), "in_progress" | "in_review");
     if after.is_finished() || after.assignee != before.assignee || returned_to_ready {
         cancel_task(tx, &after.id)?;
     }

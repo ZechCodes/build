@@ -48,10 +48,14 @@ impl DispatchedTask {
     }
 
     fn assert_complete_leaves_task(&mut self, status: &str) {
-        let before = self.app.handle(req("tasks.get", json!({"task_id":self.task_id})));
+        let before = self
+            .app
+            .handle(req("tasks.get", json!({"task_id":self.task_id})));
         self.app
             .move_held_task_on_complete(&self.entity_id, &self.agent_id);
-        let after = self.app.handle(req("tasks.get", json!({"task_id":self.task_id})));
+        let after = self
+            .app
+            .handle(req("tasks.get", json!({"task_id":self.task_id})));
         assert_eq!(after["result"]["task"]["status"], status, "{after}");
         assert_eq!(after["result"]["timeline"], before["result"]["timeline"]);
         assert!(!self.app.dispatched_task.contains_key(&self.agent_id));
@@ -84,17 +88,141 @@ impl DispatchedTask {
         while let Some((turn, mark)) = pending.next_turn() {
             if turn.agent_id == self.agent_id {
                 assert!(turn.operation_id.is_some(), "the assignment has a receipt");
+                self.app.consume_task_completion_operation(
+                    &turn.owner,
+                    &turn.agent_id,
+                    turn.operation_id.as_deref().unwrap(),
+                );
                 consumed = true;
             }
             mark.settle(&mut self.app);
         }
         assert!(consumed, "the dispatched turn was consumed");
     }
+
+    fn operation_id(&self) -> String {
+        self.app
+            .tracker_store()
+            .unwrap()
+            .current_delivery_intent(&self.task_id)
+            .unwrap()
+            .unwrap()
+            .operation_id
+    }
+
+    fn assert_complete_reviews_task(&mut self) {
+        self.app
+            .move_held_task_on_complete(&self.entity_id, &self.agent_id);
+        let after = self
+            .app
+            .handle(req("tasks.get", json!({"task_id":self.task_id})));
+        assert_eq!(after["result"]["task"]["status"], "in_review", "{after}");
+    }
+}
+
+#[test]
+fn completion_fence_requires_delivery_consumption() {
+    let mut task = DispatchedTask::new();
+    task.assert_complete_leaves_task("in_progress");
+    task.consume_turn();
+    task.assert_complete_reviews_task();
+}
+
+#[test]
+fn completion_fence_does_not_promote_an_abandoned_queue_mark() {
+    let mut task = DispatchedTask::new();
+    let mut pending = task.app.take_pending_turns();
+    while let Some((_, mark)) = pending.next_turn() {
+        mark.settle(&mut task.app);
+    }
+    task.app.record_agent_working_since(
+        &task.entity_id,
+        &task.agent_id,
+        Some("unrelated turn".into()),
+    );
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
+fn completion_fence_receipt_replay_cannot_rearm_a_completed_turn() {
+    let mut task = DispatchedTask::new();
+    let operation = task.operation_id();
+    task.app
+        .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
+        .unwrap();
+    task.assert_complete_reviews_task();
+    task.call("tasks.update", json!({"status":"in_progress"}));
+    task.app
+        .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
+        .unwrap();
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
+fn completion_fence_reconstructs_from_checked_native_receipt() {
+    let mut task = DispatchedTask::new();
+    let operation = task.operation_id();
+    task.app.task_completion_authority.clear();
+    task.app.pending_task_completion_authority.clear();
+    task.app.dispatched_task.clear();
+    task.app.record_agent_working_since(
+        &task.entity_id,
+        &task.agent_id,
+        Some(crate::store::now_rfc3339()),
+    );
+    task.app
+        .record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
+        .unwrap();
+    task.assert_complete_reviews_task();
+}
+
+#[test]
+fn completion_fence_rejects_unknown_and_foreign_native_receipts() {
+    let mut task = DispatchedTask::new();
+    let operation = task.operation_id();
+    assert!(task
+        .app
+        .record_native_operation_seen(&task.entity_id, &task.agent_id, "unknown")
+        .is_err());
+    assert!(task
+        .app
+        .record_native_operation_seen(&task.entity_id, "foreign-agent", &operation)
+        .is_err());
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
+fn completion_fence_promotes_seen_pending_on_next_working_boundary() {
+    let mut task = DispatchedTask::new();
+    task.consume_turn();
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, Some("old turn".into()));
+    task.call(
+        "tasks.assign",
+        json!({"assignee":{"kind":"agent","agent_id":task.agent_id}}),
+    );
+    task.consume_turn();
+    // Seen while the old interval is still Working belongs to the queued turn.
+    task.assert_complete_leaves_task("in_progress");
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, None);
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, Some("new turn".into()));
+    task.assert_complete_reviews_task();
+}
+
+#[test]
+fn completion_fence_cannot_review_consumed_work_with_new_prerequisite() {
+    let mut task = DispatchedTask::new();
+    task.consume_turn();
+    task.add_blocker();
+    task.assert_complete_leaves_task("in_progress");
 }
 
 #[test]
 fn completion_fence_survives_return_to_ready() {
     let mut task = DispatchedTask::new();
+    task.consume_turn();
     task.call("tasks.update", json!({"status":"ready"}));
     task.assert_complete_leaves_task("ready");
 }
@@ -102,6 +230,7 @@ fn completion_fence_survives_return_to_ready() {
 #[test]
 fn completion_fence_survives_done_then_resume_without_assignment() {
     let mut task = DispatchedTask::new();
+    task.consume_turn();
     task.call("tasks.update", json!({"status":"done"}));
     task.call("tasks.update", json!({"status":"in_progress"}));
     task.assert_complete_leaves_task("in_progress");
@@ -110,6 +239,7 @@ fn completion_fence_survives_done_then_resume_without_assignment() {
 #[test]
 fn completion_fence_survives_close_then_reopen() {
     let mut task = DispatchedTask::new();
+    task.consume_turn();
     task.call("tasks.close", json!({}));
     task.call("tasks.reopen", json!({}));
     task.assert_complete_leaves_task("in_progress");
@@ -118,6 +248,7 @@ fn completion_fence_survives_close_then_reopen() {
 #[test]
 fn completion_fence_survives_unassignment_then_same_agent_assignment_waiting() {
     let mut task = DispatchedTask::new();
+    task.consume_turn();
     task.call("tasks.assign", json!({"assignee":null}));
     task.call("tasks.update", json!({"status":"ready"}));
     task.add_blocker();
@@ -131,6 +262,7 @@ fn completion_fence_survives_unassignment_then_same_agent_assignment_waiting() {
 #[test]
 fn completion_fence_survives_target_removal() {
     let mut task = DispatchedTask::new();
+    task.consume_turn();
     let removed = task.app.handle(req(
         "agent.remove",
         json!({"entity_id":task.entity_id,"agent_id":task.agent_id}),
@@ -142,16 +274,18 @@ fn completion_fence_survives_target_removal() {
 #[test]
 fn completion_fence_keeps_new_wait_in_ready() {
     let mut task = DispatchedTask::new();
+    task.consume_turn();
     task.call("tasks.update", json!({"status":"ready"}));
     let project = task.add_blocker();
     task.assert_complete_leaves_task("ready");
-    assert!(task
-        .app
-        .tracker_store()
-        .unwrap()
-        .waiting_on_summary(&project, &task.task_id)
-        .unwrap()
-        .blocked);
+    assert!(
+        task.app
+            .tracker_store()
+            .unwrap()
+            .waiting_on_summary(&project, &task.task_id)
+            .unwrap()
+            .blocked
+    );
 }
 
 #[test]
@@ -170,7 +304,11 @@ fn completion_fence_survives_same_agent_reassignment_waiting_after_consumed_turn
         json!({"task_id":task.task_id,"assignee":{"kind":"agent","agent_id":task.agent_id}}),
     ));
     assert_eq!(reassigned["ok"], true, "{reassigned}");
-    assert_eq!(reassigned["result"]["dispatch"], Value::Null, "{reassigned}");
+    assert_eq!(
+        reassigned["result"]["dispatch"],
+        Value::Null,
+        "{reassigned}"
+    );
     task.assert_complete_leaves_task("ready");
 }
 
@@ -189,10 +327,13 @@ fn completion_fence_preserves_running_generation_until_reassigned_turn_is_consum
     );
     task.assert_complete_leaves_task("in_progress");
 
-    task.app.record_agent_working_since(&task.entity_id, &task.agent_id, None);
+    task.app
+        .record_agent_working_since(&task.entity_id, &task.agent_id, None);
     task.consume_turn();
     task.app
         .move_held_task_on_complete(&task.entity_id, &task.agent_id);
-    let after = task.app.handle(req("tasks.get", json!({"task_id":task.task_id})));
+    let after = task
+        .app
+        .handle(req("tasks.get", json!({"task_id":task.task_id})));
     assert_eq!(after["result"]["task"]["status"], "in_review", "{after}");
 }

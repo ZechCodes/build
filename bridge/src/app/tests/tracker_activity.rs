@@ -10,6 +10,17 @@ fn task_id(task: &Value) -> String {
     task["id"].as_str().unwrap().to_string()
 }
 
+/// Simulate successful provider consumption, independently of queue settlement.
+pub(super) fn consume_assignment_turns(state: &mut AppState) {
+    let mut pending = state.take_pending_turns();
+    while let Some((turn, mark)) = pending.next_turn() {
+        if let Some(operation_id) = turn.operation_id.as_deref() {
+            state.consume_task_completion_operation(&turn.owner, &turn.agent_id, operation_id);
+        }
+        mark.settle(state);
+    }
+}
+
 /// The event kinds one task carries, in order.
 fn event_kinds(state: &mut AppState, task_id: &str) -> Vec<String> {
     state.handle(req("tasks.get", json!({ "task_id": task_id })))["result"]["timeline"]
@@ -159,6 +170,7 @@ fn a_complete_from_the_agent_holding_a_task_moves_it_and_says_nothing() {
     let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
 
+    consume_assignment_turns(&mut state);
     state.done_deferring_for_agent(
         &entity_id,
         &agent_id,
@@ -216,6 +228,7 @@ fn a_review_task_consumes_its_dispatch_marker_without_moving_on_report() {
         let agent_id = handed["result"]["dispatch"]["agent_id"].as_str().unwrap();
         let entity_id = entity_id.to_string();
         let agent_id = agent_id.to_string();
+        consume_assignment_turns(&mut state);
         state.done_deferring_for_agent(
             &entity_id,
             &agent_id,
@@ -259,10 +272,7 @@ fn a_complete_after_a_usage_limit_still_moves_the_task_the_turn_was_dispatched_u
     let entity_id = dispatch["entity_id"].as_str().unwrap().to_string();
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
     // The dispatch's own turn goes out and runs.
-    let mut started = state.take_pending_turns();
-    while let Some((_, mark)) = started.next_turn() {
-        mark.settle(&mut state);
-    }
+    consume_assignment_turns(&mut state);
 
     // It stops at the limit, then the human retries before the reported reset.
     let resets_at = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
@@ -1352,6 +1362,7 @@ fn a_complete_moves_only_the_task_the_turn_was_dispatched_under() {
             .to_string()
     };
 
+    consume_assignment_turns(&mut state);
     state.done_deferring_for_agent(
         &entity_id,
         &agent_id,
@@ -1401,6 +1412,7 @@ fn a_report_on_a_turn_no_assignment_started_moves_nothing() {
     let agent_id = dispatch["agent_id"].as_str().unwrap().to_string();
 
     // The dispatch's own turn is reported and the card moves.
+    consume_assignment_turns(&mut state);
     state.done_deferring_for_agent(
         &entity_id,
         &agent_id,

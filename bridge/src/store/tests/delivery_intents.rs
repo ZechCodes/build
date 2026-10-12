@@ -405,15 +405,7 @@ fn moving_waiting_creating_assignment_to_ready_preserves_armed_generation() {
     store
         .save_tracker_task_activity(&task, &[], &[moved])
         .unwrap();
-    let waiting = store.load_delivery_intent(&intent.id).unwrap().unwrap();
-    assert_eq!(waiting.state, "waiting");
-    assert_eq!(waiting.generation, intent.generation);
-    assert_eq!(waiting.operation_id, intent.operation_id);
-    assert_eq!(waiting.target, intent.target);
-    assert!(store
-        .delivery_authority_current(&intent.id, intent.generation)
-        .unwrap());
-    assert!(store.delivery_intents_ready(100).unwrap().is_empty());
+    assert_waiting_intent_stays_armed(&store, &intent);
     blocker.status = "done".into();
     store
         .save_tracker_task_activity(&blocker, &[], &[])
@@ -492,4 +484,16 @@ fn waiting_creating_assignment(store: &Store) -> (Task, Task, DeliveryIntent) {
         )
         .unwrap();
     (task, blocker, intent)
+}
+
+fn assert_waiting_intent_stays_armed(store: &Store, intent: &DeliveryIntent) {
+    let waiting = store.load_delivery_intent(&intent.id).unwrap().unwrap();
+    assert_eq!(waiting.state, "waiting");
+    assert_eq!(waiting.generation, intent.generation);
+    assert_eq!(waiting.operation_id, intent.operation_id);
+    assert_eq!(waiting.target, intent.target);
+    assert!(store
+        .delivery_authority_current(&intent.id, intent.generation)
+        .unwrap());
+    assert!(store.delivery_intents_ready(100).unwrap().is_empty());
 }

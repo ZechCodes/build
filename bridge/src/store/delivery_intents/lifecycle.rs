@@ -17,8 +17,7 @@ pub(in crate::store) fn note_task_write(tx: &Transaction, after: &Task) -> Resul
     let Some(before) = task(tx, &intent)? else {
         return Ok(());
     };
-    let returned_to_ready =
-        after.status == "ready" && matches!(before.status.as_str(), "in_progress" | "in_review");
+    let returned_to_ready = after.status == "ready" && before.status != "ready";
     if after.is_finished() || after.assignee != before.assignee || returned_to_ready {
         cancel_task(tx, &after.id)?;
     }
@@ -75,5 +74,13 @@ pub(in crate::store) fn reconcile_task(
             notices::enqueue(tx, &task.project_path, event)?;
         }
     }
+    Ok(())
+}
+
+/// Retirement and project history deletion share one transaction, so neither
+/// startup nor an off-lock completion can recover an orphaned assignment.
+pub(in crate::store) fn cancel_project(tx: &Transaction, project: &str) -> Result<(), StoreError> {
+    tx.execute("UPDATE tracker_delivery_intents SET state='cancelled', record=json_set(record, '$.state', 'cancelled') WHERE project_key=?1 AND state <> 'cancelled'", [project])?;
+    tx.execute("UPDATE tracker_delivery_notices SET state='cancelled', record=json_set(record, '$.state', 'cancelled') WHERE project_key=?1 AND state='queued'", [project])?;
     Ok(())
 }

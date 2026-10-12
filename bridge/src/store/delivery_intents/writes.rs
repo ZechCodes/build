@@ -27,7 +27,7 @@ impl Store {
             tracker::append_activity(tx, &[], events)?;
             intent.generation = generation as u64;
             if intent.id.is_empty() { intent.id = format!("td-{}", uuid::Uuid::new_v4().simple()); }
-            if intent.operation_id.is_empty() { intent.operation_id = format!("task-delivery-{}", intent.id); }
+            if intent.operation_id.is_empty() { intent.operation_id = format!("op-{}", uuid::Uuid::new_v4()); }
             intent.state = if is_ready(tx, &intent)? { "queued" } else { "waiting" }.into();
             intent.error = None;
             intent.reservation = Value::Null;

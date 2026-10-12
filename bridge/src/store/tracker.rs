@@ -474,6 +474,7 @@ impl Store {
             for table in ["review_workspace_claims", "review_openings", "review_merge_intents"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE project_key = ?1"), [project_path])?;
             }
+            super::delivery_intents::cancel_project(tx, project_path)?;
             tx.execute(
                 "DELETE FROM tracker_tasks WHERE project_key = ?1",
                 [project_path],

@@ -9,7 +9,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub(super) use lifecycle::{note_activity, note_task_write, reconcile_task};
+pub(super) use lifecycle::{cancel_project, note_activity, note_task_write, reconcile_task};
 pub use notices::DeliveryNotice;
 pub(super) use writes::check_operation_admission;
 

@@ -54,7 +54,6 @@ impl Store {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
-            super::delivery_intents::check_operation_admission(tx, receipt)?;
             Store::write_agents(tx, conversation_owner_id, agents)?;
             insert_operation(tx, receipt)?;
             Ok(receipt.clone())
@@ -503,6 +502,7 @@ pub(super) fn insert_operation(
     tx: &rusqlite::Transaction,
     receipt: &OperationReceipt,
 ) -> Result<(), StoreError> {
+    super::delivery_intents::check_operation_admission(tx, receipt)?;
     let now = now_rfc3339();
     let delivery = receipt
         .delivery

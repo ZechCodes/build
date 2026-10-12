@@ -492,6 +492,7 @@ async fn deferred_delivery_startup_runs_without_rpc_or_connected_client() {
     })
     .await
     .expect("startup must discover queued work without any client request or subscription");
+    await_startup_provider_handoff(&app, &intent.operation_id).await;
     let app = app.lock().unwrap();
     let receipt = app
         .tracker_store()
@@ -499,6 +500,7 @@ async fn deferred_delivery_startup_runs_without_rpc_or_connected_client() {
         .operation(&intent.operation_id)
         .unwrap()
         .unwrap();
+    assert_eq!(receipt.status, crate::operation::OperationStatus::Delivered);
     assert_ne!(receipt.agent_id, fixture.pin);
     let task = app
         .tracker_store()
@@ -508,4 +510,27 @@ async fn deferred_delivery_startup_runs_without_rpc_or_connected_client() {
         .unwrap();
     assert_eq!(task.status, "in_progress");
     assert_eq!(app.entity_agents(&fixture.owner).unwrap().len(), 2);
+}
+
+async fn await_startup_provider_handoff(app: &Arc<Mutex<AppState>>, operation: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let handed_off = app
+                .lock()
+                .unwrap()
+                .tracker_store()
+                .unwrap()
+                .operation(operation)
+                .unwrap()
+                .is_some_and(|receipt| {
+                    receipt.status == crate::operation::OperationStatus::Delivered
+                });
+            if handed_off {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("client-free startup must hand the accepted brief to the QA provider session");
 }

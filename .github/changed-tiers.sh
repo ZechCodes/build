@@ -28,7 +28,7 @@ set -eu
 REPO="${1:-.}"
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
-APP_PATHS='^(spa|skriftapp|landing)/|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$'
+APP_PATHS='^(spa|skriftapp|landing)/|^transport/js/(src/|test/|testing/|package(-lock)?\.json$|\.npmrc$|LICENSE\.md$)|^deploy/k8s/app\.yaml$|^scripts/install(-desktop)?\.sh$'
 # relay-sources as one anchored pattern, each path's metacharacters escaped. A
 # list with no paths yields an empty pattern, which matches every change.
 RELAY_PATHS="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" \
@@ -36,6 +36,9 @@ RELAY_PATHS="$(grep -Ev '^(#|$)' "$SCRIPT_DIR/relay-sources" \
 # relay-sources is checked by a bridge test, so an edit to the list alone runs it.
 BRIDGE_PATHS='^bridge/|^\.github/relay-sources$'
 E2E_HARNESS_PATHS='^web/|^deploy/compose\.real\.yml$'
+# Transport evidence may ship in neither image. Its checks cannot borrow the
+# bridge tier's forgiveness of an unchanged relay (see transport_base below).
+TRANSPORT_PATHS='^transport/(js|python|tests|fixtures|compatibility|testing)/|^bridge/src/transport\.rs$|^bridge/tests/(interop_python|transport_[^/]+)\.rs$|^scripts/test-transport\.sh$|^\.github/(changed-tiers\.sh|test-changed-tiers\.sh|test-transport-workflow\.py|workflows/(ci|timing)\.yml)$'
 
 # The commit an image tag names, or empty when the tag is not a commit this
 # history can diff from HEAD.
@@ -88,6 +91,12 @@ else
 fi
 checks_base="$(older_commit "$app_base" "$relay_current")"
 
+# Python-only changes deploy no image. Even a later successful app deploy does
+# not certify them against the relay's actual commit: use both actual tags,
+# including an unchanged relay, and rerun whenever either baseline is unknown.
+transport_base="$(older_commit "$app_base" "$relay_base")"
+transport="$(moved_since "$transport_base" "$TRANSPORT_PATHS")"
+
 # The Rust checks cover the relay they gate, so a relay move is a bridge move
 # even when the only change was relay.yaml.
 if [ "$relay" = true ]; then
@@ -107,8 +116,8 @@ else
     e2e="$(moved_since "$checks_base" "$E2E_HARNESS_PATHS")"
 fi
 
-for tier in app relay bridge e2e desktop scripts shell; do
+for tier in app relay bridge e2e desktop scripts shell transport; do
     eval "printf '%s=%s\n' \"$tier\" \"\$$tier\""
 done
-printf 'production: app@%s relay@%s → app=%s relay=%s bridge=%s e2e=%s desktop=%s scripts=%s shell=%s\n' \
-    "${app_base:-unknown}" "${relay_base:-unknown}" "$app" "$relay" "$bridge" "$e2e" "$desktop" "$scripts" "$shell" >&2
+printf 'production: app@%s relay@%s → app=%s relay=%s bridge=%s e2e=%s desktop=%s scripts=%s shell=%s transport=%s\n' \
+    "${app_base:-unknown}" "${relay_base:-unknown}" "$app" "$relay" "$bridge" "$e2e" "$desktop" "$scripts" "$shell" "$transport" >&2

@@ -19,8 +19,10 @@ Desktop releases never replace the bridge's latest release.
 Before signing checksums, publication requires all nine expected distributables
 from `scripts/desktop-release-assets.mjs`: three macOS ARM64 assets and three
 assets for each Linux architecture. Missing, empty or unexpected files fail
-publication. Version 0.1.1 uses this supported-platform contract; the failed
-`desktop-v0.1.0` source tag remains unchanged.
+publication. Version 0.1.2 stages downloads, validation, checksums, signing and
+uploads in a fresh `$RUNNER_TEMP/desktop-release.XXXXXX` directory so checkout's
+`assets/brand` cannot enter the release manifest. The failed `desktop-v0.1.0`
+and `desktop-v0.1.1` source tags remain unchanged.
 
 ## Apple and release secrets
 

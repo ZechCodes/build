@@ -168,6 +168,9 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
   // changeset's patch, read for the aggregate — which a fill takes its bodies
   // from instead of the wire.
   let inHand = null;
+  // Coverage of the current fill's replies, separate from bodies already
+  // held or hydrated. A reply can name a newer key than the requesting list.
+  let fillReplies = null;
   /** The page of `path`'s body the bridge cuts from `offset`, named by the
    *  version the bridge gives the whole patch; null where it cannot cut one —
    *  asked as the page is wanted, so a bridge greeted after this surface
@@ -178,9 +181,16 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
     return answer.range ? pageFromAnswer(answer, "patch") : null;
   };
 
+  const fetchMissing = async (paths) => {
+    const replies = fillReplies;
+    const files = answeredBodies(inHand || (await fetchFiles(paths)) || {}, paths, keyFor);
+    for (const file of files) replies?.set(file.path, file.content_key);
+    return files;
+  };
+
   const bodies = createCachedBodies({
     addressOf,
-    fetchMissing: async (paths) => answeredBodies(inHand || (await fetchFiles(paths)) || {}, paths, keyFor),
+    fetchMissing,
     valueOf: (file) => ({
       key: file.path,
       value: { content_key: file.content_key, patch: file.patch, ...(file.truncated ? { truncated: true } : {}) },
@@ -201,6 +211,29 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
   const bodyOf = (path) => bodies.read(path);
   const wasAnswered = (path, key) => Boolean(hasAnsweredBody(bodyOf(path)) && answered.has(path) && answered.get(path) === key);
 
+  const settleReplies = (landed, keyOf, replies) => {
+    for (const path of landed) {
+      const body = bodyOf(path);
+      const key = keyOf.get(path);
+      // Stale hydration cannot settle the request. A mismatching key settles
+      // only when this fill carried a reply under the key now held.
+      const replied = replies.has(path) && bodyMatches(body, replies.get(path));
+      if (hasAnsweredBody(body) && (bodyMatches(body, key) || replied)) answered.set(path, key);
+    }
+  };
+
+  const fillBatch = async (batch, keyOf) => {
+    const replies = new Map();
+    fillReplies = replies;
+    try {
+      const landed = await bodies.ensure(batch);
+      settleReplies(landed, keyOf, replies);
+      return landed.length;
+    } finally {
+      fillReplies = null;
+    }
+  };
+
   async function fill(views, openPaths, budget) {
     const keyOf = new Map((views || []).map((view) => [view.path, view.contentKey]));
     const wanted = pathsToFetch(views, { openPaths, bodyOf })
@@ -210,12 +243,7 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
     let filled = 0;
     for (const batch of batchPaths(wanted)) {
       if (disposed) break;
-      filled += (await bodies.ensure(batch)).length;
-      for (const path of batch) {
-        // ensure can return fewer bodies than asked for. Only a held body
-        // settles this list key, even when the wire already names a newer one.
-        if (hasAnsweredBody(bodyOf(path))) answered.set(path, keyOf.get(path));
-      }
+      filled += await fillBatch(batch, keyOf);
     }
     return filled;
   }

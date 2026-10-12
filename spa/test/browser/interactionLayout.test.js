@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { captureLayout, loadBrowserModules, withLayoutPage } from "./layoutHarness.mjs";
 import { COMMENT_TEXT, dragInteractionText, mountInteractionFixture } from "./interactionFixture.mjs";
 
-const chrome = [".tb-legacy-item .tb-name", ".task-page-state", ".task-rail-section h2", ".tabs .t", ".task-row", ".task-card", ".task-column-head", ".task-assign", ".task-page-labels .task-label", ".file td.ln", ".markdown label"];
+const chrome = [".tb-leaf .tb-name", ".task-page-state", ".task-rail-section h2", ".tabs .t", ".task-row", ".task-card", ".task-column-head", ".task-assign", ".task-page-labels .task-label", ".file td.ln", ".markdown label"];
 const content = [".task-page-title", ".task-page-body", ".task-comment-body", ".file td.code", "#task-labels", "#task-comment", "#interaction-readonly", "#interaction-editor"];
 
 for (const theme of ["light", "dark"]) {
@@ -22,7 +22,7 @@ for (const theme of ["light", "dark"]) {
       for (const field of fields) expect(field.select, field.type).toBe("text");
       const cursors = [[".tb-sel", "pointer"], [".tabs .t", "pointer"], [".task-row", "default"], [".task-row-open", "pointer"], [".task-card", "grab"], [".task-page-state", "default"], [".task-rail-section h2", "default"], [".task-composer button:disabled", "default"]];
       for (const [selector, cursor] of cursors) expect(await page.locator(selector).first().evaluate((node) => getComputedStyle(node).cursor), selector).toBe(cursor);
-      expect(await dragInteractionText(page, ".tb-legacy-item .tb-name", { clickCount: 3 })).toBe("");
+      expect(await dragInteractionText(page, ".tb-leaf .tb-name", { clickCount: 3 })).toBe("");
       await captureLayout(page, `interaction-header-${theme}.png`);
       expect(await dragInteractionText(page, ".task-comment-body p")).toBe(COMMENT_TEXT);
       await captureLayout(page, `interaction-comment-${theme}.png`);

@@ -45,7 +45,7 @@ it("clicks the workspace lock against the fixture bridge and paints only its cac
     const geometry = await lock.evaluate((button) => ({
       svgHeight: button.querySelector("svg").getBoundingClientRect().height,
       fontSize: parseFloat(getComputedStyle(document.querySelector('.tb-name')).fontSize),
-      afterName: button.previousElementSibling.matches('[data-select="workspace"]'),
+      afterName: button.previousElementSibling.querySelector('[data-select="workspace"]') !== null,
     }));
     expect(geometry.afterName).toBe(true);
     expect(Math.abs(geometry.svgHeight - geometry.fontSize)).toBeLessThanOrEqual(1);

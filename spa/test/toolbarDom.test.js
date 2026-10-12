@@ -1,8 +1,6 @@
 // @vitest-environment jsdom
-// The view-area toolbar on main's workspace chrome: the sentence it prints, the
-// project menu behind its left half, and the workspace picker that is the bar's
-// one control on a workspace — every one of them read from the machine the
-// route names.
+// The view-area toolbar: real route ancestry, independent global and sibling
+// controls, and cached destination rows from the machine the route names.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -96,6 +94,7 @@ const { writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { readUiRecord, writeUiRecord, wipeUiRecords } = await import("../src/core/localUiStore.js");
 const { uiAddress } = await import("../src/core/localUiState.js");
 const { rememberProjectRailRoute } = await import("../src/core/projectRailState.js");
+const { taskAddress } = await import("../src/core/trackerCache.js");
 
 /** What each machine answers. A workspace read the bar makes is made on the
  *  machine the project it is about lives on, so the two are told apart. */
@@ -106,9 +105,14 @@ const openSession = (deviceId, call) => adoptDeviceSession({ deviceId, call, clo
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
 const menu = () => document.querySelector(".tbmenu");
-const names = () => [...bar().querySelectorAll(".tb-name")].map((name) => name.textContent);
+const names = () => [...bar().querySelectorAll(".tb-name")]
+  .filter((name) => App.route.name === "workspace" || !name.closest('[data-select="workspace"]'))
+  .map((name) => name.textContent);
 const openJump = async (which = "project") => {
   bar().querySelector(`[data-select="${which}"]`).click();
+  // Keep this before the first await: a touch gesture must focus search in
+  // its activating turn, before UI-store work can consume the gesture.
+  expect(document.activeElement).toBe(menu()?.querySelector(".tb-filter"));
   const list = { project: "projects", workspace: "workspaces" }[which];
   await vi.waitFor(() => expect(menu()?.dataset.list).toBe(list));
   return menu();
@@ -198,53 +202,96 @@ describe("the sentence the toolbar prints", () => {
     expect(names()).toEqual(["relaydb", "Add a health endpoint"]);
   });
 
-  it("keeps the project selector on a route that is no work item", async () => {
+  it("keeps the global selector without inventing a project ancestor on an account route", async () => {
     App.route = { name: "inbox" };
     toolbarRouteChanged();
-    expect(names()).toEqual(["relaydb"]);
+    expect(names()).toEqual([]);
+    expect(bar().querySelector(".tb-project")).toBeNull();
+    expect(bar().querySelector('[data-select="project"]')).not.toBeNull();
     expect(bar().querySelector('[data-select="item"]')).toBeNull();
   });
 });
 
-// #274: a project's two pages and its settings are the faces of its rail
-// (core/projectRail.js), as a workspace's are of its own. The bar names the
-// project and nothing after it.
+// Project faces stay in the rail; the toolbar exposes the project ancestor
+// and a sibling-workspace shortcut.
 describe("the project's pages", () => {
   const standOn = (route) => {
     App.route = route;
     toolbarRouteChanged();
   };
 
-  it("are not in the bar, on the project's page or on a task's", async () => {
+  it("keeps face tabs in the rail while offering a local workspace shortcut", async () => {
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     expect(names()).toEqual(["relaydb"]);
     expect(bar().querySelector("[data-project-tab], [role='tablist']")).toBeNull();
+    expect(bar().querySelector('[data-select="workspace"]').textContent).toContain("Workspaces");
     standOn({ name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "task-1" });
     expect(bar().querySelector("[data-project-tab], [role='tablist']")).toBeNull();
   });
 });
 
-// #174. The maintainer: "Move everything out of the nav except the
-// workspace/project picker. I also want the picker to show the project
-// 'project / workspace'." The directories, the Tasks and the settings are the
-// workspace's navigation now, in its rail (core/directoryRail.js).
-describe("the workspace picker", () => {
-  const picker = () => bar().querySelector('[data-select="workspace"]');
+describe("task ancestry from the URL", () => {
+  const taskParent = () => [...bar().querySelectorAll("a")].find((link) => link.textContent === "Tasks");
 
-  it("reads `project / workspace` as one control", async () => {
-    await standOnWorkspace();
-    expect(picker().textContent.replace(/\s+/g, " ").trim()).toBe("relaydb/payment-work▾");
-    expect(picker().querySelector(".tb-crumb").textContent).toBe("relaydb");
-    expect(picker().querySelector(".tb-name").textContent).toBe("payment-work");
-    // Project first, then the separator, then the workspace.
-    expect([...picker().children].map((child) => child.className)).toEqual([
-      "tb-crumb", "tb-sep", "tb-name", "tb-caret disclosure-caret",
-    ]);
+  it("keeps a project-hosted task under project Tasks despite a workspace assignment", async () => {
+    App.route = { name: "trackerTask", deviceId: "dev-1", projectId: "p1", taskId: "hosted-task" };
+    toolbarRouteChanged();
+    expect(taskParent()).toBeDefined();
+    expect(routeFromHash(taskParent().getAttribute("href"))).toMatchObject({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "tasks" });
+    expect(bar().textContent).toContain("hosted-task");
+    await writeCached(taskAddress("dev-1", "p1", "hosted-task"), {
+      task: { id: "hosted-task", number: 542, workspace_id: "ws-1", title: "Navigation" }, timeline: [],
+    });
+    await vi.waitFor(() => expect(bar().textContent).toContain("#542"));
+    expect(routeFromHash(taskParent().getAttribute("href"))).toMatchObject({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "tasks" });
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("Workspaces");
+    expect(workshopCall).not.toHaveBeenCalled();
   });
 
-  it("is the bar's only control on a workspace", async () => {
+  it("keeps a workspace-hosted task under that workspace's Tasks layout despite reassignment", async () => {
     await standOnWorkspace();
-    expect([...bar().querySelectorAll("button")]).toEqual([picker()]);
+    App.route = { name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", tab: "tasks", taskId: "hosted-task", view: "board" };
+    toolbarRouteChanged();
+    expect(taskParent()).toBeDefined();
+    const parent = routeFromHash(taskParent().getAttribute("href"));
+    expect(parent).toMatchObject({ name: "workspace", deviceId: "dev-1", projectId: "p1", workspaceId: "ws-1", tab: "tasks", view: "board" });
+    expect(parent.taskId).toBeUndefined();
+    await writeCached(taskAddress("dev-1", "p1", "hosted-task"), {
+      task: { id: "hosted-task", number: 543, workspace_id: "ws-other", title: "Moved assignment" }, timeline: [],
+    });
+    await vi.waitFor(() => expect(bar().textContent).toContain("#543"));
+    expect(routeFromHash(taskParent().getAttribute("href"))).toEqual(parent);
+    expect(bar().querySelector('[data-select="workspace"] .tb-name').textContent).toBe("payment-work");
+    expect(workshopCall).not.toHaveBeenCalled();
+  });
+});
+
+// The project is an ancestor link, while the workspace remains a separate
+// selector. Face navigation stays in the workspace's own rail.
+describe("the workspace breadcrumbs", () => {
+  const picker = () => bar().querySelector('[data-select="workspace"]');
+
+  it("keeps the up-arrow, project link and workspace selector independent", async () => {
+    await standOnWorkspace();
+    const project = bar().querySelector(".tb-project");
+    const global = bar().querySelector('[data-select="project"]');
+    expect(global.getAttribute("aria-label")).toBe("Switch project or workspace");
+    expect(global.textContent).not.toContain("Switch");
+    expect(project.tagName).toBe("A");
+    expect(project.textContent).toBe("relaydb");
+    expect(project.closest("nav").getAttribute("aria-label")).toBeTruthy();
+    expect(project.closest("ol")).not.toBeNull();
+    expect(picker().contains(project)).toBe(false);
+    expect(picker().querySelector(".tb-name").textContent).toBe("payment-work");
+    expect(picker().textContent.replace(/\s+/g, " ").trim()).toBe("payment-work▾");
+    expect([...bar().querySelectorAll("button, a")]).toEqual([global, project, picker()]);
+    expect(project.getAttribute("aria-label")).toBe("Open project workspace relaydb");
+    expect(picker().getAttribute("aria-label")).toBe("Switch workspace in relaydb; current: payment-work");
+  });
+
+  it("leaves face navigation and contextual verbs on the workspace surface", async () => {
+    await standOnWorkspace();
+    expect([...bar().querySelectorAll("button")]).toEqual([bar().querySelector('[data-select="project"]'), picker()]);
     for (const gone of [".tb-directories", "[data-directory]", "[data-workspace-tasks]", "[data-workspace-settings]", ".tb-back", "[data-project-back]"]) {
       expect([gone, bar().querySelector(gone)]).toEqual([gone, null]);
     }
@@ -253,19 +300,16 @@ describe("the workspace picker", () => {
     expect(bar().querySelector(".tb-right")).toBeNull();
   });
 
-  // The back chevron is gone; the way to the project's own page is the
-  // picker's menu, on the machine the workspace is on.
+  // The local picker also exposes the saved project return destination.
   it("reaches the project's own page from its menu", async () => {
     await standOnWorkspace();
     const workspaces = await openJump("workspace");
     const page = workspaces.querySelector("[data-project-page]");
-    expect(page.querySelector(".mt").textContent).toBe("Project page");
+    expect(page.querySelector(".mt").textContent).toBe("Project workspace");
     page.click();
     await waitMenuClosed();
-    // Leaving a workspace asks its view whether it may (App.routeLeaveGuard),
-    // so the navigation settles a tick later.
-    await flush();
-    expect(location.hash).toBe("#/device/dev-1/project/p1");
+    // Project return resolves remembered local UI state before navigating.
+    await vi.waitFor(() => expect(location.hash).toBe("#/device/dev-1/project/p1"));
     // …which is the Tasks tab, the project's default (#46). The inbox's
     // project name writes this same link (core/projectModel.js mints both).
     expect(routeFromHash(location.hash)).toMatchObject({ name: "project", projectId: "p1", tab: "tasks" });
@@ -281,8 +325,47 @@ describe("the workspace picker", () => {
     }));
   });
 
-  it("keeps the other routes' bars as they were", async () => {
-    // A legacy branch: the project selector and the branch after it.
+  it("advertises the saved project face on the return row before a modified click", async () => {
+    const saved = { name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md", line: 12 };
+    await rememberProjectRailRoute(saved);
+    await standOnWorkspace();
+    const row = (await openJump("workspace")).querySelector("[data-project-page]");
+    await vi.waitFor(() => expect(routeFromHash(row.getAttribute("href"))).toMatchObject(saved));
+    const standing = App.route;
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+    expect(menu()).not.toBeNull();
+    expect(App.route).toBe(standing);
+  });
+
+  it("returns through the project crumb in one activation without opening a picker", async () => {
+    await rememberProjectRailRoute({ name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md" });
+    await standOnWorkspace();
+    const project = bar().querySelector(".tb-project");
+    expect(project).not.toBeNull();
+    await vi.waitFor(() => expect(routeFromHash(project.getAttribute("href"))).toMatchObject({
+      name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md",
+    }));
+    project.click();
+    expect(menu()).toBeNull();
+    await vi.waitFor(() => expect(routeFromHash(location.hash)).toMatchObject({
+      name: "project", deviceId: "dev-1", projectId: "p1", tab: "files", sourceId: "docs", file: "README.md",
+    }));
+  });
+
+  it.each(["project", "workspace"])("focuses search synchronously and returns Escape to the exact %s trigger", async (which) => {
+    await standOnWorkspace();
+    const trigger = bar().querySelector(`[data-select="${which}"]`);
+    trigger.focus();
+    trigger.click();
+    expect(document.activeElement).toBe(menu()?.querySelector(".tb-filter"));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await waitMenuClosed();
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.isConnected).toBe(true);
+  });
+
+  it("keeps the global switcher available on legacy and project routes", async () => {
+    // The branch itself remains one leaf, even when its name contains slashes.
     expect(bar().querySelector('[data-select="project"]')).not.toBeNull();
     expect(bar().querySelector(".tb-crumb")).toBeNull();
     App.route = { name: "project", deviceId: "dev-1", projectId: "p1" };
@@ -314,11 +397,29 @@ describe("the workspace toolbar", () => {
     expect(laptopCall).not.toHaveBeenCalledWith("workspace.list", expect.anything());
   });
 
+  it("keeps the current child first, then live siblings alphabetical irrespective of status", async () => {
+    const child = (id, name, status) => ({ ...payments, id, workspace_id: id, name, status });
+    workshopHolds({ p1: [
+      child("ws-z", "Zebra", "ready"), payments,
+      child("ws-a", "Alpha", "failed"), child("ws-b", "Beta", "provisioning"),
+      child("ws-f", "Archived", "finished"),
+    ] });
+    await standOnWorkspace();
+    await openJump("workspace");
+    expect(labels("[data-workspace]")).toEqual(["payment-work", "Alpha", "Beta", "Zebra"]);
+    const filter = menu().querySelector(".tb-filter");
+    filter.value = "Alpha";
+    filter.dispatchEvent(new Event("input"));
+    await vi.waitFor(() => expect(labels("[data-workspace]")).toEqual(["Alpha"]));
+    expect(workshopCall).not.toHaveBeenCalled();
+    expect(laptopCall).not.toHaveBeenCalled();
+  });
+
   it("lists the current project's workspaces, then switches project in the same popup", async () => {
     await standOnWorkspace();
     const workspaces = await openJump("workspace");
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
-    expect(workspaces.querySelector("[data-projects]").textContent).toBe("Switch project");
+    expect(workspaces.querySelector("[data-projects]").textContent).toBe("All projects");
 
     workspaces.querySelector("[data-projects]").click();
     await waitMenuList("projects");
@@ -381,6 +482,42 @@ describe("the workspace toolbar", () => {
     const reopened = await openJump("workspace");
     expect(reopened.querySelector(".tb-scope > span").textContent).toBe("relaydb");
     expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+  });
+
+  it("does not let a dismissed global project pick steal a newly opened local scope", async () => {
+    const foreign = { id: "ws-other", project_id: "p2", name: "mascot checkout", status: "ready", directories: [] };
+    workshopHolds({ p1: [payments], p2: [foreign] });
+    await standOnWorkspace();
+    (await openJump("project")).querySelector('[data-project="dev-1/p2"]').click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    const local = await openJump("workspace");
+    // Let the dismissed project's IndexedDB write and readback finish; only
+    // the still-open local interaction is allowed to own this menu's scope.
+    await new Promise((done) => setTimeout(done, 50));
+    expect(menu()).toBe(local);
+    expect(local.querySelector(".tb-scope > span").textContent).toBe("relaydb");
+    expect(labels("[data-workspace]")).toEqual(["payment-work"]);
+    expect(document.activeElement).toBe(local.querySelector(".tb-filter"));
+  });
+
+  it("closes once when a rebuilt selector receives pointerdown then click", async () => {
+    await standOnWorkspace();
+    await openJump("workspace");
+    const original = bar().querySelector('[data-select="workspace"]');
+    const projects = feed.projects;
+    try {
+      feed = { ...feed, projects: projects.map((project) => project.projectKey === "dev-1/p1" ? { ...project, name: "Renamed relaydb" } : project) };
+      await refreshFeed();
+      const rebuilt = bar().querySelector('[data-select="workspace"]');
+      expect(rebuilt).not.toBe(original);
+      expect(original.isConnected).toBe(false);
+      rebuilt.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      rebuilt.click();
+      await waitMenuClosed();
+    } finally {
+      feed = { ...feed, projects };
+      await refreshFeed();
+    }
   });
 
   // The workspace rides the workspace list itself, so reopening the menu on the
@@ -448,15 +585,20 @@ describe("the project menu", () => {
     expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot");
   });
 
-  it("repaints an open menu and project scope on external cache writes", async () => {
+  it("applies external menu writes while preserving the active popup scope", async () => {
     const menuAddress = uiAddress({ view: "toolbar", kind: "menu", sub: "jump" });
     const scopeAddress = uiAddress({ view: "toolbar", kind: "filter", sub: "project" });
     await writeUiRecord(menuAddress, { open: true, select: "project", list: "projects", query: "" });
     await waitMenuList("projects");
     await writeUiRecord(scopeAddress, { projectKey: "dev-1/p2" });
-    await vi.waitFor(() => expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot"));
+    expect((await readUiRecord(scopeAddress)).value.projectKey).toBe("dev-1/p2");
+    expect(menu().querySelector(".mi.current .mt").textContent).toBe("relaydb");
     await writeUiRecord(menuAddress, { open: false });
     await waitMenuClosed();
+    await stopToolbar();
+    App.route = { name: "inbox" };
+    await initToolbar();
+    expect((await openJump("project")).querySelector(".mi.current .mt").textContent).toBe("mascot");
   });
 
   it("lists projects and only projects, and shuts on Escape", async () => {
@@ -484,7 +626,7 @@ describe("the project menu", () => {
     expect(menu()).toBeTruthy();
     expect(menu().querySelectorAll("[data-project]").length).toBe(0);
     expect(menu().querySelector(".tb-scope > span").textContent).toBe("mascot");
-    expect(menu().textContent).toContain("No workspace by that name.");
+    expect(menu().textContent).toContain("No cached workspaces yet");
     expect(location.hash).not.toContain("p2/branch");
   });
 
@@ -749,7 +891,7 @@ describe("an account with more than one device", () => {
     // …and the branch the reader is standing on is still a branch of relaydb on
     // the workshop, named by the bar.
     expect(App.route).toBe(standing);
-    expect(names()).toEqual(["relaydb", "build/login"]);
+    expect(names()).toEqual(["relaydb · workshop", "build/login"]);
 
     await rememberDeviceFilter(null);
     feed = savedFeed;

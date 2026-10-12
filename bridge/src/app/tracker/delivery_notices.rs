@@ -54,7 +54,7 @@ impl AppState {
             return Ok(());
         };
         if self
-            .live_task_delivery_agent(&project, agent)
+            .live_task_delivery_agent(project, agent)
             .ok()
             .as_deref()
             != params["entity_id"].as_str()

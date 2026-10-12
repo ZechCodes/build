@@ -8,12 +8,19 @@ changed in each release is recorded in [`CHANGELOG.md`](../CHANGELOG.md).
 
 The `Release the desktop app` GitHub workflow runs on `desktop-vX.Y.Z` tags.
 The tag must match `desktop/package.json` and its lockfile. It builds native
-macOS ARM64/Intel and Linux ARM64/x86_64 apps. Mac apps are Developer ID signed
+macOS Apple Silicon (ARM64) and Linux ARM64/x86_64 apps. Intel Macs use the
+browser client. Mac apps are Developer ID signed
 and notarized; Linux apps are unsigned. Releases include DMG/ZIP (macOS),
 AppImage/DEB (Linux), installer archives, SHA-256 checksums, and a Sigstore
 signature over the checksums. Assets publish to `RELEASES_REPO` (default
 `ZechCodes/build-releases`), followed by the `desktop-latest/version.txt` pointer.
 Desktop releases never replace the bridge's latest release.
+
+Before signing checksums, publication requires all nine expected distributables
+from `scripts/desktop-release-assets.mjs`: three macOS ARM64 assets and three
+assets for each Linux architecture. Missing, empty or unexpected files fail
+publication. Version 0.1.1 uses this supported-platform contract; the failed
+`desktop-v0.1.0` source tag remains unchanged.
 
 ## Apple and release secrets
 

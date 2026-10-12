@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -177,6 +177,14 @@ test("publisher ignores checked-out assets/brand through signed release and new 
   const f = fixture(t);
   const result = runPublisher(f);
   assert.equal(result.status, 0, `${result.step}\n${result.stderr}`);
+  assertPublished(f);
+});
+test("each publisher invocation gets fresh staging in runner.temp", ubuntuPublisher, t => {
+  const f = fixture(t);
+  assert.equal(runPublisher(f).status, 0);
+  const firstStage = f.stage;
+  assert.equal(runPublisher(f).status, 0);
+  assert.notEqual(f.stage, firstStage);
   assertPublished(f);
 });
 for (const [label, channel, channelUploaded] of [["empty pointer", null, true], ["older pointer", "0.1.0", true], ["equal pointer", version, true], ["newer pointer", "99.0.0", false]]) {

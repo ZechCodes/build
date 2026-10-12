@@ -362,6 +362,10 @@ pub struct AppState {
     /// Test seam: see [`OffLockGate`]. `None` in production.
     #[cfg(test)]
     off_lock_gate: Option<OffLockGate>,
+    /// Test-only synchronous drains own AppState directly, even when the
+    /// test holds it through an Arc. Their source preflights cannot relock it.
+    #[cfg(test)]
+    inline_deferred: bool,
     /// Project-list-only gate, kept separate so a lifecycle test's global git
     /// gate does not also stop the unrelated project.list probe it uses to
     /// prove the mutex is free.
@@ -668,6 +672,8 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
+            #[cfg(test)]
+            inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
             deferred_work: None,

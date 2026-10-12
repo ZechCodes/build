@@ -34,6 +34,19 @@ pub(in crate::app) struct ResolvedProjectSource {
 }
 
 impl AppState {
+    /// Real drains run off the app mutex and revalidate through this handle.
+    /// Test-only inline drains already own the app; no other request can move
+    /// its sources while that synchronous borrow is held.
+    pub(in crate::app) fn source_validation_handle(
+        &self,
+    ) -> Option<std::sync::Weak<std::sync::Mutex<AppState>>> {
+        #[cfg(test)]
+        if self.inline_deferred {
+            return None;
+        }
+        self.self_handle.clone()
+    }
+
     /// Recheck a captured original-source identity after waiting off the app mutex.
     pub(in crate::app) fn validate_source_location(
         &self,

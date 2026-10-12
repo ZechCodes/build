@@ -303,7 +303,7 @@ impl AppState {
                 isolation: workspace.isolation,
                 seed,
                 captured_source,
-                source_state: self.self_handle.clone(),
+                source_state: self.source_validation_handle(),
             }),
             params: params.clone(),
             invalidates: true,

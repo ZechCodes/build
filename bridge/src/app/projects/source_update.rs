@@ -90,7 +90,7 @@ impl AppState {
         let mutation = SerializedSourceUpdate {
             mutation,
             captured,
-            state: self.self_handle.clone(),
+            state: self.source_validation_handle(),
         };
         self.defer_project(
             source.path,

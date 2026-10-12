@@ -546,7 +546,7 @@ impl AppState {
                 scope,
                 work,
                 serialized: invalidates,
-                state: self.self_handle.clone(),
+                state: self.source_validation_handle(),
             }),
             params: params.clone(),
             invalidates,

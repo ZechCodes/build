@@ -30,8 +30,8 @@
 // the column — where the column is a drawer, that rule is not in force and the
 // toggle is not drawn.
 //
-// A project stands on the same rail: Tasks, Files and Workspaces, with its
-// Settings at the foot. Files alone has a list column to fold away.
+// A project stands on the same rail: Tasks, Changes, Files and Workspaces,
+// with its Settings at the foot. Changes and Files have list columns.
 
 import {
   ICON_FOLDER,
@@ -64,10 +64,11 @@ export const DIRECTORY_TABS = [
 const TASKS_TAB = { id: "tasks", label: tasksTabLabel, icon: ICON_SQUARE_CHECK, badge: true };
 export const WORKSPACE_TABS = [...DIRECTORY_TABS, TASKS_TAB];
 
-/** A project's faces (#274): its tracker, first because it is the page a
- *  project opens on (#46), then its source files and the workspaces cut from it. The tracker wears
+/** A project's faces: its tracker first because it is the page a project
+ *  opens on, then original-source Changes and Files and the named workspaces.
+ *  The tracker wears
  *  the project's watched unread (core/projectRail.js fills it). */
-export const PROJECT_TABS = [TASKS_TAB, DIRECTORY_TABS.find((tab) => tab.id === "files"), { id: "workspaces", label: workspacesTabLabel, icon: ICON_FOLDERS }];
+export const PROJECT_TABS = [TASKS_TAB, ...DIRECTORY_TABS, { id: "workspaces", label: workspacesTabLabel, icon: ICON_FOLDERS }];
 
 /** Where an arrow takes the highlight, as steps along the rail. Home and End
  *  are the same question asked absolutely, so they answer from one table too. */

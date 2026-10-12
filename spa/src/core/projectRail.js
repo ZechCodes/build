@@ -1,6 +1,6 @@
-// A project's navigation on the shell's rail: Tasks, Files and Workspaces,
-// with Settings at the foot. Files has the same list-column toggle as a
-// workspace's explorer.
+// A project workspace's rail: Tasks, Changes, Files and Workspaces, with
+// Settings at the foot. Changes and Files share the named workspace's
+// list-column toggle.
 //
 // core/directoryRail.js draws the cells; this is what a project hangs on them —
 // the Tasks count, the unread of every watched task in the project (#104), kept
@@ -51,7 +51,7 @@ export function mountProjectRail(host, { route, context, onSelect, navigate }) {
 
   return {
     paint(active) {
-      paintDirectoryRail(host, { tabs: PROJECT_TABS, active, onSelect, settings, sidebar: active === "files" });
+      paintDirectoryRail(host, { tabs: PROJECT_TABS, active, onSelect, settings, sidebar: active === "files" || active === "changes" });
       sayCount();
     },
     // The rail is the shell's column, lent to whichever surface is standing on

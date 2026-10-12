@@ -1,10 +1,10 @@
 // The project page's main pane, as a pure model: the workspaces one project
 // holds, in the order they already stand in.
 //
-// The rail groups every device's workspaces into project blocks
-// (core/inboxProjects.js). The page is one of those blocks opened on its own,
-// so the grouping is reused rather than repeated: a row here and the same row
-// on the rail carry the same route, the same unread and the same order.
+// Named-child membership, names and open targets come from the same cached
+// catalog as the sibling selector (core/navigationModel.js). Activity and row
+// order come from the inbox entries, with lifecycle and size management here.
+// The project's original sources never become a child row.
 //
 // What a block does not carry is what a workspace is standing on — the page has
 // room for the branch and the state, so those are read off the workspace record
@@ -13,7 +13,8 @@
 // No DOM, no app imports; views/projectView.js renders these.
 
 import { workspaceEntries } from "./inbox.js";
-import { workspaceProjectBlocks } from "./inboxProjects.js";
+import { navigationCatalog, projectWorkspaceInventory } from "./navigationModel.js";
+import { stampWorkspace } from "./feedMerge.js";
 import { routeProjectKey } from "./deviceKey.js";
 import { workspaceStatusText } from "./workspaceModel.js";
 import { humanBytes, lifecycleView } from "./workspaceLifecycle.js";
@@ -72,24 +73,23 @@ const pageRow = (entry, workspace, measuresSizes) => ({
   sizePending: sizeComing(workspace, measuresSizes),
 });
 
-/** The one project block the rail would paint for this project, or null when no
- *  device has listed it. Built from the rail's own grouping so the page and the
- *  rail cannot disagree about what is in a project. */
-function projectBlock(feed, projectKey) {
-  const workspaces = feed?.workspaces || [];
-  const projects = feed?.projects || [];
-  const entries = workspaceEntries(workspaces, projects, feed?.items || []);
-  const { blocks } = workspaceProjectBlocks(entries, projects);
-  return blocks.find((candidate) => candidate.projectKey === projectKey) || null;
+/** Rows use the navigation inventory's ownership and open targets, retaining
+ * inbox activity and order alongside the cached management facts. */
+function pageRows(feed, catalog, projectKey, measuresSizes) {
+  const inventory = projectWorkspaceInventory(catalog, projectKey);
+  const destinations = new Map(inventory.workspaces.map((destination) => [destination.workspaceKey, destination]));
+  const workspaces = (feed?.workspaces || []).map((workspace) => stampWorkspace(workspace, workspace.deviceId));
+  const projects = catalog.projects.map((group) => group.destination.project);
+  return workspaceEntries(workspaces, projects, feed?.items || [])
+    .filter((entry) => destinations.has(entry.workspaceKey))
+    .map((entry) => {
+      const destination = destinations.get(entry.workspaceKey);
+      return pageRow({ ...entry, name: destination.name, route: destination.route }, destination.workspace, measuresSizes);
+    });
 }
 
-/** The block's rows, each read beside the workspace record it came from. */
-function pageRows(feed, block, measuresSizes) {
-  const byKey = new Map((feed?.workspaces || []).map((workspace) => [workspace.workspaceKey, workspace]));
-  return [...(block?.entries || []), ...(block?.recent || [])]
-    .sort((left, right) => (left.anchorMs ?? Infinity) - (right.anchorMs ?? Infinity))
-    .map((entry) => pageRow(entry, byKey.get(entry.workspaceKey), measuresSizes));
-}
+const pageName = (catalog, projectKey, route) =>
+  catalog.projects.find((candidate) => candidate.projectKey === projectKey)?.name || route?.projectId || "";
 
 /**
  * The project page for the project a route is standing in.
@@ -104,13 +104,13 @@ function pageRows(feed, block, measuresSizes) {
  */
 export function projectPageModel(feed, route, sizes) {
   const projectKey = routeProjectKey(route);
-  const block = projectBlock(feed, projectKey);
-  const rows = pageRows(feed, block, sizes?.measuresSizes === true);
+  const catalog = navigationCatalog(feed || {});
+  const rows = pageRows(feed, catalog, projectKey, sizes?.measuresSizes === true);
   return {
     projectKey,
     projectId: route?.projectId || null,
     deviceId: route?.deviceId || null,
-    name: block?.name || route?.projectId || "",
+    name: pageName(catalog, projectKey, route),
     rows,
     unreadCount: rows.reduce((total, row) => total + row.unreadCount, 0),
     empty: rows.length === 0,

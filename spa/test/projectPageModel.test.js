@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { navigationCatalog, projectWorkspaceInventory } from "../src/core/navigationModel.js";
 import {
   ALL_WORKSPACES,
   RECLAIMABLE_WORKSPACES,
@@ -33,6 +34,22 @@ const feed = {
 const route = { name: "project", deviceId: "dev-1", projectId: "proj-1" };
 
 describe("projectPageModel", () => {
+  it("shares the cached named-child roster and targets with navigation without a project self row", () => {
+    const cached = { projects: [{ id: "proj-1", deviceId: "dev-1", name: "Build", path: "/src" }], workspaces: [
+      { id: "own", project_id: "proj-1", deviceId: "dev-1", root: "/src", name: "Original" },
+      { id: "named", project_id: "proj-1", deviceId: "dev-1", name: "Feature", root: "/work", status: "ready", directories: [{ id: "repo", is_git: true }] },
+      { id: "failed", project_id: "proj-1", deviceId: "dev-1", name: "Failed", status: "failed" },
+      { id: "finished", project_id: "proj-1", deviceId: "dev-1", status: "finished" },
+      { id: "named", project_id: "proj-1", deviceId: "dev-2", name: "Elsewhere", status: "ready" },
+    ] };
+    const inventory = projectWorkspaceInventory(navigationCatalog(cached), "dev-1/proj-1");
+    const page = projectPageModel(cached, route);
+    expect(page.rows.map((row) => row.workspaceId)).toEqual(["named", "failed"]);
+    for (const row of page.rows) {
+      const destination = inventory.workspaces.find((candidate) => candidate.key === row.workspaceKey);
+      expect({ name: row.name, route: row.route }).toEqual({ name: destination.name, route: destination.route });
+    }
+  });
   it("names the project the route stands in", () => {
     const page = projectPageModel(feed, route);
     expect(page.name).toBe("Build");

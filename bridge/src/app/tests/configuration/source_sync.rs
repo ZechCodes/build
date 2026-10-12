@@ -804,3 +804,41 @@ fn workspace_cut_fetches_after_waiting_for_a_source_mutation() {
         "a waited source mutation must not suppress the cut's fetch: {reply}"
     );
 }
+
+#[test]
+fn a_cut_refused_after_a_source_move_removes_its_unpublished_root() {
+    let fixture = fixture();
+    let replacement = init_repo_named(&fixture.root, "replacement");
+    let shared = fixture.state.shared();
+    let project_root = shared
+        .lock()
+        .unwrap()
+        .workspaces
+        .root()
+        .join(&fixture.project_id);
+    let (held, _) = SyncLock::acquire(&fixture.docs, Duration::ZERO).unwrap();
+    let cutting = frame_on_a_thread(
+        &shared,
+        "cut",
+        "workspace.create",
+        json!({"project_id": fixture.project_id, "name": "moved", "isolation": "worktree"}),
+    );
+    assert!(cutting.recv_timeout(STILL_WAITING).is_err());
+    shared
+        .lock()
+        .unwrap()
+        .projects
+        .source_mut(&fixture.project_id, "source-2")
+        .unwrap()
+        .path = replacement;
+    drop(held);
+    let reply = cutting.recv_timeout(ANSWERED_WITHIN).unwrap();
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error_code"], "conflict", "{reply}");
+    assert!(
+        std::fs::read_dir(project_root)
+            .unwrap()
+            .all(|entry| !entry.unwrap().path().is_dir()),
+        "a refused cut left its unpublished staging root behind"
+    );
+}

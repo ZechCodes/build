@@ -108,7 +108,14 @@ fn waiting_on_same_project_dag_is_atomic() {
         1
     );
     assert!(store
-        .edit_waiting_on(PROJECT, &b.id, &[a.id.clone()], &[], &Actor::User, NOW)
+        .edit_waiting_on(
+            PROJECT,
+            &b.id,
+            std::slice::from_ref(&a.id),
+            &[],
+            &Actor::User,
+            NOW,
+        )
         .is_err());
     let draft = Task::drafted(PROJECT, "refused", Actor::User, NOW);
     assert!(store

@@ -18,7 +18,7 @@ fn wait(app: &AppState, project: &str, task: &Task, blocker: &Task) {
         .edit_waiting_on(
             project,
             &task.id,
-            &[blocker.id.clone()],
+            std::slice::from_ref(&blocker.id),
             &[],
             &Actor::User,
             &crate::store::now_rfc3339(),

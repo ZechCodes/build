@@ -77,7 +77,7 @@ count toward 100/100; planning does not satisfy these controls.
 | PS522-1 | Resolve exact registered project/source scope; refuse foreign, malformed, mixed selectors and caller roots before Git/PTY work. | C1/C3: project_source_git_refuses_mixed_or_moved_scope; project_source_terminal_cannot_attach_sibling; API contracts. |
 | PS522-2 | Captured source location is a precondition, rechecked after waits; moved/removed sources never redirect Git, Sync base, terminal create/attach or delayed worker starts. | C1–C5: moved-source lock/startup races; lifecycle holds; existing Files precondition regressions. |
 | PS522-3 | Source cache/diff/draft identity includes device/project/source/location; late replies and pushes cannot merge sibling or moved roots. | C1/C6: identical-path/status-key sources; projectChanges and cache race tests. |
-| PS522-4 | Build-managed source mutations serialize with base sync without holding the app mutex; dirty/local commits and cut semantics remain intact. Shell commands are outside this lock. | C2: project_source_mutation_serializes_with_base_sync; workspace_cut_preserves_local_base_commits; source_sync suites. |
+| PS522-4 (verified, C2) | Build-managed source mutations serialize with base sync without holding the app mutex; dirty/local commits and cut semantics remain intact. Shell commands are outside this lock. | `project_source_mutation_serializes_with_base_sync` and `legacy_workspace_source_mutation_serializes_with_base_sync` prove direct and lazily adopted original-source staging waits behind sync while unrelated RPCs respond; `workspace_cut_preserves_local_base_commits` and the source-sync suites prove dirty/local-commit and cut preservation. See the C2 evidence below and exact-head gate logs on #530. |
 | PS522-5 | Terminal ownership/input never follows selection or path changes; source removal/movement holds for live sessions; explicit close/EOF/reconnect preserves exact identity. | C3/C7: terminal lifecycle, sibling-attach, reconnect/authority and projectWorkspaceTerminal browser tests. |
 | PS522-6 | Secondary Git and plain sources emit correctly addressed file/terminal facts; plain Git refusal/unborn Git behavior is honest and new params are capability-gated. | C1/C3/C6/C7: source facts, old/new contract matrix and browser tests. |
 
@@ -102,8 +102,18 @@ children. Shell Git and OS file writes remain outside Build's shared lock.
 
 | ID | C2 control | Passing evidence (#530) |
 | --- | --- | --- |
-| PS522-4 | Build-managed original-source Git mutations, source settings and base sync share canonical common-Git-dir locks outside the app mutex; settings retain ordered, deduplicated old/new/workspace locks through config settlement. Cuts pin exact configured-base OIDs, preserve local commits and dirty files, and retain #271's fetched fast-forward path. | `project_source_mutation_serializes_with_base_sync` (inherited test failed before implementation), `source_settings_wait_for_base_sync_without_holding_app_mutex`, `ordered_source_mutation_locks_deduplicate_linked_checkouts`, `cut_aliases_of_a_common_git_directory_do_not_reenter_the_lock`, `cut_oid_is_pinned_before_materialization_even_with_sync_off`, `workspace_cut_preserves_local_base_commits`; all 78 source-sync regressions passed with two test threads under nice 10. |
+| PS522-4 | Every resolved Git mutation uses the canonical common-Git-dir lock, including original sources addressed through legacy project/workspace aliases and linked worktrees. Source settings and base sync share that lock outside the app mutex; settings retain ordered, deduplicated old/new/workspace locks through config settlement. Cuts pin exact configured-base OIDs, preserve local commits and dirty files, and retain #271's fetched fast-forward path. | `project_source_mutation_serializes_with_base_sync` (inherited test failed before implementation), `legacy_workspace_source_mutation_serializes_with_base_sync` (failed at test-only `51412c09`, passed at `836c3c3e`), `source_settings_wait_for_base_sync_without_holding_app_mutex`, `ordered_source_mutation_locks_deduplicate_linked_checkouts`, `cut_aliases_of_a_common_git_directory_do_not_reenter_the_lock`, `cut_oid_is_pinned_before_materialization_even_with_sync_off`, `workspace_cut_preserves_local_base_commits`; exact-head source-sync/full-gate receipts are on #530. |
 | PS522-2 (Git/Sync base) | Captured source location is checked after lock waits. Manual sync queues retain their original registered path/base, including legacy requests, so moving a source never redirects queued sync to the replacement folder. The optional wire precondition is announced by `sources.syncBasePath`. | `moved_source_mutation_refuses_after_sync_lock_wait`, `sync_source_captured_path_survives_queue_and_lock_wait`, `manual_sync_does_not_follow_a_source_moved_before_queue_drain`; `sync_base_path_precondition_is_announced_and_typed` and shared SPA API fixtures. |
+
+The legacy-alias regression starts with a one-source project and no adopted
+workspace, then stages through `legacy-<project_id>` while sync holds the original
+repository lock. It proves staging waits, the original index stays clean and
+`project.list` responds during the wait. Sync fast-forwards successfully under
+the held lock; after release, staging succeeds and only `work.txt` is staged on
+the updated HEAD. The identical test failed before the selector-independent
+lock fix (exit 101) and passed afterward (exit 0). All mutating `git.*` verbs
+use this same deferred lock boundary; reads do not acquire it. Workspace cache
+and changeset semantics are preserved.
 
 The #600 retry correction extends PS522-4's pinning proof to saved manifests:
 the nine `app::tests::workspaces::retry::` regressions pass after the observed

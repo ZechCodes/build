@@ -687,9 +687,11 @@ time. Each row's `sync` is kept in the store's `meta` table
 (`bridge/src/store/source_sync.rs`), and a sync that lands notes the project
 list changed.
 
-Build-managed source Git mutations (including legacy first-source verbs),
+Build-managed Git mutations across all resolved scopes (including legacy
+first-source verbs and adopted workspace aliases),
 source settings edits and base sync share `source_sync::SyncLock`, keyed by
-canonical common Git directory (#530). They acquire it off the app mutex and
+canonical common Git directory (#530). Linked worktrees share that lock;
+independent workspace repositories have their own. They acquire it off the app mutex and
 revalidate source membership/location after waiting. A settings edit locks
 its old/new repositories and affected independent workspace repositories in
 canonical order, deduplicating aliases, through config settlement. Reads and

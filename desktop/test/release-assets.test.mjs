@@ -61,6 +61,7 @@ test("a symlink cannot stand in for a verified distributable", (t) => {
 });
 
 function assertReleaseWorkflowContract(workflow) {
+  workflow = workflow.replace(/\r\n/g, "\n");
   const macJob = workflow.split("  build:\n")[1].split("  build-linux:\n")[0];
   const linuxJob = workflow.split("  build-linux:\n")[1].split("  publish:\n")[0];
   const publishJob = workflow.split("  publish:\n")[1];

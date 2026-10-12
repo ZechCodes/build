@@ -50,3 +50,20 @@ count toward 100/100; planning does not satisfy these controls.
 | --- | --- | --- |
 | TS522-1 | Existing/new project worker assignment and MCP tools are same-project scoped, idempotent and purpose-authorized; clients cannot mint or demote the pin. | C4/C5/C8: assign_project_worker_is_idempotent; cross-project, forged-purpose, removal and task-assignee tests. |
 | TS522-2 | Task links preserve exact worker identity without a fake workspace; worker removal and project deletion retire pending delivery/tracking consistently without rewriting history. | C5/C10: assignment/link/cleanup and stale-generation lifecycle tests. |
+
+C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
+
+- TS522-1: `assign_project_worker_is_idempotent` (existing and new worker,
+  `operation_id` retry delivers once and makes no second worker, a reused id
+  on another assignment is `conflict`), `assigning_refuses_a_foreign_or_removed_project_worker`,
+  `a_worker_assigns_a_task_to_a_new_project_worker`,
+  `project_workers_list_and_add_project_agents_with_coding_tools`,
+  `a_worker_cannot_administer_sources_or_retire_the_pin_through_mcp` (a forged
+  `project_role` on `add_project_agent` makes a worker), contract test
+  `project_worker_assignment_is_announced_with_its_kind_and_operation_id`.
+- TS522-2: dispatches to a worker link its owner and no workspace
+  (`assign_project_worker_is_idempotent`),
+  `removing_a_worker_keeps_its_tasks_record_and_drops_its_queued_turn`,
+  `a_stale_worker_session_cannot_assign`, and
+  `project_deletion_retires_workers_and_preserves_sources` (tokens revoked,
+  queued turns dropped).

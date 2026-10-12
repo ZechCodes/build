@@ -156,3 +156,13 @@ count toward 100/100; planning does not satisfy these controls.
 | CI522-1 | One persisted coordinator survives migration, reset and repeated ensure; no per-agent surface may remove, transfer or replace the pin while the project exists. | C4/C8: project_roster_migrates_one_stable_coordinator; project_coordinator_cannot_be_removed_or_reassigned; rail pin tests. |
 | CI522-2 | Worker prompt/tools use persisted purpose; exact agent/conversation/session generation gates delivery and MCP, independent of prefix, roster position or forged surface flags. | C4/C5/C8: project_worker_tools_follow_persisted_purpose; stale callback/send, independent drafts and old-client roster tests. |
 | CI522-3 | Shared cwd never aliases resume/reset/remove artifacts; deleting one worker cannot affect siblings, pin, source files or another draft. | C4/C5/C8/C10: project_worker_removal_preserves_shared_cwd_siblings; provider lineage and browser draft tests. |
+
+C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
+
+- CI522-2: `a_stale_worker_session_cannot_assign` (an MCP frame admitted
+  before the worker's reset is refused), `a_worker_cannot_administer_sources_or_retire_the_pin_through_mcp`
+  (persisted purpose, not the launch declaration, gates the project tools).
+- CI522-3: `project_worker_removal_preserves_shared_cwd_siblings` (three live
+  sessions in the project's folder; removing one worker and resetting another
+  leave the pin's session, token, history and launch config and an
+  uncommitted source edit untouched).

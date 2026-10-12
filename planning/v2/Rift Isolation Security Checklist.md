@@ -57,3 +57,11 @@ count toward 100/100; planning does not satisfy these controls.
 | --- | --- | --- |
 | RI522-1 | Project workers are explicitly unisolated; creating an isolated workspace preserves configured-base/local-commit and existing provider copy rules, never silently switches to current source HEAD. | C2/C10: workspace_cut_preserves_local_base_commits; existing Rift/worktree cut regressions. |
 | RI522-2 | Project scratch owner and original sources never enter workspace reclaim; worker removal and whole-project deletion remove only owned artifacts and preserve source trees. | C5/C10: workspace_reclaim_never_reclaims_project_agents; project deletion with workers and shells. |
+
+C5 evidence (#533; RI522-2 stays pending until C10 adds project deletion
+with source shells): `workspace_reclaim_never_reclaims_project_agents` (the
+owner is no reclaim subject, and reclaiming a named workspace leaves the pin,
+a worker its agent made, that worker's session and the scratch),
+`project_deletion_retires_workers_and_preserves_sources` and the end-to-end
+`project_workers_take_tasks_hold_sources_and_leave_them_on_delete` (scratch
+removed, sources and an uncommitted edit kept).

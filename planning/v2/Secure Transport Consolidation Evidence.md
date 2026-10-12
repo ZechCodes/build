@@ -121,10 +121,10 @@ reporting the implementation's security checklist complete.
 | C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | locally verified; #576 receipts below |
 | D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | locally verified; #577 receipts below |
 | D2 | Node and Vite libsodium resolution; SPA lint/focused tests/build; web unit tests | #577 | locally verified; #577 receipts below |
-| B1 | App and QA images build from clean repository context without external transport access; final contents/notices reviewed | #578 | pending |
-| B2 | Root Docker/Podman ignores and narrow COPY rules exclude environments/private files and retain necessary locks | #578 | pending |
-| G1 | JS-only, Python-only, Rust, fixture, workflow/selector and unrelated-doc path cases select intended checks/images | #578 | pending |
-| G2 | Failed/skipped/canceled/missing compatibility evidence blocks owed image builds, including a later app-only commit | #578 | pending |
+| B1 | App and QA images build from clean repository context without external transport access; final contents/notices reviewed | #578 | locally verified; #578 receipts below |
+| B2 | Root Docker/Podman ignores and narrow COPY rules exclude environments/private files and retain necessary locks | #578 | locally verified; #578 receipts below |
+| G1 | JS-only, Python-only, Rust, fixture, workflow/selector and unrelated-doc path cases select intended checks/images | #578 | locally verified; #578 receipts below |
+| G2 | Failed/skipped/canceled/missing compatibility evidence blocks owed image builds, including a later app-only commit | #578 | locally verified; #578 receipts below |
 | O1 | One-checkout docs, reporting destination and remaining historical references reviewed; old repo untouched | #579 | pending |
 | R1 | Independent approval names exact feature SHA and resolves findings | #580 | pending |
 | R2 | #569 records final candidate/base, required full gates plus transport checks, scans and actual integration outcome | coordinator/#569 | pending |
@@ -342,3 +342,82 @@ source equality. These local D1/D2 receipts do not claim container builds, CI
 routing, live QA, bridge execution, pairing, network changes, publication or
 migration-wide approval. #578 owns container/CI wiring; #579 owns the remaining
 operational/reference audit.
+
+## #578 local container/CI receipts (2026-10-12)
+
+The delivery branch starts from #577's `0e5636e44864d9765c2abcbe2d0c267220cadc94`.
+Commit `5bb2295a` retains #607's uv 0.12.13 setup because the consumer branch
+predates that fix. Delivery/routing implementation is through `ade97da4`;
+this evidence update does not change runtime sources or dependencies.
+
+App and QA recipes copy the checkout's transport JS manifests, lock, source and
+notice beside the consumer, install transport first with scripts suppressed,
+then install the committed consumer lock. Node 22.23.3/npm 12.0.2 match #577;
+SPA retains `--legacy-peer-deps`, QA retains `--omit=dev`. QA now builds from the
+root and runs in `/app/web`. Both root ignore files retain consumer locks and
+exclude transport dependencies, Python environments/generated outputs and env
+files. The app's landing install also suppresses lifecycle scripts. The app
+runtime carries the exact transport BSL notice in `licenses/` beside its bundle;
+QA retains that notice with the local package.
+
+The dedicated transport job checks import/package/harness contracts before
+installing dependencies, then Python units and vectors, full JS tests including
+Python interop, Rust transport units/vectors and the Rust/Python round trip.
+Existing bridge tests retain pinned uv; the interop job uses its default in-tree
+reference without a clone or override. SPA and web jobs install transport first
+and use frozen consumers. Image guards require transport success whenever owed;
+missing, skipped, failed or canceled results cannot certify that evidence.
+All existing bridge/interop image guards remain.
+
+Transport diffs use the older actual app/relay deployment commit without the
+bridge selector's unchanged-relay forgiveness. Python-only checks can therefore
+repeat until both deployment tags advance; this conservative replay is deliberate.
+They do not select either image by themselves. JS source/dependency changes select
+app, E2E and transport, while relay selection still follows relay-sources only.
+Rust manifests/exports, fixtures, workflow/selector/checker files and delivery
+recipes/context ignores also select their required checks. Canonical transport
+LICENSE changes rebuild app; provenance edits select transport alone.
+
+Red-first contracts failed (exit 1) for the old container layout, missing image
+notice, old tier selection and missing workflow/install/gate wiring. Final
+contracts pass: 66 tier assertions, nine workflow tests (including actual image
+conditions with missing evidence), and 27 transport source/package/delivery
+contracts. ShellCheck for every tracked shell script, actionlint for all workflows,
+YAML parsing/assertions for CI, timing and compose, Semgrep on changed tracked
+files, gitleaks and diff-check exit 0. Final receipts and logs are attached on #578.
+The dry reasoning artifact covers every CI job and the timing job; timing only
+builds tests and executes its two ignored filters, so it needs no Python runtime.
+
+Both complete images built (exit 0) from a clean Git archive at `8ed446b9`, without
+external transport source access or dependency lifecycle scripts. Containers were
+created only for file inspection/export and never started. The QA source and lock
+match tracked bytes, its installed package link targets `../../../transport/js`,
+and its working directory is `/app/web`. Both image notices hash to
+`964cd7fcc4be51375162c2bbcf1b814e264d6477a24469530e73e1b113e616f2`.
+Exported inventories contain no checked `.env`, `.git`, home-checkout or `.build`
+paths. App static version output exists. No image was published.
+
+An initially clean unrelated checkout at `644c0bf0` with an empty npm cache passed
+transport `npm ci --prefix transport/js --ignore-scripts`, SPA `npm ci
+--legacy-peer-deps`, web `npm ci`, web's 23 unit tests, SPA lint and Vite build.
+Runtime sources/configs/tests and dependency manifests/locks remain byte-identical
+through the final delivery commits; the equality receipt ties these runs to them.
+The full SPA test/capture outcomes are recorded in the task's attached receipts.
+Python's five baseline cases, four vector cases and all eight JS cases pass.
+After frozen Python installation, compatibility tests ran with `UV_OFFLINE=true`,
+including targeted Rust transport units, three Rust vector tests and three
+Rust/Python harness tests (all exit 0). This is JS/Python and Rust/Python evidence,
+not a direct JS/Rust runtime exchange.
+
+The seven-day consumer release-age default and script suppression remain intact.
+AGENTS.md and both consumer READMEs now document a temporary exact-package
+`--min-release-age-exclude=package-name` exception for a deliberately reviewed
+urgent release, retaining script suppression and the cooldown for its other
+dependencies. No wildcard or persistent policy exception was added.
+
+No dependency upgrades, crypto changes, gate weakening, main merge/push, CI
+workflow dispatch, publication, paired/live QA, bridge binary or installer
+execution, user-browser interaction, home-state access or network/firewall changes
+are part of these receipts. Main CI after ordered #577/#578 integration remains
+the live verification; broader ownership/reference work and final independent
+review/integration remain #579/#580/#569.

@@ -40,6 +40,55 @@ describe("a route that names no device", () => {
 });
 
 describe("a route that names its device", () => {
+  it("validates an unguarded picker target immediately before committing", () => {
+    const entries = history.length;
+    const beforeCommit = vi.fn(() => false);
+    const original = App.route;
+    expect(go({ name: "project", deviceId: "dev-2", projectId: "p2" }, { newEntry: true, beforeCommit })).toBe(false);
+    expect(beforeCommit).toHaveBeenCalledOnce();
+    expect(App.route).toBe(original);
+    expect(location.hash).toBe("#/inbox");
+    expect(history.length).toBe(entries);
+    expect(App.viewingContext.clear).not.toHaveBeenCalled();
+  });
+
+  it("validates the winning picker target after leave approval and preserves the guard on refusal", async () => {
+    const entries = history.length;
+    const original = App.route;
+    let decide;
+    let available = true;
+    const guard = () => new Promise((resolve) => { decide = resolve; });
+    App.routeLeaveGuard = guard;
+    const beforeCommit = vi.fn(() => available);
+    const pending = go({ name: "project", deviceId: "dev-2", projectId: "p2" }, { newEntry: true, beforeCommit });
+    expect(beforeCommit).not.toHaveBeenCalled();
+    available = false;
+    decide(true);
+    expect(await pending).toBe(false);
+    expect(beforeCommit).toHaveBeenCalledOnce();
+    expect(App.route).toBe(original);
+    expect(App.routeLeaveGuard).toBe(guard);
+    expect(location.hash).toBe("#/inbox");
+    expect(history.length).toBe(entries);
+    expect(App.viewingContext.clear).not.toHaveBeenCalled();
+  });
+
+  it("does not validate a cancelled or superseded picker attempt", async () => {
+    let decide;
+    App.routeLeaveGuard = () => new Promise((resolve) => { decide = resolve; });
+    const beforeCommit = vi.fn(() => false);
+    const pending = go({ name: "project", deviceId: "dev-2", projectId: "p2" }, { newEntry: true, beforeCommit });
+    decide(false);
+    expect(await pending).toBe(false);
+    expect(beforeCommit).not.toHaveBeenCalled();
+    const superseded = go({ name: "project", deviceId: "dev-2", projectId: "p2" }, { newEntry: true, beforeCommit });
+    const winner = go({ name: "project", deviceId: "dev-2", projectId: "p3" }, { newEntry: true });
+    decide(true);
+    expect(await superseded).toBe(false);
+    expect(await winner).toBe(true);
+    expect(beforeCommit).not.toHaveBeenCalled();
+  });
+
   it("adds exactly one history entry when a destination picker opts in", () => {
     const entries = history.length;
     const destination = { name: "workspace", deviceId: "dev-2", projectId: "p2", workspaceId: "w2", tab: "files" };

@@ -7,6 +7,84 @@ beforeAll(async () => { session = await openLayoutSession({ plugins: [navigation
 afterAll(async () => { await session?.close(); });
 const grouped = '.tbmenu-list a[data-destination]:not([data-visit])';
 
+async function mountRealNavigationPicker(page, basePath) {
+  await mountNavigationPicker(page, basePath, { observeHash: false });
+  await page.evaluate(() => { window.__realRouterBaseModules = window.__layoutModules; });
+  await loadBrowserModules(page, { realApp: "src/app.js?navigation-real-router" }, basePath);
+  await page.evaluate(() => {
+    Object.assign(window.__layoutModules, window.__realRouterBaseModules);
+    const { realApp, app } = window.__layoutModules;
+    app.App.gated = true;
+    realApp.initRouter();
+    // Delegate before the fixture guard, so production go owns the decision,
+    // attempt arbitration and commit. This promise counts accepted outcomes.
+    window.__navigationHarness.go = (next, options) => {
+      window.__pendingPickerNavigation = Promise.resolve(realApp.go(next, options));
+      return window.__pendingPickerNavigation;
+    };
+  });
+}
+
+for (const scope of ["global", "local"]) for (const outcome of ["removed", "finished", "live", "cancelled"]) {
+  it(`P2 real_go_revalidates_picker_target_at_commit ${scope} ${outcome}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountRealNavigationPicker(page, basePath);
+      await page.evaluate(() => {
+        window.__layoutModules.app.App.routeLeaveGuard = () => new Promise((resolve) => { window.__allowPickerLeave = resolve; });
+      });
+      const before = await page.evaluate(async () => {
+        await new Promise(requestAnimationFrame);
+        const { app, ui, visits } = window.__layoutModules;
+        return { route: app.App.route, hash: location.hash, entries: history.length,
+          visits: (await ui.readUiRecord(visits.navigationVisitAddress))?.value,
+          page: document.querySelector("#root").innerHTML };
+      });
+      const key = scope === "global" ? "away-device/release" : "nav-device/sibling";
+      await page.locator(`[data-select="${scope === "global" ? "project" : "workspace"}"]`).click();
+      const link = page.locator(`${scope === "global" ? grouped : ".tbmenu-list a"}[data-workspace="${key}"]`);
+      const targetHash = await link.getAttribute("href");
+      await link.click();
+      await page.waitForFunction(() => typeof window.__allowPickerLeave === "function");
+      if (outcome === "removed" || outcome === "finished") {
+        await page.evaluate(async ({ key, outcome }) => {
+          const { cache } = window.__layoutModules;
+          const [deviceId, workspaceId] = key.split("/");
+          const address = { deviceId, entityId: "", kind: "workspaces" };
+          const rows = (await cache.readCached(address)).value;
+          const next = outcome === "removed" ? rows.filter((row) => row.id !== workspaceId)
+            : rows.map((row) => row.id === workspaceId ? { ...row, status: "finished" } : row);
+          await cache.writeCached(address, next);
+          // Await the cache follower, using the same authoritative catalog
+          // shown by the reopened picker, before resolving the pending leave.
+        }, { key, outcome });
+        await page.locator(`[data-select="${scope === "global" ? "project" : "workspace"}"]`).click();
+        await page.waitForFunction((key) => !document.querySelector(`.tbmenu-list [data-workspace="${key}"]`), key);
+        await page.keyboard.press("Escape");
+      }
+      const accepted = await page.evaluate(async (outcome) => {
+        window.__allowPickerLeave(outcome !== "cancelled");
+        return await window.__pendingPickerNavigation;
+      }, outcome);
+      if (outcome === "live") {
+        expect(accepted).toBe(true);
+        expect(await page.evaluate(() => history.length)).toBe(before.entries + 1);
+        expect(await page.evaluate(() => location.hash)).toBe(targetHash);
+      } else {
+        expect(accepted).toBe(false);
+        const after = await page.evaluate(async () => {
+          const { app, ui, visits } = window.__layoutModules;
+          return { route: app.App.route, hash: location.hash, entries: history.length,
+            visits: (await ui.readUiRecord(visits.navigationVisitAddress))?.value,
+            page: document.querySelector("#root").innerHTML };
+        });
+        expect(after).toEqual(before);
+        if (outcome !== "cancelled") expect(await page.locator(".notice-summary").textContent()).toContain("no longer available");
+        else expect(await page.locator(".notice").count()).toBe(0);
+      }
+    }, { width: 390, height: 844, hasTouch: true });
+  }, 30_000);
+}
+
 it.each(["global", "local project return"])("P1 production_router_adds_one_entry_and_restores_exact_route_on_Back_and_Forward %s", async (scope) => {
   await session.withPage(async ({ page, basePath }) => {
     await mountNavigationPicker(page, basePath, { observeHash: false });

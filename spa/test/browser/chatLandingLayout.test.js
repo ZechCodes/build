@@ -1,11 +1,12 @@
 import { expect, it } from "vitest";
 import { loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
+import { expectNewHeadroom } from "./chatLandingAssertions.mjs";
 
 it("lands delayed New at 12px before reporting and preserves reader control", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
-    await mountLayout(page, '<div class="rail-body" id="scroller"></div>', {
+    await mountLayout(page, '<div class="rail-panel"><div class="rail-head">Conversation</div><div class="rail-body" id="scroller"></div></div>', {
       basePath,
-      styles: 'body{display:block;height:auto} #scroller{width:640px;height:300px;margin:20px;overflow:auto} .thread-message{min-height:160px}',
+      styles: 'body{display:block;height:auto} .rail-panel{position:relative;inset:auto;width:640px;height:300px;margin:20px} .thread-message{min-height:160px}',
     });
     await loadBrowserModules(page, { thread: "src/core/thread.js", landing: "src/core/chatLanding.js" }, basePath);
     const result = await page.evaluate(async () => {
@@ -29,8 +30,21 @@ it("lands delayed New at 12px before reporting and preserves reader control", as
       paint(12, false);
       const beforeFrame = reports.length;
       await frame();
-      const lineOffset = body.querySelector(".thread-unread-line").getBoundingClientRect().top - body.getBoundingClientRect().top;
+      const lineOffset = body.querySelector(".thread-unread-line").getBoundingClientRect().top
+        - body.parentElement.querySelector(".rail-head").getBoundingClientRect().bottom;
       const landedReports = [...reports];
+      // A usage banner moves the body below the head and zeroes scroll padding.
+      // The frame correction must read that new clearance, not the first paint's.
+      landing.reset();
+      paint(12, false);
+      const banner = document.createElement("div");
+      banner.className = "usage-limit-banners";
+      banner.textContent = "Usage limit";
+      body.before(banner);
+      await frame();
+      const bannerLineOffset = body.querySelector(".thread-unread-line").getBoundingClientRect().top
+        - body.getBoundingClientRect().top;
+      banner.remove();
       // A second opening followed by a reader gesture cancels the correction
       // queued for its frame, and also prevents the later divider chasing them.
       landing.reset();
@@ -42,11 +56,12 @@ it("lands delayed New at 12px before reporting and preserves reader control", as
       paint(12, false);
       const readerTop = body.scrollTop;
       landing.dispose();
-      return { beforeRoster, beforeFrame, lineOffset, landedReports, readerTop };
+      return { beforeRoster, beforeFrame, lineOffset, bannerLineOffset, landedReports, readerTop };
     });
     expect(result.beforeRoster).toBe(0);
     expect(result.beforeFrame).toBe(0);
-    expect(result.lineOffset).toBeCloseTo(12, 0);
+    expectNewHeadroom(result.lineOffset);
+    expectNewHeadroom(result.bannerLineOffset);
     expect(result.landedReports.length).toBeGreaterThan(0);
     expect(result.landedReports.every((sequence) => sequence < 14)).toBe(true);
     expect(result.readerTop).toBe(80);

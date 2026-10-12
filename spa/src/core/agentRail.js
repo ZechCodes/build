@@ -2811,7 +2811,9 @@ function mountRailOnContext(host, context, swap) {
     // A partial history window only offers a provisional unread anchor. Move
     // it back as pages arrive until the cached window covers the read cursor.
     const waitingForHistory = openingNeedsHistory(thread);
-    if (waitingForHistory && chatLanding.active()) unreadMarker?.leave();
+    // Recompute on the paint that completes coverage too: its first unread
+    // message can precede the provisional line held by the partial window.
+    if (chatLanding.active()) unreadMarker?.leave();
     unreadFrom = unreadLineFor(thread);
     const landing = chatLanding.prepare(body, {
       hasItems: threadItems(thread).length > 0,

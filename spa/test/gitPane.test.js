@@ -223,3 +223,10 @@ describe("taskAgentCommitOptions", () => {
     expect(auto.description).toContain("Build: fix login");
   });
 });
+
+it("keeps project-source commit drafts separate across sources and moved locations", () => {
+  const scope = { project_id: "p", source_id: "code", source_path: "/code" };
+  expect(gitDraftKey(scope)).toBe('project:["p","code","/code"]');
+  expect(gitDraftKey(scope)).not.toBe(gitDraftKey({ ...scope, source_id: "docs" }));
+  expect(gitDraftKey(scope)).not.toBe(gitDraftKey({ ...scope, source_path: "/moved" }));
+});

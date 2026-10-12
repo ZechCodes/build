@@ -20,6 +20,7 @@
 // option lists) are exported for unit tests; mountGitPane is the only
 // DOM-touching entry point.
 
+import { applyProjectSourceChanges } from "./cacheSync.js";
 import { workspaceCommentMessages } from "./workspaceCommentMessages.js";
 import { reviewCommentContext } from "./reviewCommentContext.js";
 import { esc } from "./text.js";
@@ -83,6 +84,8 @@ import { DIFF_SORT_LATEST } from "./diffSort.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { watchUiState } from "./localUiState.js";
 import { registerSyncRead, syncPaneShown } from "./syncVisibleScopes.js";
+const projectSourceWatchScope = (scope) => scope.project_id && scope.source_id && scope.source_path
+  ? { kind: "project_source", project_id: scope.project_id, source_id: scope.source_id, source_path: scope.source_path } : undefined;
 const alwaysActive = () => true;
 const workspaceDiffKeyFields = (ifDiffKey, address, before) =>
   ifDiffKey && (!address || before?.value) ? { if_diff_key: ifDiffKey } : {};
@@ -434,7 +437,7 @@ export function freshLogPage(held, page) {
  *  scope carries — a worktree scope names its project too, and keying on that
  *  would pool every worktree's draft with the project's own. */
 export function gitDraftKey(scope) {
-  if (scope.workspace_id) return directoryCacheId(scope);
+  if (scope.workspace_id || (scope.project_id && scope.source_id)) return directoryCacheId(scope);
   if (scope.run_id) return `run:${scope.run_id}`;
   if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
   return `project:${scope.project_id || ""}`;
@@ -2267,12 +2270,17 @@ export function mountGitPane(
   const checkoutWatcher = readsForItself
     ? watchChanges({
         refresh: refreshCheckout,
-        onChanges: () => refreshCheckout(true),
+        onChanges: async (items) => {
+          if (scope.project_id && scope.source_path) await applyProjectSourceChanges(items, cacheScope?.deviceId);
+          if (!disposed) refreshCheckout(true);
+        },
+        deviceId: cacheScope?.deviceId,
+        scope: projectSourceWatchScope(scope),
         entity: watchedEntity,
         // Focus tier. A checkout the bridge names no entity for watches the
         // board — where `state` is all there is, and the manager trims the ask
         // to it.
-        kinds: ["state", "git", "files"],
+        kinds: scope.source_path && scope.project_id ? ["git"] : ["state", "git", "files"],
         mode: "realtime",
       })
     : null;

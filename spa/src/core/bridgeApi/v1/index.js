@@ -187,7 +187,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     branches: { finishDelete: names.has("branches.finishDelete") },
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
     agents: { createdBy: names.has("agents.createdBy") },
-    projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase") },
+    projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase"), syncBasePath: names.has("sources.syncBasePath") },
     workspaces: { measureSizes: names.has("workspace.measure_sizes"), setLocked: names.has("workspace.set_locked") },
   };
 }

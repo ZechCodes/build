@@ -37,29 +37,39 @@ web client you are editing served by them.
 - Rust stable (via rustup), plus the native libraries listed under
   [Build locally](#bridge-linux-or-macos): a C/C++ compiler, CMake, pkg-config
   and OpenSSL development headers.
-- Node.js 22 (`spa/.nvmrc`; the desktop app needs 22.12 or newer) with npm.
+- Node.js 22.23.3 and npm 12.0.2 for SPA/web (their `.nvmrc` and
+  `packageManager` pins); the desktop app needs Node 22.12 or newer.
 - [uv](https://docs.astral.sh/uv/) for `skriftapp/` (Python 3.13 or newer,
-  `skriftapp/pyproject.toml`).
+  `skriftapp/pyproject.toml`) and mandatory transport interop tests (CI pins
+  uv 0.12.13; `transport/python/uv.lock` records the reference dependencies).
 - Docker or Podman with compose, for the local stack.
 - Chromium or Chrome, for the web client's browser tests (on `PATH`, or
   `CHROMIUM_PATH` set to its executable). The landing check needs
   `CHROMIUM_PATH` or Playwright's own browser (see [Testing](#testing)).
 - To run real agents: Claude Code, Codex CLI or Pi, installed and signed in.
 
-### 1. Clone, with the transport beside it
+### 1. Clone and install the in-tree binding
 
-The web client imports the E2EE binding from a checkout of
-[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
-**next to** this repository (`spa/package.json` resolves
-`file:../../build-secure-transport/js`). Clone both into one folder:
+One Build checkout contains the JS binding and Python reference under
+[`transport/`](transport/README.md), plus the existing Rust implementation.
+SPA and web resolve `@build/secure-transport` as `file:../transport/js`.
+Registry dependencies still require installation; an external transport clone
+or shared `node_modules` is unnecessary.
 
 ```sh
-mkdir build-dev && cd build-dev
-git clone https://github.com/ZechCodes/Build.git
-git clone https://github.com/ZechCodes/build-secure-transport.git
-npm install --no-audit --no-fund --prefix build-secure-transport/js
-cd Build
+git clone https://github.com/ZechCodes/build.git
+cd build
+nice -n 10 npm ci --prefix transport/js --ignore-scripts
+nice -n 10 npm ci --prefix spa --legacy-peer-deps
+nice -n 10 npm ci --prefix web
 ```
+
+Install transport first: npm links the binding and resolves its dependencies
+from `transport/js`. Both consumers commit portable locks and disable lifecycle
+scripts in `.npmrc`. For dependency edits, use SPA `npm install
+--legacy-peer-deps` or web `npm install`, then commit the manifest and lock.
+New registry releases have a seven-day cooldown; the consumer READMEs document
+an exact-package, one-command exception for a reviewed urgent fix.
 
 ### 2. Run the local stack
 
@@ -85,7 +95,7 @@ machine, and there are two-bridge and ICE variants: see
 
 ```sh
 cd spa
-npm install --legacy-peer-deps
+nice -n 10 npm ci --legacy-peer-deps
 VITE_RELAY_URL=ws://localhost:18090 npm run build
 cd ..
 docker cp skriftapp/buildapp/static/. deploy-app-1:/app/buildapp/static/
@@ -94,9 +104,9 @@ docker cp skriftapp/buildapp/static/. deploy-app-1:/app/buildapp/static/
 Reload the page to get your build. Copying the build into the running app
 container keeps its database, so the pairing survives. Rebuilding the `app`
 image instead resets that database, and after that the stack needs `down` and
-the two commands in step 2 again. In `spa/`, always use
-`npm install --legacy-peer-deps`, never `npm ci`: the lockfile is gitignored
-because the `file:` path to the transport differs per machine.
+the two commands in step 2 again. The committed SPA lock resolves the same
+in-tree transport path on every checkout. Fresh installs use `npm ci --legacy-peer-deps`; dependency edits use
+`npm install --legacy-peer-deps` and commit the resulting lock.
 
 ### 4. Build a bridge and pair it with your account
 
@@ -189,7 +199,7 @@ line: a suite can print "passed" and still exit non-zero. CI
 | Tier | Directory | Commands |
 | --- | --- | --- |
 | Bridge | `bridge/` | `nice -n 10 cargo test`<br>`nice -n 10 cargo clippy --all-targets -- -D warnings`<br>`nice -n 10 cargo fmt --check` |
-| Web client | `spa/` | `nice -n 10 npm install --legacy-peer-deps`<br>`nice -n 10 npm run lint`<br>`nice -n 10 npm test`<br>`nice -n 10 npm run build` |
+| Web client | `spa/` | `nice -n 10 npm ci --legacy-peer-deps`<br>`nice -n 10 npm run lint`<br>`nice -n 10 npm test`<br>`nice -n 10 npm run build` |
 | App server | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp`<br>`nice -n 10 uv run --frozen pytest buildapp -q` |
 | Landing page | `landing/` | `nice -n 10 npm ci`<br>`nice -n 10 npm test` |
 | Landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then in another shell `CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/landing-check.mjs` |
@@ -199,27 +209,35 @@ line: a suite can print "passed" and still exit non-zero. CI
 
 Notes:
 
-- **Web client.** It needs the `build-secure-transport` checkout beside the
-  repository. Without it, `npm run build` cannot resolve
-  `@build/secure-transport`, and hundreds of vitest cases fail. `npm test` runs
-  the jsdom unit suite and the Chromium layout suite (`spa/test/browser/`);
-  `npm run test:browser` runs only the latter. Run vitest from inside `spa/`,
-  so that the repo's own vitest runs. `npm run lint` is the complexity gate.
-- **Bridge.** The E2EE interop test checks the Rust transport against the
-  Python reference in the `build-secure-transport` checkout. It only runs when
-  `BUILD_SECURE_TRANSPORT_PY` points at that checkout's `python/` directory, and
-  it skips (still exiting 0) when the variable is unset. From `bridge/`, as CI's
-  `interop` job does:
+- **Web client.** Install transport's locked dependencies before the SPA or
+  web, as above. `npm test` in SPA runs the jsdom unit suite and Chromium layout
+  suite (`spa/test/browser/`); `npm run test:browser` runs only the latter.
+  Run vitest from inside `spa/` so the repository's own vitest runs.
+  `npm run lint` is the complexity gate. Web's unit tests run with `npm test`
+  in `web/` and need no live stack.
+- **Bridge and transport.** Rust/Python interop discovers `transport/python`
+  from the bridge manifest directory and uses frozen uv resolution. Missing uv
+  or reference files fail the round trip instead of passing via a skip. From
+  the repo root:
 
   ```sh
-  BUILD_SECURE_TRANSPORT_PY=../../build-secure-transport/python nice -n 10 cargo test --test interop_python -- --nocapture
+  nice -n 10 uv sync --frozen --project transport/python
+  nice -n 10 uv run --frozen --project transport/python python -m unittest discover -s transport/python/tests -v
+  nice -n 10 uv run --frozen --project transport/python python -m unittest discover -s transport/compatibility -v
+  nice -n 10 npm test --prefix transport/js
+  nice -n 10 cargo test --locked --manifest-path bridge/Cargo.toml --test interop_python --test transport_vectors
   ```
+
+  JS/Python and Rust/Python exchanges are required; these do not claim a direct
+  JS/Rust runtime exchange. `BUILD_SECURE_TRANSPORT_PY` (reference path) and
+  `BST_UV` (uv executable) are deliberate compatibility-test overrides, not
+  setup requirements. See [transport development](transport/README.md).
 - **Landing page.** `landing/` commits its lockfile, so `npm ci` is right there.
   `npm test` builds the Astro page, then reads it back. The preview needs that
   build and skriftapp's virtualenv (`uv sync` in `skriftapp/`).
   `web/landing-check.mjs` imports `playwright`, so install `web/`'s
-  dependencies first with `npm install` in `web/`. It launches the browser named
-  by `CHROMIUM_PATH` (for example `/usr/bin/chromium`). Unset, it expects
+  dependencies first with the transport-then-web frozen install sequence above.
+  It launches the browser named by `CHROMIUM_PATH` (for example `/usr/bin/chromium`). Unset, it expects
   Playwright's own download: run `npx playwright install chromium` in `web/`
   first. A browser on `PATH` alone is not enough. The preview listens on port
   4173. If that port is taken, start it with `--port <n>` and set

@@ -40,7 +40,7 @@ conflict (gateway tier, Redis, §6 open decisions), the list above wins.
 
 Already built and validated (this is the differentiated, higher-risk half):
 
-- **bridge/** (Rust) — task lifecycle, worktree-per-task, full-PTY harness (no SDK), single `done` MCP tool, git-diff watcher, orchestrator, **E2EE transport binding** (Rust port of `build-secure-transport`, interop-verified vs Python/JS), relay client, and the **E2EE app RPC** (`task.*`, `stream.*`, `term.*`).
+- **bridge/** (Rust) — task lifecycle, worktree-per-task, full-PTY harness (no SDK), single `done` MCP tool, git-diff watcher, orchestrator, **E2EE transport binding** (Rust implementation beside the in-tree `transport/` JS binding and Python reference; required JS/Python and Rust/Python interop), relay client, and the **E2EE app RPC** (`task.*`, `stream.*`, `term.*`).
 - **Terminal over E2EE** — server-side `vt100` screen model, snapshot-resync (not byte replay), output coalescing. Renders Claude Code / Codex cleanly; idle keystroke RTT ~12 ms through the full path; survives client *and* relay/bridge reconnects.
 - **Reliability** — snapshot+cursor resync per surface, liveness-ping disconnect detection, generation-guarded reconnect. Verified over the **real relay** (Postgres-backed Ed25519 auth, Redis fan-out).
 - A **gateway shim** (Node) stood in for the web backend's relay-facing half — a prototype of the real `gateway`, not throwaway.

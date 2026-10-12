@@ -2,12 +2,42 @@
 
 Companion to [the #572 migration plan](Secure%20Transport%20Consolidation%20Plan.md).
 Inspection date: 2026-10-12. The original #572 planning inventory is retained;
-#575 local receipts below cover import/package evidence P1/P2; #576 receipts
-cover compatibility evidence C1–C3; #577 receipts cover consumer evidence
-D1–D2. The remaining migration evidence is pending.
+#575 receipts cover P1/P2; #576 covers C1–C3; #577 covers D1–D2;
+#578 covers B1/B2/G1/G2. Those implementations are landed. #579 records the
+operational/reference reconciliation here; #580 exact-head independent review
+and the final migration-wide handoff remain pending. Local receipts and
+main integration are distinct from observing the live main CI workflow.
 Paths below are relative to Build unless prefixed `upstream:`.
 
+## Landed plan items
+
+The recorded commits below are ancestors of the #579 starting main
+`eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f`. Landing receipts are on the named
+tasks; the detailed local evidence below remains historical at each checkpoint.
+
+| Plan item | Implementation/review head | Main landing | State |
+| --- | --- | --- | --- |
+| #572 decision and evidence plan | plan branch | `215bc79c7e91c4319f10b0c7f9dd2969030df794` | landed |
+| #575 canonical import/provenance/license, P1/P2 | `4dee2838ac9e933530a6941f3f8146815741aaee` (initial byte import `496716692caa3a711a7f627952d711adfa52ac73`) | `99eaab748857a552a5fc30384ba848c5d1e47f13` | landed |
+| #576 mandatory portable compatibility, C1–C3 | `9c3e221574bc1fe01769d3ac5bb4aeb587cd1367` | `6335adbe0aeab4b60cb6bdf16cfb790321d44351` | landed |
+| #607 required CI uv 0.12.13 prerequisite | `fe7b3e91e35d9cf2dc46939c8d0ca953fb2d8332` | `877563ae47aa22b4ca0a81de26e51b72cb141b96` | landed |
+| #577 in-tree consumers and locks, D1/D2 | `0e5636e44864d9765c2abcbe2d0c267220cadc94`, included in cohort below | `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f` | landed with #578 |
+| #578 checkout-based images/CI/routing, B1/B2/G1/G2 | `96dce16db21d03ecfe0902c84e8ffd7883f6b9d0` | `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f` | landed with #577 |
+| #579 ownership/contributor/reference reconciliation, O1 | this branch; exact head and check receipts on #579 | pending review/integration | documentation prepared |
+| #580 final independent review and integration handoff, R1 | pending | pending | not yet completed |
+
+The #576 landing ran full bridge/clippy/fmt/vendor and SPA lint/test/capture/build
+candidate gates with uv on PATH, plus scans/diff-check (all exit 0, task receipt).
+#607 corrected the missing uv prerequisite subsequently exposed on main CI.
+The #577/#578 landing ran the same candidate gates with transport installed
+before frozen SPA, plus scans/diff-check (all exit 0, task receipt). These are
+recorded coordinator results, not reruns by #579. Main CI observation at the
+cohort landing remains with the coordinator; this document does not invent a
+successful run or migration-wide final approval.
+
 ## Inspected baseline
+
+This inventory describes the original #572 planning checkout, not current main.
 
 | Source | Observed value |
 | --- | --- |
@@ -45,9 +75,9 @@ Implementation must save the full imported file/hash manifest, not only this
 directory map. Keep the initial source copy distinguishable from later edits.
 Do not follow symlinks while enumerating the import.
 
-## Consumer and packaging inventory
+## Original consumer and packaging inventory (#572)
 
-| Surface | Current coupling | Child |
+| Surface | Coupling at planning baseline | Child |
 | --- | --- | --- |
 | `spa/package.json:23`, `web/package.json:16` | `file:../../build-secure-transport/js` | #577 |
 | SPA `connection.js`, terminal `manager.js`; web harness imports | stable package name imports; preserve | #577 |
@@ -67,7 +97,7 @@ Do not follow symlinks while enumerating the import.
 | `bridge/Cargo.toml`, bridge release workflow/Containerfile | Rust already in-tree; no extraction needed | unchanged unless test wiring requires it |
 | desktop | loads hosted SPA; no transport package import or standalone bundling | no desktop migration needed |
 
-## Existing compatibility coverage
+## Original compatibility coverage (#572)
 
 | Test source | What exists at baseline | Gap relevant to relocation |
 | --- | --- | --- |
@@ -85,7 +115,8 @@ was not collected in #572.
 
 ## Documentation/reference audit (#579)
 
-Current operational references to update:
+The original audit identified these references (now reconciled by #579, except
+the deliberately preserved baseline artifacts noted below):
 
 - Root `README.md` architecture and licensing paragraphs; `SECURITY.md` currently
   sends transport vulnerabilities to the separate repository.
@@ -105,37 +136,34 @@ rather than mechanically rewriting every occurrence. Search tracked hidden
 files as well as ordinary source files. External clone instructions and active
 out-of-tree paths must have no surviving operational use.
 
-## Acceptance evidence ledger (implementation in progress)
+## Acceptance evidence ledger
 
 Each item must name exact commit, command/environment, exit status and attached
 log or artifact when completed. No row is marked passed from source inspection.
 These are the migration security requirements; all must be satisfied before
 reporting the implementation's security checklist complete.
 
-| ID | Required evidence | Owner | Planning status |
+| ID | Required evidence | Owner | Status |
 | --- | --- | --- | --- |
-| P1 | Imported canonical file hashes match pinned source; exclusions verified | #575 | locally verified; #575 receipts below |
-| P2 | Scoped BSL notice retained; npm tarball and Python sdist/wheel include correct source/license; no generated duplicate sources | #575 | locally verified; #575 receipts below |
-| C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | locally verified; #576 receipts below |
-| C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | locally verified; #576 receipts below |
-| C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | locally verified; #576 receipts below |
-| D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | locally verified; #577 receipts below |
-| D2 | Node and Vite libsodium resolution; SPA lint/focused tests/build; web unit tests | #577 | locally verified; #577 receipts below |
-| B1 | App and QA images build from clean repository context without external transport access; final contents/notices reviewed | #578 | locally verified; #578 receipts below |
-| B2 | Root Docker/Podman ignores and narrow COPY rules exclude environments/private files and retain necessary locks | #578 | locally verified; #578 receipts below |
-| G1 | JS-only, Python-only, Rust, fixture, workflow/selector and unrelated-doc path cases select intended checks/images | #578 | locally verified; #578 receipts below |
-| G2 | Failed/skipped/canceled/missing compatibility evidence blocks owed image builds, including a later app-only commit | #578 | locally verified; #578 receipts below |
-| O1 | One-checkout docs, reporting destination and remaining historical references reviewed; old repo untouched | #579 | pending |
+| P1 | Imported canonical file hashes match pinned source; exclusions verified | #575 | landed; #575 receipts and landing commit above |
+| P2 | Scoped BSL notice retained; npm tarball and Python sdist/wheel include correct source/license; no generated duplicate sources | #575 | landed; #575 receipts and landing commit above |
+| C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | landed; #576 receipts and landing commit above |
+| C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | landed; #576 receipts and landing commit above |
+| C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | landed; #576 receipts and landing commit above |
+| D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | landed; #577 receipts and landing commit above |
+| D2 | Node and Vite libsodium resolution; SPA lint/focused tests/build; web unit tests | #577 | landed; #577 receipts and landing commit above |
+| B1 | App and QA images build from clean repository context without external transport access; final contents/notices reviewed | #578 | landed; #578 receipts and landing commit above |
+| B2 | Root Docker/Podman ignores and narrow COPY rules exclude environments/private files and retain necessary locks | #578 | landed; #578 receipts and landing commit above |
+| G1 | JS-only, Python-only, Rust, fixture, workflow/selector and unrelated-doc path cases select intended checks/images | #578 | landed; #578 receipts and landing commit above |
+| G2 | Failed/skipped/canceled/missing compatibility evidence blocks owed image builds, including a later app-only commit | #578 | landed; #578 receipts and landing commit above |
+| O1 | One-checkout docs, reporting destination and remaining historical references reviewed; old repo untouched | #579 | prepared for review; exact head/check receipts on task; not landed |
 | R1 | Independent approval names exact feature SHA and resolves findings | #580 | pending |
 | R2 | #569 records final candidate/base, required full gates plus transport checks, scans and actual integration outcome | coordinator/#569 | pending |
 
-Suggested future focused entrypoints, after #576 defines the launcher contract:
-Python `uv run --frozen --project transport/python python -m unittest discover
--s transport/python/tests`; JS `npm test --prefix transport/js`; from `bridge/`,
-`cargo test transport::tests` and `cargo test --test interop_python -- --nocapture`.
-Run these under `nice -n 10` and capture exit codes. The JS launcher and Rust
-reference default must be repaired before these count as complete evidence.
-Do not run these commands during #572's planning-only pass.
+Current focused entrypoints and prerequisites are documented in
+[transport/README.md](../../transport/README.md#development-and-compatibility).
+The portable JS launcher and required in-tree Rust/Python reference landed in
+#576. Missing tools or files fail instead of silently skipping.
 
 Final implementation validation adds existing candidate gates (bridge tests,
 clippy, fmt and vendored tests; SPA lint, full test/capture/build; relevant
@@ -421,3 +449,39 @@ execution, user-browser interaction, home-state access or network/firewall chang
 are part of these receipts. Main CI after ordered #577/#578 integration remains
 the live verification; broader ownership/reference work and final independent
 review/integration remain #579/#580/#569.
+
+## #579 ownership/reference reconciliation (2026-10-12)
+
+The documentation branch starts at the completed cutover main `eaf01df8`.
+Build is the maintenance/audit source of truth and its private vulnerability
+reporting path covers JS, Python and Rust transport. Setup installs the locked
+in-tree JS dependencies before frozen SPA/web consumers; the tracked SPA verify
+skill follows that sequence. App/QA recipes use root contexts and the Build
+commit as the source pin. Historical envelope prose remains distinct from the
+signaling-only relay/WebRTC topology; no replay or `route_to` authentication
+claim is added. The imported JS/Python BSL exception remains explicit.
+
+Reference audit classification:
+
+- Active topology, contributor, security, agent, SPA/web, deployment and test-audit
+  documentation now points at the in-tree source and setup. `docs/` contains no
+  legacy transport clone/reporting reference requiring a change.
+- `transport/UPSTREAM.md`, this original inventory, and the original #572 plan
+  retain old pins, paths and clone/build-argument descriptions as provenance or
+  pre-migration requirements. They do not instruct current developers to clone.
+- `transport/js/README.md` and `transport/python/README.md` remain byte-identical
+  to the pin per coordinator decision. Current ownership/setup and the “imported,
+  do not edit here” note are centralized in `transport/README.md` and UPSTREAM.
+- `WebRTC Transport Spec.md` and `Direct Connection Spec.html` point to the
+  preserved in-tree E2E-MVP document; their older topology is historical where
+  superseded by code and ARCHITECTURE.md. Roadmap transport paths are in-tree.
+- Remaining code occurrences are package names/imports, provenance/checker
+  constants, negative clone-regression assertions, the descriptive `web/e2e.mjs`
+  comment, or repository-picker sample data in `captureRepoPicker.mjs`. These
+  do not create operational external-source dependencies and are unchanged.
+
+The external repository, history, tags and packages stay untouched and available;
+no archived/read-only hosting state is asserted. The README pointer draft is on
+#579 for Zech to apply manually. Applying it is outside this branch, as the plan
+requires. Required check exits and the exact final head are recorded on #579;
+#580 review and final integration/handoff remain separate obligations.

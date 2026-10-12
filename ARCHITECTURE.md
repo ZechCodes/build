@@ -27,7 +27,7 @@ relative to the repository root.
 | relay | `bridge/src/bin/relay.rs`, logic in `bridge/src/relay_server.rs` | relay.getbuild.ing (`deploy/k8s/relay.yaml`) |
 | bridge | `bridge/src/main.rs`, library in `bridge/src/lib.rs` | the user's machine |
 | desktop app | `desktop/` (Electron; loads the hosted SPA, see `desktop/src/security-policy.mjs`) | the user's desktop |
-| E2EE protocol | separate repo `build-secure-transport`: the SPA imports its JS binding; the bridge carries a Rust port in `bridge/src/transport.rs`, checked by `bridge/tests/interop_python.rs` | both ends |
+| E2EE protocol | `transport/js/` (SPA/web binding), `transport/python/` (reference/tests); Rust in `bridge/src/transport.rs`. Compatibility tests and fixtures live in this checkout | both ends; Python is test-only |
 
 A session goes like this:
 
@@ -1548,6 +1548,14 @@ the trackers left on tasks that finished before this rule. The user's watch
 
 ### Relay and direct connection
 
+Build maintains the crypto bindings in [transport/](transport/README.md) and
+`bridge/src/transport.rs`. The historical [E2E-MVP](transport/E2E-MVP.md)
+describes the envelope protocol; its older relay/presence topology does not
+replace the signaling-only relay and API-owned device keys described here.
+The bindings do not enforce replay protection or authenticate the outer
+`route_to` field. Moving them into Build changes ownership and build inputs,
+not the protocol, sessions or network behavior.
+
 - **Relay client**: `bridge/src/relay.rs` holds a `wss` connection to
   `/ws/device` (default `wss://relay.getbuild.ing`, `DEFAULT_RELAY_URL` in
   `bridge/src/config.rs`) and authenticates with the device's Ed25519 identity.
@@ -1922,9 +1930,13 @@ Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in
 `bridge/tests/`: the wire contract (`api_contract.rs`), relay (`relay_*.rs`),
 WebRTC (`rtc_peer.rs`), presence (`presence.rs`, `device_presence.rs`), E2EE
-interop (`interop_python.rs`, which needs a `build-secure-transport` checkout),
+interop (`interop_python.rs`, using the required in-tree `transport/python`
+reference through frozen uv resolution), compatibility vectors (`transport_vectors.rs`),
 store migration and the complexity ratchet (`complexity_ratchet.rs`). The
-complexity threshold is in `bridge/clippy.toml`.
+complexity threshold is in `bridge/clippy.toml`. Missing uv or reference files
+fail the actual Rust/Python round trip; the test does not silently skip. JS/Python
+interop and Python/JS vectors run in the dedicated transport CI job. These
+are JS/Python and Rust/Python checks, not a direct JS/Rust runtime exchange.
 
 Git fixtures set a local test identity and `commit.gpgsign=false` through
 `git_fixture::configure_repo`, so product commits in the repository and its
@@ -1948,7 +1960,9 @@ Vanilla JavaScript ES modules with no framework, bundled by Vite
 dependency is self-hosted. `@build/secure-transport` is a `file:../transport/js`
 dependency within this checkout (`spa/package.json`). SPA and web commit their
 portable npm locks; install `transport/js` from its own lock before either
-consumer. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
+consumer, using Node 22.23.3/npm 12.0.2 and the install sequence in
+[AGENTS.md](AGENTS.md#working-rules). App and QA images build the binding from
+this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
 transport lock; Node resolves the binding's dependencies from `transport/js`.
 
 ### Module layout

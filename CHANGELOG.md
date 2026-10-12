@@ -30,6 +30,14 @@ Wire 3.21.0.
 
 ### Added
 
+- Secure transport is maintained in this checkout (`transport/js`, Python
+  reference/tests, and the existing Rust implementation). SPA/web locks, CI and
+  app/QA images use the in-tree binding; developers no longer need a sibling
+  clone. Build is the maintenance/audit and private vulnerability-reporting
+  destination. The imported JS/Python BSL notice and original pinned repository
+  history remain intact; no protocol, session, identity or root-license change
+  accompanies this consolidation (#572, #575–#579).
+
 - Project sources in Git and pushes (wire 3.21.0, #529): every Git verb
   project Changes uses addresses one original source by `project_id`,
   `source_id` and its captured `source_path` (`git.projectSources`), with

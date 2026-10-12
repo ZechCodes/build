@@ -1,5 +1,8 @@
 # Tasks
 
+The waiting-on additions in #558 reflect Zech's decisions of 2026-10-12.
+They describe the next implementation, not behaviour the bridge already serves.
+
 ## Purpose
 
 A task tracker, one per project, that is where the user and the agents working
@@ -9,8 +12,9 @@ kanban view over status columns.
 
 What makes it Build's rather than a copy of GitHub's: **assigning a task is
 dispatching it**. A task handed to an agent arrives in that agent's
-conversation and the agent starts on it. There is no second step where somebody
-turns a task into work.
+conversation and the agent starts on it. A task waiting on other tasks keeps
+that assignment until they resolve; the last one releases the delivery. There
+is no second step where somebody turns a ready assignment into work.
 
 Agents are first-class here. An agent of a project can list, read, file, comment
 on, move, close, link and assign tasks in its own project, and can assign to
@@ -50,6 +54,8 @@ in this document, "plan" means the legacy flow and "task" means the tracker's.
 | `priority` | `"none"` \| `"low"` \| `"medium"` \| `"high"` \| `"urgent"` | `none` is the default and is a value, not an absence. |
 | `assignee` | `null` \| assignee | See [Actors](#actors). |
 | `links` | object | See [Links](#links). |
+| `dependencies` | object, absent on older bridges | `{blocked, waiting_on: [DependencyDigest], blocks: [DependencyDigest], blocks_count, blocks_next_cursor?}`. Reverse previews are capped at 20; list/rail/feed rows omit the preview and carry the count. Each digest carries `task_id`, `number`, `title`, `state`, `status`, `resolved` and `resolved_by` (`"done"`, `"close"`, or `null`). Read from the graph, not supplied by a client. |
+| `deferred_assignment` | object, absent when none | `{id, target, state, error?}`. The saved assignment waiting for delivery; see [When a task waits](#when-a-task-waits). `target` uses the assignment request shape, including a creating kind. |
 | `trackers` | `["agent-01K5Z…"]` | The agents watching this task — see [Tracking](#tracking). Ordered by when each started tracking, deduped, at most 50. Always present; a task nobody watches answers `[]`. |
 | `created_by` | actor | Who filed it. |
 | `created_at`, `updated_at` | RFC 3339 UTC | |
@@ -76,7 +82,7 @@ in this document, "plan" means the legacy flow and "task" means the tracker's.
 | `at` | RFC 3339 UTC | |
 | `actor` | actor | |
 | `kind` | `created` \| `assigned` \| `unassigned` \| `moved` \| `labelled` \| `linked` \| `closed` \| `reopened` \| `dispatched` \| `tracked` \| `untracked` | |
-| `payload` | object | What the kind needs. `created` carries `{title}`; `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`; `tracked` and `untracked` carry `{agent_id}` and, when the tracking was a consequence rather than a request, `{by: "assignment"}`. |
+| `payload` | object | What the kind needs. `created` carries `{title}`; `moved` carries `{from, to}`; `assigned` carries `{assignee}`; `labelled` carries `{added, removed}`; `linked` carries the link that was added; `closed` carries `{reason}`; `dispatched` carries `{workspace_id?, entity_id, agent_id, kind}`; `tracked` and `untracked` carry `{agent_id}` and, when the tracking was a consequence rather than a request, `{by: "assignment"}`. Waiting-on also adds `unlinked`, `blocked`, `unblocked`, `dispatch_deferred` and `dispatch_failed`, described under Waiting-on verbs and capabilities. |
 | `mentions_user` | `true`, absent otherwise | Since 1.27.0, an agent's `created` event has this when `create_task` was called with `mention_user: true`. Like the same flag on an agent comment, it asks the user to read or answer and counts only until the user's read mark passes the event. Other events omit it. |
 
 ### Actors
@@ -88,10 +94,12 @@ One tagged shape everywhere a person or an agent is named — `assignee`,
 { "kind": "user" }
 { "kind": "project_agent" }
 { "kind": "agent", "agent_id": "agent-01K5Z…" }
+{ "kind": "build" }
 ```
 
-`project_agent` is only ever an **assignee**. An author or an actor is always
-`user` or `agent`: by the time an agent of a project's conversation owner has
+`project_agent` is only ever an **assignee**. A comment author is `user` or
+`agent`; automatic events may use `build`. An agent author or actor has its
+own identity: by the time an agent of a project's conversation owner has
 written something, it has an id, and that id already says it is a project agent
 (the `project-` prefix). `assignee` may additionally be `null` — unassigned.
 
@@ -105,11 +113,12 @@ A task's links are what it is about in the repository and in Build:
   "branches": ["build/tasks-board"],
   "commits": ["c8381faa…"],
   "conversation_ids": ["run-5d90b1e7"],
-  "parent_task_id": null
+  "parent_task_id": null,
+  "waiting_on": ["task-01K5Y…"]
 }
 ```
 
-The four lists are ordered by when each was added, deduped, and capped at 20
+The four repository/conversation lists are ordered by when each was added, deduped, and capped at 20
 entries each. `parent_task_id` is a single task of the **same project**; a
 task may not be its own parent, and a cycle is refused.
 
@@ -117,6 +126,44 @@ task may not be its own parent, and a cycle is refused.
 `agent.list`, `thread.page` and the rail are addressed by. A dispatch records
 the conversation it delivered into here, so a task page can open the
 conversation that is working it.
+
+`waiting_on` is a separate graph from parenthood: a child does not wait on
+its parent unless somebody says so. It holds at most 20 distinct task ids,
+in order of addition. A task can block many tasks. Every endpoint belongs to
+the same project. Missing tasks, self-edges and cycles are refused before any
+part of a write lands, including a create with several blockers. A duplicate
+edge changes nothing. Cycle checks include resolved edges, so reopening a task
+cannot turn a previously accepted graph into a cycle.
+
+**All blockers must resolve.** Done or closed resolves a blocker. In review
+and an agent's Complete report do not. A merged review resolves through its
+task's move to Done, not through a merge-queue slot or an agent's prose. Keep
+the edges: `resolved_by` is `"done"` when the prerequisite is in Done, otherwise
+`"close"` when closed, and `null` while open and unfinished. Done takes
+precedence when both are true. A close releases the wait without claiming the
+prerequisite's work was completed.
+
+The goal is automation with intelligence on demand. Every assignment delivery
+names the prerequisites that are closed without Done and tells the receiving
+agent to read them, assess whether their closure actually permits this task,
+and proceed when it does. If it does not clearly permit the work, the agent
+comments on this task with `mention_user: true`, naming the uncertain
+prerequisites and the decision needed. The bridge releases the assignment;
+the agent makes that judgment rather than leaving an abandoned prerequisite
+as an indefinite hold. This instruction also goes to the project agent when
+an unassigned task unblocks. It is an assessment instruction, not a claim that
+closing is proof of completed work.
+
+`dependencies.waiting_on` names every forward edge and whether it resolves;
+`dependencies.blocks` on a detail names the first 20 reverse edges, with
+`blocks_count` and `blocks_next_cursor` for the rest. List, digest and watched
+feed rows carry the count without repeating an unbounded reverse graph.
+`tasks.waiting_on.blocks {task_id, limit?, cursor?}` pages the reverse list
+in stable task-number order, at most 100 per page, with an opaque cursor bound
+to that project and blocker. It answers `{blocks, next_cursor?}`. Forward lists
+are already bounded by the 20-edge limit. Neither is reconstructed from
+whatever subset of tasks the client happened to cache. The summaries carry
+no task bodies. Removing an edge preserves its timeline history.
 
 ### Typed references
 
@@ -301,16 +348,154 @@ the params `agent.add` is called with, because that verb reads the PRESENCE of a
 key to tell "run it on this" from "run it on whatever the workspace runs on".
 
 An optional `note` on `tasks.assign` is extra instruction text delivered under
-the task. It is not stored on the task: the task's body is the task, and a
-hand-off note belongs in the conversation it was said in.
+the task. The task's body is the task. A deferred assignment retains the note
+in its private delivery record until it can deliver it; it is not copied into
+the task body or the public dependency summaries.
 
 Assigning over an existing assignee replaces it and writes one `assigned` event.
 Assigning `null` unassigns and writes `unassigned`; it dispatches nothing and
 stops nothing that is already running.
 
+### When a task waits
+
+Assigning an open task with unresolved blockers to an agent target records
+the assignment and answers immediately with `dispatch: null` and `deferred_assignment.state:
+"waiting"`. It writes `assigned` and `dispatch_deferred`, not `dispatched`.
+The saved target is the instruction to start when ready. Linking a blocker,
+removing one or receiving a notice is not another assignment.
+
+An existing agent or the project agent is stored in `assignee` now.
+User assignment simply stores `assignee: {kind: "user"}` and uses the live
+dependency facts. It has no deferred delivery intent or `dispatch_deferred`
+event to settle; unblocking it never produces a dispatch receipt.
+A creating target stays in `deferred_assignment.target`, with `assignee: null`
+until the real agent exists. It counts as held in the project task sections;
+its label is “New workspace when ready” or “New agent when ready”, never an
+invented agent id. Assignment filters (`any` and `none`) count that saved target
+as held too. Named-agent filters match an existing target, not a future agent.
+
+A waiting task remains in Backlog or Ready. Assignment leaves either column
+alone until delivery moves it to In progress. Creating or moving an unresolved,
+undelivered task to In progress or In review is refused with `conflict`, naming
+its blockers. Moving it to Done or closing it cancels the saved delivery.
+Reopening the dependent does not restore a cancelled assignment: assign again.
+Assigning a finished task with unresolved blockers is refused.
+
+The last blocker reaching Done or closed makes a durable `unblocked` event,
+naming the blockers resolved during this wait, how they resolved, and the
+change that released the last one.
+An armed agent assignment enters `queued`, then uses today's dispatch path.
+The delivered brief names those blockers and the original assigner, carries
+`from_task`, and tells the agent to read the current task. It also carries the
+closed-without-Done list and the assessment/escalation instruction above. An
+existing agent gets one delivery, even if it also tracks the task. An
+unassigned task instead sends one informational notice to the project's pinned coordinator; it does
+not assign itself or create a worker. That notice carries the same list and
+instruction, so the coordinator can assess before assigning the work. A task
+held by the user starts no agent; its task page names the resolved-by-close
+prerequisites. Removing the last edge follows the same rule and says it was
+removed, not completed. No transition is emitted when a task is created with no unresolved
+blockers; ordinary ready assignment still dispatches immediately, with the
+same closed-without-Done list and instruction when relevant. The list covers
+all retained closed-without-Done prerequisites at message admission, including
+ones closed before assignment, not just the last prerequisite to resolve.
+An empty list needs no closure assessment instruction. Store the list and the
+exact instruction in the admitted payload so a restart cannot omit them or
+change the request behind its operation id. Later state changes are ordinary
+task notices and the agent reads the current task before acting.
+
+**Creating waits too.** `new_workspace` makes its workspace and agent only at
+unblock; `new_agent` makes its agent only then. Save the explicit choices,
+including omitted choices as omitted, the original actor and notification
+preference. Resolve project defaults at creation time. Validate project and
+target ownership both when saving and immediately before provisioning and
+delivery. A missing or retired target is a visible failed delivery, never a
+reason to choose another agent. A retired assigning agent does not become the
+user: preserve its attribution, and fail if its authority cannot be validated.
+
+Reassigning replaces the saved instruction with a new generation. Unassigning,
+closing or moving the task to Done cancels it. A deliberate move back to Ready
+from In progress or In review retires the previous delivery's authority to
+resume; to wait on a fix or review, move to Ready, add the edge, then assign.
+Adding an unresolved edge directly to an In progress or In review task is
+refused. Returning to Ready also fences the old dispatch receipt from Complete's
+automatic move; a late report cannot put a newly waiting task into In review. Reassignment while blocked normalizes an
+already-started task to Ready before saving its new intent.
+Moving a card or editing an edge never interrupts a running process.
+The agent finishes its turn with Waiting when it has handed work on.
+
+**Reopening is not a second dispatch.** Readiness always follows the live
+graph: `blocked` means an open, unfinished task has an unresolved prerequisite.
+Reopen keeps a task's column. Reopening a prerequisite outside Done makes its
+retained edges unresolved; reopening one still in Done leaves them resolved.
+Moving out of Done only re-blocks when the prerequisite is also open. An
+open, unfinished prerequisite makes dependents Blocked again and sends an
+informational notice naming it. Before delivery this returns the
+saved assignment to waiting. After delivery its instruction is consumed:
+the existing turn continues, the task's column stays where it was, and a later
+resolution cannot start another turn. Blocked describes the task's prerequisites,
+not whether its holder's process is running on this or another task.
+
+To resume an already delivered task after another wait, explicitly assign it
+again. Its new generation waits or dispatches from the graph as it stands.
+Done and closed dependents never appear in Blocked, and adding new unresolved
+edges to them is refused. This policy also applies to user-held tasks, which
+have no agent delivery to consume. The task page explains when a prerequisite
+reopened after work started; it does not promise that reopening stopped a turn.
+
+### Durable delivery
+
+The dependency service lives in the bridge, independently of open clients.
+Store the graph change, its timeline events and a durable reconciliation
+marker in one transaction. For a large fan-out, process affected dependents in
+pages: each transaction rechecks readiness, records transitions and outbox
+entries, and advances the marker. A crash cannot skip a page or invent a
+second event. A newly added edge gets its own marker, so pagination misses no
+concurrent edit. Creating a ready intent and its outbox entry is atomic.
+All paths that change status or state take this path: ordinary
+moves, review completion and review lifecycle writes, workspace finish, close
+and reopen. A committed write nudges the service; startup reconciliation also
+finds ready deliveries and unsent coordinator notices after a missed nudge.
+Reads, subscriptions and a caller-supplied `unblocked` string cannot start work.
+
+One saved delivery has a stable id, assignment generation, task/project,
+target, original actor, note, cause event ids, state, operation id and any
+workspace/agent ids already provisioned. States are `waiting`, `queued`,
+`provisioning`, `failed` and `delivered` (retained privately after success).
+The public `deferred_assignment` disappears after success or cancellation;
+a failure stays visible with a safe error and an explicit retry action.
+`tasks.assign` / `assign_task` with `retry_deferred_id` retries that exact
+failed delivery, with no replacement target or note. A stale id is `conflict`.
+A new ordinary assignment supersedes it rather than pretending to be a retry.
+
+Claim one generation transactionally, do slow provisioning outside the app
+lock, and check that generation, project, open state and all blockers again
+before creating each next resource and before posting the message. Serialize
+that final check and message admission against graph/assignment writes; a
+check after posting is too late. Reuse the existing operation-id delivery path;
+persist the operation id before posting and reconcile its receipt on retry.
+Freeze the admitted message payload, envelope and target conversation generation
+with that operation id: a retry cannot rebuild a different request from a
+renamed task or edited links. A restart after posting but before recording
+success cannot post a second brief. Provisioning likewise uses saved identities
+and a durable reservation:
+restart after creating a checkout or agent must find that resource, not make
+another. A revoked generation cannot deliver even if its checkout finishes.
+Retain any owned partial resource for explicit recovery; never delete a
+checkout with user work as cancellation cleanup.
+
+A delivery failure does not undo the blocker's Done or close, or re-block the
+graph.
+It records `dispatch_failed`, keeps the task in Ready or Backlog, and informs
+the coordinator once for that failure. It does not loop trying to start an
+agent. Retry rechecks readiness and waits again if necessary. Fan-out uses a
+bounded queue and yields between deliveries, not a loop that overwrites the
+existing single deferred-work slot. A project deletion cancels its intents and
+notices. A removed target is fenced before any late delivery.
+
 ### `new_workspace` waits for its checkout
 
-Cutting a workspace is seconds to minutes of git on a real repository, and
+For a ready assignment, cutting a workspace is seconds to minutes of git on a real repository, and
 `workspace.create` already hands that work to the deferred drain and answers
 `{workspace_id, pending}` under the lock. A workspace that is still provisioning
 has no conversation owner — `workspace.ensure_conversation` refuses one that is
@@ -324,7 +509,7 @@ shape is unchanged — `{task, dispatch}` with every id filled in — because th
 client never sees the placeholder. The other four kinds do not defer; they are
 a SQLite write and an in-memory lookup.
 
-Nothing is written to the task until the checkout exists. A cut that fails
+For an immediate assignment, nothing is written to the task until the checkout exists. A cut that fails
 leaves the task exactly as it was: unassigned, in its old column, with no
 `assigned` or `dispatched` event. A task must never name an agent that was
 never made.
@@ -449,12 +634,77 @@ what the notice has no room for, the id `get_task` needs:
 > Comment your progress on it with `comment_task`, and move it to In review
 > with `move_task` when you report Complete.
 
+### Waiting-on verbs and capabilities
+
+The table above records the original verb family. Current 3.x no longer
+registers `tasks.link`, `tasks.track`, `tasks.untrack` or `tasks.for_agent` as
+public RPCs; the agent tools and internal reads remain. Waiting-on does not
+restore those retired public verbs. It adds this contract:
+
+| Surface | Addition |
+| --- | --- |
+| `tasks.create` / `create_task` | Optional `waiting_on: [task_id]`; validate and save all edges before considering the assignee. A refusal files nothing. |
+| `tasks.waiting_on.add` | `{task_id, waiting_on: [task_id]}`; atomically add the named edges, answer `{task}`. |
+| `tasks.waiting_on.blocks` / `list_task_dependents` | `{task_id, limit?, cursor?}`; page reverse-edge digests, answer `{blocks, next_cursor?}`. |
+| `tasks.waiting_on.remove` | `{task_id, waiting_on: [task_id]}`; atomically remove the named edges, answer `{task}`. Missing same-project edges are no-ops. |
+| `link_task` | Optional `waiting_on: [task_id]` beside its current link keys; all requested links validate before any land. |
+| `unlink_task` | `{task_id, waiting_on: [task_id], track?}`; narrow to these edges, not arbitrary historical workspace or commit links. |
+| `tasks.assign` / `assign_task` | May answer a saved deferred assignment and null dispatch; optional `retry_deferred_id` is mutually exclusive with assignee and note. |
+| `tasks.update` / `move_task` | Enforce the waiting-column rule; Done/close cancel, a deliberate return to Ready retires a consumed dispatch. No `blocked` column is added. |
+| `tasks.get` / `get_task`, `tasks.list`, task digests and watched feed rows | Carry dependency summaries, authoritative `blocked`, and public deferred assignment state. The task page also reads reverse edges. |
+
+Dependency writes accept one to 20 ids, dedupe them and apply all or none.
+The project of both endpoints is checked even on removal. No wire verb or tool
+accepts an actor, `blocked`, an unblock event, a delivery generation or an
+operation id as authority. Error replies use existing `invalid_params`,
+`not_found` and `conflict`, with scoped blocker/cycle details. An agent receives
+no identity or title from an endpoint outside its project.
+
+Target **3.22.0**. #562 confirms the release boundary before setting `since`:
+new verbs name the minor in which they actually ship, sharing the current
+unshipped additive release or taking the next minor if that release has gone
+out. This planning branch changes no version. Announce `tasks.waitingOn` only
+when the graph, deferred delivery and read summaries all work. New verbs also have
+their own capability names. Cached capabilities govern rendering; the current
+greeting must advertise the feature before sending any new parameter. An older
+bridge must never silently receive an ordinary assignment from a waiting form.
+
+`linked` and `unlinked` carry `{waiting_on: task_id}` on the dependent.
+`blocked` records a false-to-true readiness transition and carries
+`{unresolved_task_ids, cause_event_ids}`; `unblocked` carries
+`{resolved_task_ids, closed_without_done_task_ids, removed_task_ids,
+cause_event_ids}`. `resolved_task_ids` names retained prerequisites resolved
+by Done or close; `closed_without_done_task_ids` is the subset resolved by close
+at that transition, including those closed earlier in the wait. Removed edges
+are named separately. Forward digests keep their `resolved_by` reason, and
+notices label closed-without-Done tasks explicitly rather than calling them
+completed. The event records its transition; the admitted message refreshes
+the closure list from current facts and freezes it with the delivery payload.
+Transition ids are the outbox deduplication keys, not a client clock. A
+prerequisite reopening after delivery sends the holder and other trackers one informational `blocked`
+notice; pending delivery holders remain quiet. Unassigned dependents notify
+the coordinator on unblock only.
+`dispatch_deferred` carries the saved id and target; `dispatch_failed` carries
+its id and safe reason. Deferred success uses the existing `dispatched` event
+and receipt, followed by the move to In progress. Attribute user/agent edits
+to their actor and service transitions to Build, preserving the original
+assignment actor in the delivery record.
+
+There is no new push type. Existing project-scoped `tasks` changes invalidate
+the edited task, changed reverse endpoints and affected dependents, including
+when a blocker's title changes. Past the existing 200-id limit, truncate and
+refetch. `thread` announces actual delivered messages. Pin notice examples in
+`thread.page.json`, not `events.json`; pin task summaries and new verb replies
+in their API fixtures. A graph edit and its push cannot claim delivery before
+its receipt exists.
+
 ## The MCP tools
 
 Eight tools, on **both** the coding surface and the project surface:
 
 `list_tasks`, `get_task`, `create_task`, `comment_task`, `assign_task`,
-`move_task`, `close_task`, `link_task`, `track_task`, `untrack_task`.
+`move_task`, `close_task`, `link_task`, `track_task`, `untrack_task`. The
+waiting-on addition also supplies `unlink_task` and `list_task_dependents`.
 
 Each is a thin wrapper over the verb of the same shape. The bridge knows who is
 calling, so:
@@ -690,6 +940,20 @@ assignee gets is the dispatched task itself, which it was already getting.
 Its shape is pinned in `fixtures/api/v1/thread.page.json` with the notice, for
 the same reason and in the same file.
 
+### Waiting without waking
+
+Saving a deferred assignment does not enroll a new assignee as a tracker yet:
+that happens at delivery. Existing explicit trackers remain, but routine
+assignment, link and partial-resolution notices to the waiting holder are
+suppressed while that assignment has an undelivered intent; resolve a
+`project_agent` target to the pinned coordinator for this suppression too.
+After delivery, a reopened-prerequisite notice is informational and is not
+suppressed merely because the task is Blocked again. Comments still arrive, because they may change the
+plan. Other trackers get ordinary informational changes. Dependency edges do
+not subscribe the holder to every blocker's timeline. At unblock, deduplicate
+the assignment brief against the holder's tracker notice; other trackers hear
+an informational `unblocked` notice, never an instruction to take over.
+
 ### The Complete reminder
 
 An agent reports Complete and walks away from three open tasks assigned to it.
@@ -701,7 +965,11 @@ message into that agent's own conversation, naming every task assigned to it
 that is **still its to finish**, and saying the three ways out: finish it,
 comment where it got to, or hand it back with a comment saying why.
 
-Still its to finish means the column is `backlog`, `ready` or `in_progress`.
+Still its to finish means the column is `backlog`, `ready` or `in_progress`,
+and the task is neither dependency-blocked nor awaiting a deferred delivery.
+Deferred, provisioning and failed deliveries have not handed work to that
+agent; they neither nag on Complete nor qualify for the report's automatic
+move to In review. Only an actual dispatch receipt does.
 
 - **In review is not held.** In review means the agent has reported Complete
   and the work is ready to be looked at; whether it is done is somebody else's
@@ -766,6 +1034,13 @@ of thirty tasks is not a list. A task the agent both holds and tracks — which
 is every assigned one — appears in both, because the two questions are
 different and a client showing one should not have to know about the other.
 
+The internal per-agent read keeps its assigned and tracking lists and adds
+`dependencies` and `deferred_assignment` to each digest. A waiting task for an
+existing agent appears in assigned even before delivery; tracking starts when
+delivered. A future agent has no rail yet: its pending task is on the project
+surface, and joins the real agent's list once created. The rail partitions held
+tasks into Working, Assigned, then Blocked using the same rule as Dashboard.
+
 Both lists are newest-updated first. Scoped to the agent's own project, which
 the bridge resolves from the agent rather than taking as an argument.
 
@@ -813,7 +1088,7 @@ somebody says they are.
 
 A watched task is one the user can see; it needs them only when:
 
-- it is **assigned to the user**, or
+- it is **assigned to the user and not dependency-blocked**, or
 - an agent's `created` event they have not read **mentions them**
   (`mention_user` on `create_task`, kept as `mentions_user` on the event since
   1.27.0), or
@@ -841,6 +1116,16 @@ timeline. Neither waits on the board's `tracker_task` feed row, whose unread
 count is re-read only with the board and can lag a comment an `tasks` push has
 already cached. Nor does the row stand in for the watch: after Stop watching,
 the cached task says `watched: false`, and the task leaves both at once.
+
+Dependency and dispatch bookkeeping (`blocked`, `unblocked`,
+`dispatch_deferred`, `dispatch_failed` and delivery settlement) updates the
+watched row without adding unread attention, setting mention/notification
+flags, advancing the human-attention anchor or crossing a dismissal line.
+Explicit comments and assignment to the user keep their own attention rules. An
+explicit unread question still needs the user while blocked. A user-held task
+becomes Needs you when actionable again through the existing assignment rule,
+not because the unblock event asks a question. Neither waiting nor a failed
+automatic delivery silently adds a user watch.
 
 ### The verbs
 
@@ -921,15 +1206,46 @@ a client gates its inbox on the capability rather than on a version compare.
 
 ## Dashboard task sections
 
-The Dashboard presents open tasks in **Active** or **Backlog**. Active has two
-groups: **Working** for a task held by an agent whose cached feed says it is
-working now, then **Assigned** for every other held task, including tasks held
-by the user or by an agent absent from the current feed. Backlog is a flat list
-of open tasks with no holder. The board column does not decide which section a
-task belongs in. Both Active groups and Backlog put higher priorities first and
-keep the task list order within a priority. An empty Active group is hidden.
-Needs you remains a separate lens and can repeat a task from Active or Backlog.
-Done remains the completion lens below.
+The Dashboard presents open, unfinished tasks in **Active** or **Backlog**.
+Active has three groups in this order: **Working**, **Assigned**, **Blocked**.
+A held task whose `dependencies.blocked` is true belongs in Blocked, even if
+its holder's cached feed says that agent is working on something else. Of the
+remaining held tasks, Working is for an agent working now, and Assigned is for
+every other holder, including the user or an agent absent from the feed. An
+undelivered assignment (queued, provisioning or failed) belongs in Assigned,
+never Working. A saved creating target is a holder even before it has an agent.
+
+Backlog holds tasks with no holder. Within it, **Blocked** lists tasks with
+unresolved blockers and **Ready** lists those with none, in that order. Each
+Blocked row says “Waiting on #12, #18”, with titles available through the
+links. A prerequisite closed outside Done is resolved and is identified as
+closed without Done on the task page, rather than keeping its dependent in
+Blocked. A prerequisite in Done is shown as completed, even when also closed.
+Waiting alone does not assign work. Held tasks, including the user's, keep the Active
+rule above and do not appear again in Backlog.
+
+This reads Zech's “label” as a grouping heading within Backlog on the board and
+project Tasks face: not a stored task label and not a move to the Ready column.
+A task already in the Backlog column stays there when its last blocker
+resolves; only its heading changes from Blocked to Ready. Heading changes
+never write a stored column, including for an unassigned task already in the
+Ready column that the holder-based Tasks face lists under Backlog. In the
+kanban, the Backlog column groups its cards by the same readiness rule; an assigned card
+whose stored column is Backlog stays there, while the Active/Backlog task face
+classifies it as held. Other columns stay as they are. This interpretation is
+stated so Zech can correct the presentation without changing the relationship.
+
+Blocked tasks do not count as working. Every group puts higher priorities
+first and keeps the task list order within a priority. Empty groups are hidden;
+the kanban still draws an empty Backlog column.
+
+The project Tasks face, agent rail task lists and watched task inbox rows all
+use this rule from cached task facts. They must not infer readiness from an
+agent's running state, missing cached blockers or a connection state. Waiting
+rows move on the normal cache update, without a reload or a client timer.
+Needs you remains a separate lens and can repeat a task from Active or Backlog;
+explicit questions survive blocking. Done and closed/history placement wins
+before Active classification, as it does for completed work today.
 
 ## The user's session
 
@@ -1148,6 +1464,29 @@ The design rules the rest of the store follows, applied here:
   number is never reused and a timeline never loses an entry. Deleting a project
   deletes its tasks, the way it deletes its plans and runs.
 
+### Waiting-on storage
+
+The original three-table design above remains the baseline. Add an indexed
+`tracker_task_dependencies` relation keyed by `(task_id, waiting_on_task_id)`,
+with a reverse index on `waiting_on_task_id`. It is the authority for
+`links.waiting_on`; do not keep a second independently writable array in the
+JSON record. Existing rows read as empty. Parent links stay in the record.
+
+Add a durable delivery table keyed by delivery id, with a unique current
+assignment generation per task, and an outbox for unblock/coordinator notices.
+Store the private intent fields described in Durable delivery there. Allocate
+the next schema version at implementation (main is currently 15), rather than
+reusing the historical schema-8 number above. Migrate without rewriting old
+assignments or interpreting their history as pending work. Startup finds only
+saved intents; it must never redispatch every old assigned task.
+
+Store methods expose graph edits, affected-task transitions and delivery
+claims, not SQL. Cycle detection, readiness, generation checks and event/outbox
+writes share the write transaction. Read forward/reverse summaries in batches,
+without a timeline read per edge. Delete project edges, intents and notices in
+the same project cleanup. The dependency service may find a large fan-out in
+pages; durable work and deduplication survive yielding between pages.
+
 ### A different backing store later
 
 The store surface is six methods, all of them whole-record:
@@ -1176,7 +1515,7 @@ answer was lost adds nothing a second time.
 3. An assignee must be of the task's project: an agent on one of its
    workspaces, its project agent, or the user.
 4. A link must be of the task's project: a workspace of it, a conversation
-   owner bound to it, a parent task in it.
+   owner bound to it, a parent task or waiting-on endpoint in it.
 5. A comment's typed refs are fenced twice — shape, then ownership by the task.
 6. The user, over the wire, may act on any project's tasks; `project_id` is a
    param there because the browser is not scoped to a project the way an agent
@@ -1203,7 +1542,12 @@ repaints from the push. A column is not a filter the user typed — it is what
 labels, the priority, the assignee, the links, and the timeline: comments and
 events interleaved, ascending, each stamped with its actor and time. A comment
 composer at the bottom. A delivered task's conversation is one press away
-through `links.conversation_ids`.
+through `links.conversation_ids`. “Waiting on” and “Blocks” list task numbers,
+titles and resolution state as task links. A same-project picker adds a blocker;
+removing one is an explicit edge action. Explain “Removing the last blocker
+starts the saved assignment” when that is the result. Submit with the new
+verbs, paint from the returned cache, and preserve the form on refusal. Reverse
+edges link their dependent task; editing that task uses the same scoped action.
 
 **The assignee picker.** One control over all five kinds — the user, the
 project's agent, any agent on any workspace of the project (grouped by
@@ -1211,13 +1555,18 @@ workspace, from `workspace.list` plus `agent.list`), a new agent on an existing
 workspace, or a new workspace. Choosing one of the last two is where the
 harness/model/effort selects appear. The control says what it is about to do —
 "cut a workspace and start an agent on it" — because assigning starts work and
-the user should not discover that afterwards.
+the user should not discover that afterwards. With blockers it says “Start
+when #12 and #18 are Done or closed”; a creating kind says it will create the
+workspace or agent then. It explains that an agent reviews closed-without-Done
+prerequisites before proceeding. A failed deferred assignment offers Retry
+for its saved id.
 
 **The agent's activity entry.** Per agent, what it holds and what it watches,
 from `tasks.for_agent {agent_id}` — two digest lists, each newest-updated
 first, each entry `{task_id, number, title, state, status, updated_at}`. An
-assigned task appears in both lists; that is not a bug to de-duplicate, it is
-the two questions being different.
+delivered assignment appears in both lists; a deferred assignment appears in
+assigned and joins tracking on delivery. The two lists answer different
+questions.
 
 **Push.** The project page subscribes `{scope: {kind: "entity", id: project_id},
 kinds: ["tasks"]}` and refetches on an item. A task page open on a task
@@ -1236,7 +1585,130 @@ hold no stages, no approvals, no diff and no review state. A task says what
 should be done and where the doing is happening; the doing itself is a
 workspace, a conversation and a diff, each of which already has a surface.
 
-Assigning starts an agent. Nothing else here does: closing a task stops
-nothing, moving a card stops nothing, and unassigning stops nothing. Stopping an
+Assigning authorizes an agent to start. Resolving or explicitly removing the
+last blocker releases that saved assignment; it cannot invent one. Otherwise,
+closing a task stops nothing, moving a card stops nothing, and unassigning stops nothing. Stopping an
 agent is `agent.remove` and `workspace.delete`, which say what they take with
 them.
+
+
+## Waiting-on decisions and delivery (#558)
+
+Zech settled the decisions on 2026-10-12: the goal is automation, relying on
+intelligence on demand. The project agent confirmed the reading of decisions
+3 and 5. The headings interpretation for Backlog is explicit above.
+
+| Decision | Agreed behaviour |
+| --- | --- |
+| Does closed without Done resolve a blocker? | Yes. Retain the edge as resolved-by-close. Deliver the closed-without-Done list and an instruction to assess whether the work can proceed, escalating with `comment_task` and `mention_user: true` if that is unclear. |
+| When are a requested workspace and agent created? | At unblock, including `new_agent`; keep a durable target meanwhile. |
+| Do review tasks automatically wait on change tasks? | Keep this in the project agent's choreography. Move a held task to Ready, add the review/fix prerequisite, then assign to resume when Done or closed. Automatic reciprocal review/change edges can deadlock; review becomes actionable before change Done. |
+| What does reopening a prerequisite do after dispatch? | Show Blocked and notify when it becomes open and unfinished, but never interrupt or automatically redispatch a consumed assignment. Assign again to request another turn. |
+| Where does an unassigned waiting task appear? | Keep it in Backlog, under Blocked; unblocked Backlog is under Ready. These are headings within Backlog, not task labels or the Ready column. Held tasks still enter Active → Blocked. |
+| Does a blocked task assigned to the user need them? | Suppress the assignment-only ask while blocked; explicit questions still need them, and unblock restores the actionable assignment. |
+
+Implementation follows the planning branch's review and merge. Each child is
+one branch from main and one fresh Astra review before merge. Estimates are
+engineering half-days, including focused tests and review fixes, not elapsed
+time. Children remain unassigned in Backlog until the project agent dispatches
+them. Wire target is 3.22.0, with #562 confirming the release boundary.
+
+| Child | Scope | Depends on | Half-days |
+| --- | --- | --- | ---: |
+| W1 / #560 | Dependency graph, storage and lifecycle transitions | Planning branch merged | 2 |
+| W2 / #561 | Durable deferred assignment and unblock delivery | W1 merged | 4 |
+| W3 / #562 | RPC/MCP contract, notices, reads and compatibility | W2 merged | 2 |
+| W4 / #563 | Shared Blocked grouping in Dashboard, inbox and rail | W3 merged | 2 |
+| W5 / #564 | Task-page edges and waiting assignment controls | W3 merged | 2 |
+
+**Total: 12 half-days (6 engineering days).** W4 and W5 can run in parallel
+once the bridge contract is merged; coordinate cached model and action helpers.
+W1–W3 are sequential because each changes the same dispatch/store contract.
+No SPA child depends on an unreviewed bridge branch. The order is
+#560 → #561 → #562 → (#563 and #564). The feature capability
+stays absent until W3 has verified the complete bridge behaviour.
+
+**W1 acceptance.** File A waiting on B and C; each must be Done or closed
+before A unblocks. Closed without Done retains its edge as resolved-by-close,
+with a distinct digest and event reason; an open, unfinished prerequisite
+still holds the task. Add/remove edges, reverse reads, project scope,
+self/cycle rejection, duplicate calls and multi-edge atomic refusal are observable through service
+tests. All terminal paths (manual move, review completion/merge/close,
+workspace finish) update dependents. Reopen, unfinished close and finished
+dependent behaviour follow the chosen policy. Migration gives existing tasks
+no blockers or pending deliveries. Proposed tests:
+`waiting_on_same_project_dag_is_atomic`, `waiting_on_all_blockers_required`,
+`waiting_on_lifecycle_paths`, `waiting_on_close_resolution_reasons`,
+`waiting_on_migration_defaults`. Include reopening a closed prerequisite both
+inside and outside Done. Supply TS558-1/3/5.
+
+**W2 acceptance.** An assigned waiting task gets no message or workspace until
+ready. Fan-in releases once; fan-out reaches every dependent without losing
+queued work. User and unassigned cases start no worker. Existing/new/project
+agent targets work. Reassign, unassign, return to Ready, close, Done, target
+removal and project deletion fence stale intents and late Complete. Fault
+injection covers restart before/after resource reservation, checkout creation,
+agent creation, message persistence and success settlement, including title or
+link edits between retries. Exactly one resource set and operation receipt
+survive. Delivery after Done or close includes every retained
+closed-without-Done prerequisite and the assessment/escalation instruction,
+even when the close preceded assignment or another blocker resolved last.
+The unassigned coordinator notice has the same facts and instruction. A forged
+or foreign close cannot release unauthorized work. Failure is visible and
+explicitly retryable. Proposed tests:
+`waiting_assignment_defers_every_target`, `unblock_fan_in_and_fan_out`,
+`deferred_dispatch_restart_boundaries`, `deferred_dispatch_generation_fences`,
+`deferred_dispatch_retry_freezes_message`, `closed_blockers_delivery_context`.
+Supply TS558-2/3/4/6.
+
+**W3 acceptance.** Create with edges validates before dispatch; add/remove,
+retry and reads round-trip through typed RPCs and project-scoped MCP tools.
+Contract fixtures cover waiting, queued, failed and delivered answers, reverse
+summaries and notices. No forged caller field or foreign endpoint starts work.
+Tracking, Complete reminders, coordinator notices, watch/read/dismissal marks
+and user Needs you obey the rules above. Close-resolution notices distinguish
+closed-without-Done from completed prerequisites and explicitly direct the
+receiving agent to assess and escalate with `comment_task` and
+`mention_user: true` when unclear; they never mention the user automatically.
+Unblock works with no connected SPA. New capability/verb declarations and
+actual release minor agree, with 3.22.0 the target pending release verification.
+Proposed tests:
+`waiting_on_rpc_mcp_contract`, `waiting_notices_and_reminders`,
+`unblock_preserves_user_attention`, `closed_blocker_notice_contract`, plus
+`api_contract`; supply TS558-1–6 end-to-end evidence, without duplicating W1/W2 unit coverage.
+
+**W4 acceptance.** Cached held tasks appear in Working, Assigned, Blocked order;
+Blocked beats a running holder, names blockers and contributes zero working
+count. Backlog has Blocked then Ready headings on both the board and project
+Tasks face; a task already in the Backlog column stays there as Done/close
+moves it between headings. No stored labels are created and no stored column
+is changed, including for existing Ready-column tasks. User, missing agent, pending creating target, Done/history, explicit
+questions, priority order and empty groups all render correctly. Existing
+task pushes update every surface without a reload or a connection-state branch. Extend `trackerAgentTasks.test.js`,
+`trackerTasksPaneDom.test.js` and inbox row unit tests; add
+`spa/test/browser/taskBlockedSections.test.js` for desktop/phone, cache-first
+mount, pushed Done/close/unblock/reopen, Backlog headings and older-capability
+fixtures. Supply TS558-7.
+
+**W5 acceptance.** Waiting on and Blocks navigate in both directions. The
+same-project picker adds/removes edges and retains its input on cycle or stale
+refusal. Last-edge removal explains and releases only an existing assignment;
+no holder starts no worker. Assignment explains delayed creation, and a failed
+intent retries by id. Resolved-by-close edges remain visible and distinguishable
+from Done, and assignment copy says Done or closed with agent assessment of
+closures. An old bridge shows existing task behaviour and sends no
+new parameter or verb, including when a cached capability was previously true.
+Add unit coverage for edge actions, cache updates and capability checks, plus
+`spa/test/browser/taskWaitingOnEdges.test.js` for keyboard, phone/desktop,
+add/remove/reverse navigation, refusal, deferred assignment, resolved-by-close
+presentation and retry. Verify one combined journey after W4 merges. Supply TS558-4/7.
+
+Every bridge child runs `nice -n 10 cargo test` (including `api_contract` and
+`complexity_ratchet`), clippy and fmt checks; the ratchet count cannot increase.
+Every SPA child runs lint, `npm test` (including `spa/test/browser/`) and build;
+`complexityRatchet.test.js` stays unchanged. Use fixture/mock bridges for browser
+acceptance, not the user's browser or live bridge. Write behavioural tests
+first. Each child runs repository security scans before push/review and updates
+only the checklist rows it has actually verified. No bridge binary, install,
+pairing, private agent configuration or network configuration work is part of
+this plan.

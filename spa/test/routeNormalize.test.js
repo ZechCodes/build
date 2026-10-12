@@ -92,7 +92,9 @@ describe("a route that names its device", () => {
   it("adds exactly one history entry when a destination picker opts in", () => {
     const entries = history.length;
     const destination = { name: "workspace", deviceId: "dev-2", projectId: "p2", workspaceId: "w2", tab: "files" };
-    expect(go(destination, { newEntry: true })).toBe(true);
+    const beforeCommit = vi.fn(() => true);
+    expect(go(destination, { newEntry: true, beforeCommit })).toBe(true);
+    expect(beforeCommit).toHaveBeenCalledOnce();
     expect(history.length).toBe(entries + 1);
     expect(App.route).toEqual(destination);
   });

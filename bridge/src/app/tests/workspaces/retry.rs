@@ -74,8 +74,16 @@ fn fixture(ready_git: bool) -> RetryFixture {
             if source.id == "source-2" {
                 return Err("fixture provisioning failure".into());
             }
+            let start = source
+                .is_git
+                .then(|| oid(&source.path, &source.base_branch));
             crate::app::workspaces::materialize_source(
-                source, path, "retry", isolation, &rift_root, None,
+                source,
+                path,
+                "retry",
+                isolation,
+                &rift_root,
+                start.as_deref(),
             )
         },
     );
@@ -225,6 +233,36 @@ fn retry_after_source_removal_waits_for_the_saved_repository() {
 #[test]
 fn retry_after_source_move_waits_for_the_saved_repository() {
     contended_saved_retry(Drift::Move);
+}
+
+#[test]
+fn retry_after_base_change_waits_for_the_saved_repository() {
+    contended_saved_retry(Drift::Base);
+}
+
+#[test]
+fn git_materialization_refuses_a_missing_pin_before_creating_a_checkout() {
+    let fixture = fixture(false);
+    let workspace = fixture.state.workspaces.get(&fixture.workspace_id).unwrap();
+    let source = WorkspaceRegistry::retry_sources(workspace)
+        .into_iter()
+        .find(|source| source.id == "source-2")
+        .unwrap();
+    let destination = fixture.workspace_root.join("unpinned");
+    let result = crate::app::workspaces::materialize_source(
+        &source,
+        &destination,
+        "unpinned",
+        Isolation::Worktree,
+        &fixture.root.join("unused-rift"),
+        None,
+    );
+    assert!(
+        result.is_err(),
+        "materialized without a prepared OID: {result:?}"
+    );
+    assert!(!destination.exists());
+    kept(&fixture);
 }
 
 #[test]

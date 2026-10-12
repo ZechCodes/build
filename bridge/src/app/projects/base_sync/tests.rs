@@ -350,3 +350,37 @@ fn cut_aliases_of_a_common_git_directory_do_not_reenter_the_lock() {
     assert_eq!(prepared.len(), 2);
     assert_eq!(prepared[0].start, prepared[1].start);
 }
+
+#[test]
+fn cut_settlement_does_not_request_sync_for_a_moved_source() {
+    let mut fixture = fixture();
+    let subject = fixture.subject(SyncOrigin::Cut);
+    let cut_from = head_of(&subject.path, "main");
+    let replacement = init_repo_named(fixture._dir.path(), "replacement");
+    fixture
+        .state
+        .projects
+        .source_mut(&fixture.project_id, "source-1")
+        .unwrap()
+        .path = replacement;
+    fixture.state.settle_source_syncs(
+        vec![Synced {
+            subject,
+            report: SyncReport {
+                outcome: SyncOutcome::CheckoutLeft { cut_from },
+                ahead: 0,
+                behind: 1,
+                fetched: true,
+            },
+            start: None,
+        }],
+        START_MS,
+    );
+    assert!(
+        fixture
+            .state
+            .source_sync_subjects(SyncPass::Requested, START_MS)
+            .is_empty(),
+        "settling a saved input queued a sync of the replacement repository"
+    );
+}

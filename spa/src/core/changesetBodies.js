@@ -88,8 +88,9 @@ export function pathsToFetch(views, { openPaths, bodyOf }) {
 
 /** Older truncated aggregates kept empty pages for paths the patch never
  *  reached. They carry a content key but still owe the reader a body. Empty
- *  complete replies remain valid, including binary and unchanged files. */
-const hasAnsweredBody = (body) => Boolean(body && (!body.truncated || body.patch));
+ *  complete replies remain valid, including binary and unchanged files, and
+ *  a page read can complete a body whose original answer was truncated. */
+const hasAnsweredBody = (body) => Boolean(body && (!body.truncated || body.patch || body.pages?.complete));
 
 /** The paths one call at a time, in request order. */
 export function batchPaths(paths, max = CHANGESET_DIFF_MAX_PATHS) {

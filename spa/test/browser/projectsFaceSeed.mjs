@@ -108,7 +108,7 @@ export async function inspectActiveBlock(page) {
       createGlyph: box(block.querySelector(".inbox-project-create svg")),
       toggle: box(toggle), toggleFill: fill(toggle), caret: box(toggle.querySelector(".inbox-recent-caret")),
       count: box(toggle.querySelector(".inbox-recent-count")),
-      accentSoft: resolved("var(--accent-soft)"), panel: resolved("var(--panel)"),
+      accentSoft: resolved("var(--accent-soft)"), panel: resolved("var(--panel)"), ground: resolved("var(--bg)"),
       rows: [...block.querySelectorAll(".inbox-entry")].map((row) => {
         const title = row.querySelector(".stitle");
         const titleBox = box(title);

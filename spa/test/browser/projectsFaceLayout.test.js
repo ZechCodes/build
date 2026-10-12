@@ -10,10 +10,9 @@ const CONTENT_X = { desktop: 51, phone: 64 };
 /** Decode real screenshot pixels at the fold and project-name columns. */
 async function blockColumnPixels(page) {
   const geometry = await page.locator(".inbox-project.active").evaluate((block) => {
-    const head = block.querySelector(".inbox-project-head").getBoundingClientRect();
-    const last = [...block.querySelectorAll(".inbox-entry")].at(-1).getBoundingClientRect();
+    const head = block.getBoundingClientRect();
     return { clip: { x: Math.floor(head.x), y: Math.floor(head.y), width: Math.ceil(head.width),
-      height: Math.ceil(last.bottom) - Math.floor(head.y) },
+      height: Math.ceil(head.bottom) - Math.floor(head.y) },
       columns: [block.querySelector(".inbox-fold svg"), block.querySelector(".inbox-project-name")]
         .map((element) => Math.round(element.getBoundingClientRect().x) - Math.floor(head.x)) };
   });
@@ -29,6 +28,26 @@ async function blockColumnPixels(page) {
       return `rgb(${pixels[offset]}, ${pixels[offset + 1]}, ${pixels[offset + 2]})`;
     }));
   }, { base64: png.toString("base64"), columns: geometry.columns });
+}
+
+/** Compare the real gutter pixel to the opaque mask's composite, allowing
+ *  one RGB level for screenshot rounding of the translucent gradient. */
+async function rowMaskPixelErrors(page, selector) {
+  const row = page.locator(selector);
+  const box = await row.boundingBox();
+  const expected = await row.locator(".inbox-actions").evaluate((element) => getComputedStyle(element).backgroundColor);
+  const png = await page.screenshot({ clip: { x: Math.floor(box.x + 5), y: Math.floor(box.y + box.height / 2), width: 1, height: 1 } });
+  return page.evaluate(async ({ base64, expected }) => {
+    const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
+    const canvas = new OffscreenCanvas(1, 1);
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const actual = context.getImageData(0, 0, 1, 1).data;
+    context.fillStyle = expected;
+    context.fillRect(0, 0, 1, 1);
+    const wanted = context.getImageData(0, 0, 1, 1).data;
+    return [0, 1, 2].map((channel) => Math.abs(actual[channel] - wanted[channel]));
+  }, { base64: png.toString("base64"), expected });
 }
 
 for (const { label, width, height, hasTouch } of [
@@ -191,7 +210,7 @@ for (const { label, width, height, hasTouch } of [
           expect(standing.bar).toBe("3px");
           const columns = await blockColumnPixels(page);
           for (const [column, pixels] of columns.entries()) {
-            expect(pixels.filter((pixel) => pixel === block.panel), `column ${column}`).toEqual([]);
+            expect(pixels.filter((pixel) => pixel === block.panel || pixel === block.ground), `column ${column}`).toEqual([]);
           }
           if (emptyLive) {
             const rows = await page.locator(".inbox-project.active .inbox-project-rows").boundingBox();
@@ -214,10 +233,39 @@ for (const { label, width, height, hasTouch } of [
           }));
       for (const margin of margins) expect(margin).toEqual(["0px", "0px", "0px", "0px"]);
       await page.locator('[data-project-fold="projects-review/build"]').click();
+      await page.locator(".inbox-project.active.inbox-folded").waitFor();
       expect(await page.locator(".inbox-project.active .inbox-recent").isVisible()).toBe(false);
       const folded = await inspectActiveBlock(page);
       expect(folded.background).toBe(folded.accentSoft);
       expect(folded.headFill).toBe("rgba(0, 0, 0, 0)");
+    }, { width, height, hasTouch });
+  }, 60_000);
+
+  it(`keeps standing and hover fills under the production stylesheet order on ${label} (#540)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await mountProjectsFace(page, basePath, { standing: true });
+      await openRecent(page, "projects-review/build");
+      // The app's styles.css imports shell before defining the shared .srow
+      // rules. Drop the harness's duplicate shell sheets to exercise that order.
+      await page.evaluate(() => {
+        for (const sheet of document.querySelectorAll('link[href$="src/styles/shell.css"], style[data-vite-dev-id$="/src/styles/shell.css"]')) sheet.remove();
+      });
+      for (const theme of ["light", "dark"]) {
+        await settleTheme(page, theme);
+        const block = await inspectActiveBlock(page);
+        const standing = block.rows.find((row) => row.key === "tracker_task:land-tracker");
+        expect(standing.fill).not.toBe(block.accentSoft);
+        expect(standing.fill).toBe(standing.actionsFill);
+        await hoverRecentRow(page);
+        const hover = await page.locator('.inbox-project.active .inbox-entry:hover')
+          .evaluate((element) => getComputedStyle(element).backgroundImage);
+        expect(hover).toContain("linear-gradient");
+        for (const selector of [".inbox-project.active .inbox-entry.active", ".inbox-project.active .inbox-entry:hover"]) {
+          const errors = await rowMaskPixelErrors(page, selector);
+          for (const error of errors) expect(error, `${theme} ${selector}`).toBeLessThanOrEqual(1);
+        }
+      }
     }, { width, height, hasTouch });
   }, 60_000);
 
@@ -257,10 +305,11 @@ it("includes the phone safe area in the block's single inset (#540)", async () =
     await mountProjectsFace(page, basePath);
     await openRecent(page, "projects-review/build");
     const block = await inspectActiveBlock(page);
-    expect(block.name.x).toBe(CONTENT_X.phone + 20);
+    const list = await page.locator("#inbox-list").boundingBox();
+    // The safe area shifts the floating rail as well as its content inset.
+    expect(block.name.x - list.x).toBe(41 + 20);
     expect(block.caret.x).toBe(block.name.x);
     for (const row of block.rows) expect(row.title.x).toBe(block.name.x);
-    const list = await page.locator("#inbox-list").boundingBox();
     expect(block.head.x).toBe(list.x);
     expect(block.head.right).toBe(list.x + list.width);
   }, { width: 390, height: 844, hasTouch: true });

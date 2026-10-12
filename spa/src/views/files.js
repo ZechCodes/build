@@ -519,13 +519,13 @@ export function renderFilesTab(body, { scope, roots, layoutEntityId, callRpc, ca
     showFileResult(path, request, result);
   };
 
-  /** A directory moved to a different cache namespace. Keep a loaded viewer,
-   * but replace a loading read whose reply now belongs to the old namespace. */
+  /** A directory moved to a different cache namespace. Keep its loaded viewer
+   * and pull afresh: the destination's held body may belong to another root. */
   const rebindSelectedFile = async (path) => {
     const request = ++fileRequest;
     watchFile(path, request);
-    const record = await rereadSelectedFile(path, request);
-    if (!stillSelected(request, path) || record?.value?.file) return;
+    const record = await heldRecord(fileAddress(path));
+    if (!stillSelected(request, path)) return;
     const result = await pullFile(path, request, recordWriteOf(record));
     showFileResult(path, request, result);
   };

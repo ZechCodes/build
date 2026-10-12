@@ -216,3 +216,12 @@ test("publisher still rejects unexpected files inside artifact staging before si
   assert.deepEqual(calls(f), []);
   assert.ok(!existsSync(join(f.stage, "SHA256SUMS")));
 });
+test("staging creation failure stops before artifact download", ubuntuPublisher, t => {
+  const f = fixture(t);
+  f.env.RUNNER_TEMP = join(f.root, "missing/runner");
+  const result = runPublisher(f);
+  assert.notEqual(result.status, 0);
+  assert.match(result.step, /Prepare isolated release staging/);
+  assert.equal(f.stage, undefined);
+  assert.deepEqual(calls(f), []);
+});

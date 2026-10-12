@@ -75,6 +75,31 @@ impl TwoSources {
             .map(|source| source.path.display().to_string())
             .collect()
     }
+
+    fn assert_worker_starts_blocked(&self) {
+        let refused = self
+            .state
+            .refuse_worker_during_source_move(&self.owner, &self.worker)
+            .expect_err("an admitted source move still holds worker starts");
+        assert!(refused.contains("folders is moving"), "{refused}");
+    }
+
+    fn assert_worker_starts_allowed(&self) {
+        self.state
+            .refuse_worker_during_source_move(&self.owner, &self.worker)
+            .expect("all admitted moves settled, so worker starts are allowed");
+    }
+
+    fn add_another_move(&mut self) -> Value {
+        let assets = init_repo_named(&self.root, "assets");
+        let added = self.state.handle(req(
+            "project.add_source",
+            json!({ "project_id": self.project_id, "path": assets }),
+        ));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let moved = init_repo_named(&self.root, "assets-moved");
+        json!({ "project_id": self.project_id, "source_id": "source-3", "path": moved })
+    }
 }
 
 /// A turn queued for a worker — the delivery that will start it — holds
@@ -194,4 +219,94 @@ fn a_moving_source_holds_worker_starts_until_it_settles() {
     f.state
         .refuse_worker_during_source_move(&f.owner, &f.worker)
         .expect("the move has settled");
+}
+
+/// A duplicate directory claim owns no move hold, whether the rejected
+/// request moves the source or only relabels it. Neither may release the
+/// admitted move that is still running off the app lock.
+#[test]
+fn a_rejected_duplicate_update_keeps_the_admitted_move_hold() {
+    for retry_moves in [true, false] {
+        let mut f = TwoSources::new();
+        let params = f.move_params();
+        f.state.project_update_source(&params).unwrap();
+        let pending = f.state.take_deferred().unwrap();
+        f.assert_worker_starts_blocked();
+
+        let retry = if retry_moves {
+            params.clone()
+        } else {
+            json!({ "project_id": f.project_id, "source_id": "source-2", "name": "Docs" })
+        };
+        let refused = f.state.project_update_source(&retry).unwrap_err();
+        assert!(refused.contains("already updating"), "{refused}");
+        f.assert_worker_starts_blocked();
+
+        f.state
+            .apply_deferred("project.update_source", &params, pending.run())
+            .unwrap();
+        f.assert_worker_starts_allowed();
+    }
+}
+
+/// A label update on another source can settle while a move is pending,
+/// but it never acquired a worker-start hold and cannot release that move's.
+#[test]
+fn a_nonmoving_update_cannot_release_another_source_move_hold() {
+    let mut f = TwoSources::new();
+    let params = f.move_params();
+    f.state.project_update_source(&params).unwrap();
+    let pending = f.state.take_deferred().unwrap();
+    f.assert_worker_starts_blocked();
+
+    let label = json!({ "project_id": f.project_id, "source_id": "source-1", "name": "Code" });
+    f.state.project_update_source(&label).unwrap();
+    let relabel = f.state.take_deferred().unwrap();
+    f.state
+        .apply_deferred("project.update_source", &label, relabel.run())
+        .unwrap();
+    f.assert_worker_starts_blocked();
+
+    f.state
+        .apply_deferred("project.update_source", &params, pending.run())
+        .unwrap();
+    f.assert_worker_starts_allowed();
+}
+
+/// Every admitted move holds worker starts until its own settlement, whether
+/// it succeeds or fails. Settling one cannot release the other; settling the
+/// final move must reopen starts, including when that final move fails.
+#[test]
+fn overlapping_source_moves_hold_workers_until_both_settle() {
+    for first_fails in [false, true] {
+        for last_fails in [false, true] {
+            let mut f = TwoSources::new();
+            let mut last_params = f.add_another_move();
+            let mut first_params = f.move_params();
+            if first_fails {
+                first_params["base_branch"] = json!("missing-branch");
+            }
+            if last_fails {
+                last_params["base_branch"] = json!("missing-branch");
+            }
+
+            f.state.project_update_source(&first_params).unwrap();
+            let first = f.state.take_deferred().unwrap();
+            f.state.project_update_source(&last_params).unwrap();
+            let last = f.state.take_deferred().unwrap();
+            f.assert_worker_starts_blocked();
+
+            let settled =
+                f.state
+                    .apply_deferred("project.update_source", &first_params, first.run());
+            assert_eq!(settled.is_err(), first_fails, "{settled:?}");
+            f.assert_worker_starts_blocked();
+
+            let settled = f
+                .state
+                .apply_deferred("project.update_source", &last_params, last.run());
+            assert_eq!(settled.is_err(), last_fails, "{settled:?}");
+            f.assert_worker_starts_allowed();
+        }
+    }
 }

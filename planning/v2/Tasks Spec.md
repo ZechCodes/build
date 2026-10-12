@@ -1475,7 +1475,8 @@ JSON record. Existing rows read as empty. Parent links stay in the record.
 Add a durable delivery table keyed by delivery id, with a unique current
 assignment generation per task, and an outbox for unblock/coordinator notices.
 Store the private intent fields described in Durable delivery there. Allocate
-the next schema version at implementation (main is currently 15), rather than
+schema 16 in W1 for the graph, readiness, reconciliation and transition
+receipts; W2 allocates its next version for delivery intents rather than
 reusing the historical schema-8 number above. Migrate without rewriting old
 assignments or interpreting their history as pending work. Startup finds only
 saved intents; it must never redispatch every old assigned task.

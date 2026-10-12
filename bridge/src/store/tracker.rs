@@ -515,6 +515,7 @@ fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
 }
 
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
+    super::waiting_on::note_task_write(tx, task)?;
     tx.execute(
         "INSERT INTO tracker_tasks
              (id, project_key, number, state, status, created_at, updated_at, record)
@@ -568,6 +569,7 @@ pub(super) fn append_activity(
             ],
         )?;
     }
+    super::waiting_on::note_activity(tx, events)?;
     Ok(())
 }
 
@@ -632,7 +634,7 @@ fn in_timeline_order(entries: &mut [TimelineEntry]) {
 ///
 /// Fail fast, the way every other record here does: a silently dropped task
 /// is work the user filed that Build would then say does not exist.
-fn decode<T: serde::de::DeserializeOwned>(
+pub(super) fn decode<T: serde::de::DeserializeOwned>(
     raw: &str,
     table: &str,
     id: &str,

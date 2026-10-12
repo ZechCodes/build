@@ -203,6 +203,9 @@ pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::TaskEvent) 
         Kind::Created => event.mentions_user && matches!(&event.actor, Actor::Agent { .. }),
         Kind::Labelled
         | Kind::Linked
+        | Kind::Unlinked
+        | Kind::Blocked
+        | Kind::Unblocked
         | Kind::Dispatched
         | Kind::Tracked
         | Kind::Untracked

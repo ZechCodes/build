@@ -1,5 +1,5 @@
 use super::*;
-use crate::update::{Release, UpdateBackend, UpdateConfig, UpdateService};
+use crate::update::{Release, UpdateBackend, UpdateConfig, UpdateService, UpdateState};
 use async_trait::async_trait;
 use tokio::sync::Notify;
 
@@ -64,9 +64,23 @@ async fn idle_handoff_blocks_real_rpc_until_failed_launch_reopens_admission() {
         .unwrap();
     let ticking = tokio::spawn({
         let service = service.clone();
-        async move { service.tick(false).await }
+        async move {
+            loop {
+                let result = service.tick(false).await;
+                match result {
+                    Ok(status) if status.state == UpdateState::ScheduledWhenIdle => {
+                        // The dependency reconciler can briefly hold the app lock;
+                        // retry like the runtime's periodic update tick does.
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    result => return result,
+                }
+            }
+        }
     });
-    backend.entered.notified().await;
+    tokio::time::timeout(Duration::from_secs(10), backend.entered.notified())
+        .await
+        .expect("idle update reaches the launch backend");
 
     let parent = dir.path().join("new-projects");
     let request = json!({ "name": "during-handoff", "parent": parent });

@@ -68,6 +68,8 @@ mod schema;
 mod source_sync;
 mod task_rename;
 mod tracker;
+mod waiting_on;
+pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
 mod user_session;
 mod workspace_lifecycle;
 
@@ -97,6 +99,10 @@ pub use tracker::{TaskFilter, TaskSeek, TaskStretch};
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
+    #[error("invalid waiting-on dependency: {0}")]
+    WaitingOnInvalid(String),
+    #[error("conflict: unresolved waiting-on dependencies")]
+    WaitingOnConflict,
     #[error("store io error: {0}")]
     Io(#[from] std::io::Error),
     /// A record file exists but cannot be parsed. Boot fails fast on this — a
@@ -218,7 +224,8 @@ pub enum StoreError {
 /// 13 adds persisted per-source review Git actions (#330).
 /// 14 persists workspace removal locks (#398).
 /// 15 adds PR bindings, operation journals, workspace claims and sync observations.
-pub const SCHEMA_VERSION: i64 = 15;
+/// 16 adds task dependencies, readiness reconciliation and transition receipts.
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -236,6 +243,7 @@ const DB_FILE: &str = "build.db";
 pub struct Store {
     dir: PathBuf,
     conn: Arc<Mutex<Connection>>,
+    pub(crate) waiting_on_wakeup: Arc<tokio::sync::Notify>,
     /// Test-only: make the next write fail.
     ///
     /// Several contracts are about what happens when the store REFUSES —
@@ -315,6 +323,7 @@ impl Store {
                 Store::add_hoisted_column(&conn, column)?;
             }
         }
+        waiting_on::ensure_reconciliation_columns(&conn)?;
         conn.execute_batch(SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
         // Against the newest HOISTED column's version rather than against the
@@ -342,6 +351,7 @@ impl Store {
         Ok(Store {
             dir,
             conn: Arc::new(Mutex::new(conn)),
+            waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             renamed_tasks,
@@ -400,7 +410,18 @@ impl Store {
         // timeout above would not cover it.
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let out = work(&tx)?;
+        // Only committed writes wake the service. The durable queue also
+        // survives an absent service or a missed process-local notification.
+        let pending: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tracker_dependency_reconcile)
+             OR EXISTS(SELECT 1 FROM tracker_dependency_changes)",
+            [],
+            |row| row.get(0),
+        )?;
         tx.commit()?;
+        if pending {
+            self.waiting_on_wakeup.notify_one();
+        }
         Ok(out)
     }
 }

@@ -286,7 +286,12 @@ fn project_sources() -> ProjectSources {
     let mut sources = state.project_at(0).sources.clone();
     for (id, name, path, is_git) in [
         ("source-2", "Second", second.clone(), true),
-        ("source-3", "Plain", std::fs::canonicalize(&plain).unwrap(), false),
+        (
+            "source-3",
+            "Plain",
+            std::fs::canonicalize(&plain).unwrap(),
+            false,
+        ),
     ] {
         sources.push(crate::app::projects::ProjectSource::added(
             id.into(),
@@ -412,10 +417,21 @@ fn project_source_git_addresses_each_source_with_its_own_keys() {
     assert_eq!(refs["ok"], true, "{refs:?}");
     // Uncommitted only in the primary: each source's changeset is its own.
     let changesets = [&first, &second].map(|scope| {
-        sources.call("git.changeset_diff", scope, json!({ "paths": ["same.txt"] }))
+        sources.call(
+            "git.changeset_diff",
+            scope,
+            json!({ "paths": ["same.txt"] }),
+        )
     });
-    assert_eq!(changesets[0]["result"]["files"][0]["path"], "same.txt", "{changesets:?}");
-    assert_eq!(changesets[1]["result"]["files"], json!([]), "{changesets:?}");
+    assert_eq!(
+        changesets[0]["result"]["files"][0]["path"], "same.txt",
+        "{changesets:?}"
+    );
+    assert_eq!(
+        changesets[1]["result"]["files"],
+        json!([]),
+        "{changesets:?}"
+    );
 }
 
 /// A plain folder is a source with Files and terminals but no Git: a Git verb
@@ -446,13 +462,34 @@ fn project_source_git_refuses_mixed_or_moved_scope() {
     let other_repo = init_repo_named(&dir, "other");
     let other_id = sources.state.add_project(other_repo, "main".into());
     let mut refusals = vec![
-        (json!({ "project_id": project_id, "source_id": "source-2" }), "invalid_params"),
-        (json!({ "project_id": project_id, "source_id": "", "source_path": second["source_path"] }), "invalid_params"),
-        (json!({ "project_id": project_id, "source_path": second["source_path"] }), "invalid_params"),
-        (json!({ "project_id": project_id, "source_id": "missing", "source_path": "/nowhere" }), "not_found"),
-        (json!({ "project_id": "missing", "source_id": "source-2", "source_path": second["source_path"] }), "not_found"),
-        (json!({ "project_id": other_id, "source_id": "source-2", "source_path": second["source_path"] }), "not_found"),
-        (json!({ "project_id": project_id, "source_id": "source-2", "source_path": dir.join("elsewhere") }), "conflict"),
+        (
+            json!({ "project_id": project_id, "source_id": "source-2" }),
+            "invalid_params",
+        ),
+        (
+            json!({ "project_id": project_id, "source_id": "", "source_path": second["source_path"] }),
+            "invalid_params",
+        ),
+        (
+            json!({ "project_id": project_id, "source_path": second["source_path"] }),
+            "invalid_params",
+        ),
+        (
+            json!({ "project_id": project_id, "source_id": "missing", "source_path": "/nowhere" }),
+            "not_found",
+        ),
+        (
+            json!({ "project_id": "missing", "source_id": "source-2", "source_path": second["source_path"] }),
+            "not_found",
+        ),
+        (
+            json!({ "project_id": other_id, "source_id": "source-2", "source_path": second["source_path"] }),
+            "not_found",
+        ),
+        (
+            json!({ "project_id": project_id, "source_id": "source-2", "source_path": dir.join("elsewhere") }),
+            "conflict",
+        ),
     ];
     for field in ["workspace_id", "run_id", "worktree_id"] {
         let mut mixed = second.clone();
@@ -511,7 +548,10 @@ fn project_source_git_serves_an_unborn_repository() {
         true,
         "main".into(),
     ));
-    assert!(sources.state.projects.set_sources(&sources.project_id, rows));
+    assert!(sources
+        .state
+        .projects
+        .set_sources(&sources.project_id, rows));
     let scope = sources.scope("source-4");
 
     let empty = sources.call("git.log", &scope, json!({}));
@@ -523,5 +563,9 @@ fn project_source_git_serves_an_unborn_repository() {
     let committed = sources.call("git.commit", &scope, json!({ "message": "first" }));
     assert_eq!(committed["ok"], true, "{committed:?}");
     let log = sources.call("git.log", &scope, json!({}));
-    assert_eq!(log["result"]["commits"].as_array().unwrap().len(), 1, "{log:?}");
+    assert_eq!(
+        log["result"]["commits"].as_array().unwrap().len(),
+        1,
+        "{log:?}"
+    );
 }

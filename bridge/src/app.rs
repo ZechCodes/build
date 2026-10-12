@@ -178,12 +178,12 @@ use config::{default_state_root, DEFAULT_HARNESS};
 #[cfg(test)]
 use config::{read_config, ConfigPersistStep};
 pub(crate) use fs::MOVED_SOURCE;
-pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use projects::base_sync::{SourceSyncPolicy, SyncPass};
 use projects::{
     default_projects_dir, AgentChoiceArgs, Project, ProjectRegistry, ProjectSourceArgs,
     WorkspaceAgentAddress, WorkspaceDirectoryArgs,
 };
+pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
 
 use std::collections::HashMap;

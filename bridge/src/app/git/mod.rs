@@ -39,16 +39,20 @@ pub(in crate::app) fn project_source_namespace(source: &ResolvedProjectSource) -
     )
 }
 
+/// One key as a source scope answers it.
+pub(in crate::app) fn namespaced_key(namespace: &str, key: &str) -> String {
+    crate::diff::fnv1a64_hex(&format!("{namespace}\0{key}"))
+}
+
 /// Re-key a payload's `status_key` and per-file `content_key`s under
 /// `namespace`, as every source-scoped read and push answers them.
 pub(in crate::app) fn namespace_payload_keys(namespace: &str, mut payload: Value) -> Value {
-    let rekey = |key: &str| crate::diff::fnv1a64_hex(&format!("{namespace}\0{key}"));
     if let Some(key) = payload.get("status_key").and_then(Value::as_str) {
-        payload["status_key"] = json!(rekey(key));
+        payload["status_key"] = json!(namespaced_key(namespace, key));
     }
     for file in payload["files"].as_array_mut().into_iter().flatten() {
         if let Some(key) = file.get("content_key").and_then(Value::as_str) {
-            file["content_key"] = json!(rekey(key));
+            file["content_key"] = json!(namespaced_key(namespace, key));
         }
     }
     payload

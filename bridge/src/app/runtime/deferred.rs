@@ -976,7 +976,8 @@ impl AppState {
     /// entity rooted there, a project source's included.
     pub(in crate::app) fn note_git_at(&self, root: &std::path::Path) {
         for entity_id in self.entities_rooted_at(root) {
-            self.changes.note_kind(&entity_id, crate::changes::Kind::Git);
+            self.changes
+                .note_kind(&entity_id, crate::changes::Kind::Git);
         }
     }
 

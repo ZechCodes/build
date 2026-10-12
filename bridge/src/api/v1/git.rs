@@ -39,7 +39,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
         v1_method!("git.pull", git_pull, GitPullParams, StatusPayload),
         v1_method!("git.push", git_push, GitPushParams, StatusPayload),
         v1_method!("git.stash", git_stash, SourceScopeParams, StatusPayload),
-        v1_method!("git.stash_pop", git_stash_pop, SourceScopeParams, StatusPayload),
+        v1_method!(
+            "git.stash_pop",
+            git_stash_pop,
+            SourceScopeParams,
+            StatusPayload
+        ),
         v1_method!(
             "git.merge_abort",
             git_merge_abort,
@@ -1013,7 +1018,10 @@ fn git_commit(
     answer(app.git_commit(&params.wire()))
 }
 
-fn git_fetch(app: &mut AppState, params: SourceScopeParams) -> Result<Answer<StatusPayload>, ApiError> {
+fn git_fetch(
+    app: &mut AppState,
+    params: SourceScopeParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
     answer(app.git_fetch(&params.wire()))
 }
 
@@ -1025,7 +1033,10 @@ fn git_push(app: &mut AppState, params: GitPushParams) -> Result<Answer<StatusPa
     answer(app.git_push(&params.wire()))
 }
 
-fn git_stash(app: &mut AppState, params: SourceScopeParams) -> Result<Answer<StatusPayload>, ApiError> {
+fn git_stash(
+    app: &mut AppState,
+    params: SourceScopeParams,
+) -> Result<Answer<StatusPayload>, ApiError> {
     answer(app.git_stash(&params.wire()))
 }
 
@@ -1043,7 +1054,10 @@ fn git_merge_abort(
     answer(app.git_merge_abort(&params.wire()))
 }
 
-fn git_refs(app: &mut AppState, params: SourceScopeParams) -> Result<Answer<RefListResult>, ApiError> {
+fn git_refs(
+    app: &mut AppState,
+    params: SourceScopeParams,
+) -> Result<Answer<RefListResult>, ApiError> {
     answer(app.git_refs(&params.wire()))
 }
 

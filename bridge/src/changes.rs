@@ -252,16 +252,98 @@ pub enum Scope {
     Entity(String),
     /// Every entity the board currently lists, tracked as the board changes.
     All,
+    /// One original project source, where the client opened it
+    /// (`changes.projectSources`, #529).
+    ProjectSource(ProjectSourceScope),
 }
 
-/// `{"kind": "...", "id": "..."}` — the wire form of a [`Scope`]. A tagged
-/// enum with a newtype variant is not something serde can derive, so the two
+/// What every project source's entity id starts with: never an id the board
+/// mints, so `all` can leave sources to the subscriptions that name them.
+pub const PROJECT_SOURCE_ENTITY_PREFIX: &str = "project-source:";
+
+/// The entity a project source's facts are noted and looked up under: one
+/// per project, source and captured folder, so a source moved to another
+/// folder is another entity and its old subscription hears nothing more.
+pub fn project_source_entity_id(project_id: &str, source_id: &str, source_path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new()
+        .chain_update(project_id)
+        .chain_update([0])
+        .chain_update(source_id)
+        .chain_update([0])
+        .chain_update(source_path)
+        .finalize();
+    let hex: String = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("{PROJECT_SOURCE_ENTITY_PREFIX}{hex}")
+}
+
+/// Whether `entity_id` names a project source rather than a board entity.
+pub fn is_project_source_entity(entity_id: &str) -> bool {
+    entity_id.starts_with(PROJECT_SOURCE_ENTITY_PREFIX)
+}
+
+/// One original project source as a subscription names it, and as each of
+/// its items carries it back under `project_source`: the project, the
+/// source's registered id and the `path` its row carried when the client
+/// opened it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProjectSourceScope {
+    pub project_id: String,
+    pub source_id: String,
+    pub source_path: String,
+    #[serde(skip)]
+    entity_id: String,
+}
+
+impl ProjectSourceScope {
+    pub fn new(project_id: String, source_id: String, source_path: String) -> Self {
+        let entity_id = project_source_entity_id(&project_id, &source_id, &source_path);
+        Self {
+            project_id,
+            source_id,
+            source_path,
+            entity_id,
+        }
+    }
+
+    pub fn entity_id(&self) -> &str {
+        &self.entity_id
+    }
+}
+
+/// `{"kind": "...", "id": "..."}` — the wire form of a [`Scope`]; a project
+/// source names itself by its three fields instead of an `id`. A tagged enum
+/// with a newtype variant is not something serde can derive, so the two
 /// halves are written out.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 struct ScopeWire {
     kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+}
+
+impl ScopeWire {
+    fn project_source<E: serde::de::Error>(self) -> Result<Scope, E> {
+        let field = |value: Option<String>, name: &str| {
+            value
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| E::custom(format!("missing required param: scope.{name}")))
+        };
+        Ok(Scope::ProjectSource(ProjectSourceScope::new(
+            field(self.project_id, "project_id")?,
+            field(self.source_id, "source_id")?,
+            field(self.source_path, "source_path")?,
+        )))
+    }
 }
 
 impl Scope {
@@ -274,7 +356,17 @@ impl Scope {
         match self {
             Scope::Board => entity_id == BOARD_ITEM_ID,
             Scope::Entity(id) => id == entity_id,
-            Scope::All => true,
+            Scope::All => !is_project_source_entity(entity_id),
+            Scope::ProjectSource(source) => source.entity_id == entity_id,
+        }
+    }
+
+    /// The one entity whose worktree this scope watches, if it names one.
+    fn watched_entity(&self) -> Option<&str> {
+        match self {
+            Scope::Entity(id) => Some(id),
+            Scope::ProjectSource(source) => Some(source.entity_id()),
+            Scope::Board | Scope::All => None,
         }
     }
 }
@@ -284,15 +376,23 @@ impl Serialize for Scope {
         let wire = match self {
             Scope::Board => ScopeWire {
                 kind: "board".into(),
-                id: None,
+                ..ScopeWire::default()
             },
             Scope::Entity(id) => ScopeWire {
                 kind: "entity".into(),
                 id: Some(id.clone()),
+                ..ScopeWire::default()
             },
             Scope::All => ScopeWire {
                 kind: "all".into(),
-                id: None,
+                ..ScopeWire::default()
+            },
+            Scope::ProjectSource(source) => ScopeWire {
+                kind: "project_source".into(),
+                project_id: Some(source.project_id.clone()),
+                source_id: Some(source.source_id.clone()),
+                source_path: Some(source.source_path.clone()),
+                ..ScopeWire::default()
             },
         };
         wire.serialize(serializer)
@@ -302,13 +402,14 @@ impl Serialize for Scope {
 impl<'de> Deserialize<'de> for Scope {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Scope, D::Error> {
         let wire = ScopeWire::deserialize(deserializer)?;
-        match (wire.kind.as_str(), wire.id) {
+        match (wire.kind.as_str(), &wire.id) {
             ("board", _) => Ok(Scope::Board),
             ("all", _) => Ok(Scope::All),
-            ("entity", Some(id)) => Ok(Scope::Entity(id)),
+            ("entity", Some(id)) => Ok(Scope::Entity(id.clone())),
             ("entity", None) => Err(serde::de::Error::custom("missing required param: scope.id")),
+            ("project_source", _) => wire.project_source(),
             (other, _) => Err(serde::de::Error::custom(format!(
-                "unknown scope kind {other:?} — board, entity, or all"
+                "unknown scope kind {other:?} — board, entity, all, or project_source"
             ))),
         }
     }
@@ -1010,6 +1111,9 @@ struct DueFrame {
     /// subscription's own latch. The lookup answers the union across every
     /// due frame; this says which of it is this one's.
     lists: BoardLists,
+    /// The project source this subscription names, which its source's item
+    /// carries back as `project_source`.
+    source: Option<ProjectSourceScope>,
 }
 
 impl DueFrame {
@@ -1052,6 +1156,9 @@ fn item_payload(
 ) -> Value {
     let mut out = Map::new();
     out.insert("entity_id".into(), json!(entity_id));
+    if let Some(source) = frame.source.as_ref().filter(|s| s.entity_id == entity_id) {
+        out.insert("project_source".into(), json!(source));
+    }
     if item.kinds.contains(Kind::State) {
         out.insert(
             "state".into(),
@@ -1436,9 +1543,12 @@ impl ChangeBus {
         let wants_all = subscriptions
             .iter()
             .any(|sub| sub.spec.kinds.needs_worktree() && sub.spec.scope == Scope::All);
-        for sub in subscriptions.iter() {
-            if let (true, Scope::Entity(id)) = (sub.spec.kinds.needs_worktree(), &sub.spec.scope) {
-                covered.insert(id.clone());
+        for sub in subscriptions
+            .iter()
+            .filter(|sub| sub.spec.kinds.needs_worktree())
+        {
+            if let Some(id) = sub.spec.scope.watched_entity() {
+                covered.insert(id.to_string());
             }
         }
         drop(subscriptions);
@@ -1467,9 +1577,8 @@ impl ChangeBus {
         }
         let polled = self.polled.lock().unwrap();
         let covered = match &sub.scope {
-            Scope::Entity(id) => polled.contains(id),
             Scope::All => !polled.is_empty(),
-            Scope::Board => false,
+            scope => scope.watched_entity().is_some_and(|id| polled.contains(id)),
         };
         if covered {
             WatchState::Polled
@@ -1641,6 +1750,10 @@ impl ChangeBus {
                 thread_after,
                 removed,
                 lists,
+                source: match &sub.spec.scope {
+                    Scope::ProjectSource(source) => Some(source.clone()),
+                    _ => None,
+                },
             });
         }
         drop(subscriptions);

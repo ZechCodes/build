@@ -7,6 +7,7 @@
 //! thread tails and the state rows only, then runs the git status walks with
 //! it released.
 
+use super::git::{namespace_payload_keys, namespaced_key, project_source_namespace};
 use super::watchers::{WorktreeRoots, WorktreeWatchers};
 use super::{AppState, ReadSubject};
 use crate::changes::WORKING_TREE_DIFF_MAX_BYTES;
@@ -18,18 +19,39 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-/// What a flush reads one checkout's git with: where it is, the branch its
+/// What a flush reads one checkout with: where it is, the branch its
 /// history is marked against, and the diff verb's own subject — the SAME
 /// [`ReadSubject`] the run and worktree diff reads render, so
 /// a pushed diff and a pulled one are one shape and a client keeps them in
 /// one cache slot.
-pub(in crate::app) struct GitSubject {
+pub(in crate::app) struct CheckoutSubject {
     root: PathBuf,
     base_branch: Option<String>,
-    diff: ReadSubject,
+    /// `None` for a plain folder: files and terminals, and no Git to read.
+    diff: Option<ReadSubject>,
+    /// The cache namespace the scope's own `git.*` verbs key under, so a
+    /// pushed key is the key a pull would answer.
+    namespace: Option<String>,
 }
 
-impl GitSubject {
+impl CheckoutSubject {
+    /// One original project source: its uncommitted work read as the
+    /// primary checkout's is, keys in the namespace its `git.*` verbs use,
+    /// and no Git at all for a plain folder.
+    fn of_project_source(source: super::projects::ResolvedProjectSource) -> Self {
+        let namespace = project_source_namespace(&source);
+        let diff = source.is_git.then(|| ReadSubject::Project {
+            project_id: source.project_id,
+            repo_path: source.root.clone(),
+        });
+        Self {
+            root: source.root,
+            base_branch: None,
+            diff,
+            namespace: Some(namespace),
+        }
+    }
+
     /// What this checkout's history marks, exactly as `git.log` marks it for
     /// the same scope.
     fn highlight(&self) -> Option<crate::gitgui::LogHighlight<'_>> {
@@ -42,9 +64,16 @@ impl GitSubject {
 /// Everything a `git` item carries, read with the app mutex released: the
 /// status walk, the latest commits, what is unpublished, and the working
 /// tree's diff.
-fn read_git(subject: &GitSubject, fact: &mut EntityFacts) {
+fn read_git(subject: &CheckoutSubject, diff: &ReadSubject, fact: &mut EntityFacts) {
     if let Ok((status, key)) = counted_status_shape(&subject.root, GIT_STATUS_MAX_FILES) {
         fact.head = status["head"].as_str().map(str::to_string);
+        let (status, key) = match &subject.namespace {
+            Some(namespace) => (
+                namespace_payload_keys(namespace, status),
+                namespaced_key(namespace, &key),
+            ),
+            None => (status, key),
+        };
         fact.status = Some(status);
         fact.status_key = Some(key);
     }
@@ -57,7 +86,7 @@ fn read_git(subject: &GitSubject, fact: &mut EntityFacts) {
     )
     .ok();
     fact.unpushed = unpushed_summary(&subject.root).ok();
-    (fact.diff, fact.diff_bytes) = read_worktree_diff(subject);
+    (fact.diff, fact.diff_bytes) = read_worktree_diff(diff);
 }
 
 /// The working tree's diff, when it is small enough to push — the body this
@@ -65,8 +94,8 @@ fn read_git(subject: &GitSubject, fact: &mut EntityFacts) {
 /// read stamps on (computing one is a second diff walk, and a push is
 /// nobody's conditional read). The size rides the item either way; past the
 /// cap the client reads the body itself when a reviewer opens the changes.
-fn read_worktree_diff(subject: &GitSubject) -> (Option<Value>, Option<u64>) {
-    let Ok(body) = subject.diff.render(crate::diff::DiffPaths::All) else {
+fn read_worktree_diff(diff: &ReadSubject) -> (Option<Value>, Option<u64>) {
+    let Ok(body) = diff.render(crate::diff::DiffPaths::All) else {
         return (None, None);
     };
     let Some(bytes) = body["patch"].as_str().map(str::len) else {
@@ -140,7 +169,7 @@ impl BoardListFacts {
 fn locked_facts(
     app: &mut AppState,
     request: &FactsRequest,
-    subjects: &BTreeMap<String, GitSubject>,
+    subjects: &BTreeMap<String, CheckoutSubject>,
 ) -> EntityFacts {
     EntityFacts {
         entity_id: request.entity_id.clone(),
@@ -170,7 +199,7 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
     };
     let (subjects, summary_subjects, mut facts, board_lists) = {
         let mut app = state.lock().unwrap();
-        let subjects = app.git_subjects();
+        let subjects = app.checkout_subjects();
         let summary_subjects = requests
             .iter()
             .filter(|request| request.git)
@@ -199,8 +228,8 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
         let Some(subject) = subjects.get(&request.entity_id) else {
             continue;
         };
-        if request.git {
-            read_git(subject, fact);
+        if let (true, Some(diff)) = (request.git, &subject.diff) {
+            read_git(subject, diff, fact);
             if let Some(stat) = run_stat_of(subject) {
                 restat_row(fact, &stat);
                 fresh_stats.push((fact.entity_id.clone(), stat));
@@ -253,8 +282,8 @@ fn entity_facts(handle: &FactsHandle, requests: &[FactsRequest]) -> Vec<EntityFa
 
 /// A run's diffstat, walked off the app lock; `None` for a subject that is
 /// no run, whose row carries no stat of this shape.
-fn run_stat_of(subject: &GitSubject) -> Option<Value> {
-    let ReadSubject::Run { .. } = subject.diff else {
+fn run_stat_of(subject: &CheckoutSubject) -> Option<Value> {
+    let Some(ReadSubject::Run { .. }) = subject.diff else {
         return None;
     };
     let base_branch = subject.base_branch.as_deref()?;
@@ -276,10 +305,11 @@ fn restat_row(fact: &mut EntityFacts, stat: &Value) {
 }
 
 impl AppState {
-    /// Every board entity with a checkout: a run's worktree, a project's
-    /// primary checkout, and each external worktree the last scan found.
+    /// Every entity with a checkout: a run's worktree, a project's primary
+    /// checkout, each external worktree the last scan found, and each of a
+    /// project's original sources, Git or plain.
     pub(in crate::app) fn worktree_roots(&self) -> WorktreeRoots {
-        self.git_subjects()
+        self.checkout_subjects()
             .into_iter()
             .map(|(id, subject)| (id, subject.root))
             .collect()
@@ -288,7 +318,44 @@ impl AppState {
     /// The same entities, with what each one's git is read against — the map
     /// a flush works from, and the one [`worktree_roots`](Self::worktree_roots)
     /// is the paths of.
-    pub(in crate::app) fn git_subjects(&self) -> BTreeMap<String, GitSubject> {
+    pub(in crate::app) fn checkout_subjects(&self) -> BTreeMap<String, CheckoutSubject> {
+        let mut subjects = self.git_subjects();
+        subjects.extend(self.project_source_subjects());
+        subjects
+    }
+
+    /// Each original source of each project, under the entity its
+    /// `project_source` subscriptions name (#529). The stored path is the
+    /// canonical folder the source was added at, read without touching the
+    /// disk: this runs under the app mutex.
+    fn project_source_subjects(&self) -> Vec<(String, CheckoutSubject)> {
+        let sources = self.projects.iter().flat_map(|project| {
+            project
+                .sources
+                .iter()
+                .map(move |source| (project.id.as_str(), source))
+        });
+        sources
+            .map(|(project_id, source)| {
+                let resolved = super::projects::ResolvedProjectSource {
+                    project_id: project_id.to_string(),
+                    source_id: source.id.clone(),
+                    source_path: source.path.display().to_string(),
+                    root: source.path.clone(),
+                    is_git: source.is_git,
+                };
+                let entity_id = crate::changes::project_source_entity_id(
+                    project_id,
+                    &source.id,
+                    &resolved.source_path,
+                );
+                (entity_id, CheckoutSubject::of_project_source(resolved))
+            })
+            .collect()
+    }
+
+    /// The board's own entities with a Git checkout.
+    fn git_subjects(&self) -> BTreeMap<String, CheckoutSubject> {
         let mut subjects = BTreeMap::new();
         for (id, active) in &self.runs {
             if active.run.state == crate::run::RunState::Archived {
@@ -298,27 +365,29 @@ impl AppState {
             let base_branch = self.run_base_branch(id, &active.worktree.base_branch);
             subjects.insert(
                 id.clone(),
-                GitSubject {
+                CheckoutSubject {
                     root: root.clone(),
                     base_branch: Some(base_branch.clone()),
-                    diff: ReadSubject::Run {
+                    diff: Some(ReadSubject::Run {
                         worktree_path: root,
                         base_sha: active.base_sha.clone(),
                         base_branch,
-                    },
+                    }),
+                    namespace: None,
                 },
             );
         }
         for project in self.projects.iter().filter(|project| project.is_git) {
             subjects.insert(
                 project.id.clone(),
-                GitSubject {
+                CheckoutSubject {
                     root: project.repo_path.clone(),
                     base_branch: None,
-                    diff: ReadSubject::Project {
+                    diff: Some(ReadSubject::Project {
                         project_id: project.id.clone(),
                         repo_path: project.repo_path.clone(),
-                    },
+                    }),
+                    namespace: None,
                 },
             );
             let Some(scan) = self.board.diff().external_scan_cache(&project.id) else {
@@ -327,13 +396,14 @@ impl AppState {
             for checkout in &scan.worktrees {
                 subjects.insert(
                     checkout.id.clone(),
-                    GitSubject {
+                    CheckoutSubject {
                         root: checkout.path.clone(),
                         base_branch: Some(project.base_branch.clone()),
-                        diff: ReadSubject::Worktree {
+                        diff: Some(ReadSubject::Worktree {
                             external: Box::new(checkout.clone()),
                             base_branch: project.base_branch.clone(),
-                        },
+                        }),
+                        namespace: None,
                     },
                 );
             }

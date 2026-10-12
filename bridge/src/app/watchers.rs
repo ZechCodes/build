@@ -23,8 +23,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Entity id → worktree root, for every board entity that has a checkout: a
-/// run's worktree, a project's primary checkout, an external worktree.
+/// Entity id → worktree root, for every entity that has a checkout: a run's
+/// worktree, a project's primary checkout, an external worktree, a project's
+/// original source.
 pub(in crate::app) type WorktreeRoots = BTreeMap<String, PathBuf>;
 
 /// How often the reconciler sweeps unprompted. A session whose push failed
@@ -53,8 +54,16 @@ impl WorktreeWatchers {
 
     /// Every entity the board lists with a checkout — what `{"kind":"all"}`
     /// resolves to. The bus's [`crate::changes::BoardEntities`] source.
+    /// Project sources are watched too, but only for the subscriptions that
+    /// name them, so they are not the board's.
     pub(in crate::app) fn entity_ids(&self) -> Vec<String> {
-        self.roots.lock().unwrap().keys().cloned().collect()
+        self.roots
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|id| !crate::changes::is_project_source_entity(id))
+            .cloned()
+            .collect()
     }
 
     /// Replace the roots snapshot. Under the app mutex this is a map swap and

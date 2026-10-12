@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use crate::app::AppState;
+use crate::changes::{Kind, KindSet, Scope};
 
 /// The refusal when a caller's `source_path` no longer names the folder its
 /// project source resolves to, for a Git verb or a change subscription.
@@ -65,5 +66,28 @@ impl AppState {
             root,
             is_git: source.is_git,
         })
+    }
+
+    /// Whether a `project_source` subscription names a registered source
+    /// where the client opened it, and asks for Git only where there is Git.
+    /// Every other scope is the bus's own business.
+    pub(crate) fn check_source_subscription(
+        &self,
+        scope: &Scope,
+        kinds: &KindSet,
+    ) -> Result<(), String> {
+        let Scope::ProjectSource(source) = scope else {
+            return Ok(());
+        };
+        let resolved = self.resolve_project_source(
+            &source.project_id,
+            &source.source_id,
+            Some(&source.source_path),
+            MOVED_GIT_SOURCE,
+        )?;
+        if kinds.contains(Kind::Git) && !resolved.is_git {
+            return Err(NOT_GIT_SOURCE.to_string());
+        }
+        Ok(())
     }
 }

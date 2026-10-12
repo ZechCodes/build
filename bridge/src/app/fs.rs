@@ -1,4 +1,4 @@
-use crate::api::v1::git::{SourceScopeParams, FsCreateDirectoryParams, FsCreateDirectoryResult};
+use crate::api::v1::git::{FsCreateDirectoryParams, FsCreateDirectoryResult, SourceScopeParams};
 use crate::api::v1::WireParams;
 use crate::api::ApiError;
 use crate::app::{expand_tilde, mime_hint};
@@ -100,12 +100,7 @@ impl FileScope {
                 source_id,
                 source_path,
             } => state
-                .resolve_project_source(
-                    project_id,
-                    source_id,
-                    source_path.as_deref(),
-                    MOVED_SOURCE,
-                )
+                .resolve_project_source(project_id, source_id, source_path.as_deref(), MOVED_SOURCE)
                 .map(|source| source.root),
             Self::Legacy(scope) => scope.resolve_root(state),
         }

@@ -81,6 +81,6 @@ function answersThisLink(feed) {
   if (!live.length) return true;
   return live.every((context) => {
     const view = feed.devices?.[context.deviceId];
-    return Boolean(view) && !view.cached;
+    return Boolean(view) && !view.cached && view.resolutionReady !== false;
   });
 }

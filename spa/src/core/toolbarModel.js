@@ -8,6 +8,15 @@ import { byProjectName, deviceTags, projectNameOf } from "./inboxProjects.js";
 import { routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
 import { conversationSummaryUnreadCount } from "./conversationUnread.js";
+import { navigationCatalog, navigationPickerModel } from "./navigationModel.js";
+
+/** The destination contract for the replacement toolbar pickers. Global
+ * and sibling scopes use one complete catalog, ready in the activating turn;
+ * opening/focusing controls belongs to the toolbar controller, not this model.
+ * The older menu models below remain for the renderer's separate migration. */
+export function toolbarDestinationModel(route, feed, options = {}) {
+  return navigationPickerModel(navigationCatalog(feed, { ...options, route }), options);
+}
 
 /** The branch the daemon will cut for a typed name, mirrored for the preview
  *  only — the daemon is still the one that decides. */
@@ -119,7 +128,7 @@ const STANDING = {
   },
   task: {
     // A task id is a uuid: it names one task wherever it is.
-    rowIs: (route) => (item) => item.kind === "task" && item.task_id === route.id,
+    rowIs: (route) => (item) => item.kind === "task" && item.task_id === route.id && item.deviceId === route.deviceId,
     label: (route, row) => (row && row.title) || "Task",
   },
   project: {
@@ -154,7 +163,7 @@ export function toolbarIdentity(route = {}, { items = [], projects = [], workspa
   return {
     projectId: route.projectId,
     projectKey: key,
-    project: projectName(key, projects, row),
+    project: projectName(key, projects, row, route.projectId),
     kind: route.name,
     label: standing.label(route, row, carried),
     row,
@@ -162,8 +171,8 @@ export function toolbarIdentity(route = {}, { items = [], projects = [], workspa
   };
 }
 
-function projectName(projectKey, projects, row) {
+function projectName(projectKey, projects, row, fallback) {
   const project = projects.find((entry) => entry.projectKey === projectKey);
   if (project) return projectNameOf(project);
-  return (row && row.project) || "";
+  return (row && row.project) || fallback || "";
 }

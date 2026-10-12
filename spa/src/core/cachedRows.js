@@ -21,9 +21,15 @@ import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 
 export const ROW_RECORD_KIND = "row";
 
+const listKnowledgeOf = (record) => ({
+  present: Array.isArray(record?.value),
+  observedAt: Array.isArray(record?.value) ? record.at : null,
+});
+
 /** One device's world as a route is resolved against it. */
 export async function cachedFeedView(deviceId) {
-  if (!deviceId) return { items: [], projects: [], workspaces: [] };
+  if (!deviceId) return { items: [], projects: [], workspaces: [],
+    listKnowledge: { projects: listKnowledgeOf(), workspaces: listKnowledgeOf() } };
   const rowAddresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND);
   const [rows, projects, workspaces] = await Promise.all([
     readCachedMany(rowAddresses),
@@ -34,6 +40,9 @@ export async function cachedFeedView(deviceId) {
     items: rows.map((record) => withCacheFreshness(record?.value, record)).filter(Boolean),
     projects: projects?.value || [],
     workspaces: workspaces?.value || [],
+    // An absent record has never listed anything. A present [] is a real
+    // observation, independent of whether this device has a board yet.
+    listKnowledge: { projects: listKnowledgeOf(projects), workspaces: listKnowledgeOf(workspaces) },
   };
 }
 

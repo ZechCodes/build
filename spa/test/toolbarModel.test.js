@@ -6,6 +6,7 @@ import {
   branchNamePreview,
   projectMenuModel,
   toolbarIdentity,
+  toolbarDestinationModel,
   workspaceMenuModel,
 } from "../src/core/toolbarModel.js";
 import { deviceKey, workspaceKey } from "../src/core/deviceKey.js";
@@ -59,6 +60,30 @@ const devices = [
   { id: "dev-1", name: "workshop" },
   { id: "dev-2", name: "laptop" },
 ];
+
+describe("the shared toolbar destination model", () => {
+  it("builds global and sibling results synchronously from the same cached records", () => {
+    const workspaces = [stampWorkspace({ id: "w", project_id: "p1", name: "Unwatched child", created_by_agent: true }, "dev-2")];
+    const feed = { projects: [...projects, on("dev-2", { id: "p1", name: "relaydb" })], workspaces };
+    const route = { name: "workspace", deviceId: "dev-2", projectId: "p1", workspaceId: "w", tab: "tasks", taskId: "task-7" };
+    const global = toolbarDestinationModel(route, feed, { devices, query: "Unwatched" });
+    expect(global).not.toBeInstanceOf(Promise);
+    expect(global.groups[0].destinations[0]).toMatchObject({ key: "dev-2/w", current: true, route });
+    const local = toolbarDestinationModel(route, feed, { projectKey: "dev-2/p1", devices });
+    expect(local.groups[0].destinations.map((row) => row.kind)).toEqual(["project", "workspace"]);
+    expect(local.groups[0].destinations[0].returnToProject).toBe(true);
+  });
+
+  it("uses the URL's project ID when a name is missing, even with another scope listed", () => {
+    const route = { name: "workspace", deviceId: "dev-2", projectId: "missing", workspaceId: "gone" };
+    expect(toolbarIdentity(route, { projects })).toMatchObject({ project: "missing", label: "gone" });
+  });
+
+  it("does not use a different device's legacy task row as a name fallback", () => {
+    const route = { name: "task", deviceId: "dev-2", projectId: "p1", id: "plan-1" };
+    expect(toolbarIdentity(route, { items: [taskRow()], projects: [] })).toMatchObject({ project: "p1", label: "Task", row: null });
+  });
+});
 
 describe("what the toolbar says you are standing in", () => {
   const feed = { items: [branchRow(), taskRow()], projects };

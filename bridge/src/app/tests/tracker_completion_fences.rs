@@ -77,6 +77,19 @@ impl DispatchedTask {
             .unwrap();
         project
     }
+
+    fn consume_turn(&mut self) {
+        let mut pending = self.app.take_pending_turns();
+        let mut consumed = false;
+        while let Some((turn, mark)) = pending.next_turn() {
+            if turn.agent_id == self.agent_id {
+                assert!(turn.operation_id.is_some(), "the assignment has a receipt");
+                consumed = true;
+            }
+            mark.settle(&mut self.app);
+        }
+        assert!(consumed, "the dispatched turn was consumed");
+    }
 }
 
 #[test]
@@ -120,16 +133,7 @@ fn completion_fence_keeps_new_wait_in_ready() {
 #[test]
 fn completion_fence_survives_same_agent_reassignment_waiting_after_consumed_turn() {
     let mut task = DispatchedTask::new();
-    let mut pending = task.app.take_pending_turns();
-    let mut consumed = false;
-    while let Some((turn, mark)) = pending.next_turn() {
-        if turn.agent_id == task.agent_id {
-            assert!(turn.operation_id.is_some(), "the original assignment has a receipt");
-            consumed = true;
-        }
-        mark.settle(&mut task.app);
-    }
-    assert!(consumed, "the dispatched turn was consumed");
+    task.consume_turn();
     task.app.record_agent_working_since(
         &task.entity_id,
         &task.agent_id,
@@ -144,4 +148,27 @@ fn completion_fence_survives_same_agent_reassignment_waiting_after_consumed_turn
     assert_eq!(reassigned["ok"], true, "{reassigned}");
     assert_eq!(reassigned["result"]["dispatch"], Value::Null, "{reassigned}");
     task.assert_complete_leaves_task("ready");
+}
+
+#[test]
+fn completion_fence_preserves_running_generation_until_reassigned_turn_is_consumed() {
+    let mut task = DispatchedTask::new();
+    task.consume_turn();
+    task.app.record_agent_working_since(
+        &task.entity_id,
+        &task.agent_id,
+        Some(crate::store::now_rfc3339()),
+    );
+    task.call(
+        "tasks.assign",
+        json!({"assignee":{"kind":"agent","agent_id":task.agent_id}}),
+    );
+    task.assert_complete_leaves_task("in_progress");
+
+    task.app.record_agent_working_since(&task.entity_id, &task.agent_id, None);
+    task.consume_turn();
+    task.app
+        .move_held_task_on_complete(&task.entity_id, &task.agent_id);
+    let after = task.app.handle(req("tasks.get", json!({"task_id":task.task_id})));
+    assert_eq!(after["result"]["task"]["status"], "in_review", "{after}");
 }

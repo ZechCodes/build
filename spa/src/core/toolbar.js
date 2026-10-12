@@ -479,10 +479,8 @@ function openJumpMenu(anchor, { list = MENU_FOR_SELECTOR[anchor.dataset.select] 
   };
   anchor.setAttribute("aria-expanded", "true");
   paintMenuShell();
-  const filter = open.element.querySelector(".tb-filter");
-  if (focus) filter?.focus();
+  if (focus) open.element.querySelector(".tb-filter").focus();
   paintMenu();
-  if (focus && !filter) open.element.querySelector('[role="menuitem"]')?.focus();
 }
 
 function applyMenuRecord(saved) {

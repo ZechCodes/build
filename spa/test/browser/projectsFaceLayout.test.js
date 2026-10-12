@@ -31,4 +31,40 @@ for (const { label, width, height, hasTouch } of [
       expect(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-quiet').count()).toBe(1);
     }, { width, height, hasTouch });
   }, 60_000);
+
+  it(`indents each project's Recent into its content column on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await page.evaluate(() => window.__layoutModules.view.setInboxView("inbox"));
+      const ungrouped = page.locator("#inbox-list > .inbox-recent > .inbox-recent-toggle");
+      await ungrouped.waitFor();
+      const ungroupedBox = await ungrouped.boundingBox();
+      const ungroupedCaret = await ungrouped.locator(".inbox-recent-caret").boundingBox();
+      expect(ungroupedBox.x).toBe(label === "phone" ? 33 : 20);
+      expect(ungroupedCaret.x).toBe(ungroupedBox.x + 6);
+
+      await page.evaluate(() => window.__layoutModules.view.setInboxView("projects"));
+      const toggles = page.locator(".inbox-project .inbox-recent-toggle");
+      expect(await toggles.count()).toBe(2);
+      for (const expanded of [false, true]) {
+        for (const theme of ["light", "dark"]) {
+          await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+          for (const toggle of await toggles.all()) {
+            const block = toggle.locator("..").locator("..");
+            const caret = await toggle.locator(".inbox-recent-caret").boundingBox();
+            const name = await block.locator(".inbox-project-name").boundingBox();
+            const fold = await block.locator(".inbox-fold").boundingBox();
+            expect(await toggle.getAttribute("aria-expanded")).toBe(String(expanded));
+            expect(caret.x).toBeGreaterThanOrEqual(name.x);
+            expect(caret.x).toBeGreaterThan(fold.x);
+            if (expanded) {
+              const quietTitle = await block.locator(".inbox-recent .stitle").boundingBox();
+              expect(caret.x).toBe(quietTitle.x);
+            }
+          }
+        }
+        if (!expanded) for (const toggle of await toggles.all()) await toggle.click();
+      }
+    }, { width, height, hasTouch });
+  }, 60_000);
 }

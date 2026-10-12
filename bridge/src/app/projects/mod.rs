@@ -87,7 +87,7 @@ mod agent_tools;
 mod agent_writes;
 pub(in crate::app) mod base_sync;
 pub(in crate::app) use agent_writes::{
-    AgentChoiceArgs, NewProjectWorker, ProjectSourceArgs, WorkspaceAgentAddress,
+    AgentChoiceArgs, ProjectSourceArgs, WorkspaceAgentAddress,
     WorkspaceDirectoryArgs,
 };
 mod conversation;

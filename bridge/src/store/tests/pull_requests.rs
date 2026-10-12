@@ -458,7 +458,7 @@ fn upgrading_real_v14_shape_preserves_legacy_header_and_snapshot_bytes() {
     }
     drop(store);
     let store = Store::new(dir.path()).unwrap();
-    assert_eq!(SCHEMA_VERSION, 15);
+    assert_eq!(SCHEMA_VERSION, 16);
     let review = store.load_review(&task.id).unwrap().unwrap();
     assert_eq!(review.mode, ReviewMode::Snapshot);
     assert!(review.pull_request.is_none());
@@ -1065,7 +1065,7 @@ fn schema_fifteen_reopen_restores_additive_sync_candidate_table_without_rewritin
     let review = publish(&store);
     store
         .connection()
-        .execute_batch("DROP TABLE review_sync_candidates")
+        .execute_batch("DROP TABLE review_sync_candidates; UPDATE meta SET value = '15' WHERE key = 'schema_version';")
         .unwrap();
     drop(store);
     let store = Store::new(dir.path()).unwrap();
@@ -1074,7 +1074,7 @@ fn schema_fifteen_reopen_restores_additive_sync_candidate_table_without_rewritin
         store.load_review_sync_candidate(&review.task_id).unwrap(),
         None
     );
-    assert_eq!(SCHEMA_VERSION, 15);
+    assert_eq!(SCHEMA_VERSION, 16);
 }
 
 #[test]

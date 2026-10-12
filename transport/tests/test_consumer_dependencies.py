@@ -53,6 +53,7 @@ class ConsumerDependencies(unittest.TestCase):
                 self.assertEqual((ROOT / consumer / '.nvmrc').read_text().strip(), '22.23.3')
                 config = (ROOT / consumer / '.npmrc').read_text().splitlines()
                 self.assertIn('ignore-scripts=true', config)
+                self.assertIn('min-release-age=7', config)
         self.assertIn('legacy-peer-deps=true', (ROOT / 'spa/.npmrc').read_text().splitlines())
 
     def test_sodium_resolutions_retain_the_transport_baseline(self):

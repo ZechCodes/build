@@ -41,6 +41,8 @@ SPA's `package-lock.json` is committed and portable. Use `npm ci
 --legacy-peer-deps` for a fresh install. When editing dependencies, run
 `npm install --legacy-peer-deps` and commit the updated lock with the manifest.
 `.npmrc` preserves the peer-resolution policy and disables install scripts.
+New registry resolutions must be at least seven days old; locked installs retain
+the committed dependency versions.
 
 ## Commands
 

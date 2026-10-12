@@ -82,6 +82,8 @@ npm test           # the chunker, against the wire shape the bridge writes — n
 `web/package-lock.json` is committed and portable. `.nvmrc` and `packageManager`
 pin the supported tools; `.npmrc` disables install scripts. When editing
 dependencies, run `npm install` and commit the updated lock with the manifest.
+New registry resolutions must be at least seven days old; locked installs retain
+the committed dependency versions.
 
 The rest need the real stack (`deploy/compose.real.yml`), because the peer
 connection needs a real bridge on the other end of it:

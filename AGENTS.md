@@ -71,6 +71,8 @@ Design rules:
   --ignore-scripts`, then `cd spa && nice -n 10 npm ci --legacy-peer-deps`
   or `cd web && nice -n 10 npm ci`. SPA `.npmrc` also records
   `legacy-peer-deps=true`; both consumer `.npmrc` files disable install scripts.
+  They also require registry versions to be at least seven days old when
+  resolving new dependencies; existing locked resolutions remain frozen.
   When changing dependencies, use `npm install --legacy-peer-deps` in SPA or
   `npm install` in web and commit the corresponding lock with the manifest.
   Keep transport's own locked dependencies installed: npm links the local

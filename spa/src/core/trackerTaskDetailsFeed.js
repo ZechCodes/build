@@ -14,7 +14,8 @@ const MAX_READS = 4;
  * Follow the details for a project's current tasks. `read()` is synchronous
  * and contains only records actually read from IndexedDB. `updateTasks()`
  * resolves after the first cache scan, while any needed live reads continue in
- * the background. Call `dispose()` when the pane unmounts.
+ * the background. Omit callRpc for a cache-only observer. Call `dispose()`
+ * when the pane unmounts.
  */
 export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onChange = () => {} }) {
   const listed = new Map();
@@ -83,6 +84,7 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
   }
 
   function queueIfBehind(id, detail) {
+    if (!callRpc) return;
     const task = listed.get(id);
     if (!changedSince(task, detail)) {
       pending.delete(id);

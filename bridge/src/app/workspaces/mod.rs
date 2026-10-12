@@ -37,6 +37,8 @@ struct WorkspaceCreateWork {
     source_state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
     /// What those syncs concluded, for the settlement to write.
     synced: std::sync::Mutex<Vec<Synced>>,
+    #[cfg(test)]
+    prepared_gate: Option<crate::app::OffLockGate>,
 }
 
 impl DeferredGitWork for WorkspaceCreateWork {
@@ -53,6 +55,10 @@ impl DeferredGitWork for WorkspaceCreateWork {
             .synced
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = prepared;
+        #[cfg(test)]
+        if let Some(gate) = &self.prepared_gate {
+            gate.arrive();
+        }
         let mut registry = match WorkspaceRegistry::load(&self.registry_root) {
             Ok(registry) => registry,
             Err(error) => return self.preparation_failed(error),
@@ -631,6 +637,8 @@ impl AppState {
                 base_syncs: self.cut_sync_subjects(&project_id),
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
+                #[cfg(test)]
+                prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
             params: params.clone(),
             invalidates: true,
@@ -816,6 +824,8 @@ impl AppState {
                 base_syncs: self.cut_sync_subjects(&workspace.project_id),
                 source_state: self.source_validation_handle(),
                 synced: Default::default(),
+                #[cfg(test)]
+                prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
             params: params.clone(),
             invalidates: true,

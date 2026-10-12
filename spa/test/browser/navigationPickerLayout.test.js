@@ -127,7 +127,7 @@ for (const method of ["touch", "mouse", "keyboard"]) for (const width of [1280, 
       expect(await page.evaluate(() => document.activeElement.dataset.workspace)).toBe("away-device/release");
       await page.keyboard.press("Enter");
       await page.waitForFunction(() => window.__navigationHarness.navigations.length === 1);
-      expect(await page.evaluate(() => document.activeElement.closest("#root") !== null)).toBe(true);
+      await page.waitForFunction(() => Boolean(document.activeElement?.closest("#root")));
     }, { width, height: width === 1280 ? 800 : width === 320 ? 740 : 844, hasTouch: true });
   }, 40_000);
 }

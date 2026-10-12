@@ -339,17 +339,23 @@ impl ProjectSources {
     }
 }
 
-/// Status, diff, history, refs and mutations each reach the source they
-/// name — including two repositories whose paths and raw status are the same,
-/// which never share a cache key — while legacy `{project_id}` keeps reaching
-/// the primary checkout with its established keys.
-#[test]
-fn project_source_git_addresses_each_source_with_its_own_keys() {
-    let mut sources = project_sources();
+/// The same untracked file in the primary and its status-identical clone.
+fn same_edit_in_both() -> (ProjectSources, Value, Value) {
+    let sources = project_sources();
     for repo in [&sources.primary, &sources.second] {
         std::fs::write(repo.join("same.txt"), "same\n").unwrap();
     }
     let (first, second) = (sources.scope("source-1"), sources.scope("source-2"));
+    (sources, first, second)
+}
+
+/// Status and diff reach the source they name — including two repositories
+/// whose paths and raw status are the same, which never share a cache key —
+/// while legacy `{project_id}` keeps reaching the primary checkout with its
+/// established keys.
+#[test]
+fn project_source_git_addresses_each_source_with_its_own_keys() {
+    let (mut sources, first, second) = same_edit_in_both();
     let first_status = sources.call("git.status", &first, json!({}));
     let second_status = sources.call("git.status", &second, json!({}));
     assert_eq!(first_status["ok"], true, "{first_status:?}");
@@ -391,7 +397,12 @@ fn project_source_git_addresses_each_source_with_its_own_keys() {
         first_diff["result"]["files"][0]["content_key"],
         second_diff["result"]["files"][0]["content_key"],
     );
+}
 
+/// Mutations, history, refs and changesets each stay in the source they name.
+#[test]
+fn project_source_git_commits_one_source_and_reads_its_own_history() {
+    let (mut sources, first, second) = same_edit_in_both();
     let staged = sources.call("git.stage", &second, json!({ "paths": ["same.txt"] }));
     assert_eq!(staged["ok"], true, "{staged:?}");
     let committed = sources.call("git.commit", &second, json!({ "message": "second only" }));

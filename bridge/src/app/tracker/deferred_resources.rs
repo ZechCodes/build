@@ -296,6 +296,61 @@ mod tests {
     }
 
     #[test]
+    fn deferred_workspace_creation_retry_refuses_retired_saved_owner() {
+        for retained_live in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("source");
+            std::fs::create_dir(&source).unwrap();
+            let mut app = state(temp.path())
+                .with_task_store(temp.path().join("store"))
+                .unwrap();
+            let project_id = app.add_project(source, "main".into());
+            let target = AssignTarget::NewWorkspace {
+                name: None,
+                isolation: None,
+                choice: Default::default(),
+                notify_user: None,
+                agent_name: None,
+            };
+            let saved = app
+                .reserve_deferred_workspace(&project_id, &target, "reserved", &Actor::User)
+                .unwrap();
+            let job = app.prepare_deferred_workspace(&saved).unwrap();
+            job.call.run(&job.params).unwrap();
+            job.call.invalidate(&mut app);
+            let workspace_id = saved["id"].as_str().unwrap();
+            let first = app
+                .deferred_assignment_agent(
+                    &project_id,
+                    &target,
+                    Some(workspace_id),
+                    &Actor::User,
+                    "retired-reservation",
+                )
+                .unwrap();
+            let mut retired = app.runs.remove(&first.1).unwrap();
+            retired.run.state = crate::run::RunState::Archived;
+            app.persist_run_record(&first.1, &retired).unwrap();
+            if retained_live {
+                app.runs.insert(first.1.clone(), retired);
+            }
+            let before = app.runs.len();
+            let result = app.deferred_assignment_agent(
+                &project_id,
+                &target,
+                Some(workspace_id),
+                &Actor::User,
+                "retired-reservation",
+            );
+            assert!(
+                result.is_err(),
+                "retired reservation was recreated: {result:?}"
+            );
+            assert_eq!(app.runs.len(), before, "retry created a replacement owner");
+        }
+    }
+
+    #[test]
     fn deferred_workspace_agent_refuses_a_workspace_from_another_project() {
         let temp = tempfile::tempdir().unwrap();
         let mut app = state(temp.path());

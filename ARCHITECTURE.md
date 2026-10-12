@@ -1993,7 +1993,9 @@ project-worker rail (#536) have separate implementations.
 
 Commit drafts keep device and account-epoch ownership in the in-memory stash
 as well as their device-scoped `build-ui` records. Old account panes cannot
-publish or clear a replacement account's draft after reset. A moved or removed
+publish or clear a replacement account's draft after reset. Account reset
+retires live UI writers and clears the page-exit journal before wiping `build-ui`,
+so a remount cannot replay the previous account's pending text. A moved or removed
 source's saved commit message remains under its old project/source/location
 address. `projectChangesDrafts.js` exposes those messages in read-only recovery
 fields labelled with the old path, for explicit copying; it never attaches them

@@ -77,6 +77,7 @@ impl AppState {
         creation_id: &str,
     ) -> Result<(String, String, Option<String>), String> {
         self.project_for(project_id)?;
+        self.guard_saved_resource_owner(project_id, creation_id)?;
         let (entity_id, workspace_id) = match target {
             AssignTarget::Agent { agent_id } => {
                 let entity_id = self.agent_of_this_project(project_id, agent_id)?;
@@ -116,6 +117,29 @@ impl AppState {
             .ok_or("the added agent has no id")?
             .to_string();
         Ok((agent_id, entity_id, workspace_id))
+    }
+
+    /// A creation identity is global to the saved delivery, including owners
+    /// no longer attached in memory. Refuse retirement before minting a new
+    /// conversation, which would otherwise lose roster-local deduplication.
+    fn guard_saved_resource_owner(&self, project_id: &str, creation_id: &str) -> Result<(), String> {
+        let live = self.runs.iter().find(|(_, run)| run.agents.iter()
+            .any(|agent| agent.creation_id.as_deref() == Some(creation_id)));
+        if let Some((owner, run)) = live {
+            if run.run.state.is_terminal() || self.projects.project_id_of(owner) != Some(project_id) {
+                return Err("saved task delivery owner was retired or changed project".into());
+            }
+        }
+        let Some(store) = &self.store else { return Ok(()); };
+        let saved = store.load_all_run_rosters().map_err(|error| error.to_string())?;
+        for run in saved.iter().filter(|run| run.agents.iter()
+            .any(|agent| agent.creation_id.as_deref() == Some(creation_id))) {
+            if run.state.is_terminal() || !self.runs.contains_key(&run.id)
+                || self.projects.project_id_of(&run.id) != Some(project_id) {
+                return Err("saved task delivery owner was retired or changed project".into());
+            }
+        }
+        Ok(())
     }
 
     fn deferred_project_owner(&mut self, project_id: &str) -> Result<String, String> {

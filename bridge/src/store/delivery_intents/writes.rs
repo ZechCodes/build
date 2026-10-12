@@ -174,7 +174,10 @@ impl Store {
                 saved.status = super::task(tx, &intent)?.expect("authority checked").status;
             }
             tracker::write_tracker_task(tx, &saved)?;
-            tracker::append_activity(tx, &[], events)?;
+            let settled_events: Vec<_> = events.iter().filter(|event| {
+                event.kind != TaskEventKind::Moved || saved.status == task.status
+            }).cloned().collect();
+            tracker::append_activity(tx, &[], &settled_events)?;
             intent.state = "delivered".into();
             write(tx, &intent)?;
             Ok(true)

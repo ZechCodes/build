@@ -58,6 +58,8 @@ pub(crate) use reviews::TrackingExpectation;
 mod conversation_reset;
 mod conversations;
 mod documents;
+mod delivery_intents;
+pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
 mod legacy;
 mod migrations;
@@ -225,7 +227,8 @@ pub enum StoreError {
 /// 14 persists workspace removal locks (#398).
 /// 15 adds PR bindings, operation journals, workspace claims and sync observations.
 /// 16 adds task dependencies, readiness reconciliation and transition receipts.
-pub const SCHEMA_VERSION: i64 = 16;
+/// 17 adds explicit assignment delivery intents and coordinator notice receipts.
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -414,7 +417,9 @@ impl Store {
         // survives an absent service or a missed process-local notification.
         let pending: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM tracker_dependency_reconcile)
-             OR EXISTS(SELECT 1 FROM tracker_dependency_changes)",
+             OR EXISTS(SELECT 1 FROM tracker_dependency_changes)
+             OR EXISTS(SELECT 1 FROM tracker_delivery_intents WHERE state IN ('queued', 'provisioning'))
+             OR EXISTS(SELECT 1 FROM tracker_delivery_notices WHERE state = 'queued')",
             [],
             |row| row.get(0),
         )?;

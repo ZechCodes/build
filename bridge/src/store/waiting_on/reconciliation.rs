@@ -1,6 +1,6 @@
 use super::{changed, invalid, reads, require_task, WaitingOnPage};
 use crate::store::{tracker::append_activity, StoreError};
-use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind};
+use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind, DONE_STATUS};
 use rusqlite::{params, OptionalExtension, Transaction};
 
 /// Called by the common task writer, including review and workspace paths.
@@ -36,9 +36,10 @@ pub(in crate::store) fn note_task_write(tx: &Transaction, task: &Task) -> Result
         |r| r.get(0),
     )?;
     if affected {
+        let resolution_changed = (state == "closed" || status == DONE_STATUS) != task.is_finished();
         tx.execute(
-            "INSERT INTO tracker_dependency_reconcile(source_task_id, at) VALUES (?1, ?2)",
-            params![task.id, task.updated_at],
+            "INSERT INTO tracker_dependency_reconcile(source_task_id, at, resolution_changed) VALUES (?1, ?2, ?3)",
+            params![task.id, task.updated_at, resolution_changed],
         )?;
     }
     Ok(())
@@ -56,9 +57,9 @@ fn invalidate_reverse_blocks(
     Ok(())
 }
 
-/// Attach lifecycle causes to the marker this write just created. Additional
-/// review events append to that same marker; readiness events never become
-/// their own causes. Plain title writes legitimately have no timeline cause.
+/// Record causes only for a write that changed prerequisite resolution.
+/// Later moves/closes that leave it resolved cannot replace its release.
+/// Additional review events append to the same recorded transition.
 pub(in crate::store) fn note_activity(
     tx: &Transaction,
     events: &[TaskEvent],
@@ -72,11 +73,11 @@ pub(in crate::store) fn note_activity(
                 | TaskEventKind::ReviewCompleted
         )
     }) {
-        let marker: Option<(i64, String)> = tx.query_row(
-            "SELECT id, cause_event_ids FROM tracker_dependency_reconcile WHERE source_task_id = ?1 AND at = ?2 AND self_done = 0 ORDER BY id DESC LIMIT 1",
-            params![event.task_id, event.at], |r| Ok((r.get(0)?, r.get(1)?)),
+        let marker: Option<(i64, String, bool)> = tx.query_row(
+            "SELECT id, cause_event_ids, resolution_changed FROM tracker_dependency_reconcile WHERE source_task_id = ?1 AND at = ?2 AND self_done = 0 ORDER BY id DESC LIMIT 1",
+            params![event.task_id, event.at], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ).optional()?;
-        if let Some((id, raw)) = marker {
+        if let Some((id, raw, true)) = marker {
             let mut ids: Vec<String> = super::super::tracker::decode(
                 &raw,
                 "tracker_dependency_reconcile",
@@ -208,8 +209,8 @@ fn transition(
 /// A live readiness check may see a later prerequisite write before its
 /// queued page runs. Preserve that write's cause too, rather than attributing
 /// a fan-in release solely to the first marker the service happened to drain.
-/// Each of the at most twenty edges seeks its newest pending lifecycle cause
-/// through a partial index; later metadata and graph edits cannot hide it.
+/// Each of the at most twenty edges seeks its recorded resolution transition
+/// through a partial index; later writes that leave it resolved cannot hide it.
 fn current_causes(
     tx: &Transaction,
     forward: &[super::DependencyDigest],
@@ -218,7 +219,7 @@ fn current_causes(
     let mut result = causes.to_vec();
     for edge in forward {
         let raw: Option<String> = tx.query_row(
-            "SELECT cause_event_ids FROM tracker_dependency_reconcile WHERE source_task_id = ?1 AND fanout = 1 AND cause_event_ids <> '[]' ORDER BY id DESC LIMIT 1",
+            "SELECT cause_event_ids FROM tracker_dependency_reconcile WHERE source_task_id = ?1 AND fanout = 1 AND resolution_changed = 1 ORDER BY id DESC LIMIT 1",
             [&edge.task_id], |r| r.get(0),
         ).optional()?;
         if let Some(raw) = raw {

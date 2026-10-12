@@ -271,14 +271,16 @@ CREATE TABLE IF NOT EXISTS tracker_dependency_reconcile (
     after_number INTEGER NOT NULL DEFAULT 0,
     self_done INTEGER NOT NULL DEFAULT 0,
     fanout INTEGER NOT NULL DEFAULT 1,
+    resolution_changed INTEGER NOT NULL DEFAULT 0,
     at TEXT NOT NULL,
     cause_event_ids TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS tracker_reconcile_by_source
     ON tracker_dependency_reconcile(source_task_id, id DESC);
-CREATE INDEX IF NOT EXISTS tracker_reconcile_lifecycle_causes
+DROP INDEX IF EXISTS tracker_reconcile_lifecycle_causes;
+CREATE INDEX IF NOT EXISTS tracker_reconcile_resolution_causes
     ON tracker_dependency_reconcile(source_task_id, id DESC)
-    WHERE fanout = 1 AND cause_event_ids <> '[]';
+    WHERE fanout = 1 AND resolution_changed = 1;
 -- Transition receipts are retained for W2 to admit notices/delivery. A read
 -- or an old assignment can never create one.
 CREATE TABLE IF NOT EXISTS tracker_dependency_outbox (

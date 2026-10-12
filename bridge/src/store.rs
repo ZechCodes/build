@@ -323,6 +323,7 @@ impl Store {
                 Store::add_hoisted_column(&conn, column)?;
             }
         }
+        waiting_on::ensure_reconciliation_columns(&conn)?;
         conn.execute_batch(SCHEMA)?;
         ensure_operation_receipt_columns(&conn)?;
         // Against the newest HOISTED column's version rather than against the

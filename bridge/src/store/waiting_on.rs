@@ -12,6 +12,22 @@ use serde::{Deserialize, Serialize};
 
 pub(super) use reconciliation::{note_activity, note_task_write};
 
+/// Support databases written by earlier W1 snapshots before the schema batch
+/// creates the resolution-cause index. The released schema-15 store has no table.
+pub(super) fn ensure_reconciliation_columns(conn: &Connection) -> Result<(), StoreError> {
+    let mut statement = conn.prepare("PRAGMA table_info(tracker_dependency_reconcile)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.is_empty() && !columns.iter().any(|column| column == "resolution_changed") {
+        conn.execute(
+            "ALTER TABLE tracker_dependency_reconcile ADD COLUMN resolution_changed INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DependencyDigest {
     pub task_id: String,

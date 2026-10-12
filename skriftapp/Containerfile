@@ -58,6 +58,9 @@ COPY skriftapp/pyproject.toml skriftapp/uv.lock ./
 COPY skriftapp/vendor ./vendor
 RUN uv sync --frozen --no-dev
 
+# The bundled transport retains its scoped upstream license notice.
+COPY transport/LICENSE.md ./licenses/secure-transport-LICENSE.md
+
 # App code + the spa stage's bundle.
 COPY skriftapp/app.yaml skriftapp/entrypoint.sh ./
 COPY skriftapp/buildapp ./buildapp

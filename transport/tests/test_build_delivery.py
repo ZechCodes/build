@@ -28,6 +28,7 @@ class BuildDelivery(unittest.TestCase):
         self.assertIn('npm ci --omit=dev --ignore-scripts', web)
         self.assertIn('WORKDIR /app/web', web)
         self.assertNotIn('COPY . ', web)
+        self.assertIn('COPY transport/LICENSE.md ./licenses/secure-transport-LICENSE.md', app)
 
     def test_root_context_and_exclusions(self):
         compose = (ROOT / 'deploy/compose.real.yml').read_text().split('\n  qa:\n', 1)[1]

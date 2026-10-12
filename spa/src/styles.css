@@ -154,6 +154,7 @@
      --panel2 column seam. --line2 clears both in light; dark needs its own
      step (see below), which is why this is a token and not a raw --line2. */
   --row-hover:var(--line2);
+  --inbox-hover-ink:var(--ink); --inbox-hover-weight:12%;
   --accent:#006d43; --accent-fill:#51ffb4; --accent-soft:#ddffed; --accent-ink:#062719;
   --user-bubble:#d7f7e4; --user-bubble-ink:#113e2b;
   --user-bubble-link:#075a39; --user-bubble-muted:#365c4b;
@@ -194,6 +195,10 @@
   /* One step above --line2 here: a hover fill on a --panel2 seam has to survive
      against a near-black column, and --line2 at seam tone is not a state. */
   --row-hover:#1b3640;
+  /* Near-black green ink darkens every row fill. The dark rail needs a
+     stronger blend to show a step comparable to the normal hover. */
+  --inbox-hover-ink:rgb(from var(--accent-ink) calc(r * .1) calc(g * .1) calc(b * .1));
+  --inbox-hover-weight:70%;
   /* Electric mint is a clear affordance against the dark ground. --green stays
      slightly quieter so merged and passed states do not compete with actions. */
   --accent:#51ffb4; --accent-fill:#51ffb4; --accent-soft:#123b29; --accent-ink:#062719;

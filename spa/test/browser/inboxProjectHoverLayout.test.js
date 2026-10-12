@@ -10,7 +10,7 @@ async function headLayout(head) {
     };
     const name = element.querySelector(".inbox-project-name");
     return {
-      box: box(element), background: getComputedStyle(element).backgroundColor,
+      box: box(element), background: getComputedStyle(element).backgroundColor, paint: getComputedStyle(element).backgroundImage,
       name: box(name), nameBackground: getComputedStyle(name).backgroundColor,
       dot: box(element.querySelector(":scope > .inbox-status-dot")),
       controls: [...element.querySelectorAll(".inbox-fold, .inbox-project-create, .inbox-project-hide")].map(box),
@@ -35,17 +35,6 @@ for (const { label, width, height } of [
         const name = head.locator(".inbox-project-name");
         const row = block.locator(".inbox-entry").first();
         const quietRow = block.locator(".inbox-quiet");
-        const fills = await block.evaluate((element) => {
-          const probe = document.createElement("span");
-          probe.style.transition = "none";
-          element.appendChild(probe);
-          const colors = ["--row-hover", "--accent-soft"].map((token) => {
-            probe.style.background = `var(${token})`;
-            return getComputedStyle(probe).backgroundColor;
-          });
-          probe.remove();
-          return colors;
-        });
         for (const active of [false, true]) {
           await block.evaluate((element, active) => { element.classList.toggle("active", active); }, active);
           await row.evaluate((element, active) => { element.classList.toggle("active", active); }, active);
@@ -54,14 +43,14 @@ for (const { label, width, height } of [
           const before = await headLayout(head);
           expect(before.deviceOpacity).toBe("0.72");
           await row.hover();
-          await page.waitForFunction(({ key, background }) =>
-            getComputedStyle(document.querySelector(`[data-key="${key}"]`)).backgroundColor === background,
-          { key: await row.getAttribute("data-key"), background: fills[active ? 1 : 0] });
+          await row.evaluate((element) => {
+            for (const animation of element.getAnimations({ subtree: true })) if (animation instanceof CSSTransition) animation.finish();
+          });
           const rowFill = await row.evaluate((element) => {
             const { left, right } = element.getBoundingClientRect();
-            return { left, right, background: getComputedStyle(element).backgroundColor };
+            return { left, right, background: getComputedStyle(element).backgroundColor, paint: getComputedStyle(element).backgroundImage };
           });
-          expect(rowFill.background).toBe(fills[active ? 1 : 0]);
+          expect(rowFill.paint).toContain("linear-gradient");
           const quietHeight = (await quietRow.boundingBox()).height;
           for (const target of ["name", "left gutter", "right gutter"]) {
             if (target === "name") await name.hover();
@@ -73,7 +62,8 @@ for (const { label, width, height } of [
             const state = `${active ? "active" : "inactive"}, ${target}`;
             await captureLayout(page, `inbox-project-hover-${label}-${theme}-${active ? "active" : "inactive"}-${target.replaceAll(" ", "-")}.png`);
             expect.soft(await head.evaluate((element) => element.matches(":hover")), state).toBe(true);
-            expect.soft(hovered.background, state).toBe(rowFill.background);
+            expect.soft(hovered.background, state).toBe("rgba(0, 0, 0, 0)");
+            expect.soft(hovered.paint, state).toContain("linear-gradient");
             expect.soft(hovered.box.x, state).toBe(rowFill.left);
             expect.soft(hovered.box.x + hovered.box.width, state).toBe(rowFill.right);
             expect.soft(hovered.box.height, state).toBeGreaterThanOrEqual(quietHeight);

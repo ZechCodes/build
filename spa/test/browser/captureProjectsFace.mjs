@@ -3,27 +3,19 @@ import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { withLayoutPage } from "./layoutHarness.mjs";
-import { inspectProjectsFace, mountProjectsFace, openRecent } from "./projectsFaceSeed.mjs";
+import { inspectProjectsFace, mountProjectsFace, openRecent, settleTheme, hoverRecentRow } from "./projectsFaceSeed.mjs";
 
 const phase = process.env.CAPTURE_PHASE || "after";
 const directory = process.env.CAPTURE_DIR || "/tmp/projects-face-480";
 await mkdir(directory, { recursive: true });
 const evidence = {};
-// Switch theme and finish the fills' transitions, so a capture shows one theme.
-async function settleTheme(page, theme) {
-  await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
-  await page.evaluate(() => Promise.all(document.getAnimations().map((animation) => {
-    if (animation instanceof CSSTransition) animation.finish();
-    return animation instanceof CSSTransition ? animation.finished : Promise.resolve();
-  })));
-}
 for (const { label, width, height, hasTouch } of [
   { label: "desktop", width: 1280, height: 800, hasTouch: false },
   { label: "phone", width: 390, height: 844, hasTouch: true },
 ]) {
   await withLayoutPage(async ({ page, basePath }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await mountProjectsFace(page, basePath);
+    await mountProjectsFace(page, basePath, { standing: true });
     for (const theme of ["light", "dark"]) {
       await settleTheme(page, theme);
       const blocks = await inspectProjectsFace(page);
@@ -31,7 +23,7 @@ for (const { label, width, height, hasTouch } of [
       if (phase === "after") {
         assert.deepEqual(blocks.map((block) => block.name), ["Alpha", "Bravo", "Build", "Zulu"]);
         for (const block of blocks) {
-          assert.equal(block.background, "rgba(0, 0, 0, 0)");
+          assert.equal(block.background, block.active ? block.accentSoft : "rgba(0, 0, 0, 0)");
           assert.equal(block.border, "0px");
           assert.equal(block.shadow, "none");
         }
@@ -43,10 +35,13 @@ for (const { label, width, height, hasTouch } of [
       }
       await page.locator("#inbox-rail").screenshot({ path: join(directory, `${phase}-${label}-${theme}.png`) });
     }
-    // The active block with its Recent open: one content column, its heading filled (#516).
+    // Matched #540 evidence: Recent open, a standing row and a hovered sibling.
     await openRecent(page, "projects-review/build");
     for (const theme of ["light", "dark"]) {
       await settleTheme(page, theme);
+      await hoverRecentRow(page);
+      assert.equal(await page.locator(".inbox-project.active .inbox-recent .inbox-entry.active").count(), 1);
+      assert.equal(await page.locator(".inbox-project.active .inbox-entry:hover").count(), 1);
       await page.locator("#inbox-rail").screenshot({ path: join(directory, `${phase}-${label}-${theme}-recent.png`) });
     }
   }, { width, height, hasTouch });

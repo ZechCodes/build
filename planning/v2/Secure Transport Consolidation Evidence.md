@@ -215,8 +215,9 @@ head/base, PID, environment and exit receipts are attached on #576.
   #576/c/tc-01M4RYEJ8G9JPVHKKVF7FCFY61. Their source and dependency bytes
   remain unchanged by the Rust completion.
 - Completed Rust source: `4445f2203d8613fe54c07fdd258876dff0220b57`.
-  The final receipt amendment changes only this evidence document; the attached
-  equality proof binds the review head to this validated source tree.
+  The final receipt/scan amendments change only this evidence document and
+  two exact historical public-fixture fingerprints in `.gitleaksignore`; the
+  attached equality proof binds the review head to this validated source tree.
 - Gates ran serially under `nice -n 10`, with two Cargo build jobs. Final Rust
   runs used two test threads; the initial red/first full run used one. uv is the
   already-installed 0.12.13 selected explicitly through `BST_UV`; Python runs
@@ -261,3 +262,11 @@ version/JSON differences. Crypto/runtime sources, original Python helper/tests,
 manifests and locks remain byte-identical to base. There is no direct JS/Rust
 runtime exchange claim. #577 consumer policy, #578 containers/CI, #579 operational
 documentation and #580 independent review remain outside this child's scope.
+
+The initial final-head Gitleaks run exited 1 on two generic-key detections in
+the fixture's introducing commit: captured sealed-box ciphertext (line 308) and
+the deliberately public session key bytes 64..95 (line 310). The redacted
+finding report is retained. Only those two commit/file/line fingerprints are
+excluded; no fixture path or rule is suppressed. Fixture bytes stay immutable,
+and complexity ratchet annotations remain unchanged. Final scans and their
+exact-head logs are attached to the task handoff.

@@ -142,3 +142,17 @@ Verified after rebasing onto `cad6ed45`, with `conversation.reset` on wire
 **Reset score: 100/100.** All ten reset controls are verified by the completed
 gates above. The existing authentication boundary and the explicit opt-in test
 and scanner scopes remain as described here.
+
+
+## #522 planned extension — not yet verified
+
+These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
+Existing scores above cover their original implemented scope only. Each owning
+child must supply passing regression/gate evidence before its new rows can
+count toward 100/100; planning does not satisfy these controls.
+
+| ID | Pending control | Required evidence |
+| --- | --- | --- |
+| CI522-1 | One persisted coordinator survives migration, reset and repeated ensure; no per-agent surface may remove, transfer or replace the pin while the project exists. | C4/C8: project_roster_migrates_one_stable_coordinator; project_coordinator_cannot_be_removed_or_reassigned; rail pin tests. |
+| CI522-2 | Worker prompt/tools use persisted purpose; exact agent/conversation/session generation gates delivery and MCP, independent of prefix, roster position or forged surface flags. | C4/C5/C8: project_worker_tools_follow_persisted_purpose; stale callback/send, independent drafts and old-client roster tests. |
+| CI522-3 | Shared cwd never aliases resume/reset/remove artifacts; deleting one worker cannot affect siblings, pin, source files or another draft. | C4/C5/C8/C10: project_worker_removal_preserves_shared_cwd_siblings; provider lineage and browser draft tests. |

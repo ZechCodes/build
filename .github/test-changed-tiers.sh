@@ -157,7 +157,11 @@ change_case "a module the relay reaches through relay_server moves the relay" \
 change_case "the relay manifest alone moves the relay, and the checks that gate its image" \
     deploy/k8s/relay.yaml "$MOVED_RELAY" manifest
 change_case "a lockfile change moves the relay" \
-    bridge/Cargo.lock "$MOVED_RELAY" lockfile
+    bridge/Cargo.lock "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" lockfile
+change_case "the crate manifest gates transport dependencies and the relay" \
+    bridge/Cargo.toml "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" crate-manifest
+change_case "the crate exports gate transport and the relay" \
+    bridge/src/lib.rs "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" crate-exports
 change_case "the image recipe moves the relay" \
     bridge/Containerfile "$MOVED_RELAY" containerfile
 change_case "a path that only contains a relay source's name is not one" \
@@ -171,6 +175,10 @@ change_case "an edit to relay-sources alone runs the guard that checks it" \
 MOVED_TRANSPORT="app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=true"
 MOVED_JS="app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false transport=true"
 
+for path in .dockerignore .containerignore; do
+    change_case "root image context inputs gate app, E2E and transport: $path" \
+        "$path" "$MOVED_JS" "ignore-$(basename "$path")"
+done
 for path in transport/js/src/index.js transport/js/test/index.test.js transport/js/testing/python.mjs \
     transport/js/package.json transport/js/package-lock.json transport/js/.npmrc transport/js/LICENSE.md; do
     change_case "the local JS binding moves app, E2E and transport: $path" \
@@ -196,6 +204,18 @@ change_case "CI changes check transport and preserve desktop selection" \
     .github/workflows/ci.yml "app=false relay=false bridge=false e2e=false desktop=true scripts=false shell=false transport=true" ci
 change_case "timing CI changes check transport" \
     .github/workflows/timing.yml "$MOVED_TRANSPORT" timing
+for path in scripts/transport_import.py scripts/transport_packages.py; do
+    change_case "transport package runners cannot skip transport: $path" \
+        "$path" "app=false relay=false bridge=false e2e=false desktop=false scripts=true shell=false transport=true" \
+        "package-runner-$(basename "$path")"
+done
+change_case "the app recipe gates transport delivery" \
+    skriftapp/Containerfile "$MOVED_JS" app-recipe
+for path in web/Containerfile deploy/compose.real.yml; do
+    change_case "QA delivery inputs check E2E and transport: $path" \
+        "$path" "app=false relay=false bridge=false e2e=true desktop=false scripts=false shell=false transport=true" \
+        "qa-$(basename "$path")"
+done
 change_case "the workflow transport contract checks itself" \
     .github/test-transport-workflow.py "$MOVED_TRANSPORT" workflow-contract
 change_case "JS documentation alone does not rebuild the app" \

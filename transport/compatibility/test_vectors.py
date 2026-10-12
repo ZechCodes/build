@@ -9,8 +9,11 @@ from build_secure_transport import (
     build_session_accept, decrypt_envelope, encrypt_frame, fingerprint_identity_key,
     open_session_init, sign_transport_key, verify_transport_key_signature,
 )
+from build_secure_transport.exceptions import (
+    DecryptionError, InvalidInputError, ProtocolError, VerificationError,
+)
 
-FIXTURES = Path(__file__).resolve().parents[2] / 'fixtures'
+FIXTURES = Path(__file__).resolve().parents[1] / 'fixtures'
 
 
 class CompatibilityVectors(unittest.TestCase):
@@ -19,8 +22,6 @@ class CompatibilityVectors(unittest.TestCase):
         cls.vector = json.loads(Path(os.environ.get('BST_FIXTURES', FIXTURES / 'v1.json')).read_text())
 
     def test_fixture_digest(self):
-        if 'BST_FIXTURES' in os.environ:
-            return  # explicit regeneration experiment; normal required run checks the immutable digest
         expected = (FIXTURES / 'SHA256SUMS').read_text().split()[0]
         self.assertEqual(hashlib.sha256((FIXTURES / 'v1.json').read_bytes()).hexdigest(), expected)
 
@@ -31,9 +32,9 @@ class CompatibilityVectors(unittest.TestCase):
         self.assertEqual(fingerprint_identity_key(v['identity_public']), v['fingerprint'])
         opened = open_session_init(v['transport_private'], v['session_init'])
         self.assertEqual(opened['session_key_b64'], v['session_key'])
-        with self.assertRaises(Exception):
+        with self.assertRaises(VerificationError):
             verify_transport_key_signature(v['identity_public'], v['transport_public'], v['bad_signature'])
-        with self.assertRaises(Exception):
+        with self.assertRaises(DecryptionError):
             open_session_init(v['wrong_transport_private'], v['session_init'])
 
     def test_accept_and_deterministic_frames_both_producers(self):
@@ -55,5 +56,5 @@ class CompatibilityVectors(unittest.TestCase):
                 if case['accepts']['python']:
                     decrypt_envelope(v['session_key'], case['envelope'])
                 else:
-                    with self.assertRaises(Exception):
+                    with self.assertRaises((DecryptionError, InvalidInputError, ProtocolError)):
                         decrypt_envelope(v['session_key'], case['envelope'])

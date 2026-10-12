@@ -28,11 +28,10 @@ test("deterministic fingerprint matches python", async () => {
   await ready();
   const identity = await generateIdentityKeypair();
 
-  const pythonFingerprint = python({
-        action: "fingerprint_identity_key",
-        identity_public_key_b64: identity.publicKeyB64
-      });
-  const expected = pythonFingerprint;
+  const expected = python({
+    action: "fingerprint_identity_key",
+    identity_public_key_b64: identity.publicKeyB64
+  });
   assert.equal(await fingerprintIdentityKey(identity.publicKeyB64), expected.fingerprint);
 });
 
@@ -61,8 +60,7 @@ test("js encryption round-trip works", async () => {
 test("cross-language bootstrap and messaging interop", async () => {
   await ready();
 
-  const pythonProbe = python({ action: "generate_transport_bundle" });
-  const transportBundle = pythonProbe;
+  const transportBundle = python({ action: "generate_transport_bundle" });
 
   await verifySignedTransportKey({
     identityPublicKeyB64: transportBundle.identity_public_key_b64,
@@ -76,21 +74,19 @@ test("cross-language bootstrap and messaging interop", async () => {
     deviceTransportPublicKeyB64: transportBundle.transport_public_key_b64
   });
 
-  const pythonBootstrap = python({
-        action: "open_session_init",
-        transport_private_key_b64: transportBundle.transport_private_key_b64,
-        session_init: sessionInit
-      });
-  const bootstrap = pythonBootstrap;
+  const bootstrap = python({
+    action: "open_session_init",
+    transport_private_key_b64: transportBundle.transport_private_key_b64,
+    session_init: sessionInit
+  });
   assert.equal(bootstrap.session_key_b64, sessionKeyB64);
 
-  const pythonAccept = python({
-        action: "build_session_accept",
-        session_key_b64: sessionKeyB64,
-        session_id: "sess-cross",
-        route_to: "client-cross"
-      });
-  const sessionAccept = pythonAccept;
+  const sessionAccept = python({
+    action: "build_session_accept",
+    session_key_b64: sessionKeyB64,
+    session_id: "sess-cross",
+    route_to: "client-cross"
+  });
   const openedAccept = await openSessionAccept({ sessionKeyB64, envelope: sessionAccept });
   assert.equal(openedAccept.sessionId, "sess-cross");
 
@@ -100,20 +96,19 @@ test("cross-language bootstrap and messaging interop", async () => {
     frameFields: { frame_type: "data", sender: "client", payload: { hello: "python" } }
   });
 
-  const pythonDecrypt = python({
-        action: "decrypt_envelope",
-        session_key_b64: sessionKeyB64,
-        envelope: clientEnvelope
-      });
-  const decryptedByPython = pythonDecrypt;
+  const decryptedByPython = python({
+    action: "decrypt_envelope",
+    session_key_b64: sessionKeyB64,
+    envelope: clientEnvelope
+  });
   assert.deepEqual(decryptedByPython.payload, { hello: "python" });
 
   const pythonReply = python({
-        action: "encrypt_frame",
-        session_key_b64: sessionKeyB64,
-        outer_fields: { session_id: "sess-cross", route_to: "client-cross" },
-        frame_fields: { frame_type: "data", sender: "device", payload: { hello: "js" } }
-      });
+    action: "encrypt_frame",
+    session_key_b64: sessionKeyB64,
+    outer_fields: { session_id: "sess-cross", route_to: "client-cross" },
+    frame_fields: { frame_type: "data", sender: "device", payload: { hello: "js" } }
+  });
   const decryptedByJs = await decryptEnvelope({
     sessionKeyB64,
     envelope: pythonReply

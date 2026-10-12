@@ -19,11 +19,15 @@ IMPORT_PATHS = (
     'python/src/build_secure_transport/exceptions.py',
     'python/tests/interop_helper.py', 'python/tests/test_device.py', 'python/uv.lock',
 )
-# Source/docs may be amended only here; source, tests and license remain immutable.
+# Crypto/runtime and license remain immutable; explicit harness amendments only.
 AMENDABLE = {'README.md', 'E2E-MVP.md', 'js/package.json',
-             'js/package-lock.json', 'python/pyproject.toml'}
+             'js/package-lock.json', 'python/pyproject.toml', 'js/test/index.test.js'}
 LOCAL_FILES = {'.gitignore', 'UPSTREAM.md', 'js/LICENSE.md',
-               'python/LICENSE.md', 'python/MANIFEST.in'}
+               'python/LICENSE.md', 'python/MANIFEST.in',
+               'js/testing/python.mjs', 'js/test/vectors.test.js',
+               'compatibility/test_vectors.py', 'testing/generate_vectors.py',
+               'testing/generate_vectors.mjs', 'fixtures/v1.json',
+               'fixtures/SHA256SUMS', 'fixtures/README.md'}
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -121,12 +125,22 @@ def regular_bytes(path):
     return path.read_bytes()
 
 
+def source_files(root):
+    # Installed ignored environments are not source. In archives, inspect every
+    # member; in Git checkouts, include tracked and unignored new files.
+    if (root / '.git').exists():
+        paths = git(root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard',
+                    '--', 'transport').split(b'\0')
+        return [root / p.decode() for p in paths if p]
+    return (root / 'transport').rglob('*')
+
+
 def check_import(root, upstream=None):
     rows = manifest(root)
     for path, _, current in rows:
         if digest(regular_bytes(root / 'transport' / path)) != current:
             raise ValueError(f'digest mismatch: {path}')
-    for path in (root / 'transport').rglob('*'):
+    for path in source_files(root):
         relative = path.relative_to(root / 'transport').as_posix()
         if path.is_symlink():
             raise ValueError(f'symlink: {relative}')

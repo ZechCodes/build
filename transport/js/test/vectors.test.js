@@ -13,9 +13,8 @@ const bytes = readFileSync(fixture);
 const v = JSON.parse(bytes);
 
 test("immutable vector digest", () => {
-  if (process.env.BST_FIXTURES) return;
   const expected = readFileSync(new URL("../../fixtures/SHA256SUMS", import.meta.url), "utf8").split(/\s/)[0];
-  assert.equal(createHash("sha256").update(bytes).digest("hex"), expected);
+  assert.equal(createHash("sha256").update(readFileSync(new URL("../../fixtures/v1.json", import.meta.url))).digest("hex"), expected);
 });
 
 test("pinned identity, captured bootstrap and accept", async () => {
@@ -35,7 +34,7 @@ test("pinned identity, captured bootstrap and accept", async () => {
 test("deterministic old/new frames and both producers decrypt", async () => {
   for (const frame of v.frames) {
     const envelope = await binding.encryptFrame({ sessionKeyB64: v.session_key,
-      outerFields: frame.outer, frameFields: frame.fields, nonceB64: frame.nonce });
+      outerFields: frame.outer, frameFields: frame.fields, nonceB64: frame.js_nonce });
     assert.deepEqual(envelope, frame.envelopes.js, frame.name);
     for (const [producer, captured] of Object.entries(frame.envelopes)) {
       assert.deepEqual(await binding.decryptEnvelope({ sessionKeyB64: v.session_key, envelope: captured }),

@@ -272,6 +272,35 @@ describe("the order a pass reads in", () => {
 });
 
 describe("what a pass writes", () => {
+  it("failed_refresh_retains_rows until a confirmed empty workspace roster arrives", async () => {
+    const { cachedFeedView } = await import("../src/core/cachedRows.js");
+    const { navigationCatalog, projectWorkspaceInventory } = await import("../src/core/navigationModel.js");
+    const inventory = async () => projectWorkspaceInventory(navigationCatalog(await cachedFeedView("dev-1")), "dev-1/p1");
+    script["workspace.list"] = () => ({ workspaces: [{ id: "ws-1", project_id: "p1", name: "Navigation", status: "ready" }] });
+    sync.startCacheSync();
+    await passesSettled(sync, "dev-1");
+    const initial = await inventory();
+    expect(initial.present).toBe(true);
+    expect(initial.workspaces.map((row) => row.key)).toEqual(["dev-1/ws-1"]);
+    expect(initial.observedAt).toBe((await read("", "workspaces")).at);
+
+    script["workspace.list"] = () => { throw new Error("workspace roster unavailable"); };
+    await sync.syncDevice("dev-1");
+    await passesSettled(sync, "dev-1");
+    const retained = await inventory();
+    expect(calls("workspace.list")).toHaveLength(2);
+    expect(retained.present).toBe(true);
+    expect(retained.workspaces.map((row) => [row.key, row.name])).toEqual([["dev-1/ws-1", "Navigation"]]);
+    expect(retained.observedAt).toBe((await read("", "workspaces")).at);
+
+    script["workspace.list"] = () => ({ workspaces: [] });
+    await sync.syncDevice("dev-1");
+    await passesSettled(sync, "dev-1");
+    expect(calls("workspace.list")).toHaveLength(3);
+    expect(await inventory()).toEqual({ present: true, observedAt: (await read("", "workspaces")).at, workspaces: [] });
+    expect((await read("", "workspaces")).value).toEqual([]);
+  });
+
   it("writes the three lists and one row per feed item", async () => {
     script["workspace.list"] = () => ({ workspaces: [{ id: "ws-1", project_id: "p1", name: "wire" }] });
     await boot([branchItem()]);

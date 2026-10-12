@@ -93,24 +93,24 @@ export function batchPaths(paths, max = CHANGESET_DIFF_MAX_PATHS) {
   return batches;
 }
 
-/** The paths of a cut answer whose bodies the cut fell in: the file the
- *  answer ends on, and every asked path it never reached. A file before the
- *  last one the answer carries arrived whole. */
-function cutPaths(answer, segments, paths) {
+/** The carried body the cut fell in. Earlier segments arrived whole;
+ *  paths the patch never reached have no body to keep yet. */
+function cutPaths(answer, segments) {
   if (!answer.truncated) return new Set();
   const carried = [...segments.keys()];
   const last = carried[carried.length - 1];
-  return new Set(paths.filter((path) => path === last || !segments.has(path)));
+  return new Set(last ? [last] : []);
 }
 
 /** One answer's bodies, one per asked path, in request order: a path with
- *  nothing to say answers an empty patch under the key the list holds for it,
- *  the way `git.diff` answers one. */
+ *  nothing to say in a complete answer gets an empty patch under the list's
+ *  key, the way `git.diff` answers one. A truncated answer's metadata can
+ *  name paths its patch never reached; those still need a wire read. */
 function answeredBodies(answer, paths, keyFor) {
   const segments = filePatchesByPath(answer.patch);
   const keys = new Map((answer.files || []).map((file) => [file.path, file.content_key]));
-  const cut = cutPaths(answer, segments, paths);
-  return paths.map((path) => ({
+  const cut = cutPaths(answer, segments);
+  return paths.filter((path) => !answer.truncated || segments.has(path)).map((path) => ({
     path,
     content_key: keys.get(path) ?? keyFor(path),
     patch: segments.get(path) || "",
@@ -193,18 +193,23 @@ export function createChangesetBodies({ addressOf, fetchFiles, keyFor, canPage =
   });
 
   const bodyOf = (path) => bodies.read(path);
+  const wasAnswered = (path, key) => Boolean(bodyOf(path) && answered.has(path) && answered.get(path) === key);
 
   async function fill(views, openPaths, budget) {
     const keyOf = new Map((views || []).map((view) => [view.path, view.contentKey]));
     const wanted = pathsToFetch(views, { openPaths, bodyOf })
-      .filter((path) => answered.get(path) !== keyOf.get(path))
+      .filter((path) => !wasAnswered(path, keyOf.get(path)))
       .slice(0, budget);
     if (!wanted.length || disposed) return 0;
     let filled = 0;
     for (const batch of batchPaths(wanted)) {
       if (disposed) break;
       filled += (await bodies.ensure(batch)).length;
-      for (const path of batch) answered.set(path, keyOf.get(path));
+      for (const path of batch) {
+        // ensure can return fewer bodies than asked for. Only a held body
+        // settles this list key, even when the wire already names a newer one.
+        if (bodyOf(path)) answered.set(path, keyOf.get(path));
+      }
     }
     return filled;
   }

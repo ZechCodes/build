@@ -475,6 +475,7 @@
   background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur));
 }
+.task-comment-mentioned .task-comment-card > .task-entry-head { margin-left:-11px; padding-left:11px; }
 .task-comment-reply {
   flex:none; align-self:center; margin-left:auto; width:28px; height:28px; padding:0;
   display:flex; align-items:center; justify-content:center;

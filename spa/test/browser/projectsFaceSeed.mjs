@@ -144,3 +144,10 @@ export async function hoverRecentRow(page) {
     for (const animation of element.getAnimations({ subtree: true })) if (animation instanceof CSSTransition) animation.finish();
   });
 }
+
+/** Exercise styles.css's imports without the harness's duplicate shell sheets. */
+export async function useProductionStyles(page) {
+  await page.evaluate(() => {
+    for (const sheet of document.querySelectorAll('link[href$="src/styles/shell.css"], style[data-vite-dev-id$="/src/styles/shell.css"]')) sheet.remove();
+  });
+}

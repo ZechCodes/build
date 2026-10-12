@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
+import { writeFile } from "node:fs/promises";
 import { withLayoutPage } from "./layoutHarness.mjs";
-import { inspectProjectsFace, inspectActiveBlock, mountProjectsFace, openRecent, settleTheme, hoverRecentRow } from "./projectsFaceSeed.mjs";
+import { inspectProjectsFace, inspectActiveBlock, mountProjectsFace, openRecent, settleTheme, hoverRecentRow, useProductionStyles } from "./projectsFaceSeed.mjs";
 
 // The project name's left edge, as #514 measured it: every child of a block
 // stands on it (#516).
@@ -10,11 +11,11 @@ const CONTENT_X = { desktop: 51, phone: 64 };
 /** Decode real screenshot pixels at the fold and project-name columns. */
 async function blockColumnPixels(page) {
   const geometry = await page.locator(".inbox-project.active").evaluate((block) => {
-    const head = block.getBoundingClientRect();
-    return { clip: { x: Math.floor(head.x), y: Math.ceil(head.y), width: Math.ceil(head.width),
-      height: Math.floor(head.bottom) - Math.ceil(head.y) },
+    const bounds = block.getBoundingClientRect();
+    return { clip: { x: Math.floor(bounds.x), y: Math.ceil(bounds.y), width: Math.ceil(bounds.width),
+      height: Math.floor(bounds.bottom) - Math.ceil(bounds.y) },
       columns: [block.querySelector(".inbox-fold svg"), block.querySelector(".inbox-project-name")]
-        .map((element) => Math.round(element.getBoundingClientRect().x) - Math.floor(head.x)) };
+        .map((element) => Math.round(element.getBoundingClientRect().x) - Math.floor(bounds.x)) };
   });
   const png = await page.screenshot({ clip: geometry.clip, type: "png" });
   return page.evaluate(async ({ base64, columns }) => {
@@ -48,6 +49,54 @@ async function rowMaskPixelErrors(page, selector) {
     const wanted = context.getImageData(0, 0, 1, 1).data;
     return [0, 1, 2].map((channel) => Math.abs(actual[channel] - wanted[channel]));
   }, { base64: png.toString("base64"), expected });
+}
+
+/** Encoded RGB brightness measures a visible step, independently of CSS formula. */
+function brightness(rgb) {
+  return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+}
+
+async function gutterPixel(page, surface) {
+  const box = await surface.boundingBox();
+  const png = await page.screenshot({ clip: { x: Math.floor(box.x + 5), y: Math.floor(box.y + box.height / 2), width: 1, height: 1 } });
+  return page.evaluate(async (base64) => {
+    const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
+    const canvas = new OffscreenCanvas(1, 1);
+    const context = canvas.getContext("2d");
+    context.drawImage(bitmap, 0, 0);
+    return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+  }, png.toString("base64"));
+}
+
+async function hoverPixels(page, selector, theme) {
+  const surface = page.locator(selector);
+  await surface.waitFor();
+  await page.mouse.move(0, 0);
+  await page.evaluate(() => document.activeElement?.blur());
+  await settleTheme(page, theme);
+  const rest = await gutterPixel(page, surface);
+  const box = await surface.boundingBox();
+  await page.mouse.move(box.x + 5, box.y + box.height / 2);
+  await settleTheme(page, theme);
+  expect(await surface.evaluate((element) => element.matches(":hover"))).toBe(true);
+  return { rest, hover: await gutterPixel(page, surface) };
+}
+
+async function normalHoverStep(page) {
+  const tones = await page.evaluate(() => {
+    const context = new OffscreenCanvas(1, 1).getContext("2d");
+    const probe = document.body.appendChild(document.createElement("span"));
+    probe.style.transition = "none";
+    const tones = ["--panel", "--row-hover"].map((token) => {
+      probe.style.background = `var(${token})`;
+      context.fillStyle = getComputedStyle(probe).backgroundColor;
+      context.fillRect(0, 0, 1, 1);
+      return [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
+    });
+    probe.remove();
+    return tones;
+  });
+  return Math.abs(brightness(tones[0]) - brightness(tones[1]));
 }
 
 for (const { label, width, height, hasTouch } of [
@@ -193,10 +242,11 @@ for (const { label, width, height, hasTouch } of [
 
   for (const theme of ["light", "dark"]) {
     for (const emptyLive of [false, true]) {
-      it(`has no rail or panel seam through the active block on ${label} ${theme}, empty live=${emptyLive} (#540)`, async () => {
+      it(`has no rail or panel seam through the active and folded block on ${label} ${theme}, empty live=${emptyLive} (#540)`, async () => {
         await withLayoutPage(async ({ page, basePath }) => {
           await page.emulateMedia({ reducedMotion: "reduce" });
           await mountProjectsFace(page, basePath, { standing: true, emptyLive });
+          await useProductionStyles(page);
           await openRecent(page, "projects-review/build");
           await settleTheme(page, theme);
           await hoverRecentRow(page);
@@ -216,9 +266,62 @@ for (const { label, width, height, hasTouch } of [
             const rows = await page.locator(".inbox-project.active .inbox-project-rows").boundingBox();
             expect(rows.height).toBe(0);
           }
+          const expanded = await page.locator(".inbox-project.active").boundingBox();
+          await page.locator('[data-project-fold="projects-review/build"]').click();
+          await page.locator(".inbox-project.active.inbox-folded").waitFor();
+          await page.mouse.move(0, 0);
+          await page.evaluate(() => document.activeElement?.blur());
+          await settleTheme(page, theme);
+          expect(await page.locator(".inbox-project.active .inbox-recent").isVisible()).toBe(false);
+          expect((await page.locator(".inbox-project.active").boundingBox()).height).toBeLessThan(expanded.height);
+          for (const [column, pixels] of (await blockColumnPixels(page)).entries()) {
+            expect(pixels.filter((pixel) => pixel === block.panel || pixel === block.ground), `folded column ${column}`).toEqual([]);
+            expect(pixels[0], `folded column ${column} top`).toBe(block.accentSoft);
+            expect(pixels.at(-1), `folded column ${column} bottom`).toBe(block.accentSoft);
+          }
         }, { width, height, hasTouch });
       }, 60_000);
     }
+  }
+
+  for (const theme of ["light", "dark"]) {
+    it(`visibly darkens standing, resting, ungrouped and head hover on ${label} ${theme} (#540)`, async () => {
+      await withLayoutPage(async ({ page, basePath }) => {
+        await page.emulateMedia({ reducedMotion: "reduce" });
+        await mountProjectsFace(page, basePath, { standing: true });
+        await useProductionStyles(page);
+        await openRecent(page, "projects-review/build");
+        await settleTheme(page, theme);
+        const referenceStep = await normalHoverStep(page);
+        expect(referenceStep).toBeGreaterThan(10);
+        const minimumStep = referenceStep / 2;
+        const samples = [];
+        const surfaces = [
+          ["standing", ".inbox-project.active .inbox-entry.active"],
+          ["resting", '.inbox-project.active [data-key="workspace:projects-review/build-live"]'],
+          ["head", ".inbox-project.active .inbox-project-head"],
+          ["inactive head", '.inbox-project[data-project="projects-review/alpha"] .inbox-project-head'],
+        ];
+        for (const [label, selector] of surfaces) {
+          const { rest, hover } = await hoverPixels(page, selector, theme);
+          samples.push({ surface: label, rest, hover, step: brightness(rest) - brightness(hover) });
+          for (const [channel, value] of hover.entries()) expect.soft(value, `${label} RGB ${channel}`).toBeLessThan(rest[channel]);
+          expect.soft(brightness(rest) - brightness(hover), `${label} visible step`).toBeGreaterThanOrEqual(minimumStep);
+          if (selector.includes("inbox-entry")) {
+            for (const error of await rowMaskPixelErrors(page, selector)) expect.soft(error, `${label} mask`).toBeLessThanOrEqual(1);
+          }
+        }
+        await page.evaluate(() => window.__layoutModules.view.setInboxView("inbox"));
+        const selector = '#inbox-list > [data-key="workspace:projects-review/build-live"]';
+        const { rest, hover } = await hoverPixels(page, selector, theme);
+        samples.push({ surface: "ungrouped", rest, hover, step: brightness(rest) - brightness(hover) });
+        for (const [channel, value] of hover.entries()) expect.soft(value, `ungrouped RGB ${channel}`).toBeLessThan(rest[channel]);
+        expect.soft(brightness(rest) - brightness(hover), "ungrouped visible step").toBeGreaterThanOrEqual(minimumStep);
+        for (const error of await rowMaskPixelErrors(page, selector)) expect.soft(error, "ungrouped mask").toBeLessThanOrEqual(1);
+        if (process.env.BUILD_HOVER_EVIDENCE) await writeFile(`${process.env.BUILD_HOVER_EVIDENCE}/${label}-${theme}.json`,
+          `${JSON.stringify({ width, theme, referenceStep, minimumStep, samples }, null, 2)}\n`);
+      }, { width, height, hasTouch });
+    }, 60_000);
   }
 
   it(`keeps all block insets in padding and a folded block filled on ${label} (#540)`, async () => {
@@ -248,9 +351,7 @@ for (const { label, width, height, hasTouch } of [
       await openRecent(page, "projects-review/build");
       // The app's styles.css imports shell before defining the shared .srow
       // rules. Drop the harness's duplicate shell sheets to exercise that order.
-      await page.evaluate(() => {
-        for (const sheet of document.querySelectorAll('link[href$="src/styles/shell.css"], style[data-vite-dev-id$="/src/styles/shell.css"]')) sheet.remove();
-      });
+      await useProductionStyles(page);
       for (const theme of ["light", "dark"]) {
         await settleTheme(page, theme);
         const block = await inspectActiveBlock(page);

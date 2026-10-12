@@ -710,6 +710,16 @@ does not prove a fetch occurred: a requested fetch uses only the budget remainin
 after the lock wait. Refused preparation removes only that create request's
 unpublished root and preserves existing workspace files.
 
+Retry preparation uses only unfinished directories in the saved workspace
+manifest. Their saved source identity, path and base remain the inputs after a
+project source moves, is removed or changes base; those changes alone do not
+refuse retry. A matching current source supplies its sync policy, while a
+detached saved input is pinned locally without automatic sync. Every Git
+directory requires an exact prepared OID before materialization. Failure to
+access or resolve a saved input preserves the published retry root and all
+ready directories. Settling an old cut never requests sync for a moved or
+rebased replacement source.
+
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes
 `usable_remote_url` (`bridge/src/remote_url.rs`): no leading `-`, no

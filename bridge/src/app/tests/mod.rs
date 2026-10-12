@@ -246,6 +246,7 @@ mod tracker_list_reads;
 mod tracker_tools;
 mod tracker_tracking;
 mod tracker_unread_kinds;
+mod tracker_waiting_on;
 mod tracker_watch_baselines;
 mod tracker_watching;
 mod updates;

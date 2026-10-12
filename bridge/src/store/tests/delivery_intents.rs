@@ -388,7 +388,7 @@ fn forge_message_origin(receipt: &mut crate::operation::OperationReceipt, change
 }
 
 #[test]
-fn moving_pending_creating_assignment_from_backlog_to_ready_retires_delivery() {
+fn moving_waiting_creating_assignment_to_ready_preserves_armed_generation() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let mut task = store
@@ -454,6 +454,15 @@ fn moving_pending_creating_assignment_from_backlog_to_ready_retires_delivery() {
     store
         .save_tracker_task_activity(&task, &[], &[moved])
         .unwrap();
+    let waiting = store.load_delivery_intent(&intent.id).unwrap().unwrap();
+    assert_eq!(waiting.state, "waiting");
+    assert_eq!(waiting.generation, intent.generation);
+    assert_eq!(waiting.operation_id, intent.operation_id);
+    assert_eq!(waiting.target, intent.target);
+    assert!(store
+        .delivery_authority_current(&intent.id, intent.generation)
+        .unwrap());
+    assert!(store.delivery_intents_ready(100).unwrap().is_empty());
     blocker.status = "done".into();
     store
         .save_tracker_task_activity(&blocker, &[], &[])
@@ -465,12 +474,15 @@ fn moving_pending_creating_assignment_from_backlog_to_ready_retires_delivery() {
             .unwrap()
             .unwrap()
             .state,
-        "cancelled"
+        "queued"
     );
-    assert!(!store
+    assert!(store
         .delivery_authority_current(&intent.id, intent.generation)
         .unwrap());
-    assert!(store.delivery_intents_ready(100).unwrap().is_empty());
+    let queued = store.delivery_intents_ready(100).unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id, intent.id);
+    assert_eq!(queued[0].generation, intent.generation);
     assert_eq!(
         store.load_tracker_task(&task.id).unwrap().unwrap().status,
         "ready"

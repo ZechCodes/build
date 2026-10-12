@@ -18,6 +18,24 @@ const dismissalRoutes = {
   scrim: (page) => page.locator("#scrim").click({ position: { x: 1, y: 1 } }),
   Cancel: (page) => page.locator("#nrcancel").click(),
 };
+it("keeps successful source states when the created project cannot be cached", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountNewProject(page, basePath);
+    await page.evaluate(() => { window.__projectCacheError = "Local cache unavailable"; });
+    await page.locator("#nrdo").click();
+    await resolveProject(page);
+    await page.evaluate(() => window.__releaseProjectCache());
+    await page.waitForSelector("#nropenerr");
+    expect(await page.locator("#nropenerr").textContent()).toBe("Local cache unavailable");
+    expect(await page.locator("[data-source-state='done']").count()).toBe(1);
+    expect(await page.locator("[data-source-state='failed'], #nrback, #nrdo").count()).toBe(0);
+    expect(await page.locator("#nrprogress").textContent()).toContain("Project created. Could not open it.");
+    await page.waitForFunction(async () =>
+      (await window.__layoutModules.store.readUiRecord(window.__projectDraftAddress)).value.sources.length === 0);
+    await page.locator("#nrcancel").click();
+    expect(await page.locator("#scrim").getAttribute("class")).not.toContain("show");
+  }, { plugins: [deviceShim, holdProjectCache] });
+});
 it("does not navigate or hide a replacement sheet when dismissed during the draft-clear write", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await mountNewProject(page, basePath);

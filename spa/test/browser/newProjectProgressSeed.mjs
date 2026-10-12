@@ -29,6 +29,7 @@ export const holdProjectCache = {
       import { writeProjectSetting as write } from '/src/core/settingsRecords.js';
       export async function writeProjectSetting(...args) {
         await window.__projectCacheReady;
+        if (window.__projectCacheError) throw new Error(window.__projectCacheError);
         return write(...args);
       }`;
   },

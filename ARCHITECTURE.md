@@ -2331,7 +2331,9 @@ creation events, so all lines run and settle together. Escape and scrim
 dismissal are blocked only until the request settles. Failure keeps the
 source errors visible; Back restores the draft and focus to Create. Success
 writes and rereads the project cache before opening it. Dismissing the settled
-sheet prevents a delayed cache write from navigating afterwards.
+sheet prevents a delayed cache write from navigating afterwards. An opening
+or cache failure after successful creation keeps source lines Done and reports
+the opening error separately, without offering another creation attempt.
 
 Unread counters count only watched conversations and tasks. A workspace's
 count sums its watched agents. Conversation watches persist a thread sequence

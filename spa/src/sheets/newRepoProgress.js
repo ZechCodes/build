@@ -29,10 +29,11 @@ export function mountNewRepoProgress(sheet, { name, sources }, { onBack, onClose
   sheet.scrollTop = 0;
   const root = sheet.querySelector("#nrprogress");
   const actions = sheet.querySelector("#nrprogress-actions");
-  const update = (state, error = "") => {
+  const update = (state, error = "", openingError = "") => {
     root.setAttribute("aria-busy", String(state === "in_progress"));
-    root.innerHTML = `<h3>${esc(name)}</h3><p class="sub">${descriptions[state]}</p>
+    root.innerHTML = `<h3>${esc(name)}</h3><p class="sub">${openingError ? "Project created. Could not open it." : descriptions[state]}</p>
       <ul class="nr-progress-sources">${sources.map((source) => sourceHtml(source, state, error)).join("")}</ul>
+      ${openingError ? `<p class="adderr" id="nropenerr">${esc(openingError)}</p>` : ""}
       ${state === "in_progress" ? '<p class="sub nr-progress-note">Large repositories can take a while to clone.</p>' : ""}`;
     actions.innerHTML = state === "in_progress" ? "" : `<button class="btn" id="nrcancel" type="button" style="margin-left:auto">Cancel</button>${state === "failed" ? '<button class="btn primary" id="nrback" type="button">Back</button>' : ""}`;
     actions.hidden = state === "in_progress";
@@ -43,5 +44,8 @@ export function mountNewRepoProgress(sheet, { name, sources }, { onBack, onClose
   };
   update("in_progress");
   root.focus();
-  return { root, done: () => update("done"), fail: (error) => update("failed", error) };
+  return {
+    root, done: () => update("done"), fail: (error) => update("failed", error),
+    openingFailed: (error) => update("done", "", error),
+  };
 }

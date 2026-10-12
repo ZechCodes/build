@@ -107,6 +107,21 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
     paint();
     $("#nrdo")?.focus();
   };
+  const openCreatedProject = async (project, target, progress) => {
+    try {
+      // An accepted creation clears its draft even if the reader dismisses the
+      // settled sheet while these independent stores finish writing.
+      await Promise.all([
+        writeProjectSetting(target.id, project),
+        draftRecord?.write({ name: "", nameAutomatic: true, sources: [], selectedDeviceId }),
+      ]);
+      const stored = (await readCached(projectSettingsAddress(target.id, project.project_id)))?.value;
+      if (!stored) throw new Error("The new project could not be read from the local cache.");
+      if (visible(progress.root)) finish(stored, target);
+    } catch (error) {
+      if (visible(progress.root)) progress.openingFailed(messageOf(error));
+    }
+  };
   const submit = async (params) => {
     if (busy) return;
     const target = selectedDevice();
@@ -121,16 +136,7 @@ export function openNewRepo(onDone, { callRpc, deviceName, deviceId = null, devi
       const project = await targetCall("project.create", params);
       if (!visible(progress.root)) return;
       progress.done();
-      // An accepted creation clears its draft even if the reader dismisses the
-      // settled sheet while these independent stores finish writing.
-      await Promise.all([
-        writeProjectSetting(target.id, project),
-        draftRecord?.write({ name: "", nameAutomatic: true, sources: [], selectedDeviceId }),
-      ]);
-      const stored = (await readCached(projectSettingsAddress(target.id, project.project_id)))?.value;
-      if (!stored) throw new Error("The new project could not be read from the local cache.");
-      if (!visible(progress.root)) return;
-      finish(stored, target);
+      await openCreatedProject(project, target, progress);
     } catch (error) {
       if (visible(progress.root)) {
         saveDraft();

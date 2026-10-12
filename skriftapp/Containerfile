@@ -33,7 +33,7 @@ FROM docker.io/library/node:22-bookworm-slim AS landing
 WORKDIR /build/repo/landing
 # Manifests first, so the dependency layer survives a copy edit.
 COPY landing/package.json landing/package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY landing/ ./
 # The hero's notification field draws the harness marks from the SPA's own
 # files (HeroField.astro imports them ?raw), one source for both. Every

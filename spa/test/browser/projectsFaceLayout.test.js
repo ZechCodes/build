@@ -1,6 +1,10 @@
 import { expect, it } from "vitest";
 import { withLayoutPage } from "./layoutHarness.mjs";
-import { inspectProjectsFace, mountProjectsFace } from "./projectsFaceSeed.mjs";
+import { inspectProjectsFace, inspectActiveBlock, mountProjectsFace, openRecent } from "./projectsFaceSeed.mjs";
+
+// The project name's left edge, as #514 measured it: every child of a block
+// stands on it (#516).
+const CONTENT_X = { desktop: 51, phone: 64 };
 
 for (const { label, width, height, hasTouch } of [
   { label: "desktop", width: 1280, height: 800, hasTouch: false },
@@ -58,13 +62,111 @@ for (const { label, width, height, hasTouch } of [
             expect(caret.x).toBeGreaterThanOrEqual(name.x);
             expect(caret.x).toBeGreaterThan(fold.x);
             if (expanded) {
-              const quietTitle = await block.locator(".inbox-recent .stitle").boundingBox();
-              expect(caret.x).toBe(quietTitle.x);
+              for (const quietTitle of await block.locator(".inbox-recent .stitle").all()) {
+                expect(caret.x).toBe((await quietTitle.boundingBox()).x);
+              }
             }
           }
         }
         if (!expanded) for (const toggle of await toggles.all()) await toggle.click();
       }
+    }, { width, height, hasTouch });
+  }, 60_000);
+
+  it(`stands a block's rows and Recent on one content column on ${label} (#516)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      const block = await inspectActiveBlock(page);
+      expect(block.name.x).toBe(CONTENT_X[label]);
+      expect(block.caret.x).toBe(CONTENT_X[label]);
+      expect(block.rows.map((row) => row.key)).toEqual(["workspace:projects-review/build-live",
+        "tracker_task:land-tracker", "tracker_task:release-check", "workspace:projects-review/build-quiet"]);
+      for (const row of block.rows) expect(row.title.x, row.key).toBe(CONTENT_X[label]);
+    }, { width, height, hasTouch });
+  }, 60_000);
+
+  it(`keeps a quiet row's name readable beside its facts on ${label} (#516)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      const quiet = (await inspectActiveBlock(page)).rows.find((row) => row.facts);
+      expect(quiet.text).toBe("Older workspace");
+      expect(quiet.clipped).toBe(false);
+      expect(quiet.facts.x).toBeGreaterThanOrEqual(quiet.title.right);
+      expect(quiet.facts.x).toBeGreaterThan(quiet.row.x);
+      expect(quiet.at).toBe(true);
+    }, { width, height, hasTouch });
+  }, 60_000);
+
+  it(`keeps every right-edge control on one column on ${label} (#516)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      const block = await inspectActiveBlock(page);
+      const column = block.create.right;
+      const [live, ...quiet] = block.rows;
+      expect(live.done.right).toBe(column);
+      for (const row of quiet) {
+        if (row.watch) expect(row.watch.right, row.key).toBe(column);
+        // The eye's glyph stands where the head's + glyph does, whatever its touch target.
+        if (row.watch) expect(Math.abs(row.watchGlyph.right - block.createGlyph.right), row.key).toBeLessThanOrEqual(1);
+        if (row.facts) expect(row.facts.right, row.key).toBe(column);
+      }
+      expect(block.count.right).toBe(column);
+      expect(quiet.filter((row) => row.watch)).toHaveLength(2);
+    }, { width, height, hasTouch });
+  }, 60_000);
+
+  it(`fills the active block's Recent heading like its head on ${label} (#516)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      for (const theme of ["light", "dark"]) {
+        await page.evaluate((theme) => {
+          document.documentElement.dataset.theme = theme;
+          for (const animation of document.getAnimations()) if (animation instanceof CSSTransition) animation.finish();
+        }, theme);
+        const block = await inspectActiveBlock(page);
+        expect(block.headFill, theme).toBe(block.accentSoft);
+        expect(block.toggleFill, theme).toBe(block.accentSoft);
+        expect(block.toggle.x, theme).toBe(block.head.x);
+        expect(block.toggle.right, theme).toBe(block.head.right);
+        // The rows keep their own fills: the standing row's accent and hover read as before.
+        for (const row of block.rows) expect(row.fill, `${theme} ${row.key}`).toBe(block.panel);
+        const inactive = await page.locator('[data-recent-toggle="projects-review/alpha"]')
+          .evaluate((toggle) => getComputedStyle(toggle).backgroundColor);
+        expect(inactive, theme).toBe("rgba(0, 0, 0, 0)");
+      }
+    }, { width, height, hasTouch });
+  }, 60_000);
+
+  it(`keeps the full-width Recent heading's focus ring inside the rail on ${label} (#516)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountProjectsFace(page, basePath);
+      await openRecent(page, "projects-review/build");
+      const toggle = page.locator('[data-recent-toggle="projects-review/build"]');
+      await toggle.focus();
+      await page.keyboard.press("Tab");
+      await page.keyboard.press("Shift+Tab");
+      const ring = await toggle.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const grow = parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth);
+        const box = element.getBoundingClientRect();
+        const list = document.querySelector("#inbox-list").getBoundingClientRect();
+        return { focused: element.matches(":focus-visible"), drawn: style.outlineStyle !== "none" && grow > -box.width / 2,
+          left: box.left - grow, right: box.right + grow, top: box.top - grow, bottom: box.bottom + grow,
+          width: box.width, list: { left: list.left, right: list.right, top: list.top, bottom: list.bottom } };
+      });
+      expect(ring.focused).toBe(true);
+      expect(ring.drawn).toBe(true);
+      expect(ring.left).toBeGreaterThanOrEqual(ring.list.left);
+      expect(ring.right).toBeLessThanOrEqual(ring.list.right);
+      expect(ring.top).toBeGreaterThanOrEqual(ring.list.top);
+      expect(ring.bottom).toBeLessThanOrEqual(ring.list.bottom);
+      // The fill still spans the rail.
+      expect(ring.width).toBe(ring.list.right - ring.list.left);
     }, { width, height, hasTouch });
   }, 60_000);
 }

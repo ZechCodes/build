@@ -848,7 +848,9 @@ function menuHtml(entry, open) {
   // reader's to act on: every verb here would race the one already running,
   // and the daemon refuses a second claim on the same thing anyway.
   if (entry.pending) return "";
-  if (entry.kind === TRACKER_TASK) return `${taskWatchButtonHtml(entry)}${menuButtonHtml(entry, open, [unwatchItemHtml(entry)])}`;
+  // The eye is always shown, so it takes the last place on the controls'
+  // column; the ⋯ that comes and goes stands before it (#516).
+  if (entry.kind === TRACKER_TASK) return `${menuButtonHtml(entry, open, [unwatchItemHtml(entry)])}${taskWatchButtonHtml(entry)}`;
   const items = [];
   if (entry.canFinish) {
     items.push(menuItemHtml(`data-done="${esc(entry.key)}"`, "Done",

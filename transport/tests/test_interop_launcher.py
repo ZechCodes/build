@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-LAUNCHER = ROOT / 'transport/js/test/helpers/python.mjs'
+LAUNCHER = ROOT / 'transport/js/testing/python.mjs'
 
 
 class PythonLauncherContract(unittest.TestCase):

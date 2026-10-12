@@ -14,6 +14,23 @@ use std::process::{Command, Stdio};
 use build_bridge::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
 use serde_json::{json, Value};
 
+#[test]
+fn reference_defaults_to_this_checkout() {
+    let reference = reference_dir(None);
+    assert_eq!(
+        reference,
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../transport/python")
+    );
+    check_reference(&reference).expect("in-tree locked Python reference exists");
+}
+
+#[test]
+fn missing_reference_is_an_error() {
+    let reference = reference_dir(Some("/definitely-missing/reference".into()));
+    let error = check_reference(&reference).unwrap_err();
+    assert!(error.contains("required Python reference"));
+}
+
 /// Run one action through the Python reference helper, returning its JSON reply.
 fn py(py_dir: &PathBuf, request: Value) -> Value {
     let script = py_dir.join("tests/interop_helper.py");

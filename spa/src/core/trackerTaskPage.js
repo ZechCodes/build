@@ -64,6 +64,7 @@ import { scrollWithin } from "./scrollWithin.js";
 import { createTaskChecklist } from "./taskChecklist.js";
 import { readTaskChecklistSupport, taskChecklistSupportAddress } from "./taskChecklistSupport.js";
 import { createTaskReplyNavigation } from "./taskCommentReplies.js";
+import { mountMeasuredHeight } from "./measuredInset.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -85,6 +86,7 @@ export function mountTaskPage(host, options) {
   wireReaderMotion(host);
   const replyNavigation = createTaskReplyNavigation(host);
   const readingPolicy = followConversation();
+  let stopHeadMeasurement = () => {};
   let reviewPage = null;
   const state = {
     ...options,
@@ -305,6 +307,7 @@ export function mountTaskPage(host, options) {
     unframed = html;
     Object.values(held).forEach((parts) => parts.clear());
     host.innerHTML = html;
+    stopHeadMeasurement();
     unreadPill.sync();
     reads.mark(); // the host was just rewritten; the mark lives among its children
   };
@@ -347,6 +350,10 @@ export function mountTaskPage(host, options) {
     frame();
     const main = host.querySelector(".task-page-main");
     const painted = new Set(patchParts(main, held.main, parts.main));
+    if (painted.has("head")) {
+      stopHeadMeasurement();
+      stopHeadMeasurement = mountMeasuredHeight(host.querySelector(".task-page-head"), host, "--task-page-head-height");
+    }
     patchParts(main.parentElement, held.rail, parts.rail, { after: main }).forEach((name) => painted.add(name));
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
@@ -801,6 +808,7 @@ export function mountTaskPage(host, options) {
     feedMoved() { paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
+      stopHeadMeasurement();
       replyNavigation.dispose();
       checklist.dispose();
       reviewPage?.dispose();

@@ -115,6 +115,17 @@ lock fix (exit 101) and passed afterward (exit 0). All mutating `git.*` verbs
 use this same deferred lock boundary; reads do not acquire it. Workspace cache
 and changeset semantics are preserved.
 
+The #533 integration is pinned by
+`source_move_keeps_sync_locks_and_worker_hold_through_settlement`: counted worker
+holds survive the off-app-mutex sync-lock wait, old/new repository locks remain
+held until settlement, and a stale-record refusal releases the move's hold and
+locks. `a_worker_held_source_syncs_without_releasing_its_location_hold` proves a
+queued worker keeps move/removal refused while service sync waits on the Git
+lock, then fast-forwards that same source without releasing its location hold.
+The existing overlap/error and parked-project return tests cover counted hold
+ownership and recovery through the sync timer. Integration gate evidence is
+recorded on #530's snapshot 4.
+
 The #600 retry correction extends PS522-4's pinning proof to saved manifests:
 the nine `app::tests::workspaces::retry::` regressions pass after the observed
 pre-fix failures. They cover unrelated unborn sources admitted through the

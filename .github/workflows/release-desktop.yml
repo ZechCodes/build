@@ -52,6 +52,9 @@ jobs:
           shellcheck -s sh scripts/install-desktop.sh scripts/test-install-desktop.sh
           scripts/test-install-desktop.sh
 
+      - name: Test the supported release asset contract
+        run: node --test --test-concurrency=1 desktop/test/release-assets.test.mjs desktop/test/publisher-staging.test.mjs
+
       - name: The installer and workflow demand the same signing identity
         run: |
           set -euo pipefail
@@ -97,9 +100,6 @@ jobs:
           - arch: arm64
             key: macos-arm64
             runner: macos-14
-          - arch: x64
-            key: macos-x86_64
-            runner: macos-15-intel
     defaults:
       run:
         working-directory: desktop
@@ -231,20 +231,35 @@ jobs:
       cancel-in-progress: false
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Checkout contains assets/brand. Release artifacts must never share it.
+      - name: Prepare isolated release staging
+        id: staging
+        run: |
+          set -euo pipefail
+          stage="$(mktemp -d "$RUNNER_TEMP/desktop-release.XXXXXX")"
+          printf 'path=%s\n' "$stage" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: desktop-*
-          path: assets
+          path: ${{ steps.staging.outputs.path }}
           merge-multiple: true
 
       - name: Digest every distributable
-        working-directory: assets
-        run: sha256sum *.dmg *.zip *.AppImage *.deb *.tar.gz > SHA256SUMS
+        working-directory: ${{ steps.staging.outputs.path }}
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          node "$GITHUB_WORKSPACE/scripts/desktop-release-assets.mjs" "$VERSION" .
+          sha256sum -- *.dmg *.zip *.AppImage *.deb *.tar.gz > SHA256SUMS
 
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Sign and verify the checksums
-        working-directory: assets
+        working-directory: ${{ steps.staging.outputs.path }}
         run: |
           cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
           cosign verify-blob \
@@ -262,7 +277,7 @@ jobs:
           Build Desktop ${VERSION}, built from ${SOURCE_REPO}@${COMMIT}.
 
           macOS apps are signed with a Developer ID certificate and notarized by Apple.
-          Download arm64 for Apple Silicon or x64 for Intel. Open the DMG and drag Build to Applications, or extract the ZIP.
+          macOS requires Apple Silicon (arm64). Open the DMG and drag Build to Applications, or extract the ZIP. Intel Macs can use the browser client.
 
           Linux packages are available for x86_64 and ARM64: use the AppImage or install the Debian package.
           The shell installer selects the correct platform and verifies the signed checksums:
@@ -273,6 +288,7 @@ jobs:
           NOTES
 
       - name: Create the release if needed and upload verified packages
+        working-directory: ${{ steps.staging.outputs.path }}
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           TAG: ${{ github.ref_name }}
@@ -282,14 +298,15 @@ jobs:
           set -euo pipefail
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" \
-              --title "Build Desktop ${VERSION}" --notes-file notes.md --latest=false
+              --title "Build Desktop ${VERSION}" --notes-file "$GITHUB_WORKSPACE/notes.md" --latest=false
           fi
-          gh release upload "$TAG" --repo "$REPO" --clobber assets/*
+          gh release upload "$TAG" --repo "$REPO" --clobber ./*
           echo "published https://github.com/${REPO}/releases/tag/${TAG}"
 
       # The channel holds only a pointer. Installers resolve it once, then fetch
       # all binaries and checksums from that immutable versioned release.
       - name: Advance the public desktop channel after all assets are uploaded
+        working-directory: ${{ steps.staging.outputs.path }}
         env:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
           VERSION: ${{ needs.version.outputs.version }}

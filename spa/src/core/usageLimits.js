@@ -3,16 +3,16 @@
 // The bridge reports harness usage limits on each device. It keeps one record per
 // harness and carries the list on its board (`board.list`, and the board item of
 // a `changes` push, since wire 1.11.0); this module holds what each device last
-// said, and paints it where the reader is — a strip at the top of every
-// conversation on that machine, counting down to the reset, with the harness's
-// own words behind a press.
+// said, and paints matching limits at the top of a conversation on that
+// machine, counting down to the reset, with the harness's own words behind a
+// press. Other harnesses' limits stay cached for their own conversations.
 //
 // The cache is the rendering boundary. A board pull or push first replaces one
 // device's record; this module hears that committed write, reads it back, and
 // only then updates the synchronous projection the picker and rail paint from.
 
 import { esc } from "./text.js";
-import { providerLabel } from "./providerCatalog.js";
+import { providerFamilyKey, providerLabel } from "./providerCatalog.js";
 import { readCached, subscribeCache, writeCached } from "./localCache.js";
 
 export const usageLimitsAddress = (deviceId) => ({ deviceId, entityId: "", kind: "usage-limits" });
@@ -141,8 +141,11 @@ function untilTextChanges(limit, now) {
  *  when none ever will. For a surface that paints several devices' limits and
  *  counts them down together. */
 export function untilAnyTextChanges(deviceIds, now = Date.now()) {
-  const waits = deviceIds
-    .flatMap((deviceId) => usageLimitsOf(deviceId))
+  return untilLimitsTextChange(deviceIds.flatMap((deviceId) => usageLimitsOf(deviceId)), now);
+}
+
+function untilLimitsTextChange(limits, now) {
+  const waits = limits
     .map((limit) => untilTextChanges(limit, now))
     .filter((wait) => wait !== null);
   return waits.length ? Math.min(...waits) : null;
@@ -154,8 +157,9 @@ const bannerHtml = (limit, now) => `<details class="usage-limit-banner" data-har
 </details>`;
 
 /**
- * The strip at the top of a conversation on `deviceId`: one line per harness
- * out of usage there, above the conversation's body.
+ * The strip at the top of a conversation on `deviceId`: limits for the active
+ * provider's family, above the conversation's body. `providerOf` reads the
+ * selected session on every sync; an unknown selection shows no limits.
  *
  * `panelOf` answers the panel as it stands, since the rail rebuilds its panel
  * whenever it switches what it shows; `sync` puts the strip back after one,
@@ -163,7 +167,7 @@ const bannerHtml = (limit, now) => `<details class="usage-limit-banner" data-har
  * repaints itself when the device's limits change and on each minute the
  * countdown moves. Returns `{ sync, dispose }`.
  */
-export function mountUsageLimitBanner(panelOf, deviceId) {
+export function mountUsageLimitBanner(panelOf, deviceId, providerOf) {
   let timer = null;
   const sync = () => {
     clearTimeout(timer);
@@ -171,8 +175,12 @@ export function mountUsageLimitBanner(panelOf, deviceId) {
     const panel = panelOf();
     if (!panel) return;
     const now = Date.now();
-    paintBanners(panel, usageLimitsOf(deviceId), now);
-    const next = untilAnyTextChanges([deviceId], now);
+    const family = providerFamilyKey(providerOf());
+    const limits = usageLimitsOf(deviceId).filter((limit) =>
+      family && providerFamilyKey(limit.harness) === family,
+    );
+    paintBanners(panel, limits, now);
+    const next = untilLimitsTextChange(limits, now);
     if (next !== null) timer = setTimeout(sync, next);
   };
   const stop = onUsageLimitsChanged((changed) => {

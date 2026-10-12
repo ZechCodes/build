@@ -18,6 +18,7 @@ import { askToOpenLinkedAgent, standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
 import { wipeUiRecords } from "./core/localUiStore.js";
+import { resetNavigationVisits } from "./core/navigationVisits.js";
 import { routeChanged } from "./core/cacheSync.js";
 import { canAnswer, contextFor, deviceContextIdentity, onDeviceStateChanged, resetDeviceContexts } from "./core/deviceContexts.js";
 import { App, SELECTED_DEVICE_KEY } from "./appState.js";
@@ -56,6 +57,7 @@ export const DEVICE_FILTER_KEY = "build.deviceFilter";
  */
 export function resetApplication() {
   App.accountEpoch += 1;
+  resetNavigationVisits();
   trackBridgeUpdateDevices([]);
   settingsReturnRoute = { name: "inbox" };
   modalDispose?.();
@@ -137,30 +139,36 @@ function standOn(route) {
   return hashFromRoute(route);
 }
 
-function applyRoute(route) {
+function applyRoute(route, { newEntry = false } = {}) {
   App.routeLeaveGuard = null;
   const hash = standOn(route);
   if (location.hash !== hash) {
-    // Replace keeps reloads and shared URLs useful without accumulating history.
+    // Ordinary app moves keep their replacement contract. A destination picker
+    // explicitly adds one entry so Back restores the work it switched away from.
     acceptedHash = hash;
-    location.replace(hash); // hashchange re-enters render after this view settles
+    if (newEntry) location.hash = hash;
+    else location.replace(hash); // hashchange re-enters render after this view settles
   } else {
     acceptedHash = null;
     render();
   }
 }
 
-export function go(route) {
+/** Selection checks run synchronously at the commit boundary, after any leave
+ * decision and attempt arbitration, before the route or history can change. */
+function commitRoute(route, options) {
+  if (options?.beforeCommit?.() === false) return false;
+  applyRoute(route, options);
+  return true;
+}
+
+export function go(route, options) {
   const attempt = ++routeAttempt;
   const guard = App.routeLeaveGuard;
-  if (!guard) {
-    applyRoute(route);
-    return true;
-  }
+  if (!guard) return commitRoute(route, options);
   return mayLeaveRoute().then((allowed) => {
     const current = allowed && attempt === routeAttempt;
-    if (current) applyRoute(route);
-    return current;
+    return current && commitRoute(route, options);
   });
 }
 

@@ -90,6 +90,9 @@ impl AppState {
     /// one pinned coordinator ([`AppState::ensure_project_pin`]).
     pub(crate) fn project_ensure_conversation(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
+        if self.projects.get(&project_id).is_none() {
+            self.revive_parked_projects();
+        }
         let project = self
             .projects
             .get(&project_id)

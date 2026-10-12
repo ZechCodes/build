@@ -540,6 +540,8 @@ impl AppState {
     }
 
     fn source_sync_subjects(&mut self, pass: SyncPass, now_ms: i64) -> Vec<SyncSubject> {
+        // The timer is the one look that needs nobody to ask.
+        self.revive_parked_projects();
         let requested = std::mem::take(&mut self.source_sync_requested);
         let fetch = Fetch::Within(SERVICE_FETCH_DEADLINE);
         let mut subjects: Vec<_> = requested.into_values().collect();

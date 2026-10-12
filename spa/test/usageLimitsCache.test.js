@@ -38,7 +38,7 @@ describe("the cached usage-limit render path", () => {
     await limits.readCachedUsageLimits("dev-1");
     limits.resetUsageLimits();
 
-    const banner = limits.mountUsageLimitBanner(panel, "dev-1");
+    const banner = limits.mountUsageLimitBanner(panel, "dev-1", () => "claude_adk");
 
     await vi.waitFor(() => {
       expect(panel().querySelector(".usage-limit-banner")?.textContent).toContain(
@@ -48,8 +48,22 @@ describe("the cached usage-limit render path", () => {
     banner.dispose();
   });
 
+  it("retains the cached Claude limit while a Codex session is selected", async () => {
+    await cache.writeCached(limits.usageLimitsAddress("dev-1"), [heldLimit]);
+    limits.resetUsageLimits();
+    let provider = "codex_app_server";
+    const banner = limits.mountUsageLimitBanner(panel, "dev-1", () => provider);
+    await vi.waitFor(() => expect(limits.usageLimitsOf("dev-1")).toEqual([heldLimit]));
+    expect(panel().querySelector(".usage-limit-banner")).toBeNull();
+    expect((await cache.readCached(limits.usageLimitsAddress("dev-1"))).value).toEqual([heldLimit]);
+    provider = "claude";
+    banner.sync();
+    expect(panel().querySelector(".usage-limit-banner").textContent).toContain("Claude");
+    banner.dispose();
+  });
+
   it("redraws through a real cache write, announcement, and readback", async () => {
-    const banner = limits.mountUsageLimitBanner(panel, "dev-1");
+    const banner = limits.mountUsageLimitBanner(panel, "dev-1", () => "claude_adk");
     expect(panel().querySelector(".usage-limit-banner")).toBeNull();
 
     await cache.writeCached(limits.usageLimitsAddress("dev-1"), [heldLimit]);

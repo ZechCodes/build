@@ -229,8 +229,9 @@ pub struct TaskAttachmentRef {
 
 /// Hand a task to somebody, and start them on it.
 ///
-/// One tagged `assignee` covering all five kinds — `user`, `project_agent`,
-/// `agent`, `new_workspace`, `new_agent` — because assignment IS dispatch and a
+/// One tagged `assignee` covering all six kinds — `user`, `project_agent`,
+/// `agent`, `new_workspace`, `new_agent`, `new_project_agent` (since 3.21.0,
+/// announced as `tasks.assignProjectAgent`) — because assignment IS dispatch and a
 /// second field beside it would be a second place for the same decision. `null`
 /// unassigns. Untyped here for the reason a timeline entry is: the five arms
 /// carry different fields, and `AssignTarget::parse` is the one place that
@@ -245,6 +246,12 @@ pub struct TasksAssignParams {
     /// it was said in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The client's id for this assignment (since 3.21.0, announced as
+    /// `tasks.assignProjectAgent`). The delivery is queued under it, and
+    /// asking again with the same id answers the dispatch it already made
+    /// instead of delivering twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
 }
 
 /// How far the user has read one task.
@@ -502,8 +509,10 @@ pub struct TaskColumns {
 // ----------------------------------------------------------------- codes ---
 
 /// The request was legible and the task's own state said no.
-const CONFLICT: [&str; 7] = [
+const CONFLICT: [&str; 8] = [
     "already has the most trackers it can carry",
+    // A retried assignment's id names a different assignment of the task.
+    "was already spent on a different assignment",
     "is already closed",
     "is already open",
     "a parent link cannot close a loop",
@@ -517,8 +526,10 @@ const CONFLICT: [&str; 7] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 22] = [
+const INVALID: [&str; 24] = [
     "unknown assignee kind:",
+    "operation_id exceeds",
+    "operation_id contains",
     "assignee: name a kind",
     "assignee new_agent: name a",
     "unknown status:",

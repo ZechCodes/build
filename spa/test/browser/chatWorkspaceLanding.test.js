@@ -66,6 +66,7 @@ async function mountWorkspaceLanding(page, basePath, options) {
 }
 
 async function expectNewLanding(page) {
+  await page.waitForSelector("#rail-body .thread-unread-line");
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const position = await page.evaluate(linePosition);
   expectNewHeadroom(position.offset - position.headBottom, JSON.stringify(position));

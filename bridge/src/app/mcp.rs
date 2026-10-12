@@ -642,6 +642,30 @@ impl AppState {
                 workspace_id,
                 agent_id: removed,
             } => self.project_agent_remove_workspace_agent(entity_id, workspace_id, removed),
+            BridgeAction::ListProjectAgents => self.project_agent_project_agents(entity_id),
+            BridgeAction::AddProjectAgent {
+                notify_user,
+                harness,
+                model,
+                effort,
+                name,
+                role,
+                capability,
+            } => self.project_agent_add_project_agent(
+                crate::app::AgentSender {
+                    entity_id,
+                    agent_id,
+                },
+                crate::app::AgentChoiceArgs {
+                    harness: harness.as_deref(),
+                    model: model.as_deref(),
+                    effort: effort.as_deref(),
+                    role: role.as_deref(),
+                    capability: capability.as_deref(),
+                },
+                name.as_deref(),
+                *notify_user,
+            ),
             BridgeAction::MessageWorkspaceAgent {
                 workspace_id,
                 agent_id: addressed,

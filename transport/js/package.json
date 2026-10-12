@@ -1,0 +1,21 @@
+{
+  "name": "@build/secure-transport",
+  "version": "0.1.0",
+  "description": "Browser-native E2EE protocol helpers for Build secure transport",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.7.15"
+  },
+  "license": "SEE LICENSE IN LICENSE.md",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE.md"
+  ]
+}

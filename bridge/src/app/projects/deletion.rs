@@ -116,22 +116,7 @@ impl AppState {
         {
             return Err("Stop running agents before deleting the project".into());
         }
-        let mut roots: Vec<_> = workspaces
-            .iter()
-            .filter(|workspace| workspace.managed)
-            .map(|workspace| workspace.root.clone())
-            .collect();
-        roots.extend(run_ids.iter().filter_map(|id| {
-            let run = &self.runs[id];
-            (!run.adopted
-                && run
-                    .worktree
-                    .path
-                    .starts_with(self.project_worktrees_root(&project_id)))
-            .then(|| run.worktree.path.clone())
-        }));
-        roots.sort();
-        roots.dedup();
+        let roots = self.owned_project_roots(&project_id, &run_ids, &workspaces);
         validate_deletion_paths(self, &roots, &workspaces)?;
         let mut checkouts: Vec<_> = workspaces
             .iter()
@@ -170,6 +155,7 @@ impl AppState {
                 }
             }
         }
+        self.revoke_project_agents(&run_ids);
         self.project_deletion_in_progress = true;
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteProjectFiles {
@@ -185,6 +171,52 @@ impl AppState {
             gate: None,
         })));
         Ok(json!({"project_id": project_id, "deleted": true}))
+    }
+
+    /// Every directory deleting the project removes: its managed
+    /// workspaces, the run checkouts Build cut for it, and the scratch its
+    /// own conversation stood in. Never a source: what the project was made
+    /// from is the user's, and stays.
+    fn owned_project_roots(
+        &self,
+        project_id: &str,
+        run_ids: &[String],
+        workspaces: &[&crate::workspace::Workspace],
+    ) -> Vec<PathBuf> {
+        let mut roots: Vec<_> = workspaces
+            .iter()
+            .filter(|workspace| workspace.managed)
+            .map(|workspace| workspace.root.clone())
+            .collect();
+        roots.extend(run_ids.iter().filter_map(|id| {
+            let run = &self.runs[id];
+            let cut_here = !run.adopted
+                && run
+                    .worktree
+                    .path
+                    .starts_with(self.project_worktrees_root(project_id));
+            (cut_here || self.is_project_conversation_owner(id)).then(|| run.worktree.path.clone())
+        }));
+        roots.sort();
+        roots.dedup();
+        roots
+    }
+
+    /// Take every agent of the project's runs off the control plane: the
+    /// token its harness authenticates with, and any turn still queued for
+    /// it. Their sessions are retired with their roots; this is what could
+    /// still reach them after.
+    fn revoke_project_agents(&mut self, run_ids: &[String]) {
+        let agent_ids: Vec<String> = run_ids
+            .iter()
+            .filter_map(|id| self.runs.get(id))
+            .flat_map(|run| run.agents.iter().map(|agent| agent.id.clone()))
+            .collect();
+        for agent_id in &agent_ids {
+            self.session_registry.revoke_mcp_token(agent_id);
+        }
+        self.delivery_queue
+            .retain_queued(|turn| !agent_ids.contains(&turn.agent_id));
     }
 
     fn complete_project_delete(&mut self, project_id: &str) -> Result<(), String> {

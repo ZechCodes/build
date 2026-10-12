@@ -11,11 +11,16 @@ export const navigationAppShim = {
   load(id) {
     if (id !== "\0navigation-breadcrumb-app") return null;
     return `import { App } from '/src/appState.js'; export { App };
-      export function go(route) { window.__navigationHarness.navigate(route); }
-      export function render() {} export function rememberSelectedDevice() {}`;
+      export function go(route, options = {}) {
+        if (window.__navigationHarness.go) return window.__navigationHarness.go(route, options);
+        const navigate = () => window.__navigationHarness.navigate(route, options);
+        return App.routeLeaveGuard ? Promise.resolve(App.routeLeaveGuard()).then((allowed) => allowed && navigate()) : navigate();
+      }
+      export function render() {} export function rememberSelectedDevice() {}
+      export function markRoute() {} export function renderUnlessStanding() {} export function unmountView() {}`;
   },
 };
-export async function mountNavigationBreadcrumbs(page, basePath, { theme = "light", longNames = false, kind = "workspace", duplicateNames = false, inboxPinned = false } = {}) {
+export async function mountNavigationBreadcrumbs(page, basePath, { theme = "light", longNames = false, kind = "workspace", duplicateNames = false, inboxPinned = false, observeHash = true } = {}) {
   if (await page.evaluate(() => !!window.__navigationHarness)) {
     await page.evaluate(async () => { await window.__layoutModules.toolbar.stopToolbar(); window.__layoutModules.feed.stopFeed(); });
   }
@@ -27,7 +32,7 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
     app: "src/appState.js", cache: "src/core/localCache.js", feed: "src/core/taskFeed.js", toolbar: "src/core/toolbar.js",
     router: "src/core/router.js", projectState: "src/core/projectRailState.js", lock: "src/core/workspaceLockSupport.js", tracker: "src/core/trackerCache.js", directoryRail: "src/core/directoryRail.js",
   }, basePath);
-  await page.evaluate(async ({ theme, longNames, kind, duplicateNames, inboxPinned }) => {
+  await page.evaluate(async ({ theme, longNames, kind, duplicateNames, inboxPinned, observeHash }) => {
     const { app, cache, feed, toolbar, router, projectState, lock, tracker, directoryRail } = window.__layoutModules;
     const deviceId = "nav-device";
     document.documentElement.dataset.theme = theme;
@@ -55,8 +60,13 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
     await lock.rememberWorkspaceLockSupport(deviceId, { workspaces: { setLocked: true } });
     await projectState.rememberProjectRailRoute(routes.project);
     await tracker.writeTaskRecord(deviceId, "build", "nav-task", { task: { id: "nav-task", number: 542, title: "Navigation: one-row breadcrumbs and focused sibling switcher", project_id: "build", assignee: { kind: "agent", workspace_id: "elsewhere" } }, timeline: [] });
-    window.__navigationHarness = { navigations: [], focusInGesture: null, navigate(next) { this.navigations.push(next); app.App.route = next; location.hash = router.hashFromRoute(next); toolbar.toolbarRouteChanged(); } };
-    if (!window.__navigationHashObserver) {
+    window.__navigationHarness = { navigations: [], focusInGesture: null, navigate(next, { newEntry = true } = {}) {
+      this.navigations.push(next); app.App.route = next;
+      const hash = router.hashFromRoute(next);
+      if (newEntry) location.hash = hash; else history.replaceState(null, "", hash);
+      toolbar.toolbarRouteChanged(); return true;
+    } };
+    if (observeHash && !window.__navigationHashObserver) {
       window.addEventListener("hashchange", () => {
         const modules = window.__layoutModules;
         if (modules.router.hashFromRoute(modules.app.App.route) !== location.hash) {
@@ -74,7 +84,7 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
     document.querySelectorAll("[data-select]").forEach((control) => control.addEventListener("click", () => {
       window.__navigationHarness.focusInGesture = document.activeElement?.matches(".tb-filter") === true;
     }));
-  }, { theme, longNames, kind, duplicateNames, inboxPinned });
+  }, { theme, longNames, kind, duplicateNames, inboxPinned, observeHash });
   await page.locator(".toolbar").waitFor();
   if (kind === "workspace") await page.locator("[data-workspace-lock]").waitFor();
   await page.evaluate(() => document.fonts.ready);

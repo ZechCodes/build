@@ -2,8 +2,7 @@
 // and what the work you are standing in is doing.
 //
 // Left: independent project ancestry and local workspace selection. The up
-// arrow opens the existing global project list; direct global destinations and
-// visit ordering belong to its next migration. Both searches mount and focus
+// arrow opens all cached project/workspace destinations. Both searches mount and focus
 // inside the activating gesture, with persistence following the interaction.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
@@ -27,14 +26,20 @@ import { App, go } from "../app.js";
 import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
 import { openCreateWork } from "./createWork.js";
-import { projectMenuModel, toolbarIdentity, toolbarDestinationModel } from "./toolbarModel.js";
-import { deviceTagHtml, projectNameOf } from "./inboxProjects.js";
+import { toolbarIdentity, toolbarDestinationModel } from "./toolbarModel.js";
+import { projectNameOf } from "./inboxProjects.js";
 import { filterByDevice } from "./deviceFilter.js";
 import { deviceKey, routeProjectKey, routeWorkspaceKey } from "./deviceKey.js";
 import { deviceView } from "./feedMerge.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { patchList } from "./patchList.js";
-import { toolbarHtml, unreadBadgeHtml } from "./toolbarRender.js";
+import { toolbarHtml } from "./toolbarRender.js";
+import { navigationCatalog } from "./navigationModel.js";
+import { globalNavigationPicker, reconcilePickerOrder } from "./navigationPickerModel.js";
+import { globalPickerEntries } from "./navigationPickerRender.js";
+import { mountNavigationVisits } from "./navigationVisits.js";
+import { followNavigationTaskUnread } from "./navigationTaskUnread.js";
+import { setInboxCollapsed } from "./inboxShell.js";
 import { navigationSelectionTarget, projectReturnTarget } from "./navigationRoutes.js";
 import { hashFromRoute, routeFromHash } from "./router.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
@@ -86,6 +91,9 @@ let taskKey = null;
 let taskLabel = null;
 let stopTaskLabel = null;
 let returnRead = 0;
+let visitTracker = null;
+let visits = [];
+let watchedTasks = null;
 
 function watchStandingReviewSupport() {
   const deviceId = App.route.name === "workspace" ? App.route.deviceId : null;
@@ -362,6 +370,7 @@ function wireToolbar(host) {
 function activateSwitcher(control) {
   if (open?.anchor === control) return closeMenu();
   removeMenu(false);
+  if (window.innerWidth <= 900) setInboxCollapsed(true, { animate: false, persist: false, reveal: false });
   const list = MENU_FOR_SELECTOR[control.dataset.select];
   if (list === "workspaces") {
     void rememberScope(routeProjectKey(App.route) || scopedProjectKey);
@@ -371,6 +380,20 @@ function activateSwitcher(control) {
   openJumpMenu(control, { list, focus: true });
   pendingMenuFocus = false;
   persistMenu({ open: true, select: control.dataset.select, list, query: "" });
+}
+
+const globalShortcut = (event) => (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k"
+  && !event.altKey && !event.isComposing && !event.defaultPrevented;
+
+function onGlobalShortcut(event) {
+  if (!globalShortcut(event)) return;
+  const editable = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), .cm-editor, .monaco-editor, .xterm, .terminal, .term-screen, .console-pane, [data-terminal]';
+  if (event.target.closest?.(editable) || document.activeElement?.closest(editable)) return;
+  if (document.querySelector('[role="dialog"], dialog[open]')) return;
+  const control = document.querySelector('[data-select="project"]');
+  if (!control) return;
+  event.preventDefault();
+  activateSwitcher(control);
 }
 
 function updateProjectReturnLink(host) {
@@ -384,12 +407,14 @@ function updateProjectReturnLink(host) {
 }
 
 /** Explicit project ancestry returns to its saved face; a self-link does nothing. */
-async function openProjectPage(project = returnProject()) {
+async function openProjectPage(project = returnProject(), { newEntry = false } = {}) {
   const standing = App.route;
   closeMenu();
   if (!project) return;
   const target = await projectReturnTarget(project, { route: standing, currentHash: currentHash() });
-  if (App.route === standing && !target.current) go(target.route);
+  if (App.route !== standing || target.current) return;
+  if (newEntry) void navigateDestination(target.route, { kind: "project", key: deviceKey(project.deviceId, project.id) });
+  else go(target.route);
 }
 
 // ---- the menu each selector opens -------------------------------------------
@@ -410,6 +435,7 @@ function menuShell(anchor, className) {
   const element = document.createElement("div");
   element.className = className;
   element.setAttribute("role", "dialog");
+  element.setAttribute("aria-modal", "true");
   element.setAttribute("aria-label", "Switch project or workspace");
   // Fixed to the viewport under its anchor, like the tab row's menus: the
   // toolbar is a narrow row and would clip a child popup.
@@ -430,7 +456,7 @@ function menuShell(anchor, className) {
   const onOutside = (event) => {
     if (element.contains(event.target)) return;
     if (open?.anchor?.contains(event.target)) return;
-    closeMenu();
+    closeMenu({ restoreFocus: true });
   };
   document.addEventListener("keydown", onKeydown, true);
   document.addEventListener("pointerdown", onOutside);
@@ -484,6 +510,8 @@ function openJumpMenu(anchor, { list = MENU_FOR_SELECTOR[anchor.dataset.select] 
 }
 
 function applyMenuRecord(saved) {
+  // This tab's active gesture wins over older and other-tab persistence echoes.
+  if (open) return;
   cachedMenuValue = saved;
   if (!scopeReady) return;
   if (!saved?.open) {
@@ -553,17 +581,35 @@ function showList(list) {
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
   paintMenuShell();
-  const entries = (MENU_LISTS[open.list] || workspaceMenuEntries)();
-  patchList(open.element.querySelector(".tbmenu-list"), entries, {
-    keyOf: (entry) => entry.key,
-    render: (entry) => entry.html,
-  });
+  const signature = JSON.stringify([open.list, open.query, open.list === "workspaces" ? scopedProjectKey : null]);
+  const next = (MENU_LISTS[open.list] || workspaceMenuEntries)();
+  const entries = signature === open.orderSignature ? reconcilePickerOrder(open.entries, next) : next;
+  open.orderSignature = signature;
+  open.entries = entries;
+  reconcileMenuRows(entries);
   updateMenuReturnLink();
   const reviewHost = open.element.querySelector(".tbmenu-review");
   if (reviewHost) {
     const review = workspaceReviewMenuEntry();
     patchList(reviewHost, review ? [review] : [], { keyOf: () => "review", render: (entry) => entry.html });
   }
+}
+
+function reconcileMenuRows(entries) {
+  const list = open.element.querySelector(".tbmenu-list");
+  const scroll = list.scrollTop;
+  const focused = document.activeElement;
+  const oldRows = [...list.querySelectorAll("a")];
+  const index = oldRows.indexOf(focused);
+  patchList(list, entries, {
+    keyOf: (entry) => entry.key,
+    render: (entry) => entry.html,
+  });
+  if (index >= 0 && !focused.isConnected) {
+    const rows = [...list.querySelectorAll("a")];
+    (rows[Math.min(index, rows.length - 1)] || open.element.querySelector(".tb-filter")).focus({ preventScroll: true });
+  }
+  list.scrollTop = scroll;
 }
 
 // #541 can identify a parent from its cached children before project.list
@@ -642,29 +688,55 @@ function paintMenuShell() {
   };
 }
 
-/** The project half's pick: the menu moves to what is inside that project,
- *  which is its workspaces — read from that project's own machine. A legacy
- *  branch or task route stays readable in the bar's sentence, but it is not a
- *  place the menu offers to go any more. */
-function pickProject(element) {
+function pickWorkspace(element) {
   if (!element) return false;
-  const project = projectFor(element.dataset.project);
-  void rememberScope(element.dataset.project);
-  showList("workspaces");
-  loadWorkspaces(project);
+  const selected = scopedDestinations().find((candidate) => candidate.kind === "workspace" && candidate.key === element.dataset.workspace);
+  const route = App.route;
+  closeMenu();
+  if (!selected) {
+    notifyError("Workspace is no longer available.", "Use the project breadcrumb to return to the project.");
+    return true;
+  }
+  void navigationSelectionTarget(selected, { route, currentHash: currentHash() }).then((target) => {
+    if (App.route === route && !target.current) navigateDestination(target.route, selected);
+  });
   return true;
 }
 
-function pickWorkspace(element) {
+function pickDestination(element) {
   if (!element) return false;
-  const selected = scopedDestinations().find((candidate) => candidate.key === element.dataset.workspace);
+  const selected = globalCatalog().destinations.find((row) => row.key === element.dataset.destination && row.kind === element.dataset.destinationKind);
   const route = App.route;
   closeMenu();
-  if (!selected) return true;
+  if (!selected) {
+    notifyError("Destination is no longer available.", "Use the project breadcrumb to return to the project.");
+    return true;
+  }
   void navigationSelectionTarget(selected, { route, currentHash: currentHash() }).then((target) => {
-    if (App.route === route && !target.current) go(target.route);
+    if (App.route === route && !target.current) navigateDestination(target.route, selected);
   });
   return true;
+}
+
+function destinationStillAvailable(destination) {
+  const available = globalCatalog().destinations.some((row) => row.kind === destination.kind && row.key === destination.key);
+  if (!available) notifyError("Destination is no longer available.", "Use the project breadcrumb to return to the project.");
+  return available;
+}
+
+async function navigateDestination(route, destination) {
+  const accepted = await go(route, { newEntry: true, beforeCommit: () => destinationStillAvailable(destination) });
+  if (accepted === false) return;
+  const hash = hashFromRoute(route);
+  requestAnimationFrame(() => {
+    if (hashFromRoute(App.route) !== hash) return;
+    // #root is the persistent main landmark. Cache-first async renderers may
+    // replace headings after navigation has already been accepted.
+    const target = $("#root");
+    if (!target) return;
+    target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+  });
 }
 
 function cycleMenuTab(event) {
@@ -678,7 +750,7 @@ function cycleMenuTab(event) {
 
 function onMenuKeydown(event) {
   if (event.key === "Tab") return cycleMenuTab(event);
-  const rows = [...open.element.querySelectorAll('.tbmenu-list [role="menuitem"]')];
+  const rows = [...open.element.querySelectorAll('.tbmenu-list a[href]')];
   const index = rows.indexOf(document.activeElement);
   const moves = { ArrowDown: 1, ArrowUp: -1 };
   if (moves[event.key]) {
@@ -702,7 +774,7 @@ const MENU_ACTIONS = [
   ["[data-menu-close]", () => closeMenu({ restoreFocus: true })],
   ["[data-manage-workspaces]", manageWorkspaces],
   ["[data-projects]", () => showList("projects")],
-  ["[data-project-page]", () => openProjectPage()],
+  ["[data-project-page]", () => openProjectPage(returnProject(), { newEntry: true })],
   ["[data-workspace-review]", openStandingReview],
   ["[data-create]", openCreate],
 ];
@@ -713,7 +785,7 @@ function onMenuClick(event) {
   if (target.closest("a")) event.preventDefault();
   const action = MENU_ACTIONS.find(([selector]) => target.closest(selector));
   if (action) return action[1]();
-  if (pickProject(target.closest("[data-project]"))) return;
+  if (pickDestination(target.closest("[data-destination]"))) return;
   pickWorkspace(target.closest("[data-workspace]"));
 }
 
@@ -732,27 +804,15 @@ function openCreate() {
 
 /** The project half's rows: which project — said with its machine when another
  *  machine uses the same name — and how much is waiting in it. */
-function projectMenuEntries() {
-  const projects = projectMenuModel({
-    projects: projectsOf(),
-    items: feed.items,
-    devices: App.devices,
-    projectKey: scopedProject()?.projectKey,
-    query: open.query,
-  });
-  if (!projects.length) return [{ key: "none", html: `<div class="tb-none dim">No project by that name.</div>` }];
-  return projects.map((project) => ({
-    key: `project:${project.key}`,
-    html: `<button class="mi${project.current ? " current" : ""}" data-project="${esc(project.key)}" type="button" role="menuitem">
-               <span class="mi-line"><span class="mt">${esc(project.name)}${deviceTagHtml(project)}</span>${unreadBadgeHtml(project.unreadCount, project.name)}</span></button>`,
-  }));
-}
+const globalCatalog = () => navigationCatalog(feed, { route: App.route, devices: App.devices, currentHash: currentHash(), taskUnread: watchedTasks?.taskUnread() });
+const projectMenuEntries = () => globalPickerEntries(globalNavigationPicker(globalCatalog(), { query: open.query, visits }));
 
 /** The project half's frame. */
 function projectMenuShellHtml() {
   return `${menuHeading("Switch to")}
-    <input class="tb-filter mini" type="text" placeholder="Jump to a project" value="${esc(open.query)}"
-      aria-label="Filter projects" ${fieldTraits("search", "go")} />
+    <input class="tb-filter mini" type="text" placeholder="Search projects or workspaces" value="${esc(open.query)}"
+      aria-label="Search projects or workspaces" ${fieldTraits("search", "go")} />
+    <div class="tb-group tb-scope">All projects · All devices</div>
     <div class="tbmenu-list"></div>`;
 }
 
@@ -761,6 +821,7 @@ function projectMenuShellHtml() {
 const scopedPicker = () => toolbarDestinationModel(App.route, feed, {
   devices: App.devices, projectKey: scopedProject()?.projectKey || routeProjectKey(App.route),
   currentHash: currentHash(), query: open.query,
+  taskUnread: watchedTasks?.taskUnread(),
 });
 const scopedDestinations = () => scopedPicker().groups.flatMap((group) => group.destinations);
 
@@ -770,7 +831,7 @@ function workspaceMenuEntries() {
   const rows = entries.map((destination) => ({
     key: `${destination.kind}:${destination.key}`,
     html: `<a class="mi${destination.current ? " current" : ""}" ${destination.kind === "project" ? "data-project-page" : `data-workspace="${esc(destination.key)}"`}
-      href="${esc(destination.hash)}" role="menuitem"${destination.current ? ' aria-current="page"' : ""}>
+      href="${esc(destination.hash)}"${destination.current ? ' aria-current="page"' : ""}>
       <span class="mt">${esc(destination.kind === "project" ? "Project workspace" : destination.name)}</span>
       <span class="md">${esc(destination.current ? "Current" : destination.statusText || "Return to this project")}</span></a>`,
   }));
@@ -836,10 +897,20 @@ export function initToolbar() {
   }
   mounted = true;
   const run = ++toolbarRun;
+  watchedTasks = followNavigationTaskUnread({ onChange: () => { if (mounted && run === toolbarRun && open) paintMenu(); } });
+  document.addEventListener("keydown", onGlobalShortcut);
+  visits = [];
+  visitTracker = mountNavigationVisits({ onChange(value) {
+    if (!mounted || run !== toolbarRun) return;
+    visits = value;
+    if (open) paintMenu();
+  } });
+  void visitTracker.visit(App.route);
   scopedProjectKey = null;
   scopeReady = false;
   unsubscribeFeed = subscribeFeed((next) => {
     feed = next;
+    watchedTasks.follow(globalCatalog().projects.map((group) => group.destination.project));
     shownFeed = filterByDevice(next, App.deviceFilter);
     // The menu is a view over the same records: a workspace made, renamed or
     // finished on another machine moves it on the delivery that carried it.
@@ -852,7 +923,7 @@ export function initToolbar() {
     scopedProjectKey = typeof saved?.projectKey === "string" ? saved.projectKey : null;
     paint();
   });
-  toolbarReady = scopeRecord.ready.then(async () => {
+  toolbarReady = Promise.all([scopeRecord.ready, visitTracker.ready]).then(async () => {
     if (!mounted || run !== toolbarRun) return;
     scopeReady = true;
     const routeKey = routeProjectKey(App.route);
@@ -870,14 +941,19 @@ export function initToolbar() {
  *  because it is the one that follows a move. */
 export function toolbarRouteChanged() {
   if (!mounted) return;
+  closeMenu();
+  void visitTracker?.visit(App.route);
   paint({ entering: true });
-  if (cachedMenuValue?.open) applyMenuRecord(cachedMenuValue);
   loadStandingWorkspaces();
 }
 
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
-  const settled = Promise.all([scopeRecord?.flush(), menuRecord?.flush()]);
+  const settled = settleToolbarState();
+  visitTracker = null;
+  visits = [];
+  stopNavigationTaskUnread();
+  document.removeEventListener("keydown", onGlobalShortcut);
   mounted = false;
   stopLockSupport?.();
   stopLockSupport = null;
@@ -908,4 +984,11 @@ export function stopToolbar() {
   workspacesByProject.clear();
   closeMenu({ persist: false });
   return settled;
+}
+
+const settleToolbarState = () => Promise.all([scopeRecord?.flush(), menuRecord?.flush(), visitTracker?.dispose()]);
+
+function stopNavigationTaskUnread() {
+  watchedTasks?.dispose();
+  watchedTasks = null;
 }

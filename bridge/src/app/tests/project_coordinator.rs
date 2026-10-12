@@ -11,7 +11,7 @@ use crate::mcp::{BridgeAction, McpSurface};
 use crate::project_roster::ProjectRole;
 
 /// A bridge over a store under `state_root`, booted the way the daemon boots.
-fn booted(state_root: &Path) -> AppState {
+pub(super) fn booted(state_root: &Path) -> AppState {
     AppState::new_unrooted_configured(
         state_root.join("worktrees"),
         "main",
@@ -24,7 +24,7 @@ fn booted(state_root: &Path) -> AppState {
     .unwrap()
 }
 
-fn ensure(state: &mut AppState, project_id: &str) -> String {
+pub(super) fn ensure(state: &mut AppState, project_id: &str) -> String {
     let ensured = state.handle(req(
         "project.ensure_conversation",
         json!({ "project_id": project_id }),
@@ -33,7 +33,7 @@ fn ensure(state: &mut AppState, project_id: &str) -> String {
     ensured["result"]["run_id"].as_str().unwrap().to_string()
 }
 
-fn add_worker(state: &mut AppState, owner: &str, params: Value) -> String {
+pub(super) fn add_worker(state: &mut AppState, owner: &str, params: Value) -> String {
     let mut params = params;
     params["entity_id"] = json!(owner);
     let added = state.handle(req("agent.add", params));
@@ -45,7 +45,7 @@ fn add_worker(state: &mut AppState, owner: &str, params: Value) -> String {
     added["result"]["agent"]["id"].as_str().unwrap().to_string()
 }
 
-fn roles(state: &AppState, owner: &str) -> Vec<(String, Option<ProjectRole>)> {
+pub(super) fn roles(state: &AppState, owner: &str) -> Vec<(String, Option<ProjectRole>)> {
     state
         .entity_agents(owner)
         .unwrap()
@@ -54,7 +54,7 @@ fn roles(state: &AppState, owner: &str) -> Vec<(String, Option<ProjectRole>)> {
         .collect()
 }
 
-fn coordinators(state: &AppState, owner: &str) -> Vec<String> {
+pub(super) fn coordinators(state: &AppState, owner: &str) -> Vec<String> {
     roles(state, owner)
         .into_iter()
         .filter(|(_, role)| *role == Some(ProjectRole::Coordinator))
@@ -83,13 +83,13 @@ fn store_as_legacy(state_root: &Path, owner: &str, keep_agents: bool) {
     store.save_run(&record).unwrap();
 }
 
-fn a_repo() -> (tempfile::TempDir, PathBuf) {
+pub(super) fn a_repo() -> (tempfile::TempDir, PathBuf) {
     let (home, repo) = init_repo();
     let repo = std::fs::canonicalize(&repo).unwrap();
     (home, repo)
 }
 
-fn a_state_root() -> (tempfile::TempDir, PathBuf) {
+pub(super) fn a_state_root() -> (tempfile::TempDir, PathBuf) {
     let tmp = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(tmp.path()).unwrap();
     (tmp, root)
@@ -179,7 +179,7 @@ fn an_empty_legacy_project_roster_gains_a_single_pin() {
 }
 
 /// Assert `answer` refused with `code`.
-fn refused_with(answer: &Value, code: &str) {
+pub(super) fn refused_with(answer: &Value, code: &str) {
     assert_eq!(answer["ok"], false, "{answer:?}");
     assert_eq!(answer["error_code"], code, "{answer:?}");
 }
@@ -628,8 +628,8 @@ fn a_missing_project_scratch_is_recreated_and_keeps_the_pin() {
 /// primary source neither retires the owner nor forgets which agent is its
 /// coordinator. The pin keeps the project surface and every refusal, a worker
 /// still cannot start without the sources, and once the folder is back —
-/// added again within the boot, or found at the next — the project answers
-/// the same owner and the same pin.
+/// found again within the boot, or at the next — the project answers the
+/// same owner and the same pin.
 #[tokio::test]
 async fn a_boot_without_the_primary_source_keeps_the_pins_purpose() {
     let (_home, repo) = a_repo();
@@ -647,7 +647,10 @@ async fn a_boot_without_the_primary_source_keeps_the_pins_purpose() {
     {
         let mut state = booted(&state_root);
         std::fs::rename(&away, &repo).unwrap();
-        let project_id = added_project(&mut state, &repo);
+        // Nothing is added again: the list finds the folder back (#533).
+        let listed = state.handle(req("project.list", json!({})));
+        assert_eq!(listed["ok"], true, "{listed:?}");
+        let project_id = state.projects.project_id_of(&owner).unwrap().to_string();
         assert_eq!(ensure(&mut state, &project_id), owner);
         assert_eq!(state.project_pin(&owner), Some(pin.as_str()));
     }

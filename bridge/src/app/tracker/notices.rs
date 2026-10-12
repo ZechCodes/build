@@ -313,7 +313,10 @@ fn notice_of(write: &TaskWrite, actor_name: Option<String>) -> Option<TaskNotice
         // happens to a linked workspace is not one either: the project agent
         // hears about quiet workspaces in one notice of its own, and nobody
         // watching the task is woken for it.
-        TaskEventKind::Tracked
+        TaskEventKind::Blocked
+        | TaskEventKind::Unblocked
+        | TaskEventKind::Unlinked
+        | TaskEventKind::Tracked
         | TaskEventKind::Untracked
         | TaskEventKind::Watched
         | TaskEventKind::Unwatched
@@ -400,7 +403,10 @@ pub(in crate::app) fn notice_of_entry(entry: &crate::tracker::TimelineEntry) -> 
                 TaskEventKind::Linked => Some(plain("linked")),
                 TaskEventKind::Closed => Some(plain("closed")),
                 TaskEventKind::Reopened => Some(plain("reopened")),
-                TaskEventKind::Tracked
+                TaskEventKind::Blocked
+                | TaskEventKind::Unblocked
+                | TaskEventKind::Unlinked
+                | TaskEventKind::Tracked
                 | TaskEventKind::Untracked
                 | TaskEventKind::Watched
                 | TaskEventKind::Unwatched

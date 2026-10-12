@@ -76,3 +76,11 @@ journey remain with their owning children; this does not claim those are shipped
 
 The ten original integration controls remain verified. The remaining #522
 extension scope stays pending until its owning children and #538 pass.
+
+C5 evidence (#533; RI522-2 stays pending until C10 adds project deletion
+with source shells): `workspace_reclaim_never_reclaims_project_agents` (the
+owner is no reclaim subject, and reclaiming a named workspace leaves the pin,
+a worker its agent made, that worker's session and the scratch),
+`project_deletion_retires_workers_and_preserves_sources` and the end-to-end
+`project_workers_take_tasks_hold_sources_and_leave_them_on_delete` (scratch
+removed, sources and an uncommitted edit kept).

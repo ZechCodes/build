@@ -71,6 +71,107 @@ describe("createChangesetBodies", () => {
   const layer = (fetchFiles, keyFor = () => "c1") =>
     createChangesetBodies({ addressOf: () => null, fetchFiles, keyFor });
 
+  it("fetches paths a truncated aggregate never reached instead of keeping empty bodies", async () => {
+    const asked = [];
+    const paths = ["a.txt", "b.txt", "c.txt", "d.txt"];
+    const files = paths.map((path) => ({ path, content_key: "c1" }));
+    const bodies = layer(async (wanted) => {
+      asked.push([...wanted]);
+      return { files, patch: wanted.map((path) => patchFor(path, "from wire")).join("") };
+    });
+    await bodies.seed({ files, patch: patchFor("a.txt", "whole") + patchFor("b.txt", "cut"), truncated: true }, paths);
+    const views = files.map((file) => ({ path: file.path, contentKey: file.content_key }));
+    await bodies.sync(views, new Set(paths));
+    await bodies.sync(views, new Set(paths));
+
+    expect(asked).toEqual([["c.txt", "d.txt"]]);
+    for (const path of ["c.txt", "d.txt"]) expect(bodies.bodyOf(path).patch).toContain("+from wire");
+    bodies.dispose();
+  });
+
+  it("retries paths omitted by a truncated wire answer on the next paint", async () => {
+    const asked = [];
+    const bodies = layer(async (paths) => {
+      asked.push([...paths]);
+      if (asked.length === 1) return { files: [], patch: patchFor("a.txt", "cut"), truncated: true };
+      return { files: [], patch: patchFor("b.txt", "retried") };
+    });
+    const views = ["a.txt", "b.txt"].map((path) => ({ path, contentKey: "c1" }));
+    const open = new Set(views.map((view) => view.path));
+    await bodies.sync(views, open);
+    await bodies.sync(views, open);
+
+    expect(asked).toEqual([["a.txt", "b.txt"], ["b.txt"]]);
+    expect(bodies.bodyOf("b.txt").patch).toContain("+retried");
+    bodies.dispose();
+  });
+
+  it("retries an older held body omitted by a truncated refresh and lands its new body", async () => {
+    const asked = [];
+    const files = ["a.txt", "b.txt"].map((path) => ({ path, content_key: "new" }));
+    const bodies = layer(async (paths) => {
+      asked.push([...paths]);
+      if (asked.length === 1) return { files, patch: patchFor("a.txt", "refreshed"), truncated: true };
+      return { files, patch: patchFor("b.txt", "retried") };
+    }, () => "new");
+    try {
+      await bodies.seed({ files: [{ path: "b.txt", content_key: "old" }], patch: patchFor("b.txt", "previous") }, ["b.txt"]);
+      const views = files.map((file) => ({ path: file.path, contentKey: file.content_key }));
+      const open = new Set(["a.txt", "b.txt"]);
+      await bodies.sync(views, open);
+      expect(bodies.bodyOf("b.txt")).toMatchObject({ content_key: "old", patch: patchFor("b.txt", "previous") });
+      await bodies.sync(views, open);
+      await bodies.sync(views, open);
+
+      expect(asked).toEqual([["a.txt", "b.txt"], ["b.txt"]]);
+      expect(bodies.bodyOf("b.txt")).toMatchObject({ content_key: "new", patch: patchFor("b.txt", "retried") });
+    } finally {
+      bodies.dispose();
+    }
+  });
+
+  it("retries the same paths after a rejected fill", async () => {
+    const asked = [];
+    const bodies = layer(async (paths) => {
+      asked.push([...paths]);
+      if (asked.length === 1) throw new Error("transport hiccup");
+      return { files: [], patch: patchFor("a.txt", "recovered") };
+    });
+    const views = [{ path: "a.txt", contentKey: "c1" }];
+    const open = new Set(["a.txt"]);
+    await expect(bodies.sync(views, open)).rejects.toThrow("transport hiccup");
+    await bodies.sync(views, open);
+
+    expect(asked).toEqual([["a.txt"], ["a.txt"]]);
+    expect(bodies.bodyOf("a.txt").patch).toContain("+recovered");
+    bodies.dispose();
+  });
+
+  it("fetches an unanswered path even when its list has no content key", async () => {
+    const bodies = layer(async () => ({ files: [], patch: patchFor("a.txt", "unkeyed") }), () => undefined);
+    await bodies.sync([{ path: "a.txt" }], new Set(["a.txt"]));
+    expect(bodies.bodyOf("a.txt").patch).toContain("+unkeyed");
+    bodies.dispose();
+  });
+
+  it("settles a landed body with a newer key until the list changes", async () => {
+    let calls = 0;
+    const bodies = layer(async () => {
+      calls += 1;
+      return { files: [{ path: "a.txt", content_key: "newer" }], patch: patchFor("a.txt", "newer") };
+    });
+    const views = [{ path: "a.txt", contentKey: "old" }];
+    const open = new Set(["a.txt"]);
+    await bodies.sync(views, open);
+    await bodies.sync(views, open);
+    expect(calls).toBe(1);
+
+    views[0].contentKey = "another edit";
+    await bodies.sync(views, open);
+    expect(calls).toBe(2);
+    bodies.dispose();
+  });
+
   it("answers each asked path from the one call it makes", async () => {
     const asked = [];
     const bodies = layer(async (paths) => {

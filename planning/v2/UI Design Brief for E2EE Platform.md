@@ -45,16 +45,18 @@ Board (home)
      └─ Harnesses (detected credentials, integration mode defaults)
 ```
 
-**Navigation amendment proposed in #523 (2026-10-12):** the Board/Plan/Diff tree
+**Navigation direction settled in #523 (2026-10-12):** the Board/Plan/Diff tree
 above records the original design, not the current SPA's Inbox and workspace
 rails. [Project and workspace navigation](Navigation%20Spec.md) defines real
 project breadcrumbs, sibling selection, and direct cross-project destinations,
-using #522's project-workspace vocabulary. Its recommended budget is one tap up
+using #522's project-workspace vocabulary. Its interaction budget is one tap up
 to the project and two activations to a sibling or another project's workspace
-through Switch; search, scrolling, and rail disclosures are additional effort.
+through Switch, the leading up-arrow project/workspace switcher; search,
+scrolling, and rail disclosures are additional effort.
 This replaces the unqualified “everything within two taps of the board” claim.
-The navigation amendment remains proposed until Zech decides its open points;
-implementation follows in separately reviewed child tasks.
+Last visited ordering and landing behavior are adopted defaults unless Zech
+objects; neither blocks implementation. Implementation follows in separately
+reviewed child tasks.
 
 ---
 

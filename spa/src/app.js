@@ -154,17 +154,21 @@ function applyRoute(route, { newEntry = false } = {}) {
   }
 }
 
+/** Selection checks run synchronously at the commit boundary, after any leave
+ * decision and attempt arbitration, before the route or history can change. */
+function commitRoute(route, options) {
+  if (options?.beforeCommit?.() === false) return false;
+  applyRoute(route, options);
+  return true;
+}
+
 export function go(route, options) {
   const attempt = ++routeAttempt;
   const guard = App.routeLeaveGuard;
-  if (!guard) {
-    applyRoute(route, options);
-    return true;
-  }
+  if (!guard) return commitRoute(route, options);
   return mayLeaveRoute().then((allowed) => {
     const current = allowed && attempt === routeAttempt;
-    if (current) applyRoute(route, options);
-    return current;
+    return current && commitRoute(route, options);
   });
 }
 

@@ -20,7 +20,7 @@ async function mountRealNavigationPicker(page, basePath) {
     // attempt arbitration and commit. This promise counts accepted outcomes.
     window.__navigationHarness.go = (next, options) => {
       window.__pendingPickerNavigation = Promise.resolve(realApp.go(next, options)).then((accepted) => {
-        // Gating skips live surfaces. Repaint the cached toolbar as standShell
+        // Gating skips live surfaces. Repaint the cached toolbar as renderPage
         // normally does, only after production go actually commits.
         if (accepted) toolbar.toolbarRouteChanged();
         return accepted;

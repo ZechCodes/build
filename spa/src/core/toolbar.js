@@ -413,7 +413,7 @@ async function openProjectPage(project = returnProject(), { newEntry = false } =
   if (!project) return;
   const target = await projectReturnTarget(project, { route: standing, currentHash: currentHash() });
   if (App.route !== standing || target.current) return;
-  if (newEntry) void navigateDestination(target.route);
+  if (newEntry) void navigateDestination(target.route, { kind: "project", key: deviceKey(project.deviceId, project.id) });
   else go(target.route);
 }
 
@@ -690,7 +690,7 @@ function paintMenuShell() {
 
 function pickWorkspace(element) {
   if (!element) return false;
-  const selected = scopedDestinations().find((candidate) => candidate.key === element.dataset.workspace);
+  const selected = scopedDestinations().find((candidate) => candidate.kind === "workspace" && candidate.key === element.dataset.workspace);
   const route = App.route;
   closeMenu();
   if (!selected) {
@@ -698,7 +698,7 @@ function pickWorkspace(element) {
     return true;
   }
   void navigationSelectionTarget(selected, { route, currentHash: currentHash() }).then((target) => {
-    if (App.route === route && !target.current) navigateDestination(target.route);
+    if (App.route === route && !target.current) navigateDestination(target.route, selected);
   });
   return true;
 }
@@ -713,13 +713,19 @@ function pickDestination(element) {
     return true;
   }
   void navigationSelectionTarget(selected, { route, currentHash: currentHash() }).then((target) => {
-    if (App.route === route && !target.current) navigateDestination(target.route);
+    if (App.route === route && !target.current) navigateDestination(target.route, selected);
   });
   return true;
 }
 
-async function navigateDestination(route) {
-  const accepted = await go(route, { newEntry: true });
+function destinationStillAvailable(destination) {
+  const available = globalCatalog().destinations.some((row) => row.kind === destination.kind && row.key === destination.key);
+  if (!available) notifyError("Destination is no longer available.", "Use the project breadcrumb to return to the project.");
+  return available;
+}
+
+async function navigateDestination(route, destination) {
+  const accepted = await go(route, { newEntry: true, beforeCommit: () => destinationStillAvailable(destination) });
   if (accepted === false) return;
   const hash = hashFromRoute(route);
   requestAnimationFrame(() => {

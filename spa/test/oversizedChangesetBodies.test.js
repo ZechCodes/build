@@ -105,6 +105,26 @@ it("refetches an empty incomplete body left in the cache by an older truncated a
   }
 });
 
+it("refreshes a hydrated older body instead of settling it for the current list key", async () => {
+  const path = "stale.txt";
+  await cache.writeCached(address(path), { content_key: "old", patch: patch(path, "previous") });
+  const fetchFiles = vi.fn(async () => ({ files: [{ path, content_key: "new" }], patch: patch(path, "refreshed") }));
+  const bodies = createChangesetBodies({ addressOf: address, keyFor: () => "new", fetchFiles });
+  const views = [{ path, contentKey: "new" }];
+  try {
+    await bodies.sync(views, allOpen(views));
+    expect(fetchFiles).not.toHaveBeenCalled();
+    expect(bodies.bodyOf(path).content_key).toBe("old");
+    await bodies.sync(views, allOpen(views));
+    await bodies.sync(views, allOpen(views));
+
+    expect(fetchFiles).toHaveBeenCalledExactlyOnceWith([path]);
+    expect(bodies.bodyOf(path)).toMatchObject({ content_key: "new", patch: patch(path, "refreshed") });
+  } finally {
+    bodies.dispose();
+  }
+});
+
 it("keeps an empty complete paged body without refetching its truncated head", async () => {
   const path = "empty.txt";
   const currentKey = "current";

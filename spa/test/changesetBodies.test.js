@@ -106,6 +106,30 @@ describe("createChangesetBodies", () => {
     bodies.dispose();
   });
 
+  it("retries an older held body omitted by a truncated refresh and lands its new body", async () => {
+    const asked = [];
+    const files = ["a.txt", "b.txt"].map((path) => ({ path, content_key: "new" }));
+    const bodies = layer(async (paths) => {
+      asked.push([...paths]);
+      if (asked.length === 1) return { files, patch: patchFor("a.txt", "refreshed"), truncated: true };
+      return { files, patch: patchFor("b.txt", "retried") };
+    }, () => "new");
+    try {
+      await bodies.seed({ files: [{ path: "b.txt", content_key: "old" }], patch: patchFor("b.txt", "previous") }, ["b.txt"]);
+      const views = files.map((file) => ({ path: file.path, contentKey: file.content_key }));
+      const open = new Set(["a.txt", "b.txt"]);
+      await bodies.sync(views, open);
+      expect(bodies.bodyOf("b.txt")).toMatchObject({ content_key: "old", patch: patchFor("b.txt", "previous") });
+      await bodies.sync(views, open);
+      await bodies.sync(views, open);
+
+      expect(asked).toEqual([["a.txt", "b.txt"], ["b.txt"]]);
+      expect(bodies.bodyOf("b.txt")).toMatchObject({ content_key: "new", patch: patchFor("b.txt", "retried") });
+    } finally {
+      bodies.dispose();
+    }
+  });
+
   it("retries the same paths after a rejected fill", async () => {
     const asked = [];
     const bodies = layer(async (paths) => {

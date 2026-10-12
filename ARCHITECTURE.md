@@ -273,7 +273,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.20.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.21.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -392,6 +392,15 @@ runtime that starts them.
   tail, beside an exact full-run digest. Omitting `activity` keeps the bounded
   default. The mode applies to backward pages, forward deltas and newest
   deltas; `thread.activity` still reads the digest's span on demand.
+  3.21.0 adds `agents.projectWorkers` (#532): `agent.list {entity_id,
+  include_project_workers}` (a verb again, after 3.0 retired the old one),
+  `project_role` (`coordinator` or `worker`) on a project owner's agent
+  digests, `pinned_agent_id` on its `agent.list` answer, and `project_role`
+  on `agent.add`, which accepts only `"worker"` and only on a project's
+  conversation owner. Every roster read that predates workers (board rows,
+  the project list's conversations, `agent.remove`, and `agent.list` without
+  the flag) carries a project owner's pinned coordinator alone. See MCP
+  tools.
   3.19.0 adds `unread.watchScoped` (#474): conversation and task unread
   counts exclude unwatched conversations and news from before the current
   watch began. Watch baselines persist separately from read cursors.
@@ -1322,13 +1331,41 @@ and forwards each call to the daemon's Unix socket (`BRIDGE_MCP_SOCKET`, default
 the handlers in `bridge/src/app/mcp.rs`.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
-`Project`). Each action is a `BridgeAction` variant. The tool lists are
+`Project`), which a project's agents take from their persisted purpose (see
+A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
 `coding_tools()`, `router_tools()`, `project_tools()`, `workspace_tools()` and
 `task_tools()`. They cover conversation tools (`post_thread_message`,
 `message_agent`, `set_topic`, `compact_self`, …; compaction in
 `bridge/src/mcp/compaction.rs`), workspace tools (`create_workspace`,
 `add_workspace_agent`, …) and the tracker (`get_task`, `comment_task`,
 `move_task`, `label_task`, …).
+
+**A project's agents.** A project's conversation owner (the run
+`project.ensure_conversation` mints over the project's scratch directory)
+holds exactly one pinned coordinator and any number of workers
+(`bridge/src/project_roster.rs`, `bridge/src/app/projects/coordinator.rs`).
+The owner persists `pinned_agent_id` and each agent its `project_role`; every
+one of them still carries the `project-` id prefix, so nothing reads purpose
+off the id. The owner is born with its pin; boot and every ensure settle an
+older roster (its coordinator, else its primary, becomes the pin, and every
+other agent a worker with its id, history and settings) and mint a pin only
+where none can be kept, never by roster position. The pin is first in rail
+order, so every verb that names no agent reaches it. `agent.remove` and
+`run.abandon` refuse the pin and its owner with `conflict`; `agent.add` makes
+only workers there. Recovery never retires the owner either. A boot or the
+vanished-run sweep that finds the scratch directory gone creates it again
+instead of abandoning or archiving the owner. A boot that cannot reach the
+project's folder keeps the owner live, recognised by the project path on its
+record, so the pin keeps its purpose and refusals. The same owner answers
+once the folder is back. Only `project.delete` retires the pin. The coordinator is on the `Project` surface with the
+`project_agent` prompt; a worker is on the `Coding` surface with the
+`project_worker` prompt (`bridge/templates/project_worker.md`): it starts in
+the project's folder, may write every source, and is refused a start while
+that folder is missing. The daemon authorizes every call by the persisted
+purpose (`AppState::agent_mcp_surface`). A worker's launch also declares the
+coding surface to its MCP server in `BRIDGE_MCP_SURFACE` (codex through its
+server `env` and `enabled_tools`), which `McpSurface::launched` only ever
+narrows, so a copied value grants nothing.
 
 **Tracking.** A task's `trackers` are the agents told about each change to it
 (`bridge/src/app/tracker/notices.rs`; never the agent that made the change).

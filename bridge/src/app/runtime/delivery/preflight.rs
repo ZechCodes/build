@@ -554,16 +554,13 @@ impl AppState {
         provider: crate::models::AgentProvider,
         cold: &str,
     ) -> String {
-        if !crate::agent::is_project_agent(agent_id)
-            || crate::harness::harness_for(provider).requires_unadorned_command(cold)
-        {
+        if crate::harness::harness_for(provider).requires_unadorned_command(cold) {
             return cold.to_string();
         }
-        self.closed_with_the_conversation(
-            owner,
-            agent_id,
-            format!("{cold}\n\n{}", self.project_agent_prompt(owner)),
-        )
+        let Some(prompt) = self.project_surface_prompt(owner, agent_id) else {
+            return cold.to_string();
+        };
+        self.closed_with_the_conversation(owner, agent_id, format!("{cold}\n\n{prompt}"))
     }
 
     /// The cold prompt the SURFACE gets. Every path that opens a conversation
@@ -573,9 +570,7 @@ impl AppState {
     /// cold prompt passes through, and the only one that knows which agent the
     /// turn is for.
     fn surface_prompt(&self, owner: &str, agent_id: &str, cold: &str) -> String {
-        if crate::agent::is_project_agent(agent_id) {
-            return self.project_agent_prompt(owner);
-        }
-        cold.to_string()
+        self.project_surface_prompt(owner, agent_id)
+            .unwrap_or_else(|| cold.to_string())
     }
 }

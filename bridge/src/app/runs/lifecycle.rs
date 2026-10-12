@@ -282,20 +282,22 @@ impl AppState {
     /// the removal itself.
     pub(crate) fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
+        // A project's conversation owner holds the project's pinned agent,
+        // which only deleting the project retires — asked first, so the
+        // answer does not hang on whether its project is reachable now.
+        self.refuse_ending_project_owner(&run_id)?;
         let project_id = self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         // Judged before a single agent is killed: an abandon that is not legal
         // must leave the run exactly as it found it.
         run_transition(&active.run.state, RunEvent::Abandon)
             .map_err(|illegal| illegal.to_string())?;
-        // Abandoning removes the run's worktree. Two runs end by letting go of
-        // the checkout instead: one standing in the project's own repository —
-        // the repository is what workspaces are cut from, and removing it would
-        // take the project with it — and a project's conversation owner, whose
-        // scratch directory is the project's and outlives every session held
-        // in it. Both are read off the record, so they answer after a restart.
-        let keeps_checkout = self.stands_in_the_repository(&run_id, active)
-            || self.is_project_conversation_owner(&run_id);
+        // Abandoning removes the run's worktree. A run standing in the
+        // project's own repository ends by letting go of the checkout instead:
+        // the repository is what workspaces are cut from, and removing it
+        // would take the project with it. Read off the record, so it answers
+        // after a restart.
+        let keeps_checkout = self.stands_in_the_repository(&run_id, active);
         if !keeps_checkout {
             self.refuse_removing_locked_workspace_at(&active.worktree.path)?;
         }

@@ -150,6 +150,11 @@ pub struct PersistedRun {
     /// The pre-agent, entity-keyed conversation — see [`PersistedPlan::legacy_thread`].
     #[serde(rename = "thread", default, skip_serializing_if = "Thread::is_empty")]
     pub legacy_thread: Thread,
+    /// A project conversation owner's pinned coordinator, by agent id
+    /// ([`crate::project_roster`]). Absent on every other run, and on an owner
+    /// written before pins existed until the boot settlement records one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_agent_id: Option<String>,
     pub last_summary: Option<String>,
     #[serde(default)]
     pub last_error: Option<String>,

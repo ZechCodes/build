@@ -670,6 +670,23 @@ impl McpSurface {
         }
     }
 
+    /// The surface a launched server lists: the one its owner id names,
+    /// narrowed to the coding surface when the launch declared it.
+    ///
+    /// A project's agents all carry the project prefix, and only its pinned
+    /// coordinator is on the project surface; the bridge declares the coding
+    /// surface for a worker in [`MCP_SURFACE_ENV`]. A declaration only ever
+    /// narrows. It cannot hand an id the project or router tools, and the
+    /// daemon checks every call against the agent's persisted purpose anyway,
+    /// so a copied declaration grants nothing.
+    pub fn launched(owner_id: &str, declared: Option<&str>) -> McpSurface {
+        let named = McpSurface::for_owner(owner_id);
+        match (named, declared) {
+            (McpSurface::Project, Some("coding")) => McpSurface::Coding,
+            _ => named,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             McpSurface::Coding => "coding",
@@ -678,6 +695,11 @@ impl McpSurface {
         }
     }
 }
+
+/// The environment variable a harness hands its Build MCP server when the
+/// agent's persisted purpose narrows the surface its id names: `coding`, for a
+/// project worker. See [`McpSurface::launched`].
+pub const MCP_SURFACE_ENV: &str = "BRIDGE_MCP_SURFACE";
 
 /// The conversation-aware MCP server. Identity-scoped to one owner (a plan or a run);
 /// `owner_id` is opaque here — the daemon disambiguates it by owner lookup.
@@ -701,6 +723,14 @@ impl DoneServer {
     pub fn for_owner(owner_id: impl Into<String>) -> Self {
         let owner_id = owner_id.into();
         let surface = McpSurface::for_owner(&owner_id);
+        DoneServer { owner_id, surface }
+    }
+
+    /// The server a harness launched: the surface its owner id names, as its
+    /// launch declared it narrowed ([`McpSurface::launched`]).
+    pub fn launched(owner_id: impl Into<String>, declared: Option<&str>) -> Self {
+        let owner_id = owner_id.into();
+        let surface = McpSurface::launched(&owner_id, declared);
         DoneServer { owner_id, surface }
     }
 

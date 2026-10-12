@@ -58,6 +58,8 @@ const ROUTER: &str = template!("router.md");
 
 const PROJECT_AGENT: &str = template!("project_agent.md");
 
+const PROJECT_WORKER: &str = template!("project_worker.md");
+
 /// What every code-changing phase adds about its completion message. Appended rather
 /// than written into each template so the four asks cannot drift apart, and so
 /// a project overriding one template still overrides only that one.
@@ -165,6 +167,9 @@ pub struct Templates {
     /// The other one: a project agent is about a project rather than about any
     /// piece of work inside it.
     pub project_agent: String,
+    /// A project's worker: it writes the project's original sources, shared
+    /// with the user and the other workers, and works no phase of a run.
+    pub project_worker: String,
 }
 
 impl Default for Templates {
@@ -183,6 +188,7 @@ impl Default for Templates {
             // in its own words, and the tracker is the one thing it has that
             // that prompt predates.
             project_agent: format!("{PROJECT_AGENT}\n\n{TASK_TOOLS_NOTE}\n\n{LINK_MARKUP_NOTE}"),
+            project_worker: coding_template(PROJECT_WORKER),
         }
     }
 }
@@ -1077,6 +1083,7 @@ mod tests {
             ("review_changes", &t.review_changes),
             ("message", &t.message),
             ("project_agent", &t.project_agent),
+            ("project_worker", &t.project_worker),
         ]
     }
 
@@ -1111,6 +1118,7 @@ mod tests {
             ("review_changes", &t.review_changes),
             ("message", &t.message),
             ("project_agent", &t.project_agent),
+            ("project_worker", &t.project_worker),
         ]
     }
 
@@ -1129,6 +1137,7 @@ mod tests {
             &t.message,
             &t.router,
             &t.project_agent,
+            &t.project_worker,
         ] {
             assert!(!template.contains("phase="), "{template}");
             assert!(!template.contains("outputs."), "{template}");

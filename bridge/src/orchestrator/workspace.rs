@@ -114,9 +114,27 @@ pub struct SpawnOptions {
     /// base, which is the user's and gets nothing of Build's written into it,
     /// while its scaffold stays in the root Build keeps for it.
     pub scaffold: Option<PathBuf>,
+    /// The Build MCP surface the agent's persisted purpose grants, or `None`
+    /// to leave it to the owner id ([`crate::mcp::McpSurface::for_owner`]).
+    pub mcp_surface: Option<crate::mcp::McpSurface>,
 }
 
 impl SpawnOptions {
+    /// The surface this session's Build MCP server lists.
+    pub fn mcp_surface(&self) -> crate::mcp::McpSurface {
+        self.mcp_surface
+            .unwrap_or_else(|| crate::mcp::McpSurface::for_owner(&self.owner_id))
+    }
+
+    /// The surface a launch must declare to its MCP server
+    /// ([`crate::mcp::MCP_SURFACE_ENV`]): the granted one, where it narrows
+    /// what the owner id names — a project worker's. `None` everywhere else,
+    /// so every other launch is exactly what it was.
+    pub fn declared_mcp_surface(&self) -> Option<crate::mcp::McpSurface> {
+        self.mcp_surface
+            .filter(|granted| *granted != crate::mcp::McpSurface::for_owner(&self.owner_id))
+    }
+
     /// The `--mcp-config` a harness is handed: worktree-relative where the
     /// scaffold is the cwd, which is every agent but a project agent, and
     /// absolute where it is not, since a relative one would be read from the
@@ -424,6 +442,30 @@ pub enum Agent {
     WarmBuilder(WarmBuilder),
 }
 
+/// What a launched harness's Build MCP server is handed: the session's
+/// capability token and the surface the agent's persisted purpose grants
+/// (`None` leaves it to the owner id).
+#[derive(Debug, Clone, Copy)]
+pub struct McpGrant<'a> {
+    pub token: &'a str,
+    pub surface: Option<crate::mcp::McpSurface>,
+}
+
+impl<'a> From<&'a str> for McpGrant<'a> {
+    fn from(token: &'a str) -> Self {
+        McpGrant {
+            token,
+            surface: None,
+        }
+    }
+}
+
+impl<'a> From<&'a String> for McpGrant<'a> {
+    fn from(token: &'a String) -> Self {
+        McpGrant::from(token.as_str())
+    }
+}
+
 /// Owned inputs for constructing one agent process. Cloning this under the app
 /// lock lets every filesystem and provider setup step run after that lock is
 /// released.
@@ -444,15 +486,16 @@ pub(crate) struct PreparedAgentLaunch {
 impl AgentLaunch {
     /// Make the worktree launch-ready and return everything the app needs to
     /// spawn it. The ordered scaffold/spec boundary stays inside this operation.
-    pub(crate) fn prepare(
+    pub(crate) fn prepare<'token>(
         &self,
         owner_id: &str,
         dirs: LaunchDirs<'_>,
         model_choice: &ModelChoice,
         continue_session: bool,
         resume_session_id: Option<String>,
-        mcp_session_token: &str,
+        mcp: impl Into<McpGrant<'token>>,
     ) -> Result<PreparedAgentLaunch, OrchestratorError> {
+        let mcp = mcp.into();
         self.scaffold_agent_worktree(dirs.scaffold, owner_id)?;
         let writes_where_it_stands =
             crate::harness::harness_for(model_choice.provider).claude_files_where_it_stands();
@@ -465,9 +508,10 @@ impl AgentLaunch {
             continue_session,
             resume_session_id,
             owner_id: owner_id.to_string(),
-            mcp_session_token: mcp_session_token.to_string(),
+            mcp_session_token: mcp.token.to_string(),
             cwd: dirs.cwd.to_path_buf(),
             scaffold: (dirs.scaffold != dirs.cwd).then(|| dirs.scaffold.to_path_buf()),
+            mcp_surface: mcp.surface,
         };
         let spec = match &self.agent {
             Agent::Warm(spec) => Ok(spec.clone()),
@@ -931,6 +975,7 @@ impl Orchestrator {
             publication_attempt: None,
             model_choice,
             agents: AgentRoster::empty(),
+            pinned_agent_id: None,
             last_summary: None,
             last_error: None,
         })

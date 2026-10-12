@@ -252,6 +252,7 @@ impl AppState {
         );
         self.recover_captures(captures)?;
         self.restore_plans_before_runs(plans, runs)?;
+        self.settle_project_rosters();
         self.rebuild_session_summaries()?;
         self.rebuild_user_session()?;
         self.restore_workspace_lifecycle()?;
@@ -459,7 +460,20 @@ impl AppState {
             }
         }
 
-        if !active.run.state.is_terminal() && !active.worktree.path.exists() {
+        // A project's owner stands in Build's own scratch, which is cut
+        // again rather than restored from a branch it never had.
+        let project_owner = crate::app::projects::is_project_scratch(
+            &self.state_root,
+            std::path::Path::new(&record.project_path),
+            &active.worktree.path,
+        );
+        if project_owner && !active.run.state.is_terminal() {
+            if let Err(error) = crate::app::projects::recut_project_scratch(&active.worktree.path) {
+                active.last_error = Some(error);
+                state_changed = true;
+            }
+        }
+        if !project_owner && !active.run.state.is_terminal() && !active.worktree.path.exists() {
             let restored = project_id
                 .as_deref()
                 .filter(|_| !active.adopted)
@@ -532,7 +546,7 @@ impl AppState {
         }
 
         if project_id.is_none() && !active.run.state.is_terminal() {
-            if active.adopted {
+            if active.adopted || project_owner {
                 // Automated actions never touch an adopted worktree: park the
                 // run needs-attention instead of abandoning.
                 eprintln!(
@@ -717,13 +731,15 @@ impl AppState {
         if self.vanished_run_sweep_in_flight {
             return;
         }
+        self.recut_project_scratches();
         let queries: Vec<StagePublicationQuery> = self
             .runs
             .iter()
-            .filter(|(_, active)| {
+            .filter(|(run_id, active)| {
                 !active.run.state.is_terminal()
                     && active.run.state != RunState::Created
                     && !active.worktree.path.exists()
+                    && !self.is_project_conversation_owner(run_id)
             })
             .map(|(run_id, active)| self.stage_publication_query(run_id, active))
             .collect();
@@ -736,6 +752,23 @@ impl AppState {
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
         });
+    }
+
+    /// Cut again the scratch of every live project owner that lost it. A
+    /// project's owner is never archived as a vanished run: its scratch is
+    /// Build's to make, and archiving it would retire its pinned agent.
+    fn recut_project_scratches(&self) {
+        for (run_id, active) in &self.runs {
+            if active.run.state.is_terminal()
+                || active.worktree.path.is_dir()
+                || !self.is_project_conversation_owner(run_id)
+            {
+                continue;
+            }
+            if let Err(error) = crate::app::projects::recut_project_scratch(&active.worktree.path) {
+                eprintln!("{run_id}: {error}");
+            }
+        }
     }
 
     /// A run the user deletes must disappear from Build. Any live run whose
@@ -751,6 +784,7 @@ impl AppState {
                 .runs
                 .get(&run_id)
                 .is_none_or(|active| active.worktree.path.exists())
+                || self.is_project_conversation_owner(&run_id)
             {
                 continue;
             }

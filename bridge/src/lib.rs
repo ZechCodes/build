@@ -80,6 +80,7 @@ pub mod pairing;
 pub mod plan;
 pub mod presence;
 pub mod priority;
+pub mod project_roster;
 pub mod pty;
 pub mod reachability;
 pub mod reaper;

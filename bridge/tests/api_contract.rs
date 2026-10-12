@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.20.0");
+    assert_eq!(API_VERSION, "3.21.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -361,7 +361,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.20.0");
+    assert_eq!(API_VERSION, "3.21.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -1267,7 +1267,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.20.0");
+    assert_eq!(API_VERSION, "3.21.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1350,4 +1350,34 @@ fn lean_activity_fixture_examples_match_reachable_pages() {
             assert_eq!(actual[field], example["result"][field], "{params}: {field}");
         }
     }
+}
+
+/// Project workers ride one capability: the roster read that asks for them,
+/// each agent's purpose, the pin by id, and the only purpose `agent.add`
+/// accepts. The legacy shape is the pinned coordinator alone.
+#[test]
+fn project_workers_are_announced_with_their_roster_read_and_purposes() {
+    assert_eq!(API_VERSION, "3.21.0");
+    let advertised = capabilities(false);
+    assert!(advertised.contains(&"agents.projectWorkers"));
+    assert!(advertised.contains(&"agent.list"));
+    let list = read_json(&fixtures_root().join("v1/agent.list.json"));
+    assert_eq!(list["since"], "3.21.0");
+    assert_eq!(
+        list["project_workers"]["capability"],
+        "agents.projectWorkers"
+    );
+    assert_eq!(list["params"]["include_project_workers"], true);
+    let agents = list["result"]["agents"].as_array().unwrap();
+    assert_eq!(agents[0]["id"], list["result"]["pinned_agent_id"]);
+    let purposes: Vec<&str> = agents
+        .iter()
+        .map(|agent| agent["project_role"].as_str().unwrap())
+        .collect();
+    assert_eq!(purposes, ["coordinator", "worker"]);
+    let add = read_json(&fixtures_root().join("v1/agent.add.json"));
+    assert_eq!(add["project_workers"]["since"], "3.21.0");
+    assert_eq!(add["project_workers"]["params"][0], "project_role");
+    let remove = read_json(&fixtures_root().join("v1/agent.remove.json"));
+    assert_eq!(remove["pinned_coordinator"]["since"], "3.21.0");
 }

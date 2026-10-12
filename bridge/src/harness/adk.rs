@@ -143,12 +143,13 @@ impl Harness for AdkHarness {
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
         }
-        Ok(spec
+        let spec = spec
             .env(
                 "BRIDGE_MCP_SOCKET",
                 context.mcp_socket.to_string_lossy().into_owned(),
             )
-            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token))
+            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token);
+        Ok(crate::harness::declare_mcp_surface(spec, options))
     }
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {

@@ -1242,9 +1242,10 @@ fn mcp_stdio() {
     let session_token = std::env::var("BRIDGE_MCP_TOKEN").ok();
 
     // The owner id decides the tool surface: a router session's id is prefixed,
-    // and so is a project agent's, so which tools a harness is offered can never
-    // disagree with which kind of session it is.
-    let server = build_bridge::mcp::DoneServer::for_owner(&owner_id);
+    // and so is a project agent's. A project worker's launch narrows it to the
+    // coding surface; nothing a launch declares can widen it.
+    let declared = std::env::var(build_bridge::mcp::MCP_SURFACE_ENV).ok();
+    let server = build_bridge::mcp::DoneServer::launched(&owner_id, declared.as_deref());
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
     let _ = server.run_stdio(

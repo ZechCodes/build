@@ -30,7 +30,7 @@ vi.mock("../src/terminal/manager.js", () => ({
   subscribeTerminalStatus: () => () => {},
   // Which machine the shells type at, and the moves between machines, are the
   // app spine's business and not this suite's: they answer, and nothing moves.
-  terminalDeviceId: () => null,
+  terminalDeviceId: () => "dev-1",
   followTerminalDevice: () => {},
   resetTerminalManager: () => {},
   // Minting a terminal session is the connection layer's (spec rule 5); no
@@ -534,7 +534,10 @@ describe("original-source project console", () => {
   it("closes the immutable source scope and changes only that source cache", async () => {
     await projectWorld(); await mount(projectContext());
     const { readCached } = await import("../src/core/localCache.js");
-    region().querySelectorAll("[data-close]")[1].click(); await flush();
+    const close = region().querySelectorAll("[data-close]")[1];
+    expect(close.tagName).toBe("BUTTON");
+    expect(close.getAttribute("aria-label")).toBe("Close Docs · Terminal 1");
+    close.click(); await flush();
     expect(manager.closeTerminal).toHaveBeenCalledWith("term-2", scope("docs", "/docs"));
     expect((await readCached(address("docs", "/docs"))).value.tabs).toEqual([]);
     expect((await readCached(address("code", "/code"))).value.tabs).toEqual([{ term_id: "term-1" }]);

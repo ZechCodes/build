@@ -1625,7 +1625,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   color:var(--ink2); background:none; border:none; padding:4px 2px 4px 8px;
   cursor:pointer; white-space:nowrap; }
 .console-tab.active .console-tab-name { color:var(--accent); }
-.console-tab .tx { color:var(--dim); font-size:13px; line-height:1;
+.console-tab .tx { border:0; background:none; font:inherit; cursor:pointer; color:var(--dim); font-size:13px; line-height:1;
   padding:0 3px; border-radius:4px; cursor:pointer; }
 .console-tab .tx:hover { color:var(--red); background:var(--line2); }
 .console-controls { margin-left:auto; flex:none; display:flex; align-items:center; gap:2px; }
@@ -1681,5 +1681,5 @@ body.gated #inbox-rail { display:none; }
   font-size:11px; line-height:1.4; color:var(--dim);
 }
 
-.console-source { min-width: 0; max-width: 9rem; font-size: var(--font-small, 12px); padding: 2px; }
-@media (max-width: 600px) { .console-source { max-width: 5rem; } }
+.console-source { width: 9rem; max-width: 9rem; }
+@media (max-width: 600px) { .console-source { width: 108px; max-width: 108px; } }

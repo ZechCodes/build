@@ -4,15 +4,16 @@ import { el } from "../dom.js";
 import { esc } from "./text.js";
 import { consoleKey, consoleSize, consoleTakesKey, grownConsoleSize, toggledConsoleSize } from "./consoleModel.js";
 import { consoleHeadHtml, consoleToggleHtml, consoleTabHtml, consoleNewTerminalHtml, consoleGrowHtml, mountUserTerminalPane } from "./console.js";
-import { terminalManager } from "../terminal/manager.js";
+import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { directoryCacheId } from "./directoryScope.js";
-import { readCached, mergeCached, subscribeCache } from "./localCache.js";
+import { readCached, mergeCachedTogether, subscribeCache } from "./localCache.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { hasProjectTerminalSource } from "./projectTerminalCache.js";
 import { readProjectTerminalSupport } from "./projectTerminalSupport.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { notifyError } from "./notify.js";
-import { attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
+import { attachConnectionOverlay } from "./surfaceTabs.js";
 
 const scopeOf = (projectId, source) => ({ project_id: projectId, source_id: source.id, source_path: source.path });
 const tabKey = (scope, termId) => JSON.stringify([directoryCacheId(scope), termId]);
@@ -30,7 +31,8 @@ export function mountProjectConsole(host, context) {
   let again = false;
   let uiReady = false;
   let ui;
-  let reconnect;
+  let connected = false;
+  const active = () => !state.disposed && (!context.cacheScope || context.cacheScope.active());
   const selections = watchUiState(uiAddress({ deviceId: context.deviceId, entityId: key, view: "console", kind: "selection" }), (saved) => {
     state.sourceId = saved?.sourceId || state.sourceId;
     state.selected = saved?.selected || state.selected;
@@ -58,7 +60,7 @@ export function mountProjectConsole(host, context) {
     region.innerHTML = '<div class="termpane console-pane"></div>';
     const target = region.firstElementChild;
     try {
-      const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, onExit: () => void remove(tab) });
+      const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, deviceId: context.deviceId, stands: () => active() && generation === state.mounting, onExit: () => void remove(tab) });
       if (state.disposed || generation !== state.mounting) { pane.dispose(); return; }
       state.pane = pane;
       state.connection = attachConnectionOverlay(target);
@@ -108,7 +110,7 @@ export function mountProjectConsole(host, context) {
       host.innerHTML = `<div class="console"><div class="console-head">${consoleHeadHtml(state.size)}</div><div class="console-body" hidden></div></div>`;
       host.querySelector("#console-toggle").onclick = toggle;
       const controls = host.querySelector(".console-controls");
-      controls.innerHTML = '<select class="console-source" aria-label="Terminal source"></select>' + consoleGrowHtml(state.size);
+      controls.innerHTML = '<select class="console-source mini" aria-label="Terminal source"></select>' + consoleGrowHtml(state.size);
       controls.querySelector("select").onchange = (event) => { state.sourceId = event.target.value; void remember(); };
       controls.querySelector(".console-grow").onclick = () => void setSize(grownConsoleSize(state.size));
     }
@@ -141,7 +143,7 @@ export function mountProjectConsole(host, context) {
     const sources = sourcesOf(project);
     const support = await readProjectTerminalSupport(context.deviceId);
     const records = await Promise.all(sources.map(async (source) => ({ source, record: await readCached(address(scopeOf(context.projectId, source))) })));
-    if (state.disposed) return;
+    if (!active()) return;
     state.sources = sources;
     state.supported = support.projectSources;
     state.records = new Map(records.map(({ source, record }) => [source.id, record]));
@@ -163,7 +165,7 @@ export function mountProjectConsole(host, context) {
     try {
       const tabs = await manager.listTerminals(scope);
       if (!state.disposed && state.sources.some((item) => item.id === source.id && item.path === source.path)) {
-        await mergeCached(at, (held) => held ? null : { tabs });
+        await mutateRoster(scope, (held) => held ? null : { tabs });
       }
     } catch { /* cached content stands until the sync layer or reconnect answers */ }
   }
@@ -175,8 +177,14 @@ export function mountProjectConsole(host, context) {
     return reading;
   }
 
+  async function mutateRoster(scope, mutate) {
+    return mergeCachedTogether([projectsAddress, address(scope)], ([projects, held]) => {
+      if (!active() || !hasProjectTerminalSource(projects, scope)) return null;
+      return [null, mutate(held)];
+    });
+  }
   async function change(tab, mutate) {
-    await mergeCached(address(tab.scope), (held) => ({ tabs: mutate(held?.tabs || []) }));
+    await mutateRoster(tab.scope, (held) => ({ tabs: mutate(held?.tabs || []) }));
   }
   const remove = (tab) => change(tab, (tabs) => tabs.filter((entry) => entry.term_id !== tab.termId));
   async function close(tab) {
@@ -210,13 +218,18 @@ export function mountProjectConsole(host, context) {
     if (uiReady) paint();
   });
   void Promise.all([ui.ready, selections.ready]).then(() => { uiReady = true; void read(); });
-  const rearm = () => {
-    reconnect = whenTerminalReconnects(() => { pending.clear(); void read(); rearm(); });
-  };
-  rearm();
+  const unwatchStatus = subscribeTerminalStatus((status) => {
+    const restored = status === "connected";
+    if (restored && !connected && active()) {
+      pending.clear();
+      if (state.paneKey && !state.pane) disposePane();
+      void read();
+    }
+    connected = restored;
+  });
   return {
     toggle, size: () => state.size,
     subscribeSize(listener) { state.listeners.add(listener); listener(state.size); return () => state.listeners.delete(listener); },
-    dispose() { state.disposed = true; unwatch(); ui.dispose(); selections.dispose(); reconnect?.dispose(); document.removeEventListener("keydown", onKey); disposePane(); state.listeners.clear(); host.innerHTML = ""; delete host.dataset.size; },
+    dispose() { state.disposed = true; unwatch(); ui.dispose(); selections.dispose(); unwatchStatus(); document.removeEventListener("keydown", onKey); disposePane(); state.listeners.clear(); host.innerHTML = ""; delete host.dataset.size; },
   };
 }

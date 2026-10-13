@@ -32,7 +32,7 @@ import { hide, motionHooks, motionSettled, reveal } from "./motion.js";
 import { notifyError } from "./notify.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
-import { terminalManager } from "../terminal/manager.js";
+import { terminalManager, terminalDeviceId } from "../terminal/manager.js";
 import { branchRowIn } from "./feedRows.js";
 import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { routedEntityId } from "./inbox.js";
@@ -87,13 +87,14 @@ export function terminalTabsController() {
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */
-export function mountUserTerminalPane(host, termId, { scope = {}, onExit }) {
+export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands = () => true, deviceId = null }) {
   const manager = terminalManager();
+  const current = () => stands() && (!deviceId || terminalDeviceId() === deviceId);
   return mountTerminalPane(host, {
-    attach: (opts) => manager.attachTerminal(termId, scope, opts),
-    input: (data) => manager.input(termId, data),
-    resize: (cols, rows) => manager.resize(termId, cols, rows),
-    onExit,
+    attach: (opts) => current() ? manager.attachTerminal(termId, scope, opts) : Promise.reject(new Error("This terminal pane closed.")),
+    input: (data) => current() ? manager.input(termId, data) : Promise.resolve(),
+    resize: (cols, rows) => current() ? manager.resize(termId, cols, rows) : Promise.resolve(),
+    onExit: (...args) => { if (current()) onExit?.(...args); },
   });
 }
 
@@ -108,7 +109,7 @@ export function consoleTabHtml(tab, selected) {
   return (
     `<span class="console-tab${tab.id === selected ? " active" : ""}" data-motion>` +
     `<button type="button" class="console-tab-name" data-term="${esc(tab.id)}">${esc(tab.label)}</button>` +
-    `<span class="tx" data-close="${esc(tab.id)}" title="Close this terminal">×</span></span>`
+    `<button type="button" class="tx" data-close="${esc(tab.id)}" title="Close this terminal" aria-label="Close ${esc(tab.label)}">×</button></span>`
   );
 }
 

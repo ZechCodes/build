@@ -101,6 +101,10 @@ impl AppState {
         {
             return;
         }
+        let reconstructing = !self
+            .pending_task_completion_authority
+            .contains_key(agent_id)
+            && !self.task_completion_authority.contains_key(agent_id);
         // Only actual consumption may replace a different consumed pending
         // turn. Merely accepting another assignment cannot overwrite it.
         if self
@@ -110,10 +114,6 @@ impl AppState {
         {
             self.pending_task_completion_authority.remove(agent_id);
         }
-        let reconstructing = !self
-            .pending_task_completion_authority
-            .contains_key(agent_id)
-            && !self.task_completion_authority.contains_key(agent_id);
         self.capture_task_completion_authority(
             entity_id,
             agent_id,

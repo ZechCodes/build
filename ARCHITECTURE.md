@@ -441,6 +441,14 @@ runtime that starts them.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
+  3.21.0 also adds `tasks.waitingOn` (#558/#562), sharing the still-unreleased
+  0.2.13 release: create-time dependencies, `tasks.waiting_on.add/remove/blocks`,
+  and `retry_deferred_id` on assignment. Task answers carry graph-owned
+  `dependencies` (forward resolution reasons, authoritative blocking, reverse
+  count and a bounded detail preview) and saved `deferred_assignment` state.
+  A closed prerequisite resolves with `resolved_by: "close"`; Done resolves
+  with `"done"`. Closure briefs ask the recipient to assess and escalate on
+  the task when unclear. The retired `tasks.link` public RPC stays retired.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -1573,6 +1581,18 @@ reclaim never sees the project's owner, and reclaiming or deleting a named
 workspace never retires a project worker, even one its agents made.
 `project.delete` retires the pin and every worker, revokes their tokens and
 queued turns, and removes the project's scratch; its sources stay.
+
+**Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
+those edges atomically with its ordinary links. `unlink_task` removes only
+waiting-on edges, and `list_task_dependents` pages same-project reverse digests
+with an opaque scoped cursor and a maximum of 100 rows. Every endpoint is
+validated before a write lands. `assign_task` accepts `retry_deferred_id` alone
+to retry the exact current failed intent, retaining its target, note and receipt
+identity. Assignment while blocked saves authority without enrolling or
+waking its holder. Comments still arrive; Complete reminders and automatic
+moves exclude blocked or undelivered assignments. A blocked user assignment
+is not an assignment-only ask; explicit questions and existing watch/read/
+dismissal marks remain effective, and unblock makes the assignment actionable.
 
 **Tracking.** A task's `trackers` are the agents told about each change to it
 (`bridge/src/app/tracker/notices.rs`; never the agent that made the change).

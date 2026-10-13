@@ -30,6 +30,12 @@ Wire 3.21.0.
 
 ### Added
 
+- Waiting-on task orchestration (wire 3.21.0, #558/#562): atomic create and
+  scoped dependency tools, bounded reverse reads, saved assignment/retry
+  answers and quiet delivery notices. Blocked user assignments preserve
+  explicit questions and become actionable when prerequisites resolve.
+
+
 - Secure transport is maintained in this checkout (`transport/js`, Python
   reference/tests, and the existing Rust implementation). SPA/web locks, CI and
   app/QA images use the in-tree binding; developers no longer need a sibling

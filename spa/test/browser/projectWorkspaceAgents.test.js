@@ -127,6 +127,7 @@ for (const viewport of VIEWPORTS) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBe(0);
       for (const theme of ["light", "dark"]) {
         await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+        await settled(page);
         await captureLayout(page, `536-${viewport.width}-${theme}.png`);
       }
       await page.evaluate(() => window.__greetWorkers(true));

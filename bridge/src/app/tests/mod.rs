@@ -268,3 +268,5 @@ mod workspace_sizes;
 mod workspaces;
 
 mod conversation_watch_baselines;
+
+mod waiting_on_rpc_mcp_contract;

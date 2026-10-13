@@ -16,13 +16,14 @@ let watchers = [];
 // into a surface fails here rather than only in a browser.
 const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
+  disarmChangeEvents: () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({
+  bridgeCapabilities: (deviceId) => ({
     changes: { subscriptions: true, kinds: carriedKinds },
     // #57: whether this bridge can carry files on a task. A case that sets
     // it false is an older bridge answering, not another machine.
-    tasks: { attachments: carriesAttachments },
+    tasks: { attachments: carriesAttachments, waitingOn: deviceId === "dev-1" && carriesWaitingOn },
   }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
@@ -39,6 +40,7 @@ const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "tasks"];
 let carriedKinds = EVERY_KIND;
 /** Whether the bridge under test has `tasks.attach` (1.8). */
 let carriesAttachments = true;
+let carriesWaitingOn = true;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -178,6 +180,7 @@ beforeEach(async () => {
   watchers = [];
   carriedKinds = EVERY_KIND;
   carriesAttachments = true;
+  carriesWaitingOn = true;
   away = true;
   reconnecting = true;
   movedListeners = new Set();
@@ -203,6 +206,70 @@ beforeEach(async () => {
 
 afterEach(() => {
   pane?.dispose();
+});
+
+describe("device-scoped waiting assignments from the pane", () => {
+  let context, contexts;
+
+  const greet = (waitingOn) => {
+    carriesWaitingOn = waitingOn;
+    contexts.adoptBridgeSelection(context, { version: "3.21.0", unsupported: null },
+      { capabilities: { tasks: { waitingOn } } });
+  };
+
+  const openRealPicker = async (held, view) => {
+    const { fakeSession } = await import("./deviceSessionFixture.js");
+    contexts = await import("../src/core/deviceContexts.js");
+    const session = fakeSession("dev-1");
+    call = vi.fn(async (method) => method === "tasks.list" ? { tasks: [held] } : {
+      task: { ...held, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } } },
+      dispatch: null,
+    });
+    session.call = call;
+    context = contexts.adoptDeviceSession(session);
+    greet(true);
+    const actual = await vi.importActual("../src/core/trackerAssigneePicker.js");
+    openAssigneePicker.mockImplementationOnce(actual.openAssigneePicker);
+    await mount({ view });
+    host.querySelector("[data-task-assign]").click();
+    await flush();
+    const select = document.querySelector("[data-assignee-select]");
+    select.value = "new_workspace";
+    select.dispatchEvent(new Event("change"));
+    const note = document.querySelector("#task-assign-note");
+    note.value = "Assess the prerequisite";
+    note.dispatchEvent(new Event("input"));
+  };
+
+  afterEach(() => contexts?.resetDeviceContexts());
+
+  it.each(["list", "board"])("saves a blocked assignment from the %s on its capable device", async (view) => {
+    const held = task({ id: "task-waiting", dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } });
+    await openRealPicker(held, view);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([["tasks.assign", {
+      task_id: held.id, assignee: { kind: "new_workspace", provider: "claude_adk" }, note: "Assess the prerequisite",
+    }]]);
+    expect(openAssigneePicker.mock.lastCall[0]).toMatchObject({ deviceId: "dev-1", projectId: "proj-1" });
+    expect(document.querySelector("#task-assign-scrim")).toBeNull();
+  });
+
+  it.each(["list", "board"])("keeps the %s note and target after a cached reblock and downgraded greeting", async (view) => {
+    const held = task({ id: "task-reblocked", dependencies: { blocked: false, waiting_on: [] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });
+    await openRealPicker(held, view);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, {
+      task: { ...held, dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } }, timeline: [],
+    });
+    greet(false);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+  });
 });
 
 describe("painting before the bridge is asked", () => {

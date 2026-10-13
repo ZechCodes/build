@@ -169,16 +169,20 @@ C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
 
 ### C8 / #536 scoped verification — 2026-10-13
 
-The SPA contribution verifies the following controls; the combined #522
-extension remains pending its C10 evidence. These results supplement the
-existing C4/C5 bridge authority and shared-cwd cleanup evidence, without
-rescoring those implementations.
+Fix-round checkpoint: findings 1–6 and copy have focused passing evidence.
+The full SPA gate pass and final scans remain pending at the mandatory
+context-limit handoff; this entry makes no final verification claim.
+
+The SPA contribution verifies the following controls; final fix-round
+revalidation and the combined #522 extension's C10 evidence remain pending.
+These results supplement existing C4/C5 bridge authority and shared-cwd
+cleanup evidence, without rescoring those implementations.
 
 | Control | C8 evidence | Scoped score |
 | --- | --- | ---: |
-| CI522-1 | Rail model/DOM tests and the worker-first Chromium fixture keep the persisted pin above the separator, refuse its removal, and exclude project workers from named-workspace rails. Project-hosted tasks retain the project rail. | 25/25 |
-| CI522-2 | Exact worker conversation sends, independent drafts, cached support downgrade, same-owner/device isolation and retired-reader tests. Generation-admission regressions pause a roster read across a real reset: both absent and present initial thread records refuse the retired digest and admit a fresh retry. Roster and captured thread writes are fenced in one transaction. | 25/25 |
-| CI522-3 | Resetting one shared-owner worker invalidates its captured submission while sibling and pin drafts survive. DOM removal and Chromium navigation preserve separate drafts and the canonical pin conversation across surfaces. Provider/source preservation remains covered by inherited C5 evidence. | 25/25 |
+| CI522-1 | Rail model/DOM tests and the worker-first Chromium fixture keep the persisted pin above the separator, refuse its removal, and exclude project workers from named-workspace rails. Project-hosted tasks retain the project rail. Complete-roster Overview and lineage tests follow roster/support changes and retain unwatched workers and their descendants. | 25/25 |
+| CI522-2 | Exact worker conversation sends, independent drafts, cached support downgrade, same-owner/device isolation and retired-reader tests. Generation-admission regressions pause a roster read across a real reset: both absent and present initial thread records refuse the retired digest and admit a fresh retry. Roster and captured thread writes are fenced in one transaction. The scheduler bounds unrelated roster requests at two while selected thread/Git/task recovery and a queued owner continue. | 25/25 |
+| CI522-3 | Resetting one shared-owner worker invalidates its captured submission while sibling and pin drafts survive. DOM removal and Chromium navigation preserve separate drafts and the canonical pin conversation across surfaces. At 390/1280 widths, project → workspace A → workspace B → project transitions retain the exact composer/body/thread nodes, visibility and focus throughout synchronous, mutation and animation-frame samples; sends retain the exact canonical pin address and current viewing context. Task lines and rail notices use shared purpose-aware identity: named Codex workers retain their cached name and own harness mark, while the coordinator keeps the project mark. Provider/source preservation remains covered by inherited C5 evidence. | 25/25 |
 
 Focused gates ran under `nice -n 10`: rail DOM/isolation and shell project/link
 suites passed 385 tests (exit 0); `browser/projectWorkspaceAgents.test.js`
@@ -188,6 +192,34 @@ first (exit 1). The route scheduling regression failed first (exit 1), then
 passed all ten route/rail-reading tests (exit 0); it restores independent
 parallel route-cache reads without weakening assertions. Scoped source lint
 passed (exit 0). Final broad gates and scans are recorded on #536 when complete.
+
+Fix-round evidence for findings 1–4: Overview failed first and then passed
+22 tests; lineage failed first and then passed 41 lineage/model tests; removed
+worker identity failed first and then passed 37 task identity/notice tests,
+then 38 after the legacy fallback regression. Durable identity client/contracts
+passed 71 tests; the API contract regression failed first and then passed all
+46 contract tests. The roster scheduler regression failed first and then
+passed; its related six suites passed 258 tests. These focused runs used
+`nice -n 10` and the green results exited 0. The legacy project-purpose
+metadata regression failed first (exit 101), then 11 bridge identity tests
+passed (exit 0): live and stored project purposes clear synthetic workspace
+fields, including fields preserved in older identity snapshots. Finding 5's
+390/1280 Chromium regressions failed first against the prior production code
+(exit 1), then all seven worker Chromium tests passed (exit 0); nine focused
+rail/shell/browser suites passed 452 tests (exit 0) and scoped lint passed
+(exit 0). The test checks the same visible, focused nodes at every transition
+step, including transient mutation/frame states. Finding 6's task-line/notice
+regressions failed first (seven semantic failures, exit 1); the cached rail
+notice regression also failed first. Three notice/task-line/rail suites then
+passed 403 tests (exit 0), and scoped lint passed (exit 0). Project-worker
+fixture cases cover named Codex workers, durable removed workers, cached bare
+actors/assignees and the coordinator's project mark. Copy/cache notice
+regressions failed first (exit 1), then the focused project/pin suites passed
+102 tests (exit 0) and scoped lint passed (exit 0). Cached capable →
+unsupported → capable transitions preserve the same composer/thread and focus;
+unknown support and workspace pins remain silent. Final broad gates remain
+pending in this fix round; earlier gate results above do not certify the
+final revision.
 
 Together with TS522-1's 25/25 recorded in the Task checklist, the four applicable
 C8 controls score **100/100 within C8's implemented scope**. This is not a

@@ -422,8 +422,16 @@ runtime that starts them.
   on `agent.add`, which accepts only `"worker"` and only on a project's
   conversation owner. Every roster read that predates workers (board rows,
   the project list's conversations, `agent.remove`, and `agent.list` without
-  the flag) carries a project owner's pinned coordinator alone. See MCP
-  tools. 3.21.0 also adds `tasks.assignProjectAgent` (#533): the
+  the flag) carries a project owner's pinned coordinator alone. Task agent
+  identities and inline task-notice identities also carry optional
+  `project_role` (#536), retained independently of an optional name or live
+  membership. This additive field shares the unreleased 3.21.0 minor; clients
+  read it when present and need no separate dispatch capability. Without the
+  field or exact cached pin membership, a captured project identity stays a
+  generic agent with its saved ordinal/harness rather than claiming to be the
+  coordinator. The `project_identities` contract entries on `tasks.get`,
+  `tasks.list` and `thread.page` record the field and its `since: 3.21.0`.
+  See MCP tools. 3.21.0 also adds `tasks.assignProjectAgent` (#533): the
   `new_project_agent` assignee kind on `tasks.assign` and `tasks.create`,
   and `operation_id` on `tasks.assign`, which a retry answers with the
   dispatch already made. A reused id asked of a different assignment is
@@ -2076,7 +2084,7 @@ action. A Changes diff opens Files with the same source, path and line.
 Project list cache writes reconcile added, relabelled, removed and moved sources
 in place. Surviving panes keep their drafts, selected commits and scroll; moving
 a source gives it a new location namespace. Face changes retain the shell's
-conversation and console. The project-worker rail (#536) has a separate implementation.
+conversation and console. The project-worker rail is described below.
 
 The project and its project-hosted task pages share `console: {kind: "project"}`
 in `shell.js`. The Terminal rail button sits outside the face tablist and
@@ -2142,6 +2150,70 @@ conditional writes fence obsolete reads. Source moves cannot apply an old reply
 to the replacement namespace. `projectChangesRpc.js` captures the opened source
 and rechecks membership/location and current capabilities at dispatch, including
 after a queued greeting. Stale source writes refuse instead of following a move.
+
+### Project agent rail and rosters
+
+The project and its project-hosted tasks show one protected pin above the
+separator and every project worker below it, including unwatched workers.
+The pin's identity comes from `pinned_agent_id`, independently of roster
+ordering. Named workspace pages show their own agents and the project pin;
+project workers stay on project hosts. The assignee picker includes workers
+from that exact project's complete cached roster, with new-worker assignment
+separately gated by `tasks.assignProjectAgent`.
+
+`projectAgentsCache.js` stores complete rosters at
+`deviceId|entityId|project-agents` separately from legacy pinned-only rows.
+The per-device `project-agents-support` record holds the greeting's
+`agents.projectWorkers` and `tasks.assignProjectAgent` support. Rendering reads
+support and roster together; a valid roster must name that exact owner and a
+pin present in its agents. Without cached support it paints only the legacy
+pin. Current greetings additionally gate worker creation and new-worker task
+assignment, including a retained picker caller after a capability downgrade.
+The pin's tooltip reads “Project agent”. An explicit cached
+`projectWorkers: false` shows “Update this computer's Build bridge to use
+project agents.” on a project host; unknown support and workspace pins keep
+that notice absent. Rendering the notice does not replace the mounted
+composer or thread, and never waits for connection state.
+
+`cachedFeedView()` projects complete rosters onto `projects[].projectRoster`;
+`projectRosterRows()` supplies complete owner rows to lineage, task activity,
+attention and sync without replacing pinned-only inbox summaries. Overview
+reads the same complete roster directly. Overview, lineage and the task feed
+hear both roster and support invalidations; task activity follows canonical
+conversation addresses, and watched-task running state follows the exact
+worker or persisted pin. Route discovery keeps its separate legacy owner-list
+path, so reading every worker roster never delays finding the selected
+conversation. The rail's `railWorkItem.js` reads the same complete
+record on project hosts and filters it to the exact pin on a workspace host.
+
+Roster pulls use the sync planner and its two shared background wire slots.
+The selected project's roster has foreground authority; unrelated held roster
+replies cannot delay selected thread, Git or task recovery. Landing a complete
+roster extends that pass's conversation jobs before it reads worker histories.
+State and thread invalidations refresh the complete record through the same
+scheduler. Roster admission captures every named thread generation and checks
+the roster write and those generation records in one transaction; a late
+pre-reset reply cannot restore a retired worker conversation. Removal and
+reset target the exact worker, preserving sibling and pin drafts.
+
+When a project/workspace host changes while the route explicitly selects
+the same canonical pin, the shell retargets the mounted rail instead of
+disposing it. The composer, thread and focus remain mounted throughout
+navigation; the viewing
+workspace and host-specific Overview/console change with the host. A different
+agent, device or repository still selects its own controller.
+
+`projectActor.js` supplies shared purpose checks for task rows, comments,
+avatars and thread notices. Durable `TaskAgentIdentity.project_role` survives
+removal; older stored identities are backfilled from a persisted roster role
+when one is available. A recovered project purpose clears synthetic workspace
+identity fields, including fields retained by older snapshots: the owner's
+scratch directory is not a named workspace. A named worker keeps its own name
+and harness mark. An unnamed worker uses its captured ordinal and harness;
+an older captured
+identity with unknown purpose uses the same generic presentation unless exact
+cached membership confirms the pin. Deleted identities retain their label and
+have no conversation link.
 
 ### Files
 

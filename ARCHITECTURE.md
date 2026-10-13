@@ -2657,10 +2657,14 @@ refuses when that device cannot answer.
   `tasks.waitingOn` is persisted by `taskWaitingOnSupport.js` for task-page
   Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
   current greeting before dependency writes, paged reverse reads, saved-id
-  retries and assignments from waiting forms. The form captures its waiting
-  requirement and checks current detail/catalogue/query/page facts before
-  submitting, so a cached reblock followed by a downgraded greeting cannot
-  silently start work. `taskAssignmentFacts.js` prefers task timestamps, then
+  retries and assignments from waiting forms. After greeting settlement, the
+  assignment sender reads current detail/catalogue/query/page facts through
+  `taskAssignmentFacts.js` and checks the same greeting authority again before
+  capability validation and the RPC send, with no intervening wait. The picker
+  passes the target/note without a submit-time readiness decision; its opened
+  task supplies prerequisite facts only when no cached replica has them.
+  A reblock during greeting waits cannot silently start work on an older bridge.
+  `taskAssignmentFacts.js` prefers task timestamps, then
   list read order (detail/legacy write time), then cache write order, keeping
   delayed same-stamp pages from replacing newer list facts. Successful
   responses update tracker detail and list replicas through

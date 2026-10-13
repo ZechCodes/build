@@ -389,3 +389,20 @@ tracked targets, 200 rules, no findings); Gitleaks `origin/main..HEAD` and
 diff-check exit **0**. The W5-owned TS558-4/7 score remains **100/100**.
 Fetched origin/main remains `0ee0188f`, already merged; no bridge files,
 complexity caps or ratchet entries changed.
+
+W5 revision 5 / #564 moves assignment admission to the send boundary after
+round-3's pending-greeting finding. The real board/list regressions in
+`trackerTasksPaneDom.test.js` both fail first (exit **1**, commit `95acb82a`):
+a ready form submits while re-greeting waits, only the list cache reblocks,
+then an older greeting settles. Action-level fresh-fact/captured-authority
+regressions also fail first (exit **1**, commit `ea0da86e`).
+
+Commit `2a753441` removes the picker's captured/submit-time readiness decision.
+After greeting settlement, `taskWaitingOnActions.js` rereads the freshest
+scoped `taskAssignmentFacts`, rechecks the same greeting authority after that
+asynchronous cache read, then validates capability and sends without another
+wait. The opened task is a fallback only if no cache replica supplies known
+prerequisite facts; no cached-capability downgrade invents immediate work.
+All prior assignment/cache freshness regressions, the new pending-greeting
+cases, and unchanged ratchet pass (six files / 127 tests, exit **0**); lint
+exits **0**. Final fresh broad gates and publication evidence follow on #564.

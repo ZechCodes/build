@@ -90,7 +90,10 @@ class SecureTransportTests(unittest.TestCase):
             outer_fields={"session_id": "sess-123", "route_to": "device-123"},
             frame_fields={"frame_type": "data", "sender": "client", "payload": {"x": 1}},
         )
-        envelope["ciphertext"] = envelope["ciphertext"][:-1] + ("A" if envelope["ciphertext"][-1] != "A" else "B")
+        # Flip an authenticated byte; base64 padding bits can decode unchanged.
+        ciphertext = bytearray(b64decode(envelope["ciphertext"] + "=="))
+        ciphertext[0] ^= 1
+        envelope["ciphertext"] = b64encode(ciphertext).decode().rstrip("=")
 
         with self.assertRaises(DecryptionError):
             decrypt_envelope(session_key_b64, envelope)

@@ -37,7 +37,7 @@ ownership/setup is in [README.md](README.md).
 | `python/src/build_secure_transport/device.py` | `6bfef20825ee35e7294ed80d53b944c14869724f39d89905a8418c8beada635b` | `6bfef20825ee35e7294ed80d53b944c14869724f39d89905a8418c8beada635b` |
 | `python/src/build_secure_transport/exceptions.py` | `2ca01dce41552dc196c65f76f488f7a8f748d9f8419fd26b156a31f154c63548` | `2ca01dce41552dc196c65f76f488f7a8f748d9f8419fd26b156a31f154c63548` |
 | `python/tests/interop_helper.py` | `828b973fe961fd1d07fb77935407df8d75f51874d2e6440bbb4308501f668b8b` | `828b973fe961fd1d07fb77935407df8d75f51874d2e6440bbb4308501f668b8b` |
-| `python/tests/test_device.py` | `27a275599f0888af302667848df76d5e6ee2b712ab357acf6c110740d66dd24c` | `27a275599f0888af302667848df76d5e6ee2b712ab357acf6c110740d66dd24c` |
+| `python/tests/test_device.py` | `27a275599f0888af302667848df76d5e6ee2b712ab357acf6c110740d66dd24c` | `59dec4f851e1d2b43bfc43e9f286c3ed0187b703cf9cb2475f3a6104682f079d` |
 | `python/uv.lock` | `800e16b959c20ba90bd4341f44bf1ef3671233c9edab2fee8584f21f83cec97d` | `800e16b959c20ba90bd4341f44bf1ef3671233c9edab2fee8584f21f83cec97d` |
 
 ## Exclusions
@@ -111,6 +111,18 @@ private reporting destination, frozen development/tests, preserved language
 README bytes, and the legacy repository boundary. Its source digest remains the
 original pinned blob; only its current digest changes. No language README,
 crypto, fixture, dependency, manifest, lock or license bytes change in #579.
+
+## #612 tamper-test amendment
+
+`python/tests/test_device.py`: make `test_decrypt_rejects_tamper` flip a bit in
+the first decoded ciphertext byte and re-encode without padding. Replacing the
+last base64 character could change only unused padding bits, leaving the
+authenticated bytes unchanged and randomly failing the rejection assertion.
+The other four Python cases are unchanged. The import checker explicitly
+permits this test amendment; the original source digest is preserved and only
+the current digest changes. Every other imported file, including crypto sources
+and dependencies, stays byte-identical to the preceding Build baseline. The JS
+suite has no corresponding last-character tamper pattern and is unchanged.
 
 ## Maintenance and future imports
 

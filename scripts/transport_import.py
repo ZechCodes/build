@@ -21,7 +21,8 @@ IMPORT_PATHS = (
 )
 # Crypto/runtime and license remain immutable; explicit harness amendments only.
 AMENDABLE = {'README.md', 'E2E-MVP.md', 'js/package.json',
-             'js/package-lock.json', 'python/pyproject.toml', 'js/test/index.test.js'}
+             'js/package-lock.json', 'python/pyproject.toml', 'js/test/index.test.js',
+             'python/tests/test_device.py'}
 LOCAL_FILES = {'.gitignore', 'UPSTREAM.md', 'js/LICENSE.md',
                'python/LICENSE.md', 'python/MANIFEST.in',
                'js/testing/python.mjs', 'js/test/vectors.test.js',

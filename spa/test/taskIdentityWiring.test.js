@@ -56,6 +56,25 @@ describe("bridge identity through the task cache", () => {
     expect(host.querySelector(".task-assignee-current a")).toBeNull();
   });
 
+  it("uses a safe generic identity for an unnamed removed worker from an older bridge", async () => {
+    const task = structuredClone(answer.result.task);
+    const worker = { kind: "agent", agent_id: "project-unnamed-worker" };
+    task.identities = { [worker.agent_id]: { agent_id: worker.agent_id, name: null, ordinal: 2,
+      workspace_id: null, workspace_name: null, provider: "codex_app_server", available: false } };
+    task.assignee = worker;
+    await writeTaskRecord(DEVICE, PROJECT, answer.params.task_id, taskRecord(task, [
+      { type: "comment", id: "tc-worker-gone", author: worker, body: "Ready.", created_at: "2026-09-19T10:12:00Z" },
+    ]));
+    const host = await renderCached({ items: [], workspaces: [] });
+    const author = host.querySelector(".task-comment .task-entry-head strong");
+    expect(author.textContent).toBe("Agent 2");
+    expect(host.querySelector(".task-comment .task-avatar.is-project")).toBeNull();
+    expect(host.querySelector(".task-comment .rail-harness-icon")?.dataset.harnessIcon).toBe("codex_app_server");
+    expect(host.querySelector(".task-comment .task-entry-head a")).toBeNull();
+    expect(host.querySelector(".task-assign-open").textContent.trim()).toBe("Agent 2");
+    expect(host.querySelector(".task-assignee-current a")).toBeNull();
+  });
+
   it("names an unwatched comment author, draws its harness, and links its agent", async () => {
     // No feed item or watched-agent digest is involved in this path.
     await writeTaskRecord(DEVICE, PROJECT, answer.params.task_id,
@@ -105,7 +124,7 @@ describe("bridge identity through the task cache", () => {
     const task = structuredClone(answer.result.task);
     const agent = { kind: "agent", agent_id: "project-01M2SCB" };
     task.identities[agent.agent_id] = { agent_id: agent.agent_id, name: null, ordinal: 1,
-      workspace_id: null, workspace_name: null, provider: "claude_adk", available: false };
+      workspace_id: null, workspace_name: null, provider: "claude_adk", available: false, project_role: "coordinator" };
     task.assignee = agent;
     await writeTaskRecord(DEVICE, PROJECT, answer.params.task_id, taskRecord(task, [
       { type: "comment", id: "tc-project-gone", author: agent, body: "Ready.", created_at: "2026-09-19T10:12:00Z" },

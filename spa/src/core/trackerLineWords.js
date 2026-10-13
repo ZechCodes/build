@@ -129,7 +129,7 @@ const agentName = (agentId, agentLabels, identities = {}) => {
     return `${identity.workspace_name} · ${name}`;
   }
   if (identity?.name) return String(identity.name).trim();
-  if (identity?.project_role === "worker") return capturedAgentName(identity);
+  if (identity?.ordinal) return capturedAgentName(identity);
   return agentLabels[agentId] || shortAgentLabel(agentId);
 };
 

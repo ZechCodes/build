@@ -75,7 +75,7 @@ impl Store {
         id: &str,
         admitted: Value,
     ) -> Result<DeliveryNotice, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut notice =
                 load_notice(tx, id)?.ok_or_else(|| invalid("delivery notice not found"))?;
             if notice
@@ -94,7 +94,7 @@ impl Store {
     }
 
     pub fn settle_delivery_notice(&self, id: &str) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut notice =
                 load_notice(tx, id)?.ok_or_else(|| invalid("delivery notice not found"))?;
             notice.state = "delivered".into();

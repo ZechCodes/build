@@ -11,7 +11,7 @@ impl Store {
         events: &[TaskEvent],
         mut intent: DeliveryIntent,
     ) -> Result<DeliveryIntent, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if task.is_finished() || intent.task_id != task.id || intent.project_path != task.project_path {
                 return Err(invalid("delivery requires its open unfinished project task"));
             }
@@ -46,7 +46,7 @@ impl Store {
         id: &str,
         generation: u64,
     ) -> Result<Option<DeliveryIntent>, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let Some(mut intent) = load(tx, id)? else {
                 return Ok(None);
             };
@@ -76,7 +76,7 @@ impl Store {
         reservation: Value,
         admitted: Option<Value>,
     ) -> Result<DeliveryIntent, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut intent = require(tx, id, generation)?;
             if intent.state == "delivered" {
                 return Err(invalid("delivery already consumed"));
@@ -104,7 +104,7 @@ impl Store {
         generation: u64,
         error: &str,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut intent = require(tx, id, generation)?;
             if matches!(intent.state.as_str(), "failed" | "delivered") {
                 return Ok(());
@@ -126,7 +126,7 @@ impl Store {
     }
 
     pub fn retry_delivery_intent(&self, id: &str) -> Result<DeliveryIntent, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let original = load(tx, id)?.ok_or_else(|| invalid("delivery intent not found"))?;
             let mut intent = require(tx, id, original.generation)?;
             if intent.state != "failed" {
@@ -151,7 +151,7 @@ impl Store {
         task: &Task,
         events: &[TaskEvent],
     ) -> Result<bool, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let Some(mut intent) = load(tx, id)? else {
                 return Ok(false);
             };

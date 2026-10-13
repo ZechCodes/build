@@ -50,7 +50,7 @@ impl Store {
         agents: &[Agent],
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
@@ -386,7 +386,7 @@ impl Store {
         record: &PersistedPlan,
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
@@ -403,7 +403,7 @@ impl Store {
         record: &PersistedRun,
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }

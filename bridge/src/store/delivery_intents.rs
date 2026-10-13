@@ -35,7 +35,7 @@ impl Store {
         &self,
         project: &str,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| cancel_project(tx, project))
+        self.in_waiting_on_transaction(|tx| cancel_project(tx, project))
     }
 
     pub fn load_delivery_intent(&self, id: &str) -> Result<Option<DeliveryIntent>, StoreError> {
@@ -69,7 +69,7 @@ impl Store {
     /// Saved intents only. Admitted work remains discoverable when reblocked,
     /// so startup can reconcile its receipt without admitting another message.
     pub fn delivery_intents_ready(&self, limit: usize) -> Result<Vec<DeliveryIntent>, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut statement = tx.prepare("SELECT id, record FROM tracker_delivery_intents WHERE state IN ('queued', 'provisioning') ORDER BY rowid LIMIT ?1")?;
             let intents = statement.query_map([limit.clamp(1, 100) as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
                 .map(|r| { let (id, raw) = r?; tracker::decode::<DeliveryIntent>(&raw, "tracker_delivery_intents", &id) }).collect::<Result<Vec<_>, StoreError>>()?;

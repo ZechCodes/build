@@ -115,7 +115,7 @@ import { bridgeCapabilities } from "./changeEvents.js";
 import { fetchThreadAttachment } from "./threadAttachmentPages.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
-import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels as agentLabelsOf, assignableAgents } from "./trackerAssignee.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
@@ -2821,7 +2821,7 @@ function mountRailOnContext(host, context, swap) {
   const conversationAgentLabels = () => {
     const place = conversationPlace();
     if (!place.projectId || !place.deviceId) return {};
-    return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
+    return agentLabelsOf(assignableAgents(feedView, deviceKey(place.deviceId, place.projectId)));
   };
 
   /** Current cached models for message attribution. The fingerprint below

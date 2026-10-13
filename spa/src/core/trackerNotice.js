@@ -36,6 +36,7 @@ import { actionPhrase, actorName, columnName, quoted, shownName } from "./tracke
 import { harnessIconHtml } from "./harnessIcon.js";
 import { projectInitial } from "./agentRailModel.js";
 import { actorHref } from "./trackerIdentity.js";
+import { isProjectActor } from "./projectActor.js";
 
 export const NOTICE_CLASS = "thread-task-notice";
 
@@ -188,11 +189,16 @@ export function noticeLineText(notice, reading = {}) {
     .filter(Boolean).join(" ");
 }
 
-const noticeActorMarkHtml = (actor, projectName) => {
-  if (actor?.kind === "project_agent" || actor?.agent_id?.startsWith("project-")) {
-    return `<span class="thread-task-actor-mark is-project" aria-hidden="true">${esc(projectInitial(projectName || "Build"))}</span>`;
+const taggedNoticeActor = (actor) => typeof actor === "string" ? { kind: "agent", agent_id: actor.trim() } : actor;
+const noticeAgentModel = (actor, reading) => reading.agentModels?.[taggedNoticeActor(actor)?.agent_id];
+
+const noticeActorMarkHtml = (actor, reading) => {
+  const tagged = taggedNoticeActor(actor);
+  const identity = tagged?.identity || reading.identities?.[tagged?.agent_id] || noticeAgentModel(actor, reading);
+  if (isProjectActor({ ...tagged, identity }, reading)) {
+    return `<span class="thread-task-actor-mark is-project" aria-hidden="true">${esc(projectInitial(reading.projectName || "Build"))}</span>`;
   }
-  const provider = actor?.identity?.provider;
+  const provider = identity?.provider;
   return provider ? `<span class="thread-task-actor-mark" aria-hidden="true">${harnessIconHtml(provider)}</span>` : "";
 };
 
@@ -225,15 +231,16 @@ const noticeNumberHtml = (notice, taskHref) => {
 };
 
 const noticeAssigneeHtml = (notice, reading, linkContext) => {
-  const assignee = actorName(notice.assignee, noticeReading(notice, reading));
-  const mark = noticeActorMarkHtml({ ...notice.assignee, identity: notice.assignee_identity }, reading.projectName);
-  return sectionHtml("to", "to", nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext), reading.agentModels?.[notice.assignee?.agent_id]));
+  const assigneeReading = noticeReading(notice, reading);
+  const assignee = actorName(notice.assignee, assigneeReading);
+  const mark = noticeActorMarkHtml(notice.assignee, assigneeReading);
+  return sectionHtml("to", "to", nameHtml(assignee, mark, linkContext && actorHref(notice.assignee, linkContext), noticeAgentModel(notice.assignee, reading)));
 };
 
 const noticeByHtml = (notice, word, who, reading, linkContext) => {
   if (!who) return "";
-  const mark = noticeActorMarkHtml(notice.actor, reading.projectName);
-  return sectionHtml("by", word, nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext), reading.agentModels?.[notice.actor?.agent_id]));
+  const mark = noticeActorMarkHtml(notice.actor, reading);
+  return sectionHtml("by", word, nameHtml(who, mark, linkContext && actorHref(notice.actor, linkContext), noticeAgentModel(notice.actor, reading)));
 };
 
 const noticeSpansHtml = (notice, did, who, reading, taskHref = "", linkContext = null) => {

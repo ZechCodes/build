@@ -7267,3 +7267,35 @@ describe("cached project worker rail", () => {
     expect(railHost().querySelector('[data-agent="workspace-agent"]')).toBeTruthy();
   });
 });
+
+
+describe("cached project worker notice labels", () => {
+  const workerId = "project-notice-worker";
+  const projectKey = "dev-1/p1";
+  const rosterProject = (key, name) => ({ projectKey: key, name: "Build", projectRoster: {
+    entity_id: "run-project", pinned_agent_id: "project-pin", agents: [
+      agent({ id: "project-pin", project_role: "coordinator" }),
+      agent({ id: workerId, project_role: "worker", provider: "codex_app_server", name }),
+    ],
+  } });
+  const snapshot = (name) => ({ items: [], workspaces: [], projects: [
+    rosterProject(projectKey, name), rosterProject("dev-1/p2", "Other project worker"),
+    rosterProject("dev-2/p1", "Other device worker"),
+  ] });
+
+  it("uses the exact complete roster and repaints its cached worker name", async () => {
+    const notice = { type: "message", data: { id: "worker-notice", sequence: 1, role: "user", from_build: true,
+      body: "", from_task: { task_id: "task-worker", number: 536, title: "Worker identity" },
+      task_notice: { actor: workerId, action: "commented" } } };
+    payload = branchRow({ run: { run_id: "run-3", thread: { items: [notice], sessions: [] } } });
+    await pushFeed(snapshot("Astra"));
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    const name = () => panel()?.querySelector('[data-task-notice="task-worker"] .thread-task-agent-name');
+    await vi.waitFor(() => expect(name()?.textContent).toBe("Astra"));
+    expect(panel().querySelector('[data-task-notice="task-worker"] [data-harness-icon="codex_app_server"]')).toBeTruthy();
+    expect(panel().querySelector('[data-task-notice="task-worker"] .is-project')).toBeNull();
+    await pushFeed(snapshot("Sol"));
+    await vi.waitFor(() => expect(name()?.textContent).toBe("Sol"));
+    expect(panel().querySelector('[data-task-notice="task-worker"]').textContent).not.toContain("Other");
+  });
+});

@@ -239,6 +239,7 @@ mod tracker;
 mod tracker_activity;
 mod tracker_agent_files;
 mod tracker_closure_context;
+mod tracker_waiting_attention;
 mod tracker_completion_fences;
 mod tracker_deferred_delivery;
 mod tracker_deferred_evidence;

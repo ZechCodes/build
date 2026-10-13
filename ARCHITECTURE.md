@@ -2658,22 +2658,28 @@ refuses when that device cannot answer.
   Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
   current greeting before dependency writes, paged reverse reads, saved-id
   retries and assignments from waiting forms. After greeting settlement, the
-  assignment sender reads current detail/catalogue/query/page facts through
+  assignment sender reads current detail/catalogue/query/page facts and the
+  picker's opened task through
   `taskAssignmentFacts.js` and checks the same greeting authority again before
   capability validation and the RPC send, with no intervening wait. The picker
   passes the target/note without a submit-time readiness decision; its opened
-  task supplies prerequisite facts only when no cached replica has them.
+  task participates in the same scoped timestamp arbitration as cached facts.
   A reblock during greeting waits cannot silently start work on an older bridge.
   `taskAssignmentFacts.js` compares the task's own timestamps across replicas,
   discarding strictly older stamped facts. Ties and unknown timestamps retain
   waiting evidence: if the remaining sources disagree, waiting wins. Source
   read/write orders are never compared; an unrelated catalogue mutation cannot
-  promote stale ready facts. An older bridge may refuse a ready task until
+  promote stale ready facts. Omitted/null dependency summaries or summaries
+  without the wire's boolean `blocked` flag are unknown and never assert ready.
+  While any source is unknown, any known blocker retains waiting. An explicit
+  current-wire `blocked: false` with `waiting_on: []` is known ready and ranks
+  by timestamp normally; its newer version supersedes older known blockers.
+  An older bridge may refuse a ready task until
   ambiguous caches converge, preserving the waiting-on capability guard.
   `taskAssignmentFacts.test.js` covers timestamp/tie/unknown conflicts, and
   `trackerTasksPaneDom.test.js` exercises unrelated-mutation refusal and kept
-  drafts through both list and board pickers. These and the earlier assignment
-  regressions pass in #564's 10,451-test Chromium-inclusive suite.
+  drafts through both list and board pickers, including a legacy refresh that
+  omits the newer opened task's dependency facts. Final suite evidence is on #564.
   Successful
   responses update tracker detail and list replicas through
   `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.

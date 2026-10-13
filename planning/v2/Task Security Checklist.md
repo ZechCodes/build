@@ -458,3 +458,30 @@ remains **100/100** with the round-4 cache-conflict reproduction closed.
 No bridge files, complexity caps or ratchet entries change. Source is fixed
 through the gates; this final follow-up records evidence only. Push, saved
 snapshot, head/base and attached exit/log evidence are recorded on #564.
+
+W5 revision 7 / #564 closes round-5’s omitted-dependency refresh finding.
+`3244f02c` adds real list/board picker regressions using production cache
+writers: ready t1 remains in a filtered query; a blocked t2 task opens the
+picker; a downgraded legacy refresh omits its dependency summary from the
+current replicas. Both fail first (exit **1**, forbidden `tasks.assign`).
+`ceeccd38` adds unit coverage for the opened source and unknown dependency
+data, red exit **1** (three assertions).
+
+Fix `6957095f` feeds the opened task into the same scoped timestamp
+arbitration as every cached source and removes its fallback-only admission.
+Omitted/null summaries and objects with no boolean readiness flag are unknown,
+never ready. Unknown plus any known blocker keeps waiting. Known sources
+retain task-timestamp arbitration and the conservative tie/unknown-timestamp
+rule; source read/write order is never compared. The send-time greeting
+authority design from `2a753441` remains intact. Seven focused regression
+files pass (**154 tests**, exit **0**, including unchanged complexity ratchet).
+
+Explicit empty waiting lists remain authoritative: the current wire represents
+no blockers as `dependencies: { blocked: false, waiting_on: [] }`, not `{}`.
+Commit `c1273844` adds three regressions showing this newer summary wins over
+older catalogue/query/page blockers and an older opened blocker. They pass
+with the production fix unchanged (**24 unit tests**, exit **0**). Thus the
+“empty dependency data” wording referred to an object lacking readiness data,
+never to the wire’s empty prerequisite list. TS558-4’s removal-consequence
+evidence is unchanged; TS558-7 includes the opened-source, unknown-summary
+and authoritative-empty-list cases. Final broad gates and publication follow.

@@ -953,7 +953,8 @@ and after committed writes, off tokio workers, and invalidates affected task
 summaries through the existing change bus. Readiness events preserve Done/close
 provenance and have durable outbox receipts. This storage slice grants no
 assignment delivery authority; durable assignments are the following #561
-slice, and the waiting-on capability remains absent until #562.
+slice. #562 verifies the graph, dispatch and read contract and announces
+`tasks.waitingOn` in the still-unreleased wire 3.21.0.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the

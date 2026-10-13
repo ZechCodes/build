@@ -439,3 +439,74 @@ fn waiting_reads_bound_reverse_preview_and_share_summaries() {
     assert_eq!(watched["dependencies"]["blocks_count"], 21);
     assert!(watched["dependencies"].get("blocks").is_none());
 }
+
+#[test]
+fn waiting_on_invalidation_fanout_contract() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let blocker = id(&filed(&mut app, &project, "fanout blocker"));
+    let mut dependents = Vec::new();
+    for number in 0..crate::changes::TASKS_PER_FLUSH + 1 {
+        let dependent = id(&filed(&mut app, &project, &format!("fanout {number}")));
+        edges(&app, &project, &dependent, &[blocker.clone()]);
+        dependents.push(dependent);
+    }
+    let state = app.shared();
+    while AppState::pump_waiting_on_changes_for_test(&state).unwrap() {}
+    let handler = AppState::handler(Arc::clone(&state));
+    let changes = state.lock().unwrap().changes();
+    let (session, mut rx, key) = SessionSender::observable("waiting-fanout");
+    assert_eq!(
+        handler.call(
+            session.clone(),
+            req("session.hello", json!({"changes":"subscriptions"}))
+        )["ok"],
+        true
+    );
+    assert_eq!(handler.call(session.clone(),req("changes.subscribe",json!({
+        "subscription_id":"waiting-tasks","scope":{"kind":"entity","id":project},"kinds":["tasks"]
+    })))["ok"],true);
+    changes.flush();
+    while rx.try_recv().is_ok() {}
+    assert_eq!(
+        handler.call(
+            session,
+            req("tasks.update", json!({"task_id":blocker,"status":"done"}))
+        )["ok"],
+        true
+    );
+    while AppState::pump_waiting_on_changes_for_test(&state).unwrap() {}
+    changes.flush();
+    let mut task_pushes = Vec::new();
+    while let Ok(envelope) = rx.try_recv() {
+        let push = SessionSender::decrypt_push(&key, &envelope);
+        if push["type"] == "changes" {
+            task_pushes.extend(
+                push["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|item| item.get("tasks").is_some())
+                    .cloned(),
+            );
+        }
+    }
+    assert_eq!(task_pushes.len(), 1, "{task_pushes:?}");
+    assert_eq!(task_pushes[0]["entity_id"], project);
+    assert_eq!(task_pushes[0]["tasks"]["truncated"], true);
+    assert!(
+        task_pushes[0]["tasks"]["task_ids"]
+            .as_array()
+            .unwrap()
+            .len()
+            <= crate::changes::TASKS_PER_FLUSH
+    );
+    let store = state.lock().unwrap().tracker_store().unwrap().clone();
+    let path = state
+        .lock()
+        .unwrap()
+        .tracker_project_path(&project)
+        .unwrap();
+    let summaries = store.waiting_on_summaries(&path, &dependents).unwrap();
+    assert!(summaries.values().all(|summary| !summary.blocked));
+}

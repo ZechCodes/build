@@ -8,6 +8,13 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 impl AppState {
+    #[cfg(test)]
+    pub(in crate::app) fn pump_waiting_on_changes_for_test(
+        state: &Arc<Mutex<Self>>,
+    ) -> Result<bool, String> {
+        reconcile_page(&Arc::downgrade(state)).ok_or("state disappeared".to_string())?
+    }
+
     /// Graph facts and saved delivery state are read from persistence, including
     /// changes reconciled while no browser is connected.
     pub(super) fn extend_task_waiting_summary(

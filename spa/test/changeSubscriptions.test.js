@@ -660,3 +660,53 @@ describe("a refused subscribe on the record", () => {
     expect(subscriptionEntries()).toEqual([]);
   });
 });
+
+
+describe("project source subscriptions", () => {
+  const source = { kind: "project_source", project_id: "p1", source_id: "s1", source_path: "/repo" };
+  const sourceBridge = (enabled = true) => vi.fn(async (method, params) => {
+    if (method === "session.hello") return {
+      ...SUBSCRIBING_GREETING,
+      capabilities: [...SUBSCRIBING_CAPABILITIES, ...(enabled ? ["changes.projectSources"] : [])],
+    };
+    calls.push([method, params]);
+    return {};
+  });
+
+  it("subscribes with the captured location only after a current capable greeting", async () => {
+    changeEvents.watchChanges({ id: "source", scope: source, kinds: ["git"], refresh: () => {} });
+    await changeEvents.greetBridge(sourceBridge(false), { deviceId: "dev-a" });
+    await settle();
+    expect(subscribes()).toEqual([]);
+    await changeEvents.greetBridge(sourceBridge(), { deviceId: "dev-a" });
+    await settle();
+    expect(subscribes()).toEqual([expect.objectContaining({ subscription_id: "source", scope: source, kinds: ["git"] })]);
+    calls.length = 0;
+    await changeEvents.greetBridge(sourceBridge(false), { deviceId: "dev-a" });
+    await settle();
+    expect(subscribes()).toEqual([]);
+  });
+
+  it("delivers only matching project, source, location and device facts", async () => {
+    const onChanges = vi.fn();
+    const legacy = vi.fn();
+    changeEvents.watchChanges({ scope: source, kinds: ["git"], deviceId: "dev-a", onChanges, refresh: () => {} });
+    changeEvents.watchChanges({ scope: "all", kinds: ["git"], onChanges: legacy, refresh: () => {} });
+    await changeEvents.greetBridge(sourceBridge(), { deviceId: "dev-a" });
+    await changeEvents.greetBridge(sourceBridge(), { deviceId: "dev-b" });
+    await settle();
+    const fact = { entity_id: "opaque-source", project_source: { project_id: "p1", source_id: "s1", source_path: "/repo" }, git: { status: { status_key: "k" } } };
+    const emit = (item, device = "dev-a") => changeEvents.dispatchChangeEvent({ type: "changes", items: [item] }, device);
+    emit(fact, "dev-b");
+    for (const [key, value] of [["project_id", "p2"], ["source_id", "s2"], ["source_path", "/moved"]]) {
+      emit({ ...fact, project_source: { ...fact.project_source, [key]: value } });
+    }
+    expect(onChanges).not.toHaveBeenCalled();
+    emit(fact);
+    expect(onChanges).toHaveBeenCalledExactlyOnceWith([fact]);
+    expect(legacy).not.toHaveBeenCalled();
+    await changeEvents.greetBridge(sourceBridge(false), { deviceId: "dev-a" });
+    emit(fact);
+    expect(onChanges).toHaveBeenCalledTimes(1);
+  });
+});

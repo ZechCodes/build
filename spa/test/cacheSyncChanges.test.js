@@ -36,6 +36,7 @@ let carriedKinds = EVERY_KIND;
 /** Whether the greeting announced `bodies.pages` (#95). */
 let pagesBodies = false;
 let perFileDiffs = false;
+let projectSourceFacts = false;
 
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
@@ -46,7 +47,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
   bridgeCapabilities: () => ({
-    changes: { subscriptions: true, kinds: carriedKinds },
+    changes: { subscriptions: true, kinds: carriedKinds, projectSources: projectSourceFacts },
     bodies: { pages: pagesBodies },
     diffs: { perFile: perFileDiffs },
   }),
@@ -160,6 +161,7 @@ beforeEach(async () => {
   carriedKinds = EVERY_KIND;
   pagesBodies = false;
   perFileDiffs = false;
+  projectSourceFacts = false;
   App.route = { name: "inbox" };
   registerDevice("dev-1");
   bridge.call = vi.fn(async (method, params) => answer(method, params));
@@ -1309,5 +1311,71 @@ describe("a bridge that does not carry tasks", () => {
     await boot();
     expect(kindsOfInbox()).toEqual(["state", "thread"]);
     expect(live().map((watcher) => watcher.id)).toContain("s-background");
+  });
+});
+
+
+describe("project source Git facts", () => {
+  const scope = { project_id: "p1", source_id: "s1", source_path: "/repo" };
+  const fact = (git, source = scope) => ({ entity_id: "project-source:opaque", project_source: source, git });
+  const seed = async () => {
+    projectSourceFacts = true;
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", sources: [{ id: "s1", path: "/repo" }] }] });
+    await boot([]);
+    return (await import("../src/core/directoryScope.js")).directoryCacheId(scope);
+  };
+
+  it("stores source facts under the complete directory address and preserves the legacy namespace", async () => {
+    const id = await seed();
+    await cache.writeCached({ deviceId: "dev-1", entityId: "p1", kind: "status" }, { status_key: "legacy" });
+    await sync.applyProjectSourceChanges([fact({
+      status: { status_key: "source", files: [] },
+      log: { commits: [{ hash: "source-commit" }], newest: "source-commit", reset: true },
+      unpushed: { base: {}, commits: [], diff_key: "u1" },
+      diff: { diff_key: "d1", patch: "source patch" },
+    })], "dev-1");
+    expect((await read(id, "status")).value.status_key).toBe("source");
+    expect((await read(id, "log")).value.commits).toEqual([{ hash: "source-commit" }]);
+    expect((await read(id, "unpushed")).value.diff_key).toBe("u1");
+    expect((await read(id, "diff")).value).toMatchObject({ diff_key: "d1", patch: "source patch", stale: false });
+    expect((await read("p1", "status")).value.status_key).toBe("legacy");
+    expect(await read("project-source:opaque", "status")).toBeUndefined();
+  });
+
+  it("marks an omitted working diff stale without fetching a workspace review", async () => {
+    const id = await seed();
+    await cache.writeCached({ deviceId: "dev-1", entityId: id, kind: "diff" }, { patch: "previous", diff_key: "old", stale: false });
+    const before = bridge.call.mock.calls.length;
+    await sync.applyProjectSourceChanges([fact({ status: { status_key: "changed" }, diff: null })], "dev-1");
+    expect((await read(id, "diff")).value).toMatchObject({ patch: "previous", stale: true });
+    expect(bridge.call.mock.calls.slice(before)).toEqual([]);
+  });
+
+  it("writes mounted source facts when this tab does not own the background sync lock", async () => {
+    const id = await seed();
+    sync.stopCacheSync();
+    await sync.applyProjectSourceChanges([fact({ status: { status_key: "mounted" } })], "dev-1");
+    expect((await read(id, "status")).value.status_key).toBe("mounted");
+  });
+
+  it("invalidates held log and refs when a pushed status key changes", async () => {
+    const id = await seed();
+    for (const [kind, value] of [["status", { status_key: "old" }], ["log", { commits: [], stale: false }], ["refs", { branches: [], stale: false }]]) {
+      await cache.writeCached({ deviceId: "dev-1", entityId: id, kind }, value);
+    }
+    await sync.applyProjectSourceChanges([fact({ status: { status_key: "changed" } })], "dev-1");
+    expect((await read(id, "log")).value.stale).toBe(true);
+    expect((await read(id, "refs")).value.stale).toBe(true);
+  });
+
+  it("rejects moved, removed, cross-project and ungreeted source facts", async () => {
+    const id = await seed();
+    for (const source of [{ ...scope, source_path: "/old" }, { ...scope, source_id: "removed" }, { ...scope, project_id: "other" }]) {
+      await sync.applyProjectSourceChanges([fact({ status: { status_key: "bad" } }, source)], "dev-1");
+    }
+    projectSourceFacts = false;
+    await sync.applyProjectSourceChanges([fact({ status: { status_key: "old-bridge" } })], "dev-1");
+    expect(await read(id, "status")).toBeUndefined();
+    expect(await read("project-source:opaque", "status")).toBeUndefined();
   });
 });

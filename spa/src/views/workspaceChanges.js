@@ -146,6 +146,7 @@ function gatedViewingContext(viewingContext) {
  */
 export function mountWorkspaceChanges(body, { directories, current, git, review = null, viewingContext = null, onSelectDirectory }) {
   let standing = current;
+  let visible = true;
   const model = () => directories.map((directory) => ({ ...directory, current: directory.sourceId === standing }));
   body.innerHTML = `<div class="workspace-changes">${review ? '<div class="workspace-changes-header"></div>' : ""}${directoryTabsHtml(model())}<div class="workspace-changes-body"></div></div>`;
   const reviewEntry = review ? mountWorkspaceReviewEntry(body.querySelector(".workspace-changes-header"), review) : null;
@@ -161,7 +162,7 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
     if (!directoryReady(directory)) surface.element.innerHTML = directoryStatusHtml(directory);
     else if (directoryHasGit(directory)) {
       surface.pane = mountChanges(surface.element, git(sourceId, surface.gate.context));
-      surface.pane.setVisible(!surface.element.hidden);
+      surface.pane.setVisible(visible && !surface.element.hidden);
     }
     else surface.element.innerHTML = noGitHtml(directory);
     // Retry is one workspace action across kept surfaces. Carry its host
@@ -216,8 +217,8 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
     }
     paintRow();
     onSelectDirectory(sourceId);
-    shown.gate.show();
-    shown.pane?.setVisible(true);
+    if (visible) shown.gate.show();
+    shown.pane?.setVisible(visible);
   }
   wireDirectoryTabs(body.querySelector(".workspace-dirtabs"), select);
   if (directoryOf(standing)) surfaceFor(standing);
@@ -238,6 +239,16 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
     }
   };
   return {
+    selectDirectory: select,
+    setVisible(shown) {
+      visible = shown;
+      for (const [sourceId, surface] of surfaces) {
+        const active = shown && sourceId === standing;
+        if (active) surface.gate.show();
+        else surface.gate.hide();
+        surface.pane?.setVisible(active);
+      }
+    },
     workspaceMoved(next) {
       directories = next;
       reconcileSurfaces();

@@ -36,10 +36,13 @@ beforeEach(async () => {
 afterEach(() => rail.dispose());
 
 describe("the project rail, wired", () => {
-  it("offers Files between Tasks and Workspaces and the Files sidebar toggle", () => {
+  it("offers Changes and Files between Tasks and Workspaces with their sidebar toggle", () => {
     rail.paint("files");
-    expect([...host().querySelectorAll("[data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["tasks", "files", "workspaces"]);
+    expect([...host().querySelectorAll("[data-tab]")].map((tab) => tab.dataset.tab)).toEqual(["tasks", "changes", "files", "workspaces"]);
     expect(host().querySelector("[data-tab=files]").getAttribute("aria-selected")).toBe("true");
+    expect(host().querySelector("[data-sidebar-toggle]")).not.toBeNull();
+    rail.paint("changes");
+    expect(host().querySelector("[data-tab=changes]").getAttribute("aria-selected")).toBe("true");
     expect(host().querySelector("[data-sidebar-toggle]")).not.toBeNull();
     rail.paint("tasks");
     expect(host().querySelector("[data-sidebar-toggle]")).toBeNull();
@@ -95,12 +98,12 @@ describe("the project rail, wired", () => {
     rail.paint("tasks");
     host().querySelector("[data-tab=tasks]").focus();
     document.activeElement.dispatchEvent(new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(next).toBe("files");
+    expect(next).toBe("changes");
 
     rail.dispose();
     rail = mountProjectRail(host(), { route, context, onSelect: (tab) => selected.push(tab), navigate: vi.fn() });
     rail.paint(next);
-    expect(document.activeElement).toBe(host().querySelector("[data-tab=files]"));
+    expect(document.activeElement).toBe(host().querySelector("[data-tab=changes]"));
   });
 
   it("hands the column back empty when the keyboard was on it and nothing stands up after", async () => {

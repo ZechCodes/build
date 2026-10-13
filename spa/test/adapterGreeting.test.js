@@ -26,7 +26,7 @@ const NONE = {
   branches: { finishDelete: false },
   push: { registerKey: false, revokeKey: false },
   agents: { createdBy: false },
-  projects: { updateSource: false, syncBase: false },
+  projects: { updateSource: false, syncBase: false, syncBasePath: false },
   workspaces: { measureSizes: false, setLocked: false },
 };
 
@@ -89,7 +89,7 @@ describe("the adapter a greeting selects", () => {
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
       agents: { createdBy: false },
-      projects: { updateSource: false, syncBase: false },
+      projects: { updateSource: false, syncBase: false, syncBasePath: false },
       workspaces: { measureSizes: false, setLocked: false },
     });
   });

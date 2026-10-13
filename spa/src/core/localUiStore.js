@@ -262,12 +262,12 @@ export async function deleteUiDraftsIfUnwritten(entries, active) {
 
 /** Write one record, stamped with when — and, for a UI writer, its owner and
  *  edit sequence, which order the page-exit journal's replay. */
-export function writeUiRecord(address, value, { source, sequence } = {}) {
+export function writeUiRecord(address, value, { source, sequence, active = () => true } = {}) {
   watchReplica();
   const key = recordKey(address);
   const record = { ...writeStamp(), value, ...(source ? { source, sequence } : {}) };
   return database.write((store) => {
-    unlessRetired(store, address, () => store.put(record, key));
+    unlessRetired(store, address, () => { if (active()) store.put(record, key); });
     return null;
   }).then((wrote) => {
     if (wrote) announce(partsOfKey(key));
@@ -320,7 +320,7 @@ export function writeUiRecordIfUnwritten(address, captured, value) {
  * insert a newer record between the comparison and the write. A same-owner
  * in-flight write made just before page exit is ordered by edit sequence;
  * other writers are ordered by timestamp, with ties left untouched. */
-export function writeUiRecordIfNewer(address, value, { at, source, sequence }) {
+export function writeUiRecordIfNewer(address, value, { at, source, sequence, active = () => true }) {
   if (!Number.isFinite(at) || !source || !Number.isFinite(sequence)) return Promise.resolve(false);
   watchReplica();
   const key = recordKey(address);
@@ -331,6 +331,7 @@ export function writeUiRecordIfNewer(address, value, { at, source, sequence }) {
     current.onsuccess = () => {
       if (!isNewer({ at, source, sequence }, current.result)) return;
       unlessRetired(store, address, () => {
+        if (!active()) return;
         applied = putOrAbort(store, { ...writeStamp(), value, source, sequence }, key);
       });
     };

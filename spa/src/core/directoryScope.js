@@ -9,6 +9,7 @@ export function directoryCacheId(scope) {
   const ownedEntity = [scope.entity_id, scope.run_id, scope.worktree_id].find(Boolean);
   if (ownedEntity) return ownedEntity;
   if (scope.workspace_id) return `workspace:${JSON.stringify([scope.workspace_id, scope.source_id])}`;
+  if (scope.project_id && scope.source_id && scope.source_path) return `project:${JSON.stringify([scope.project_id, scope.source_id, scope.source_path])}`;
   if (scope.project_id) return `project:${JSON.stringify(scope.source_id ? [scope.project_id, scope.source_id] : [scope.project_id])}`;
   return null;
 }

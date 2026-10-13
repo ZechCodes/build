@@ -65,7 +65,7 @@ threat is git reading the text as something other than a location.
 **Status: 100/100.** All scoped upload, directory and file creation controls above are verified by the linked tests.
 
 
-## #522 planned extension — not yet verified
+## #522 extension — evidence by owning child
 
 These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
 Existing scores above cover their original implemented scope only. Each owning
@@ -76,10 +76,10 @@ count toward 100/100; planning does not satisfy these controls.
 | --- | --- | --- |
 | PS522-1 | Resolve exact registered project/source scope; refuse foreign, malformed, mixed selectors and caller roots before Git/PTY work. | C1/C3: project_source_git_refuses_mixed_or_moved_scope; project_source_terminal_cannot_attach_sibling; API contracts. |
 | PS522-2 | Captured source location is a precondition, rechecked after waits; moved/removed sources never redirect Git, Sync base, terminal create/attach or delayed worker starts. | C1–C5: moved-source lock/startup races; lifecycle holds; existing Files precondition regressions. |
-| PS522-3 | Source cache/diff/draft identity includes device/project/source/location; late replies and pushes cannot merge sibling or moved roots. | C1/C6: identical-path/status-key sources; projectChanges and cache race tests. |
+| PS522-3 | Source cache/diff/draft identity includes device/project/source/location; late replies and pushes cannot merge sibling or moved roots. | C1 source-key evidence below; C6 cache, draft and reconciliation evidence below. |
 | PS522-4 (verified, C2) | Build-managed source mutations serialize with base sync without holding the app mutex; dirty/local commits and cut semantics remain intact. Shell commands are outside this lock. | `project_source_mutation_serializes_with_base_sync` and `legacy_workspace_source_mutation_serializes_with_base_sync` prove direct and lazily adopted original-source staging waits behind sync while unrelated RPCs respond; `workspace_cut_preserves_local_base_commits` and the source-sync suites prove dirty/local-commit and cut preservation. See the C2 evidence below and exact-head gate logs on #530. |
 | PS522-5 | Terminal ownership/input never follows selection or path changes; source removal/movement holds for live sessions; explicit close/EOF/reconnect preserves exact identity. | C3/C7: terminal lifecycle, sibling-attach, reconnect/authority and projectWorkspaceTerminal browser tests. |
-| PS522-6 | Secondary Git and plain sources emit correctly addressed file/terminal facts; plain Git refusal/unborn Git behavior is honest and new params are capability-gated. | C1/C3/C6/C7: source facts, old/new contract matrix and browser tests. |
+| PS522-6 | Secondary Git and plain sources emit correctly addressed file/terminal facts; plain Git refusal/unborn Git behavior is honest and new params are capability-gated. | C1 source-fact and unborn-Git evidence below; C6 Git/Files capability and browser evidence below. Terminal lifecycle/browser evidence remains C3/C7. |
 
 ### #529 (C1) evidence — original-source Git scope, source facts and subscriptions
 
@@ -165,3 +165,29 @@ not refuse retry. Exact-head red/green and full-gate receipts are on #530.
 PS522-4's C2 scope is verified; the other planned #522 rows above still need
 the remaining children. Full gate results and the exact reviewed head are
 recorded on #530, rather than claiming future end-to-end coverage here.
+
+### #534 (C6) evidence — project Changes, cached scopes and page lifetime
+
+C6 covers original-source Changes and the project page's four faces. It adds no
+bridge enforcement or terminal lifecycle control. The test receipts and exact
+reviewed head are recorded on #534; the browser harness uses fixture RPCs and
+temporary browser profiles, not a paired client or a live bridge.
+
+| ID | C6 control | Regression evidence (#534) |
+| --- | --- | --- |
+| PS522-3 (cache and subscriptions) | Source records use the device cache scope plus project/source/captured-location directory namespace, independently of equal status/content keys. Source pushes validate cached project membership, refuse moved/removed/foreign source facts and leave legacy project records separate. A subscription delivers only the exact device/project/source/location; mounted source delivery does not depend on background-sync lock ownership. | `namespaces source records by source and captured folder` (`projectChanges.test.js`); `stores source facts under the complete directory address and preserves the legacy namespace`, `writes mounted source facts when this tab does not own the background sync lock`, `rejects moved, removed, cross-project and ungreeted source facts` (`cacheSyncChanges.test.js`); `delivers only matching project, source, location and device facts` (`changeSubscriptions.test.js`). |
+| PS522-3 (mutable Git state) | Changed status invalidates held refs/history and an omitted working diff becomes stale without introducing isolated-workspace review calls. Kept source panes and face changes preserve surviving source drafts and selection; a moved location starts a different record/draft namespace. | `invalidates held log and refs when a pushed status key changes`, `marks an omitted working diff stale without fetching a workspace review` (`cacheSyncChanges.test.js`); `keeps project-source commit drafts separate across sources and moved locations` (`gitPane.test.js`); `opens direct source/commit links and reconciles cache feed without remounting` (`projectViewDom.test.js`); `keeps source commit drafts across tabs and faces and commits only the captured source`, `reconciles source rename, addition, removal and movement without losing unrelated drafts` (`browser/projectWorkspaceChanges.test.js`). |
+| PS522-3 (draft ownership and recovery) | In-memory commit drafts separate identical IDs on different devices and account epochs. Reset fences old panes' input, pending writes and late clearing; it also retires UI writers and clears already-journaled page-exit text before a new account can replay it. Moved/removed source messages remain under their old location and appear as read-only recovery text, excluding another device/project; reconciliation-flushed drafts appear and restored exact locations resume normal ownership. Recovery also rejects replaced-account readbacks. | `isolates identical checkout IDs on different devices and restores each device's draft`, `leaves no prior-account draft after reset with a pending timer (late input: %s)`, `cannot clear a new account's draft when the old account's composer completes late`, `does not replay a page-exit journal from the previous account after a real application reset` (`gitPaneDrafts.test.js`); `visibly recovers persisted moved and removed source drafts without retargeting them`, `discovers drafts flushed during reconciliation and removes recovered rows when their location returns`, `ignores UI store readbacks from a replaced account` (`projectChangesRecovery.test.js`). |
+| PS522-2 (SPA dispatch only) | Git and Sync base calls retain the opened source location and recheck membership/location after queued greeting waits. A captured moved or removed source refuses before sending a mutation; other source drafts remain usable. The bridge lock-wait fence remains C1/C2 evidence above. | `refuses stale %s before it reaches a replacement source` and `rechecks the source and capabilities when a queued greeting dispatches` (`projectChanges.test.js`); `refuses a captured location after move or removal but permits other source drafts` (`projectFilesSupport.test.js`). |
+| PS522-6 (SPA compatibility) | Rendering uses cached per-device support before a greeting. Dispatch requires current source-Git/subscription capability; legacy primary Git uses only its legacy project selector and unsupported secondary Git explains the update requirement. Files also removes unsupported source/location fields at dispatch. Plain sources remain visible without Git initialization. | `persists support for a cold cache mount and updates after downgrade`, `never sends new selectors to a legacy bridge, refusing secondary and moved primary` (`projectChanges.test.js`); `subscribes with the captured location only after a current capable greeting` (`changeSubscriptions.test.js`); `removes captured source paths before calling an older source-aware bridge`, `removes both selectors before calling a legacy primary bridge` (`projectFilesSupport.test.js`); cold-cache/old-bridge browser cases and the 390/1280 light/dark cases with two Git sources and a plain folder (`browser/projectWorkspaceChanges.test.js`). |
+
+Browser evidence also verifies exact source/commit links, diff-to-Files
+source/path/line, captured-source commit-all parameters and kept chat/console DOM
+through face switches. `preserves a commit-only deep link until the default
+source resolves` (`projectChangesRecovery.test.js`) and `opens a commit-only
+deep link on the default source` (`browser/projectWorkspaceChanges.test.js`)
+cover commit links without an explicit source. It establishes DOM lifetime only: #535 owns project
+console/source tabs and PS522-5/6 terminal behavior; #536 owns the project-worker
+rail/roster. Combined live compatibility and lifecycle acceptance remains #538.
+The original implemented checklist's 100/100 score is unchanged; the broader
+PS522-6 row stays pending for its remaining terminal owners.

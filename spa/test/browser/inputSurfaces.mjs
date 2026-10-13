@@ -20,6 +20,7 @@ export const INPUT_SOURCES = {
   "core/filesUploadActions.js": "New folder",
   "core/filterMenuControl.js": "filter menu / task composer",
   "core/inbox.js": "reroute",
+  "core/projectChangesDrafts.js": "saved source draft",
   "core/taskComposer.js": "task composer",
   "core/taskReviewActions.js": "task review",
   "core/taskReviewControls.js": "task review",
@@ -102,6 +103,7 @@ export const INPUT_SURFACES = [
   { name: "assignee note", selectors: [".modal-create textarea"] },
   { name: "comment popover", selectors: [".cp-input"] },
   { name: "changes composer", selectors: [".csinput"] },
+  { name: "saved source draft", selectors: ["[data-recovered-draft] textarea"] },
   { name: "file editor", selectors: [".file-editor"] },
   { name: "New folder", selectors: ['input[aria-label="New folder name"]'] },
   { name: "review file", selectors: ["[data-review-line-input]"] },
@@ -115,6 +117,7 @@ const modules = {
   task: "src/core/trackerTaskRender.js", assignee: "src/core/trackerAssigneePicker.js", pop: "src/commentPop.js",
   fileUploads: "src/core/filesUploadActions.js",
   changes: "src/core/changesComposer.js", editor: "src/core/fileEditor.js", reviewFiles: "src/core/taskReviewFiles.js",
+  sourceDrafts: "src/core/projectChangesDrafts.js", uiStore: "src/core/localUiStore.js", directoryScope: "src/core/directoryScope.js",
   reviewEntry: "src/core/workspaceReviewEntry.js", reviewSupport: "src/core/taskReviewSupport.js",
 };
 
@@ -219,6 +222,11 @@ async function seedInputSurface({ name, theme }) {
     "changes composer"() {
       const composer = m.changes.mountChangesComposer(root, { offers: () => ({ commentable: true, uncommitted: true }), run: async () => {}, readDraft: () => "", writeDraft: () => {} });
       dispose(composer);
+    },
+    "saved source draft": async () => {
+      const entityId = m.directoryScope.directoryCacheId({ project_id: project.id, source_id: "removed-source", source_path: "/old-source" });
+      await m.uiStore.writeUiRecord({ deviceId: device.id, entityId, kind: "ui-draft", sub: entityId }, { text: "Saved commit message" });
+      dispose(m.sourceDrafts.mountProjectChangesDrafts(root, { deviceId: device.id, project }));
     },
     "file editor"() { dispose(m.editor.mountFileEditor(root, { value: "// The editor preserves its own layout.\nconst styled = true;\n" })); },
     "review file"() {

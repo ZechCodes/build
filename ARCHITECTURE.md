@@ -1337,6 +1337,32 @@ remain viewed across snapshots.
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
+Codex app-server provider errors are turn failures, so an exhausted
+`error` notification (`willRetry: false`) keeps the process and provider thread
+available for the next message. Build classifies `codexErrorInfo`, its upstream
+HTTP status, and explicit timeout/overload text (`codex_app_server/errors.rs`).
+Stream disconnections, HTTP 408/5xx and internal-server failures receive one
+continuation after `PROVIDER_RETRY_BACKOFF` (60 seconds). The continuation names
+the sanitized error and asks the agent to continue from its preserved context;
+it keeps the failed turn's model and effort. Codex's own `willRetry: true`
+notifications consume no Build retry. Auth, quota/429, invalid requests,
+context-window, sandbox and unknown failures never retry automatically.
+
+The session remains working during the backoff. An unrecovered turn failure,
+or an unexpected protocol transition that ends the session, publishes one
+`TurnFailed` activity. The app records a failed outcome, delivers a failure
+message to the dispatch requester (falling back to the project's coordinator),
+and comments once on the dispatched task. The activity carries the failed
+operation so a newer consumed turn keeps its task and execution clock. Task
+comments require current assignment and conversation authority; ordinary
+completion reports retain their existing semantics. Failure notices use the
+ordinary 30-second notice settle window and wake without a client connected.
+The failed holder is not woken to read its own failure. Lifecycle telemetry
+includes sanitized error message,
+code, HTTP status and epitaph rather than raw provider payloads or credentials.
+An exhausted provider notification logs `terminal_error` with `scope: turn`;
+it does not request process shutdown.
+
 ADK reports `Working` while a parent turn is open or its background-task roster
 is nonempty. A delivered turn opens when its final newline is written. The
 child can also start a turn itself: top-level assistant text, thinking or tool

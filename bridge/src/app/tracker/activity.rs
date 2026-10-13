@@ -23,6 +23,10 @@
 //! mentions; `comment_task` and `tasks.comment` are the two things that
 //! write one, and an agent that wants its report on the task calls one of
 //! them. The prompt asks it to.
+//!
+//! A terminal provider failure is Build observing that an agent cannot make
+//! that handoff. `failures` records one Build comment for that exact dispatch;
+//! ordinary agent reports keep the behavior described above.
 
 use super::{edits, StoredAnswer, TaskWrite};
 use crate::app::AppState;

@@ -10,4 +10,5 @@ pub(in crate::app) mod review_sync;
 pub(in crate::app) mod sessions;
 pub(in crate::app) mod spawning;
 pub(in crate::app) mod terminals;
+pub(in crate::app) mod turn_failures;
 pub(in crate::app) mod usage_limits;

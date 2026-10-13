@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, watch};
 
 use super::connection::{AppServerConnection, SharedConnection};
 use super::diagnostics::SessionDiagnostics;
+use super::errors::sanitize_error;
 use super::limits::{AppServerLimits, StateLimits};
 use super::observation::{CodexSurfaces, GoalReadFence};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
@@ -19,8 +20,8 @@ use super::process::{
 };
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
-    OperationResult, ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
-    ServerNotification, ThreadMetadataNotification,
+    NotificationError, OperationResult, ParentThreadFilter, ParentThreadRoute, PendingOperation,
+    RoutedServerRequest, ServerNotification, ThreadMetadataNotification,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
@@ -267,6 +268,8 @@ struct SessionCore {
     diagnostics: SessionDiagnostics,
     shutdown_origin: Mutex<Option<&'static str>>,
     last_protocol_event: Mutex<&'static str>,
+    provider_error: Mutex<Option<NotificationError>>,
+    failure_reported: AtomicBool,
 }
 
 impl CodexAppServerSession {
@@ -340,6 +343,8 @@ impl CodexAppServerSession {
             diagnostics: SessionDiagnostics::new(),
             shutdown_origin: Mutex::new(None),
             last_protocol_event: Mutex::new("session_created"),
+            provider_error: Mutex::new(None),
+            failure_reported: AtomicBool::new(false),
         });
         core.log("session_created", []);
         core.reconciliation_timer.start(Arc::downgrade(&core));
@@ -377,7 +382,7 @@ impl SessionCore {
                 ],
             );
         }
-        let (require_version, should_close, reconciliation_pending) = {
+        let (require_version, should_close, timeout_delay) = {
             let mut state = self.state.lock().unwrap();
             let phase = state.diagnostic_phase();
             let transition = match state.transition(event, self.elapsed(), self.state_limits) {
@@ -425,7 +430,7 @@ impl SessionCore {
             (
                 require_version,
                 should_close.then(|| state.epitaph()),
-                state.reconciliation_pending(),
+                state.timeout_delay(self.elapsed(), self.state_limits),
             )
         };
         if let Some(reason) = should_close {
@@ -444,13 +449,20 @@ impl SessionCore {
             ))?;
         }
         self.reconciliation_timer
-            .set(reconciliation_pending, self.state_limits.reconciliation);
+            .set(timeout_delay.is_some(), timeout_delay.unwrap_or_default());
         Ok(())
     }
 
     fn apply_effect(self: &Arc<Self>, effect: &SessionEffect) -> Result<bool, HarnessError> {
         match effect {
             SessionEffect::Request(operation) => {
+                if matches!(
+                    operation,
+                    PendingOperation::StartTurn { .. } | PendingOperation::CompactThread { .. }
+                ) {
+                    self.failure_reported.store(false, Ordering::Release);
+                    self.provider_error.lock().unwrap().take();
+                }
                 let (thread_id, turn_id) = operation_ids(operation);
                 self.log(
                     if operation.method() == "turn/interrupt" {
@@ -500,7 +512,15 @@ impl SessionCore {
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
                 self.report_all(reports);
             }
-            SessionEffect::Report(report) => self.report(report.clone()),
+            SessionEffect::Report(report) => {
+                if matches!(
+                    report.activity,
+                    crate::harness::AgentActivity::TurnFailed { .. }
+                ) {
+                    self.failure_reported.store(true, Ordering::Release);
+                }
+                self.report(report.clone());
+            }
             SessionEffect::RequireVersionEvidence => return Ok(true),
             SessionEffect::Close => unreachable!("close effects are applied after releasing state"),
         }
@@ -681,6 +701,9 @@ impl SessionCore {
                 thread_id,
                 completion,
             } => {
+                if let Some(error) = &completion.details {
+                    *self.provider_error.lock().unwrap() = Some(error.clone());
+                }
                 self.log(
                     "turn_completed",
                     [
@@ -709,15 +732,20 @@ impl SessionCore {
                 self.translate(&notification)
             }
             ServerNotification::Error(error) => {
-                self.log(
-                    "error_notification",
-                    [
-                        ("provider_thread_id", json!(error.thread_id)),
-                        ("turn_id", json!(error.turn_id)),
-                        ("will_retry", json!(error.will_retry)),
-                        ("error_present", json!(!error.error.message.is_empty())),
-                    ],
-                );
+                *self.provider_error.lock().unwrap() = Some(error.error.clone());
+                let mut fields = self.error_fields(None);
+                fields.extend([
+                    ("provider_thread_id", json!(error.thread_id)),
+                    ("turn_id", json!(error.turn_id)),
+                    ("will_retry", json!(error.will_retry)),
+                    ("error_present", json!(!error.error.message.is_empty())),
+                ]);
+                self.log("error_notification", fields);
+                if !error.will_retry {
+                    let mut fields = self.error_fields(Some(&error.error.safe_message()));
+                    fields.push(("scope", json!("turn")));
+                    self.log("terminal_error", fields);
+                }
                 self.remember_protocol("error_notification");
                 self.apply_state(SessionEvent::ObservedError(error.clone()))
             }
@@ -878,7 +906,8 @@ impl SessionCore {
         }
     }
 
-    fn publish_terminal(&self, outcome: TerminalOutcome) {
+    fn publish_terminal(&self, mut outcome: TerminalOutcome) {
+        outcome.epitaph = outcome.epitaph.as_deref().map(sanitize_error);
         let mut published = self.published.lock().unwrap();
         if published.is_some() {
             return;
@@ -890,15 +919,14 @@ impl SessionCore {
         drop(published);
         let last = *self.last_protocol_event.lock().unwrap();
         let origin = *self.shutdown_origin.lock().unwrap();
-        self.log(
-            "terminal_settled",
-            [
-                ("exit_code", json!(outcome.exit_code)),
-                ("epitaph_present", json!(outcome.epitaph.is_some())),
-                ("shutdown_origin", json!(origin)),
-                ("last_protocol_event", json!(last)),
-            ],
-        );
+        let mut fields = self.error_fields(outcome.epitaph.as_deref());
+        fields.extend([
+            ("exit_code", json!(outcome.exit_code)),
+            ("epitaph_present", json!(outcome.epitaph.is_some())),
+            ("shutdown_origin", json!(origin)),
+            ("last_protocol_event", json!(last)),
+        ]);
+        self.log("terminal_settled", fields);
         let previous = self.status.borrow().clone();
         if let Some(next) = previous.transition(ended) {
             self.status.send_replace(next);
@@ -916,6 +944,22 @@ impl SessionCore {
             self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
+        if (outcome.epitaph.is_some() || outcome.exit_code != Some(0))
+            && !matches!(origin, Some("explicit_end" | "session_drop"))
+            && !self.failure_reported.swap(true, Ordering::AcqRel)
+        {
+            self.report(ActivityReport::own_work(
+                crate::harness::AgentActivity::TurnFailed {
+                    operation_id: self.state.lock().unwrap().failure_operation_id(),
+                    summary: outcome.epitaph.clone().unwrap_or_else(|| {
+                        format!(
+                            "Codex app-server exited unexpectedly (code {:?})",
+                            outcome.exit_code
+                        )
+                    }),
+                },
+            ));
+        }
         let uncertain = self.pending_receipts.lock().unwrap().take_operation_ids();
         if !uncertain.is_empty() {
             self.receipts.send_modify(|snapshot| {
@@ -930,7 +974,9 @@ impl SessionCore {
     }
 
     fn record_terminal_error(&self, reason: String) {
-        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(reason));
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(sanitize_error(
+            &reason,
+        )));
     }
 
     fn fail(&self, reason: String) {
@@ -1002,13 +1048,38 @@ impl SessionCore {
                 None,
             ),
         };
-        self.log(
-            source,
-            [
-                ("error_present", json!(error_present)),
-                ("exit_code", json!(exit_code)),
-            ],
-        );
+        let reason = match event {
+            CoordinatorTerminalEvent::TerminalError(reason) => Some(reason.as_str()),
+            _ => None,
+        };
+        let mut fields = self.error_fields(reason);
+        fields.extend([
+            ("error_present", json!(error_present)),
+            ("exit_code", json!(exit_code)),
+        ]);
+        self.log(source, fields);
+    }
+
+    fn error_fields(&self, epitaph: Option<&str>) -> Vec<(&'static str, Value)> {
+        let error = self.provider_error.lock().unwrap();
+        vec![
+            (
+                "error_message",
+                json!(error
+                    .as_ref()
+                    .map(NotificationError::safe_message)
+                    .or_else(|| epitaph.map(sanitize_error))),
+            ),
+            (
+                "error_code",
+                json!(error.as_ref().and_then(NotificationError::safe_code)),
+            ),
+            (
+                "http_status",
+                json!(error.as_ref().and_then(NotificationError::safe_http_status)),
+            ),
+            ("epitaph", json!(epitaph.map(sanitize_error))),
+        ]
     }
 }
 
@@ -1032,7 +1103,7 @@ impl AgentSession for CodexAppServerSession {
             }
         }
         let receipt_token = self.core.pending_receipts.lock().unwrap().register(turn);
-        let event = if turn.choice.is_some() {
+        let event = if turn.choice.is_some() || turn.operation_id.is_some() {
             SessionEvent::SendChosenTurn(turn.clone())
         } else {
             SessionEvent::SendTurn(turn.text.clone())
@@ -1920,6 +1991,62 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn provider_failure_telemetry_retains_sanitized_cause_and_code() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read hold");
+        let (session, _) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        session
+            .core
+            .dispatch_notification(ServerNotification::TurnStarted {
+                thread_id: THREAD_ID.to_string(),
+                turn_id: TURN_ID.to_string(),
+            })
+            .unwrap();
+        let error = ServerNotification::decode(
+            "error",
+            json!({
+                "threadId": THREAD_ID, "turnId": TURN_ID, "willRetry": false,
+                "error": {"message": "quota exhausted Authorization: Bearer fixture-secret",
+                    "codexErrorInfo": "usageLimitExceeded"}
+            }),
+        )
+        .unwrap();
+        session.core.dispatch_notification(error).unwrap();
+        assert_eq!(session.status(), AgentStatus::Waiting);
+        // A later protocol failure also retains the provider cause through shutdown.
+        let _ = session
+            .core
+            .apply_state(SessionEvent::TurnStarted("unexpected-a".into()));
+        let _ = session
+            .core
+            .apply_state(SessionEvent::TurnStarted("unexpected-b".into()));
+        wait_until("settled its terminal", || {
+            session.core.published.lock().unwrap().is_some()
+        });
+        let records = session.core.diagnostics.captured();
+        for event in ["error_notification", "terminal_error", "terminal_settled"] {
+            let record = records
+                .iter()
+                .find(|record| record["event"] == event)
+                .unwrap();
+            assert_eq!(
+                record["error_message"],
+                "quota exhausted Authorization: Bearer [REDACTED]"
+            );
+            assert_eq!(record["error_code"], "usageLimitExceeded");
+        }
+        let serialized = serde_json::to_string(&records).unwrap();
+        assert!(!serialized.contains("fixture-secret"));
+        assert!(records
+            .iter()
+            .any(|record| record["event"] == "terminal_settled"
+                && record["epitaph"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("unexpected"))));
+    }
+
     fn scripted_session_with_gated_grace(
         root: &Path,
         script: &str,
@@ -1999,8 +2126,18 @@ mod tests {
     }
 
     fn wait_for_activity_closed(activity: &mut broadcast::Receiver<ActivityReport>) {
+        let mut failures = 0;
         wait_until("closed its activity channel", || {
             match activity.try_recv() {
+                Ok(ActivityReport {
+                    activity: crate::harness::AgentActivity::TurnFailed { summary, .. },
+                    ..
+                }) => {
+                    failures += 1;
+                    assert_eq!(failures, 1, "a session failure reports once");
+                    assert!(!summary.is_empty());
+                    false
+                }
                 Err(broadcast::error::TryRecvError::Empty) => false,
                 Err(broadcast::error::TryRecvError::Closed) => true,
                 other => panic!("unexpected activity before channel closed: {other:?}"),

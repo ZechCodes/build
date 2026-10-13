@@ -13,6 +13,8 @@ use crate::store::PersistedArchivedWorktree;
 use crate::timing::{recording_clock, SLOW_FRAME};
 use serde_json::Value;
 
+mod turn_failures;
+
 /// The frame path as a test that is not measuring a frame calls it.
 ///
 /// Every acquisition the delivery path makes belongs to the frame that

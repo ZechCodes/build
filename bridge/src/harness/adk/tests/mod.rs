@@ -34,6 +34,7 @@ fn row_kind(reported: &ActivityReport) -> &'static str {
         AgentActivity::ToolResult { .. } => "tool_result",
         AgentActivity::Narration { .. } => "narration",
         AgentActivity::TaskUpdate { .. } => "task_update",
+        AgentActivity::TurnFailed { .. } => "turn_failed",
     }
 }
 

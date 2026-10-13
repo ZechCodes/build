@@ -317,6 +317,7 @@ fn real_adk_session_reports_a_background_task_and_stays_working() {
                     } => format!("tool_result[{outcome:?}]: {summary}"),
                     AgentActivity::Narration { summary } => format!("narration: {summary}"),
                     AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
+                    AgentActivity::TurnFailed { summary, .. } => format!("turn_failed: {summary}"),
                 };
                 eprintln!("[activity] {line}");
                 seen.lock().unwrap().push(line);

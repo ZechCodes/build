@@ -491,11 +491,10 @@ pub trait AgentSession: Send + Sync {
 
 /// One thing an agent reported doing, on its way to the conversation.
 ///
-/// The five kinds are `ThreadEventKind`'s five activity kinds and nothing else:
-/// a session that reports its own work has no second tab, no second scrollback
-/// and no second input path — its reasoning, tool calls, narration and
-/// background work are conversation, classed `Status`, so none of them pulls
-/// the human in.
+/// Reasoning, tool calls, narration and background work are conversation,
+/// classed `Status`, so none of them pulls the human in. A terminal provider
+/// failure travels on this same stream and becomes a failed report, with the
+/// attention and task handoff an agent that stopped cannot write itself.
 ///
 /// Each carries the summary the timeline shows. What it costs to build one is
 /// the reporting session's business: a protocol carrier renders a tool call as
@@ -527,6 +526,13 @@ pub enum AgentActivity {
     /// Background work the harness runs beyond the turn moved — started,
     /// finished, failed, or said something worth reading.
     TaskUpdate { summary: String },
+    /// A turn failed after provider recovery was exhausted or refused. Its
+    /// exact operation survives a newer turn starting before the app pump
+    /// records this failure.
+    TurnFailed {
+        summary: String,
+        operation_id: Option<String>,
+    },
 }
 
 /// How a tool call ended, as the harness saw it.
@@ -552,7 +558,8 @@ impl AgentActivity {
             | AgentActivity::ToolUse { summary, .. }
             | AgentActivity::ToolResult { summary, .. }
             | AgentActivity::Narration { summary }
-            | AgentActivity::TaskUpdate { summary } => summary,
+            | AgentActivity::TaskUpdate { summary }
+            | AgentActivity::TurnFailed { summary, .. } => summary,
         }
     }
 }

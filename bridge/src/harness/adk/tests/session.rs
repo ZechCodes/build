@@ -925,6 +925,7 @@ fn real_adk_session_steers_mid_turn() {
                     } => format!("tool_result[{outcome:?}]: {summary}"),
                     AgentActivity::Narration { summary } => format!("narration: {summary}"),
                     AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
+                    AgentActivity::TurnFailed { summary, .. } => format!("turn_failed: {summary}"),
                 };
                 eprintln!("[activity] {line}");
                 seen.lock().unwrap().push(line);
@@ -1079,6 +1080,7 @@ fn real_adk_session_interrupts_mid_tool() {
                     } => format!("tool_result[{outcome:?}]: {summary}"),
                     AgentActivity::Narration { summary } => format!("narration: {summary}"),
                     AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
+                    AgentActivity::TurnFailed { summary, .. } => format!("turn_failed: {summary}"),
                 };
                 eprintln!("[activity] {line}");
                 seen.lock().unwrap().push(line);

@@ -823,3 +823,23 @@ a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
 .rail-clearing .composer-context-gauge { display: none; }
 .rail-clearing .composer-bar { justify-content: center; }
 .rail-clearing .composer-choice-controls { flex-wrap: wrap; justify-content: center; }
+
+/* Task dependencies keep their editor while the other rail details repaint. */
+.task-rail-details, .task-waiting-on { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.task-waiting-on[hidden] { display:none; }
+.task-dependencies { display:flex; flex-direction:column; gap:8px; list-style:none; margin:0; padding:0; }
+.task-dependency { display:flex; align-items:start; justify-content:space-between; gap:8px; font-size:12px; }
+.task-dependency > div { min-width:0; }
+.task-dependency a { color:var(--accent); text-decoration:none; overflow-wrap:anywhere; }
+.task-dependency a:hover { text-decoration:underline; }
+.task-dependency .btn { padding:3px 6px; font-size:11px; flex:none; }
+.task-dependency-resolution { display:block; color:var(--dim); margin-top:3px; font-size:11px; }
+.task-dependency-resolution[data-resolved-by="done"] { color:var(--green); }
+.task-waiting-section [data-waiting-picker] { display:flex; flex-direction:column; gap:6px; }
+.task-waiting-confirm-actions { display:flex; gap:6px; margin-top:6px; }
+.task-waiting-error { color:var(--red) !important; }
+@media (max-width:760px) {
+  .task-rail-details { display:contents; }
+  .task-waiting-on { flex:1 1 100%; }
+  .task-dependency .btn { min-height:36px; }
+}

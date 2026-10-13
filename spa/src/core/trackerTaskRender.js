@@ -274,10 +274,10 @@ const linksHtml = (rows) =>
  * `tasks.update` for the column, the labels and the priority, and
  * `tasks.assign` for who holds it. The page never sends a whole record.
  */
-export function taskRailHtml(task, context) {
+function taskRailDetailsHtml(task, context) {
   const { columns, links, labelsDraft, busy } = context;
   const assigneeLink = task.assignee && actorHref(task.assignee, context);
-  return `<aside class="task-rail" aria-label="About this task">
+  return `<div class="task-rail-details">
     ${selectSection("task-status", "Status", columnOptionsHtml(columns, task.status), busy)}
     ${railSection("Labels", `<input id="task-labels" type="text" ${fieldTraits("identifier")} placeholder="bug, ui" value="${esc(labelsDraft)}"${busy ? " disabled" : ""} />
       <p class="sub">Comma separated.</p>`)}
@@ -286,12 +286,17 @@ export function taskRailHtml(task, context) {
       ? `<div class="task-assignee-current">${actorIdentityHtml(task.assignee, context, { icon: true })}</div>` : ""}
       <button class="btn task-assign-open" type="button" data-task-assign="${esc(task.id)}"${busy ? " disabled" : ""}>${assigneeLink ? "Change assignee" : assigneeHtml(task.assignee, context)}</button>`)}
     ${railSection("Links", linksHtml(links))}
-    ${stateControlHtml(task, busy)}
-  </aside>`;
+  </div>`;
+}
+
+const waitingOnRegion = '<div class="task-waiting-on" data-task-waiting-on hidden></div>';
+
+export function taskRailHtml(task, context) {
+  return `<aside class="task-rail" aria-label="About this task">${taskRailDetailsHtml(task, context)}${waitingOnRegion}${stateControlHtml(task, context.busy)}</aside>`;
 }
 
 /** The page's frame: the column the task reads down, which the rail follows. */
-export const TASK_PAGE_FRAME = '<div class="task-page"><div class="task-page-main"></div></div>';
+export const TASK_PAGE_FRAME = '<div class="task-page"><div class="task-page-main"></div><aside class="task-rail" aria-label="About this task"></aside></div>';
 
 /**
  * The page as parts, in order, for a surface that repaints only the parts
@@ -318,7 +323,11 @@ export function taskPageParts(task, context) {
         key: "composer",
       },
     ],
-    rail: [{ name: "rail", html: taskRailHtml(task, context) }],
+    rail: [
+      { name: "rail", html: taskRailDetailsHtml(task, context) },
+      { name: "waiting", html: waitingOnRegion, key: "waiting" },
+      { name: "state", html: stateControlHtml(task, context.busy) },
+    ],
     timeline: timeline.rows,
   };
 }

@@ -64,6 +64,8 @@ import { scrollWithin } from "./scrollWithin.js";
 import { createTaskChecklist } from "./taskChecklist.js";
 import { readTaskChecklistSupport, taskChecklistSupportAddress } from "./taskChecklistSupport.js";
 import { createTaskReplyNavigation } from "./taskCommentReplies.js";
+import { mountTaskWaitingOn } from "./taskWaitingOnPage.js";
+import { readTaskWaitingOnSupport, taskWaitingOnSupportAddress } from "./taskWaitingOnSupport.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
@@ -88,6 +90,7 @@ export function mountTaskPage(host, options) {
   const readingPolicy = followConversation();
   let stopHeadMeasurement = () => {};
   let reviewPage = null;
+  let waitingEditor = null;
   const state = {
     ...options,
     task: null,
@@ -102,6 +105,7 @@ export function mountTaskPage(host, options) {
     disposed: false,
     picker: null,
     checklistSupported: false,
+    waitingOnSupported: false,
     // The tray's entries are the VIEW's draft, not the DOM's: a bridge that
     // gains attachments stands up a new box, and an upload started before
     // that has to settle into the tray after it.
@@ -306,6 +310,8 @@ export function mountTaskPage(host, options) {
     framed = false;
     unframed = html;
     Object.values(held).forEach((parts) => parts.clear());
+    waitingEditor?.dispose();
+    waitingEditor = null;
     host.innerHTML = html;
     stopHeadMeasurement();
     unreadPill.sync();
@@ -354,12 +360,23 @@ export function mountTaskPage(host, options) {
       stopHeadMeasurement();
       stopHeadMeasurement = mountMeasuredHeight(host.querySelector(".task-page-head"), host, "--task-page-head-height");
     }
-    patchParts(main.parentElement, held.rail, parts.rail, { after: main }).forEach((name) => painted.add(name));
+    patchParts(host.querySelector(".task-rail"), held.rail, parts.rail).forEach((name) => painted.add(name));
     if (patchTimeline(parts.timeline, painted.has("timeline"))) painted.add("timeline");
     wire(painted);
     syncCommentBox();
+    syncWaitingEditor();
     if (painted.has("timeline")) unreadPill.sync();
     restoreField(typing);
+  }
+
+  function syncWaitingEditor() {
+    if (state.waitingOnSupported && !waitingEditor) {
+      waitingEditor = mountTaskWaitingOn(host.querySelector("[data-task-waiting-on]"), {
+        deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
+        call: (method, params) => state.callRpc(method, params),
+      });
+    }
+    waitingEditor?.update(state.task);
   }
 
   /** The timeline's rows, patched inside the list the `timeline` part stood
@@ -446,14 +463,16 @@ export function mountTaskPage(host, options) {
   }
 
   async function paintFromCache() {
-    const [cached, list, at, checklistSupported] = await Promise.all([
+    const [cached, list, at, checklistSupported, waitingOnSupported] = await Promise.all([
       readTaskRecord(state.deviceId, state.projectId, state.taskId),
       readTasksRecord(state.deviceId, state.projectId),
       taskRecordAt(state.deviceId, state.projectId, state.taskId),
       readTaskChecklistSupport(state.deviceId),
+      readTaskWaitingOnSupport(state.deviceId),
     ]);
     if (state.disposed) return;
     state.checklistSupported = checklistSupported;
+    state.waitingOnSupported = waitingOnSupported;
     state.columns = columnsOf(list?.columns);
     if (!cached?.task || state.task) return;
     take(cached, { live: false });
@@ -476,6 +495,13 @@ export function mountTaskPage(host, options) {
     if (state.disposed || !cached) return;
     take(cached, { keepDrafts: Boolean(state.task), live: true });
     reads.succeeded();
+    paint();
+  });
+
+  const waitingOnSupportWatcher = subscribeCache(taskWaitingOnSupportAddress(state.deviceId), async () => {
+    const supported = await readTaskWaitingOnSupport(state.deviceId);
+    if (state.disposed) return;
+    state.waitingOnSupported = supported;
     paint();
   });
 
@@ -602,6 +628,8 @@ export function mountTaskPage(host, options) {
   function openPicker() {
     state.picker = openAssigneePicker({
       task: state.task,
+      deviceId: state.deviceId,
+      projectId: state.projectId,
       options: assigneeOptions(groups()),
       current: selectedOptionId(state.task.assignee),
       catalog: state.catalog(),
@@ -704,7 +732,7 @@ export function mountTaskPage(host, options) {
   /** Wire what a paint stood up, and nothing it left alone. */
   function wire(painted) {
     if (painted.has("head")) wireWatch();
-    if (painted.has("rail")) wireRail();
+    if (painted.has("rail") || painted.has("state")) wireRail();
     if (painted.has("composer")) wireComposer();
     if (painted.has("review")) wireReview();
     if (painted.has("timeline")) wireReviewComments();
@@ -811,6 +839,8 @@ export function mountTaskPage(host, options) {
       stopHeadMeasurement();
       replyNavigation.dispose();
       checklist.dispose();
+      waitingEditor?.dispose();
+      waitingOnSupportWatcher();
       reviewPage?.dispose();
       commentDraft.dispose();
       host.removeEventListener("scroll", onScroll);

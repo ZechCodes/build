@@ -1,5 +1,6 @@
 // Dependency markup is painted from saved digests. All human and wire text is
 // escaped, including task titles, ids, and delivery errors.
+import { fieldTraits } from "./fieldTraits.js";
 import { esc } from "./text.js";
 import { hashFromRoute } from "./router.js";
 import { edgeResolutionLabel } from "./taskWaitingOnModel.js";
@@ -24,7 +25,7 @@ export const waitingOnFrameHtml = () => `<section class="task-rail-section task-
   <button class="btn" type="button" data-waiting-retry hidden>Retry saved assignment</button>
   <form data-waiting-picker>
     <label class="sr-only" for="task-waiting-search">Search tasks</label>
-    <input id="task-waiting-search" type="text" data-waiting-search aria-label="Search tasks" placeholder="Search by number or title">
+    <input id="task-waiting-search" type="text" ${fieldTraits("search")} data-waiting-search aria-label="Search tasks" placeholder="Search by number or title">
     <label class="sr-only" for="task-waiting-choice">Prerequisite task</label>
     <select id="task-waiting-choice" data-waiting-choice aria-label="Prerequisite task"></select>
     <button class="btn" type="submit" data-waiting-add>Add prerequisite</button>

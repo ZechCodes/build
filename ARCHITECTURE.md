@@ -2654,6 +2654,13 @@ refuses when that device cannot answer.
   resumes that housekeeping when its device greets.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
+  `tasks.waitingOn` is persisted by `taskWaitingOnSupport.js` for task-page
+  Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
+  current greeting before dependency writes, paged reverse reads, saved-id
+  retries and assignments from waiting forms. The form captures its waiting
+  requirement so a downgraded greeting cannot silently start work. Successful
+  responses update tracker detail and list replicas through
+  `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in
   `spa/src/core/needsYouRule.js`, read by the Tasks tab and the inbox's
   watched tasks; `branches.finishDelete` becomes whether Done deletes the

@@ -180,11 +180,15 @@ const activityReader = (activityByAgent, projectKey) => {
 
 /** Who holds a task, as its Assigned row says it: the name every other
  *  surface gives that agent, read off the cached task's own identities. */
-const holderOf = (task, reading) =>
-  actorName(task.assignee || task.deferred_assignment?.target, { ...reading, identities: task.identities || {} }) || null;
+const holderOf = (task, reading) => {
+  const holder = task.assignee || task.deferred_assignment?.target;
+  const creatingNames = { new_workspace: "New workspace", new_agent: "New agent" };
+  return creatingNames[holder?.kind] ||
+    actorName(holder, { ...reading, identities: task.identities || {} }) || null;
+};
 
-/** A task assigned to the user is theirs to act on, so it stands in Needs you
- *  ("Assigned to you") and nowhere else: Active lists only agents' tasks. */
+/** Readiness-aware user-held tasks also stand in Active. Older tasks retain
+ *  their assignment-only Needs-you placement. */
 const belongsInActiveOrBacklog = (task) => task && !isFinished(task) &&
   (task.assignee?.kind !== "user" || taskHasReadiness(task));
 

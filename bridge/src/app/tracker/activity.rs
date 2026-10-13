@@ -71,7 +71,7 @@ impl AppState {
         agent_id: &str,
         task: Task,
     ) -> Result<(), String> {
-        if !task.is_open() {
+        if !task.is_open() || !self.task_holder_has_actionable_work(&task)? {
             return Ok(());
         }
         let actor = Actor::Agent {

@@ -90,6 +90,7 @@ impl AppState {
                         .as_ref()
                         .and_then(crate::tracker::Assignee::agent_id)
                         == Some(agent_id)
+                    && self.task_holder_has_actionable_work(task).unwrap_or(false)
             })
             .collect()
     }

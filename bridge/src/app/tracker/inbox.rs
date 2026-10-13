@@ -58,9 +58,18 @@ impl AppState {
             .ok()?
             .load_tracker_timeline(&task.id)
             .ok()?;
-        let last = timeline.iter().rev().find(|entry| !ended_tracking(entry))?;
+        let last = timeline
+            .iter()
+            .rev()
+            .find(|entry| !attention_bookkeeping(entry))?;
         let at = entry_at(last).to_string();
-        let assigned_to_user = matches!(task.assignee, Some(Assignee::User));
+        let blocked = self
+            .tracker_store()
+            .ok()?
+            .waiting_on_summary(&task.project_path, &task.id)
+            .ok()?
+            .blocked;
+        let assigned_to_user = matches!(task.assignee, Some(Assignee::User)) && !blocked;
         let mut row = json!({
             "kind": "tracker_task",
             "task_id": task.id,
@@ -86,6 +95,7 @@ impl AppState {
             "done_until_next": self.task_is_done_until_next(task, &timeline),
         });
         self.extend_task_review_summary(&task.id, &mut row).ok()?;
+        self.extend_task_waiting_summary(task, &mut row).ok()?;
         Some(row)
     }
 
@@ -117,7 +127,7 @@ impl AppState {
         };
         !timeline
             .iter()
-            .filter(|entry| !ended_tracking(entry))
+            .filter(|entry| !attention_bookkeeping(entry))
             .any(|entry| after(Some(cleared), entry_id(entry)))
     }
 }
@@ -127,6 +137,24 @@ impl AppState {
 /// finished the task, which is what the row should say, or — from the boot
 /// pass — on its own, where it must not bring back a row the user cleared or
 /// move it up the list.
+fn attention_bookkeeping(entry: &TimelineEntry) -> bool {
+    let TimelineEntry::Event(event) = entry else {
+        return false;
+    };
+    use crate::tracker::TaskEventKind as Kind;
+    match event.kind {
+        Kind::Blocked
+        | Kind::Unblocked
+        | Kind::DispatchDeferred
+        | Kind::DispatchFailed
+        | Kind::Dispatched => true,
+        Kind::Linked | Kind::Unlinked => event.payload.get("waiting_on").is_some(),
+        Kind::Tracked => event.payload["by"] == "assignment",
+        Kind::Moved => matches!(event.payload["by"].as_str(), Some("dispatch" | "report")),
+        _ => ended_tracking(entry),
+    }
+}
+
 fn ended_tracking(entry: &TimelineEntry) -> bool {
     let TimelineEntry::Event(event) = entry else {
         return false;
@@ -193,6 +221,11 @@ pub(in crate::app) fn counts_as_unread(entry: &TimelineEntry) -> bool {
 /// push asks the same question of the events a write carries (#191).
 pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::TaskEvent) -> bool {
     use crate::tracker::{Actor, TaskEventKind as Kind};
+    if event.kind == Kind::Moved
+        && matches!(event.payload["by"].as_str(), Some("dispatch" | "report"))
+    {
+        return false;
+    }
     match event.kind {
         Kind::Assigned
         | Kind::Unassigned

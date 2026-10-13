@@ -732,6 +732,11 @@ pub struct TrackerTaskRow {
     pub assignee: Option<serde_json::Value>,
     /// The row is the user's own work to do, which pins it above the rest.
     pub assigned_to_user: bool,
+    /// Authoritative bounded graph and saved public assignment facts (3.21.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<crate::api::v1::tasks::TaskDependenciesView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_assignment: Option<crate::api::v1::tasks::DeferredAssignmentView>,
     pub last_event: TrackerTaskEventView,
     /// Both the instant the last event happened, as the rows beside this one
     /// send them, so the interleave needs no special case.

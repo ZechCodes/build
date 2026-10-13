@@ -45,7 +45,17 @@ impl AppState {
 
     /// Tell everyone watching, except whoever did it.
     pub(in crate::app) fn notify_trackers(&mut self, write: &TaskWrite) {
-        let told = trackers_to_tell(write);
+        let mut told = trackers_to_tell(write);
+        if write.comments.is_empty() {
+            match self.pending_task_delivery_holder(&write.task) {
+                Ok(Some(holder)) => told.retain(|tracker| tracker != &holder),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("read pending task holder: {error}");
+                    return;
+                }
+            }
+        }
         if told.is_empty() {
             return;
         }

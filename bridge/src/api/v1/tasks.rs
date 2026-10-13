@@ -255,9 +255,20 @@ pub struct TaskAttachmentRef {
 /// unassigns. Untyped here for the reason a timeline entry is: the five arms
 /// carry different fields, and `AssignTarget::parse` is the one place that
 /// reads them, naming each refusal.
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "TasksAssignWire")]
 pub struct TasksAssignParams {
+    pub task_id: String,
+    pub assignee: Value,
+    pub retry_deferred_id: Option<String>,
+    pub note: Option<String>,
+    pub operation_id: Option<String>,
+}
+
+/// Preserve field presence until mutually exclusive retry inputs are validated.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TasksAssignWire {
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     #[serde(
@@ -287,6 +298,50 @@ pub struct TasksAssignParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub operation_id: Option<Option<String>>,
+}
+
+impl TryFrom<TasksAssignWire> for TasksAssignParams {
+    type Error = &'static str;
+
+    fn try_from(wire: TasksAssignWire) -> Result<Self, Self::Error> {
+        if wire.retry_deferred_id.is_some()
+            && (wire.assignee.is_some() || wire.note.is_some() || wire.operation_id.is_some())
+        {
+            return Err(
+                "retry_deferred_id is mutually exclusive with assignee, note and operation_id",
+            );
+        }
+        if wire.retry_deferred_id.is_none() && wire.assignee.is_none() {
+            return Err("assignee is required");
+        }
+        Ok(Self {
+            task_id: wire.task_id,
+            assignee: wire.assignee.unwrap_or(Value::Null),
+            retry_deferred_id: wire.retry_deferred_id,
+            note: wire.note.flatten(),
+            operation_id: wire.operation_id.flatten(),
+        })
+    }
+}
+
+impl Serialize for TasksAssignParams {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut wire = serializer.serialize_map(None)?;
+        wire.serialize_entry("task_id", &self.task_id)?;
+        if let Some(id) = &self.retry_deferred_id {
+            wire.serialize_entry("retry_deferred_id", id)?;
+        } else {
+            wire.serialize_entry("assignee", &self.assignee)?;
+        }
+        if let Some(note) = &self.note {
+            wire.serialize_entry("note", note)?;
+        }
+        if let Some(id) = &self.operation_id {
+            wire.serialize_entry("operation_id", id)?;
+        }
+        wire.end()
+    }
 }
 
 /// How far the user has read one task.

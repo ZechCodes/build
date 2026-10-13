@@ -32,7 +32,8 @@ export function taskWatchBaseline(rows, task, detailTask) {
  *  two to the cases the bridge prints. */
 const NEWS_EVENT_KINDS = new Set(["assigned", "unassigned", "moved", "closed", "reopened", "review_completed"]);
 const isAskedCreation = (row) => row.kind === "created" && row.mentionsUser === true && row.actor?.kind === "agent";
-const isNews = (row) => row.type === "comment" || (row.type === "event" && (NEWS_EVENT_KINDS.has(row.kind) || isAskedCreation(row)));
+const isAutomaticMove = (row) => row.kind === "moved" && ["dispatch", "report"].includes(row.payload?.by);
+const isNews = (row) => row.type === "comment" || (row.type === "event" && !isAutomaticMove(row) && (NEWS_EVENT_KINDS.has(row.kind) || isAskedCreation(row)));
 
 export const taskUnreadRules = {
   eligible: (row) => row.actor?.kind !== "user" && isNews(row),

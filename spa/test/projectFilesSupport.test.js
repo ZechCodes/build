@@ -12,6 +12,48 @@ beforeEach(async () => { capabilities = { fs: { projectSources: false } }; await
 const context = () => ({ deviceId: "d", rpc: vi.fn(async () => ({ ok: true })), whenGreeted: async (dispatch) => ({ sent: dispatch() }) });
 
 describe("project source filesystem support", () => {
+  it.each([
+    ["added primary", [{ id: "code", path: "/code" }], [{ id: "docs", path: "/docs" }, { id: "code", path: "/code" }]],
+    ["removed primary", [{ id: "code", path: "/code" }, { id: "docs", path: "/docs" }], [{ id: "docs", path: "/docs" }]],
+    ["relabelled primary", [{ id: "code", path: "/code", name: "Code" }], [{ id: "code", path: "/code", name: "Renamed code" }]],
+    ["moved primary", [{ id: "code", path: "/code" }], [{ id: "code", path: "/new-code" }]],
+    ["cold project", null, [{ id: "docs", path: "/docs" }]],
+  ])("reads the reconciled %s through a legacy bridge", async (_name, sources, nextSources) => {
+    const machine = context();
+    const opened = sources ? { sources } : null;
+    let current = opened;
+    const rpc = projectFilesRpc(machine, sources?.[0]?.id, { project: opened, currentProject: () => current });
+    current = { sources: nextSources };
+    const primary = nextSources[0];
+    await rpc("fs.read", { project_id: "p", source_id: primary.id, source_path: primary.path, path: "README.md" });
+    expect(machine.rpc).toHaveBeenCalledExactlyOnceWith("fs.read", { project_id: "p", path: "README.md" });
+  });
+  it("resolves the legacy primary again after a queued greeting", async () => {
+    const machine = context();
+    const before = { sources: [{ id: "code", path: "/code" }, { id: "docs", path: "/docs" }] };
+    let current = before;
+    machine.whenGreeted = async (dispatch) => {
+      current = { sources: [{ id: "docs", path: "/docs" }] };
+      return { sent: dispatch() };
+    };
+    const rpc = projectFilesRpc(machine, "code", { project: before, currentProject: () => current });
+    await rpc("fs.read", { project_id: "p", source_id: "docs", source_path: "/docs", path: "README.md" });
+    expect(machine.rpc).toHaveBeenCalledExactlyOnceWith("fs.read", { project_id: "p", path: "README.md" });
+  });
+  it("refuses stale locations and secondary sources on a reconciled legacy bridge", async () => {
+    const machine = context();
+    const before = { sources: [{ id: "code", path: "/code" }, { id: "docs", path: "/docs" }] };
+    let current = { sources: [{ id: "docs", path: "/new-docs" }, { id: "other", path: "/other" }] };
+    const rpc = projectFilesRpc(machine, "code", { project: before, currentProject: () => current });
+    for (const method of ["fs.read", "fs.write"]) {
+      await expect(rpc(method, { project_id: "p", source_id: "code", source_path: "/code", path: "README.md" })).rejects.toThrow("folder moved");
+      await expect(rpc(method, { project_id: "p", source_id: "docs", source_path: "/docs", path: "README.md" })).rejects.toThrow("folder moved");
+    }
+    await expect(rpc("fs.read", { project_id: "p", source_id: "other", source_path: "/other", path: "README.md" })).rejects.toThrow("Update the bridge");
+    current = { sources: [] };
+    await expect(rpc("fs.write", { project_id: "p", source_id: "docs", source_path: "/new-docs", path: "README.md" })).rejects.toThrow("folder moved");
+    expect(machine.rpc).not.toHaveBeenCalled();
+  });
   it("addresses upload sessions by id even after their project source moved", async () => {
     const machine = context();
     const before = { path: "/old", sources: [{ id: "docs", path: "/old" }] };

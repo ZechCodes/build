@@ -668,6 +668,24 @@ describe("the Reclaimable filter and the size column", () => {
 
 
 describe("project Files", () => {
+  it.each(["removed primary", "cold mount"])("dispatches the reconciled Files root after a %s", async (caseName) => {
+    snapshot = { ...snapshot, projects: caseName === "cold mount" ? [] : [{ ...project, sources: [
+      { id: "code", name: "Code", path: "/code" }, { id: "docs", name: "Docs", path: "/docs" },
+    ] }] };
+    App.route = { ...App.route, tab: "files" };
+    await openProject();
+    const explorer = renderFilesTab.mock.results[0].value;
+    const options = renderFilesTab.mock.calls[0][1];
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "docs", name: "Documents", path: "/docs" }] }] };
+    deliver();
+    const roots = explorer.updateRoots.mock.calls.at(-1)[0];
+    expect(roots.map((root) => [root.id, root.label])).toEqual([["docs", "Documents"]]);
+    here.mockClear();
+    await options.callRpc("fs.tree", { ...roots[0].scope, path: "" });
+    expect(here).toHaveBeenCalledExactlyOnceWith("fs.tree", { project_id: "proj-1", path: "" });
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(explorer.dispose).not.toHaveBeenCalled();
+  });
   it("does not overwrite a newer surface when the cold support read finishes", async () => {
     let finishRead;
     readProjectFilesSupport.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));

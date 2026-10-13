@@ -38,12 +38,18 @@ function withSourcePath(params, sourceOwner, fs) {
   return opened ? { ...params, source_path: opened } : params;
 }
 
+// Root reconciliation keeps the explorer mounted. Its legacy selector must
+// follow the cached project roster, including after a queued greeting.
+const legacyPrimarySourceId = (sourceOwner, openedId) => sourceOwner
+  ? sourceOwner.currentProject()?.sources?.[0]?.id
+  : openedId;
+
 function dispatch(context, primarySourceId, sourceOwner, method, params, options) {
   if (uploadSessionMethods.has(method)) return context.rpc(method, params, ...options);
   refuseMovedSource(sourceOwner, params);
   const fs = bridgeCapabilities(context.deviceId).fs;
   if (!params.source_id || fs?.projectSources) return context.rpc(method, withSourcePath(params, sourceOwner, fs), ...options);
-  if (params.source_id !== primarySourceId) throw new Error("Update the bridge to browse this project folder.");
+  if (params.source_id !== legacyPrimarySourceId(sourceOwner, primarySourceId)) throw new Error("Update the bridge to browse this project folder.");
   const { source_id: _source, source_path: _path, ...legacy } = params;
   return context.rpc(method, legacy, ...options);
 }

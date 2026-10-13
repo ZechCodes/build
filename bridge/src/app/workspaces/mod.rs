@@ -10,6 +10,7 @@ use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
 mod branch_delete;
+mod deferred_creation;
 mod deletion;
 mod directories;
 mod git_initialization;
@@ -30,6 +31,7 @@ struct WorkspaceCreateWork {
     workspace_name: String,
     workspace: Workspace,
     unpublished: bool,
+    recover_existing: bool,
     sources: Vec<WorkspaceSource>,
     isolation: Isolation,
     /// The sources whose base is brought up to date before the cut (#267).
@@ -63,6 +65,7 @@ impl DeferredGitWork for WorkspaceCreateWork {
             Ok(registry) => registry,
             Err(error) => return self.preparation_failed(error),
         };
+        self.claim_saved_reservation(&mut registry)?;
         if !self.unpublished {
             let workspace = registry.provision(
                 &self.workspace_id,
@@ -186,6 +189,13 @@ pub(super) fn materialize_source(
 }
 
 impl WorkspaceCreateWork {
+    fn claim_saved_reservation(&self, registry: &mut WorkspaceRegistry) -> Result<(), String> {
+        if self.recover_existing {
+            registry.claim_delivery_workspace(&self.workspace)?;
+        }
+        Ok(())
+    }
+
     /// Nothing has materialized yet. Only a root this create privately
     /// prepared may be removed; an existing workspace retains its files.
     fn preparation_failed(&self, error: String) -> Result<Value, String> {
@@ -208,6 +218,9 @@ impl WorkspaceCreateWork {
         destination: &Path,
         isolation: Isolation,
     ) -> Result<(Option<String>, Isolation), String> {
+        if self.recover_existing && std::fs::symlink_metadata(destination).is_ok() {
+            return deferred_creation::recover_checkout(source, destination, &self.workspace_name);
+        }
         let start = cut_start(
             &self
                 .synced
@@ -640,6 +653,7 @@ impl AppState {
                     .into_owned(),
                 workspace: workspace.clone(),
                 unpublished: true,
+                recover_existing: false,
                 sources,
                 isolation,
                 base_syncs: self.cut_sync_subjects(&project_id),
@@ -828,6 +842,7 @@ impl AppState {
                     .into_owned(),
                 workspace: workspace.clone(),
                 unpublished: false,
+                recover_existing: false,
                 sources,
                 isolation: workspace.isolation,
                 base_syncs,

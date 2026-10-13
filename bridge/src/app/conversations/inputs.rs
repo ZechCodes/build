@@ -67,21 +67,6 @@ impl PostOrigin {
         }
     }
 
-    /// A post that hands a task over. The sender, if any, is added by the
-    /// caller that knows there was one: a dispatch the human asked for has
-    /// none, and a dispatch an agent asked for wears it.
-    pub(in crate::app) fn handing_over(
-        task: crate::thread::TaskEnvelope,
-        operation_id: Option<String>,
-    ) -> Self {
-        PostOrigin {
-            operation_id,
-            from_agent: None,
-            requested_by: None,
-            from_task: Some(task),
-        }
-    }
-
     /// A post one agent asked another for. It wears the asker — stamped by the
     /// caller, which is the only place that knows where the asker was speaking
     /// from — and the receipt remembers the conversation it was asked from.

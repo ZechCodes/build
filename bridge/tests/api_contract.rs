@@ -1583,3 +1583,111 @@ fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
     serde_json::from_value::<v1::tasks::TaskDispatch>(dispatch.clone())
         .expect("the example dispatch is a TaskDispatch");
 }
+
+#[test]
+fn waiting_on_contract_announces_scoped_verbs_in_the_unreleased_minor() {
+    let advertised = capabilities(false);
+    assert!(advertised.contains(&"tasks.waitingOn"));
+    assert!(!advertised.contains(&"tasks.link"));
+    for method in [
+        "tasks.waiting_on.add",
+        "tasks.waiting_on.remove",
+        "tasks.waiting_on.blocks",
+    ] {
+        assert!(advertised.contains(&method), "{method}: absent capability");
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["since"], "3.21.0");
+        let (_, handler) = v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap();
+        for field in [
+            "actor",
+            "blocked",
+            "unblocked",
+            "generation",
+            "operation_id",
+            "resolved_by",
+        ] {
+            let mut injected = fixture["params"].clone();
+            injected[field] = serde_json::json!(true);
+            assert!(
+                handler.parse_params(&injected).is_err(),
+                "{method}: accepted {field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn waiting_on_contract_pins_delivery_states_and_resolution_provenance() {
+    let fixture = read_json(&fixtures_root().join("v1/tasks.assign.json"));
+    let states: BTreeSet<_> = fixture["examples"]
+        .as_array()
+        .expect("waiting assignment examples")
+        .iter()
+        .filter_map(|example| example["delivery_state"].as_str())
+        .collect();
+    assert_eq!(
+        states,
+        BTreeSet::from(["waiting", "queued", "failed", "delivered"])
+    );
+    let get = read_json(&fixtures_root().join("v1/tasks.get.json"));
+    let reasons: BTreeSet<_> = get["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|example| {
+            example["result"]["task"]["dependencies"]["waiting_on"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|edge| edge["resolved_by"].as_str())
+        .collect();
+    assert_eq!(reasons, BTreeSet::from(["close", "done"]));
+}
+
+#[test]
+fn waiting_on_contract_pins_closed_blocker_notices_and_unblock_payload() {
+    let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
+    let notice = fixture["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|example| example["result"]["items"].as_array().into_iter().flatten())
+        .map(|item| &item["data"])
+        .find(|message| message["task_notice"]["action"] == "unblocked")
+        .expect("closed prerequisite notice");
+    let body = notice["body"].as_str().unwrap();
+    for instruction in [
+        "closed without Done",
+        "assess",
+        "comment_task",
+        "mention_user: true",
+    ] {
+        assert!(body.contains(instruction), "missing {instruction}");
+    }
+    assert!(notice.get("mentions_user").is_none());
+    let get = read_json(&fixtures_root().join("v1/tasks.get.json"));
+    let event = get["examples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|example| {
+            example["result"]["timeline"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .find(|entry| entry["kind"] == "unblocked")
+        .expect("unblock event");
+    for key in [
+        "resolved_task_ids",
+        "closed_without_done_task_ids",
+        "removed_task_ids",
+        "cause_event_ids",
+    ] {
+        assert!(event["payload"][key].is_array(), "missing {key}");
+    }
+}

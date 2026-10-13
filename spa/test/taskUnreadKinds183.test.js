@@ -42,6 +42,12 @@ describe("the SPA's count", () => {
     expect(counted(mark, [said, event("moved", "te-01K5Z000000000000000000012")])).toBe(2);
   });
 
+  it.each(["dispatch", "report"])("keeps automatic %s moves quiet in current cached timelines", (by) => {
+    const moved = { ...event("moved", "te-01K5Z000000000000000000012"), payload: { by } };
+    expect(counted(mark, [moved])).toBe(0);
+    expect(counted(mark, [comment({ id: "tc-01K5Z000000000000000000011", author: agent }), moved])).toBe(1);
+  });
+
   it("counts an agent completing a review until that event is read", () => {
     const completed = event("review_completed", "te-01K5Z000000000000000000013");
     expect(counted(mark, [completed])).toBe(1);

@@ -563,6 +563,8 @@ export function mountTasksPane(host, options) {
     const task = state.shown.find((candidate) => candidate.id === taskId);
     if (!task) return;
     state.picker = openAssigneePicker({
+      deviceId: state.deviceId,
+      projectId: state.projectId,
       task,
       options: assigneeOptions(groups()),
       current: selectedOptionId(task.assignee),

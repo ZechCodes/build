@@ -56,7 +56,8 @@ use std::collections::BTreeSet;
 /// 3.21.0 adds original project source scopes on the Git verbs and
 /// source-qualified change subscriptions (#529), and project workers on the
 /// agent roster (#532), original-source terminal ownership (#531), and the
-/// captured sync-base path precondition (#530).
+/// captured sync-base path precondition (#530), plus waiting-on task graph,
+/// deferred assignment and read contracts (#562).
 pub const API_VERSION: &str = "3.21.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
@@ -120,6 +121,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.doneSinceLeft",
     "tasks.listPaged", // Since 1.25.0: limit/cursor and next_cursor on tasks.list.
     "tasks.unreadCounts", // Since 1.29.0: unread_count on a watched task (tasks.list, tasks.get).
+    "tasks.waitingOn", // Since 3.21.0: scoped graph, deferred assignment and bounded dependency reads (#562).
     "tasks.watching",
     "messages.context",
     "messages.fromAgent",

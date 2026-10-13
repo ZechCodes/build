@@ -14,6 +14,7 @@ import { homeDeviceId } from "../core/devicePolicy.js";
 import { canAnswer, contextFor } from "../core/deviceContexts.js";
 import { createTerminalFollowController } from "./followController.js";
 import { TerminalSocket } from "./session.js";
+import { isProjectTerminalScope, projectTerminalRpc } from "../core/projectTerminalRpc.js";
 import { createStatusHub } from "./statusHub.js";
 
 let socket = null;
@@ -77,6 +78,9 @@ export function terminalManager() {
     // them never hears about it.
     const created = new TerminalSocket({
       transport,
+      userTerminalDevice: terminalDeviceId,
+      userTerminalRpc: (deviceId, method, params, call) => isProjectTerminalScope(params)
+        ? projectTerminalRpc(contextFor(deviceId), method, params, call) : call(method, params),
       onTermUnresponsive: () => followTerminalDevice({ freshSession: true }),
     });
     socket = created;

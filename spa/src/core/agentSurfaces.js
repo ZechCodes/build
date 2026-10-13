@@ -42,6 +42,8 @@ import {
   buildAgentRowHtml,
   checklistItemHtml,
   taskSurfaceRowHtml,
+  taskViewerHtml,
+  TASK_ACTIVITY_STATES,
   checklistContextHtml,
   checklistViewerHtml,
   completedFoldHeadHtml,
@@ -141,13 +143,40 @@ function workflowView(surfaces, reading, selectedKey, wasRunning) {
   };
 }
 
+function taskViewerLists({ surfaces, reading }) {
+  const { running, completed } = runningAndCompletedRows(surfaceRows(TASKS_ENTRY_KIND, surfaces, reading));
+  const grouped = running.some((row) => row.readinessAware);
+  return [
+    { selector: ".surface-task-legacy", rows: grouped ? [] : running, render: taskSurfaceRowHtml },
+    ...TASK_ACTIVITY_STATES.map((state) => ({
+      selector: `.surface-task-${state}-rows`,
+      rows: grouped ? running.filter((row) => row.state === state || (state === "working" && row.state === "in_progress")) : [],
+      render: taskSurfaceRowHtml,
+    })),
+    { selector: ".surface-task-tracked-rows", rows: grouped ? running.filter((row) => row.state === "tracked") : [], render: taskSurfaceRowHtml },
+    { selector: SURFACE_SELECTOR.completed, rows: completed, render: taskSurfaceRowHtml, folded: true },
+  ];
+}
+
+const TASKS_VIEWER_PLAN = {
+  frameHtmlWithEmptyLists: taskViewerHtml,
+  lists: taskViewerLists,
+  groups: ({ surfaces }) => {
+    const lists = taskViewerLists({ surfaces });
+    return TASK_ACTIVITY_STATES.map((state) => ({
+      selector: `.surface-task-${state}`,
+      shown: lists.find((list) => list.selector === `.surface-task-${state}-rows`).rows.length > 0,
+    }));
+  },
+};
+
 const VIEWER_PLANS = {
   [WORKFLOW_ENTRY_KIND]: {
     frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
   },
   [AGENT_ENTRY_KIND]: AGENTS_VIEWER_PLAN,
   [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
-  [TASKS_ENTRY_KIND]: runningAboveWhatFinished(TASKS_ENTRY_KIND, taskSurfaceRowHtml),
+  [TASKS_ENTRY_KIND]: TASKS_VIEWER_PLAN,
   [CHECKLIST_ENTRY_KIND]: {
     frameHtmlWithEmptyLists: () => checklistViewerHtml(),
     headSelector: CHECKLIST_CONTEXT_SELECTOR,

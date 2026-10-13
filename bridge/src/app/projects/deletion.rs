@@ -140,6 +140,7 @@ impl AppState {
         self.preserve_project_task_identities(&project_id)?;
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         self.persist_config(&config)?;
+        self.retire_project_task_deliveries(&project_id)?;
         let mut retirements = Vec::new();
         for root in &session_roots {
             retirements.extend(self.retire_workspace_agents(root));
@@ -217,6 +218,16 @@ impl AppState {
         }
         self.delivery_queue
             .retain_queued(|turn| !agent_ids.contains(&turn.agent_id));
+    }
+
+    fn retire_project_task_deliveries(&self, project_id: &str) -> Result<(), String> {
+        if let Some(store) = &self.store {
+            let path = self.tracker_project_path(project_id)?;
+            store
+                .retire_task_deliveries_of_project(&path)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     fn complete_project_delete(&mut self, project_id: &str) -> Result<(), String> {

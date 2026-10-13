@@ -30,6 +30,7 @@ export function consoleSize(value) {
  *  carries the machine (core/deviceKey.js). */
 export function consoleKey(context) {
   if (!context) return "none";
+  if (context.kind === "project") return `project:${workspaceKey(context.deviceId, context.projectId)}`;
   if (context.kind === "workspace") return `workspace:${workspaceKey(context.deviceId, context.workspaceId)}`;
   return context.kind === "task" ? `task:${context.taskId}` : `branch:${context.projectId}:${context.branch}`;
 }
@@ -88,6 +89,7 @@ export function grownConsoleSize(size) {
  * runs in the project's own checkout, which the project alone names.
  */
 const scopeResolvers = {
+  project: (context) => context.projectId && context.sourceId && context.sourcePath ? { project_id: context.projectId, source_id: context.sourceId, source_path: context.sourcePath } : null,
   // A workspace owns its terminals as a whole. Its selected source directory
   // deliberately does not participate in terminal identity.
   workspace: (context) => context.workspaceId ? { workspace_id: context.workspaceId } : null,
@@ -119,6 +121,7 @@ export function consoleScope(context, row) {
  */
 export function consoleFeedRoute(context) {
   if (!context) return null;
+  if (context.kind === "project") return { name: "project", deviceId: context.deviceId, projectId: context.projectId };
   if (context.kind === "task")
     return { name: "task", deviceId: context.deviceId, projectId: context.projectId, id: context.taskId };
   if (context.kind === "workspace")

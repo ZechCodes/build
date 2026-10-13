@@ -660,7 +660,9 @@ operation id as authority. Error replies use existing `invalid_params`,
 `not_found` and `conflict`, with scoped blocker/cycle details. An agent receives
 no identity or title from an endpoint outside its project.
 
-Target **3.22.0**. #562 confirms the release boundary before setting `since`:
+Release boundary verified for #562: **3.21.0** shares bridge 0.2.13, still
+Unreleased in CHANGELOG, with bridge-v0.2.12 the latest repository tag. The
+planning target was 3.22.0; new verbs use the actual unshipped minor. The rule is:
 new verbs name the minor in which they actually ship, sharing the current
 unshipped additive release or taking the next minor if that release has gone
 out. This planning branch changes no version. Announce `tasks.waitingOn` only
@@ -1612,7 +1614,7 @@ Implementation follows the planning branch's review and merge. Each child is
 one branch from main and one fresh Astra review before merge. Estimates are
 engineering half-days, including focused tests and review fixes, not elapsed
 time. Children remain unassigned in Backlog until the project agent dispatches
-them. Wire target is 3.22.0, with #562 confirming the release boundary.
+them. Wire is 3.21.0: #562 verified the unshipped bridge 0.2.13 release boundary.
 
 | Child | Scope | Depends on | Half-days |
 | --- | --- | --- | ---: |
@@ -1672,7 +1674,7 @@ closed-without-Done from completed prerequisites and explicitly direct the
 receiving agent to assess and escalate with `comment_task` and
 `mention_user: true` when unclear; they never mention the user automatically.
 Unblock works with no connected SPA. New capability/verb declarations and
-actual release minor agree, with 3.22.0 the target pending release verification.
+actual release minor agree: #562 verified 3.21.0 in the unshipped 0.2.13 release.
 Proposed tests:
 `waiting_on_rpc_mcp_contract`, `waiting_notices_and_reminders`,
 `unblock_preserves_user_attention`, `closed_blocker_notice_contract`, plus

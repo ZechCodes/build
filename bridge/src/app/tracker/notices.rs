@@ -45,7 +45,17 @@ impl AppState {
 
     /// Tell everyone watching, except whoever did it.
     pub(in crate::app) fn notify_trackers(&mut self, write: &TaskWrite) {
-        let told = trackers_to_tell(write);
+        let mut told = trackers_to_tell(write);
+        if write.comments.is_empty() {
+            match self.pending_task_delivery_holder(&write.task) {
+                Ok(Some(holder)) => told.retain(|tracker| tracker != &holder),
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("read pending task holder: {error}");
+                    return;
+                }
+            }
+        }
         if told.is_empty() {
             return;
         }
@@ -314,6 +324,8 @@ fn notice_of(write: &TaskWrite, actor_name: Option<String>) -> Option<TaskNotice
         // hears about quiet workspaces in one notice of its own, and nobody
         // watching the task is woken for it.
         TaskEventKind::Blocked
+        | TaskEventKind::DispatchDeferred
+        | TaskEventKind::DispatchFailed
         | TaskEventKind::Unblocked
         | TaskEventKind::Unlinked
         | TaskEventKind::Tracked
@@ -404,6 +416,8 @@ pub(in crate::app) fn notice_of_entry(entry: &crate::tracker::TimelineEntry) -> 
                 TaskEventKind::Closed => Some(plain("closed")),
                 TaskEventKind::Reopened => Some(plain("reopened")),
                 TaskEventKind::Blocked
+                | TaskEventKind::DispatchDeferred
+                | TaskEventKind::DispatchFailed
                 | TaskEventKind::Unblocked
                 | TaskEventKind::Unlinked
                 | TaskEventKind::Tracked

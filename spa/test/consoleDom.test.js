@@ -30,7 +30,7 @@ vi.mock("../src/terminal/manager.js", () => ({
   subscribeTerminalStatus: () => () => {},
   // Which machine the shells type at, and the moves between machines, are the
   // app spine's business and not this suite's: they answer, and nothing moves.
-  terminalDeviceId: () => null,
+  terminalDeviceId: () => "dev-1",
   followTerminalDevice: () => {},
   resetTerminalManager: () => {},
   // Minting a terminal session is the connection layer's (spec rule 5); no
@@ -253,7 +253,10 @@ describe("the sizes", () => {
     await open(); // the same control shuts it
     expect(size()).toBe("collapsed");
     expect(panes[0].disposed).toBe(true);
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
     expect(manager.closeTerminal).not.toHaveBeenCalled();
   });
 
@@ -308,7 +311,10 @@ describe("the terminals", () => {
     [...region().querySelectorAll(".console-tab-name")][1].click();
     await flush();
     expect(manager.attachTerminal.mock.calls.map((call) => call[0])).toEqual(["term-1", "term-2"]);
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
   });
 
   it("closes one from its ×, and falls back to what is left", async () => {
@@ -495,8 +501,78 @@ describe("disposal", () => {
     panel.dispose();
     expect(region().innerHTML).toBe("");
     expect(region().dataset.size).toBeUndefined();
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
     expect(manager.closeTerminal).not.toHaveBeenCalled();
     panel = null;
+  });
+});
+
+
+describe("original-source project console", () => {
+  const source = (id, path) => ({ id, path, name: id === "code" ? "Code" : "Docs", is_git: id === "code" });
+  const scope = (id, path) => ({ project_id: "p1", source_id: id, source_path: path });
+  const address = (id, path, deviceId = "dev-1") => ({ deviceId, entityId: `project:${JSON.stringify(["p1", id, path])}`, kind: "terminals" });
+  async function projectWorld(deviceId = "dev-1") {
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached({ deviceId, entityId: "", kind: "projects" }, [{ project_id: "p1", sources: [source("code", "/code"), source("docs", "/docs")] }]);
+    await writeCached({ deviceId, entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+    await writeCached(address("code", "/code", deviceId), { tabs: [{ term_id: "term-1" }] });
+    await writeCached(address("docs", "/docs", deviceId), { tabs: [{ term_id: "term-2" }] });
+  }
+  const projectContext = (over = {}) => ({ kind: "project", projectId: "p1", deviceId: "dev-1", cacheScope: consoleCacheScope(over.deviceId || "dev-1"), ...over });
+
+  it("paints cached source labels without creating shells and keeps the shell when new-tab source changes", async () => {
+    await projectWorld();
+    await mount(projectContext());
+    expect(tabs()).toEqual(["Code · Terminal 1", "Docs · Terminal 1"]);
+    expect(size()).toBe("collapsed");
+    expect(manager.createTerminal).not.toHaveBeenCalled();
+    panel.toggle(); await flush();
+    expect(manager.attachTerminal).toHaveBeenLastCalledWith("term-1", scope("code", "/code"), expect.any(Object));
+    const picker = region().querySelector("[aria-label='Terminal source']");
+    picker.value = "docs"; picker.dispatchEvent(new Event("change")); await flush();
+    expect(manager.attachTerminal).toHaveBeenCalledTimes(1);
+    region().querySelector(".console-new").click(); await flush();
+    expect(manager.createTerminal).toHaveBeenCalledWith(scope("docs", "/docs"), 80, 24);
+    expect(tabs()).toEqual(["Code · Terminal 1", "Docs · Terminal 1", "Docs · Terminal 2"]);
+  });
+
+  it("closes the immutable source scope and changes only that source cache", async () => {
+    await projectWorld(); await mount(projectContext());
+    const { readCached } = await import("../src/core/localCache.js");
+    const close = region().querySelectorAll("[data-close]")[1];
+    expect(close.tagName).toBe("BUTTON");
+    expect(close.getAttribute("aria-label")).toBe("Close Docs · Terminal 1");
+    close.click(); await flush();
+    expect(manager.closeTerminal).toHaveBeenCalledWith("term-2", scope("docs", "/docs"));
+    expect((await readCached(address("docs", "/docs"))).value.tabs).toEqual([]);
+    expect((await readCached(address("code", "/code"))).value.tabs).toEqual([{ term_id: "term-1" }]);
+  });
+
+  it("keeps cached tabs on older bridges and paints an update notice", async () => {
+    await projectWorld();
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-terminal-support" }, { projectSources: false });
+    await mount(projectContext()); panel.toggle(); await flush();
+    expect(tabs()).toEqual(["Code · Terminal 1", "Docs · Terminal 1"]);
+    expect(region().textContent).toContain("Update this device");
+    expect(manager.createTerminal).not.toHaveBeenCalled();
+    expect(manager.attachTerminal).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse another device or a moved source's shells", async () => {
+    await projectWorld(); await mount(projectContext()); panel.toggle(); await flush();
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached(address("code", "/code", "dev-2"), { tabs: [{ term_id: "term-99" }] }); await flush();
+    expect(tabs()).toEqual(["Code · Terminal 1", "Docs · Terminal 1"]);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [{ project_id: "p1", sources: [source("code", "/new"), source("docs", "/docs")] }]); await flush();
+    expect(tabs()).toEqual(["Docs · Terminal 1"]);
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
   });
 });

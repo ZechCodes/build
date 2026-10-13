@@ -1,0 +1,29 @@
+{
+  "method": "tasks.waiting_on.blocks",
+  "since": "3.21.0",
+  "params": {
+    "task_id": "task-prerequisite-1",
+    "limit": 20
+  },
+  "result": {
+    "blocks": [
+      {
+        "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+        "number": 12,
+        "title": "Kanban drag does not persist",
+        "state": "open",
+        "status": "backlog",
+        "resolved": false,
+        "resolved_by": null
+      }
+    ],
+    "next_cursor": "opaque-project-bound-cursor"
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "unavailable",
+    "internal"
+  ]
+}

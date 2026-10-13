@@ -50,7 +50,7 @@ impl Store {
         agents: &[Agent],
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
@@ -386,7 +386,7 @@ impl Store {
         record: &PersistedPlan,
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
@@ -403,7 +403,7 @@ impl Store {
         record: &PersistedRun,
         receipt: &OperationReceipt,
     ) -> Result<OperationReceipt, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if let Some(existing) = existing_operation_or_conflict(tx, receipt)? {
                 return Ok(existing);
             }
@@ -502,6 +502,7 @@ pub(super) fn insert_operation(
     tx: &rusqlite::Transaction,
     receipt: &OperationReceipt,
 ) -> Result<(), StoreError> {
+    super::delivery_intents::check_operation_admission(tx, receipt)?;
     let now = now_rfc3339();
     let delivery = receipt
         .delivery

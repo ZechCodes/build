@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 
 const { App, initRouter } = await import("../src/app.js");
-const { takeConsoleTerminal } = await import("../src/core/consoleModel.js");
+const { takeConsoleTerminal, markConsoleTerminal, consoleFeedRoute } = await import("../src/core/consoleModel.js");
 
 const hashChanged = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -29,4 +29,13 @@ describe("reading a URL that names a terminal", () => {
     await hashChanged();
     expect(takeConsoleTerminal()).toBeNull();
   });
+});
+
+
+it("keeps project terminal state outside face routes", () => {
+  const route = consoleFeedRoute({ kind: "project", deviceId: "d", projectId: "p", sourceId: "docs" });
+  expect(route).toEqual({ name: "project", deviceId: "d", projectId: "p" });
+  markConsoleTerminal("term-2");
+  expect(takeConsoleTerminal()).toBe("term-2");
+  expect(takeConsoleTerminal()).toBeNull();
 });

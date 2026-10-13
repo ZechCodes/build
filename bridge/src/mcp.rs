@@ -39,6 +39,7 @@ const READABLE_BODIES: &[&str] = &[
 
 mod compaction;
 mod reviews;
+mod waiting_on;
 
 /// The protocol version this server advertises when a client omits one.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -351,6 +352,26 @@ pub enum BridgeAction {
         /// File this task as a question for the user.
         mention_user: Option<bool>,
     },
+    TrackerWithWaitingOn {
+        wrapped: Box<BridgeAction>,
+        waiting_on: Vec<String>,
+    },
+    TrackerUnlinkWaitingOn {
+        task_id: String,
+        waiting_on: Vec<String>,
+        track: Option<bool>,
+    },
+    TrackerTaskDependents {
+        task_id: String,
+        limit: Option<u64>,
+        cursor: Option<String>,
+    },
+    TrackerRetryTaskDelivery {
+        task_id: String,
+        retry_deferred_id: String,
+        track: Option<bool>,
+        notify_user: Option<bool>,
+    },
     /// Say something on one, with typed references fenced by what it is about.
     TrackerCommentTask {
         task_id: String,
@@ -548,6 +569,10 @@ impl BridgeAction {
             BridgeAction::TrackerMoveTask { .. } => "move_task",
             BridgeAction::TrackerLabelTask { .. } => "label_task",
             BridgeAction::TrackerCloseTask { .. } => "close_task",
+            BridgeAction::TrackerWithWaitingOn { wrapped, .. } => wrapped.tool_name(),
+            BridgeAction::TrackerUnlinkWaitingOn { .. } => "unlink_task",
+            BridgeAction::TrackerTaskDependents { .. } => "list_task_dependents",
+            BridgeAction::TrackerRetryTaskDelivery { .. } => "assign_task",
             BridgeAction::TrackerLinkTask { .. } => "link_task",
             BridgeAction::TrackerTrackTask { .. } => "track_task",
             BridgeAction::TrackerUntrackTask { .. } => "untrack_task",
@@ -614,7 +639,11 @@ impl BridgeAction {
             // The tracker is on every surface that WORKS a project: a coding
             // agent files and moves the tasks it is given, and a project
             // agent runs the board. The router has no project to be scoped to.
-            BridgeAction::TrackerListTasks { .. }
+            BridgeAction::TrackerWithWaitingOn { .. }
+            | BridgeAction::TrackerUnlinkWaitingOn { .. }
+            | BridgeAction::TrackerTaskDependents { .. }
+            | BridgeAction::TrackerRetryTaskDelivery { .. }
+            | BridgeAction::TrackerListTasks { .. }
             | BridgeAction::TrackerGetTask { .. }
             | BridgeAction::TrackerReadComment { .. }
             | BridgeAction::TrackerCreateTask { .. }
@@ -1279,6 +1308,7 @@ impl DoneServer {
                 }
             }),
         ];
+        waiting_on::extend_tools(&mut tools);
         tools.extend(reviews::tools());
         tools
     }
@@ -1286,6 +1316,9 @@ impl DoneServer {
     /// The tracker's `tools/call` arms, shared by both working surfaces.
     /// `None` is "not one of mine", which every other tool is.
     fn handle_task_tools_call(id: &Value, name: &str, params: Option<&Value>) -> Option<Handled> {
+        if let Some(handled) = waiting_on::handle_call(id, name, params) {
+            return Some(handled);
+        }
         if let Some(handled) = reviews::handle_call(id, name, params) {
             return Some(handled);
         }
@@ -3204,7 +3237,7 @@ mod tests {
     /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 24] = [
+    const TASK_TOOLS: [&str; 26] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -3217,6 +3250,8 @@ mod tests {
         "link_task",
         "track_task",
         "untrack_task",
+        "unlink_task",
+        "list_task_dependents",
         "snapshot_review",
         "get_review",
         "read_review",

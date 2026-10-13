@@ -74,8 +74,8 @@ const callsOn = (ws, method) =>
 
 /** A socket with a session and a wire: what the manager hands over once the
  *  followed device's channels are open. */
-async function connected({ session = terminalSession(), settle = tick } = {}) {
-  const socket = new TerminalSocket({ transport: fakeTransport });
+async function connected({ session = terminalSession(), settle = tick, transport = fakeTransport } = {}) {
+  const socket = new TerminalSocket({ transport });
   const statuses = [];
   socket.onStatus((status) => statuses.push(status));
   socket.adoptTerminalSession(session);
@@ -604,6 +604,86 @@ describe("TerminalSocket", () => {
     socket.close();
   });
 
+  it("refuses a source request whose connection wait resumes on another device", async () => {
+    const socket = new TerminalSocket({ transport: fakeTransport });
+    socket.adoptTerminalSession(terminalSession("dev-a"));
+    const scope = { project_id: "p1", source_id: "s1", source_path: "/same-path" };
+    const pending = socket.createTerminal(scope, 80, 24);
+    pending.catch(() => {});
+    const wire = fakeWire();
+    await socket.adoptTerminalSession(terminalSession("dev-b", "replacement"), wire);
+    await tick();
+    // Prevent a failed assertion from leaving an unanswered terminal RPC.
+    for (const call of callsOn(wire, "term.create")) respond(wire, {}, call.id, {});
+    await expect(pending).rejects.toThrow(/device|machine/);
+    expect(callsOn(wire, "term.create")).toEqual([]);
+    socket.close();
+  });
+
+  it("detaches old device source registrations without closing or attaching them on the new device", async () => {
+    const { socket, ws, init } = await connected();
+    const closed = vi.fn();
+    const source = { project_id: "p1", source_id: "s1", source_path: "/same-path" };
+    const attaching = socket.attachTerminal("same-id", source, { onClosed: closed });
+    await tick();
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0 });
+    await attaching;
+    const replacement = fakeWire();
+    const adoption = socket.adoptTerminalSession(terminalSession("other-device", "other-session"), replacement);
+    await tick();
+    // Settle any incorrect reattach so the red run does not hang.
+    for (const call of callsOn(replacement, "term.attach")) respond(replacement, {}, call.id, { snapshot: b64(""), cursor: 0 });
+    await adoption;
+    push(replacement, {}, { type: "term.closed", term_id: "same-id", reason: "exited" });
+    await tick();
+    expect(callsOn(replacement, "term.attach")).toEqual([]);
+    expect(callsOn(replacement, "term.close")).toEqual([]);
+    expect(closed).not.toHaveBeenCalled();
+    expect(socket._terms.has("same-id")).toBe(false);
+    socket.close();
+  });
+
+  it("retains project source assertions for attach, close and reconnect", async () => {
+    const { socket, ws, init } = await connected();
+    const scope = { project_id: "p1", source_id: "plain", source_path: "/original/plain" };
+    const guard = vi.fn((_device, method, params, dispatch) => dispatch(method, params));
+    socket._userTerminalRpc = guard;
+    const attaching = socket.attachTerminal("term-source", scope, { onSnapshot: () => {} });
+    await tick();
+    expect(lastPayload(ws).params).toMatchObject(scope);
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0 });
+    await attaching;
+    const replacement = rewire(socket);
+    await tick();
+    expect(lastPayload(replacement).params).toMatchObject({ ...scope, term_id: "term-source" });
+    respond(replacement, init, lastPayload(replacement).id, { snapshot: b64(""), cursor: 0 });
+    await tick();
+    const closing = socket.closeTerminal("term-source");
+    await tick();
+    expect(lastPayload(replacement).params).toEqual({ ...scope, term_id: "term-source" });
+    respond(replacement, init, lastPayload(replacement).id, { ok: true });
+    await closing;
+    expect(guard.mock.calls.map(([device, method]) => [device, method])).toEqual([
+      ["dev-b", "term.attach"], ["dev-b", "term.attach"], ["dev-b", "term.close"],
+    ]);
+    socket.close();
+  });
+
+  it("refuses reconnect source attach at the dispatch guard before selectors reach the wire", async () => {
+    const { socket, ws, init } = await connected();
+    const scope = { project_id: "p1", source_id: "s1", source_path: "/original" };
+    const attaching = socket.attachTerminal("term-source", scope, { onSnapshot: () => {} });
+    await tick();
+    respond(ws, init, lastPayload(ws).id, { snapshot: b64(""), cursor: 0 });
+    await attaching;
+    socket._userTerminalRpc = vi.fn(async () => { throw new Error("Update this device"); });
+    const replacement = rewire(socket);
+    await tick();
+    expect(callsOn(replacement, "term.attach")).toEqual([]);
+    expect(socket._userTerminalRpc).toHaveBeenCalledWith("dev-b", "term.attach", expect.objectContaining(scope), expect.any(Function));
+    socket.close();
+  });
+
   it("keeps a user terminal's workspace scope when reconnecting", async () => {
     const { socket, ws, init } = await connected();
     const attaching = socket.attachTerminal(
@@ -626,6 +706,11 @@ describe("TerminalSocket", () => {
     expect(p.params).toEqual({ workspace_id: "ws-7", term_id: "term-4", cols: 90, rows: 30 });
     respond(ws2, init2, p.id, { snapshot: b64(""), cursor: 0 });
     await tick();
+    const closing = socket.closeTerminal("term-4");
+    await tick();
+    expect(lastPayload(ws2).params).toEqual({ term_id: "term-4" });
+    respond(ws2, init2, lastPayload(ws2).id, { ok: true });
+    await closing;
     socket.close();
   });
 });
@@ -995,5 +1080,154 @@ describe("createStatusHub (per-pane connectivity fan-out)", () => {
     unsubscribe();
     hub.set("connected");
     expect(seen).toEqual(["connecting"]);
+  });
+});
+
+
+describe("user terminal attach lifetime", () => {
+  const scope = { project_id: "p", source_id: "code", source_path: "/code" };
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const isolated = (dispatch = (_device, verb, params, call) => call(verb, params)) => {
+    const socket = new TerminalSocket({ transport: {}, userTerminalRpc: dispatch });
+    socket._session = { deviceId: "device" };
+    socket._call = vi.fn(async () => ({ snapshot: b64("screen"), cursor: 0 }));
+    return socket;
+  };
+  it("cancels a real connection wait without retaining a waiter or attaching on reconnect", async () => {
+    const socket = isolated();
+    const abort = new AbortController();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal });
+    const outcome = request.catch((error) => error);
+    expect(socket._connectWaiters).toHaveLength(1);
+    abort.abort();
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    expect(socket._connectWaiters).toHaveLength(0);
+    expect(socket._terms.size).toBe(0);
+    socket._connected = true;
+    for (const waiter of socket._connectWaiters.splice(0)) waiter.resolve();
+    await tick();
+    expect(socket._call).not.toHaveBeenCalled();
+    expect(socket._terms.size).toBe(0);
+    socket.close();
+  });
+  it("cannot dispatch an attach whose pane closed while real wire encryption was pending", async () => {
+    const encryption = deferred();
+    let encrypting = false;
+    const transport = { ...fakeTransport, encryptFrame: async (frame) => {
+      if (frame.frameFields.payload.method === "term.attach") {
+        encrypting = true;
+        await encryption.promise;
+      }
+      return fakeTransport.encryptFrame(frame);
+    } };
+    const { socket, ws } = await connected({ transport });
+    const abort = new AbortController();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal });
+    const outcome = request.catch((error) => error);
+    await tick();
+    expect(encrypting).toBe(true);
+    abort.abort();
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    encryption.resolve();
+    await tick();
+    try {
+      expect(callsOn(ws, "term.attach")).toEqual([]);
+      expect(socket._terms.size).toBe(0);
+    } finally { socket.close(); }
+  });
+  it("checks pane lifetime again at dispatch after an asynchronous source/greeting guard", async () => {
+    const ready = deferred();
+    const socket = isolated(async (_device, verb, params, call) => { await ready.promise; return call(verb, params); });
+    socket._connected = true;
+    const abort = new AbortController();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal });
+    const outcome = request.catch((error) => error);
+    await tick();
+    expect(socket._terms.size).toBe(1);
+    abort.abort();
+    const replacement = socket._register("shell", "user", scope, {});
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    ready.resolve();
+    await tick();
+    expect(socket._call).not.toHaveBeenCalled();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+  it("rejects on cancellation during an attach reply and cannot paint or detach a replacement", async () => {
+    const reply = deferred();
+    const socket = isolated();
+    socket._connected = true;
+    socket._call.mockReturnValue(reply.promise);
+    const abort = new AbortController();
+    const snapshot = vi.fn();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal, onSnapshot: snapshot });
+    const outcome = request.catch((error) => error);
+    await tick();
+    expect(socket._call).toHaveBeenCalledOnce();
+    abort.abort();
+    const replacement = socket._register("shell", "user", scope, {});
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    reply.resolve({ snapshot: b64("obsolete"), cursor: 1 });
+    await tick();
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+  it("retires a replaced registration's pending acknowledgement resource", () => {
+    const socket = isolated();
+    const previous = socket._register("shell", "user", scope, {});
+    previous.ackTimer = setTimeout(() => {}, 1000);
+    socket._register("shell", "user", scope, {});
+    try { expect(previous.ackTimer).toBeNull(); }
+    finally { clearTimeout(previous.ackTimer); socket.close(); }
+  });
+  it("gives pane disposal an identity-owned detach that cannot forget the next registration", async () => {
+    const socket = isolated();
+    socket._connected = true;
+    let detach;
+    await socket.attachTerminal("shell", scope, { onRegistered: (dispose) => { detach = dispose; } });
+    const replacement = socket._register("shell", "user", scope, {});
+    detach();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+  it("ends reconnect attachment promptly when the pane is cancelled", async () => {
+    const reply = deferred();
+    const socket = isolated();
+    const abort = new AbortController();
+    socket._register("shell", "user", scope, { signal: abort.signal });
+    socket._call.mockReturnValue(reply.promise);
+    let settled = false;
+    const restoring = socket._reattachAll().then(() => { settled = true; });
+    await tick();
+    abort.abort();
+    await tick();
+    try {
+      expect(settled).toBe(true);
+      expect(socket._terms.size).toBe(0);
+    } finally {
+      reply.resolve({ snapshot: "", cursor: 0 });
+      await restoring;
+      socket.close();
+    }
+  });
+  it("does not apply a reconnect reply or reap the replacement when registration changed", async () => {
+    const reply = deferred();
+    const socket = isolated();
+    const snapshot = vi.fn();
+    socket._register("shell", "user", scope, { onSnapshot: snapshot });
+    socket._call.mockReturnValue(reply.promise);
+    const restoring = socket._reattachAll();
+    await tick();
+    const replacement = socket._register("shell", "user", scope, {});
+    reply.resolve({ snapshot: b64("obsolete"), cursor: 1 });
+    await restoring;
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
   });
 });

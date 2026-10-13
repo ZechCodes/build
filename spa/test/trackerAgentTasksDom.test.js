@@ -205,3 +205,22 @@ describe("staying live off the record, with nothing asked of the bridge", () => 
     live.dispose();
   });
 });
+
+
+describe("cached waiting-on activity on the rail (#563)", () => {
+  const prerequisite = { task_id: "p12", number: 12, title: "Prepare API", resolved: false };
+  it("cold-mounts Blocked and reclassifies pushed unblock, close and reopen without RPC", async () => {
+    greeting = NO_GREETING;
+    const waiting = mine({ number: 7, id: "i7", status: "in_progress", dependencies: { blocked: true, waiting_on: [prerequisite] } });
+    await putTasks([waiting]);
+    await mount();
+    expect(entry.entriesFor(ME, true)[0]).toMatchObject({ state: "blocked", blockers: [prerequisite] });
+    await putTasks([{ ...waiting, dependencies: { blocked: false, waiting_on: [{ ...prerequisite, resolved: true }] } }]);
+    await vi.waitFor(() => expect(entry.entriesFor(ME, true)[0].state).toBe("working"));
+    expect(entry.entriesFor(ME, false)[0].state).toBe("assigned");
+    await putTasks([{ ...waiting, state: "closed" }]);
+    await vi.waitFor(() => expect(entry.entriesFor(ME, true)[0].state).toBe("closed"));
+    await putTasks([waiting]);
+    await vi.waitFor(() => expect(entry.entriesFor(ME, true)[0].state).toBe("blocked"));
+  });
+});

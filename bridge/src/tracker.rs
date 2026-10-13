@@ -647,6 +647,8 @@ pub enum TaskEventKind {
     Closed,
     Reopened,
     Dispatched,
+    DispatchDeferred,
+    DispatchFailed,
     /// An agent started watching this task — by asking, or by being assigned
     /// it. The payload says which.
     Tracked,
@@ -690,6 +692,8 @@ impl TaskEventKind {
             TaskEventKind::Closed => "closed",
             TaskEventKind::Reopened => "reopened",
             TaskEventKind::Dispatched => "dispatched",
+            TaskEventKind::DispatchDeferred => "dispatch_deferred",
+            TaskEventKind::DispatchFailed => "dispatch_failed",
             TaskEventKind::Tracked => "tracked",
             TaskEventKind::Untracked => "untracked",
             TaskEventKind::Watched => "watched",

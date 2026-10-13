@@ -115,7 +115,7 @@ impl Store {
         &self,
         intent: &ReviewMergeIntent,
     ) -> Result<Review, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut saved = require_intent(tx, intent)?;
             let header = require_pull_request(tx, &saved.request.task_id)?;
             check_version(

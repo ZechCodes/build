@@ -57,7 +57,9 @@ pub(crate) use reviews::TrackingExpectation;
 
 mod conversation_reset;
 mod conversations;
+mod delivery_intents;
 mod documents;
+pub use delivery_intents::{DeliveryIntent, DeliveryNotice};
 mod entities;
 mod legacy;
 mod migrations;
@@ -225,7 +227,8 @@ pub enum StoreError {
 /// 14 persists workspace removal locks (#398).
 /// 15 adds PR bindings, operation journals, workspace claims and sync observations.
 /// 16 adds task dependencies, readiness reconciliation and transition receipts.
-pub const SCHEMA_VERSION: i64 = 16;
+/// 17 adds explicit assignment delivery intents and coordinator notice receipts.
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -385,6 +388,33 @@ impl Store {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+    /// Only task/graph/delivery writes can make reconciliation work available.
+    /// Empty polling transactions must not consume their own wakeup while a
+    /// provisioning job is running outside the app lock.
+    fn in_waiting_on_transaction<T>(
+        &self,
+        work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
+        let (out, pending) = self.in_transaction(|tx| {
+            let before = tx.total_changes();
+            let out = work(tx)?;
+            let pending = tx.total_changes() != before && tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tracker_dependency_reconcile)
+                 OR EXISTS(SELECT 1 FROM tracker_dependency_changes)
+                 OR EXISTS(SELECT 1 FROM tracker_delivery_intents WHERE state IN ('queued', 'provisioning'))
+                 OR EXISTS(SELECT 1 FROM tracker_delivery_notices WHERE state = 'queued')",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+            Ok((out, pending))
+        })?;
+        // Notify after commit; failed writes never publish process-local work.
+        if pending {
+            self.waiting_on_wakeup.notify_one();
+        }
+        Ok(out)
+    }
+
     /// Run `work` inside one transaction. Every save is all-or-nothing: a
     /// record and the conversation rows that belong to it land together or not
     /// at all, which is the guarantee the old tmp-file-and-rename bought one
@@ -410,18 +440,7 @@ impl Store {
         // timeout above would not cover it.
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let out = work(&tx)?;
-        // Only committed writes wake the service. The durable queue also
-        // survives an absent service or a missed process-local notification.
-        let pending: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tracker_dependency_reconcile)
-             OR EXISTS(SELECT 1 FROM tracker_dependency_changes)",
-            [],
-            |row| row.get(0),
-        )?;
         tx.commit()?;
-        if pending {
-            self.waiting_on_wakeup.notify_one();
-        }
         Ok(out)
     }
 }

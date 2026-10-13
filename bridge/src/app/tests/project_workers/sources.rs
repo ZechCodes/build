@@ -583,6 +583,13 @@ async fn a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds() 
     ));
     assert_eq!(asked["ok"], true, "{asked}");
     let move_params = f.move_params();
+    // Own the delivery reservation before shared() starts background drains.
+    // Removing a queued turn cannot release a worker that a drain has started.
+    let mut worker_turns = f.state.take_pending_turns();
+    let (worker_turn, worker_hold) = worker_turns.next_turn().unwrap();
+    assert_eq!(worker_turn.agent_id, f.worker);
+    assert!(worker_turns.is_empty());
+    let worker_key = worker_turn.tab_key();
     let shared = f.state.shared();
     let handler = AppState::handler(Arc::clone(&shared));
     let scope = json!({"project_id": f.project_id, "source_id": "source-2", "source_path": docs});
@@ -598,8 +605,6 @@ async fn a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds() 
     let id = opened["term_id"].as_str().unwrap();
     let mut addressed = scope.clone();
     addressed["term_id"] = json!(id);
-    // Routed reads drain delivery. Keep this fixture's worker turn queued,
-    // so releasing that queued hold at the end does not leave a live worker.
     let listed = shared
         .lock()
         .unwrap()
@@ -664,8 +669,10 @@ async fn a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds() 
         app.projects.get(&f.project_id).unwrap().sources[1].path,
         docs
     );
-    app.delivery_queue
-        .retain_queued(|turn| turn.agent_id != f.worker);
+    assert!(app.delivery_queue.agent_in_flight(&worker_key));
+    assert!(app.session_registry.agent_snapshot(&worker_key).is_none());
+    worker_hold.settle(&mut app);
+    assert!(!app.delivery_queue.holds_agent(&worker_key));
     drop(app);
     terminal_ok(&handler, "project.update_source", move_params);
     let stale = handler.call(SessionSender::detached("stale"), req("term.create", scope));

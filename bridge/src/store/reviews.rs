@@ -139,7 +139,7 @@ impl Store {
         description: &str,
     ) -> Result<(Review, Vec<TaskEvent>), StoreError> {
         let description = validate_description(description)?;
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let task = require_task(tx, task_id)?;
             let now = now_rfc3339();
             complete_review_in_tx(
@@ -169,7 +169,7 @@ impl Store {
         actor: &Actor,
         now: &str,
     ) -> Result<Option<TaskEvent>, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if load_header(tx, &task.id)?.is_some_and(|review| review.state == ReviewState::Open) {
                 return complete_review_in_tx(
                     tx,

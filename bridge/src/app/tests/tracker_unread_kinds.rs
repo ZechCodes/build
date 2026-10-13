@@ -145,6 +145,11 @@ fn table() -> Vec<Value> {
             ],
         ),
     ]);
+    for by in ["dispatch", "report"] {
+        let mut moved = event(TaskEventKind::Moved, agent(), MARK + 1);
+        moved["payload"] = json!({"by":by});
+        cases.push(case(&format!("automatic {by} move"), mark(), vec![moved]));
+    }
     cases
 }
 

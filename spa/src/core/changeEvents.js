@@ -76,6 +76,7 @@ import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectAgentsSupport } from "./projectAgentsCache.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
+import { rememberProjectTerminalSupport } from "./projectTerminalSupport.js";
 import { rememberProjectChangesSupport } from "./projectChangesSupport.js";
 import { rememberFileUploadSupport } from "./fileUploadSupport.js";
 import { rememberWorkspaceLockSupport } from "./workspaceLockSupport.js";
@@ -90,6 +91,7 @@ export { SPA_API_RANGE };
 const NO_CAPABILITIES = Object.freeze({
   changes: Object.freeze({ subscriptions: false, kinds: Object.freeze([]), projectSources: false }),
   git: Object.freeze({ projectSources: false }),
+  term: Object.freeze({ projectSources: false }),
   fs: Object.freeze({ projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false }),
   requests: Object.freeze({ priority: false }),
   rtc: Object.freeze({ clientLanCache: false }),
@@ -966,6 +968,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberProjectAgentsSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
   void rememberProjectChangesSupport(deviceId, state.adapter.capabilities);
+  void rememberProjectTerminalSupport(deviceId, state.adapter.capabilities);
   void rememberFileUploadSupport(deviceId, state.adapter.capabilities);
   // And whether task body writes compare their original hash (#347).
   void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);

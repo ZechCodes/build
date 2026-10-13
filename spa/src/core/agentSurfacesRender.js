@@ -1,4 +1,5 @@
 import { esc } from "./text.js";
+import { taskBlockerLinksHtml } from "./trackerTaskReadinessRender.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
@@ -331,6 +332,18 @@ export function runningAndCompletedViewerHtml(kind, { running, completed }, rend
   </div>`;
 }
 
+export const TASK_ACTIVITY_STATES = ["working", "assigned", "blocked"];
+
+export function taskViewerHtml() {
+  const groups = TASK_ACTIVITY_STATES.map((state) => `<section class="surface-group surface-task-group surface-task-${state}" hidden>
+    <h4 class="surface-group-head">${state[0].toUpperCase()}${state.slice(1)}</h4>
+    <div class="surface-task-${state}-rows"></div>
+  </section>`).join("");
+  return `<div class="surface-viewer surface-tasks"><div class="surface-running">
+    <div class="surface-task-legacy"></div>${groups}<div class="surface-task-tracked-rows"></div>
+  </div></div>`;
+}
+
 function shellTailHtml(tail) {
   if (!tail.length) return "";
   return `<details class="surface-shell-tail">
@@ -350,15 +363,20 @@ export function shellRowHtml(row) {
  * One task on the agent's Tasks surface (#34).
  *
  * The state's own word is the trailing stat — "In progress", "Assigned",
- * "Tracking", "In review" — because the mark beside the subject is a colour
- * and four of the six states share two colours between them. The row carries
- * no link: the surfaces are a viewer, and where a task is opened FROM is the
- * Tasks tab and the task's page.
+ * "Blocked", "Tracking", "In review" — because the mark is a colour.
+ * Blocked rows also link the unresolved prerequisites from their cached digests.
  */
 export function taskSurfaceRowHtml(row) {
   return surfaceRowHtml("surface-task", row, {
     trailing: row.stateMark ? statHtml(row.stateMark.label) : "",
+    body: taskBlockersHtml(row),
   });
+}
+
+function taskBlockersHtml({ blockers = [], projectId, deviceId, state }) {
+  if (state !== "blocked") return "";
+  if (!blockers.length) return `<div class="surface-task-blockers surface-row-note">Waiting on prerequisites</div>`;
+  return `<div class="surface-task-blockers surface-row-note">${taskBlockerLinksHtml(blockers, { projectId, deviceId })}</div>`;
 }
 
 export function checklistItemHtml(row) {

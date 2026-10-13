@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 let bridgeAdapter, bridgeCapabilities, changeEventsArmed, greetBridge, resetChangeEvents, subscriptionsActive, watchChanges;
 
 const NONE = {
+  term: { projectSources: false },
   changes: { subscriptions: false, kinds: [], projectSources: false },
   git: { projectSources: false },
   fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },

@@ -114,13 +114,27 @@ belongs in the SPA. Logic that must run while no client is connected (agents,
 watchers, presence, updates) belongs in the bridge as services isolated from
 the RPC and event layer. New work should move toward that.
 
-**Today the code does not fully follow the rule.** Some verbs still carry domain
-logic in the request path. For example, `tasks.assign`
-(`bridge/src/api/v1/tasks.rs`) calls `AppState::tasks_assign`, and
-`bridge/src/app/tracker/dispatch.rs` then applies the assignment policy: it
-watches a task assigned to the user, tracks the receiving agent, and links
-the dispatch result, all inside the call. Read the handler before assuming a
-verb is a thin read or write.
+**Task assignment** records durable authority in schema-17 delivery intents
+before provisioning or admitting a message. The saved target, actor, note,
+operation identity and generation survive restart. Waiting assignments create
+no worker or workspace. `app/tracker/delivery_service.rs` runs from shared
+startup without a client, claims bounded work, runs checkout work off the app
+lock, and revalidates scope and generation before admission. Explicit immediate
+assignments use the same delivery steps. Frozen message parameters and origin
+land before receipt admission, whose transaction checks current graph and
+authority. Recovery settles an existing receipt without rebuilding its message.
+The durable notice outbox tells the coordinator about unassigned releases and
+holders about reblocking. Assignment and coordinator briefs list every retained
+prerequisite closed without Done and direct assessment and user escalation.
+`completion_authority.rs` binds Complete to the assignment operation actually
+consumed through Sent/Seen; a queued replacement cannot authorize an older
+turn's report. The RPC and push layer remains separate from this service.
+Background provisioning owns the ordinary filesystem-job count until settlement,
+so lock, rename and reclaim refuse while it waits for source synchronization.
+Reserved deferred workspaces prepare their unfinished saved sources through the
+same manifest retry path and canonical SyncLock as workspace retry; changed
+project settings cannot redirect the saved cut or leave Git materialization
+without a pinned commit. Worker source-location holds remain independent.
 
 **Frames.** A request is `{id, method, params}`; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
@@ -427,6 +441,14 @@ runtime that starts them.
   The SPA's adapter claims `>=2.0.0 <4.0.0`: it calls nothing a 2.x bridge
   lacks (what 2.x added after 2.0.0 is capability-gated), so the app can
   roll before the bridge.
+  3.21.0 also adds `tasks.waitingOn` (#558/#562), sharing the still-unreleased
+  0.2.13 release: create-time dependencies, `tasks.waiting_on.add/remove/blocks`,
+  and `retry_deferred_id` on assignment. Task answers carry graph-owned
+  `dependencies` (forward resolution reasons, authoritative blocking, reverse
+  count and a bounded detail preview) and saved `deferred_assignment` state.
+  A closed prerequisite resolves with `resolved_by: "close"`; Done resolves
+  with `"done"`. Closure briefs ask the recipient to assess and escalate on
+  the task when unclear. The retired `tasks.link` public RPC stays retired.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -931,7 +953,8 @@ and after committed writes, off tokio workers, and invalidates affected task
 summaries through the existing change bus. Readiness events preserve Done/close
 provenance and have durable outbox receipts. This storage slice grants no
 assignment delivery authority; durable assignments are the following #561
-slice, and the waiting-on capability remains absent until #562.
+slice. #562 verifies the graph, dispatch and read contract and announces
+`tasks.waitingOn` in the still-unreleased wire 3.21.0.
 
 PR-style opening is a service in `bridge/src/reviews/opening.rs`, exposed by
 wire 3.15.0's typed RPC and MCP adapters (#405). `api/v1/reviews.rs` owns the
@@ -1545,8 +1568,9 @@ administration, reclaim and `compact_agent` stay the pin's. `assign_task` and
 on the task's project's owner, handed the task, linking no workspace
 (`bridge/src/app/tracker/dispatch.rs`). `tasks.assign` takes the client's
 `operation_id`; the delivery is queued under it, and asking again with the
-same id answers the `dispatched` event the task already records instead of
-delivering again or making a second worker (`bridge/src/app/tracker/handoff.rs`).
+same id validates the saved assignment target, actor, sender and note and
+answers its durable delivery state instead of delivering again or making a
+second worker (`bridge/src/app/tracker/delivery_acceptance.rs`).
 Removing a worker retires its session, token and queued turns alone, and
 resetting one replaces its own history and session: siblings and the pin keep
 theirs though they share its folder, and the task it held keeps its record. A live worker — a session running, being
@@ -1558,6 +1582,18 @@ reclaim never sees the project's owner, and reclaiming or deleting a named
 workspace never retires a project worker, even one its agents made.
 `project.delete` retires the pin and every worker, revokes their tokens and
 queued turns, and removes the project's scratch; its sources stay.
+
+**Waiting-on tools.** `create_task` accepts `waiting_on`; `link_task` adds
+those edges atomically with its ordinary links. `unlink_task` removes only
+waiting-on edges, and `list_task_dependents` pages same-project reverse digests
+with an opaque scoped cursor and a maximum of 100 rows. Every endpoint is
+validated before a write lands. `assign_task` accepts `retry_deferred_id` alone
+to retry the exact current failed intent, retaining its target, note and receipt
+identity. Assignment while blocked saves authority without enrolling or
+waking its holder. Comments still arrive; Complete reminders and automatic
+moves exclude blocked or undelivered assignments. A blocked user assignment
+is not an assignment-only ask; explicit questions and existing watch/read/
+dismissal marks remain effective, and unblock makes the assignment actionable.
 
 **Tracking.** A task's `trackers` are the agents told about each change to it
 (`bridge/src/app/tracker/notices.rs`; never the agent that made the change).
@@ -2040,8 +2076,36 @@ action. A Changes diff opens Files with the same source, path and line.
 Project list cache writes reconcile added, relabelled, removed and moved sources
 in place. Surviving panes keep their drafts, selected commits and scroll; moving
 a source gives it a new location namespace. Face changes retain the shell's
-conversation and console. Project source terminal selection (#535) and the
-project-worker rail (#536) have separate implementations.
+conversation and console. The project-worker rail (#536) has a separate implementation.
+
+The project and its project-hosted task pages share `console: {kind: "project"}`
+in `shell.js`. The Terminal rail button sits outside the face tablist and
+reports the console's expanded state. It opens the existing console and never
+creates a shell. `projectConsole.js` paints source-labelled tabs from each
+source's `terminals` cache record at device/project/source/captured-path addresses.
+A remembered source picker chooses only the next new shell; changing it or
+changing faces leaves the selected shell and pane standing. Explicit tab close
+uses the tab's captured source assertion and updates only that roster. Collapse
+and navigation detach client screens without closing server shells.
+
+`projectTerminalSupport.js` remembers `term.projectSources` for cold rendering.
+`projectTerminalRpc.js` checks the current compatible greeting and exact cached
+source membership before list/create/attach/close, including reconnect attach.
+Unsupported bridges retain cached tabs and an update notice, receiving no new
+terminal selectors. The shared terminal manager fences requests and pane input
+against device changes. Pane cancellation crosses connection waits, source/greeting
+validation and attach replies; detach releases only the requesting registration.
+Failed or cancelled pane setup releases every acquired terminal resource. Channel
+recovery stays in the terminal lifecycle; the project console neither reads
+connection status nor changes its presentation on disconnect/reconnect.
+`cacheSync.js` prepares original-source subscriptions with the ownership lists
+when `changes.projectSources` is present. On sync/reconnect, `syncPhases.js`
+reads all source terminal rosters after the foreground and inbox, through the
+same two background streams as checkout warming. Their exact terminal record
+identities share the planner's completion and visibility promotion, so an
+unrelated source reply never blocks a newly selected foreground. Source push
+and list writes check membership/location transactionally and keep equal IDs on
+other devices and paths separate. No project terminal polling is introduced.
 
 Commit drafts keep device and account-epoch ownership in the in-memory stash
 as well as their device-scoped `build-ui` records. Old account panes cannot
@@ -2205,8 +2269,9 @@ In practice:
   and written independently as they land. `syncPhases.js` then reads the open
   conversation, the open checkout and project's first task page, the inbox's
   other conversations and remaining task pages/review metadata, and finally
-  background checkout records and bodies. `syncBackgroundStreams.js` drains
-  that final phase through two streams per device, retaining each checkout's
+  source terminal rosters, then background checkout records and bodies.
+  `syncBackgroundStreams.js` drains that final phase through two streams per
+  device, retaining each checkout's
   read/write order and letting a free stream advance past a slow checkout.
   Inbox and push-triggered background RPCs share those two wire slots per
   device/session/restored path. A failed first task page still waits for its

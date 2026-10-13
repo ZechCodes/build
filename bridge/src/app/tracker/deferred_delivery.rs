@@ -69,7 +69,9 @@ impl AppState {
     }
 
     /// Claim a single item, retaining the job outside the RPC deferred slot.
-    pub(in crate::app) fn prepare_task_delivery(&mut self) -> Result<Option<TaskDeliveryWork>, String> {
+    pub(in crate::app) fn prepare_task_delivery(
+        &mut self,
+    ) -> Result<Option<TaskDeliveryWork>, String> {
         let ready = self
             .tracker_store()?
             .delivery_intents_ready(100)
@@ -92,6 +94,11 @@ impl AppState {
         }
         match self.prepare_delivery_resource(&mut intent) {
             Ok(git) => {
+                // Claim before the service releases the app mutex. Provisioning
+                // persists a workspace snapshot just like an ordinary RPC job.
+                if git.is_some() {
+                    self.active_deferred_filesystem_jobs += 1;
+                }
                 self.task_delivery_in_flight.insert(intent.id.clone());
                 Ok(Some(TaskDeliveryWork { intent, git }))
             }
@@ -137,6 +144,10 @@ impl AppState {
         git: Option<&DeferredGit>,
         result: Option<Result<Value, String>>,
     ) -> Result<(), String> {
+        // Settlement still holds the app mutex, including every error path.
+        if git.is_some() {
+            self.active_deferred_filesystem_jobs -= 1;
+        }
         let id = intent.id.clone();
         let finished = self.finish_delivery_steps(&mut intent, git, result);
         self.task_delivery_in_flight.remove(&id);

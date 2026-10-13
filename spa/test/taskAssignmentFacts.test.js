@@ -41,6 +41,28 @@ describe("assignment facts across cached task replicas", () => {
     expect((await read()).dependencies.blocked).toBe(false);
   });
 
+  it.each(lists.slice(0, 2))("keeps newer %s facts when a same-stamp older page lands late", async (_kind, address) => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+    await writeCached(address, { tasks: [row(true)], read_order: 1_800_000_000_002 });
+    now.mockReturnValue(1_800_000_000_010);
+    await writeCached(lists[2][1], { tasks: [row(false)], read_order: 1_800_000_000_001 });
+    expect((await read()).dependencies.blocked).toBe(true);
+  });
+
+  it("ignores a delayed same-stamp blocker after a newer ready query", async () => {
+    await writeCached(lists[1][1], { tasks: [row(false)], read_order: 1_800_000_000_002 });
+    await writeCached(lists[2][1], { tasks: [row(true)], read_order: 1_800_000_000_001 });
+    expect((await read()).dependencies.blocked).toBe(false);
+  });
+
+  it("uses the task timestamp before list read order", async () => {
+    await writeCached(lists[0][1], { tasks: [row(true)], read_order: 1_800_000_000_002 });
+    await writeCached(lists[2][1], {
+      tasks: [row(false, "2026-10-13T01:01:00Z")], read_order: 1_800_000_000_001,
+    });
+    expect((await read()).dependencies.blocked).toBe(false);
+  });
+
   it("does not read another device, project or task", async () => {
     await writeCached(tasksAddress("other-device", "project"), { tasks: [row(true)] });
     await writeCached(tasksAddress("device", "other-project"), { tasks: [row(true)] });

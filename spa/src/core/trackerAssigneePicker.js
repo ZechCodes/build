@@ -23,7 +23,6 @@ import {
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
-import { readTaskAssignmentFacts } from "./taskAssignmentFacts.js";
 import { createTaskWaitingOnActions } from "./taskWaitingOnActions.js";
 
 const PREFIX = "task-assign";
@@ -69,12 +68,6 @@ function prerequisiteCopy(state) {
   return `<p class="sub task-assign-prerequisites">Prerequisites must be Done or closed. Requested workspaces and agents are created when the task unblocks. The assigned agent assesses prerequisites closed without Done before proceeding.${user}</p>`;
 }
 
-async function assignmentNeedsWaitingOn(deviceId, projectId, taskId, capturedWait, assignee) {
-  if (assignee === null) return false;
-  const cached = await readTaskAssignmentFacts(deviceId, projectId, taskId);
-  return capturedWait || Boolean(cached?.dependencies?.blocked);
-}
-
 export function assigneePickerBodyHtml(state) {
   return `<h3>${esc(titleOf(state.task))}</h3>
     <p class="sub create-hint">${esc(state.task.title || "")}</p>
@@ -100,10 +93,7 @@ export function assigneePickerBodyHtml(state) {
  * needs to say something about.
  */
 export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null, note = "", deviceId = "", projectId = task.project_id }) {
-  const actions = createTaskWaitingOnActions({ deviceId, projectId, taskId: task.id, call: callRpc });
-  // Capture the wait when the form opens. A downgraded cached capability or
-  // later repaint cannot turn this choice into an immediate assignment.
-  const requiresWaitingOn = Boolean(task.dependencies?.blocked);
+  const actions = createTaskWaitingOnActions({ deviceId, projectId, taskId: task.id, task, call: callRpc });
   const state = {
     task,
     options,
@@ -139,8 +129,7 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
         taskId: task.id,
         note: state.note,
       });
-      const waiting = await assignmentNeedsWaitingOn(deviceId, projectId, task.id, requiresWaitingOn, params.assignee);
-      const answer = await actions.assign(params, { requiresWaitingOn: waiting });
+      const answer = await actions.assign(params);
       if (dismissed) return;
       await close();
       onAssigned?.(answer);

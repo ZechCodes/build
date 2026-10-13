@@ -4,28 +4,39 @@ import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { cacheTaskWaitingOnBlocks, cacheTaskWaitingOnResponse, captureTaskWaitingOnBlocksRead } from "./taskWaitingOnCache.js";
 import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
+import { readTaskAssignmentFacts } from "./taskAssignmentFacts.js";
 export { TASK_WAITING_ON_UPDATE };
 
-export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }) {
+export function createTaskWaitingOnActions({ deviceId, projectId, taskId, task = null, call }) {
+  async function needsWaitingOn(method, params, options) {
+    if (method !== "tasks.assign" || Object.hasOwn(params, "retry_deferred_id")) return options.requiresWaitingOn !== false;
+    if (params.assignee === null) return false;
+    const cached = await readTaskAssignmentFacts(deviceId, projectId, taskId);
+    // The opened task remains evidence when no replica has prerequisite facts.
+    return Boolean((cached || task)?.dependencies?.blocked);
+  }
+
+  async function send(method, params, options, stands) {
+    // This runs after greeting settlement, not at submit: cache facts may
+    // change while greeting. Retain its authority across the cache read.
+    const requiresWaitingOn = await needsWaitingOn(method, params, options);
+    if (!stands()) throw new Error("This machine's greeting changed before sending. Try again.");
+    if (requiresWaitingOn && (!contextFor(deviceId) || bridgeCapabilities(deviceId)?.tasks?.waitingOn !== true)) {
+      throw new Error(TASK_WAITING_ON_UPDATE);
+    }
+    return call(method, params);
+  }
+
   async function ask(method, params, options = {}) {
-    const requiresWaitingOn = options.requiresWaitingOn !== false;
     const context = contextFor(deviceId);
-    if (!context && requiresWaitingOn) throw new Error(TASK_WAITING_ON_UPDATE);
     const basis = method === "tasks.waiting_on.blocks"
       ? await captureTaskWaitingOnBlocksRead(deviceId, projectId, taskId) : {};
     // Established commands retain their before-greeting behavior for callers
     // with no session context. New graph contracts always need a greeting.
-    if (!context && !requiresWaitingOn) {
-      const answer = await call(method, params);
-      await cacheTaskWaitingOnResponse(deviceId, projectId, answer);
-      return answer;
-    }
-    const request = await whenGreeted(context, () => {
-      if (requiresWaitingOn && bridgeCapabilities(deviceId)?.tasks?.waitingOn !== true) {
-        throw new Error(TASK_WAITING_ON_UPDATE);
-      }
-      return call(method, params);
-    });
+    const stands = () => !contextFor(deviceId);
+    const request = context
+      ? await whenGreeted(context, (current) => send(method, params, options, current))
+      : { sent: send(method, params, options, stands), stands };
     if (!request) throw new Error("This machine is unavailable. Try again when it returns.");
     const answer = await request.sent;
     if (!request.stands()) throw new Error("This machine's greeting changed while the request was running. Reload the task before trying again.");
@@ -41,9 +52,9 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
     blocks: ({ cursor, limit } = {}) => ask("tasks.waiting_on.blocks", {
       task_id: taskId, ...(cursor ? { cursor } : {}), ...(limit ? { limit } : {}),
     }, { cursor }),
-    assign: (params, { requiresWaitingOn = false } = {}) => ask("tasks.assign", {
+    assign: (params) => ask("tasks.assign", {
       ...params, task_id: taskId,
-    }, { requiresWaitingOn }),
+    }),
     retry: (id) => ask("tasks.assign", { task_id: taskId, retry_deferred_id: id }),
     create: (params) => ask("tasks.create", { project_id: projectId, ...params }, {
       requiresWaitingOn: Object.hasOwn(params, "waiting_on"),

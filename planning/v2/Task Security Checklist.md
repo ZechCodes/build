@@ -250,7 +250,11 @@ The Dashboard-model pending creating-target name regressions likewise failed
 before the fix (exit **1**, two tests), then passed with all 48 model tests
 (exit **0**). The grouping, rail, inbox and board unit evidence is recorded
 on #563 alongside the browser red/green logs and 390px/1280px light/dark
-fixture screenshots. These renderers introduce no write authority or
+fixture screenshots. The real-wire watched-inbox fixture additionally verifies
+the unblocked dependency digest and `Assigned · Assigned to you` group-plus-ask
+facts (four tests, exit **0**); its stale pre-grouping expectation was first
+observed failing (isolated exit **1**).
+These renderers introduce no write authority or
 connection-state branch. This evidence verifies the complete W4 cached-rendering
 scope; TS558-7's W5 write-capability and edge-control scope remains owned by
 #564 and is not claimed here.

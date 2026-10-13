@@ -45,7 +45,7 @@ it("retains greeting authority across the asynchronous send-time cache read", as
   let finish;
   mocks.facts.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   const request = actions.assign({ assignee: { kind: "new_workspace" } });
-  await vi.waitFor(() => expect(mocks.facts).toHaveBeenCalledWith("d", "p", "t"));
+  await vi.waitFor(() => expect(mocks.facts).toHaveBeenCalledWith("d", "p", "t", null));
   expect(call).not.toHaveBeenCalled();
   mocks.stands.mockReturnValue(false);
   finish({ dependencies: { blocked: false } });

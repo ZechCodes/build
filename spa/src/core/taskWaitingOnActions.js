@@ -11,9 +11,8 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, task =
   async function needsWaitingOn(method, params, options) {
     if (method !== "tasks.assign" || Object.hasOwn(params, "retry_deferred_id")) return options.requiresWaitingOn !== false;
     if (params.assignee === null) return false;
-    const cached = await readTaskAssignmentFacts(deviceId, projectId, taskId);
-    // The opened task remains evidence when no replica has prerequisite facts.
-    return Boolean((cached || task)?.dependencies?.blocked);
+    const facts = await readTaskAssignmentFacts(deviceId, projectId, taskId, task);
+    return Boolean(facts?.dependencies?.blocked);
   }
 
   async function send(method, params, options, stands) {

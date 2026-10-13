@@ -289,3 +289,22 @@ by the passing complete rerun. #614 did not fail, so no isolated flake reruns
 were needed. Gate logs, red/green evidence and four representative screenshots
 are attached on #564. Origin/main stayed e42778df through the ready fetch;
 no merge was needed. No live bridge or user browser was used.
+
+
+W5 revision 2 / #564 closes the two P2 review gaps in snapshot 1. The board/list
+picker now forwards device and project scope (`facfb5bb`). Four regressions run
+through the real picker, fake IDB and greeting authority in both board/list
+views: capable blocked assignment succeeds; cached reblock plus greeting
+downgrade refuses without losing the note or target. All four failed before the
+fix and pass afterward; the related pane suites exit 0 (94 tests).
+
+Accepted edge/assignment replies now advance an atomic task-detail mutation
+fence (`b0ca5ccc`). Both the mounted task-page reader and secondary detail feed
+capture its basis before `tasks.get` and reject stale responses during atomic
+cache admission, alongside the existing checklist guard. Production reader
+regressions failed first for graph edits and saved-assignment state, including a
+same-timestamp feed response. Fresh reads begun after the action still admit.
+Expanded DOM/churn/read-order/cache/ratchet coverage exits 0 (117 tests); source
+lint and diff checks exit 0. No complexity cap, annotation or ratchet changed.
+The W5-owned TS558-4/7 score remains 100/100 with these gaps closed; revision-2
+broad gates and security scan logs are attached to the new #564 review head.

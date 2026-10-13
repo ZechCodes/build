@@ -130,7 +130,7 @@ bound. W2 delivery authorization and W3 caller-facing evidence are verified belo
 | TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 / #564 verifies the cached armed/unassigned removal consequence in `taskWaitingOnModel.test.js`, `taskWaitingOnPage.test.js` and keyboard browser cases in `taskWaitingOnEdges.test.js`; removal sends only the edge command and does not invent an assignment or worker. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
 | TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
-| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W5 / #564: `taskWaitingOnEdges.test.js` verifies escaped hostile titles, cached edges with held reads, distinct Done/close presentation, same-project keyboard editing and reverse navigation at 390/1280 light/dark, exact saved-id retry, current-greeting refusal and legacy request shapes. `taskWaitingAssignment.test.js` and `trackerTasksPaneDom.test.js` verify ready-form detail-first and list-first reblock-at-submit refusal with note/target retention in board/list views. `taskAssignmentFacts.test.js` verifies catalogue/query/page freshness and device/project/task isolation. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js` and `taskWaitingOnPage.test.js` fence reverse page generations, unmounted production task pushes and mounted off-preview stale tails/cursors. W4 / #563 grouping evidence below verifies cached Blocked/Ready groups, history precedence and older-capability rendering; the second landing verifies the combined journey. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W5 / #564: `taskWaitingOnEdges.test.js` verifies escaped hostile titles, cached edges with held reads, distinct Done/close presentation, same-project keyboard editing and reverse navigation at 390/1280 light/dark, exact saved-id retry, current-greeting refusal and legacy request shapes. `taskWaitingAssignment.test.js` and `trackerTasksPaneDom.test.js` verify ready-form detail-first and list-first reblock-at-submit refusal with note/target retention in board/list views. `taskAssignmentFacts.test.js` verifies catalogue/query/page freshness and device/project/task isolation. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js` and `taskWaitingOnPage.test.js` fence reverse page generations, unmounted production task pushes and mounted off-preview stale tails/cursors. Round-7 / #564 adds `taskDependencyKnowledge.test.js` for persistent per-task readiness across unknown refreshes, strictly newer capable clears, writer paths, concurrency and eviction, plus real list/board loss-of-all-replicas refusal tests. `trackerTaskChecklistDom.test.js` verifies a fenced push-triggered detail read gets a replacement after successful edge editing, restoring cached/rendered timeline history. W4 / #563 grouping evidence below verifies cached Blocked/Ready groups, history precedence and older-capability rendering; the second landing verifies the combined journey. |
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
 gate exit 0 (4,592 library tests passed, 9 ignored; integration tests include
@@ -498,3 +498,42 @@ opened-source and unknown-summary bypass. No bridge files, complexity caps
 or ratchet entries change. Source stays fixed at `6957095f` throughout the
 final gates; later commits add explicit empty-list tests and record evidence.
 Publication head/base, snapshot and attached exit/log evidence are on #564.
+
+
+W5 round-7 fix / #564 (2026-10-13), addressing the round-6 review:
+
+- Dependency knowledge now has its own per-task `tracker-task-dependencies`
+  cache record scoped by device/project/task. Only admitted writes carrying a
+  boolean readiness summary can update it. The summary keeps the source task's
+  timestamp. Legacy omitted/null/unknown summaries leave it untouched even if
+  their ordinary task timestamp is newer. A blocked record persists until a
+  strictly newer capable version reports ready; the current-wire
+  `{blocked:false, waiting_on:[]}` clear remains authoritative. Tied or unknown
+  timestamps retain waiting. Replica timestamps/read orders no longer decide
+  the guard once knowledge exists. The previous conservative fallback remains
+  for caches without a knowledge record, including one atomic snapshot of
+  knowledge with the fallback replicas after an initial knowledge miss.
+- The reviewer's real list/board reproduction opens ready t1, learns blocked
+  t2 in detail/catalogue, verifies the reblock was known, then overwrites every
+  blocking replica with legacy t2. Both tests failed on forbidden
+  `tasks.assign` before the fix (exit **1**), then pass while retaining note and
+  target. Twenty-five knowledge tests cover every production writer path,
+  newer legacy writes, older/newer capable empty lists, timestamp ties, rejected
+  writes, concurrent writers, reload, scoped eviction and the initial-miss race.
+  The additional initial-miss test failed first (exit **1**) and passes after
+  the knowledge/fallback snapshot change.
+- Successful add/remove requests a detail refresh through the task page's
+  existing trailing reader after the action cache write. The page/button/action
+  reproduction failed first (exit **1**, only two detail reads). It now proves
+  the push-triggered read is rejected by the unchanged detail fence, then the
+  third read restores the cached and rendered link/readiness timeline. Controls
+  retain refused drafts and removal still issues only the edge command.
+
+Focused validation exits **0**: eight files / **207 tests** for the primary
+record/cache/assignment/paging fix (including unchanged complexity ratchet);
+three files / **40 tests** for expanded writer coverage, push invalidation and
+page/action race; three files / **51 tests** for the final initial-miss change,
+including all fallback fact regressions and unchanged ratchet. Scoped lint
+exits **0**. ARCHITECTURE's Render from cache and capability sections describe
+both fixes. No bridge files, complexity caps or ratchet entries change. Final
+broad gates and publication evidence follow below and on #564.

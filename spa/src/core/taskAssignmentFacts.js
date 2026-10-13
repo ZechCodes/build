@@ -1,6 +1,6 @@
 // Assignment reads durable dependency knowledge. Pre-upgrade caches without
 // that record retain conservative arbitration of replicas and the opened row.
-import { readTaskDependencyKnowledge } from "./taskDependencyKnowledge.js";
+import { readTaskDependencyKnowledge, taskDependencyKnowledgeAddress } from "./taskDependencyKnowledge.js";
 import { cachedAddresses, readCachedMany } from "./localCache.js";
 import { taskAddress, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND } from "./trackerCache.js";
 
@@ -11,14 +11,20 @@ const taskInstant = (task) => {
 };
 const taskInRecord = (record, taskId) => record?.value?.task
   || record?.value?.tasks?.find((task) => task.id === taskId);
+const knowledgeFacts = (knowledge) => ({ id: knowledge.task_id, updated_at: knowledge.updated_at, dependencies: knowledge.dependencies });
 const hasDependencyFacts = (task) => typeof task.dependencies?.blocked === "boolean";
 
 export async function readTaskAssignmentFacts(deviceId, projectId, taskId, opened = null) {
   const knowledge = await readTaskDependencyKnowledge(deviceId, projectId, taskId);
-  if (knowledge) return { id: knowledge.task_id, updated_at: knowledge.updated_at, dependencies: knowledge.dependencies };
+  if (knowledge) return knowledgeFacts(knowledge);
   const addresses = (await cachedAddresses({ deviceId, entityId: projectId }))
     .filter((address) => listKinds.includes(address.kind));
-  const records = await readCachedMany([taskAddress(deviceId, projectId, taskId), ...addresses]);
+  // A capable write may establish knowledge during the initial cache miss.
+  // Snapshot it with the fallback replicas before using their conservative rule.
+  const [observed, ...records] = await readCachedMany([
+    taskDependencyKnowledgeAddress(deviceId, projectId, taskId), taskAddress(deviceId, projectId, taskId), ...addresses,
+  ]);
+  if (observed?.value) return knowledgeFacts(observed.value);
   const tasks = [...records.map((record) => taskInRecord(record, taskId)), opened]
     .filter((task) => task?.id === taskId);
   return selectAssignmentFacts(tasks);

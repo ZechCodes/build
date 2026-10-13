@@ -31,6 +31,7 @@ let mainWindow = null;
 let accessToken = null;
 let refreshToken = null;
 let pendingAuthorization = null;
+let exchangingCode = false;
 let refreshTimer = null;
 let tokenStore = null;
 let refreshInFlight = null;
@@ -207,6 +208,7 @@ async function beginAuthentication() {
   try {
     await shell.openExternal(pendingAuthorization.url);
   } catch (error) {
+    pendingAuthorization = null;
     await showAuthenticationError(error);
   }
 }
@@ -216,6 +218,7 @@ async function handleAuthorizationCallback(url) {
   const authorization = pendingAuthorization;
   const generation = credentialGeneration;
   pendingAuthorization = null;
+  exchangingCode = true;
   try {
     const { code } = parseAuthorizationCallback(url, authorization.state);
     const payload = await requestTokens(
@@ -225,7 +228,10 @@ async function handleAuthorizationCallback(url) {
     useTokens(payload);
     openAuthenticatedWindow();
   } catch (error) {
+    exchangingCode = false;
     if (generation === credentialGeneration) await showAuthenticationError(error);
+  } finally {
+    exchangingCode = false;
   }
 }
 
@@ -308,7 +314,7 @@ if (!hasSingleInstanceLock) {
     void startAuthentication().finally(() => { starting = false; });
 
     app.on("activate", () => {
-      if (mainWindow || starting || signingOut) return;
+      if (mainWindow || starting || exchangingCode || signingOut) return;
       if (accessToken) mainWindow = createWindow();
       else if (!pendingAuthorization) void startAuthentication();
     });

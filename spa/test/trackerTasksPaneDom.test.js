@@ -217,12 +217,13 @@ describe("device-scoped waiting assignments from the pane", () => {
       { capabilities: { tasks: { waitingOn } } }, authority);
   };
 
-  const openRealPicker = async (held, view, { holdDetail = false } = {}) => {
+  const openRealPicker = async (held, view, { holdDetail = false, holdList = false } = {}) => {
     const { fakeSession } = await import("./deviceSessionFixture.js");
     contexts = await import("../src/core/deviceContexts.js");
     const session = fakeSession("dev-1");
     call = vi.fn(async (method) => {
       if (holdDetail && method === "tasks.get") return new Promise(() => {});
+      if (holdList && method === "tasks.list") return new Promise(() => {});
       return method === "tasks.list" ? { tasks: [held] } : {
         task: { ...held, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } } },
         dispatch: null,
@@ -401,6 +402,42 @@ describe("device-scoped waiting assignments from the pane", () => {
     expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
     expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
   });
+
+  it.each(["list", "board"].flatMap((view) => ["detail", "catalogue", "query", "page"].map((source) => [view, source])))(
+    "keeps the %s draft when an older first knowledge record bypasses a pre-existing %s blocker",
+    async (view, source) => {
+      const ready = task({ id: `task-migration-${view}-${source}`, updated_at: "2026-10-13T01:00:00Z",
+        dependencies: { blocked: false, waiting_on: [] } });
+      const blocked = { ...ready, updated_at: "2026-10-13T01:01:00Z",
+        dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+      const legacy = { ...blocked };
+      delete legacy.dependencies;
+      const addresses = {
+        detail: trackerCache.taskAddress("dev-1", "proj-1", ready.id),
+        catalogue: trackerCache.tasksAddress("dev-1", "proj-1"),
+        query: trackerCache.tasksQueryAddress("dev-1", "proj-1", { label: "retained" }),
+        page: trackerCache.tasksPageAddress("dev-1", "proj-1", { cursor: "retained" }),
+      };
+      // Raw writes reproduce a released-client cache before knowledge existed.
+      await cache.writeCached(addresses.catalogue, trackerCache.tasksRecord([legacy], columns()));
+      await cache.writeCached(addresses[source], source === "detail"
+        ? { task: blocked, timeline: [] } : trackerCache.tasksRecord([blocked], columns()));
+      const { readTaskDependencyKnowledge } = await import("../src/core/taskDependencyKnowledge.js");
+      expect(await readTaskDependencyKnowledge("dev-1", "proj-1", ready.id)).toBeNull();
+      // Keep wire reads pending so the first record really is the older ready response.
+      await openRealPicker(legacy, view, { holdDetail: true, holdList: true });
+      expect(await readTaskDependencyKnowledge("dev-1", "proj-1", ready.id)).toBeNull();
+      await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { label: "old-read" },
+        trackerCache.tasksRecord([ready], columns()));
+      greet(false);
+      document.querySelector("[data-assign-go]").click();
+      await flush();
+      expect(listed("tasks.assign")).toEqual([]);
+      expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+      expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+      expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+    },
+  );
 
 });
 

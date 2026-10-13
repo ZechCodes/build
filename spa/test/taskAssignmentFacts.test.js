@@ -11,7 +11,9 @@ beforeEach(async () => {
   ({ readTaskAssignmentFacts } = await import("../src/core/taskAssignmentFacts.js"));
 });
 afterEach(() => vi.restoreAllMocks());
-const row = (blocked, updated_at = "2026-10-13T01:00:00Z") => ({ id: "task", updated_at, dependencies: { blocked } });
+const row = (blocked, updated_at = "2026-10-13T01:00:00Z") => ({
+  id: "task", updated_at, dependencies: { blocked, waiting_on: blocked ? [{ task_id: "prerequisite", resolved: false }] : [] },
+});
 const read = (opened) => readTaskAssignmentFacts("device", "project", "task", opened);
 const lists = [
   ["catalogue", tasksAddress("device", "project")],
@@ -35,9 +37,9 @@ describe("assignment facts across cached task replicas", () => {
     expect((await read(opened)).dependencies.blocked).toBe(true);
   });
 
-  it("treats omitted dependencies as unknown, preserving any known blocker", async () => {
+  it("treats omitted and partial dependencies as unknown, preserving any known blocker", async () => {
     await writeCached(lists[0][1], { tasks: [row(true)] });
-    await writeCached(lists[1][1], { tasks: [row(false, "2026-10-13T01:01:00Z")] });
+    await writeCached(lists[1][1], { tasks: [{ ...row(false, "2026-10-13T01:01:00Z"), dependencies: { blocked: false } }] });
     await writeCached(taskAddress("device", "project", "task"), {
       task: { id: "task", updated_at: "2026-10-13T01:02:00Z" },
     });

@@ -105,3 +105,10 @@ it("consults knowledge established while an initially empty knowledge read was p
   const { readTaskAssignmentFacts } = await import("../src/core/taskAssignmentFacts.js");
   expect((await readTaskAssignmentFacts("device", "project", "task", ready)).dependencies.blocked).toBe(true);
 });
+
+it.each([{}, { blocked: false }, { blocked: false, waiting_on: null }])("a partial ready summary %j cannot erase durable waiting", async (dependencies) => {
+  await writes.detail(task(true));
+  await writes.query({ ...task(false, "2026-10-13T01:01:00Z"), dependencies });
+  await writes.detail({ ...task(false, "2026-10-13T01:02:00Z"), dependencies: undefined });
+  expect((await read()).dependencies.blocked).toBe(true);
+});

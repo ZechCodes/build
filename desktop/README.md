@@ -16,7 +16,9 @@ The refresh token is encrypted with Electron `safeStorage` and saved as
 POSIX systems). Startup silently refreshes it before opening the app. Each
 rotated token atomically replaces the previous file. If secure storage is
 unavailable, including Linux's `basic_text` fallback, credentials remain in
-memory and the next launch requires browser sign-in. See Electron's
+memory; a successful new sign-in removes any previously saved account’s token,
+and the next launch requires browser sign-in. A deletion failure is reported
+before opening the account window. See Electron's
 [safeStorage documentation](https://www.electronjs.org/docs/latest/api/safe-storage)
 for the OS key providers and protection boundaries.
 
@@ -31,9 +33,10 @@ it does not start browser sign-in. A failed response after server rotation can
 still require sign-in on retry because the previous token is already invalid.
 
 **Account → Sign Out** clears the saved token, credentials and refresh timer,
-closes the app window, and quits. This signs out this desktop installation;
-it does not sign out the system browser or revoke other sessions. If the disk
-cannot be cleared, the app reports that sign-out failed before quitting.
+retires the app window, then awaits clearing the default session’s cookies,
+localStorage, IndexedDB and HTTP cache before quitting. This signs out this desktop installation;
+it does not sign out the system browser or revoke other sessions. If saved credentials, session storage or the HTTP cache cannot be cleared,
+the app reports that sign-out failed before quitting.
 
 Authentication regression tests stub Electron, encryption, token HTTP responses,
 browser handoff and timers. They never start Electron or perform a real sign-in.

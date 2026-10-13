@@ -689,3 +689,27 @@ test("closing the native failure parent still completes Sign Out without destroy
   assert.equal(calls.quit, 1);
   assert.equal(calls.reportWindows[0].destroyed, true);
 });
+
+test("a late browser-handoff rejection cannot open authentication UI during Sign Out", async (t) => {
+  let rejectBrowser;
+  const browser = new Promise((_resolve, reject) => { rejectBrowser = reject; });
+  const storage = deferred();
+  const { calls, signOut } = await launch(t, {
+    stored: null,
+    openExternal: () => browser,
+    clearStorageData: () => storage.promise,
+  });
+  assert.equal(calls.browser.length, 1);
+  const cleanup = signOut().click();
+  await flush();
+  assert.deepEqual(calls.cleanup, ["storage"]);
+  rejectBrowser(new Error("fixture browser handoff failed"));
+  await flush();
+  assert.deepEqual(calls.dialogs.map((dialog) => dialog.title), []);
+  assert.equal(calls.quit, undefined);
+  storage.resolve();
+  await cleanup;
+  assert.equal(calls.quit, 1);
+  assert.equal(calls.fetch.length, 0);
+  assert.equal(calls.windows.length, 0);
+});

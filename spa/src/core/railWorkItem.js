@@ -14,7 +14,7 @@
 // rail reads, so the rail paints it the way it paints a push — and only where
 // nothing has written that record since the verb went out.
 
-import { projectAgentsAddress, projectAgentsSupportAddress, readProjectAgents } from "./projectAgentsCache.js";
+import { projectAgentsAddress, projectAgentsSupportAddress, readProjectAgents, readProjectAgentsSupport } from "./projectAgentsCache.js";
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
 import {
@@ -105,9 +105,9 @@ export function createRailWorkItem({
     // Cache invalidations supersede a pending snapshot; independent consumers
     // of that same snapshot must not cancel one another's initial paint.
     const token = rowRead;
-    const [project, legacy] = await Promise.all([cachedProjectRow(entityId), cachedLegacyRow(entityId)]);
+    const [project, legacy, support] = await Promise.all([cachedProjectRow(entityId), cachedLegacyRow(entityId), readProjectAgentsSupport(context.deviceId)]);
     const row = project || legacy;
-    return token === rowRead ? row : null;
+    return token === rowRead && row ? { ...row, projectWorkersSupported: support.projectWorkers } : null;
   };
 
   const cachedLegacyRow = async (entityId) => {

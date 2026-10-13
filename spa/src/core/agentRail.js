@@ -2427,10 +2427,24 @@ function mountRailOnContext(host, context, swap) {
     usageLimitBanner.sync();
   };
 
+  const syncProjectAgentsUpdateNotice = () => {
+    const panel = host.querySelector(".rail-panel");
+    if (!panel) return;
+    const notice = panel.querySelector(".rail-project-agents-update");
+    const outdated = context.kind === "project" && !context.pinnedOnly && entity.projectWorkersSupported === false;
+    if (!outdated) { notice?.remove(); return; }
+    if (notice) return;
+    const message = document.createElement("p");
+    message.className = "sub rail-project-agents-update";
+    message.textContent = "Update this computer's Build bridge to use project agents.";
+    panel.querySelector(".rail-head")?.after(message);
+  };
+
   /** The panel, painted for whatever the rail has selected. */
   const paintPanel = () => {
     if (selectedKind === "overview") paintOverviewPanel();
     else paintConversationPanel();
+    syncProjectAgentsUpdateNotice();
     syncThreadTimeVisibility();
   };
 

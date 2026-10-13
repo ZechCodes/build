@@ -230,23 +230,13 @@ export const RAIL_SEPARATOR_ENTRY = Object.freeze({
  *  work item. */
 export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) || "?").toUpperCase();
 
-/** What the project's bubble is waiting on, in the same order an agent's is
- *  (`bubbleNews`): a failure, then work in flight, then the unread left. */
-function projectAgentNews(agents) {
-  const unread = rosterUnreadCount(agents);
-  const asking = agents.find(unreadIsNews);
-  if (asking) return unreadReasonText(asking.unread_reason, "agent") || `${unread} unread`;
-  return agents.some(agentIsRunning) ? "working" : "";
-}
-
 /**
  * The project's own agent, as a workspace's strip carries it.
  *
  * It is there whether or not the project has a conversation yet: the agent is
  * the project's, not this workspace's, and one nobody has started is still the
- * one every workspace in the project talks to. Until an agent has been born on
- * it the tip says how to start it, the way a ghost's does, rather than reading
- * as a bubble with nothing behind it.
+ * one every workspace in the project talks to. Its tooltip names that purpose
+ * consistently; unread, working and watching stay on the bubble's own marks.
  *
  * It is marked the way an unwatched agent's bubble is (#105) while the
  * project's agent open under it is one the reader does not watch, or, with
@@ -254,16 +244,13 @@ function projectAgentNews(agents) {
  * the strip carries it at all.
  */
 export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null } = {}) {
-  const news = projectAgentNews(agents);
-  const who = `Project agent for ${name}`;
   const unwatched = projectAgentMarked(agents, active, openAgentId);
-  const title = agents.length ? [who, news].filter(Boolean).join(" — ") : `${who}: send a message to start it`;
   return {
     type: "project",
     id: entityId || "",
     label: projectInitial(name),
     pattern: null,
-    title: unwatched ? `${title} · ${UNWATCHED_TIP}` : title,
+    title: "Project agent",
     unwatched,
     active,
     unread: rosterUnreadCount(agents),
@@ -380,7 +367,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
         type: "ghost",
         id: "",
         ...face(agentPattern(1)),
-        title: chatCapable ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace",
+        title: onProjectPage ? "Project agent" : chatCapable ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace",
         active: selectedKind === "agent",
         unread: 0,
         working: false,
@@ -394,7 +381,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
     // A named agent wears its initials; an unnamed one keeps the painted
     // pattern, which says as much as a letter cut from an ordinal would.
     initials: agentInitials(agent),
-    title: agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
+    title: onProjectPage ? "Project agent" : agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
     unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
     unread: conversationUnreadCount(agent),
@@ -582,6 +569,7 @@ const projectEntity = (row, agents) => ({
   adoptable: false,
   canAdd: !!row.pinned_agent_id,
   pinnedAgentId: row.pinned_agent_id || null,
+  projectWorkersSupported: row.projectWorkersSupported,
   chatCapable: true,
   executionContext: row.execution_context || null,
   directories: [],

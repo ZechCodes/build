@@ -2206,7 +2206,7 @@ describe("the strip's watched agents (#105)", () => {
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
-      expect(projectBubble().title).toMatch(/Not watching$/);
+      expect(projectBubble().title).toBe("Project agent");
 
       bubbleOf("ag-one").click();
       await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
@@ -2226,7 +2226,7 @@ describe("the strip's watched agents (#105)", () => {
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
-      expect(projectBubble().title).toMatch(/Not watching$/);
+      expect(projectBubble().title).toBe("Project agent");
 
       bubbleOf("ag-one").click();
       await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
@@ -7246,6 +7246,54 @@ describe("cached project worker rail", () => {
       await flush();
       expect(workerBubble()).toBeNull();
     } finally { release?.(); spy.mockRestore(); }
+  });
+
+  it("names the project pin exactly Project agent", async () => {
+    await mountWorkers();
+    expect(railHost().querySelector('[data-agent="project-pin"]').title).toBe("Project agent");
+  });
+
+  it("adds the cached old-bridge notice without replacing the pin conversation", async () => {
+    await mountWorkers();
+    railHost().querySelector('[data-agent="project-pin"]').click();
+    await flush();
+    const input = panel().querySelector("#railinput");
+    const thread = panel().querySelector(".thread-items");
+    input.value = "keep this draft";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    const notice = () => panel().querySelector(".rail-project-agents-update");
+    expect(notice()).toBeNull();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+    await vi.waitFor(() => expect(notice()?.textContent).toBe("Update this computer's Build bridge to use project agents."));
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(panel().querySelector(".thread-items")).toBe(thread);
+    expect(input.value).toBe("keep this draft");
+    expect(document.activeElement).toBe(input);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    await vi.waitFor(() => expect(notice()).toBeNull());
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(panel().querySelector(".thread-items")).toBe(thread);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("does not call an unknown cached bridge outdated", async () => {
+    payload = { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] };
+    await mount({ kind: "project", entityId: owner, openAgentId: "project-pin" });
+    expect(panel().querySelector(".rail-project-agents-update")).toBeNull();
+  });
+
+  it("does not show a project agents update notice on a workspace host", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+    payload = { kind: "workspace", entity_id: "workspace-owner", project_id: "p1", agents: [agent({ id: "workspace-agent" })] };
+    await writeRailBoard({ items: [payload, { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] }],
+      projects: [{ project_id: "p1", name: "Project", entity_id: owner }],
+      workspaces: [{ workspace_id: "ws", project_id: "p1", entity_id: "workspace-owner", name: "Child" }] });
+    await mount({ kind: "workspace", workspaceId: "ws", openAgentId: "workspace-agent", projectAgent: { projectId: "p1", entityId: owner, name: "Project" } });
+    railHost().querySelector('[data-bubble="project"]').click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(panel().querySelector(".rail-project-agents-update")).toBeNull();
   });
 
   it("explains shared source writes when adding a worker", async () => {

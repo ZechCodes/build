@@ -74,8 +74,8 @@ const callsOn = (ws, method) =>
 
 /** A socket with a session and a wire: what the manager hands over once the
  *  followed device's channels are open. */
-async function connected({ session = terminalSession(), settle = tick } = {}) {
-  const socket = new TerminalSocket({ transport: fakeTransport });
+async function connected({ session = terminalSession(), settle = tick, transport = fakeTransport } = {}) {
+  const socket = new TerminalSocket({ transport });
   const statuses = [];
   socket.onStatus((status) => statuses.push(status));
   socket.adoptTerminalSession(session);
@@ -1113,6 +1113,31 @@ describe("user terminal attach lifetime", () => {
     expect(socket._call).not.toHaveBeenCalled();
     expect(socket._terms.size).toBe(0);
     socket.close();
+  });
+  it("cannot dispatch an attach whose pane closed while real wire encryption was pending", async () => {
+    const encryption = deferred();
+    let encrypting = false;
+    const transport = { ...fakeTransport, encryptFrame: async (frame) => {
+      if (frame.frameFields.payload.method === "term.attach") {
+        encrypting = true;
+        await encryption.promise;
+      }
+      return fakeTransport.encryptFrame(frame);
+    } };
+    const { socket, ws } = await connected({ transport });
+    const abort = new AbortController();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal });
+    const outcome = request.catch((error) => error);
+    await tick();
+    expect(encrypting).toBe(true);
+    abort.abort();
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    encryption.resolve();
+    await tick();
+    try {
+      expect(callsOn(ws, "term.attach")).toEqual([]);
+      expect(socket._terms.size).toBe(0);
+    } finally { socket.close(); }
   });
   it("checks pane lifetime again at dispatch after an asynchronous source/greeting guard", async () => {
     const ready = deferred();

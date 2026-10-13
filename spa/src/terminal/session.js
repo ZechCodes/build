@@ -801,14 +801,14 @@ export class TerminalSocket {
     return this._userTerminalRpc(this.deviceId, method, params, (verb, scoped) => {
       if (this._session !== session) throw new TerminalSocketLost("disconnected");
       assertAttachmentCurrent({ isCurrent });
-      return this._call(verb, scoped);
+      return this._call(verb, scoped, undefined, () => assertAttachmentCurrent({ isCurrent }));
     });
   }
 
-  _call(method, params = {}, timeoutMs) {
+  _call(method, params = {}, timeoutMs, assertCurrent) {
     const rpc = this._rpc;
     if (!rpc) return Promise.reject(new TerminalSocketLost(this._closed ? "closed" : "disconnected"));
-    return rpc.call(method, params, { timeoutMs });
+    return rpc.call(method, params, { timeoutMs, assertCurrent });
   }
 
   /// Nothing is carrying this session any more: say so, and end every wait that

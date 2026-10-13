@@ -59,7 +59,7 @@ export function mountProjectConsole(host, context) {
     region.innerHTML = '<div class="termpane console-pane"></div>';
     const target = region.firstElementChild;
     try {
-      const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, deviceId: context.deviceId, signal: state.mountAbort.signal,
+      const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, deviceId: context.deviceId, signal: state.mountAbort.signal, recover: true,
         stands: () => active() && generation === state.mounting, onExit: () => void remove(tab) });
       if (state.disposed || generation !== state.mounting) { pane.dispose(); return; }
       state.pane = pane;

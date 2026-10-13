@@ -215,7 +215,7 @@ export function createSessionRpc({
     async call(
       method,
       params = {},
-      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null } = {},
+      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null, assertCurrent = () => {} } = {},
     ) {
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
@@ -237,6 +237,7 @@ export function createSessionRpc({
         const sending = await wire;
         if (closed || pending.get(id) !== waiting) return;
         if (!sending) throw noCarrier();
+        assertCurrent();
         const envelope = await transport.encryptFrame({
           sessionKeyB64,
           outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
@@ -250,6 +251,7 @@ export function createSessionRpc({
         // carrier/encryption was pending. Once the outward call has settled,
         // its request must never cross later and mutate the old scope.
         if (closed || pending.get(id) !== waiting) return;
+        assertCurrent();
         waiting.handoffAttempted = true;
         await sending.send(envelope);
       })();

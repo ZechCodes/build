@@ -27,4 +27,3 @@ it("cannot retry a lost attach after the pane lifetime ends", async () => {
   await expect(attachUserTerminal(manager, "shell", {}, { isCurrent: () => current })).rejects.toMatchObject({ name: "AbortError" });
   expect(manager.attachTerminal).toHaveBeenCalledOnce();
 });
-

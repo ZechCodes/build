@@ -88,13 +88,16 @@ export function terminalTabsController() {
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */
-export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands = () => true, deviceId = null, signal }) {
+export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands = () => true, deviceId = null, signal, recover = false }) {
   const manager = terminalManager();
   const current = () => stands() && (!deviceId || terminalDeviceId() === deviceId);
   let detach = () => {};
+  // Older console surfaces own their existing retry controller. The project
+  // surface delegates recovery to the resource and never reads socket status.
+  const attach = recover ? attachUserTerminal : (owner, id, at, options) => owner.attachTerminal(id, at, options);
   return mountTerminalPane(host, {
     signal, isCurrent: current,
-    attach: (opts) => current() ? attachUserTerminal(manager, termId, scope, { ...opts, signal, isCurrent: current, onRegistered: (dispose) => { detach = dispose; } }) : Promise.reject(new Error("This terminal pane closed.")),
+    attach: (opts) => current() ? attach(manager, termId, scope, { ...opts, signal, isCurrent: current, onRegistered: (dispose) => { detach = dispose; } }) : Promise.reject(new Error("This terminal pane closed.")),
     input: (data) => current() ? manager.input(termId, data) : Promise.resolve(),
     resize: (cols, rows) => current() ? manager.resize(termId, cols, rows) : Promise.resolve(),
     onExit: (...args) => { if (current()) onExit?.(...args); },

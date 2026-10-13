@@ -80,12 +80,14 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
       }
       return {};
     };
-    const context = contexts.adoptDeviceSession({ deviceId, call: fixture.call, close() {} });
+    const call = (...args) => fixture.call(...args);
+    const context = contexts.adoptDeviceSession({ deviceId, call, close() {} });
+    fixture.context = context;
     fixture.greet = async (old) => {
       fixture.old = old;
       const authority = contexts.greetingInFlight(context);
-      await events.greetBridge(fixture.call, { deviceId, isCurrent: authority.current, install(selection) {
-        const adapter = selection.create(fixture.call);
+      await events.greetBridge(call, { deviceId, isCurrent: authority.current, install(selection) {
+        const adapter = selection.create(call);
         contexts.adoptBridgeSelection(context, selection, adapter, authority);
         return adapter;
       } });

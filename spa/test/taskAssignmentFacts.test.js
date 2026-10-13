@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { taskAddress, tasksAddress, tasksQueryAddress, tasksPageAddress } from "../src/core/trackerCache.js";
 
@@ -10,6 +10,7 @@ beforeEach(async () => {
   ({ writeCached } = await import("../src/core/localCache.js"));
   ({ readTaskAssignmentFacts } = await import("../src/core/taskAssignmentFacts.js"));
 });
+afterEach(() => vi.restoreAllMocks());
 const row = (blocked, updated_at = "2026-10-13T01:00:00Z") => ({ id: "task", updated_at, dependencies: { blocked } });
 const read = () => readTaskAssignmentFacts("device", "project", "task");
 const lists = [
@@ -31,7 +32,8 @@ describe("assignment facts across cached task replicas", () => {
     expect((await read()).dependencies.blocked).toBe(false);
   });
 
-  it("uses cache write order when task timestamps tie", async () => {
+  it("uses cache write order when task timestamps tie in the same millisecond", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
     await writeCached(taskAddress("device", "project", "task"), { task: row(false) });
     await writeCached(lists[1][1], { tasks: [row(true)] });
     expect((await read()).dependencies.blocked).toBe(true);

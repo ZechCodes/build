@@ -120,13 +120,16 @@ const shortAgentLabel = (agentId) => {
 
 /** An agent of a workspace: what the rest of the project calls it, or the
  *  four characters it wears where nothing can. */
+const capturedAgentName = (identity) => String(identity.name || "").trim() || `Agent ${identity.ordinal || 1}`;
+
 const agentName = (agentId, agentLabels, identities = {}) => {
   const identity = identities[agentId];
   if (identity?.workspace_name) {
-    const name = String(identity.name || "").trim() || `Agent ${identity.ordinal || 1}`;
+    const name = capturedAgentName(identity);
     return `${identity.workspace_name} · ${name}`;
   }
   if (identity?.name) return String(identity.name).trim();
+  if (identity?.project_role === "worker") return capturedAgentName(identity);
   return agentLabels[agentId] || shortAgentLabel(agentId);
 };
 

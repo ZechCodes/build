@@ -961,7 +961,7 @@ mod tests {
                 // Rule 2: plan your own work on the board.
                 "Use Build tasks to plan your OWN work too.",
                 "file a Build task for it with `create_task`",
-                "assign it to yourself, and move it across the board as you go",
+                "assign it to yourself, and update its column and assignee when those change",
                 // Rule 3: ask where both readers are.
                 "When a task came from outside this conversation, ask ON the task.",
                 "not this thread and not a message to whoever assigned it",
@@ -971,7 +971,7 @@ mod tests {
             // And the rules that were there before these three arrived.
             for kept in [
                 "read it with `get_task` before you start",
-                "Comment meaningful progress on it with `comment_task` as you go",
+                "Comment on the task with `comment_task` when something changes what the reader should know",
                 "Move it to In review with `move_task` when you report Complete.",
                 "Moving a task with an open review to Done with `move_task` also",
                 "records the review as “Marked done”",
@@ -980,6 +980,21 @@ mod tests {
             ] {
                 assert!(text.contains(kept), "{name} dropped an older rule: {text}");
             }
+        }
+    }
+
+    /// Routine status belongs to the board; no template asks for a running
+    /// commentary on the task (#620), including the router without task tools.
+    #[test]
+    fn no_template_asks_for_comments_as_you_go() {
+        let t = Templates::default();
+        let mut templates = templates_with_the_task_tools(&t);
+        templates.push(("router", &t.router));
+        for (name, template) in templates {
+            assert!(
+                !collapse_whitespace(template).contains("as you go"),
+                "{name} still asks for running commentary: {template}"
+            );
         }
     }
 
@@ -995,6 +1010,7 @@ mod tests {
                 FLAG_SPLIT,
                 REPORTED,
                 ON_A_TASK,
+                TASK_COMMENT_EVENTS,
                 REPLY_THERE,
                 ASKED_IN_THREAD,
                 RESULT_ON_TASK,
@@ -1010,6 +1026,8 @@ mod tests {
             for stale in [
                 "is the only thing they see",
                 "is the only thing the user sees",
+                "questions, results and meaningful progress, not every step",
+                "Comment your progress",
             ] {
                 assert!(!says(template, stale), "{name} still says {stale:?}");
             }

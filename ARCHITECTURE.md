@@ -1542,6 +1542,15 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
+The task board's column and assignee carry routine status. Agent prompts and
+MCP descriptions tell agents to comment on tasks only for a decision or
+finding that changes the plan, a question, a handoff, or the final result with
+its evidence. Questions about assigned tasks belong on the task, with
+`mention_user` only when the answer is the user's call. Agents do not comment
+just to say they are still working. The shared task-tools note and conversation
+protocol carry this rule; wording tests keep them consistent with the tool
+descriptions and assignment prompts.
+
 **A project's agents.** A project's conversation owner (the run
 `project.ensure_conversation` mints over the project's scratch directory)
 holds exactly one pinned coordinator and any number of workers

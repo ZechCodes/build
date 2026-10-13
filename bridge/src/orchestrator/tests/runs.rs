@@ -494,6 +494,7 @@ fn conversation_prompt_says_where_the_user_is_talked_to() {
     let prompt = conversation_prompt("do the work");
     for rule in [
         ON_A_TASK,
+        TASK_COMMENT_EVENTS,
         REPLY_THERE,
         ASKED_IN_THREAD,
         RESULT_ON_TASK,

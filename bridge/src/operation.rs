@@ -211,7 +211,7 @@ impl OperationPayload {
     /// Only for an assignment, and the check is `from_build`: a tracking
     /// notice wears a task too, and it is Build telling a watcher that
     /// somebody else changed something. Telling that watcher to read the task
-    /// before it starts, comment its progress and move the card to In review
+    /// before it starts, comment what changed and move the card to In review
     /// is telling it to take over work nobody gave it — which is what a
     /// tracker was being told until #35.
     ///
@@ -229,9 +229,13 @@ impl OperationPayload {
             .next()
             .map_or_else(String::new, |task| {
                 format!(
-                    "\nThe task is `{}` — read it with get_task before you start. Comment your \
-                     progress on it with comment_task, and move it to In review with move_task \
-                     when you report Complete.\n",
+                    "\nThe task is `{}` — read it with get_task before you start. \
+                     Comment on the task with comment_task when something changes what the \
+                     reader should know: a decision or finding that changes the plan, a question \
+                     (use mention_user only when it is the user's call), a handoff, or the final \
+                     result with its evidence. The board already shows the task's column and \
+                     assignee; do not comment to say you are still working. Then move it to \
+                     In review with move_task when you report Complete.\n",
                     task.task_id
                 )
             })
@@ -537,6 +541,7 @@ mod tests {
     /// that hands work over.
     #[test]
     fn a_notice_gets_the_line_and_no_envelope_paragraph() {
+        use crate::test_support::user_involvement::{says, TASK_COMMENT_EVENTS};
         let envelope = crate::thread::TaskEnvelope {
             task_id: "task-01K5Z".into(),
             number: 13,
@@ -576,6 +581,7 @@ mod tests {
             "which you are tracking",
             "nobody is waiting",
             "read it with get_task before you start",
+            "Comment on the task with comment_task",
             "move it to In review with move_task",
         ] {
             assert!(!warm.contains(absent), "{absent:?} is still said: {warm}");
@@ -599,6 +605,14 @@ mod tests {
             brief.contains("move it to In review with move_task"),
             "{brief}"
         );
+        for cold in [false, true] {
+            let prompt = handed.delivery_prompt("post-1", cold, AgentProvider::Claude);
+            assert!(says(&prompt, TASK_COMMENT_EVENTS), "{prompt}");
+            assert!(
+                !says(&prompt, "Comment your progress"),
+                "assignment still asks for running commentary: {prompt}"
+            );
+        }
     }
 
     /// A task the user is LOOKING at is not one they handed over, and the

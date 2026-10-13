@@ -631,8 +631,12 @@ notice — the body is already the first thing in that prompt — so it carries
 what the notice has no room for, the id `get_task` needs:
 
 > The task is `task-01K5Z…` — read it with `get_task` before you start.
-> Comment your progress on it with `comment_task`, and move it to In review
-> with `move_task` when you report Complete.
+> Comment on the task with `comment_task` when something changes what the
+> reader should know: a decision or finding that changes the plan, a question
+> (use `mention_user` only when it is the user's call), a handoff, or the final
+> result with its evidence. The board already shows the task's column and
+> assignee; do not comment to say you are still working.
+> Move it to In review with `move_task` when you report Complete.
 
 ### Waiting-on verbs and capabilities
 
@@ -761,8 +765,11 @@ One shared block appended to every template that carries these tools, the way
 cannot drift between surfaces and a project that overrides one template
 overrides only that one. It says:
 
-- when a message hands you a task, that task is the work: comment your
-  progress on it rather than only reporting at the end;
+- when a message hands you a task, that task is the work: read it before
+  starting and comment only for decisions or findings that change the plan,
+  questions, handoffs, and the final result with its evidence. Ask on the task;
+  use `mention_user` only when the answer is the user's call. The board already
+  shows the column and assignee; do not comment to say you are still working;
 - move it to **In review** when you report Complete — you are saying the work is
   ready to be looked at, not that it is accepted;
 - hand work off by **assigning** the task, not by messaging: an assignment
@@ -870,8 +877,9 @@ carrying:
 
 **A tracker is not the assignee, and the notice must not read as a brief.** The
 delivery envelope tells an agent handed a task to read it with `get_task`
-before it starts, to comment its progress and to move the card to In review
-when it reports Complete. A notice wears `from_task` too, so a watcher was
+before it starts, to comment at decisions, questions, handoffs and the final
+result with evidence, and to move the card to In review when it reports
+Complete. A notice wears `from_task` too, so a watcher was
 getting that same instruction — which is telling it to take over work nobody
 gave it. The assignment wording is for the assignee's dispatch message only;
 a notice says what it is, that nothing is being asked, and how to stop them.

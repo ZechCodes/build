@@ -1,10 +1,12 @@
-//! When an agent involves the user (#232), one sentence per rule. Every
+//! When an agent involves the user (#232), one wording per rule. Every
 //! surface that carries a rule — the conversation protocol, the tool
 //! descriptions, the task-tools note — carries it in exactly these words, so
 //! the rule reads the same wherever an agent meets it.
 
 /// Where the user is talked to once they are on a task.
-pub const ON_A_TASK: &str = "Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step.";
+pub const ON_A_TASK: &str = "Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task.";
+/// Events worth a task comment; routine status is already on the board (#620).
+pub const TASK_COMMENT_EVENTS: &str = "Comment on the task with comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working.";
 /// What they write on a task is answered there.
 pub const REPLY_THERE: &str = "When they write on it, reply there.";
 /// A question is answered where it was asked.

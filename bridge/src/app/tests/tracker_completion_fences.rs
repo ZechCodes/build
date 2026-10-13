@@ -315,6 +315,36 @@ fn completion_fence_keeps_consumed_pending_task_when_another_assignment_is_accep
 }
 
 #[test]
+fn completion_fence_two_queued_assignments_keep_unrelated_turn_fenced() {
+    let mut task = DispatchedTask::new();
+    // Finish A, then start a turn with no task completion authority.
+    task.consume_turn();
+    task.assert_complete_reviews_task();
+    task.app.record_agent_working_since(
+        &task.entity_id, &task.agent_id, Some("unrelated turn".into()),
+    );
+    let second = task.assign_another_task("task B awaiting consumption");
+    let operation = task.app.tracker_store().unwrap()
+        .current_delivery_intent(&second).unwrap().unwrap().operation_id;
+    let third = task.assign_another_task("task C awaiting consumption");
+    // C has replaced B's unconsumed pending marker when B's Seen arrives.
+    task.app.record_native_operation_seen(&task.entity_id, &task.agent_id, &operation)
+        .unwrap();
+    task.app.move_held_task_on_complete(&task.entity_id, &task.agent_id);
+    for id in [&second, &third] {
+        let task = task.app.handle(req("tasks.get", json!({"task_id":id})));
+        assert_eq!(task["result"]["task"]["status"], "in_progress", "{task}");
+    }
+    // Waiting again must also remain fenced against another old Complete.
+    task.task_id = second;
+    task.add_blocker();
+    task.assert_complete_leaves_task("in_progress");
+    task.app.record_agent_working_since(&task.entity_id, &task.agent_id, None);
+    task.app.record_agent_working_since(&task.entity_id, &task.agent_id, Some("task B".into()));
+    task.assert_complete_leaves_task("in_progress");
+}
+
+#[test]
 fn completion_fence_requires_delivery_consumption() {
     let mut task = DispatchedTask::new();
     task.assert_complete_leaves_task("in_progress");

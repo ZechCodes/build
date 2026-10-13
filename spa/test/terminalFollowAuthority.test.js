@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+const sourceSupport = vi.hoisted(() => ({ enabled: true }));
+vi.mock("../src/core/changeEvents.js", () => ({
+  bridgeCapabilities: () => ({ term: { projectSources: sourceSupport.enabled } }),
+  disarmChangeEvents: () => {},
+}));
 import { createTerminalFollowController } from "../src/terminal/followController.js";
 
 const settle = async () => {
@@ -115,5 +121,49 @@ describe("terminal follow authority at asynchronous boundaries", () => {
     await settle();
     expect(h.session.release).toHaveBeenCalledOnce();
     expect(h.controller.snapshot().sessionId).toBe(null);
+  });
+});
+
+
+describe("project source dispatch follows greeting authority", () => {
+  const scope = { project_id: "p-authority", source_id: "s1", source_path: "/original" };
+  const setup = async () => {
+    globalThis.indexedDB = new IDBFactory();
+    globalThis.IDBKeyRange = IDBKeyRange;
+    const cache = await import("../src/core/localCache.js");
+    await cache.wipeCache();
+    const registry = await import("../src/core/deviceContexts.js");
+    const { projectTerminalRpc } = await import("../src/core/projectTerminalRpc.js");
+    const session = { deviceId: "dev-authority", call: vi.fn(async () => ({ ok: true })) };
+    const context = registry.adoptDeviceSession(session);
+    sourceSupport.enabled = true;
+    const address = { deviceId: session.deviceId, entityId: "", kind: "projects" };
+    await cache.writeCached(address, [{ id: scope.project_id, sources: [{ id: scope.source_id, path: scope.source_path }] }]);
+    return { registry, cache, context, session, address, projectTerminalRpc };
+  };
+  it("waits for the replacement greeting and refuses a downgraded terminal capability", async () => {
+    const h = await setup();
+    const old = h.registry.greetingInFlight(h.context);
+    const request = h.projectTerminalRpc(h.context, "term.attach", { ...scope, term_id: "same-id" });
+    const replacement = { deviceId: "dev-authority", call: vi.fn(async () => ({})) };
+    h.registry.adoptDeviceSession(replacement);
+    await settle();
+    expect(h.session.call).not.toHaveBeenCalled();
+    expect(replacement.call).not.toHaveBeenCalled();
+    h.registry.adoptBridgeSelection(h.context, { version: "3.21.0" }, {}, old);
+    await settle();
+    expect(replacement.call).not.toHaveBeenCalled();
+    sourceSupport.enabled = false;
+    h.registry.adoptBridgeSelection(h.context, { version: "3.20.0" }, {});
+    await expect(request).rejects.toThrow(/Update/);
+    expect(replacement.call).not.toHaveBeenCalled();
+  });
+  it("refuses a moved source after the current greeting settles", async () => {
+    const h = await setup();
+    const request = h.projectTerminalRpc(h.context, "term.create", scope);
+    await h.cache.writeCached(h.address, [{ id: scope.project_id, sources: [{ id: scope.source_id, path: "/replacement" }] }]);
+    h.registry.adoptBridgeSelection(h.context, { version: "3.21.0" }, {});
+    await expect(request).rejects.toThrow(/moved or was removed/);
+    expect(h.session.call).not.toHaveBeenCalled();
   });
 });

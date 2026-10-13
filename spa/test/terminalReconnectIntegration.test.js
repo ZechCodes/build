@@ -4,6 +4,7 @@
 // channels share a peer connection in production, so a terminal probe failure
 // must never close that carrier from inside the terminal stack.
 
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const contexts = vi.hoisted(() => new Map());
@@ -35,6 +36,11 @@ vi.mock("../src/app.js", () => ({
 vi.mock("../src/core/deviceContexts.js", async () => ({
   ...(await vi.importActual("../src/core/deviceContexts.js")),
   contextFor: (deviceId) => contexts.get(deviceId) || null,
+}));
+
+vi.mock("../src/core/changeEvents.js", async () => ({
+  ...(await vi.importActual("../src/core/changeEvents.js")),
+  bridgeCapabilities: (deviceId) => ({ term: { projectSources: contexts.get(deviceId)?.terminalSupport === true } }),
 }));
 
 const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, subscribeTerminalStatus, terminalManager } =
@@ -475,4 +481,46 @@ describe("terminal session handoff after a bridge restart", () => {
     expect(events).toContain("reentrant-b:ping");
     unsubscribe();
   });
+});
+
+
+it("guards project source reattach against a downgraded app greeting on the replacement terminal carrier", async () => {
+  resetTerminalManager();
+  contexts.clear();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
+  const registry = await import("../src/core/deviceContexts.js");
+  const cache = await import("../src/core/localCache.js");
+  await cache.wipeCache();
+  const first = answeringCarrier("project-source-first");
+  const appSession = { deviceId: "dev-a", call: vi.fn(async () => ({})) };
+  const context = registry.adoptDeviceConnection(appSession, { term: first }).context;
+  context.terminalSupport = true;
+  contexts.set("dev-a", context);
+  registry.adoptBridgeSelection(context, { version: "3.21.0" }, {});
+  App.route = { name: "project", deviceId: "dev-a", projectId: "p1" };
+  await cache.writeCached({ deviceId: "dev-a", entityId: "", kind: "projects" }, [
+    { id: "p1", sources: [{ id: "plain", path: "/original/plain" }] },
+  ]);
+  let number = 0;
+  provideTerminalSessions(async (deviceId) => ({ sessionId: `source-${++number}`, sessionKeyB64: `key-${number}`, deviceId, release: vi.fn() }));
+  try {
+    const socket = terminalManager();
+    await socket.whenConnected();
+    const scope = { project_id: "p1", source_id: "plain", source_path: "/original/plain" };
+    await socket.attachTerminal("same-id", scope, {});
+    expect(first.sent.find((frame) => frame.frameFields.payload.method === "term.attach").frameFields.payload.params).toMatchObject(scope);
+    const replacement = answeringCarrier("project-source-old-bridge");
+    registry.adoptDeviceConnection({ deviceId: "dev-a", call: vi.fn(async () => ({})) }, { term: replacement });
+    context.terminalSupport = false;
+    registry.adoptBridgeSelection(context, { version: "3.20.0" }, {});
+    followTerminalDevice({ freshSession: true });
+    await vi.waitFor(() => expect(socket._connected).toBe(true));
+    expect(replacement.sent.filter((frame) => frame.frameFields.payload.method === "term.attach")).toEqual([]);
+    expect(appSession.call).not.toHaveBeenCalled();
+  } finally {
+    resetTerminalManager();
+    registry.retireDeviceContext("dev-a");
+    contexts.clear();
+  }
 });

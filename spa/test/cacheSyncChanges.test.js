@@ -37,6 +37,7 @@ let carriedKinds = EVERY_KIND;
 let pagesBodies = false;
 let perFileDiffs = false;
 let projectSourceFacts = false;
+let projectTerminalFacts = false;
 
 const App = { route: { name: "inbox" }, devices: [{ id: "dev-1" }] };
 vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")).App }));
@@ -50,6 +51,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
     changes: { subscriptions: true, kinds: carriedKinds, projectSources: projectSourceFacts },
     bodies: { pages: pagesBodies },
     diffs: { perFile: perFileDiffs },
+    term: { projectSources: projectTerminalFacts },
   }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
@@ -71,6 +73,7 @@ const stateListeners = new Set();
 vi.mock("../src/core/deviceContexts.js", () => ({
   contextFor: (deviceId) => contexts.get(deviceId) || null,
   liveContexts: () => [...contexts.values()],
+  whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
   onDeviceStateChanged: (fn) => {
     stateListeners.add(fn);
     return () => stateListeners.delete(fn);
@@ -162,6 +165,7 @@ beforeEach(async () => {
   pagesBodies = false;
   perFileDiffs = false;
   projectSourceFacts = false;
+  projectTerminalFacts = false;
   App.route = { name: "inbox" };
   registerDevice("dev-1");
   bridge.call = vi.fn(async (method, params) => answer(method, params));
@@ -1374,8 +1378,68 @@ describe("project source Git facts", () => {
       await sync.applyProjectSourceChanges([fact({ status: { status_key: "bad" } }, source)], "dev-1");
     }
     projectSourceFacts = false;
+    projectTerminalFacts = false;
     await sync.applyProjectSourceChanges([fact({ status: { status_key: "old-bridge" } })], "dev-1");
     expect(await read(id, "status")).toBeUndefined();
     expect(await read("project-source:opaque", "status")).toBeUndefined();
+  });
+});
+
+
+describe("project source terminal rosters", () => {
+  const scope = { project_id: "p1", source_id: "s1", source_path: "/repo" };
+  const prepare = async () => {
+    projectSourceFacts = true;
+    projectTerminalFacts = true;
+    script["project.list"] = () => ({ projects: [{ project_id: "p1", sources: [{ id: "s1", path: "/repo" }, { id: "plain", path: "/plain" }] }] });
+    script["term.list"] = (params) => ({ terminals: [{ term_id: `term-${params.source_id}` }] });
+    await boot([]);
+    return (await import("../src/core/directoryScope.js")).directoryCacheId(scope);
+  };
+  it("rehydrates all original source rosters, including plain folders, with exact subscriptions", async () => {
+    const id = await prepare();
+    expect((await read(id, "terminals"))?.value.tabs).toEqual([{ term_id: "term-s1" }]);
+    expect(bridge.call).toHaveBeenCalledWith("term.list", scope, expect.anything());
+    expect(bridge.call).toHaveBeenCalledWith("term.list", { ...scope, source_id: "plain", source_path: "/plain" }, expect.anything());
+    expect(live().filter((watcher) => watcher.scope?.kind === "project_source").map((watcher) => watcher.kinds)).toEqual([["terminals"], ["terminals"]]);
+  });
+  it("writes source terminal pushes separately and refuses removed locations", async () => {
+    const id = await prepare();
+    await sync.applyProjectSourceChanges([{ project_source: scope, terminals: { tabs: [{ term_id: "new" }] } }], "dev-1");
+    expect((await read(id, "terminals"))?.value.tabs).toEqual([{ term_id: "new" }]);
+    await sync.applyProjectSourceChanges([{ project_source: { ...scope, source_path: "/old" }, terminals: { tabs: [{ term_id: "bad" }] } }], "dev-1");
+    expect((await read(id, "terminals"))?.value.tabs).toEqual([{ term_id: "new" }]);
+    expect(await read("p1", "terminals")).toBeUndefined();
+  });
+  it("reconciles source subscriptions after a settings push and leaves unchanged lists quiet", async () => {
+    await prepare();
+    const before = calls("term.list").length;
+    const current = [{ project_id: "p1", sources: [{ id: "s1", path: "/repo" }, { id: "plain", path: "/plain" }] }];
+    await deliver([{ entity_id: "board", state: { projects: current } }]);
+    expect(calls("term.list")).toHaveLength(before);
+    const changed = [{ project_id: "p1", sources: [{ id: "s1", path: "/moved" }] }];
+    await deliver([{ entity_id: "board", state: { projects: changed } }]);
+    expect(live().filter((watcher) => watcher.scope?.kind === "project_source").map((watcher) => watcher.scope)).toEqual([{ kind: "project_source", ...scope, source_path: "/moved" }]);
+    expect(calls("term.list").at(-1)[1]).toEqual({ ...scope, source_path: "/moved" });
+  });
+  it("does not apply a second device's same source IDs to this device's roster", async () => {
+    const id = await prepare();
+    registerDevice("dev-2");
+    await cache.writeCached({ deviceId: "dev-2", entityId: "", kind: "projects" }, [
+      { id: "p1", sources: [{ id: "s1", path: "/different-device" }] },
+    ]);
+    await sync.applyProjectSourceChanges([{ project_source: scope, terminals: { tabs: [{ term_id: "foreign" }] } }], "dev-2");
+    expect((await read(id, "terminals"))?.value.tabs).toEqual([{ term_id: "term-s1" }]);
+    expect(await cache.readCached({ deviceId: "dev-2", entityId: id, kind: "terminals" })).toBeUndefined();
+  });
+  it("preserves cached source rosters when the bridge lacks terminal support", async () => {
+    const id = await prepare();
+    projectTerminalFacts = false;
+    const before = bridge.call.mock.calls.length;
+    document.dispatchEvent(new Event("visibilitychange"));
+    await passesSettled(sync, "dev-1");
+    await settle();
+    expect(bridge.call.mock.calls.slice(before).filter(([method, params]) => method === "term.list" && params.source_id)).toEqual([]);
+    expect((await read(id, "terminals"))?.value.tabs).toEqual([{ term_id: "term-s1" }]);
   });
 });

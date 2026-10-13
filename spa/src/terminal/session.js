@@ -85,8 +85,18 @@ export function terminalScope(scope = {}) {
   return scope.workspace_id ? { workspace_id: scope.workspace_id } : { ...scope };
 }
 
+function projectSourceScope(scope) {
+  return Boolean(scope.project_id && (scope.source_id || scope.source_path));
+}
+
+function terminalCloseScope(scope) {
+  return projectSourceScope(scope) ? terminalScope(scope) : {};
+}
+
 export class TerminalSocket {
-  constructor({ transport, onTermUnresponsive = noop }) {
+  constructor({ transport, onTermUnresponsive = noop, userTerminalRpc = (_deviceId, method, params, call) => call(method, params), userTerminalDevice = null }) {
+    this._userTerminalRpc = userTerminalRpc;
+    this._userTerminalDevice = userTerminalDevice || (() => this.deviceId);
     this.transport = transport;
     /** What to do about a terminal session that stopped answering on a wire
      *  that is plainly still carrying: re-establish the terminals, and nothing
@@ -228,24 +238,29 @@ export class TerminalSocket {
    *  shell: a worktree's agent is Build's, lives in its Agent tab, and is
    *  started by a delivery rather than by opening a terminal. */
   async createTerminal(scope, cols, rows) {
+    const deviceId = this._userTerminalDevice();
     await this.whenConnected();
-    return this._call("term.create", { ...terminalScope(scope), cols, rows });
+    return this._userCall("term.create", { ...terminalScope(scope), cols, rows }, deviceId);
   }
 
   /** term.list — the user's open shells for a scope (never the agent). */
   async listTerminals(scope) {
+    const deviceId = this._userTerminalDevice();
     await this.whenConnected();
-    const r = await this._call("term.list", terminalScope(scope));
+    const r = await this._userCall("term.list", terminalScope(scope), deviceId);
     return r.terminals || [];
   }
 
   /** term.close — kill the server PTY and deregister locally. */
-  async closeTerminal(termId) {
+  async closeTerminal(termId, scope = this._terms.get(termId)?.attachParams || {}) {
+    const deviceId = this._userTerminalDevice();
+    const entry = this._terms.get(termId);
+    const session = this._session;
     try {
       await this.whenConnected();
-      await this._call("term.close", { term_id: termId });
+      await this._userCall("term.close", { ...terminalCloseScope(scope), term_id: termId }, deviceId);
     } finally {
-      this._forgetTerm(termId);
+      if (this._session === session && this._terms.get(termId) === entry) this._forgetTerm(termId);
     }
   }
 
@@ -253,14 +268,16 @@ export class TerminalSocket {
    *  the registration so reconnects cannot accidentally reattach the id from
    *  another workspace. Legacy callers may omit it while old surfaces migrate. */
   async attachTerminal(termId, scope = {}, opts = undefined) {
+    const deviceId = this._userTerminalDevice();
     // Backward compatibility for the former (termId, opts) signature.
     if (opts === undefined) { opts = scope; scope = {}; }
     await this.whenConnected();
     const attachParams = terminalScope(scope);
+    this._assertUserTerminalDevice(attachParams, deviceId);
     const entry = this._register(termId, "user", attachParams, opts || {});
     let r;
     try {
-      r = await this._call("term.attach", { ...attachParams, term_id: termId, cols: entry.cols, rows: entry.rows });
+      r = await this._userCall("term.attach", { ...attachParams, term_id: termId, cols: entry.cols, rows: entry.rows }, deviceId);
     } catch (e) {
       this._deregisterFailedAttach(termId, entry);
       throw e;
@@ -419,7 +436,7 @@ export class TerminalSocket {
 
   _register(termId, kind, attachParams, opts) {
     const entry = {
-      kind, attachParams,
+      kind, attachParams, deviceId: this.deviceId,
       // The wire id this entry currently answers to — what an ack names. An
       // agent's is provisional until the bridge answers with the real one.
       termId,
@@ -465,7 +482,14 @@ export class TerminalSocket {
 
   /** This socket's own crypto and correlation for the session it has just been
    *  given. A session is one key: a fresh one is a fresh rpc. */
+  _detachForeignProjectTerminals(deviceId) {
+    for (const [termId, entry] of this._terms) {
+      if (projectSourceScope(entry.attachParams) && entry.deviceId !== deviceId) this._forgetTerm(termId);
+    }
+  }
+
   _openSession({ sessionId, sessionKeyB64, deviceId }) {
+    this._detachForeignProjectTerminals(deviceId);
     this._session = { sessionId, sessionKeyB64, deviceId };
     this._rpc = createSessionRpc({
       transport: this.transport,
@@ -531,7 +555,7 @@ export class TerminalSocket {
       try {
         const r = entry.kind === "agent"
           ? await this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
-          : await this._call("term.attach", { ...entry.attachParams, term_id: termId, cols: entry.cols, rows: entry.rows });
+          : await this._userCall("term.attach", { ...entry.attachParams, term_id: termId, cols: entry.cols, rows: entry.rows }, entry.deviceId);
         if (!isCurrent()) return;
         // A worktree that moved (or an agent that opened while we were away)
         // answers with a different wire id: follow it rather than stream into
@@ -736,6 +760,21 @@ export class TerminalSocket {
    *  shared rule (core/pathLiveness.js). */
   _whatVouchesFor(wire) {
     return whatVouchesFor(this._rpc, wire);
+  }
+
+  _assertUserTerminalDevice(scope, deviceId) {
+    if (projectSourceScope(scope) && deviceId && this.deviceId !== deviceId) {
+      throw new Error("The terminal device changed before this request could be sent.");
+    }
+  }
+
+  _userCall(method, params, deviceId = this.deviceId) {
+    this._assertUserTerminalDevice(params, deviceId);
+    const session = this._session;
+    return this._userTerminalRpc(this.deviceId, method, params, (verb, scoped) => {
+      if (this._session !== session) throw new TerminalSocketLost("disconnected");
+      return this._call(verb, scoped);
+    });
   }
 
   _call(method, params = {}, timeoutMs) {

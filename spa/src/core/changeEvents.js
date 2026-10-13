@@ -99,7 +99,7 @@ const NO_CAPABILITIES = Object.freeze({
   reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
-    listPaged: false, bodyPrecondition: false,
+    listPaged: false, bodyPrecondition: false, assignProjectAgent: false,
   }),
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),

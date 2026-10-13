@@ -55,8 +55,8 @@ const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for=
   <label class="create-label" for="${esc(prefix)}-isolation">Isolation</label>
   <select id="${esc(prefix)}-isolation">${isolationOptionsHtml(draft.isolation, null, { inheritLabel: "Inherit project setting" })}</select>`;
 
-const workerFieldsHtml = (draft, prefix) => `<label class="create-label" for="${esc(prefix)}-agent-name">Worker name</label>
-  <input id="${esc(prefix)}-agent-name" type="text" ${fieldTraits("identifier")} placeholder="Name this worker" value="${esc(draft.name)}" />
+const workerFieldsHtml = (draft, prefix) => `<label class="create-label" for="${esc(prefix)}-worker">Worker name</label>
+  <input id="${esc(prefix)}-worker" type="text" ${fieldTraits("identifier")} placeholder="Name this worker" value="${esc(draft.name)}" />
   <p class="sub">Project workers share source files and checked-out branches.</p>`;
 
 /**
@@ -87,7 +87,7 @@ export function readAssigneeDraft(root, draft, prefix) {
   return {
     ...draft,
     optionId: valueOf(root, `${prefix}-assignee`) || draft.optionId,
-    name: valueOf(root, `${prefix}-workspace`) || valueOf(root, `${prefix}-agent-name`),
+    name: valueOf(root, `${prefix}-workspace`) || valueOf(root, `${prefix}-worker`),
     isolation: valueOf(root, `${prefix}-isolation`),
   };
 }
@@ -105,7 +105,7 @@ export function wireAssigneeControl(root, draft, { prefix, onDraft }) {
   if (!control) return;
   control.querySelector("[data-assignee-select]").onchange = () =>
     onDraft({ ...readAssigneeDraft(root, draft, prefix), choiceOpen: draft.choiceOpen });
-  const name = root.querySelector(`#${prefix}-workspace`) || root.querySelector(`#${prefix}-agent-name`);
+  const name = root.querySelector(`#${prefix}-workspace`) || root.querySelector(`#${prefix}-worker`);
   if (name) name.oninput = () => onDraft(readAssigneeDraft(root, draft, prefix));
   const isolation = root.querySelector(`#${prefix}-isolation`);
   if (isolation) isolation.onchange = () => onDraft(readAssigneeDraft(root, draft, prefix));

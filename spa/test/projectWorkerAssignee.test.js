@@ -47,13 +47,13 @@ describe("cached project worker assignees", () => {
     const callRpc = vi.fn().mockRejectedValueOnce(new Error("Try again")).mockResolvedValue({ task: {} });
     picker = openAssigneePicker({ task: { id: "task", number: 1 }, options: assigneeOptions(assignableAgents(feed, projectKey)),
       current: "new_project_agent", callRpc });
-    const name = document.querySelector("#task-assign-agent-name");
+    const name = document.querySelector("#task-assign-worker");
     expect(name).not.toBeNull();
     name.value = "Ada";
     name.dispatchEvent(new Event("input"));
     document.querySelector("[data-assign-go]").click();
     await painted(() => !document.querySelector("[data-assign-go]").disabled);
-    expect(document.querySelector("#task-assign-agent-name").value).toBe("Ada");
+    expect(document.querySelector("#task-assign-worker").value).toBe("Ada");
     document.querySelector("[data-assign-go]").click();
     await called(callRpc, (mock) => mock.mock.calls.length === 2);
     const first = callRpc.mock.calls[0][1];

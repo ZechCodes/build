@@ -50,7 +50,7 @@ fn create_v16_fixture(dir: &std::path::Path) -> Vec<(String, String)> {
     tracker_task_records(&conn)
 }
 
-fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
+fn assert_v17_task_preservation(store: &Store, records: &[(String, String)]) {
     use crate::tracker::Assignee;
 
     let waiting = store.load_tracker_task("task-waiting").unwrap().unwrap();
@@ -73,6 +73,9 @@ fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
 
     let conn = store.connection();
     assert_eq!(tracker_task_records(&conn).as_slice(), records);
+}
+
+fn assert_v17_delivery_tables(conn: &Connection) {
     let version: i64 = conn
         .query_row(
             "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
@@ -98,6 +101,9 @@ fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
         )
         .unwrap();
     assert_eq!(indexes, 3);
+}
+
+fn assert_v17_dependency_preservation(conn: &Connection) {
     let edge: (String, i64, i64) = conn
         .query_row(
             "SELECT waiting_on_task_id,position,task_number FROM tracker_task_dependencies \
@@ -142,6 +148,13 @@ fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
         .next()
         .unwrap()
         .is_none());
+}
+
+fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
+    assert_v17_task_preservation(store, records);
+    let conn = store.connection();
+    assert_v17_delivery_tables(&conn);
+    assert_v17_dependency_preservation(&conn);
 }
 
 #[test]

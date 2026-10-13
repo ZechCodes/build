@@ -20,7 +20,16 @@ impl AppState {
             .waiting_on_summary(&task.project_path, &task.id)
             .stored()?;
         row["dependencies"] = serde_json::to_value(summary).map_err(|error| error.to_string())?;
-        if let Some(intent) = store.current_delivery_intent(&task.id).stored()? {
+        if let Some(intent) = store
+            .current_delivery_intent(&task.id)
+            .stored()?
+            .filter(|intent| {
+                matches!(
+                    intent.state.as_str(),
+                    "waiting" | "queued" | "provisioning" | "failed"
+                )
+            })
+        {
             let state = match intent.state.as_str() {
                 "provisioning" => "queued",
                 state => state,

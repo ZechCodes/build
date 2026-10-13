@@ -383,10 +383,11 @@ fn waiting_notices_and_reminders_undelivered_states() {
     );
     app.retry_task_delivery(&intent.id).unwrap();
     pump(&mut app);
-    assert_eq!(
-        call(&mut app, "tasks.get", json!({"task_id":dependent}))["task"]["deferred_assignment"]
-            ["state"],
-        "delivered"
+    assert!(
+        call(&mut app, "tasks.get", json!({"task_id":dependent}))["task"]
+            .get("deferred_assignment")
+            .is_none(),
+        "successful delivery removes the public pending assignment"
     );
     app.remind_of_open_tasks(&owner, &agent);
     assert!(

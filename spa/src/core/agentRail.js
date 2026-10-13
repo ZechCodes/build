@@ -537,6 +537,12 @@ const bubbleClasses = (bubble) => {
   return classes.join(" ");
 };
 
+// The project pin keeps its purpose as the tooltip. Its accessible name also
+// announces the unread badge, which an aria-label would otherwise override.
+const bubbleAccessibleName = (bubble) =>
+  (bubble.project || bubble.type === "project") && bubble.unread
+    ? `${bubble.title}, ${bubble.unread} unread` : bubble.title;
+
 export function bubbleHtml(bubble) {
   // The line between the project's agent and this work item's own. It says
   // nothing and is pressed by nobody, so it is not a button.
@@ -552,7 +558,7 @@ export function bubbleHtml(bubble) {
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
-    aria-label="${esc(bubble.title)}" aria-expanded="${Boolean(bubble.expanded)}"
+    aria-label="${esc(bubbleAccessibleName(bubble))}" aria-expanded="${Boolean(bubble.expanded)}"
     aria-controls="rail-panel">${bubbleFaceHtml(bubble)}</button>`;
 }
 

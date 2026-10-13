@@ -463,8 +463,14 @@ describe("the strip on a page standing on the project", () => {
     await writeRailWorkItem(projectAgentRow);
     await visit(route);
     await vi.waitFor(() => {
-      expect(document.querySelector('#agent-rail .rail-strip [title*="2 unread"]')).toBeTruthy();
+      const bubble = document.querySelector('#agent-rail .rail-strip [data-agent="pa-1"]');
+      const badge = bubble?.querySelector(".rail-count");
+      expect(badge?.textContent).toBe("2");
+      expect(badge?.hidden).toBe(false);
+      expect(bubble?.title).toBe("Project agent");
     }, { timeout: 30_000, interval: 5 });
+    const bubble = document.querySelector('#agent-rail .rail-strip [data-agent="pa-1"]');
+    expect(bubble.getAttribute("aria-label")).toBe("Project agent, 2 unread");
   };
 
   // The maintainer, on the project page after the shell roll: two bubbles for

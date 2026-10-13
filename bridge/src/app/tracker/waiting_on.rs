@@ -44,10 +44,10 @@ impl AppState {
             row["deferred_assignment"] =
                 json!({"id":intent.id,"target":intent.target,"state":state,"error":intent.error});
         }
-        Ok(())
+        self.extend_task_blocks_summary(task, row)
     }
 
-    /// Only the detail view carries the first bounded reverse page.
+    /// All task answers carry the same first bounded reverse page.
     pub(super) fn extend_task_blocks_summary(
         &self,
         task: &Task,

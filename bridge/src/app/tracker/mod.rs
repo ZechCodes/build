@@ -233,7 +233,6 @@ impl AppState {
         let mut answer = task_with_timeline_json(&project_id, &task, &timeline);
         self.extend_task_review_summary(&task.id, &mut answer["task"])?;
         self.extend_task_waiting_summary(&task, &mut answer["task"])?;
-        self.extend_task_blocks_summary(&task, &mut answer["task"])?;
         Ok(answer)
     }
 

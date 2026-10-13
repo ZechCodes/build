@@ -776,8 +776,8 @@ pub struct TrackerTaskEventView {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum FeedItem {
-    TrackerTask(TrackerTaskRow),
-    Work(FeedItemRow),
+    TrackerTask(Box<TrackerTaskRow>),
+    Work(Box<FeedItemRow>),
 }
 
 /// One external checkout the rail's scan found.

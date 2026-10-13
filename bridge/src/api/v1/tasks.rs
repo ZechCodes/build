@@ -164,7 +164,6 @@ pub struct TasksAttachmentParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct TasksCreateParams {
     pub project_id: String,
     pub title: String,
@@ -267,13 +266,12 @@ pub struct TasksAssignParams {
 
 /// Preserve field presence until mutually exclusive retry inputs are validated.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TasksAssignWire {
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     #[serde(
         default,
-        deserialize_with = "provided_value",
+        deserialize_with = "provided",
         skip_serializing_if = "Option::is_none"
     )]
     pub assignee: Option<Value>,
@@ -284,7 +282,7 @@ struct TasksAssignWire {
     /// it was said in.
     #[serde(
         default,
-        deserialize_with = "provided_optional_string",
+        deserialize_with = "provided",
         skip_serializing_if = "Option::is_none"
     )]
     pub note: Option<Option<String>>,
@@ -294,7 +292,7 @@ struct TasksAssignWire {
     /// instead of delivering twice.
     #[serde(
         default,
-        deserialize_with = "provided_optional_string",
+        deserialize_with = "provided",
         skip_serializing_if = "Option::is_none"
     )]
     pub operation_id: Option<Option<String>>,
@@ -408,16 +406,10 @@ pub struct DeferredAssignmentView {
     pub error: Option<String>,
 }
 
-fn provided_optional_string<'de, D: serde::Deserializer<'de>>(
+fn provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     deserializer: D,
-) -> Result<Option<Option<String>>, D::Error> {
-    Option::<String>::deserialize(deserializer).map(Some)
-}
-
-fn provided_value<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Value>, D::Error> {
-    Value::deserialize(deserializer).map(Some)
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -766,16 +758,18 @@ fn tasks_waiting_on_add(
     params: TasksWaitingOnParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
     let wire = params.wire();
-    answer(app.tasks_waiting_on_edit(&wire, true))
-        .map_err(|error| refine_waiting(app, error, &wire))
+    answer(app.tasks_waiting_on_edit(&wire, true)).map_err(|error| {
+        refine_waiting(app, error, Some(&params.task_id), None, &params.waiting_on)
+    })
 }
 fn tasks_waiting_on_remove(
     app: &mut AppState,
     params: TasksWaitingOnParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
     let wire = params.wire();
-    answer(app.tasks_waiting_on_edit(&wire, false))
-        .map_err(|error| refine_waiting(app, error, &wire))
+    answer(app.tasks_waiting_on_edit(&wire, false)).map_err(|error| {
+        refine_waiting(app, error, Some(&params.task_id), None, &params.waiting_on)
+    })
 }
 fn tasks_waiting_on_blocks(
     app: &mut AppState,
@@ -785,7 +779,13 @@ fn tasks_waiting_on_blocks(
 }
 
 /// Add facts only after the implementation fenced every dependency endpoint.
-fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiError {
+fn refine_waiting(
+    app: &mut AppState,
+    error: ApiError,
+    task_id: Option<&str>,
+    project_id: Option<&str>,
+    proposed: &[String],
+) -> ApiError {
     let error = refine(error);
     let message = error.message().to_string();
     let blocked = message.contains("conflict: unresolved waiting-on dependencies");
@@ -794,18 +794,19 @@ fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiErr
     if !blocked && !cycle {
         return error;
     }
-    let Some(task_id) = params["task_id"].as_str() else {
-        return refine_waiting_create(app, error, params);
+    let Some(task_id) = task_id else {
+        return refine_waiting_create(app, error, project_id, proposed);
     };
-    let Ok(read) = app.tasks_get(&serde_json::json!({"task_id":task_id})) else {
+    let Some(task) = waiting_task_read(app, task_id) else {
         return error;
     };
-    let waiting_on = if blocked {
-        scoped_waiting_blockers(app, &read["task"], params)
+    let details = if blocked {
+        let waiting_on =
+            scoped_waiting_blockers(app, &task.project_id, task.dependencies.as_ref(), proposed);
+        Some(serde_json::json!({"task_id":task_id,"waiting_on":waiting_on}))
     } else {
-        params["waiting_on"].as_array().cloned().unwrap_or_default()
+        Some(serde_json::json!({"task_id":task_id,"waiting_on":proposed}))
     };
-    let details = Some(serde_json::json!({"task_id":task_id,"waiting_on":waiting_on}));
     if blocked {
         ApiError::conflict(message, details)
     } else {
@@ -814,12 +815,16 @@ fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiErr
 }
 
 /// Rejected creation has no saved task; scope facts to its validated project.
-fn refine_waiting_create(app: &mut AppState, error: ApiError, params: &Value) -> ApiError {
-    let Some(project_id) = params["project_id"].as_str() else {
+fn refine_waiting_create(
+    app: &mut AppState,
+    error: ApiError,
+    project_id: Option<&str>,
+    proposed: &[String],
+) -> ApiError {
+    let Some(project_id) = project_id else {
         return error;
     };
-    let waiting_on =
-        scoped_waiting_blockers(app, &serde_json::json!({"project_id":project_id}), params);
+    let waiting_on = scoped_waiting_blockers(app, project_id, None, proposed);
     ApiError::conflict(
         error.message(),
         Some(serde_json::json!({"project_id":project_id,"waiting_on":waiting_on})),
@@ -827,44 +832,61 @@ fn refine_waiting_create(app: &mut AppState, error: ApiError, params: &Value) ->
 }
 
 /// A refused new edge is absent from storage; include its scoped proposal too.
-fn scoped_waiting_blockers(app: &mut AppState, task: &Value, params: &Value) -> Vec<Value> {
-    let mut blockers = task["dependencies"]["waiting_on"]
-        .as_array()
-        .map(|edges| {
-            edges
+fn scoped_waiting_blockers(
+    app: &mut AppState,
+    project_id: &str,
+    dependencies: Option<&TaskDependenciesView>,
+    proposed: &[String],
+) -> Vec<crate::store::DependencyDigest> {
+    let mut blockers = dependencies
+        .map(|summary| {
+            summary
+                .waiting_on
                 .iter()
-                .filter(|edge| edge["resolved"] == false)
+                .filter(|edge| !edge.resolved)
                 .cloned()
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let Some(proposed) = params["waiting_on"].as_array() else {
-        return blockers;
-    };
     for id in proposed {
-        if blockers.iter().any(|blocker| blocker["task_id"] == *id) {
+        if blockers.iter().any(|blocker| blocker.task_id == *id) {
             continue;
         }
-        if let Some(blocker) = proposed_waiting_blocker(app, task, id) {
+        if let Some(blocker) = proposed_waiting_blocker(app, project_id, id) {
             blockers.push(blocker)
         }
     }
     blockers
 }
 
-fn proposed_waiting_blocker(app: &mut AppState, task: &Value, id: &Value) -> Option<Value> {
-    let id = id.as_str()?;
+fn waiting_task_read(app: &mut AppState, id: &str) -> Option<TaskView> {
     let read = app.tasks_get(&serde_json::json!({"task_id":id})).ok()?;
-    let prerequisite = &read["task"];
-    if prerequisite["project_id"] != task["project_id"]
-        || prerequisite["state"] != "open"
-        || prerequisite["status"] == "done"
+    serde_json::from_value::<TaskDetail>(read)
+        .ok()
+        .map(|detail| detail.task)
+}
+
+fn proposed_waiting_blocker(
+    app: &mut AppState,
+    project_id: &str,
+    id: &str,
+) -> Option<crate::store::DependencyDigest> {
+    let prerequisite = waiting_task_read(app, id)?;
+    if prerequisite.project_id != project_id
+        || prerequisite.state != "open"
+        || prerequisite.status == "done"
     {
         return None;
     }
-    Some(
-        serde_json::json!({"task_id":id,"number":prerequisite["number"],"title":prerequisite["title"],"state":prerequisite["state"],"status":prerequisite["status"],"resolved":false,"resolved_by":null}),
-    )
+    Some(crate::store::DependencyDigest {
+        task_id: id.to_string(),
+        number: prerequisite.number,
+        title: prerequisite.title,
+        state: crate::tracker::TaskState::Open,
+        status: prerequisite.status,
+        resolved: false,
+        resolved_by: None,
+    })
 }
 
 // -------------------------------------------------------------- handlers ---
@@ -882,8 +904,15 @@ fn tasks_create(
     params: TasksCreateParams,
 ) -> Result<Answer<TaskAssigned>, ApiError> {
     let wire = params.wire();
-    answer(app.tasks_create(&wire).map(super::deferral_placeholder))
-        .map_err(|error| refine_waiting(app, error, &wire))
+    answer(app.tasks_create(&wire).map(super::deferral_placeholder)).map_err(|error| {
+        refine_waiting(
+            app,
+            error,
+            None,
+            Some(&params.project_id),
+            params.waiting_on.as_deref().unwrap_or_default(),
+        )
+    })
 }
 
 fn tasks_attach(
@@ -905,7 +934,8 @@ fn tasks_update(
     params: TasksUpdateParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
     let wire = params.wire();
-    answer(app.tasks_update(&wire)).map_err(|error| refine_waiting(app, error, &wire))
+    answer(app.tasks_update(&wire))
+        .map_err(|error| refine_waiting(app, error, Some(&params.task_id), None, &[]))
 }
 
 fn tasks_comment(
@@ -921,7 +951,7 @@ fn tasks_assign(
 ) -> Result<Answer<TaskAssigned>, ApiError> {
     let wire = params.wire();
     answer(app.tasks_assign(&wire).map(super::deferral_placeholder))
-        .map_err(|error| refine_waiting(app, error, &wire))
+        .map_err(|error| refine_waiting(app, error, Some(&params.task_id), None, &[]))
 }
 
 fn tasks_close(

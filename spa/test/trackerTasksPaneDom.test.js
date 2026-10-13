@@ -291,6 +291,37 @@ describe("device-scoped waiting assignments from the pane", () => {
     expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
   });
 
+  it.each(["list", "board"])("keeps the %s draft when an unrelated mutation raises a stale ready catalogue's read order", async (view) => {
+    const { nextTaskRead } = await import("../src/core/taskReadOrder.js");
+    const { cacheTaskWaitingOnResponse } = await import("../src/core/taskWaitingOnCache.js");
+    const held = task({ id: "task-same-stamp-reblocked", labels: ["bug"], dependencies: { blocked: false, waiting_on: [] } });
+    const unrelated = task({ id: "task-unrelated", number: 2, labels: ["other"] });
+    await openRealPicker(held, view, { holdDetail: true });
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", trackerCache.tasksRecord(
+      [held, unrelated], columns(), await nextTaskRead(),
+    ));
+    const params = { project_id: "proj-1", state: "open", label: "bug" };
+    const blocked = { ...held, dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", params, trackerCache.tasksRecord(
+      [blocked], columns(), await nextTaskRead(),
+    ));
+    expect(await cacheTaskWaitingOnResponse("dev-1", "proj-1", {
+      task: { ...unrelated, title: "Unrelated accepted edit", updated_at: "2026-08-21T10:02:00Z" },
+    })).toBe(true);
+    const catalogue = await trackerCache.readTasksRecord("dev-1", "proj-1");
+    const query = await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params);
+    expect(catalogue.read_order).toBeGreaterThan(query.read_order);
+    expect(catalogue.tasks.find((row) => row.id === held.id).dependencies.blocked).toBe(false);
+    expect(query.tasks[0]).toMatchObject({ id: held.id, updated_at: held.updated_at, dependencies: { blocked: true } });
+    greet(false);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+  });
+
   it.each(["list", "board"])("rechecks the %s assignment after a pending greeting and retains its reblocked draft", async (view) => {
     const held = task({ id: "task-regreeting-reblocked", dependencies: { blocked: false, waiting_on: [] } });
     await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });

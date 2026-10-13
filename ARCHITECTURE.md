@@ -619,6 +619,41 @@ captured `source_path` (`sources.syncBasePath`, wire 3.21.0, #530). A manual
 request captures the registered location and configured base through the
 service queue; after acquiring the source lock the service rechecks both,
 refusing a moved source rather than syncing either its old or new folder.
+
+`term.create`, `term.list`, `term.attach` and source-asserted `term.close`
+accept the same exact original-source selector under `term.projectSources`
+(wire 3.21.0, #531). Plain folders support shells too. Terminal scope parsing
+in `app/runtime/terminals/scope.rs` rejects malformed, foreign, mixed selectors
+and caller roots before opening a PTY; `source_path` asserts the registered
+location, and a moved location returns `conflict`. Each explicit source shell
+keeps immutable project/source/location ownership beside its canonical cwd.
+Lists and `terminals` facts use that ownership, so registered aliases sharing
+a folder still have separate explicit tab rows. Legacy scopes remain canonical
+root aliases, including shells opened before an explicit source selector was
+available; input/resize/ack continue to address the captured terminal ID.
+
+Client detach or reconnect keeps the shell and ID. Explicit tab close, EOF,
+a missing root and project deletion use the existing kill/reap and screen
+closure lifecycle. Source move/remove refuses while shells stand in that
+source folder, naming their IDs. Create and move/remove admission run under
+the app lock; shell spawn stays under that guard, and the existing Updating
+reservation blocks shell starts and source removal throughout deferred source
+update work and settlement. The spawn guard also rechecks project deletion:
+a create admitted earlier refuses before opening a PTY if deletion has already
+collected retirements. A create that spawns first is included in that collection,
+even when its original source folder survives deletion.
+Label changes leave live shells alone. These holds
+keep the source's membership/location consistent; they do not restrict shell
+commands or serialize them with Git/base sync. Worker holds also permit
+source shells and base sync; both shell and worker holds must end before
+relocation or removal.
+A worker-held source can open and attach a shell while base sync waits on its
+Git lock, and sync can fast-forward with that shell still open. Closing the
+shell leaves the worker's location hold intact. An already-admitted terminal
+create rechecks Updating at spawn: a move's reservation holds it back during
+the SyncLock wait and after work completes, until config settlement. The old
+selector then conflicts; a fresh selector opens at the settled location.
+
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.

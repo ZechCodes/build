@@ -103,6 +103,7 @@ describe("adapter selection", () => {
       // kind in one subscribe shares that call's fate.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
       git: { projectSources: false },
+      term: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
@@ -188,6 +189,7 @@ describe("adapter selection", () => {
       expect(selected.create(vi.fn()).capabilities).toEqual({
         changes: { subscriptions: false, kinds: [], projectSources: false },
         git: { projectSources: false },
+        term: { projectSources: false },
         fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
         requests: { priority: false },
         rtc: { clientLanCache: false },
@@ -564,4 +566,35 @@ it("gates project source Git and change subscriptions by capability name", () =>
   expect(previous.git.projectSources).toBe(false);
   expect(previous.changes.projectSources).toBe(false);
   expect(previous.fs.projectSources).toBe(true);
+});
+
+it("gates project source terminals only by their capability name", () => {
+  for (const capabilities of [
+    [],
+    ["term.projectSources"],
+    ["git.projectSources", "fs.projectSources", "changes.projectSources"],
+    ["term.create", "term.list", "term.attach", "term.close"],
+  ]) {
+    const flags = selectAdapter({ api_version: "3.21.0", capabilities }).create(vi.fn()).capabilities;
+    expect(flags.term.projectSources).toBe(capabilities.includes("term.projectSources"));
+    if (capabilities.includes("term.projectSources")) {
+      expect(flags.git.projectSources).toBe(false);
+      expect(flags.fs.projectSources).toBe(false);
+      expect(flags.changes.projectSources).toBe(false);
+    }
+  }
+});
+
+it("keeps terminal source scopes disabled without a compatible named greeting", () => {
+  for (const greeting of [
+    null,
+    {},
+    { api_version: "3.21.0" },
+    { api_version: "3.21.0", capabilities: "term.projectSources" },
+    { api_version: "3.20.0", capabilities: [] },
+    { api_version: "4.0.0", capabilities: ["term.projectSources"] },
+    { api_version: 3, capabilities: ["term.projectSources"] },
+  ]) {
+    expect(v1.capabilitiesOf(greeting).term.projectSources).toBe(false);
+  }
 });

@@ -17,118 +17,19 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// A worktree-backed scope. Run-scoped files use the git root; terminals and
-/// agents use the container root through `terminal_scope_root`. Scope roots
-/// are resolved server-side ONLY (spec §1): ids map to roots through the
-/// bridge's own records — a client-supplied filesystem path is never a scope root.
-#[derive(Debug, Clone)]
-pub(in crate::app) enum TermScope {
-    Run {
-        run_id: String,
-    },
-    ExternalWorktree {
-        project_id: String,
-        worktree_id: String,
-    },
-    Primary {
-        project_id: String,
-    },
-}
+mod scope;
 
-impl TermScope {
-    /// Parse the legacy inline work-item scope params.
-    pub(in crate::app) fn parse(params: &Value) -> Result<TermScope, String> {
-        let field = |key: &str| {
-            params
-                .get(key)
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        if let Some(run_id) = field("run_id") {
-            return Ok(TermScope::Run { run_id });
-        }
-        let Some(project_id) = field("project_id") else {
-            return Err("missing scope: run_id or project_id required".to_string());
-        };
-        match field("worktree_id") {
-            Some(worktree_id) => Ok(TermScope::ExternalWorktree {
-                project_id,
-                worktree_id,
-            }),
-            None => Ok(TermScope::Primary { project_id }),
-        }
-    }
+use scope::resolve_terminal_scope;
 
-    /// Resolve to the scope's canonical file root, server-side only.
-    /// `&mut AppState` because the external-worktree arm may refresh the scan
-    /// cache; it never accepts a raw path and never canonicalizes client input.
-    ///
-    /// The result goes through [`AppState::canonical_root`] because the same
-    /// directory arrives here in two literal forms — a run's worktree is
-    /// `worktrees_root.join(name)` while the scanner canonicalizes, and on
-    /// macOS `/tmp` is `/private/tmp`. The tab registry is keyed by this path,
-    /// so one un-canonicalized entry point would silently split one worktree
-    /// into two and orphan whatever was already open in it.
-    pub(in crate::app) fn resolve_root(
-        &self,
-        state: &mut AppState,
-    ) -> Result<std::path::PathBuf, String> {
-        let root = match self {
-            TermScope::Run { run_id } => {
-                let active = state.runs.get(run_id).ok_or("unknown run_id")?;
-                let root = state.run_git_root(run_id, &active.worktree.path);
-                if !root.exists() {
-                    return Err("worktree no longer exists".to_string());
-                }
-                root
-            }
-            TermScope::ExternalWorktree {
-                project_id,
-                worktree_id,
-            } => {
-                state
-                    .resolve_external_worktree(project_id, worktree_id)?
-                    .path
-            }
-            TermScope::Primary { project_id } => state
-                .projects
-                .iter()
-                .find(|p| &p.id == project_id)
-                .map(|p| p.repo_path.clone())
-                .ok_or_else(|| "unknown project_id".to_string())?,
-        };
-        Ok(AppState::canonical_root(&root))
-    }
-}
-
-/// Resolve the terminal's owning workspace. Workspace-aware clients use the
-/// container root; old work-item clients retain their checkout-root behavior.
 pub(in crate::app) fn terminal_scope_root(
     state: &mut AppState,
     params: &Value,
 ) -> Result<std::path::PathBuf, String> {
-    if let Some(workspace_id) = params
-        .get("workspace_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
-        return state.workspace_root(workspace_id);
-    }
-    if let Some(run_id) = params
-        .get("run_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-    {
-        let active = state.runs.get(run_id).ok_or("unknown run_id")?;
-        let root = &active.worktree.path;
-        if !root.exists() {
-            return Err("worktree no longer exists".to_string());
-        }
-        return Ok(AppState::canonical_root(root));
-    }
-    TermScope::parse(params)?.resolve_root(state)
+    Ok(resolve_terminal_scope(state, params)?.root)
 }
+pub(in crate::app) use scope::source_scope_requested;
+pub(in crate::app) use scope::{TermScope, TerminalScope};
+pub(crate) use scope::{MOVED_TERMINAL_SOURCE, SOURCE_SHELLS_LIVE, SOURCE_TERMINAL_BUSY};
 
 /// What a client is told about the tab it just attached to.
 pub(in crate::app) struct TabFacts {
@@ -325,7 +226,14 @@ pub(in crate::app) fn term_create(
 
     let (key, pumps) = {
         let mut s = timer.lock(state);
-        let root = terminal_scope_root(&mut s, params)?;
+        // RPC admission can precede deletion's retirement collection. Recheck
+        // under the spawn guard so a shell cannot appear after that collection.
+        if s.project_deletion_in_progress {
+            return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
+        }
+        let scope = resolve_terminal_scope(&mut s, params)?;
+        let root = scope.root;
+        s.refuse_source_shell_start_at(&root)?;
         s.refuse_writers_while_reserved(&root)?;
         // The cap counts the human's shells and never an agent: sixteen open
         // terminals must not be able to crowd a worktree's agent out of a
@@ -341,12 +249,13 @@ pub(in crate::app) fn term_create(
             root: root.clone(),
             tab_id: tab_id.clone(),
         };
-        let (tab, rx) = Tab::spawn_shell(
+        let (mut tab, rx) = Tab::spawn_shell(
             &shell_harness_spec(&shell),
             tab_id,
             root,
             terminal_size(cols, rows),
         )?;
+        tab.project_source = scope.source;
         let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
         s.note_terminals_at(&key.root);
         (key, pumps)
@@ -380,15 +289,7 @@ pub(in crate::app) fn term_attach(
     let attachment = {
         let mut s = timer.lock(state);
         let key = s.tab_key_of_wire_id(&term_id)?;
-        // Workspace-aware clients prove that the id belongs to the workspace
-        // currently mounted. This also keeps a stale cached id from attaching
-        // to an unrelated workspace after a directory/ref selection change.
-        if params.get("workspace_id").is_some() {
-            let requested_root = terminal_scope_root(&mut s, params)?;
-            if key.root != requested_root {
-                return Err("terminal does not belong to workspace".to_string());
-            }
-        }
+        s.check_terminal_scope(params, &key)?;
         s.attachment(&key)?
     };
     Ok(attach_to_tab(attachment, sender, cols, rows))
@@ -557,17 +458,18 @@ impl AppState {
     /// run adopts it; filtering by scope made every open shell vanish from the
     /// tab row at adoption while its process kept running.
     pub(in crate::app) fn term_list(&mut self, params: &Value) -> Result<Value, String> {
-        let root = terminal_scope_root(self, params)?;
-        Ok(json!({ "terminals": self.shell_tabs_at(&root) }))
+        let scope = resolve_terminal_scope(self, params)?;
+        Ok(json!({ "terminals": self.shell_tabs_for(&scope) }))
     }
 
     /// The same rows, for a root already resolved: what `term.list` answers
     /// with, and what a `terminals` push item carries.
-    pub(in crate::app) fn shell_tabs_at(&self, root: &std::path::Path) -> Vec<Value> {
+    pub(in crate::app) fn shell_tabs_for(&self, scope: &TerminalScope) -> Vec<Value> {
         let mut terminals: Vec<(u64, Value)> = self
             .session_registry
-            .shell_tabs_at(root)
+            .shell_tabs_at(&scope.root)
             .into_iter()
+            .filter(|tab| scope.accepts(tab.project_source.as_ref()))
             .filter_map(|tab| {
                 let (cols, rows) = tab.size?;
                 Some((
@@ -591,6 +493,7 @@ impl AppState {
     pub(in crate::app) fn term_close(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let key = self.tab_key_of_wire_id(&term_id)?;
+        self.check_terminal_scope(params, &key)?;
         if key.is_agent() {
             // The agent tab is not one of the human's tabs to close: it is
             // always reachable, and its life is bound to the worktree.

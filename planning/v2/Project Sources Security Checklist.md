@@ -94,6 +94,32 @@ owning child has added its evidence.
 | PS522-6 | Secondary Git and plain sources push correctly addressed git, files and terminal facts to the subscription that names them; a plain folder refuses Git verbs and `git` subscriptions honestly; an unborn repository stages and commits its first commit with empty history; scope `all` (every older client) hears no source item; new params are gated by `git.projectSources` and `changes.projectSources`. Terminal scopes and browser coverage are C3, C6 and C7. | `project_source_changes_keep_secondary_and_plain_roots_distinct`, `project_source_git_serves_an_unborn_repository`, `project_source_git_refuses_a_plain_folder`, `original_project_sources_drive_git_and_pushes_end_to_end`; SPA `gates project source Git and change subscriptions by capability name`. |
 
 
+### #531 (C3) evidence — original-source terminal ownership and lifecycle
+
+C3 verifies the bridge terminal controls below. The combined #522 rows remain
+pending for source workers, SPA consumers and integrated acceptance in their
+owning children; this does not claim the whole extension is 100/100.
+
+| ID | C3 control | Passing evidence (#531) |
+| --- | --- | --- |
+| PS522-1 | Explicit terminal selectors resolve registered project/source/location, refuse foreign, malformed, mixed selectors and caller roots, and check exact ownership on attach/close. Sources sharing a canonical folder cannot attach or close each other's explicitly owned shells. Existing workspace consoles retain their workspace-owned shells when their selected directory changes. | `project_source_terminal_cannot_attach_sibling`, `project_source_terminals_open_list_attach_and_close_per_source`, `workspace_terminal_starts_at_the_workspace_root_and_survives_source_selection`; 35 terminal/lifecycle tests pass. |
+| PS522-2 | Source create/list/attach/close refuse captured locations that moved. Shell spawn and source move/remove admission share the app guard; an Updating reservation blocks new shells and source removal until deferred source settlement finishes. Project deletion admission and shell spawn share that guard, so an earlier admitted create cannot spawn after deletion collects retirements. | `project_source_terminal_survives_detach_not_source_retarget`, `a_source_move_in_flight_holds_new_shells_back`; the move race was red before the admission fix; `an_admitted_source_terminal_create_cannot_outlive_project_deletion` was red with a registered orphan PTY after deletion and green after the guarded recheck. |
+| PS522-5 | Each explicit shell retains its source ownership and canonical cwd; terminal-ID input does not follow the UI selection. Client detach/reconnect preserves the ID and screen. Live shells, including legacy root aliases, hold source move/remove and the refusal names the shell; label changes preserve it; close then move succeeds. | `project_source_terminal_survives_detach_not_source_retarget`, `a_legacy_shell_in_a_source_folder_holds_the_source`, existing terminal reconnect/EOF/close/reaper tests in the passing 35-test runtime suite. |
+| PS522-6 | Secondary Git and plain sources open/list/attach/close shells and push source-addressed tab rosters on create, close and plain-folder EOF. Source aliases have distinct explicit rows. New selectors are announced separately as `term.projectSources` in pending wire 3.21.0; legacy requests and the historical 3.20 manifest remain intact. | `project_source_shells_push_their_opening_exit_and_close_to_their_own_source`; all five `push_project_sources` tests pass. SPA `announces terminal source selectors independently of Git and Files`, `gates project source terminals only by their capability name` and `keeps terminal source scopes disabled without a compatible named greeting`; all 126 adapter/API contract checks pass, including the legacy method arrival-date regression. The SPA adapter flag is advertised-name-only; console dispatch and UI remain C7. |
+
+The #530/#533 merge interaction is pinned by
+`a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds`: create,
+list and attach remain available while service sync waits on its Git lock;
+sync actually fast-forwards without changing the shell ID or cwd. Move/remove
+refusals name the shell while it is live, then the worker after shell close;
+releasing the remaining worker permits movement and the old selector conflicts.
+`an_admitted_source_terminal_create_cannot_cross_a_serialized_source_move`
+checks an actual RPC create that passed admission before a move. Updating
+refuses it during the canonical SyncLock wait and after work completes before
+settlement; a fresh selector opens at the settled location. Omitting the spawn
+Updating guard makes that test fail with an unexpected live PTY. Merged-tree
+full-gate receipts for these controls are recorded on #531's snapshot 3.
+
 ### #530 (C2) evidence — source serialization and pinned cuts
 
 C2 verifies PS522-4 in full and the Git/Sync base wait portion of PS522-2.

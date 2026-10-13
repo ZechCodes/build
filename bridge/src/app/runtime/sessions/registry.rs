@@ -85,6 +85,7 @@ pub(in crate::app) struct AgentTabFact {
 }
 
 pub(in crate::app) struct ShellTabFact {
+    pub project_source: Option<crate::changes::ProjectSourceScope>,
     pub key: TabKey,
     pub tab_id: String,
     pub created_at: String,
@@ -320,11 +321,19 @@ impl SessionRegistry {
             .is_some_and(|tab| tab.role == TabRole::Shell)
     }
 
+    pub(in crate::app) fn shell_source(
+        &self,
+        key: &TabKey,
+    ) -> Option<&crate::changes::ProjectSourceScope> {
+        self.tabs.get(key)?.project_source.as_ref()
+    }
+
     pub(in crate::app) fn shell_tabs_at(&self, root: &Path) -> Vec<ShellTabFact> {
         self.tabs
             .iter()
             .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
             .map(|(key, tab)| ShellTabFact {
+                project_source: tab.project_source.clone(),
                 key: key.clone(),
                 tab_id: tab.tab_id.clone(),
                 created_at: tab.created_at.clone(),

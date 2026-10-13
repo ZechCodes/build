@@ -694,6 +694,7 @@ pub(in crate::app::tests) fn gated_tab(
         tab_id,
         root: root.to_path_buf(),
         role,
+        project_source: None,
         created_at: now_rfc3339(),
         session: Arc::new(harness),
         session_instance,

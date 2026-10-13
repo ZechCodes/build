@@ -47,6 +47,35 @@ impl TwoSources {
         }
     }
 
+    fn incoming_docs(&self) -> (PathBuf, git2::Oid) {
+        let docs = self.root.join("docs");
+        let upstream = self.root.join("docs-upstream");
+        git_in(
+            &self.root,
+            &[
+                "clone",
+                "-q",
+                docs.to_str().unwrap(),
+                upstream.to_str().unwrap(),
+            ],
+        );
+        crate::git_fixture::configure_repo(&upstream);
+        git_in(
+            &docs,
+            &["remote", "add", "origin", upstream.to_str().unwrap()],
+        );
+        std::fs::write(upstream.join("news.txt"), "incoming\n").unwrap();
+        git_in(&upstream, &["add", "."]);
+        git_in(&upstream, &["commit", "-q", "-m", "incoming"]);
+        let expected = git2::Repository::open(&upstream)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target()
+            .unwrap();
+        (docs, expected)
+    }
+
     fn remove_docs(&mut self) -> Value {
         self.state.handle(req(
             "project.remove_source",
@@ -331,7 +360,14 @@ fn a_rejected_duplicate_update_keeps_the_admitted_move_hold() {
             json!({ "project_id": f.project_id, "source_id": "source-2", "name": "Docs" })
         };
         let refused = f.state.project_update_source(&retry).unwrap_err();
-        assert!(refused.contains("already updating"), "{refused}");
+        // Moving retries reach the shell Updating barrier; label-only retries
+        // retain defer_project's existing refusal. Neither owns a move count.
+        let expected = if retry_moves {
+            "source location is being changed"
+        } else {
+            "already updating"
+        };
+        assert!(refused.contains(expected), "{refused}");
         f.assert_worker_starts_blocked();
 
         f.state
@@ -471,31 +507,7 @@ fn source_move_keeps_sync_locks_and_worker_hold_through_settlement() {
 #[test]
 fn a_worker_held_source_syncs_without_releasing_its_location_hold() {
     let mut f = TwoSources::new();
-    let docs = f.root.join("docs");
-    let upstream = f.root.join("docs-upstream");
-    git_in(
-        &f.root,
-        &[
-            "clone",
-            "-q",
-            docs.to_str().unwrap(),
-            upstream.to_str().unwrap(),
-        ],
-    );
-    crate::git_fixture::configure_repo(&upstream);
-    git_in(
-        &docs,
-        &["remote", "add", "origin", upstream.to_str().unwrap()],
-    );
-    std::fs::write(upstream.join("news.txt"), "incoming\n").unwrap();
-    git_in(&upstream, &["add", "."]);
-    git_in(&upstream, &["commit", "-q", "-m", "incoming"]);
-    let expected = git2::Repository::open(&upstream)
-        .unwrap()
-        .head()
-        .unwrap()
-        .target()
-        .unwrap();
+    let (docs, expected) = f.incoming_docs();
     let posted = f.state.handle(req(
         "thread.post",
         json!({"entity_id": f.owner, "agent_id": f.worker, "body": "edit docs"}),
@@ -551,4 +563,120 @@ fn a_worker_held_source_syncs_without_releasing_its_location_hold() {
         app.projects.get(&f.project_id).unwrap().sources[1].path,
         docs
     );
+}
+
+/// A worker and an original-source shell pin the location independently;
+/// neither prevents service sync or changes the terminal's captured ownership.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_held_syncing_source_accepts_a_terminal_and_keeps_both_holds() {
+    let mut f = TwoSources::new();
+    f.state.term_shell = "/bin/bash".into();
+    let (docs, expected) = f.incoming_docs();
+    let posted = f.state.handle(req(
+        "thread.post",
+        json!({"entity_id": f.owner, "agent_id": f.worker, "body": "edit docs"}),
+    ));
+    assert_eq!(posted["ok"], true, "{posted}");
+    let asked = f.state.handle(req(
+        "project.sync_source",
+        json!({"project_id": f.project_id, "source_id": "source-2", "source_path": docs}),
+    ));
+    assert_eq!(asked["ok"], true, "{asked}");
+    let move_params = f.move_params();
+    let shared = f.state.shared();
+    let handler = AppState::handler(Arc::clone(&shared));
+    let scope = json!({"project_id": f.project_id, "source_id": "source-2", "source_path": docs});
+    let (held, _) = SyncLock::acquire(&docs, Duration::ZERO).unwrap();
+    let syncing = Arc::clone(&shared);
+    let (answered, answers) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        AppState::sync_sources(&syncing, crate::app::SyncPass::Requested, 1_000);
+        answered.send(()).unwrap();
+    });
+    assert!(answers.recv_timeout(Duration::from_millis(400)).is_err());
+    let opened = terminal_ok(&handler, "term.create", scope.clone());
+    let id = opened["term_id"].as_str().unwrap();
+    let mut addressed = scope.clone();
+    addressed["term_id"] = json!(id);
+    // Routed reads drain delivery. Keep this fixture's worker turn queued,
+    // so releasing that queued hold at the end does not leave a live worker.
+    let listed = shared
+        .lock()
+        .unwrap()
+        .handle(req("term.list", scope.clone()));
+    assert_eq!(listed["ok"], true, "{listed}");
+    assert_eq!(listed["result"]["terminals"][0]["term_id"], id);
+    assert_eq!(
+        terminal_ok(&handler, "term.attach", addressed.clone())["live"],
+        true
+    );
+    assert!(!docs.join("news.txt").exists());
+    drop(held);
+    answers.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert_eq!(
+        git2::Repository::open(&docs)
+            .unwrap()
+            .head()
+            .unwrap()
+            .target(),
+        Some(expected)
+    );
+    assert_eq!(
+        std::fs::read_to_string(docs.join("news.txt")).unwrap(),
+        "incoming\n"
+    );
+    let attached = terminal_ok(&handler, "term.attach", addressed.clone());
+    assert_eq!(attached["term_id"], id);
+    assert_eq!(attached["live"], true);
+    {
+        let mut app = shared.lock().unwrap();
+        let key = app.tab_key_of_wire_id(id).unwrap();
+        assert_eq!(key.root, docs);
+        let params = json!({"project_id": f.project_id, "source_id": "source-2"});
+        for (method, params) in [
+            ("project.remove_source", params),
+            ("project.update_source", move_params.clone()),
+        ] {
+            let refused = app.handle(req(method, params));
+            refused_with(&refused, "conflict");
+            assert!(refused["error"].as_str().unwrap().contains(id), "{refused}");
+        }
+    }
+    let closed = shared.lock().unwrap().handle(req("term.close", addressed));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let mut app = shared.lock().unwrap();
+    let removed = app.handle(req(
+        "project.remove_source",
+        json!({"project_id": f.project_id, "source_id": "source-2"}),
+    ));
+    refused_with(&removed, "conflict");
+    assert!(removed["error"]
+        .as_str()
+        .unwrap()
+        .contains("Stop Editor first"));
+    let refused_move = app.handle(req("project.update_source", move_params.clone()));
+    refused_with(&refused_move, "conflict");
+    assert!(refused_move["error"]
+        .as_str()
+        .unwrap()
+        .contains("Stop Editor first"));
+    assert_eq!(
+        app.projects.get(&f.project_id).unwrap().sources[1].path,
+        docs
+    );
+    app.delivery_queue
+        .retain_queued(|turn| turn.agent_id != f.worker);
+    drop(app);
+    terminal_ok(&handler, "project.update_source", move_params);
+    let stale = handler.call(SessionSender::detached("stale"), req("term.create", scope));
+    refused_with(&stale, "conflict");
+}
+
+fn terminal_ok(handler: &crate::carrier::FrameHandler, method: &str, params: Value) -> Value {
+    let reply = handler.call(
+        SessionSender::detached("source-terminal"),
+        req(method, params),
+    );
+    assert_eq!(reply["ok"], true, "{method}: {reply}");
+    reply["result"].clone()
 }

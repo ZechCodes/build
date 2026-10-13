@@ -237,6 +237,7 @@ pub(in crate::app::tests) fn tab_running(role: TabRole, session: DictatedSession
         tab_id: "term-status".to_string(),
         root: PathBuf::from("/nowhere"),
         role,
+        project_source: None,
         created_at: now_rfc3339(),
         session: Arc::new(session),
         session_instance,
@@ -307,6 +308,7 @@ pub(in crate::app::tests) fn dictated_agent_tab(
             agent_id: agent_id.to_string(),
             provider: AgentProvider::default(),
         },
+        project_source: None,
         created_at: now_rfc3339(),
         session: Arc::new(session),
         session_instance: Some(SessionInstance {

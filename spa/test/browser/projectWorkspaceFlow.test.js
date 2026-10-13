@@ -54,6 +54,7 @@ for (const width of [390, 1280]) {
       // Edit the original source through Files, then use the unchanged
       // commit-all pane. Equal status/content keys cannot select Docs instead.
       await page.locator('[data-tab="files"]').click();
+      if (width === 390) await page.getByRole("button", { name: "Show files", exact: true }).click();
       await page.locator('[data-root="code"] .frow[data-path="README.md"]').dblclick();
       await page.locator('[data-file-mode="edit"]').click();
       await page.locator(".file-editor").fill("# shared source wording\n");

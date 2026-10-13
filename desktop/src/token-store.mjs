@@ -27,7 +27,7 @@ export function createTokenStore({ userData, safeStorage }) {
   }
 
   function save(token) {
-    if (!encryptionAvailable()) return;
+    if (!encryptionAvailable()) return false;
     const encrypted = safeStorage.encryptString(token);
     mkdirSync(userData, { recursive: true, mode: 0o700 });
     const temporary = `${path}.${randomUUID()}.tmp`;
@@ -41,6 +41,7 @@ export function createTokenStore({ userData, safeStorage }) {
       }
       // Replace atomically: no append, torn ciphertext, or inherited permissions.
       renameSync(temporary, path);
+      return true;
     } finally {
       rmSync(temporary, { force: true });
     }

@@ -17,7 +17,7 @@ const tokens = (suffix = "rotated") => ({
 const response = (payload, ok = true) => ({ ok, json: async () => payload });
 let sequence = 0;
 
-async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken } = {}) {
+async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken, showMessageBox } = {}) {
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
   if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
@@ -54,7 +54,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     },
     dialog: { showMessageBox: async (options) => {
       calls.dialogs.push(options);
-      return { response: calls.dialogResponse ?? 1 };
+      return showMessageBox ? showMessageBox(options) : { response: calls.dialogResponse ?? 1 };
     } },
     Menu: { buildFromTemplate: (template) => template, setApplicationMenu: (menu) => { calls.menu = menu; } },
     net: { fetch: async (url, options) => {
@@ -86,7 +86,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
   globalThis[key] = fixture;
   const hook = registerHooks({
     resolve(specifier, context, nextResolve) {
-      if (specifier === "./token-store.mjs") {
+      if (specifier === "./token-store.mjs" && context.parentURL === new URL(`../src/main.mjs?test=${id}`, import.meta.url).href) {
         const resolved = nextResolve(specifier, context);
         return { ...resolved, url: `${resolved.url}?test=${id}` };
       }
@@ -99,10 +99,10 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
         source: `export const { app, BrowserWindow, safeStorage, dialog, Menu, net, session, shell } = globalThis.${key};`,
       };
       const loaded = nextLoad(url, context);
-      if (url.includes("/src/main.mjs?test=")) {
+      if (url === new URL(`../src/main.mjs?test=${id}`, import.meta.url).href) {
         return { ...loaded, source: `${loaded.source}\nexport { refreshTokens as testRefreshTokens };` };
       }
-      if (removeSavedToken && url.includes("/src/token-store.mjs")) {
+      if (removeSavedToken && url === new URL(`../src/token-store.mjs?test=${id}`, import.meta.url).href) {
         return { ...loaded, source: String(loaded.source).replace(
           'const clear = () => rmSync(path, { force: true });',
           `const clear = () => globalThis.${key}.removeSavedToken();`,
@@ -452,4 +452,29 @@ test("overlapping refresh requests share one exchange and the next refresh uses 
   await refreshTokens();
   assert.equal(calls.fetch.length, 3);
   assert.equal(calls.fetch[2].body.get("refresh_token"), "fixture-refresh-overlap-2");
+});
+
+
+test("an existing authentication dialog cannot quit during sign-out cleanup", async (t) => {
+  const dialog = deferred();
+  const storage = deferred();
+  const { calls, signOut } = await launch(t, {
+    fetch: (count) => {
+      if (count === 2) throw new Error("fixture offline");
+      return response(tokens());
+    },
+    showMessageBox: () => dialog.promise,
+    clearStorageData: () => storage.promise,
+  });
+  t.mock.timers.tick(840_000);
+  await flush();
+  assert.equal(calls.dialogs.length, 1);
+  const signingOut = signOut().click();
+  await flush();
+  dialog.resolve({ response: 1 });
+  await flush();
+  assert.equal(calls.quit, undefined, "old dialog cannot bypass awaited session cleanup");
+  storage.resolve();
+  await signingOut;
+  assert.equal(calls.quit, 1);
 });

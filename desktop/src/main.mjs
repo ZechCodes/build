@@ -87,15 +87,24 @@ async function requestTokens(body) {
   return payload;
 }
 
-function useTokens(payload) {
+function persistRefreshToken(token) {
+  let persisted = false;
   try {
-    tokenStore.save(payload.refresh_token);
+    persisted = tokenStore.save(token);
   } catch {
-    // Rotation has already invalidated the previous token on the server.
-    // Keep this launch usable in memory, but don't leave stale credentials.
-    try { tokenStore.clear(); } catch { /* Disk may also be unavailable. */ }
     console.error("could not save encrypted Build sign-in; this launch will use memory only");
   }
+  if (persisted) return;
+  // A new in-memory account must never leave an older account restorable.
+  try {
+    tokenStore.clear();
+  } catch {
+    throw new Error("Build could not remove the previous saved sign-in. Please try again.");
+  }
+}
+
+function useTokens(payload) {
+  persistRefreshToken(payload.refresh_token);
   accessToken = payload.access_token;
   refreshToken = payload.refresh_token;
   if (refreshTimer) clearTimeout(refreshTimer);
@@ -172,19 +181,37 @@ async function startAuthentication() {
 }
 
 async function signOut() {
+  if (signingOut) return;
   signingOut = true;
   clearCredentials();
+  // Retire the renderer before clearing persistent storage so it cannot
+  // rewrite account content while cleanup awaits Electron.
+  mainWindow?.destroy();
+  const failures = [];
   try {
     tokenStore.clear();
   } catch {
+    failures.push("the saved sign-in");
+  }
+  const cleanupOperations = [
+    ["browser storage", () => session.defaultSession.clearStorageData()],
+    ["the HTTP cache", () => session.defaultSession.clearCache()],
+  ];
+  for (const [name, cleanup] of cleanupOperations) {
+    try {
+      await cleanup();
+    } catch {
+      failures.push(name);
+    }
+  }
+  if (failures.length) {
     await dialog.showMessageBox({
       type: "error",
       title: "Build sign-out failed",
-      message: "Build could not remove the saved sign-in. Please try signing out again after restarting.",
+      message: `Build could not clear ${failures.join(" and ")}. Please try signing out again after restarting.`,
       buttons: ["Quit"],
     });
   }
-  mainWindow?.destroy();
   app.quit();
 }
 
@@ -198,7 +225,8 @@ async function showAuthenticationError(error, retry = beginAuthentication) {
     defaultId: 0,
     cancelId: 1,
   });
-  if (result.response === 0 && !signingOut) await retry();
+  if (signingOut) return;
+  if (result.response === 0) await retry();
   else app.quit();
 }
 

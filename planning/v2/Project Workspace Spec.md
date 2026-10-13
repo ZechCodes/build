@@ -14,7 +14,9 @@ Zech approved all five recommendations on #522; each recommendation below is ado
 
 1. **Dirty or locally committed base:** retain #267's `sync_base`
    setting and defaults. Fetch and safe fast-forward remain automatic; dirty,
-   ahead, diverged or in-progress bases are skipped with a visible reason.
+   diverged or in-progress bases are skipped with a visible reason. An
+   ahead-only base is left unchanged and reports `UpToDate` with its ahead
+   count, as specified by #267: there is no incoming work to apply.
    Never silently stash, reset, rebase, discard, or disable the setting. Manual
    **Sync base** has the same safety rules. Build-managed Git mutations share
    the sync lock; a user's terminal or an agent's shell is not controlled by it.
@@ -231,7 +233,7 @@ base sync. User-requested Git verbs retain their existing execution policy.
 | --- | --- | --- |
 | Clean, behind, safe fast-forward | Fetch + ff; preserve #271's bounded cut path | May start at fetched upstream commit while service advances base |
 | Dirty/untracked collision/in-progress | Skip with reason; leave files/index alone | Git cut uses configured base's committed state and existing warning; does not copy uncommitted tracked edits |
-| Configured base has local commits, ahead/diverged | Preserve local branch; report skip | Starts from those local base commits; disclose that they are included |
+| Configured base has local commits, ahead/diverged | Preserve local branch; ahead-only reports `UpToDate` with ahead count (#267), divergence reports skip with reason | Starts from those local base commits; disclose that they are included |
 | Source HEAD on another branch | Existing safe base-ref sync rules | Starts from configured base, not that other branch's HEAD |
 | `sync_base: false` | No automatic/cut sync; explicit Sync base still fetches and safely advances without enabling automatic sync | Uses configured local base |
 | Plain folder | No Git sync | Existing directory-copy isolation rules |

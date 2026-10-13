@@ -9,6 +9,7 @@ beforeAll(async () => { session = await openLayoutSession({ plugins: [deviceShim
 afterAll(async () => { await session?.close(); });
 
 const PIN = '[data-bubble="agent"][data-agent="project-pin"]';
+const CHILD_PIN = '[data-bubble="project"][data-agent="project-owner"]';
 const SIBLING = '[data-bubble="agent"][data-agent="project-sibling"]';
 const CREATED = '[data-bubble="agent"][data-agent="project-created"]';
 const INPUT = ".thread-composer textarea";
@@ -82,13 +83,21 @@ for (const width of [390, 1280]) {
 
       // Open the same assignment control used by tasks, populated from the
       // production complete-roster projection rather than a hand-built option.
-      await page.evaluate(async () => {
-        const { picker, assignee, feed } = window.__layoutModules;
-        let snapshot;
-        const stop = feed.subscribeFeed((value) => { snapshot = value; });
-        await feed.refreshFeed(); stop();
+      await page.evaluate(() => {
+        const { assignee, feed } = window.__layoutModules;
+        window.__flowStopAssignmentFeed = feed.subscribeFeed((snapshot) => {
+          window.__flowAssignmentOptions = assignee.assigneeOptions(assignee.assignableAgents(snapshot, "flow-device/p"));
+        });
+        void feed.refreshFeed();
+      });
+      // Cache writes announce asynchronously; a visible provisional bubble
+      // does not yet mean the complete roster has reached the task feed.
+      await page.waitForFunction(() => window.__flowAssignmentOptions?.some((option) => option.id === "agent:project-created"));
+      await page.evaluate(() => {
+        const { picker } = window.__layoutModules;
+        window.__flowStopAssignmentFeed();
         window.__flowPicker = picker.openAssigneePicker({ task: { id: "task-acceptance", number: 538, title: "Accept project workspace" },
-          options: assignee.assigneeOptions(assignee.assignableAgents(snapshot, "flow-device/p")), current: "agent:project-created",
+          options: window.__flowAssignmentOptions, current: "agent:project-created",
           callRpc: (method, params) => window.__flowCall("flow-device", method, params),
           onAssigned: (answer) => { window.__flowAssignmentAnswer = answer; } });
       });
@@ -107,6 +116,8 @@ for (const width of [390, 1280]) {
         { project_id: "p", source_id: "assets", source_path: "/fixture/assets" },
       ]);
       await captureLayout(page, `538-console-${width}.png`);
+      // The phone's chat card dismisses when the source console is used.
+      if (width === 390) await selectAgent(page, CREATED);
       await page.locator(INPUT).fill("Keep this worker draft on return");
 
       // The Rust companion verifies real cut bytes and lifecycle admission.
@@ -115,7 +126,7 @@ for (const width of [390, 1280]) {
       await page.locator('[data-agent="child-agent"]').waitFor();
       expect(await page.locator(CREATED).count()).toBe(0);
       expect(await page.locator(SIBLING).count()).toBe(0);
-      expect(await page.locator(PIN).count()).toBe(1);
+      expect(await page.locator(CHILD_PIN).count()).toBe(1);
       await page.evaluate(async () => {
         const route = await window.__layoutModules.returnRoute.projectReturnRoute(window.__flowDevices["flow-device"].record);
         await window.__flowNavigate({ ...route, agent: "project-created" });
@@ -141,6 +152,7 @@ for (const width of [390, 1280]) {
       await page.evaluate(() => window.__flowNavigate({ name: "project", deviceId: "flow-device", projectId: "p", tab: "changes", sourceId: "docs", agent: "project-created" }));
       await page.locator(INPUT).waitFor();
       await settled(page);
+      if (!await page.locator(INPUT).isVisible()) await selectAgent(page, CREATED);
       await captureLayout(page, `538-agent-separator-${width}.png`);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.locator(".rail-remove").click();

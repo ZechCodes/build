@@ -363,6 +363,10 @@ fn removal_and_move(
     );
     configure(&moved);
     let change = json!({ "project_id": project.id, "source_id": "source-2", "path": moved });
+    // Isolate the worker hold first; an open source terminal also refuses
+    // movement, and its refusal takes precedence while both are live.
+    let scope = source_scope(&project.id, &project.sources[1]);
+    bridge.ok("term.close", with(&scope, json!({ "term_id": shells[1] })));
     let refused = bridge.refused("project.update_source", change.clone(), "conflict");
     assert!(
         refused["error"]
@@ -416,16 +420,21 @@ fn removal_and_move(
     );
     bridge.ok("conversation.reset", json!({ "project_id": project.id, "entity_id": project.owner,
         "agent_id": sibling, "conversation_id": sibling, "expected_thread_id": sibling_before["thread_id"] }));
+    let shell = open_shell(bridge, &scope, &project.secondary);
     let refused = bridge.refused("project.update_source", change.clone(), "conflict");
     assert!(
-        refused["error"].as_str().unwrap().contains("shell"),
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("Close source terminals")
+            && refused["error"].as_str().unwrap().contains(&shell),
         "{refused}"
     );
     bridge.ok(
         "term.close",
         with(
             &source_scope(&project.id, &project.sources[1]),
-            json!({ "term_id": shells[1] }),
+            json!({ "term_id": shell }),
         ),
     );
     bridge.ok("project.update_source", change);
@@ -460,7 +469,13 @@ fn removal_and_move(
     moved
 }
 
-fn delete_preserves_originals(bridge: &Bridge, project: &Project, root: &Path, moved: &Path) {
+fn delete_preserves_originals(
+    bridge: &Bridge,
+    project: &Project,
+    root: &Path,
+    moved: &Path,
+    shell: &str,
+) {
     let last = worker(bridge, &project.owner, "Deletion worker");
     post(bridge, &project.owner, &last, "a final live session");
     std::fs::write(project.primary.join("unsaved.txt"), "keep my work\n").unwrap();
@@ -486,7 +501,10 @@ fn delete_preserves_originals(bridge: &Bridge, project: &Project, root: &Path, m
         std::fs::read_to_string(project.plain.join("notes.txt")).unwrap(),
         "original notes\n"
     );
-    bridge.refused("term.attach", json!({ "term_id": "term-1" }), "not_found");
+    // Unscoped legacy terminal refusals retain their existing internal code
+    // (rpc::terminal_session_refusal); assert the terminal itself is gone.
+    let retired = bridge.refused("term.attach", json!({ "term_id": shell }), "internal");
+    assert_eq!(retired["error"], "unknown term_id");
     bridge.refused(
         "thread.post",
         json!({ "entity_id": project.owner, "agent_id": last, "body": "retired" }),
@@ -553,11 +571,14 @@ fn concurrent_secondary_sync(bridge: &Bridge, project: &Project) {
         "uncommitted scratch\n"
     );
     let local = head(&project.secondary);
+    let base = repo.refname_to_id("refs/heads/main").unwrap();
     let report = sync_base(&project.secondary, "main", Fetch::Skip);
-    assert!(
-        matches!(report.outcome, SyncOutcome::Skipped(_)),
-        "{report:?}"
-    );
+    // #267 reports an ahead-only base as up to date: there is no incoming
+    // remote work to apply. Local worker commits must remain untouched.
+    assert_eq!(report.outcome, SyncOutcome::UpToDate, "{report:?}");
+    assert_eq!((report.ahead, report.behind), (1, 0));
+    assert!(!report.fetched);
+    assert_eq!(repo.refname_to_id("refs/heads/main").unwrap(), base);
     assert_eq!(
         head(&project.secondary),
         local,
@@ -591,10 +612,16 @@ fn unborn_and_plain_matrix(bridge: &Bridge, root: &Path) {
         source_scope(&project, &rows[1]),
         "invalid_params",
     );
-    bridge.refused(
+    let plain_sync = bridge.refused(
         "project.sync_source",
         source_scope(&project, &rows[1]),
-        "invalid_params",
+        "internal",
+    );
+    // Sync base retains #267's plain-folder refusal; explicit git.status
+    // above uses the newer source-Git invalid_params contract.
+    assert_eq!(
+        plain_sync["error"],
+        "Build cannot sync a folder that is not a Git repository: it has no base branch."
     );
     assert!(!plain.join(".git").exists());
     std::fs::write(unborn.join("first.txt"), "first commit\n").unwrap();
@@ -698,7 +725,7 @@ fn project_workspace_combined_journey_and_source_matrix() {
     let moved = removal_and_move(
         &bridge, &project, &assigned, &sibling, &task, &shells, &root,
     );
-    delete_preserves_originals(&bridge, &project, &root, &moved);
+    delete_preserves_originals(&bridge, &project, &root, &moved, &shells[0]);
     unborn_and_plain_matrix(&bridge, &root);
     bridge.shutdown();
 }

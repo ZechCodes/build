@@ -344,28 +344,31 @@ function railChatDependencies(context) {
  *  back the indices it rendered, so the stamp's place comes off them on the way
  *  down.
  */
-function stampedViewingContext(store, stamp) {
-  if (!store || !stamp) return store;
+function stampedViewingContext(store, initialStamp) {
+  let stamp = initialStamp;
+  const listeners = new Set();
+  const offset = () => stamp && store?.isEnabled?.() !== false ? 1 : 0;
   const wrapped = {
     ...store,
     snapshot() {
-      const held = store.snapshot?.();
-      // Nothing is sent to a bridge that takes no context, so nothing is shown.
-      if (store.isEnabled?.() === false) return held;
-      return { version: 1, items: [stamp, ...(held?.items || [])] };
+      const held = store?.snapshot?.();
+      return offset() ? { version: 1, items: [stamp, ...(held?.items || [])] } : held;
     },
-    remove: (index) => store.remove?.(index - 1),
-    removeMany: (indices) => store.removeMany?.(indices.map((index) => index - 1)),
-    // The store announces its own snapshot; this tray paints from ours.
-    subscribe: (listener) => store.subscribe?.(() => listener(wrapped.snapshot())),
+    remove: (index) => store?.remove?.(index - offset()),
+    removeMany: (indices) => store?.removeMany?.(indices.map((index) => index - offset())),
+    subscribe(listener) {
+      listeners.add(listener);
+      const stop = store?.subscribe?.(() => listener(wrapped.snapshot()));
+      return () => { listeners.delete(listener); stop?.(); };
+    },
+    retarget(next) {
+      stamp = next;
+      for (const listener of listeners) listener(wrapped.snapshot());
+    },
   };
   return wrapped;
 }
 
-/** Where this rail is standing, when that is a workspace it reached the
- *  project's conversation from: what every message sent from here wears, and
- *  the store the composer's tray paints it from. Null and the store itself for
- *  every other rail. */
 const railStandingPlace = (context) => {
   const fromWorkspace = context.fromWorkspace || null;
   const store = context.viewingContext || App.viewingContext;
@@ -767,13 +770,18 @@ const workItemContext = (context, known, { openAgentId = null, addingAgent = fal
  * not hold, this wrapper does: whether the panel is out, and what each side was
  * last read to be, so the rail that comes up is the one that went down.
  */
+const initialProjectFacts = (context) => ({
+  entityId: context.projectAgent?.entityId || (context.kind === "project" ? context.entityId : null) || null,
+  name: context.projectAgent?.name || context.projectName || "",
+});
+
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
-  if (!context.projectAgent?.projectId) return mountRailOnContext(host, context, null);
+  context = { ...context };
   // What the rail has learned about the project: its name, and the conversation
   // owner — minted by the press that opens it, never by a render. Held out here
   // so a swap does not ask for either of them again.
-  let known = { entityId: context.projectAgent.entityId || null, name: context.projectAgent.name || "" };
+  let known = initialProjectFacts(context);
   // The last payload read for each side, kept by the kind it answers for. The
   // rail reads both — the one it stands on and the one beside it — so a swap
   // has what the side it is standing up already is, and hands it over as that
@@ -798,7 +806,7 @@ export function mountAgentRail(host, context) {
   // page's too (#148): both sides remember it under the page's key, so an
   // overview opened on the project's side is the overview a fresh mount of
   // this page comes back to.
-  const pageKey = createAgentRailContext(context).key;
+  let pageKey = createAgentRailContext(context).key;
   const stand = (standing, alongside, { panelOpen = null, selectedKind = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
@@ -808,11 +816,11 @@ export function mountAgentRail(host, context) {
       // conversation selected on its strip.
       overviewPageKind: context.kind,
       pageKey,
-      payload: payloads.get(standing.kind) || null,
-      alongside: { ...alongside, payload: payloads.get(alongside.kind) || null },
+      payload: payloads.get(standing.kind) || standing.payload || null,
+      alongside: alongside ? { ...alongside, payload: payloads.get(alongside.kind) || null } : null,
       panelOpen,
       selectedKind,
-    }, swap);
+    }, context.projectAgent ? swap : null);
   };
   const swap = {
     learned: (facts) => {
@@ -838,9 +846,24 @@ export function mountAgentRail(host, context) {
   // conversation. It may be the project's — the project's agent is reachable
   // from every workspace in the project — and the side that finds it in its own
   // half of the strip is the side that stands the rail there.
-  stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
+  if (context.projectAgent) stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
     addingAgent: context.addingAgent === true }), projectSide());
+  else stand(context, null);
   return {
+    retarget(next) {
+      if (!live?.canRetarget(next)) return false;
+      context = { ...context, ...next, entityId: next.entityId || null,
+        workspaceId: next.workspaceId || null, payload: null };
+      payloads.clear();
+      workspaceName = "";
+      pageKey = createAgentRailContext(context).key;
+      const project = context.kind === "workspace" ? projectSide(next.openAgentId) : {
+        ...context, entityId: known.entityId, projectAgent: null, alongside: null, pinnedOnly: false, fromWorkspace: null,
+      };
+      live.retarget({ ...project, pageKey, overviewPageKind: context.kind,
+        alongside: context.kind === "workspace" ? workItemContext(context, known) : null }, swap);
+      return true;
+    },
     collapse() {
       live?.collapse();
     },
@@ -979,7 +1002,8 @@ function mountRailOnContext(host, context, swap) {
   const railContext = createAgentRailContext(context);
   const key = railContext.key;
   const { cacheScope, ownsRepository: ownsChatRepository, repository: chatRepository } = railChatDependencies(context);
-  const { fromWorkspace, composerViewingContext } = railStandingPlace(context);
+  let fromWorkspace = context.fromWorkspace || null;
+  const { composerViewingContext } = railStandingPlace(context);
   const {
     isPending,
     projectOptimistic,
@@ -991,7 +1015,7 @@ function mountRailOnContext(host, context, swap) {
   const railView = chatRepository.railView(key);
   // Where the kind of selection is kept: the page's view, which is this rail's
   // own unless it stands on the project's side of a workspace page.
-  const pageView = context.pageKey ? chatRepository.railView(context.pageKey) : railView;
+  let pageView = context.pageKey ? chatRepository.railView(context.pageKey) : railView;
   const selection = context.selection || createAgentSelection();
   // What the side this mount stands on was last read to be, where a swap put
   // this rail here holding it. The strip paints its agents — their unread,
@@ -1057,7 +1081,8 @@ function mountRailOnContext(host, context, swap) {
       if (standing()) notifyCommandFailure(error, COMPACTION_REFUSED, COMPACTION_UNSUPPORTED);
     },
   });
-  const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
+  let { projectAgent, standing: onProjectAgentRail } = projectAgentState(context);
+  const { entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
   let projectName = knownName;
   let mintingProjectAgent = false;
@@ -1076,14 +1101,15 @@ function mountRailOnContext(host, context, swap) {
   // it, or one workspace's. It opens as the page's own and moves only when the
   // reader moves it; the choice is cached per page so a remount — a swap to the
   // project's agent is one — keeps it.
-  const overviewPage = overviewPageOf(context, alongside, projectId);
+  let overviewPage = overviewPageOf(context, alongside, projectId);
   let overviewScope = overviewPage.scope;
   let overviewRead = { rows: [], workspaces: [], tasks: [] };
-  const overviewScopeRecord = overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
+  const watchOverviewScope = () => overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
     if (!isOverviewScope(saved) || JSON.stringify(saved) === JSON.stringify(overviewScope)) return;
     overviewScope = saved;
     showOverviewScope();
   }) : NO_SCOPE_RECORD;
+  let overviewScopeRecord = watchOverviewScope();
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let disposed = false;
@@ -1786,16 +1812,27 @@ function mountRailOnContext(host, context, swap) {
   /// bubbles say. Its row, out of the same cache this rail's own comes from.
   /// There is nothing to read while the project has no owner: that bubble says
   /// how to start one instead, which is not a read.
+  const refreshWorkspaceStamp = async (captured) => {
+    if (captured.kind !== "workspace") return;
+    const listed = await readCached(cacheScope.address({ entityId: "", kind: "workspaces" }));
+    if (!standing() || captured !== alongside) return;
+    const row = listed?.value?.find((workspace) => (workspace.workspace_id || workspace.id) === captured.workspaceId);
+    fromWorkspace = workspaceStamp(captured, row?.name);
+    composerViewingContext.retarget(fromWorkspace);
+  };
+
   const refreshAlongside = async () => {
-    if (!alongside || (alongside.kind === "project" && !projectOwner)) return;
-    const entityId = await records.entityIdFor(alongside);
-    if (!standing()) return;
+    const captured = alongside;
+    if (!captured || (captured.kind === "project" && !projectOwner)) return;
+    const entityId = await records.entityIdFor(captured);
+    if (!standing() || captured !== alongside) return;
     watchAlongsideRow(entityId);
+    await refreshWorkspaceStamp(captured);
     // A row this device does not hold leaves the strip saying what it said: a
     // bubble that blanks because one record is cold is worse than one behind.
     const row = await records.cachedRow(entityId);
-    if (!standing() || !row) return;
-    alongsideEntity = railEntity(row, alongside.kind);
+    if (!standing() || captured !== alongside || !row) return;
+    alongsideEntity = railEntity(row, captured.kind);
     keepForSwap(alongside.kind, row);
     paint();
     overview.refresh();
@@ -4257,7 +4294,42 @@ function mountRailOnContext(host, context, swap) {
   };
   const stopHearingRetirement = chatRepository.onRetired(stopListening);
 
+  // A host change may alter the strip and workspace stamp while the exact
+  // canonical project conversation, composer and thread remain mounted.
+  const selectedIsProjectPin = () => entity.pinnedAgentId
+    ? selectedId === entity.pinnedAgentId : agentOf(selectedId)?.project_role === "coordinator";
+
+  const canRetarget = (next) => standing() && context.kind === "project" && selectedKind === "agent"
+    && selectedIsProjectPin() && next.openAgentId === selectedId
+    && next.deviceId === context.deviceId && next.projectId === projectId
+    && next.chatRepository === chatRepository && ["project", "workspace"].includes(next.kind);
+
+  const retarget = (next, nextSwap) => {
+    swap = nextSwap;
+    Object.assign(context, { projectAgent: null, alongside: null, fromWorkspace: null }, next);
+    ({ projectAgent, standing: onProjectAgentRail } = projectAgentState(context));
+    pageView = chatRepository.railView(context.pageKey || key);
+    pageView.chooseKind(selectedKind);
+    fromWorkspace = context.fromWorkspace;
+    composerViewingContext.retarget(fromWorkspace);
+    panelVisible = true;
+    unwatchAlongsideRow?.();
+    unwatchAlongsideRow = null;
+    watchedAlongsideId = undefined;
+    alongside = context.alongside ? createAgentRailContext(context.alongside) : null;
+    alongsideEntity = railEntity(null, alongsideKind(context));
+    overviewScopeRecord.dispose({ flushPending: false });
+    overviewPage = overviewPageOf(context, alongside, projectId);
+    overviewScope = overviewPage.scope;
+    overviewScopeRecord = watchOverviewScope();
+    paint();
+    void refresh();
+    overview.refresh();
+  };
+
   return {
+    canRetarget,
+    retarget,
     /** Put the panel away without touching the docked/card preference — what a
      *  toolbar tab press means on a phone, where the chat covers the page it
      *  is about to change (#62). Unlike `dismissPopover` this does not spare a

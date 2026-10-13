@@ -97,7 +97,7 @@ async function mountWorkers(page, basePath) {
   await mountLayout(page, markup, { basePath, styles: SHELL_STYLES });
   await loadChatOverviewModules(page, basePath, {
     contexts: "src/core/deviceContexts.js", events: "src/core/changeEvents.js",
-    scope: "src/core/cacheScope.js", shell: "src/core/shell.js",
+    scope: "src/core/cacheScope.js", shell: "src/core/shell.js", viewing: "src/core/viewingContext.js",
   });
   await page.evaluate(seedProjectWorkers);
   await page.locator(WORKER).waitFor();
@@ -225,5 +225,138 @@ it("keeps project task workers and draft, while a named workspace shows its pin 
     await page.locator(WORKER).waitFor();
     await page.waitForFunction(() => document.querySelector(".thread-composer textarea")?.value === "Keep the coordinator draft across surfaces");
     await page.evaluate(() => window.__layoutModules.shell.stopShell());
+  }, { width: 1280, height: 900 });
+}, 40_000);
+
+
+for (const viewport of VIEWPORTS) {
+  it(`keeps the exact focused pin conversation mounted throughout host changes (${viewport.width})`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountWorkers(page, basePath);
+      await page.evaluate(async () => {
+        const { app, cache, merge, shell, viewing } = window.__layoutModules;
+        app.App.viewingContext = viewing.createViewingContext();
+        await cache.writeCached({ deviceId: "workers-device", entityId: "workspace-b-owner", kind: "row" }, {
+          kind: "workspace", entity_id: "workspace-b-owner", workspace_id: "workspace-b", project_id: "workers-project",
+          agents: [{ id: "workspace-b-agent", name: "B editor", state: "live", provider: "codex" }],
+        });
+        const address = { deviceId: "workers-device", entityId: "", kind: "workspaces" };
+        const rows = (await cache.readCached(address)).value;
+        await cache.writeCached(address, [...rows, merge.stampWorkspace({ id: "workspace-b", project_id: "workers-project",
+          entity_id: "workspace-b-owner", name: "Workspace B" }, "workers-device")]);
+        window.__workerRail.dispose();
+        app.App.route.agent = "project-pin";
+        shell.standShell(app.App.route);
+      });
+      await page.waitForFunction(() => document.querySelector(".thread-items")?.textContent.includes("Cached Build coordinator"));
+      await page.locator(INPUT).fill("Keep my exact mounted draft");
+      await page.locator(INPUT).focus();
+      await page.evaluate(() => {
+        const selectors = [".thread-composer textarea", "#rail-body", ".thread-items"];
+        const held = selectors.map((selector) => document.querySelector(selector));
+        const failures = [];
+        window.__continuity = { failures, samples: 0 };
+        const sample = (phase) => {
+          window.__continuity.samples++;
+          held.forEach((node, index) => {
+            const rect = node.getBoundingClientRect();
+            if (!node.isConnected || document.querySelector(selectors[index]) !== node || !rect.width || !rect.height ||
+              !node.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }))
+              failures.push(`${phase}: ${selectors[index]} detached, replaced or hidden`);
+          });
+          if (document.activeElement !== held[0]) failures.push(`${phase}: composer focus lost`);
+        };
+        const observer = new MutationObserver((records) => {
+          for (const record of records) {
+            for (const removed of record.removedNodes)
+              if (held.some((node) => removed === node || removed.contains?.(node))) failures.push("mutation: held conversation removed");
+            if (!record.target.contains?.(held[0])) continue;
+            const wasHidden = record.attributeName === "aria-hidden" && record.oldValue === "true"
+              || record.attributeName === "inert" && record.oldValue !== null
+              || record.attributeName === "class" && record.oldValue?.split(" ").includes("rail-collapsed");
+            if (wasHidden) failures.push("mutation: held conversation temporarily hidden");
+          }
+          sample("mutation");
+        });
+        observer.observe(document.querySelector("#agent-rail"), { subtree: true, childList: true, attributes: true, attributeOldValue: true });
+        const focusout = () => failures.push("focusout: composer blurred");
+        held[0].addEventListener("focusout", focusout);
+        let running = true;
+        const frame = () => { if (running) { sample("frame"); requestAnimationFrame(frame); } };
+        requestAnimationFrame(frame);
+        window.__continuity.sample = sample;
+        window.__continuity.stop = () => { running = false; observer.disconnect(); held[0].removeEventListener("focusout", focusout); };
+      });
+      for (const step of [
+        { name: "workspace", workspaceId: "workers-workspace", own: "workspace-agent", stamp: "from Workspace" },
+        { name: "workspace", workspaceId: "workspace-b", own: "workspace-b-agent", stamp: "from Workspace B" },
+        { name: "project", own: "project-worker", stamp: null },
+      ]) {
+        await page.evaluate((step) => {
+          const { app, shell } = window.__layoutModules;
+          app.App.route = { name: step.name, workspaceId: step.workspaceId, deviceId: "workers-device",
+            projectId: "workers-project", agent: "project-pin", tab: "changes" };
+          shell.standShell(app.App.route);
+          window.__continuity.sample("synchronous navigation");
+        }, step);
+        await page.locator(`[data-agent="${step.own}"]`).waitFor();
+        await settled(page);
+        if (step.stamp) {
+          expect(await page.locator('.thread-composer [data-context-kind="workspace"]').textContent()).toBe(step.stamp);
+          expect(await page.locator(WORKER).count()).toBe(0);
+        } else expect(await page.locator('.thread-composer [data-context-kind="workspace"]').count()).toBe(0);
+        expect(await page.locator(INPUT).inputValue()).toBe("Keep my exact mounted draft");
+        expect(await page.evaluate(() => window.__continuity.failures)).toEqual([]);
+      }
+      const state = await page.evaluate(() => { window.__continuity.stop(); return window.__continuity; });
+      expect(state.samples).toBeGreaterThan(6);
+      expect(state.failures).toEqual([]);
+      await page.evaluate(() => window.__greetWorkers());
+      await page.locator(".composer-send").click();
+      await page.waitForFunction(() => window.__workerCalls.some(({ method }) => method === "thread.post"));
+      const posted = await page.evaluate(() => window.__workerCalls.find(({ method }) => method === "thread.post").params);
+      expect(posted).toMatchObject({ entity_id: "project-owner", agent_id: "project-pin", conversation_id: "conversation-project-pin",
+        body: "Keep my exact mounted draft" });
+      expect(posted.viewing_context?.items?.some((item) => item.kind === "workspace") || false).toBe(false);
+      await page.evaluate(() => window.__layoutModules.shell.stopShell());
+    }, viewport);
+  }, 40_000);
+}
+
+
+it("refuses continuity for workers, unknown identity and unrelated navigation", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkers(page, basePath);
+    await page.locator(INPUT).waitFor();
+    const decisions = await page.evaluate(() => {
+      const { contexts, scope } = window.__layoutModules;
+      const context = contexts.knownDeviceContext("workers-device");
+      const descriptor = { kind: "workspace", workspaceId: "workers-workspace", deviceId: "workers-device",
+        projectId: "workers-project", openAgentId: "project-pin", projectAgent: { projectId: "workers-project" },
+        cacheScope: scope.scopeFor("workers-device"), chatRepository: context.chatRepository };
+      const textarea = document.querySelector(".thread-composer textarea");
+      const results = [
+        { openAgentId: null }, { openAgentId: "project-worker" }, { deviceId: "other-device" },
+        { projectId: "other-project" }, { chatRepository: {} }, { kind: "branch" },
+      ].map((change) => window.__workerRail.retarget({ ...descriptor, ...change }));
+      return { results, same: textarea === document.querySelector(".thread-composer textarea") };
+    });
+    expect(decisions).toEqual({ results: [false, false, false, false, false, false], same: true });
+    await selectWithKeyboard(page, WORKER);
+    expect(await page.evaluate(() => window.__workerRail.retarget({ kind: "project", deviceId: "workers-device",
+      projectId: "workers-project", openAgentId: "project-worker",
+      chatRepository: window.__layoutModules.contexts.knownDeviceContext("workers-device").chatRepository }))).toBe(false);
+    const cold = await page.evaluate(() => {
+      const { rail, contexts } = window.__layoutModules;
+      const host = document.createElement("aside"); document.body.append(host);
+      const repository = contexts.knownDeviceContext("workers-device").chatRepository;
+      const mounted = rail.mountAgentRail(host, { kind: "project", deviceId: "workers-device", projectId: "unknown-project",
+        entityId: "unknown-owner", openAgentId: "unknown-pin", chatRepository: repository });
+      const kept = mounted.retarget({ kind: "project", deviceId: "workers-device", projectId: "unknown-project",
+        openAgentId: "unknown-pin", chatRepository: repository });
+      mounted.dispose(); host.remove(); return kept;
+    });
+    expect(cold).toBe(false);
+    await page.evaluate(() => window.__workerRail.dispose());
   }, { width: 1280, height: 900 });
 }, 40_000);

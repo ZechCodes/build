@@ -2,6 +2,7 @@
 import { workspaceLockHtml } from "./workspaceLock.js";
 import { esc } from "./text.js";
 import { toolbarBreadcrumbs } from "./toolbarBreadcrumbs.js";
+import { ICON_CHEVRON_LEFT } from "./icons.js";
 
 const selectorHtml = (name, label, current = false) =>
   `<button class="tb-sel tb-workspace" data-select="workspace" type="button" aria-haspopup="dialog" aria-expanded="false"
@@ -11,7 +12,7 @@ const selectorHtml = (name, label, current = false) =>
 
 const switcherHtml = () =>
   `<button class="tb-switch" data-select="project" type="button" aria-haspopup="dialog" aria-expanded="false"
-     aria-label="Switch project or workspace" title="Switch project or workspace"><span aria-hidden="true">↑</span></button>`;
+     aria-label="Switch project or workspace" title="Switch project or workspace"><span aria-hidden="true">${ICON_CHEVRON_LEFT}</span></button>`;
 
 const linkHtml = (entry, className, attribute = "") =>
   `<a class="${className}" href="${esc(entry.hash || "#/inbox")}" ${attribute}${entry.current ? ' aria-current="page"' : ""}

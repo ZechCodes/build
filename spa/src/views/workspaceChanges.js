@@ -239,6 +239,7 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
     }
   };
   return {
+    selectDirectory: select,
     setVisible(shown) {
       visible = shown;
       for (const [sourceId, surface] of surfaces) {

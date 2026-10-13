@@ -2007,12 +2007,20 @@ recovery fields with an unknown source location, for explicit copying rather tha
 assignment to today's primary source. Changes deep links keep their requested
 source and commit until the source location resolves from the project cache;
 commit-only links wait for the default source.
+If a requested source is absent from a populated cached roster, surviving
+sources still mount alongside a visible missing-source warning. The URL and
+requested commit remain pending until that exact source resolves or the user
+chooses a surviving source; the missing source's commit is never applied to it.
 
 Source Git records use `directoryCacheId`'s project/source/captured-location
 entity inside the device cache scope; status keys alone never select a source.
 `cacheSync.js` verifies the source against cached project membership
 before writing pushed records and keeps legacy project records separate.
 Source-qualified subscriptions match device, project, source and captured path.
+Git panes select event coverage separately from their stable storage/RPC scope:
+bridges without `changes.projectSources` retain board/state subscriptions, while
+source-capable sessions use exact source/Git subscriptions. Greetings reconcile
+that coverage without moving draft addresses or weakening captured-path guards.
 The mounted pane writes read results to the cache before painting; disposal and
 conditional writes fence obsolete reads. Source moves cannot apply an old reply
 to the replacement namespace. `projectChangesRpc.js` captures the opened source

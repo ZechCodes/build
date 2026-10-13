@@ -8,12 +8,15 @@ import { subscribeCache } from "../core/localCache.js";
 import { mountProjectChangesDrafts } from "../core/projectChangesDrafts.js";
 
 export function mountProjectChanges(host, { project, route, context, viewingContext, agentSelection, onSourceSelection, onCommitSelection, onOpenFile }) {
-  host.innerHTML = '<div class="project-changes-context"><p>Original sources · shared checkout</p><p data-project-source-context></p><button type="button" class="btn mini" data-project-sync-base hidden>Sync base</button><span class="warn" data-project-sync-error role="status"></span></div><div class="project-changes-drafts" data-project-changes-drafts hidden></div><div data-project-changes-body></div>';
+  host.innerHTML = '<div class="project-changes-context"><p>Original sources · shared checkout</p><p data-project-source-context></p><button type="button" class="btn mini" data-project-sync-base hidden>Sync base</button><span class="warn" data-project-sync-error role="status"></span><div class="warn" data-project-missing-source role="status" hidden><span data-project-link-status></span> <button type="button" class="btn mini" data-project-use-source hidden></button></div></div><div class="project-changes-drafts" data-project-changes-drafts hidden></div><div data-project-changes-body></div>';
   const drafts = mountProjectChangesDrafts(host.querySelector("[data-project-changes-drafts]"), { deviceId: context.deviceId, project });
   const body = host.querySelector("[data-project-changes-body]");
   const note = host.querySelector("[data-project-source-context]");
   const sync = host.querySelector("[data-project-sync-base]");
   const error = host.querySelector("[data-project-sync-error]");
+  const missingSource = host.querySelector("[data-project-missing-source]");
+  const linkStatus = host.querySelector("[data-project-link-status]");
+  const useSource = host.querySelector("[data-project-use-source]");
   let support = { projectSources: false, syncBase: false, syncBasePath: false };
   let standing = route.sourceId;
   let pane = null;
@@ -22,6 +25,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   let visible = true;
   let lastSelection = null;
   let supportLoaded = false;
+  let reconciling = false;
   const commits = new Map();
   let defaultCommit = !route.sourceId ? route.commit : null;
   let requestedSource = route.sourceId ? { id: route.sourceId, commit: route.commit } : null;
@@ -37,17 +41,28 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     return true;
   };
   const rpcFor = (id) => projectChangesRpc(context, sourceOf(id), { projectId: route.projectId, currentProject: () => project });
+  const paintRequestedSource = (source) => {
+    missingSource.hidden = !requestedSource;
+    useSource.hidden = !requestedSource || !source;
+    useSource.textContent = source ? `Use ${source.name || source.id}` : "";
+    if (!requestedSource) return;
+    linkStatus.textContent = project?.sources?.length
+      ? `Requested source “${requestedSource.id}” is unavailable. Choose another source to continue; its linked commit will not be opened there.`
+      : `Waiting for project source “${requestedSource.id}”.`;
+  };
   const paintContext = () => {
     const source = sourceOf(standing);
     note.textContent = source ? projectSourceContext(source) : "No project sources configured.";
     sync.hidden = !source || source.is_git === false || !support.syncBase;
     sync.disabled = pending;
+    paintRequestedSource(source);
   };
   const selectSource = (id) => {
+    if (!reconciling) requestedSource = null;
     standing = id;
     error.textContent = "";
     paintContext();
-    onSourceSelection(id, commits.get(sourceKey(id)) || null);
+    if (!requestedSource) onSourceSelection(id, commits.get(sourceKey(id)) || null);
   };
   const git = (id, gatedContext) => ({
     scope: projectChangesDirectories(project, route.projectId, support.projectSources).find((dir) => dir.sourceId === id).scope,
@@ -57,27 +72,44 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     requestedCommit: commits.get(sourceKey(id)) || null,
     onCommitSelection: (commit) => {
       commits.set(sourceKey(id), commit);
-      if (id === standing) onCommitSelection(commit);
+      if (id === standing && !requestedSource) onCommitSelection(commit);
     },
     navigate: { openFile: ({ path, line }) => onOpenFile({ sourceId: id, path, line }) },
   });
+  const reconcilePane = (directories, selectRequested) => {
+    reconciling = true;
+    try {
+      if (!pane) pane = mountWorkspaceChanges(body, { directories, current: standing, git, viewingContext, onSelectDirectory: selectSource });
+      else {
+        pane.workspaceMoved(directories);
+        if (selectRequested) pane.selectDirectory(standing);
+      }
+    } finally { reconciling = false; }
+  };
+  const publishSelection = () => {
+    if (requestedSource || lastSelection === sourceKey(standing)) return;
+    lastSelection = sourceKey(standing);
+    selectSource(standing);
+  };
+  const resolveDefaultCommit = () => {
+    if (!defaultCommit || !standing) return;
+    commits.set(sourceKey(standing), defaultCommit);
+    defaultCommit = null;
+  };
   function reconcile() {
-    if (!resolveRequestedSource()) { paintContext(); return; }
-    const directories = projectChangesDirectories(project, route.projectId, support.projectSources);
+    const requested = requestedSource?.id;
+    const resolved = resolveRequestedSource();
+    const directories = projectChangesDirectories(project, route.projectId, support.projectSources)
+      .filter((directory) => directory.scope.source_path);
+    if (!resolved && !directories.length && !pane) { paintContext(); return; }
     if (!directories.some((directory) => directory.sourceId === standing)) standing = directories[0]?.sourceId || null;
-    if (defaultCommit && standing) {
-      commits.set(sourceKey(standing), defaultCommit);
-      defaultCommit = null;
-    }
-    if (!pane) pane = mountWorkspaceChanges(body, { directories, current: standing, git, viewingContext, onSelectDirectory: selectSource });
-    else pane.workspaceMoved(directories);
-    if (lastSelection !== sourceKey(standing)) {
-      lastSelection = sourceKey(standing);
-      selectSource(standing);
-    }
+    resolveDefaultCommit();
+    reconcilePane(directories, requested && resolved);
+    publishSelection();
     pane.setVisible(visible);
     paintContext();
   }
+  useSource.onclick = () => selectSource(standing);
   sync.onclick = async () => {
     if (pending || !sourceOf(standing)) return;
     pending = true;

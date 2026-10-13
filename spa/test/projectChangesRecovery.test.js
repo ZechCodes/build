@@ -3,7 +3,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
-const mountWorkspaceChanges = vi.fn(() => ({ workspaceMoved() {}, setVisible() {}, dispose() {} }));
+const mountWorkspaceChanges = vi.fn((host, options) => ({
+  workspaceMoved: vi.fn(), selectDirectory: vi.fn((id) => options.onSelectDirectory(id)), setVisible() {}, dispose() {},
+}));
 vi.mock("../src/views/workspaceChanges.js", () => ({ mountWorkspaceChanges: (...args) => mountWorkspaceChanges(...args) }));
 const { mountProjectChanges } = await import("../src/views/projectChanges.js");
 const { rememberProjectChangesSupport } = await import("../src/core/projectChangesSupport.js");
@@ -42,6 +44,33 @@ it("preserves a commit-only deep link until the default source resolves", async 
   expect(selected).toHaveBeenLastCalledWith("code", "abc");
 });
 
+it("mounts surviving sources for a fresh removed-source bookmark and visibly offers recovery", async () => {
+  const selected = mount(project, { sourceId: "docs", commit: "abc" });
+  await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
+  const options = mountWorkspaceChanges.mock.calls[0][1];
+  expect(options.directories.map((directory) => directory.sourceId)).toEqual(["code"]);
+  expect(options.current).toBe("code");
+  expect(options.git("code").requestedCommit).toBeNull();
+  expect(host.querySelector("[data-project-missing-source]").textContent).toMatch(/docs.*unavailable/i);
+  expect(selected).not.toHaveBeenCalled();
+  handle.update({ ...project, name: "Updated project" });
+  expect(mountWorkspaceChanges).toHaveBeenCalledTimes(1);
+  expect(options.git("code").requestedCommit).toBeNull();
+  host.querySelector("[data-project-use-source]").click();
+  expect(selected).toHaveBeenLastCalledWith("code", null);
+  expect(host.querySelector("[data-project-missing-source]").hidden).toBe(true);
+});
+
+it("reconciles away the last survivor while keeping an unresolved bookmark pending", async () => {
+  const selected = mount(project, { sourceId: "docs", commit: "abc" });
+  await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
+  const pane = mountWorkspaceChanges.mock.results[0].value;
+  handle.update({ ...project, sources: [] });
+  expect(pane.workspaceMoved).toHaveBeenLastCalledWith([]);
+  expect(selected).not.toHaveBeenCalled();
+  expect(host.querySelector("[data-project-use-source]").hidden).toBe(true);
+});
+
 it.each([null, { id: "p", sources: [] }, project, { id: "p", sources: [{ id: "docs", is_git: true }] }])("keeps an explicit source and commit pending until their source location resolves (%j)", async (initial) => {
   const selected = mount(initial, { sourceId: "docs", commit: "abc" });
   await vi.waitFor(() => expect(host.querySelector("[data-project-source-context]").textContent).not.toBe(""));
@@ -50,7 +79,8 @@ it.each([null, { id: "p", sources: [] }, project, { id: "p", sources: [{ id: "do
   handle.update(resolved);
   await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
   const options = mountWorkspaceChanges.mock.calls.at(-1)[1];
-  expect(options.current).toBe("docs");
+  if (initial === project) expect(mountWorkspaceChanges.mock.results.at(-1).value.selectDirectory).toHaveBeenCalledWith("docs");
+  else expect(options.current).toBe("docs");
   expect(options.git("docs").requestedCommit).toBe("abc");
   expect(selected).toHaveBeenLastCalledWith("docs", "abc");
   handle.update({ ...resolved, name: "Relabelled project" });

@@ -21,7 +21,7 @@ async function mountProject(page, basePath, options = {}) {
   await page.evaluate(seedProject, { theme: "dark", sourceId: "code", supported: true, greeting: true, patch: PATCH, ...options });
 }
 
-async function seedProject({ theme, sourceId, supported, greeting, commit, patch, lateProject }) {
+async function seedProject({ theme, sourceId, supported, greeting, commit, patch, lateProject, removedSource }) {
   document.documentElement.dataset.theme = theme;
   document.head.insertAdjacentHTML("afterbegin", '<meta name="viewport" content="width=device-width, initial-scale=1">');
   const { app, project, contexts, cache, feed, adapter, support, filesSupport, directory, changes } = window.__layoutModules;
@@ -61,7 +61,7 @@ async function seedProject({ theme, sourceId, supported, greeting, commit, patch
     window.__project = { ...window.__project, sources };
     await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, [window.__project]);
   };
-  if (!lateProject) await window.__writeProject(window.__project.sources);
+  if (!lateProject) await window.__writeProject(window.__project.sources.filter((source) => source.id !== removedSource));
   for (const source of window.__project.sources.filter((source) => source.is_git)) {
     const scope = supported ? { project_id: "p", source_id: source.id, source_path: source.path } : { project_id: "p" };
     const entityId = directory.directoryCacheId(scope);
@@ -99,6 +99,48 @@ it("resolves an explicit source and commit when the cached project arrives after
     expect(await page.locator('[data-directory="docs"]').getAttribute("aria-selected")).toBe("true");
     expect(await page.evaluate(() => location.hash)).toContain(`/changes?source=docs&commit=${COMMIT}`);
     expect(await page.evaluate(() => window.__calls.find((call) => call.method === "git.show").params)).toMatchObject({ source_id: "docs", source_path: "/docs", hash: COMMIT });
+  });
+}, 60_000);
+
+it.each([390, 1280])("recovers a fresh removed-source bookmark without blocking surviving tabs at %i px", async (width) => {
+  await session.withPage(async ({ page, basePath }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await mountProject(page, basePath, { sourceId: "docs", commit: COMMIT, removedSource: "docs" });
+    await page.locator('[data-surface="code"] .csinput').first().waitFor();
+    expect(await page.locator('[data-directory="code"]').getAttribute("aria-selected")).toBe("true");
+    expect(await page.locator('[data-directory="assets"]').count()).toBe(1);
+    expect(await page.locator('[data-project-missing-source]').textContent()).toMatch(/docs.*unavailable/);
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ sourceId: "docs", commit: COMMIT });
+    expect(await page.evaluate(() => window.__calls.filter((call) => call.method === "git.show"))).toEqual([]);
+    await page.evaluate(() => window.__writeProject(window.__project.sources));
+    expect(await page.locator('[data-project-missing-source]').isVisible()).toBe(true);
+    if (width === 390) await page.locator('[data-project-use-source]').click();
+    else await page.locator('[data-directory="assets"]').click();
+    expect(await page.evaluate(() => {
+      const route = window.__layoutModules.app.App.route;
+      return { sourceId: route.sourceId, commit: route.commit ?? null };
+    })).toEqual({ sourceId: width === 390 ? "code" : "assets", commit: null });
+    expect(await page.evaluate(() => location.hash)).not.toContain("commit=");
+    expect(await page.locator('[data-project-missing-source]').isVisible()).toBe(false);
+    expect(await page.evaluate(() => window.__calls.filter((call) => call.method === "git.show"))).toEqual([]);
+  });
+}, 60_000);
+
+it("opens the pending exact commit when its source arrives after surviving tabs mounted", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountProject(page, basePath, { sourceId: "docs", commit: COMMIT, removedSource: "docs" });
+    await page.locator('[data-surface="code"] .csinput').first().waitFor();
+    await page.evaluate(() => window.__writeProject([]));
+    await page.waitForFunction(() => !document.querySelector('[data-surface="code"]'));
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ sourceId: "docs", commit: COMMIT });
+    await page.evaluate(() => window.__writeProject([...window.__project.sources,
+      { id: "docs", name: "Docs", path: "/docs", is_git: true, base_branch: "main" }]));
+    await page.locator(`[data-surface="docs"] .commitheader[data-hash="${COMMIT}"]`).waitFor();
+    expect(await page.locator('[data-directory="docs"]').getAttribute("aria-selected")).toBe("true");
+    expect(await page.evaluate(() => location.hash)).toContain(`/changes?source=docs&commit=${COMMIT}`);
+    expect(await page.locator('[data-project-missing-source]').isVisible()).toBe(false);
+    expect(await page.evaluate(() => window.__calls.find((call) => call.method === "git.show").params))
+      .toMatchObject({ source_id: "docs", source_path: "/docs", hash: COMMIT });
   });
 }, 60_000);
 

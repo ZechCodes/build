@@ -42,7 +42,7 @@ macro_rules! stop_after {
     }};
 }
 
-pub(super) struct TaskDeliveryWork {
+pub(in crate::app) struct TaskDeliveryWork {
     pub intent: DeliveryIntent,
     pub git: Option<DeferredGit>,
 }
@@ -69,7 +69,7 @@ impl AppState {
     }
 
     /// Claim a single item, retaining the job outside the RPC deferred slot.
-    pub(super) fn prepare_task_delivery(&mut self) -> Result<Option<TaskDeliveryWork>, String> {
+    pub(in crate::app) fn prepare_task_delivery(&mut self) -> Result<Option<TaskDeliveryWork>, String> {
         let ready = self
             .tracker_store()?
             .delivery_intents_ready(100)
@@ -131,7 +131,7 @@ impl AppState {
             .map(Some)
     }
 
-    pub(super) fn finish_task_delivery(
+    pub(in crate::app) fn finish_task_delivery(
         &mut self,
         mut intent: DeliveryIntent,
         git: Option<&DeferredGit>,

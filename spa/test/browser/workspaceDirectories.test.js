@@ -27,6 +27,7 @@ async function mountWorkspace(page, basePath, tab, directories = null) {
       if (method === "workspace.get") return window.__workspace;
       if (method === "workspace.add_directory" || method === "workspace.remove_directory") return window.__mutation;
       if (method === "workspace.git_init_options") return { source: { is_git: false }, workspace: { is_git: false } };
+      if (method === "git.unpushed" && window.__holdReboundReview && params.source_id === "b" && params.entity_id === "workspace-run") return new Promise(() => {});
       if (method === "git.log") return { commits: [] };
       if (method === "git.status") return { staged: [], unstaged: [], untracked: [] };
       return {};
@@ -185,6 +186,9 @@ for (const warmRunCache of [false, true]) {
         const { cache } = window.__layoutModules;
         const address = { deviceId: "directory-refresh", entityId: "workspace-run" };
         if (!warmRunCache) await cache.deleteCached(["status", "log"].map((kind) => ({ ...address, kind })));
+        // A review reply can invalidate history and request it again. Hold it
+        // on the warm path so that refresh cannot mask the optional mount pull.
+        window.__holdReboundReview = warmRunCache;
         window.__beta = document.querySelector('[data-surface="b"]');
       }, warmRunCache);
       await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));

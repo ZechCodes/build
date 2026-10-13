@@ -22,6 +22,7 @@ export const SELECT_SOURCES = {
   "core/taskReviewFeedback.js": "task review",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewRender.js": "task review",
+  "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite",
   "core/trackerAssigneeControl.js": "task controls",
   "core/trackerTaskRender.js": "task controls",
   "core/workspaceReviewEntry.js": "workspace review",
@@ -34,7 +35,7 @@ export const SELECT_SURFACES = [
   { name: "project Terminal", selectors: ['[aria-label="Terminal source"]'] },
   { name: "local settings", selectors: ["#creationdev", "#defprovider", "[data-harness-model]", "[data-harness-effort]"] },
   { name: "device settings", selectors: ["[data-agent-mode]", "#defaultharness", "#projectagentharness", "#projectagentmodel", "#projectagenteffort", "[data-capability]", '[data-isolation="select"]'] },
-  { name: "task controls", selectors: ["#task-status", "#task-priority", "#assign-assignee", "#assign-isolation", "#assign-choice-provider", "#assign-choice-model", "#assign-choice-effort", "#capture-project", "#create-work-isolation", ".diffsort-select", "select.mini"] },
+  { name: "task controls", selectors: ["#task-status", "#task-priority", "[data-waiting-choice]", "#assign-assignee", "#assign-isolation", "#assign-choice-provider", "#assign-choice-model", "#assign-choice-effort", "#capture-project", "#create-work-isolation", ".diffsort-select", "select.mini"] },
   { name: "compose", selectors: ["#compose-project", "#compose-choice-provider", "#compose-choice-model", "#compose-choice-effort"] },
   { name: "workspace settings", selectors: ["#wsdiradd", "#wsdefprovider", "[data-harness-model]", "[data-harness-effort]"] },
   { name: "project settings", selectors: ['[data-isolation="select"]'] },
@@ -65,6 +66,7 @@ const modules = {
   review: "src/core/taskReviewPage.js", reviewSupport: "src/core/taskReviewSupport.js", reviewCache: "src/core/taskReviewCache.js",
   reviewMerge: "src/core/taskReviewMerge.js",
   reviewLifecycle: "src/core/taskReviewLifecycle.js",
+  waiting: "src/core/taskWaitingOnRender.js",
 };
 
 async function loadSurfaceModules(page, basePath) {
@@ -116,7 +118,13 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
     const draft = { optionId: "workspace", name: "", isolation: "", choiceOpen: true, choice: { provider: "claude_adk", model: "claude-opus-4", effort: "high" } };
     const assignee = m.assignee.assigneeControlHtml(options, draft, { prefix: "assign", catalog });
     const capture = m.capture.captureDecisionHtml(m.capture.captureDecisionModel({ id: "capture-1", text: "Fix selects", state: "needs_input" }), { projects: [project], projectId: project.id });
-    root.innerHTML = rail + `<div class="modal-create">${assignee}</div>` + capture + `<div class="modal-create">${m.create.createWorkBodyHtml({ projectId: project.id, projectName: project.name, name: "", isolation: "", busy: false })}</div>` + m.sort.diffSortHtml("latest") + '<label>Compact control<select class="mini"><option>First</option><option>Second</option></select></label>';
+    root.innerHTML = rail + m.waiting.waitingOnFrameHtml() + `<div class="modal-create">${assignee}</div>` + capture + `<div class="modal-create">${m.create.createWorkBodyHtml({ projectId: project.id, projectName: project.name, name: "", isolation: "", busy: false })}</div>` + m.sort.diffSortHtml("latest") + '<label>Compact control<select class="mini"><option>First</option><option>Second</option></select></label>';
+  }
+  if (name === "task controls") {
+    root.querySelector("[data-waiting-choice]").innerHTML = m.waiting.blockerOptionsHtml([
+      { id: "prerequisite", number: 8, title: "Prerequisite" },
+      { id: "second-prerequisite", number: 9, title: "Second prerequisite" },
+    ], "prerequisite");
   }
   if (name === "compose") {
     root.innerHTML = '<div id="compose"></div>';

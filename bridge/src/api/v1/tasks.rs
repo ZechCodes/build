@@ -613,7 +613,8 @@ pub struct TaskColumns {
 // ----------------------------------------------------------------- codes ---
 
 /// The request was legible and the task's own state said no.
-const CONFLICT: [&str; 8] = [
+const CONFLICT: [&str; 9] = [
+    "conflict: unresolved waiting-on dependencies",
     "already has the most trackers it can carry",
     // A retried assignment's id names a different assignment of the task.
     "was already spent on a different assignment",
@@ -739,7 +740,7 @@ fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiErr
         return error;
     }
     let Some(task_id) = params["task_id"].as_str() else {
-        return error;
+        return refine_waiting_create(app, error, params);
     };
     let Ok(read) = app.tasks_get(&serde_json::json!({"task_id":task_id})) else {
         return error;
@@ -755,6 +756,19 @@ fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiErr
     } else {
         ApiError::InvalidParams { message, details }
     }
+}
+
+/// Rejected creation has no saved task; scope facts to its validated project.
+fn refine_waiting_create(app: &mut AppState, error: ApiError, params: &Value) -> ApiError {
+    let Some(project_id) = params["project_id"].as_str() else {
+        return error;
+    };
+    let waiting_on =
+        scoped_waiting_blockers(app, &serde_json::json!({"project_id":project_id}), params);
+    ApiError::conflict(
+        error.message(),
+        Some(serde_json::json!({"project_id":project_id,"waiting_on":waiting_on})),
+    )
 }
 
 /// A refused new edge is absent from storage; include its scoped proposal too.
@@ -812,11 +826,9 @@ fn tasks_create(
     app: &mut AppState,
     params: TasksCreateParams,
 ) -> Result<Answer<TaskAssigned>, ApiError> {
-    answer(
-        app.tasks_create(&params.wire())
-            .map(super::deferral_placeholder),
-    )
-    .map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_create(&wire).map(super::deferral_placeholder))
+        .map_err(|error| refine_waiting(app, error, &wire))
 }
 
 fn tasks_attach(
@@ -852,11 +864,9 @@ fn tasks_assign(
     app: &mut AppState,
     params: TasksAssignParams,
 ) -> Result<Answer<TaskAssigned>, ApiError> {
-    answer(
-        app.tasks_assign(&params.wire())
-            .map(super::deferral_placeholder),
-    )
-    .map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_assign(&wire).map(super::deferral_placeholder))
+        .map_err(|error| refine_waiting(app, error, &wire))
 }
 
 fn tasks_close(

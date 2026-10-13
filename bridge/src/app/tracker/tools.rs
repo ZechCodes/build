@@ -621,10 +621,9 @@ impl AppState {
         }
         let labels = normalize_labels(&labels)?;
         if labels == task.labels {
-            return Ok(json!({
-                "labels": task.labels,
-                "task": super::task_json(&scope.project_id, &task),
-            }));
+            let mut answer = self.task_dependency_answer(&task.id)?;
+            answer["labels"] = json!(task.labels);
+            return Ok(answer);
         }
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(scope.actor.clone(), task);

@@ -376,20 +376,46 @@ fn waiting_on_rpc_mcp_contract_every_raw_waiting_refusal_is_a_conflict() {
     let (_home, mut app, project) = tracked(tmp.path());
     let blocker = filed(&mut app, &project, "unfinished blocker");
     for finished in ["closed", "done"] {
-        let created = rpc(&mut app, "tasks.create", json!({"project_id":project,"title":finished,"waiting_on":[blocker["id"]]}));
+        let created = rpc(
+            &mut app,
+            "tasks.create",
+            json!({"project_id":project,"title":finished,"waiting_on":[blocker["id"]]}),
+        );
         let id = &created["task"]["id"];
-        if finished == "closed" { rpc(&mut app, "tasks.close", json!({"task_id":id})); }
-        else { rpc(&mut app, "tasks.update", json!({"task_id":id,"status":"done"})); }
-        let assigned = app.handle(req("tasks.assign",json!({"task_id":id,"assignee":{"kind":"user"}})));
+        if finished == "closed" {
+            rpc(&mut app, "tasks.close", json!({"task_id":id}));
+        } else {
+            rpc(
+                &mut app,
+                "tasks.update",
+                json!({"task_id":id,"status":"done"}),
+            );
+        }
+        let assigned = app.handle(req(
+            "tasks.assign",
+            json!({"task_id":id,"assignee":{"kind":"user"}}),
+        ));
         assert_eq!(assigned["error_code"], "conflict", "{assigned}");
-        assert_eq!(assigned["details"]["waiting_on"][0]["task_id"], blocker["id"], "{assigned}");
+        assert_eq!(
+            assigned["details"]["waiting_on"][0]["task_id"], blocker["id"],
+            "{assigned}"
+        );
     }
-    let before = rpc(&mut app, "tasks.list", json!({"project_id":project}))["tasks"].as_array().unwrap().len();
+    let before = rpc(&mut app, "tasks.list", json!({"project_id":project}))["tasks"]
+        .as_array()
+        .unwrap()
+        .len();
     for status in ["in_progress", "in_review", "done"] {
         let created = app.handle(req("tasks.create",json!({"project_id":project,"title":"must not persist","status":status,"waiting_on":[blocker["id"]]})));
         assert_eq!(created["error_code"], "conflict", "{created}");
     }
-    assert_eq!(rpc(&mut app,"tasks.list",json!({"project_id":project}))["tasks"].as_array().unwrap().len(),before);
+    assert_eq!(
+        rpc(&mut app, "tasks.list", json!({"project_id":project}))["tasks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        before
+    );
 }
 
 #[test]
@@ -400,7 +426,10 @@ fn waiting_on_rpc_mcp_contract_create_refusals_name_proposed_blockers() {
     for status in ["in_progress", "in_review", "done"] {
         let refusal = app.handle(req("tasks.create",json!({"project_id":project,"title":"must not persist","status":status,"waiting_on":[blocker["id"]]})));
         assert_eq!(refusal["error_code"], "conflict", "{refusal}");
-        assert_eq!(refusal["details"]["waiting_on"][0]["task_id"],blocker["id"],"{refusal}");
+        assert_eq!(
+            refusal["details"]["waiting_on"][0]["task_id"], blocker["id"],
+            "{refusal}"
+        );
     }
 }
 
@@ -408,6 +437,10 @@ fn waiting_on_rpc_mcp_contract_create_refusals_name_proposed_blockers() {
 fn waiting_on_rpc_mcp_contract_malformed_mcp_cursor_is_refused() {
     for cursor in [json!(42), json!(true), Value::Null, json!("")] {
         let parsed = DoneServer::new("test").handle_message(&json!({"id":1,"method":"tools/call","params":{"name":"list_task_dependents","arguments":{"task_id":"task-test","cursor":cursor}}}).to_string());
-        assert!(parsed.action.is_none(),"malformed cursor was forwarded: {:?}",parsed.action);
+        assert!(
+            parsed.action.is_none(),
+            "malformed cursor was forwarded: {:?}",
+            parsed.action
+        );
     }
 }

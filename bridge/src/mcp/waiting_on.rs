@@ -141,6 +141,15 @@ fn action(name: &str, params: Option<&Value>) -> Result<BridgeAction, String> {
             track: optional_flag(params, "track"),
         }),
         "list_task_dependents" => {
+            let cursor = argument(params, "cursor")
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|cursor| !cursor.trim().is_empty())
+                        .map(str::to_string)
+                        .ok_or("cursor must be a nonempty string")
+                })
+                .transpose()?;
             let limit = argument(params, "limit")
                 .map(|v| {
                     v.as_u64()
@@ -151,7 +160,7 @@ fn action(name: &str, params: Option<&Value>) -> Result<BridgeAction, String> {
             Ok(BridgeAction::TrackerTaskDependents {
                 task_id: current_id(&required_argument(params, "task_id")?),
                 limit,
-                cursor: optional_argument(params, "cursor"),
+                cursor,
             })
         }
         "assign_task" => {

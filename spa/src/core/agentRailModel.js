@@ -554,12 +554,11 @@ const taskEntity = (row) => ({
   thread: row.thread || null,
 });
 
-/** A project: the conversation owner `project.ensure_conversation` minted, and
- *  nothing else. There is no checkout under a project to adopt — the project's
- *  own is the template its workspaces are cut from, and the agent works in a
- *  scratch directory Build owns — so the rail here is a conversation and no
- *  more: nothing to adopt, one agent, and no directory a written path could be
- *  resolved against. */
+/** The project workspace rail uses the scratch conversation owner minted by
+ *  `project.ensure_conversation`: one pinned project agent (the coordinator)
+ *  plus project workers. The owner's scratch directory holds scaffolding;
+ *  workers execute in the original project sources, sharing their checkouts.
+ *  There is no named child workspace checkout here to adopt. */
 const projectEntity = (row, agents) => ({
   entityId: row.entity_id || row.run_id || null,
   kind: "project",

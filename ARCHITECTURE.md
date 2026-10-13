@@ -2176,8 +2176,8 @@ pin present in its agents. Without cached support it paints only the legacy
 pin. Current greetings additionally gate worker creation and new-worker task
 assignment, including a retained picker caller after a capability downgrade.
 The pin's tooltip reads “Project agent”. An explicit cached
-`projectWorkers: false` shows “Update this computer's Build bridge to use
-project agents.” on a project host; unknown support and workspace pins keep
+`projectWorkers: false` shows “Update this device to use project agents.”
+on a project host; unknown support and workspace pins keep
 that notice absent. Rendering the notice does not replace the mounted
 composer or thread, and never waits for connection state.
 

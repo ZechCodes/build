@@ -17,7 +17,11 @@ export const terminalShim = {
     if (id === "\0project-terminal-manager") return `
       export const terminalManager=()=>window.__terminalManager;
       export const terminalDeviceId=()=>"console-device";
-      export const subscribeTerminalStatus=()=>()=>{};
+      export const subscribeTerminalStatus=(listener)=>{
+        window.__terminalStatusListeners.add(listener);
+        listener(window.__terminalStatus);
+        return ()=>window.__terminalStatusListeners.delete(listener);
+      };
       export const provideTerminalSessions=()=>{};
       export const followTerminalDevice=()=>{};
       export const resetTerminalManager=()=>{};
@@ -50,6 +54,12 @@ export async function mountProjectTerminal(page, basePath, { theme = "dark", sup
     const record = { id: "p", project_id: "p", deviceId, projectKey: `${deviceId}/p`, name: "Build", path: "/project/code", entity_id: "project-owner", sources };
     const scopeOf = (source) => ({ project_id: "p", source_id: source.id, source_path: source.path });
     window.__terminalCalls = [];
+    window.__terminalStatus = "connected";
+    window.__terminalStatusListeners = new Set();
+    window.__setTerminalStatus = (status) => {
+      window.__terminalStatus = status;
+      for (const listener of window.__terminalStatusListeners) listener(status);
+    };
     const noteCall = (method, params) => window.__terminalCalls.push({ method, params });
     window.__terminalManager = {
       listTerminals: async (scope) => { noteCall("term.list", scope); return []; },

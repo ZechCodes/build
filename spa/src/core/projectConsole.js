@@ -13,7 +13,6 @@ import { readProjectTerminalSupport } from "./projectTerminalSupport.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { notifyError } from "./notify.js";
-import { attachConnectionOverlay } from "./surfaceTabs.js";
 
 const scopeOf = (projectId, source) => ({ project_id: projectId, source_id: source.id, source_path: source.path });
 const tabKey = (scope, termId) => JSON.stringify([directoryCacheId(scope), termId]);
@@ -26,7 +25,7 @@ export function mountProjectConsole(host, context) {
   const address = (scope) => ({ deviceId: context.deviceId, entityId: directoryCacheId(scope), kind: "terminals" });
   const projectsAddress = { deviceId: context.deviceId, entityId: "", kind: "projects" };
   const state = { disposed: false, sources: [], tabs: [], selected: null, sourceId: null, supported: false,
-    size: "collapsed", reopen: "half", pane: null, paneKey: null, connection: null, mounting: 0, listeners: new Set(), records: new Map() };
+    size: "collapsed", reopen: "half", pane: null, paneKey: null, mounting: 0, listeners: new Set(), records: new Map() };
   let reading = null;
   let again = false;
   let uiReady = false;
@@ -47,10 +46,9 @@ export function mountProjectConsole(host, context) {
 
   function disposePane() {
     state.mounting += 1;
-    state.connection?.dispose();
     state.pane?.dispose();
     if (state.paneKey) manager.detach(state.paneKey.termId);
-    state.pane = null; state.paneKey = null; state.connection = null;
+    state.pane = null; state.paneKey = null;
   }
 
   async function mountPane(region, tab) {
@@ -63,7 +61,6 @@ export function mountProjectConsole(host, context) {
       const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, deviceId: context.deviceId, stands: () => active() && generation === state.mounting, onExit: () => void remove(tab) });
       if (state.disposed || generation !== state.mounting) { pane.dispose(); return; }
       state.pane = pane;
-      state.connection = attachConnectionOverlay(target);
     } catch (error) {
       if (state.disposed || generation !== state.mounting) return;
       if (/unknown term_id/.test(error.message || "")) void remove(tab);
@@ -104,6 +101,14 @@ export function mountProjectConsole(host, context) {
     node.querySelector("[data-close]").onclick = () => void close(find());
   }
 
+  function placeNewTerminal(strip, add) {
+    if (strip.lastElementChild === add) return;
+    const focused = document.activeElement === add;
+    if (add.parentNode === strip && typeof strip.moveBefore === "function") strip.moveBefore(add, null);
+    else strip.append(add);
+    if (focused) add.focus();
+  }
+
   function paint() {
     if (state.disposed || !uiReady) return;
     if (!host.querySelector(".console")) {
@@ -122,7 +127,7 @@ export function mountProjectConsole(host, context) {
     let add = strip.querySelector(".console-new");
     if (!add) { add = el(consoleNewTerminalHtml()); add.onclick = () => void create(); strip.append(add); }
     add.disabled = !state.supported || !currentSource() || !state.records.get(currentSource()?.id);
-    strip.append(add);
+    placeNewTerminal(strip, add);
     const grow = host.querySelector(".console-grow");
     patchElement(grow, el(consoleGrowHtml(state.size))); grow.hidden = state.size === "collapsed";
     paintBody(); emitSize();

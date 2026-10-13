@@ -10,6 +10,68 @@ afterAll(async () => { await session?.close(); });
 const railToggle = (page) => page.getByRole("button", { name: "Terminal", exact: true });
 const callsTo = (page, method) => page.evaluate((method) => window.__terminalCalls.filter((call) => call.method === method), method);
 
+it("keeps the cached console unchanged across terminal connection transitions", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountProjectTerminal(page, basePath);
+    await railToggle(page).click();
+    await page.locator(".project-terminal-screen").waitFor();
+    const before = await page.locator("#console-region").innerHTML();
+    await page.evaluate(() => { window.__keptTerminal = document.querySelector(".console-pane"); });
+    for (const status of ["disconnected", "connecting", "connected"]) {
+      await page.evaluate(async (status) => {
+        window.__setTerminalStatus(status);
+        // Reconnection can schedule a cache read; let that finish as well.
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      }, status);
+      expect(await page.locator("#console-region").innerHTML()).toBe(before);
+      expect(await page.evaluate(() => window.__keptTerminal === document.querySelector(".console-pane"))).toBe(true);
+    }
+    expect(await callsTo(page, "term.attach")).toHaveLength(1);
+  });
+}, 60_000);
+
+for (const rosterChanges of [false, true]) {
+  it(`keeps New terminal keyboard focus through ${rosterChanges ? "roster insertions requiring a move" : "an unrelated cache write"}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountProjectTerminal(page, basePath);
+      const add = page.getByRole("button", { name: "New terminal", exact: true });
+      await add.focus();
+      await page.evaluate(async (rosterChanges) => {
+        const { cache, directory } = window.__layoutModules;
+        const region = document.querySelector("#console-region");
+        const strip = region.querySelector(".console-tabs");
+        window.__keptNewTerminal = strip.querySelector(".console-new");
+        window.__consoleListMoves = [];
+        const moves = new MutationObserver((records) => window.__consoleListMoves.push(...records.map((record) => record.type)));
+        moves.observe(strip, { childList: true });
+        // Exercise the fallback for browsers without state-preserving moves.
+        if (rosterChanges) strip.moveBefore = undefined;
+        const painted = new Promise((resolve) => {
+          const observer = new MutationObserver(() => { observer.disconnect(); resolve(); });
+          observer.observe(region, { attributes: true, attributeFilter: ["data-size"] });
+        });
+        if (rosterChanges) {
+          const scope = { project_id: "p", source_id: "notes", source_path: "/project/notes" };
+          await cache.writeCached({ deviceId: "console-device", entityId: directory.directoryCacheId(scope), kind: "terminals" },
+            { tabs: [{ term_id: "term-notes" }, { term_id: "term-external", name: "External" }] });
+        } else {
+          await cache.writeCached({ deviceId: "console-device", entityId: "unrelated", kind: "tasks" }, []);
+        }
+        await painted;
+        moves.disconnect();
+      }, rosterChanges);
+      expect(await add.evaluate((button) => button === document.activeElement)).toBe(true);
+      expect(await page.evaluate(() => window.__keptNewTerminal === document.querySelector(".console-new"))).toBe(true);
+      expect(await page.locator(".console-tabs > :last-child").getAttribute("aria-label")).toBe("New terminal");
+      if (rosterChanges) expect(await page.locator(".console-tab-name").allTextContents()).toContain("Notes · External");
+      else expect(await page.evaluate(() => window.__consoleListMoves)).toEqual([]);
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(() => window.__terminalCalls.some((call) => call.method === "term.create"));
+      expect(await callsTo(page, "term.create")).toHaveLength(1);
+    });
+  }, 60_000);
+}
+
 for (const width of [390, 1280]) {
   for (const theme of ["light", "dark"]) {
     it(`keeps source shells in the existing console at ${width}px in ${theme}`, async () => {

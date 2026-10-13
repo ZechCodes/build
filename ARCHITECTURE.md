@@ -2664,9 +2664,13 @@ refuses when that device cannot answer.
   passes the target/note without a submit-time readiness decision; its opened
   task supplies prerequisite facts only when no cached replica has them.
   A reblock during greeting waits cannot silently start work on an older bridge.
-  `taskAssignmentFacts.js` prefers task timestamps, then
-  list read order (detail/legacy write time), then cache write order, keeping
-  delayed same-stamp pages from replacing newer list facts. Successful
+  `taskAssignmentFacts.js` compares the task's own timestamps across replicas,
+  discarding strictly older stamped facts. Ties and unknown timestamps retain
+  waiting evidence: if the remaining sources disagree, waiting wins. Source
+  read/write orders are never compared; an unrelated catalogue mutation cannot
+  promote stale ready facts. An older bridge may refuse a ready task until
+  ambiguous caches converge, preserving the waiting-on capability guard.
+  Successful
   responses update tracker detail and list replicas through
   `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in

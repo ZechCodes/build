@@ -418,3 +418,31 @@ publication evidence attached on #564. The W5-owned TS558-4/7 score remains
 **100/100** after the send-time race is closed. No bridge files, complexity
 caps or ratchet entries changed. Source stayed fixed throughout these gates;
 the final follow-up only records this evidence.
+
+W5 revision 6 / #564 supersedes revision 3’s timestamp-tie read/write
+ranking after round-4’s unrelated-mutation reproduction. Test-first commit
+`ef9c0139` reproduces both list and board forbidden assignments through the
+real picker and production cache writers: an accepted edit of unrelated B
+raises the catalogue read order while retaining ready A, outranking blocked
+A in a filtered query at the same task timestamp. Both fail first (exit **1**).
+Unit-rule commit `97c24a2b` fails first too (exit **1**, four assertions).
+
+Fix `84540e28` removes source read/write ranking from `taskAssignmentFacts.js`.
+The task’s own timestamp selects the newest stamped facts; unstamped facts
+remain ambiguous. Among those candidates, waiting wins disagreement.
+Strictly newer ready versions still supersede older blockers. Unit coverage
+checks tied writes, delayed tied pages, unknown/invalid timestamps in both
+readiness directions, mixed stamped/unstamped sources and device/project/task
+isolation. Two former assertions of ready-wins read ordering now assert the
+requested waiting-wins tie policy. A ready task can temporarily be refused
+on an older bridge until replicas converge; ambiguous waiting evidence cannot
+authorize immediate assignment on that bridge.
+
+The send-time structure from `2a753441` is unchanged: settle the greeting,
+reread scoped facts, recheck the same greeting authority, validate capability
+and send without another wait. The earlier scope, detail/list-first reblock,
+delayed-page and pending-greeting regression coverage remains green. Focused
+validation exits **0** (seven files / **146 tests**, including the unchanged
+complexity ratchet). TS558-4’s edge-removal consequence evidence is unchanged;
+TS558-7’s cache conflict and old-bridge refusal evidence now includes the
+round-4 reproductions. Final broad-gate and publication evidence follows.

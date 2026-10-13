@@ -81,4 +81,6 @@ export async function mountProjectTerminal(page, basePath, { theme = "dark", sup
     shell.standShell(app.App.route);
     await project.renderProject();
   }, { theme, supported });
+  // The rail mounts before the console's asynchronous cache reads paint tabs.
+  await page.locator(".console-tab-name").first().waitFor();
 }

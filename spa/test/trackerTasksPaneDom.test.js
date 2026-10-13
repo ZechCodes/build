@@ -224,8 +224,8 @@ describe("device-scoped waiting assignments from the pane", () => {
     call = vi.fn(async (method) => {
       if (holdDetail && method === "tasks.get") return new Promise(() => {});
       return method === "tasks.list" ? { tasks: [held] } : {
-      task: { ...held, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } } },
-      dispatch: null,
+        task: { ...held, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } } },
+        dispatch: null,
       };
     });
     session.call = call;

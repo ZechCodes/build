@@ -23,7 +23,7 @@ import {
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
-import { readTaskRecord } from "./trackerCache.js";
+import { readTaskAssignmentFacts } from "./taskAssignmentFacts.js";
 import { createTaskWaitingOnActions } from "./taskWaitingOnActions.js";
 
 const PREFIX = "task-assign";
@@ -71,8 +71,8 @@ function prerequisiteCopy(state) {
 
 async function assignmentNeedsWaitingOn(deviceId, projectId, taskId, capturedWait, assignee) {
   if (assignee === null) return false;
-  const cached = await readTaskRecord(deviceId, projectId, taskId);
-  return capturedWait || Boolean(cached?.task?.dependencies?.blocked);
+  const cached = await readTaskAssignmentFacts(deviceId, projectId, taskId);
+  return capturedWait || Boolean(cached?.dependencies?.blocked);
 }
 
 export function assigneePickerBodyHtml(state) {

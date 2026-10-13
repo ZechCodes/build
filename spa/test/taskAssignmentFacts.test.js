@@ -1,12 +1,14 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { readTaskAssignmentFacts } from "../src/core/taskAssignmentFacts.js";
-import { writeCached } from "../src/core/localCache.js";
 import { taskAddress, tasksAddress, tasksQueryAddress, tasksPageAddress } from "../src/core/trackerCache.js";
 
-beforeEach(() => {
+let readTaskAssignmentFacts, writeCached;
+beforeEach(async () => {
+  vi.resetModules();
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
+  ({ writeCached } = await import("../src/core/localCache.js"));
+  ({ readTaskAssignmentFacts } = await import("../src/core/taskAssignmentFacts.js"));
 });
 const row = (blocked, updated_at = "2026-10-13T01:00:00Z") => ({ id: "task", updated_at, dependencies: { blocked } });
 const read = () => readTaskAssignmentFacts("device", "project", "task");

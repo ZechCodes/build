@@ -80,7 +80,6 @@ export function createRailWorkItem({
   let rereading = null;
   let rereadAgain = false;
   let rowRead = 0;
-  let projectRead = 0;
 
   const rowAddress = (entityId) =>
     (entityId && (context.kind === "task"
@@ -103,9 +102,12 @@ export function createRailWorkItem({
 
   const cachedRow = (entityId) => context.kind === "project" ? readProjectRow(entityId) : cachedLegacyRow(entityId);
   const readProjectRow = async (entityId) => {
-    const token = ++projectRead;
-    const row = await cachedProjectRow(entityId) || await cachedLegacyRow(entityId);
-    return token === projectRead ? row : null;
+    // Cache invalidations supersede a pending snapshot; independent consumers
+    // of that same snapshot must not cancel one another's initial paint.
+    const token = rowRead;
+    const [project, legacy] = await Promise.all([cachedProjectRow(entityId), cachedLegacyRow(entityId)]);
+    const row = project || legacy;
+    return token === rowRead ? row : null;
   };
 
   const cachedLegacyRow = async (entityId) => {

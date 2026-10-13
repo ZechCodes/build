@@ -1610,7 +1610,7 @@ fn waiting_on_contract_pins_delivery_states_and_resolution_provenance() {
     assert_eq!(states, BTreeSet::from(["waiting", "queued", "failed", "delivered"]));
     let get = read_json(&fixtures_root().join("v1/tasks.get.json"));
     let reasons: BTreeSet<_> = get["examples"].as_array().unwrap().iter()
-        .flat_map(|example| example["result"]["task"]["waiting_on"].as_array().into_iter().flatten())
+        .flat_map(|example| example["result"]["task"]["dependencies"]["waiting_on"].as_array().into_iter().flatten())
         .filter_map(|edge| edge["resolved_by"].as_str()).collect();
     assert_eq!(reasons, BTreeSet::from(["close", "done"]));
 }

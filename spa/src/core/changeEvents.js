@@ -73,6 +73,7 @@ import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js
 import { rememberConversationResetSupport } from "./conversationReset.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
+import { rememberTaskWaitingOnSupport } from "./taskWaitingOnSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
 import { rememberProjectTerminalSupport } from "./projectTerminalSupport.js";
@@ -100,7 +101,7 @@ const NO_CAPABILITIES = Object.freeze({
   reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
-    listPaged: false, bodyPrecondition: false,
+    listPaged: false, bodyPrecondition: false, waitingOn: false,
   }),
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
@@ -970,6 +971,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberFileUploadSupport(deviceId, state.adapter.capabilities);
   // And whether task body writes compare their original hash (#347).
   void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
+  void rememberTaskWaitingOnSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

@@ -375,7 +375,7 @@ function preserveDetailReview(held, incoming) {
   return withDetailReviewState(state, next);
 }
 
-function preserveTaskFloors(held, incoming) {
+export function preserveTaskFloors(held, incoming) {
   return withReadThroughFloor(held, preserveDetailReview(held, incoming));
 }
 

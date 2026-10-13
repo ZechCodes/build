@@ -20,7 +20,7 @@ export const navigationAppShim = {
       export function markRoute() {} export function renderUnlessStanding() {} export function unmountView() {}`;
   },
 };
-export async function mountNavigationBreadcrumbs(page, basePath, { theme = "light", longNames = false, kind = "workspace", duplicateNames = false, inboxPinned = false, observeHash = true } = {}) {
+export async function mountNavigationBreadcrumbs(page, basePath, { theme = "light", longNames = false, kind = "workspace", duplicateNames = false, inboxPinned = false, observeHash = true, inboxHeader = false } = {}) {
   if (await page.evaluate(() => !!window.__navigationHarness)) {
     await page.evaluate(async () => { await window.__layoutModules.toolbar.stopToolbar(); window.__layoutModules.feed.stopFeed(); });
   }
@@ -31,8 +31,9 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
   await loadBrowserModules(page, {
     app: "src/appState.js", cache: "src/core/localCache.js", feed: "src/core/taskFeed.js", toolbar: "src/core/toolbar.js",
     router: "src/core/router.js", projectState: "src/core/projectRailState.js", lock: "src/core/workspaceLockSupport.js", tracker: "src/core/trackerCache.js", directoryRail: "src/core/directoryRail.js",
+    ...(inboxHeader ? { inbox: "src/core/inboxShell.js" } : {}),
   }, basePath);
-  await page.evaluate(async ({ theme, longNames, kind, duplicateNames, inboxPinned, observeHash }) => {
+  await page.evaluate(async ({ theme, longNames, kind, duplicateNames, inboxPinned, observeHash, inboxHeader }) => {
     const { app, cache, feed, toolbar, router, projectState, lock, tracker, directoryRail } = window.__layoutModules;
     const deviceId = "nav-device";
     document.documentElement.dataset.theme = theme;
@@ -81,10 +82,13 @@ export async function mountNavigationBreadcrumbs(page, basePath, { theme = "ligh
     document.querySelector("#agent-rail").innerHTML = '<div class="rail-panel" id="rail-panel"><div class="rail-head" style="padding:16px">Conversation</div><div class="rail-body"><p style="padding:16px">Cached discussion</p></div></div><div class="rail-strip"></div>';
     document.body.classList.add("agent-open");
     await feed.startFeed(); await toolbar.initToolbar();
+    // Mount the actual dynamic header, including railViewSwitchHtml, pin and
+    // New project markup. No app boot or device connection is needed.
+    if (inboxHeader) await window.__layoutModules.inbox.initInboxRail();
     document.querySelectorAll("[data-select]").forEach((control) => control.addEventListener("click", () => {
       window.__navigationHarness.focusInGesture = document.activeElement?.matches(".tb-filter") === true;
     }));
-  }, { theme, longNames, kind, duplicateNames, inboxPinned, observeHash });
+  }, { theme, longNames, kind, duplicateNames, inboxPinned, observeHash, inboxHeader });
   await page.locator(".toolbar").waitFor();
   if (kind === "workspace") await page.locator("[data-workspace-lock]").waitFor();
   await page.evaluate(() => document.fonts.ready);

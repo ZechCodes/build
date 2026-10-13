@@ -50,7 +50,8 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
   }
   class BaseWindow extends EventEmitter {
     constructor(options) { super(); this.options = options; calls.reportWindows.push(this); }
-    destroy() { this.destroyed = true; }
+    isDestroyed() { return Boolean(this.destroyed); }
+    destroy() { assert.equal(this.isDestroyed(), false, "native window cannot be destroyed twice"); this.destroyed = true; }
   }
   const defaultState = { cookie: "account-cookie", cache: "account-content" };
   const tokenState = { cookie: null, cache: null };
@@ -79,7 +80,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
         calls.reportSignal = options.signal;
       }
       calls.dialogs.push(options);
-      return showMessageBox ? showMessageBox(options) : { response: calls.dialogResponse ?? 1 };
+      return showMessageBox ? showMessageBox(options, parentOptions ? parentOrOptions : undefined) : { response: calls.dialogResponse ?? 1 };
     } },
     Menu: { buildFromTemplate: (template) => template, setApplicationMenu: (menu) => { calls.menu = menu; } },
     net: { fetch: async (url, options) => {
@@ -673,4 +674,18 @@ test("Sign Out aborts outstanding token requests before deleting storage", async
   pending.resolve(response(tokens("late")));
   await flush();
   assert.equal(calls.dialogs.length, 0);
+});
+
+
+test("closing the native failure parent still completes Sign Out without destroying it twice", async (t) => {
+  const { calls, signOut } = await launch(t, {
+    clearCache: () => { throw new Error("fixture-private-failure"); },
+    showMessageBox: (_options, parent) => {
+      parent.destroy();
+      return { response: 0 };
+    },
+  });
+  await signOut().click();
+  assert.equal(calls.quit, 1);
+  assert.equal(calls.reportWindows[0].destroyed, true);
 });

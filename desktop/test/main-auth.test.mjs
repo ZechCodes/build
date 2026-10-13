@@ -40,13 +40,17 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     constructor(options) {
       super();
       this.options = options;
+      this.actions = [];
       this.webContents = new EventEmitter();
       this.webContents.setWindowOpenHandler = () => {};
       calls.windows.push(this);
     }
-    loadURL(url) { this.url = url; return Promise.resolve(); }
-    show() {} focus() {} isMinimized() { return false; }
-    destroy() { this.destroyed = true; this.emit("closed"); }
+    loadURL(url) { this.actions.push("load"); this.url = url; return Promise.resolve(); }
+    show() { this.actions.push("show"); }
+    focus() { this.actions.push("focus"); }
+    isMinimized() { return Boolean(this.minimized); }
+    restore() { this.actions.push("restore"); this.minimized = false; }
+    destroy() { this.actions.push("destroy"); this.destroyed = true; this.emit("closed"); }
   }
   class BaseWindow extends EventEmitter {
     constructor(options) { super(); this.options = options; calls.reportWindows.push(this); }
@@ -134,7 +138,13 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       };
       const loaded = nextLoad(url, context);
       if (url === new URL(`../src/main.mjs?test=${id}`, import.meta.url).href) {
-        return { ...loaded, source: `${loaded.source}\nexport { refreshTokens as testRefreshTokens };` };
+        return { ...loaded, source: `${loaded.source}\nexport {
+          refreshTokens as testRefreshTokens,
+          showAuthenticationError as testShowAuthenticationError,
+          openAuthenticatedWindow as testOpenAuthenticatedWindow,
+          startAuthentication as testStartAuthentication,
+          beginAuthentication as testBeginAuthentication,
+        };` };
       }
       if (removeSavedToken && url === new URL(`../src/token-store.mjs?test=${id}`, import.meta.url).href) {
         return { ...loaded, source: String(loaded.source).replace(
@@ -151,7 +161,10 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     delete globalThis[key];
     rmSync(directory, { recursive: true, force: true });
   });
-  const { testRefreshTokens } = await import(`../src/main.mjs?test=${id}`);
+  const {
+    testRefreshTokens, testShowAuthenticationError, testOpenAuthenticatedWindow,
+    testStartAuthentication, testBeginAuthentication,
+  } = await import(`../src/main.mjs?test=${id}`);
   await flush();
   const header = () => {
     let result;
@@ -163,7 +176,13 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     const state = new URL(calls.browser.at(-1)).searchParams.get("state");
     app.emit("open-url", { preventDefault() {} }, `getbuilding://oauth/callback?code=fixture-code&state=${state}`);
   };
-  return { app, calls, defaultState, tokenState, path, header, signOut, callback, refreshTokens: testRefreshTokens, safeStorage: fixture.safeStorage };
+  return {
+    app, calls, defaultState, tokenState, path, header, signOut, callback,
+    refreshTokens: testRefreshTokens, showAuthenticationError: testShowAuthenticationError,
+    openAuthenticatedWindow: testOpenAuthenticatedWindow,
+    startAuthentication: testStartAuthentication, beginAuthentication: testBeginAuthentication,
+    safeStorage: fixture.safeStorage,
+  };
 }
 
 test("launch silently refreshes saved credentials and rotates before opening the app", async (t) => {
@@ -769,4 +788,97 @@ test("Try Again from an existing authentication dialog cannot restart sign-in af
   storage.resolve();
   await cleanup;
   assert.equal(calls.quit, 1);
+});
+
+
+test("an existing auth dialog cannot invoke its retry callback after Sign Out", async (t) => {
+  const dialog = deferred();
+  const storage = deferred();
+  const { calls, signOut, showAuthenticationError } = await launch(t, {
+    clearStorageData: () => storage.promise,
+    showMessageBox: () => dialog.promise,
+  });
+  let retries = 0;
+  const showing = showAuthenticationError(new Error("fixture auth error"), () => { retries++; });
+  await flush();
+  assert.equal(calls.dialogs.length, 1);
+  const cleanup = signOut().click();
+  await flush();
+  dialog.resolve({ response: 0 });
+  await showing;
+  assert.equal(retries, 0, "post-dialog guard must stop the callback itself");
+  assert.equal(calls.quit, undefined);
+  storage.resolve();
+  await cleanup;
+});
+
+test("authenticated-window helper cannot reopen the renderer after Sign Out", async (t) => {
+  const storage = deferred();
+  const { calls, signOut, openAuthenticatedWindow } = await launch(t, {
+    clearStorageData: () => storage.promise,
+  });
+  const window = calls.windows[0];
+  openAuthenticatedWindow();
+  await flush();
+  assert.deepEqual(window.actions, ["load", "load"], "helper reloads the existing window before Sign Out");
+  const cleanup = signOut().click();
+  await flush();
+  openAuthenticatedWindow();
+  await flush();
+  assert.equal(calls.windows.length, 1, "helper must not create a replacement window");
+  assert.deepEqual(window.actions, ["load", "load", "destroy"]);
+  storage.resolve();
+  await cleanup;
+});
+
+test("second-instance restores and focuses a live window but has no window actions after Sign Out", async (t) => {
+  const storage = deferred();
+  const { app, calls, signOut } = await launch(t, { clearStorageData: () => storage.promise });
+  const window = calls.windows[0];
+  window.minimized = true;
+  app.emit("second-instance", {}, ["build"]);
+  assert.deepEqual(window.actions, ["load", "restore", "show", "focus"]);
+  const cleanup = signOut().click();
+  await flush();
+  app.emit("second-instance", {}, ["build"]);
+  assert.deepEqual(window.actions, ["load", "restore", "show", "focus", "destroy"]);
+  storage.resolve();
+  await cleanup;
+  app.emit("second-instance", {}, ["build"]);
+  assert.deepEqual(window.actions, ["load", "restore", "show", "focus", "destroy"]);
+});
+
+test("startup helper cannot reload saved credentials during Sign Out after deletion fails", async (t) => {
+  const storage = deferred();
+  let decryptions = 0;
+  const { calls, signOut, startAuthentication } = await launch(t, {
+    safeStorage: { decryptString: (bytes) => { decryptions++; return bytes.toString().slice(10); } },
+    removeSavedToken: () => { throw new Error("fixture deletion failure"); },
+    clearStorageData: () => storage.promise,
+  });
+  assert.equal(decryptions, 1);
+  const cleanup = signOut().click();
+  await flush();
+  await startAuthentication();
+  assert.equal(decryptions, 1, "entry guard prevents rereading the surviving account credential");
+  assert.equal(calls.fetch.length, 1);
+  assert.equal(calls.windows.length, 1);
+  storage.resolve();
+  await cleanup;
+});
+
+test("browser-auth helper cannot launch a new browser handoff during Sign Out", async (t) => {
+  const storage = deferred();
+  const { calls, signOut, beginAuthentication } = await launch(t, {
+    stored: null, clearStorageData: () => storage.promise,
+  });
+  assert.equal(calls.browser.length, 1);
+  const cleanup = signOut().click();
+  await flush();
+  await beginAuthentication();
+  assert.equal(calls.browser.length, 1, "entry guard blocks the browser side effect itself");
+  assert.equal(calls.fetch.length, 0);
+  assert.equal(calls.windows.length, 0);
+  storage.resolve();
+  await cleanup;
 });

@@ -127,10 +127,10 @@ bound. W2 delivery authorization and W3 caller-facing evidence are verified belo
 | TS558-1 | Dependency create/add/remove and reverse reads stay within the caller's project; mixed valid/foreign writes fail atomically without exposing foreign titles or identities. | W1/W3: `waiting_on_same_project_dag_is_atomic`, RPC/MCP cross-project create, add, remove, read and partial-write refusal tests. |
 | TS558-2 | Deferred delivery revalidates the saved target's project and current authority before provisioning and after off-lock work; missing/retired targets never fall back to another agent. | W2 verified: `waiting_assignment_defers_every_target`, `deferred_delivery_revalidates_foreign_target_before_admission`, `deferred_delivery_removed_target_never_substitutes_another_agent`, `deferred_delivery_retired_sender_preserves_authority_failure`, `deferred_workspace_creation_retry_refuses_retired_saved_owner` and `deferred_receipt_recovery_fences_missing_retired_and_foreign_targets` cover every target, off-lock recovery, retirement and foreign bindings. `deferred_provisioning_excludes_workspace_lock_and_rename_until_settlement` proves background provisioning holds filesystem mutation exclusion through settlement, refuses reclaim while waiting on source SyncLock, and accepted edits persist afterwards. `deferred_workspace_pins_saved_git_inputs_while_source_is_held` proves current and changed-base reservations wait on the saved repository lock, pin its commit, keep the app mutex available and preserve queued worker source-location holds. W3 caller-facing scope/compatibility is verified in #562 by the scoped RPC/MCP and exact-intent retry tests below. |
 | TS558-3 | Only a committed same-project readiness change (Done, close or edge removal) with a current authorized assignment, or an explicit ready assignment, can enqueue delivery; closed edges retain resolved-by-close provenance. Caller-authored notices, pushes or forged close/unblock/generation/operation fields grant no authority. | W1 provenance evidence above is retained. W2 verified: `durable_delivery_generation_and_live_graph_fence_saved_work`, `delivery_admission_fences_graph_writes_and_failed_retry`, `delivery_admission_binds_frozen_payload_address_and_origin` and `deferred_delivery_operation_id_cannot_admit_a_forged_payload_or_foreign_owner` refuse stale graph/generation and forged operation, address, payload and origin facts. `deferred_delivery_startup_runs_without_rpc_or_connected_client` proves startup handoff without a client. `pending_provisioning_does_not_self_wake_idle_reconciliation` holds provisioning in flight, bounds empty reconciliation polls to zero immediate repolls, rejects unrelated-write wakeups and retains new-assignment wakeups. W3 RPC/MCP contract evidence is verified in #562, including forged fields and canonical typed refusals. |
-| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 task-page removal/browser evidence remains #564. |
+| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 / #564 verifies the cached armed/unassigned removal consequence in `taskWaitingOnModel.test.js`, `taskWaitingOnPage.test.js` and keyboard browser cases in `taskWaitingOnEdges.test.js`; removal sends only the edge command and does not invent an assignment or worker. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
 | TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
-| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W4/W5: hostile title rendering, cache-first/push grouping including Backlog Blocked/Ready without label or column writes, resolved-by-close presentation, current-greeting refusal and older-bridge browser fixtures. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W5 / #564: `taskWaitingOnEdges.test.js` verifies escaped hostile titles, cached edges with held reads, distinct Done/close presentation, same-project keyboard editing and reverse navigation at 390/1280 light/dark, exact saved-id retry, current-greeting refusal and legacy request shapes. `taskWaitingAssignment.test.js` verifies ready-form reblock-at-submit refusal with note/target retention. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js` and `taskWaitingOnPage.test.js` fence reverse page generations, unmounted production task pushes and mounted off-preview stale tails/cursors. W4 grouping evidence belongs to #563; the second landing verifies the combined journey. |
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
 gate exit 0 (4,592 library tests passed, 9 ignored; integration tests include
@@ -153,8 +153,8 @@ The waiting-on capability stayed absent until #562 verified the corrected comple
 
 W3 / #562 bridge integration evidence (2026-10-12): **100/100 for the
 bridge-owned portions of TS558-1–6 (all six applicable controls verified).**
-W4/W5 UI and browser evidence, including TS558-4's removal warning and
-TS558-7, remains pending; this score does not claim those controls.
+This W3 score covers bridge controls. W5 UI evidence for TS558-4/7 is recorded
+below; W4 grouping and the combined journey belong to #563/the second landing.
 
 - TS558-1: `waiting_on_rpc_mcp_contract_refusals_are_atomic_and_scoped`,
   `waiting_on_rpc_mcp_contract_foreign_endpoints_and_cursors_are_fenced` and
@@ -232,3 +232,40 @@ complete rerun. A SPA attempt that encountered the initial regression-test
 compile error was stopped (exit 143), then the complete stable-source suite
 passed. Failed/setup attempts are retained with the passing evidence on #562.
 Origin/main remained b1e4643a through the final fetch, so no merge was needed.
+
+
+W5 / #564 task-page evidence (2026-10-13): **100/100 for the W5-owned
+portions of TS558-4/7 (both applicable controls verified).**
+
+- TS558-4: model and task-page tests distinguish a saved waiting/queued assignment
+  from an unassigned, cancelled or consumed one. The browser's armed/unassigned
+  final-edge confirmations send only `tasks.waiting_on.remove`; they never issue
+  an assignment, workspace creation or agent start. Assignment copy explains Done
+  or close, delayed creation, closure assessment and user-held waits; failed
+  delivery retries only its exact saved id.
+- TS558-7: browser fixtures exercise 390/1280 light/dark keyboard add/remove and
+  both navigation directions, paged reverse reads, escaped hostile titles,
+  same-project choices, distinct Done/close resolution and retained cycle/stale
+  drafts. Reads held in flight leave cached controls usable. Legacy records send
+  the exact old assignment shape; cached waiting records under an older greeting
+  retain the prerequisite explanation and refuse sends. A ready form reblocked
+  in the cache before submit also refuses the downgraded greeting without losing
+  its note or target.
+- Reverse-cache regressions remove/add edges at endpoints absent from previews,
+  invalidate an unmounted production task push, fence stale first/continuation
+  replies (including previously unseen endpoints), discard mounted stale tails
+  and restore the authoritative preview cursor. Other projects remain usable.
+
+Test-first evidence on #564: cached reblock and legacy fixture runs exited 1
+before correction, then assignment/browser coverage exited 0 (22 tests, including
+15 Chromium cases). Cache mutation and production-push/mounted-page regressions
+also exited 1 before correction, then all four focused cache/page/push/change
+suites exited 0 (53 tests). Earlier assignment copy, model, action, capability and
+cache evidence is retained in the checkpoint. No complexity exemption or ratchet
+count changed. The four inspected phone/desktop screenshots still match the
+markup; the takeover changed cache/dispatch guards and fixtures.
+
+W4 Active/Backlog grouping is #563's scope. As directed for the parallel landing,
+the second of #563/#564 to land verifies assigned wait → Done/close release →
+one delivery with closure assessment → updated Active/Backlog groups. This W5
+score does not claim that combined journey before W4 lands.

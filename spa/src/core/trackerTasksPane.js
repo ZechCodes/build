@@ -44,7 +44,7 @@ import {
 import { columnsOf } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
 import { boardColumns, moveParams, nextColumn, withMovedTask } from "./trackerBoardModel.js";
-import { agentLabels, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels, assigneeOptions, projectName, selectedOptionId, assignableAgents } from "./trackerAssignee.js";
 import { BOARD_VIEW, DASHBOARD_VIEW, LIST_VIEW, mountTasksChrome } from "./trackerPaneChrome.js";
 import { paintGroupedTaskRows, paintTaskBoard } from "./trackerTasksBody.js";
 import { attentionGroups, NEEDS_YOU_GROUP, REST_GROUP, WORKING_GROUP } from "./trackerAttentionModel.js";
@@ -106,7 +106,7 @@ export function mountTasksPane(host, options) {
 
   // ---- what the feed knows about this project's agents ---------------------
 
-  const groups = () => workspaceAgents(state.feed(), state.projectKey);
+  const groups = () => assignableAgents(state.feed(), state.projectKey);
   const labelsOfAgents = () => agentLabels(groups());
   /** What every row on this tab names an actor from: the project's agents, and
    *  the project itself, which its own agent is named after (#63). */
@@ -747,6 +747,7 @@ export function mountTasksPane(host, options) {
     /** The feed moved: the agents a picker would offer may have, so the next
      *  paint names them again. Nothing is re-read from the bridge. */
     feedMoved() {
+      state.picker?.setOptions?.(assigneeOptions(groups()));
       rescope();
       details.updateTasks(state.shown);
       void activity.updateFeed(state.feed(), state.projectKey);

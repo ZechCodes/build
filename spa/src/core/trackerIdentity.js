@@ -8,7 +8,7 @@ import { isProjectActor, taskAvatarHtml } from "./taskAvatar.js";
 import { agentFromGroups, agentModelBadgeHtml } from "./agentModelBadge.js";
 
 const agentIdOf = (actor) => typeof actor === "string" ? actor : actor?.agent_id || "";
-const projectActor = (actor, id) => isProjectActor(typeof actor === "string" ? { agent_id: id } : actor);
+const projectActor = (actor, id, context) => isProjectActor(typeof actor === "string" ? { agent_id: id } : actor, context);
 
 const projectHref = (id, context) => hashFromRoute({
   name: "project", deviceId: context.deviceId, projectId: context.projectId, agent: id || undefined,
@@ -29,15 +29,22 @@ const workspaceHref = (id, context) => {
     workspaceId, tab: "changes", agent: id });
 };
 
+const isProjectDestination = (actor, id, context) => {
+  const group = (context.agentGroups || []).find((candidate) => candidate.kind === "project");
+  if (group && id) return group.pinnedAgentId === id || group.agents.some((agent) => agent.id === id);
+  const projectIdentity = String(id).startsWith("project-") && context.identities?.[id]?.available;
+  return projectActor(actor, id, context) || projectIdentity;
+};
+
 export function actorHref(actor, context = {}) {
   if (!context.deviceId || !context.projectId || !actor) return "";
   const id = agentIdOf(actor);
   if (context.identities?.[id]?.available === false) return "";
-  return projectActor(actor, id) ? projectHref(id, context) : workspaceHref(id, context);
+  return isProjectDestination(actor, id, context) ? projectHref(id, context) : workspaceHref(id, context);
 }
 
 const actorMarkHtml = (actor, context, id) => {
-  if (projectActor(actor, id)) return taskAvatarHtml({ kind: "project_agent" }, context);
+  if (projectActor(actor, id, context)) return taskAvatarHtml({ kind: "project_agent" }, context);
   const provider = context.identities?.[id]?.provider || context.agentProviders?.[id];
   return provider ? harnessIconHtml(provider) : "";
 };

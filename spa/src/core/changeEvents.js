@@ -74,6 +74,7 @@ import { rememberConversationResetSupport } from "./conversationReset.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
+import { rememberProjectAgentsSupport } from "./projectAgentsCache.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
 import { rememberProjectChangesSupport } from "./projectChangesSupport.js";
 import { rememberFileUploadSupport } from "./fileUploadSupport.js";
@@ -106,7 +107,7 @@ const NO_CAPABILITIES = Object.freeze({
   threads: Object.freeze({ postOperations: false, attachmentChunks: false, leanActivity: false }),
   branches: Object.freeze({ finishDelete: false }),
   push: Object.freeze({ registerKey: false, revokeKey: false }),
-  agents: Object.freeze({ createdBy: false }),
+  agents: Object.freeze({ createdBy: false, projectWorkers: false }),
   projects: Object.freeze({ updateSource: false, syncBase: false, syncBasePath: false }),
   workspaces: Object.freeze({ measureSizes: false, setLocked: false }),
 });
@@ -962,6 +963,7 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   // And whether it measures its workspaces' sizes when asked (#273).
   void rememberWorkspaceSizeSupport(deviceId, state.adapter.capabilities);
   void rememberWorkspaceLockSupport(deviceId, state.adapter.capabilities);
+  void rememberProjectAgentsSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   void rememberProjectFilesSupport(deviceId, state.adapter.capabilities);
   void rememberProjectChangesSupport(deviceId, state.adapter.capabilities);
   void rememberFileUploadSupport(deviceId, state.adapter.capabilities);

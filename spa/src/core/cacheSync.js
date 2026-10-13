@@ -36,6 +36,8 @@
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
 import { directoryCacheId } from "./directoryScope.js";
+import { projectRosterRows } from "./projectRosterFeed.js";
+import { projectsWithAgentRosters, syncProjectAgents } from "./projectAgentsCache.js";
 import { trailingRead } from "./trailingRead.js";
 import { createSyncPhases } from "./syncPhases.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
@@ -406,7 +408,9 @@ async function orderedSync(deviceId, turn) {
   const fence = pushFence();
   const lists = await readLists(context, fence);
   if (!lists || !context.active()) return false;
-  const { view, before, ownership } = lists;
+  const { before, ownership } = lists;
+  await refreshProjectAgents(context, lists.view.projects);
+  const view = { ...lists.view, projects: await projectsWithAgentRosters(context.deviceId, lists.view.projects) };
   const pass = await workspacesToRead(context, view);
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route,
@@ -522,6 +526,21 @@ async function landOwnershipList(context, kind, rows, before, fence) {
   const reading = { ...context, active: () => context.active() && !pushedSince(addressOf(context, "", kind), fence) };
   if (!reading.active()) return;
   await writeSessionList(reading, kind, incoming, before);
+}
+
+/** Complete rosters have their own cache; board summaries remain pinned-only. */
+async function refreshProjectAgents(context, projects, entityId = null) {
+  const capabilities = bridgeCapabilities(context.deviceId);
+  if (!capabilities.agents?.projectWorkers) return;
+  const owners = projects || await heldValue(context, "", "projects") || [];
+  await Promise.all(owners.filter((project) => !entityId || (project.entity_id || project.run_id) === entityId)
+    .map((project) => syncProjectAgents({ deviceId: context.deviceId,
+      entityId: project.entity_id || project.run_id, capabilities: () => bridgeCapabilities(context.deviceId),
+      call: (method, params) => context.call(method, params, "background"), active: context.active,
+      afterWrite: async (roster) => {
+        await reconcileConversationGenerations(context, roster.entity_id, roster.agents);
+        await writeSurfaces(context, roster.entity_id, roster.agents);
+      } }).catch(() => null)));
 }
 
 async function refreshWorkspaceSummaries(context, view, fence) {
@@ -770,7 +789,7 @@ function readTasks(context, projectId) {
  * leads, whatever the inbox order says.
  */
 async function workspacesToRead(context, view) {
-  const items = view.items || [];
+  const items = projectRosterRows(view);
   const rows = new Map();
   // `items` is the inbox, so it omits a run after every agent on it is
   // unwatched. The routed workspace still owns that run and its thread; the
@@ -1515,6 +1534,7 @@ async function writePushedBoard(context, state, before) {
     await writeSessionList(context, "projects", state.projects.map((project) => stampProject(project, context.deviceId)), before);
   }
   if (!context.active()) return;
+  if (state.projects) await refreshProjectAgents(context, state.projects);
   if (state.workspaces) {
     // A row that names its own verdict — a list a git flush re-sent, with the
     // summary that flush re-read — is the fresh word. A row that names none
@@ -1618,6 +1638,7 @@ async function applyState(context, entityId, state) {
   await writeConversationRow(context, entityId, stampRow(state, context.deviceId));
   if (!context.active()) return;
   await writeSurfaces(context, entityId, state.agents);
+  await refreshProjectAgents(context, null, entityId);
   if (!context.active()) return;
   if (isFinishedState(state.state)) await evictWorkspaceData(context.deviceId, entityId, context.active);
   if (state.review_summary && context.active()) {
@@ -1633,6 +1654,7 @@ async function applyThreadItem(context, entityId, tips) {
     if (!context.active()) return;
     await applyThreadTip(context, entityId, tip);
   }
+  await refreshProjectAgents(context, null, entityId);
 }
 
 /** Which conversation a tip is about, addressed the way the record is. */

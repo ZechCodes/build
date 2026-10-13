@@ -77,6 +77,7 @@ import {
   removeRecord,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
+import { syncProjectAgents } from "./projectAgentsCache.js";
 import { mountUsageLimitBanner } from "./usageLimits.js";
 import { createTimelineSlice } from "./timelineSlice.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
@@ -726,6 +727,7 @@ const projectAgentContext = (context, known, workspaceName, openAgentId = null) 
   projectId: context.projectAgent.projectId,
   entityId: known.entityId,
   workspaceId: null,
+  pinnedOnly: true,
   fromWorkspace: workspaceStamp(context, workspaceName),
   selection: null,
   openAgentId,
@@ -1313,7 +1315,8 @@ function mountRailOnContext(host, context, swap) {
     const agents = visibleAgents();
     const wanted = selectionFromMemory ? rememberedAgentId(agents, selectedId) : selectedId;
     if (agents.length) selectionFromMemory = false;
-    chooseAgent(selectAgentId(agents, wanted));
+    const target = agents.some((agent) => agent.id === wanted) ? wanted : entity.pinnedAgentId || wanted;
+    chooseAgent(selectAgentId(agents, target));
   };
   const syncWatchFromAgent = () => {
     const current = watchStateFor(agentOf(selectedId));
@@ -1436,15 +1439,17 @@ function mountRailOnContext(host, context, swap) {
    *  what it starts on is the machine's answer and not this browser's. */
   const onProjectRail = () => railContext.kind === "project";
   const deviceProjectAgent = () => projectAgentSetting || NO_AGENT_CHOICE;
+  const workerCreationNotice = () => entity.kind === "project" && entity.pinnedAgentId
+    ? '<p class="sub rail-worker-notice">Works in the original project sources. Files, Git index and current branch are shared with you and other project workers.</p>' : "";
   const newAgentDefaults = (catalogOffered) =>
-    onProjectRail()
+    onProjectRail() && !entity.pinnedAgentId
       ? deviceProjectAgent()
       : agentDefaultsInWorkspace(railWorkspaceKey(), catalogOffered);
   /** The same, for a harness the human has just pressed. A model belongs to its
    *  harness, so the device's model travels only onto the harness the device
    *  named; any other leads with that harness's own default. */
   const newAgentDefaultsFor = (providerId) =>
-    onProjectRail()
+    onProjectRail() && !entity.pinnedAgentId
       ? { ...(deviceProjectAgent().provider === providerId ? deviceProjectAgent() : NO_AGENT_CHOICE), provider: providerId }
       : agentDefaultsForWorkspace(railWorkspaceKey(), providerId);
 
@@ -2055,7 +2060,8 @@ function mountRailOnContext(host, context, swap) {
       // this rail is standing on.
       agents: withRollups(onProjectAgentRail ? alongsideEntity.agents : stripAgents()),
       selectedId, selectedKind, kind: below.kind, chatCapable: below.chatCapable !== false,
-      canAdd: onProjectAgentRail ? below.canAdd : null,
+      canAdd: below.kind === "project" ? below.canAdd : onProjectAgentRail ? below.canAdd : null,
+      pinnedAgentId: below.pinnedAgentId,
       projectAgent: projectAgentEntry(),
       projectName,
     });
@@ -2277,6 +2283,7 @@ function mountRailOnContext(host, context, swap) {
       agents: visibleAgents(),
       agentId: settled ? settled.id : null,
       kind: entity.kind,
+      pinnedAgentId: entity.pinnedAgentId,
     });
     const hasTerminal = !!agent && agentHasTerminal(agent);
     // Which face this agent can actually wear. `mode` is remembered per work
@@ -2606,6 +2613,7 @@ function mountRailOnContext(host, context, swap) {
     const choices = harnessChoicesHtml(providers, chosen);
     body.innerHTML = `<div class="rail-newagent">
       <p>Start a new conversation</p>
+      ${workerCreationNotice()}
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
       <label class="rail-newagent-name">
         <span>Label <em>optional</em></span>
@@ -3666,6 +3674,19 @@ function mountRailOnContext(host, context, swap) {
   const startingRecord = (agentId) =>
     patchRecord(agentId, { state: AGENT_STARTING }, { scope: pendingAgentsScope(), clearedBy: agentSessionAnswered });
 
+  const projectWorkerCreationParams = (workerCreation) => {
+    if (!workerCreation) return {};
+    if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) {
+      throw new Error("Update this device to add project workers.");
+    }
+    return { project_role: "worker" };
+  };
+
+  const refreshCompleteRoster = () => entity.kind === "project" && entity.pinnedAgentId
+    ? syncProjectAgents({ deviceId: context.deviceId, entityId: entity.entityId,
+      capabilities: () => bridgeCapabilities(context.deviceId), call: chatRepository.currentCall(), active: standing }).catch(() => null)
+    : Promise.resolve();
+
   const createAgentWithMessage = (controller, submission, { retry = false } = {}) => {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
@@ -3697,6 +3718,7 @@ function mountRailOnContext(host, context, swap) {
       const added = await creationCall("agent.add", {
         entity_id: entityId,
         creation_id: submission.creationId,
+        ...projectWorkerCreationParams(choice.projectWorkerCreation),
         ...newAgentParams(choice),
       });
       const createdAgent = (added && added.agent) || null;
@@ -3710,6 +3732,7 @@ function mountRailOnContext(host, context, swap) {
       };
       chatOwnership.resolve(controller, resolvedIdentity);
       controller.absorbAgent(createdAgent);
+      void refreshCompleteRoster();
       controller.clearOperationKind(submission);
       handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id, createdAgent.thread_id));
       renameAgentIdentity(provisionalAgentId, createdAgent.id, controller);
@@ -3850,7 +3873,7 @@ function mountRailOnContext(host, context, swap) {
     if (resettingConversation) return undefined;
     const message = stamped({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
     if (!controller.identity.agentId) {
-      const submission = controller.captureProvisionalSubmission(message, newAgentChoice());
+      const submission = controller.captureProvisionalSubmission(message, { ...newAgentChoice(), projectWorkerCreation: entity.kind === "project" && !!entity.pinnedAgentId });
       return postProvisional(controller, submission);
     }
     return deliverSubmission(controller, controller.captureSubmission(message));
@@ -4034,6 +4057,7 @@ function mountRailOnContext(host, context, swap) {
         paint();
       },
     });
+    await refreshCompleteRoster();
     await refreshFeed();
     await refresh();
   };

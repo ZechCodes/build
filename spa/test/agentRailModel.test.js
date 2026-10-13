@@ -366,6 +366,24 @@ describe("the strip's watched agents (#105)", () => {
 // is what makes it the PROJECT's — so a workspace's strip carries it above a
 // line, with the workspace's own agents below.
 describe("the project's own page", () => {
+  it("places the persisted pin above workers regardless of roster order", () => {
+    const agents = [agent({ id: "worker", name: "Source worker", project_role: "worker" }),
+      agent({ id: "pin", project_role: "coordinator" })];
+    const bubbles = railBubbles({ agents, selectedId: "worker", kind: "project", projectName: "build", pinnedAgentId: "pin", canAdd: true });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.id])).toEqual([["agent", "pin"], ["separator", ""], ["agent", "worker"], ["add", ""]]);
+    expect(bubbles[0]).toMatchObject({ project: true, active: false });
+    expect(bubbles[2]).toMatchObject({ initials: "SW", active: true });
+    expect(bubbles[2].project).toBeUndefined();
+  });
+
+  it("offers a first worker below the pin and protects the pin from removal", () => {
+    const agents = [agent({ id: "pin", project_role: "coordinator" })];
+    expect(railBubbles({ agents, kind: "project", pinnedAgentId: "pin", canAdd: true }).map((bubble) => bubble.type)).toEqual(["agent", "separator", "add"]);
+    expect(canRemoveAgent({ agents, kind: "project", agentId: "pin", pinnedAgentId: "pin" })).toBe(false);
+    expect(canRemoveAgent({ agents: [...agents, agent({ id: "worker", project_role: "worker" })], kind: "project", agentId: "worker", pinnedAgentId: "pin" })).toBe(true);
+    expect(railEntity({ entity_id: "owner", pinned_agent_id: "pin", agents }, "project")).toMatchObject({ pinnedAgentId: "pin", canAdd: true });
+  });
+
   // The page and the strip agree about whose agent this is: on the project's
   // own conversation the bubbles wear what the project's bubble wears above
   // the line on a workspace — the initial, squared off — not a work item's face.

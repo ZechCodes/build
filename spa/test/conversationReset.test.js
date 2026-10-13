@@ -181,3 +181,27 @@ it("retires a first-message optimistic projection and refuses its delayed scope 
   expect(store.pendingIn(freshScope)).toEqual([]);
   repo.dispose();
 });
+
+it("resetting one project worker retires its exact generation while shared-owner sibling drafts survive", async () => {
+  const { projectAgentsAddress } = await import("../src/core/projectAgentsCache.js");
+  const owner = "shared-owner";
+  const agent = (id) => ({ id, conversation_id: `${id}-chat`, thread_id: `${id}-old`, thread_generation_revision: 0,
+    project_role: id === "pin" ? "coordinator" : "worker", state: "live" });
+  const agents = [agent("worker-a"), agent("worker-b"), agent("pin")];
+  const rosterAddress = projectAgentsAddress(address.deviceId, owner);
+  await writeCached(rosterAddress, { entity_id: owner, pinned_agent_id: "pin", agents });
+  const repo = createChatRepository({ scope: { deviceId: address.deviceId }, call: async () => ({}), storage: null });
+  const controllers = agents.map((a) => repo.controller({ entityId: owner, agentId: a.id, conversationId: a.conversation_id, threadId: a.thread_id }));
+  for (const [index, controller] of controllers.entries()) controller.writeDraft({ body: `draft-${index}` });
+  const submission = controllers[0].captureSubmission();
+  const a = { ...agents[0], thread_id: "worker-a-new", thread_generation_revision: 1, state: "idle" };
+  await writeCached({ deviceId: address.deviceId, entityId: owner, kind: "thread", sub: a.conversation_id }, { thread_id: "worker-a-old", items: [], deliveredSequence: 0 });
+  await applyConversationReset({ deviceId: address.deviceId, active: () => true }, {
+    entity_id: owner, agent_id: a.id, conversation_id: a.conversation_id, previous_thread_id: "worker-a-old", agent: a,
+  });
+  expect((await readCached(rosterAddress)).value.agents).toEqual([a, agents[1], agents[2]]);
+  expect(() => repo.assertSubmissionActive(submission)).toThrow(/cleared|generation/);
+  expect(controllers[1].readDraft().body).toBe("draft-1");
+  expect(controllers[2].readDraft().body).toBe("draft-2");
+  repo.dispose();
+});

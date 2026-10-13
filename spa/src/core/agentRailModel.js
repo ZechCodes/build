@@ -202,7 +202,7 @@ export function bubbleTip(agent) {
 }
 
 const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
-const addAgentTitle = (kind) => `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
+const addAgentTitle = (kind) => kind === "project" ? "Add agent" : `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
 
 /** Whether the strip offers another agent here. The work item answers it when
  *  it has been read — `canAdd` off its own payload — and the kind answers for a
@@ -303,10 +303,30 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
  * has on every workspace's strip, so the page and the strip agree about whose
  * agent this is. `projectName` is what that initial is cut from.
  */
-export function railBubbles({ agents = [], selectedId = null, selectedKind = "agent", kind = "branch", chatCapable = true, canAdd = null, projectAgent = null, projectName } = {}) {
-  const own = ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName });
-  return projectAgent ? underTheProject(own, projectAgent) : own;
+const BUBBLE_DEFAULTS = { agents: [], selectedId: null, selectedKind: "agent", kind: "branch", chatCapable: true,
+  canAdd: null, projectAgent: null, projectName: undefined, pinnedAgentId: null };
+export function railBubbles(given = {}) {
+  const options = { ...BUBBLE_DEFAULTS, ...given };
+  if (options.kind === "project" && options.pinnedAgentId) return projectWorkerBubbles(options);
+  const own = ownBubbles(options);
+  return options.projectAgent ? underTheProject(own, options.projectAgent) : own;
 }
+
+/** A project owner has one persisted pin and ordinary workers on that same owner. */
+function projectWorkerBubbles({ agents, selectedId, selectedKind, canAdd, projectName, pinnedAgentId }) {
+  const pin = agents.find((agent) => agent.id === pinnedAgentId);
+  if (!pin) return [];
+  const pinned = ownBubbles({ agents: [pin], selectedId, selectedKind, kind: "project", canAdd: false, projectName, alwaysVisible: true });
+  const workers = agents.filter((agent) => agent.id !== pinnedAgentId);
+  const owned = workers.length ? ownBubbles({ agents: workers, selectedId, selectedKind, kind: "workspace", canAdd: false }) : [];
+  if (canAdd) owned.push(addBubble("project", selectedKind));
+  return [...pinned, RAIL_SEPARATOR_ENTRY, ...owned];
+}
+
+const addBubble = (kind, selectedKind) => ({
+  type: "add", id: "", label: "+", pattern: null, title: addAgentTitle(kind),
+  active: selectedKind === "add", unread: 0, working: false,
+});
 
 /** The face a bubble on the project's own conversation wears: the project's
  *  initial in place of a pattern, flagged so the strip squares it off. */
@@ -351,7 +371,7 @@ const onTheStrip = (agent, selectedId, selectedKind) =>
 const UNWATCHED_TIP = "Not watching";
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
-function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName }) {
+function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName, alwaysVisible = false }) {
   const onProjectPage = kind === "project";
   const face = (pattern) => (onProjectPage ? projectFace(projectName) : { label: "", pattern });
   if (!agents.length) {
@@ -367,7 +387,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
       },
     ];
   }
-  const bubbles = agents.filter((agent) => onTheStrip(agent, selectedId, selectedKind)).map((agent) => ({
+  const bubbles = agents.filter((agent) => alwaysVisible || onTheStrip(agent, selectedId, selectedKind)).map((agent) => ({
     type: "agent",
     id: agent.id,
     ...face(agentPattern(agent.ordinal)),
@@ -385,16 +405,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
   // Tasks carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.
   if (offersAnotherAgent(kind, canAdd)) {
-    bubbles.push({
-      type: "add",
-      id: "",
-      label: "+",
-      pattern: null,
-      title: addAgentTitle(kind),
-      active: selectedKind === "add",
-      unread: 0,
-      working: false,
-    });
+    bubbles.push(addBubble(kind, selectedKind));
   }
   return bubbles;
 }
@@ -409,10 +420,14 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
  * may go, the first and the last included — a branch left with none is a
  * working branch whose chat tab asks which agent to start one on.
  */
-export function canRemoveAgent({ agents = [], agentId = null, kind = "branch" } = {}) {
+export function canRemoveAgent({ agents = [], agentId = null, kind = "branch", pinnedAgentId = null } = {}) {
+  if (kind === "project") return removableProjectWorker(agents, agentId, pinnedAgentId);
   if ((kind !== "branch" && kind !== "workspace") || !agentId) return false;
   return agents.some((agent) => agent.id === agentId);
 }
+
+const removableProjectWorker = (agents, agentId, pinnedAgentId) =>
+  agentId !== pinnedAgentId && agents.some((agent) => agent.id === agentId && agent.project_role === "worker");
 
 /** How removal names the agent it is about to take away — in the button's
  *  tooltip and in the confirmation behind it, which say the same words.
@@ -565,7 +580,8 @@ const projectEntity = (row, agents) => ({
   branch: null,
   worktreeId: null,
   adoptable: false,
-  canAdd: false,
+  canAdd: !!row.pinned_agent_id,
+  pinnedAgentId: row.pinned_agent_id || null,
   chatCapable: true,
   executionContext: row.execution_context || null,
   directories: [],

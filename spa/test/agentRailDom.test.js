@@ -7175,3 +7175,95 @@ it("re-reports the now-safe tail after returning from overview to the same conve
     geometry.mockRestore();
   }
 });
+
+describe("cached project worker rail", () => {
+  const owner = "run-project";
+  const pin = () => agent({ id: "project-pin", conversation_id: "pin-chat", project_role: "coordinator", name: "Coordinator" });
+  const worker = (id = "project-worker") => agent({ id, conversation_id: `${id}-chat`, project_role: "worker", name: "Source worker", ordinal: 2 });
+  const writeRoster = async (agents = [worker(), pin()]) => {
+    await writeCached({ deviceId: "dev-1", entityId: owner, kind: "project-agents" }, { entity_id: owner, pinned_agent_id: "project-pin", agents });
+    await flush();
+  };
+  const mountWorkers = async () => {
+    payload = { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] };
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    await writeRoster();
+    await mount({ kind: "project", entityId: owner, openAgentId: "project-worker" });
+  };
+  const workerBubble = () => railHost().querySelector('[data-agent="project-worker"][data-bubble="agent"]');
+
+  it("paints cached workers before any worker-capable greeting and keeps legacy summaries separate", async () => {
+    await mountWorkers();
+    expect(workerBubble()).toBeTruthy();
+    expect(workerBubble().title).toContain("Source worker");
+    expect(railHost().querySelector(".rail-strip").children[1].getAttribute("role") === "separator").toBe(true);
+    expect(railHost().querySelector('[data-bubble="add"]')).toBeTruthy();
+    await pushRow({ ...payload, agents: [pin()] });
+    expect(workerBubble()).toBeTruthy();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+    await flush();
+    expect(workerBubble()).toBeNull();
+    expect(railHost().querySelector('[data-bubble="add"]')).toBeNull();
+  });
+
+  it("sends on the exact worker conversation and preserves sibling drafts when it leaves", async () => {
+    await mountWorkers();
+    await vi.waitFor(() => expect(panel()?.querySelector("#railinput")).toBeTruthy());
+    panel().querySelector("#railinput").value = "edit original source";
+    panel().querySelector("#railsend").click();
+    await vi.waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
+    expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: owner, agent_id: "project-worker", conversation_id: "project-worker-chat" });
+    railHost().querySelector('[data-agent="project-pin"][data-bubble="agent"]').click();
+    await flush();
+    const draft = panel().querySelector("#railinput");
+    draft.value = "coordinator draft";
+    draft.dispatchEvent(new Event("input", { bubbles: true }));
+    workerBubble().click();
+    await flush();
+    await writeRoster([pin()]);
+    expect(workerBubble()).toBeNull();
+    expect(panel().querySelector("#railinput").value).toBe("coordinator draft");
+  });
+
+  it("a delayed cached roster read cannot repaint workers after a support downgrade", async () => {
+    await mountWorkers();
+    const cache = await import("../src/core/localCache.js");
+    const readMany = cache.readCachedMany;
+    let release;
+    const spy = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await readMany(addresses);
+      if (!release && addresses[0]?.kind === "project-agents-support") {
+        await new Promise((resolve) => { release = resolve; });
+      }
+      return records;
+    });
+    try {
+      await writeRoster();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+      await vi.waitFor(() => expect(workerBubble()).toBeNull());
+      release();
+      await flush();
+      expect(workerBubble()).toBeNull();
+    } finally { release?.(); spy.mockRestore(); }
+  });
+
+  it("explains shared source writes when adding a worker", async () => {
+    await mountWorkers();
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(panel().querySelector(".rail-worker-notice")?.textContent).toContain("original project sources");
+  });
+
+  it("keeps project workers out of a named workspace including worker deep links", async () => {
+    await mountWorkers();
+    rail.dispose();
+    payload = { kind: "workspace", entity_id: "workspace-owner", project_id: "p1", agents: [agent({ id: "workspace-agent" })] };
+    await writeRailBoard({ items: [payload, { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] }],
+      projects: [{ project_id: "p1", name: "Project", entity_id: owner }],
+      workspaces: [{ workspace_id: "ws", project_id: "p1", entity_id: "workspace-owner", name: "Child" }] });
+    await mount({ kind: "workspace", workspaceId: "ws", openAgentId: "project-worker", projectAgent: { projectId: "p1", entityId: owner, name: "Project" } });
+    expect(workerBubble()).toBeNull();
+    expect(railHost().querySelector('[data-agent="workspace-agent"]')).toBeTruthy();
+  });
+});

@@ -14,6 +14,7 @@
 // rail reads, so the rail paints it the way it paints a push — and only where
 // nothing has written that record since the verb went out.
 
+import { projectAgentsAddress, projectAgentsSupportAddress, readProjectAgents } from "./projectAgentsCache.js";
 import { ROW_RECORD_KIND, cachedRouteEntry } from "./cachedRows.js";
 import { entityIdOf } from "./entityId.js";
 import {
@@ -73,9 +74,13 @@ export function createRailWorkItem({
   let unwatchRow = null;
   let unwatchFeed = null;
   let unwatchSources = null;
+  let unwatchProjectRoster = null;
+  let unwatchProjectSupport = null;
   let watchedRowId;
   let rereading = null;
   let rereadAgain = false;
+  let rowRead = 0;
+  let projectRead = 0;
 
   const rowAddress = (entityId) =>
     (entityId && (context.kind === "task"
@@ -87,7 +92,23 @@ export function createRailWorkItem({
   /// The row itself, or nothing where this device holds none — a checkout
   /// nobody has claimed has no row anywhere, and the rail on it is the one that
   /// adopts on its first message.
-  const cachedRow = async (entityId) => {
+  const cachedProjectRow = async (entityId) => {
+    if (context.kind !== "project") return null;
+    const roster = await readProjectAgents(context.deviceId, entityId);
+    if (!roster) return null;
+    return context.pinnedOnly
+      ? { ...roster, pinned_agent_id: null, agents: roster.agents.filter((agent) => agent.id === roster.pinned_agent_id) }
+      : { ...roster, project_id: context.projectId };
+  };
+
+  const cachedRow = (entityId) => context.kind === "project" ? readProjectRow(entityId) : cachedLegacyRow(entityId);
+  const readProjectRow = async (entityId) => {
+    const token = ++projectRead;
+    const row = await cachedProjectRow(entityId) || await cachedLegacyRow(entityId);
+    return token === projectRead ? row : null;
+  };
+
+  const cachedLegacyRow = async (entityId) => {
     const address = rowAddress(entityId);
     if (!address) return null;
     const row = (await readCached(address))?.value;
@@ -96,6 +117,10 @@ export function createRailWorkItem({
     // run is deliberately absent from the inbox's `items`. The same board
     // record keeps it in `runs`; read that cached roster for the workspace
     // without putting it back into the inbox as a visible row.
+    return cachedRun(entityId);
+  };
+
+  const cachedRun = async (entityId) => {
     const feed = (await readCached(feedAddress()))?.value;
     return (feed?.runs || []).find((run) => entityIdOf(run) === entityId) || null;
   };
@@ -104,6 +129,10 @@ export function createRailWorkItem({
   /// right now: the row's own, else the board's `runs`. Taken before a verb is
   /// sent, for `patchAgentIfUnwritten` to find unchanged after its answer.
   const rowWrite = async (entityId) => {
+    if (context.kind === "project" && await readProjectAgents(context.deviceId, entityId)) {
+      const address = projectAgentsAddress(context.deviceId, entityId);
+      return { entityId, address, written: cachedWriteOf(await captureCachedRecord(address)) };
+    }
     const address = rowAddress(entityId);
     if (!address) return null;
     const readsRuns = READS_BOARD_RUNS.includes(context.kind);
@@ -181,8 +210,9 @@ export function createRailWorkItem({
   };
 
   const takeUpRow = async (entityId) => {
+    const token = ++rowRead;
     const row = await cachedRow(entityId);
-    if (alive() && row) standOn(row);
+    if (alive() && token === rowRead && watchedRowId === entityId && row) standOn(row);
   };
 
   /// One re-read at a time, and one more where something moved while it ran.
@@ -227,9 +257,15 @@ export function createRailWorkItem({
     if (watchedRowId === entityId) return;
     unwatchRow?.();
     unwatchFeed?.();
+    unwatchProjectRoster?.();
+    unwatchProjectSupport?.();
     unwatchRow = null;
     unwatchFeed = null;
     watchedRowId = entityId;
+    if (context.kind === "project") {
+      unwatchProjectRoster = subscribeCache(projectAgentsAddress(context.deviceId, entityId), () => void takeUpRow(entityId));
+      unwatchProjectSupport = subscribeCache(projectAgentsSupportAddress(context.deviceId), () => void takeUpRow(entityId));
+    }
     const address = rowAddress(entityId);
     unwatchRow = address
       ? subscribeCache(address, () => void takeUpRow(entityId))
@@ -288,6 +324,8 @@ export function createRailWorkItem({
       unwatchFeed = null;
       unwatchSources?.();
       unwatchSources = null;
+      unwatchProjectRoster?.();
+      unwatchProjectSupport?.();
     },
   };
 }

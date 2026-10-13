@@ -35,6 +35,34 @@ beforeEach(async () => {
 });
 
 describe("expanded agent overview", () => {
+  it("keeps unwatched project workers in Overview and follows roster/support invalidations", async () => {
+    const rosters = await import("../src/core/projectAgentsCache.js");
+    const pin = agent("project-pin");
+    const worker = agent("project-worker", { watched: false, conversation_id: "worker-conversation" });
+    await cache.writeCached(rosterAddress, { kind: "project", agents: [pin] });
+    await rosters.rememberProjectAgentsSupport(scope.deviceId, { agents: { projectWorkers: true } });
+    const address = rosters.projectAgentsAddress(scope.deviceId, rosterAddress.entityId);
+    const roster = { entity_id: rosterAddress.entityId, pinned_agent_id: pin.id, agents: [pin, worker] };
+    await cache.writeCached(address, roster);
+    await cache.writeCached(threadAddress("worker-conversation"), { items: [message(1, "agent", "Unwatched work")] });
+    const paints = [];
+    const reader = overview.createAgentOverview({ scope, projectId: "project-1",
+      sources: () => [{ slot: "current", kind: "project", entityId: rosterAddress.entityId,
+        section: "project", sectionName: "Project agents", address: rosterAddress }],
+      onRows: (rows) => paints.push(rows) });
+    try {
+      reader.open();
+      await vi.waitFor(() => expect(paints.at(-1)?.map((row) => row.id)).toContain(worker.id));
+      expect(paints.at(-1).find((row) => row.id === worker.id)).toMatchObject({ watching: false, snippet: "Unwatched work" });
+      await cache.writeCached(address, { ...roster, agents: [pin, { ...worker, name: "Left worker" }] });
+      await vi.waitFor(() => expect(paints.at(-1)?.find((row) => row.id === worker.id)?.name).toBe("Left worker"));
+      await rosters.rememberProjectAgentsSupport(scope.deviceId, {});
+      await vi.waitFor(() => expect(paints.at(-1)?.map((row) => row.id)).toEqual([pin.id]));
+      await rosters.rememberProjectAgentsSupport(scope.deviceId, { agents: { projectWorkers: true } });
+      await vi.waitFor(() => expect(paints.at(-1)?.map((row) => row.id)).toContain(worker.id));
+    } finally { reader.close(); }
+  });
+
   it("groups a project's cached agents with its populated workspaces by latest agent message", async () => {
     const projectAddress = rowAddress("run-overview");
     await cache.writeCached(projectAddress, { kind: "project", agents: [agent("project-agent", { name: "Project agent" })] });

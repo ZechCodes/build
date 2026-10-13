@@ -209,3 +209,26 @@ The unchanged API contract suite also exited 0 (45 tests), including reachable
 newest-activity notice pages and typed result round trips. Clippy with warnings
 denied and formatting exited 0 after splitting two inherited test functions
 into assertion helpers; no complexity exemption or ratchet count changed.
+
+
+W3 final gates (2026-10-12), all under `nice -n 10`, judged by their actual
+exit codes: full `cargo test` **0** (4,648 library tests passed, 9 ignored;
+`api_contract` 45 passed, `complexity_ratchet` 2 passed, all remaining
+integrations and documentation tests passed); Clippy `--all-targets -- -D
+warnings` **0**; `cargo fmt --check` **0**; locked vendored-library test **0**
+(169 passed, 4 ignored); Semgrep auto/error **0** (203 rules, 29 changed tracked
+Rust/JS targets, no findings); Gitleaks `--log-opts='origin/main..HEAD'` **0**;
+`git diff --check origin/main..HEAD` **0**. Transport's locked install and SPA's
+locked install, lint, full tests and build each exited **0** using pinned Node
+22.23.3/npm 12.0.2. Full SPA: 652 files, 10,229 tests passed, including the
+shared cached unread regression and isolated Chromium tests.
+
+Rust interop used the existing uv 0.12.15 executable directly on the gate's
+PATH after the unset mise shim caused one failed attempt; no global tool
+configuration changed. Earlier broad gates exposed the stale reverse-preview
+assertion, unreachable notice fixture and two test functions over the complexity
+cap. Their corrections passed the unchanged contract and ratchet tests and the
+complete rerun. A SPA attempt that encountered the initial regression-test
+compile error was stopped (exit 143), then the complete stable-source suite
+passed. Failed/setup attempts are retained with the passing evidence on #562.
+Origin/main remained b1e4643a through the final fetch, so no merge was needed.

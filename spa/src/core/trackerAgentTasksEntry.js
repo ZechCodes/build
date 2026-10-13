@@ -61,9 +61,9 @@ export function mountAgentTasks({ deviceId, projectId, onChanged } = {}) {
 
     /** This agent's tasks as surface entries, or none at all — which is what
      *  keeps the pill away from an agent holding and tracking nothing. */
-    entriesFor(agentId) {
+    entriesFor(agentId, working = false) {
       if (!named || !agentId) return null;
-      const entries = agentTaskEntries(state.tasks, agentId);
+      const entries = agentTaskEntries(state.tasks, agentId, { working, deviceId, projectId });
       return entries.length ? entries : null;
     },
     dispose() {

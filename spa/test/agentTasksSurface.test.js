@@ -139,3 +139,66 @@ describe("the viewer it opens", () => {
     viewer.dispose();
   });
 });
+
+
+describe("Blocked tasks on the rail (#563)", () => {
+  const prerequisite = { task_id: "task-blocker-12", number: 12, title: "Prepare API", state: "open", status: "ready", resolved: false };
+  const waiting = mine({ dependencies: { blocked: true, waiting_on: [prerequisite] }, status: "in_progress" });
+  const surfaces = () => ({ tasks: agentTaskEntries([waiting], ME, { working: true }) });
+
+  it("marks Blocked without counting it as working", () => {
+    expect(surfaceStateMark(TASKS_ENTRY_KIND, "blocked")).toEqual({ mark: "blocked", label: "Blocked" });
+    expect(surfacePills(surfaces())[0].count).toBe(0);
+    expect(surfaceMenuOptions(surfaces())[0].description).toBe("");
+  });
+
+  it("names the unresolved blocker with its title and a navigable link", () => {
+    document.body.innerHTML = `<div class="surface-host"></div>`;
+    const host = document.querySelector(".surface-host");
+    const viewer = mountSurfaceViewer(host, TASKS_ENTRY_KIND, {});
+    viewer.set(surfaces());
+    expect(host.textContent).toContain("Waiting on #12");
+    const blocker = host.querySelector(".surface-task-blockers a");
+    expect(blocker.title).toBe("Prepare API");
+    expect(blocker.getAttribute("href")).toContain("task-blocker-12");
+    expect(host.querySelector(".surface-row-stat").textContent).toBe("Blocked");
+    viewer.dispose();
+  });
+});
+
+
+describe("readiness groups on the task rail (#563)", () => {
+  it("shows Working, Assigned and Blocked headings in order, hides empty groups and keeps history folded", () => {
+    document.body.innerHTML = `<div class="surface-host"></div>`;
+    const host = document.querySelector(".surface-host");
+    const viewer = mountSurfaceViewer(host, TASKS_ENTRY_KIND, {});
+    const readiness = { blocked: false, waiting_on: [] };
+    const tasks = [
+      mine({ number: 1, dependencies: readiness }),
+      mine({ number: 2, dependencies: readiness, deferred_assignment: { state: "queued" } }),
+      mine({ number: 3, dependencies: { blocked: true, waiting_on: [{ task_id: "b12", number: 12, title: "API", resolved: false }] } }),
+      mine({ number: 4, dependencies: readiness, status: "done" }),
+    ];
+    const show = (list) => viewer.set({ tasks: agentTaskEntries(list, ME, { working: true }) });
+    show(tasks);
+    const headings = () => [...host.querySelectorAll(".surface-task-group:not([hidden]) .surface-group-head")].map((head) => head.textContent);
+    expect(headings()).toEqual(["Working", "Assigned", "Blocked"]);
+    expect(host.querySelector(".surface-task-working .surface-row-stat").textContent).toBe("Working");
+    expect(host.querySelector("details").open).toBe(false);
+    show([...tasks, task({ number: 8, title: "Tracking the API", trackers: [ME], dependencies: readiness })]);
+    expect(host.querySelector(".surface-running").textContent).toContain("#8 Tracking the API");
+    show([tasks[2]]);
+    expect(headings()).toEqual(["Blocked"]);
+    viewer.dispose();
+  });
+});
+
+
+it("keeps an authoritative Blocked record legible when blocker digests are absent", () => {
+  document.body.innerHTML = `<div class="surface-host"></div>`;
+  const host = document.querySelector(".surface-host");
+  const viewer = mountSurfaceViewer(host, TASKS_ENTRY_KIND, {});
+  viewer.set({ tasks: agentTaskEntries([mine({ dependencies: { blocked: true } })], ME) });
+  expect(host.textContent).toContain("Waiting on prerequisites");
+  viewer.dispose();
+});

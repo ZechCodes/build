@@ -91,3 +91,17 @@ it("concurrent writers and a fresh module instance retain the newest capable kno
   const fresh = await import("../src/core/taskAssignmentFacts.js");
   expect((await fresh.readTaskAssignmentFacts("device", "project", "task")).dependencies.blocked).toBe(true);
 });
+
+it("consults knowledge established while an initially empty knowledge read was pending", async () => {
+  const ready = task(false);
+  const blocked = task(true, "2026-10-13T01:01:00Z");
+  const original = cache.readCached;
+  vi.spyOn(cache, "readCached").mockImplementationOnce(async (address) => {
+    const absent = await original(address);
+    await writes.catalogue(blocked);
+    await writes.catalogue({ ...blocked, dependencies: null });
+    return absent;
+  });
+  const { readTaskAssignmentFacts } = await import("../src/core/taskAssignmentFacts.js");
+  expect((await readTaskAssignmentFacts("device", "project", "task", ready)).dependencies.blocked).toBe(true);
+});

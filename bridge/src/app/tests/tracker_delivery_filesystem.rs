@@ -59,8 +59,7 @@ fn deferred_provisioning_excludes_workspace_lock_and_rename_until_settlement() {
         Err(crate::reclaim::BUSY.into())
     );
     let result = work.git.as_ref().map(DeferredGit::run);
-    app.finish_task_delivery(work.intent, work.git.as_ref(), result)
-        .unwrap();
+    app.finish_prepared_task_delivery(work, result).unwrap();
     app.workspace_set_locked(&json!({"workspace_id":workspace,"locked":true}))
         .unwrap();
     app.workspace_rename(&json!({"workspace_id":workspace,"name":"renamed"}))

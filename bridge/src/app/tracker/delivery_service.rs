@@ -1,5 +1,4 @@
 //! Client-independent assignment recovery. Resource work never holds the app lock.
-use super::deferred_delivery::TaskDeliveryWork;
 use crate::app::{off_the_workers, AppState, DeliveryRunner};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
@@ -48,14 +47,14 @@ fn delivery_step(weak: &Weak<Mutex<AppState>>) -> Option<Result<bool, String>> {
             let notices = app.pump_task_delivery_notices()?;
             (app.prepare_task_delivery()?, notices)
         };
-        let Some(TaskDeliveryWork { intent, git }) = work else {
+        let Some(work) = work else {
             return Ok(notices);
         };
-        let result = git.as_ref().map(crate::app::DeferredGit::run);
+        let result = work.git.as_ref().map(crate::app::DeferredGit::run);
         state
             .lock()
             .unwrap()
-            .finish_task_delivery(intent, git.as_ref(), result)?;
+            .finish_prepared_task_delivery(work, result)?;
         Ok(true)
     })();
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);

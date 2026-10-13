@@ -64,7 +64,7 @@ impl AppState {
             return Ok(page.pending || noticed);
         };
         let result = work.git.as_ref().map(DeferredGit::run);
-        self.finish_task_delivery(work.intent, work.git.as_ref(), result)?;
+        self.finish_prepared_task_delivery(work, result)?;
         Ok(true)
     }
 
@@ -138,16 +138,26 @@ impl AppState {
             .map(Some)
     }
 
-    pub(in crate::app) fn finish_task_delivery(
+    /// Background work owns its own filesystem claim. Immediate delivery is
+    /// already counted and released by the ordinary RPC deferred-job path.
+    pub(in crate::app) fn finish_prepared_task_delivery(
+        &mut self,
+        work: TaskDeliveryWork,
+        result: Option<Result<Value, String>>,
+    ) -> Result<(), String> {
+        // Settlement still holds the app mutex, including every error path.
+        if work.git.is_some() {
+            self.active_deferred_filesystem_jobs -= 1;
+        }
+        self.finish_task_delivery(work.intent, work.git.as_ref(), result)
+    }
+
+    pub(super) fn finish_task_delivery(
         &mut self,
         mut intent: DeliveryIntent,
         git: Option<&DeferredGit>,
         result: Option<Result<Value, String>>,
     ) -> Result<(), String> {
-        // Settlement still holds the app mutex, including every error path.
-        if git.is_some() {
-            self.active_deferred_filesystem_jobs -= 1;
-        }
         let id = intent.id.clone();
         let finished = self.finish_delivery_steps(&mut intent, git, result);
         self.task_delivery_in_flight.remove(&id);

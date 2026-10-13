@@ -420,6 +420,10 @@ function connectionFailed(deviceId, error) {
   // A retry refused by the existing security stop did not try a connection.
   // Keep the original refusal rather than relabeling it as an ordinary outage.
   if (existingDeviceLifecycle(deviceId)?.snapshot().securityStop) return;
+  recordConnectionDiagnostic(`${deviceId}:dial`, "dial-failed", {
+    reason: reasonOf(error),
+    status: error?.status ?? null,
+  });
   closeRendezvous(deviceId);
   if (error?.securityCritical) refuseDeviceConnection(deviceId, error.message);
   else blockCurrentDevice(deviceId, reasonOf(error));

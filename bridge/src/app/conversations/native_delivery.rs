@@ -158,6 +158,7 @@ impl AppState {
             }
             Ok(serde_json::Value::Null)
         })?;
+        self.consume_task_completion_operation(entity_id, agent_id, operation_id);
         Ok(())
     }
 }

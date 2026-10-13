@@ -379,16 +379,7 @@ pub(in crate::app) fn deliver(
             eprintln!("record legacy delivery status {owner}/{agent_id}: {error}");
         }
     }
-    if let Some(operation_id) = turn.operation_id.as_deref() {
-        if session.turn_receipt_support() == TurnReceiptSupport::Sent {
-            if let Err(error) = app.record_operation_delivery_status(
-                operation_id,
-                crate::thread::MessageDeliveryStatus::Sent,
-            ) {
-                eprintln!("record delivery status {operation_id}: {error}");
-            }
-        }
-    }
+    record_sent_operation_delivery(&mut app, turn, session.turn_receipt_support());
     if still_pumping_instance(&app, &key, &session, &instance) {
         let was_working = app
             .entity_agents(owner)
@@ -407,6 +398,25 @@ pub(in crate::app) fn deliver(
         }
     }
     Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))))
+}
+
+fn record_sent_operation_delivery(
+    app: &mut AppState,
+    turn: &PendingAgentTurn,
+    support: TurnReceiptSupport,
+) {
+    if support != TurnReceiptSupport::Sent {
+        return;
+    }
+    let Some(operation_id) = turn.operation_id.as_deref() else {
+        return;
+    };
+    match app
+        .record_operation_delivery_status(operation_id, crate::thread::MessageDeliveryStatus::Sent)
+    {
+        Ok(()) => app.consume_task_completion_operation(&turn.owner, &turn.agent_id, operation_id),
+        Err(error) => eprintln!("record delivery status {operation_id}: {error}"),
+    }
 }
 
 /// Which of the router's options the user tapped, named either by id or by

@@ -207,6 +207,8 @@ pub(in crate::app) fn event_counts_as_unread(event: &crate::tracker::TaskEvent) 
         | Kind::Blocked
         | Kind::Unblocked
         | Kind::Dispatched
+        | Kind::DispatchDeferred
+        | Kind::DispatchFailed
         | Kind::Tracked
         | Kind::Untracked
         | Kind::Watched

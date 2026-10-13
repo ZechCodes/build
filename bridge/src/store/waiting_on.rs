@@ -67,7 +67,7 @@ impl Store {
         events: &[TaskEvent],
         waiting_on: &[String],
     ) -> Result<Task, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let number = super::tracker::next_task_number(tx, &draft.project_path)?;
             let task = Task { number, ..draft };
             super::tracker::write_tracker_task(tx, &task)?;
@@ -93,7 +93,7 @@ impl Store {
         actor: &Actor,
         now: &str,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let task = require_task(tx, project, task_id)?;
             graph::edit(tx, &task, add, remove, actor, now)
         })
@@ -110,7 +110,7 @@ impl Store {
         remove: &[String],
         actor: &Actor,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             require_task(tx, &task.project_path, &task.id)?;
             super::reviews::lifecycle::save_activity_in_tx(
                 tx,
@@ -129,7 +129,7 @@ impl Store {
     /// One bounded fan-out page, including its cursor and transition receipts.
     /// Repeating after restart never repeats a transition already committed.
     pub fn reconcile_waiting_on(&self, limit: usize) -> Result<WaitingOnPage, StoreError> {
-        self.in_transaction(|tx| reconciliation::page(tx, limit.clamp(1, 100)))
+        self.in_waiting_on_transaction(|tx| reconciliation::page(tx, limit.clamp(1, 100)))
     }
 
     /// Browser invalidations are separate from the durable transition outbox

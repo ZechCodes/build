@@ -291,6 +291,31 @@ CREATE TABLE IF NOT EXISTS tracker_dependency_changes (
     task_id TEXT PRIMARY KEY REFERENCES tracker_tasks(id) ON DELETE CASCADE
 );
 
+-- W2: only explicit assignments insert authority, never migrated history.
+CREATE TABLE IF NOT EXISTS tracker_delivery_intents (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tracker_tasks(id) ON DELETE CASCADE,
+    project_key TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    operation_id TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    record TEXT NOT NULL,
+    UNIQUE(task_id, generation)
+);
+CREATE INDEX IF NOT EXISTS tracker_deliveries_ready
+    ON tracker_delivery_intents(state);
+CREATE UNIQUE INDEX IF NOT EXISTS tracker_deliveries_current
+    ON tracker_delivery_intents(task_id) WHERE state <> 'cancelled';
+CREATE TABLE IF NOT EXISTS tracker_delivery_notices (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tracker_tasks(id) ON DELETE CASCADE,
+    project_key TEXT NOT NULL,
+    state TEXT NOT NULL,
+    record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tracker_delivery_notices_ready
+    ON tracker_delivery_notices(state);
+
 -- One task review names one workspace. Snapshots are separate rows so adding
 -- one never rewrites older metadata. Git bodies and patches stay in Git.
 CREATE TABLE IF NOT EXISTS reviews (

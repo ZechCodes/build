@@ -15,7 +15,7 @@ impl Store {
         bindings: &[ReviewBranchBinding],
         actor: &Actor,
     ) -> Result<Review, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut header = pull_requests::require_pull_request(tx, task_id)?;
             check_version(&header, expected_version)?;
             let metadata = header.pull_request.as_ref().expect("PR metadata checked");
@@ -54,7 +54,7 @@ impl Store {
         expected_review_version: Option<u64>,
         now: &str,
     ) -> Result<(Task, Vec<TaskEvent>), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             save_activity_in_tx(
                 tx,
                 task,
@@ -75,7 +75,7 @@ impl Store {
         expected_version: u64,
         comment: &TaskComment,
     ) -> Result<Review, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let task = require_task(tx, task_id)?;
             let header = pull_requests::require_pull_request(tx, task_id)?;
             check_version(&header, expected_version)?;

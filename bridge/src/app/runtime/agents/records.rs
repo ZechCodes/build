@@ -702,6 +702,15 @@ impl AppState {
         agent_id: &str,
         working_since: Option<String>,
     ) {
+        let starts_turn = working_since.is_some()
+            && self
+                .entity_agents(owner)
+                .ok()
+                .and_then(|agents| agents.by_id(agent_id))
+                .is_some_and(|agent| agent.working_since.is_none());
+        if starts_turn {
+            self.begin_task_completion_turn(agent_id);
+        }
         let unchanged = self
             .entity_agents(owner)
             .ok()

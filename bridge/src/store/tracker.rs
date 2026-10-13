@@ -130,7 +130,7 @@ impl Store {
         draft: Task,
         events: &[TaskEvent],
     ) -> Result<Task, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let number = next_task_number(tx, &draft.project_path)?;
             let task = Task { number, ..draft };
             write_tracker_task(tx, &task)?;
@@ -151,7 +151,7 @@ impl Store {
         comments: &[TaskComment],
         events: &[TaskEvent],
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             if comments.is_empty() && events.is_empty() {
                 return write_tracker_task(tx, task);
             }
@@ -182,7 +182,7 @@ impl Store {
     /// `updated_at` stays where it was: this is bookkeeping, not a change to
     /// the task, and must not reorder anybody's list.
     pub fn end_tracking_on_finished_tasks(&self) -> Result<usize, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let done: Option<String> = tx
                 .query_row(
                     "SELECT value FROM meta WHERE key = ?1",
@@ -220,7 +220,7 @@ impl Store {
     /// Migrate read-time identity and completion metadata without overwriting
     /// concurrent task lifecycle writes.
     pub fn backfill_tracker_task(&self, task: &Task) -> Result<Task, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let raw: Option<String> = tx
                 .query_row(
                     "SELECT record FROM tracker_tasks WHERE id = ?1",
@@ -428,7 +428,7 @@ impl Store {
         project_path: &str,
         release: impl Fn(&crate::reviews::records::Review) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let unfinished: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM review_openings WHERE project_key = ?1
                  AND state IN ('preparing', 'failed', 'interrupted')) OR EXISTS(
@@ -474,6 +474,7 @@ impl Store {
             for table in ["review_workspace_claims", "review_openings", "review_merge_intents"] {
                 tx.execute(&format!("DELETE FROM {table} WHERE project_key = ?1"), [project_path])?;
             }
+            super::delivery_intents::cancel_project(tx, project_path)?;
             tx.execute(
                 "DELETE FROM tracker_tasks WHERE project_key = ?1",
                 [project_path],
@@ -516,6 +517,7 @@ fn finished_tracked_tasks(tx: &Transaction) -> Result<Vec<Task>, StoreError> {
 
 pub(super) fn write_tracker_task(tx: &Transaction, task: &Task) -> Result<(), StoreError> {
     super::waiting_on::note_task_write(tx, task)?;
+    super::delivery_intents::note_task_write(tx, task)?;
     tx.execute(
         "INSERT INTO tracker_tasks
              (id, project_key, number, state, status, created_at, updated_at, record)
@@ -570,6 +572,7 @@ pub(super) fn append_activity(
         )?;
     }
     super::waiting_on::note_activity(tx, events)?;
+    super::delivery_intents::note_activity(tx, events)?;
     Ok(())
 }
 

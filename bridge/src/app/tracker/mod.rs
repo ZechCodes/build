@@ -14,8 +14,20 @@
 mod activity;
 mod agent_files;
 mod attachments;
+mod closure_context;
 mod comments;
+mod completion_authority;
+pub(in crate::app) use completion_authority::{
+    PendingTaskCompletionAuthority, TaskCompletionAuthority,
+};
+mod deferred_delivery;
+mod deferred_resources;
+mod delivery_acceptance;
+mod delivery_notices;
+mod delivery_service;
 mod dispatch;
+#[cfg(test)]
+pub(in crate::app) use deferred_delivery::DeferredDeliveryBoundary;
 mod edits;
 mod handoff;
 mod identities;

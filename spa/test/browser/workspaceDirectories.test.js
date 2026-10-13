@@ -176,8 +176,8 @@ for (const warmRunCache of [false, true]) {
       await page.waitForFunction(async () => {
         const { cache } = window.__layoutModules;
         const address = { deviceId: "directory-refresh", entityId: "workspace-run" };
-        const [status, log] = await Promise.all([cache.readCached({ ...address, kind: "status" }), cache.readCached({ ...address, kind: "log" })]);
-        return Boolean(status && log);
+        const [status, log, unpushed] = await Promise.all(["status", "log", "unpushed"].map((kind) => cache.readCached({ ...address, kind })));
+        return Boolean(status && log && unpushed && !status.value.stale && !log.value.stale);
       });
       await page.locator('[data-directory="b"]').click();
       await page.locator('[data-surface="b"] .crail-host').waitFor();
@@ -189,6 +189,9 @@ for (const warmRunCache of [false, true]) {
       }, warmRunCache);
       await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));
       await page.locator('[data-directory="a"]').waitFor({ state: "detached" });
+      // Only the deliberately emptied cache guarantees a pull. Let that miss
+      // reach the reader before publishing, so this case stays cold on startup.
+      if (!warmRunCache) await page.waitForFunction(() => window.__calls.some((call) => call.method === "git.log" && call.params.source_id === "b" && call.params.entity_id === "workspace-run"), null, { timeout: 3000 });
       // Observe the new cache subscription, rather than a conditional startup
       // RPC. Publish a second log after the first paint to exercise live writes.
       for (const hash of ["b".repeat(40), "c".repeat(40)]) {

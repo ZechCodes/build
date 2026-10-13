@@ -11,6 +11,7 @@
 // which comments asked, the earlier rule stands: In review, or any unread
 // agent comment on a watched task.
 
+import { taskIsBlocked } from "./trackerTaskReadiness.js";
 import { entityIdOf } from "./entityId.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { latestTaskMark } from "./trackerUnread.js";
@@ -125,7 +126,7 @@ const reasonsOf = (task, hasUnreadComment, askedOnly) => {
   const reasons = [];
   if (!askedOnly && task?.status === "in_review") reasons.push(ATTENTION_REASONS.inReview);
   if (hasUnreadComment) reasons.push(ATTENTION_REASONS.inbox);
-  if (task?.assignee?.kind === "user") reasons.push(ATTENTION_REASONS.assigned);
+  if (task?.assignee?.kind === "user" && !taskIsBlocked(task)) reasons.push(ATTENTION_REASONS.assigned);
   return reasons;
 };
 

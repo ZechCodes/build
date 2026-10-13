@@ -1,3 +1,4 @@
+import { agentIsRunning } from "./agentRunning.js";
 // The agent rail: the conversation surface for whatever the view area is
 // standing in.
 //
@@ -3430,7 +3431,7 @@ function mountRailOnContext(host, context, swap) {
   const surfacesWithTasks = (surfaces) => {
     const focusId = agentInFocus()?.id || null;
     const merged = { ...(surfaces || {}) };
-    const tasks = tasksBlock?.entriesFor(focusId);
+    const tasks = tasksBlock?.entriesFor(focusId, agentIsRunning(agentInFocus()));
     if (tasks) merged[TASKS_ENTRY_KIND] = tasks;
     // The Build agents this agent made (#216): another source again, the
     // project's cached rows, drawn in the Agents panel beside the sub-agents.

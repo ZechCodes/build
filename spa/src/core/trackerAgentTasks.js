@@ -1,7 +1,7 @@
 // What one agent's tasks are, grouped the way a reader of its conversation
 // wants them.
 //
-// Four groups, in this order: what it is working on, what it is holding, what
+// What it is working on, what it is holding, what is blocked, what
 // it has finished, and what it is only watching. The order is the reader's
 // question order — "what is this agent doing" first, "what did it do" last —
 // and the two at the bottom are collapsed because they are history and
@@ -17,6 +17,8 @@
 //
 // No DOM, no app imports.
 
+import { taskActivityGroup, taskHasReadiness, tasksByPriority, unresolvedTaskBlockers } from "./trackerTaskReadiness.js";
+
 /** The column a task is being worked in. The one status that means "this is
  *  happening now" rather than "this is somewhere on the board". */
 const IN_PROGRESS = "in_progress";
@@ -28,6 +30,7 @@ const DONE = "done";
 
 export const WORKING_GROUP = "working";
 export const HOLDING_GROUP = "holding";
+export const BLOCKED_GROUP = "blocked";
 export const FINISHED_GROUP = "finished";
 export const WATCHING_GROUP = "watching";
 
@@ -62,12 +65,17 @@ export const isFinished = (task) => task?.state === "closed" || task?.status ===
  * would double every row. Watching is therefore what this agent follows and
  * does NOT hold.
  */
-export function groupOf(task, agentId) {
-  if (assignedTo(task, agentId)) {
-    if (isFinished(task)) return FINISHED_GROUP;
-    return task?.status === IN_PROGRESS ? WORKING_GROUP : HOLDING_GROUP;
-  }
+export function groupOf(task, agentId, { working = false } = {}) {
+  if (assignedTo(task, agentId)) return heldGroupOf(task, working);
   return tracks(task, agentId) ? WATCHING_GROUP : null;
+}
+
+function heldGroupOf(task, working) {
+  if (isFinished(task)) return FINISHED_GROUP;
+  if (!taskHasReadiness(task)) return task.status === IN_PROGRESS ? WORKING_GROUP : HOLDING_GROUP;
+  const activity = taskActivityGroup(task, working);
+  if (activity === "blocked") return BLOCKED_GROUP;
+  return activity === "working" ? WORKING_GROUP : HOLDING_GROUP;
 }
 
 /** When a task last moved, as a number. A task with no readable stamp
@@ -109,7 +117,9 @@ export const byRecency = (left, right) =>
 // reader.
 
 export const TASK_SURFACE_IN_PROGRESS = "in_progress";
+export const TASK_SURFACE_WORKING = "working";
 export const TASK_SURFACE_ASSIGNED = "assigned";
+export const TASK_SURFACE_BLOCKED = "blocked";
 export const TASK_SURFACE_TRACKED = "tracked";
 export const TASK_SURFACE_IN_REVIEW = "in_review";
 export const TASK_SURFACE_DONE = "done";
@@ -120,8 +130,10 @@ const IN_REVIEW = "in_review";
 /** The order the rows read in: what it is doing, what it is holding, what it
  *  is only following, then the three it is finished with. */
 const SURFACE_STATE_ORDER = [
+  TASK_SURFACE_WORKING,
   TASK_SURFACE_IN_PROGRESS,
   TASK_SURFACE_ASSIGNED,
+  TASK_SURFACE_BLOCKED,
   TASK_SURFACE_TRACKED,
   TASK_SURFACE_IN_REVIEW,
   TASK_SURFACE_DONE,
@@ -135,45 +147,61 @@ const SURFACE_STATE_ORDER = [
  * a task closed from Backlog is finished, and calling it "assigned" would
  * put work nobody is doing at the top of the list.
  */
-function surfaceStateOf(task, agentId) {
-  const group = groupOf(task, agentId);
+function surfaceStateOf(task, agentId, options) {
+  const group = groupOf(task, agentId, options);
   if (group === null) return null;
   if (group === WATCHING_GROUP) return TASK_SURFACE_TRACKED;
-  if (task?.state === "closed") return TASK_SURFACE_CLOSED;
-  if (task?.status === DONE) return TASK_SURFACE_DONE;
-  if (task?.status === IN_REVIEW) return TASK_SURFACE_IN_REVIEW;
-  return group === WORKING_GROUP ? TASK_SURFACE_IN_PROGRESS : TASK_SURFACE_ASSIGNED;
+  const history = historyStateOf(task);
+  if (history) return history;
+  if (group === BLOCKED_GROUP) return TASK_SURFACE_BLOCKED;
+  return activityStateOf(task, group);
+}
+
+function activityStateOf(task, group) {
+  if (group !== WORKING_GROUP) return TASK_SURFACE_ASSIGNED;
+  return taskHasReadiness(task) ? TASK_SURFACE_WORKING : TASK_SURFACE_IN_PROGRESS;
+}
+
+function historyStateOf(task) {
+  if (task.state === "closed") return TASK_SURFACE_CLOSED;
+  if (task.status === DONE) return TASK_SURFACE_DONE;
+  return task.status === IN_REVIEW ? TASK_SURFACE_IN_REVIEW : null;
 }
 
 /**
  * One agent's tasks as surface entries: flat, ordered, ready to draw.
  *
- * Most recently moved first within each standing, because this is an activity
- * surface and what moved is the question it answers.
+ * Readiness-aware lists keep priority first and source order within ties.
+ * Older records retain the established most-recently-moved order.
  *
  * Deliberately NOT the raw task record: a task's own `state` is open or
  * closed, and the surfaces layer reads `state` as the mark that decides where
  * a row sits. Two meanings on one field is a bug waiting for somebody to read
  * the wrong one.
  */
-export function agentTaskEntries(tasks, agentId) {
-  const entries = [];
-  for (const task of tasks || []) {
-    const state = surfaceStateOf(task, agentId);
-    if (!state) continue;
-    entries.push({
+export function agentTaskEntries(tasks, agentId, options = {}) {
+  const enabled = (tasks || []).some(taskHasReadiness);
+  const orderedTasks = enabled ? tasksByPriority(tasks) : tasks;
+  return (orderedTasks || []).map((task, index) => ({ task, index, state: surfaceStateOf(task, agentId, options) }))
+    .filter(({ state }) => state)
+    .sort((left, right) => surfaceEntryOrder(left, right, enabled))
+    .map(({ task, state }) => ({
       id: task.id,
       state,
       number: task.number ?? null,
       title: task.title || "",
       status: task.status || "",
       updated_at: task.updated_at || null,
-    });
-  }
-  return entries.sort(
-    (left, right) =>
-      SURFACE_STATE_ORDER.indexOf(left.state) - SURFACE_STATE_ORDER.indexOf(right.state) || byRecency(left, right),
-  );
+      ...(taskHasReadiness(task) ? { readinessAware: true, projectId: options.projectId || task.project_id, deviceId: options.deviceId || null } : {}),
+      ...(state === TASK_SURFACE_BLOCKED ? { blockers: unresolvedTaskBlockers(task) } : {}),
+    }));
+}
+
+function surfaceEntryOrder(left, right, enabled) {
+  const standing = SURFACE_STATE_ORDER.indexOf(left.state) - SURFACE_STATE_ORDER.indexOf(right.state);
+  if (standing) return standing;
+  if (!enabled) return byRecency(left.task, right.task);
+  return left.index - right.index;
 }
 
 /** The open tasks this agent holds — not finished, not merely tracked. What a
@@ -181,5 +209,5 @@ export function agentTaskEntries(tasks, agentId) {
 export const agentOpenTaskCount = (tasks, agentId) =>
   (tasks || []).filter((task) => {
     const group = groupOf(task, agentId);
-    return group === WORKING_GROUP || group === HOLDING_GROUP;
+    return [WORKING_GROUP, HOLDING_GROUP, BLOCKED_GROUP].includes(group);
   }).length;

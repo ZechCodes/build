@@ -26,7 +26,7 @@ export async function mountProjectFlow(page, basePath, options = {}) {
     <aside id="agent-rail" aria-label="Agents"></aside></div><div id="console-region"></div></div></div>`,
   { basePath, styles: "#shell{--inbox-space:0px;height:100vh} #toolbar{padding:12px 20px} .project-terminal-screen{padding:16px;white-space:pre-wrap;font-size:13px}" });
   await loadChatOverviewModules(page, basePath, {
-    project: "src/views/projectView.js", shell: "src/core/shell.js", contexts: "src/core/deviceContexts.js",
+    project: "src/views/projectView.js", workspace: "src/views/workspaceView.js", shell: "src/core/shell.js", contexts: "src/core/deviceContexts.js",
     events: "src/core/changeEvents.js", directory: "src/core/directoryScope.js", scope: "src/core/cacheScope.js",
     changesSupport: "src/core/projectChangesSupport.js", terminalSupport: "src/core/projectTerminalSupport.js",
     filesSupport: "src/core/projectFilesSupport.js", roster: "src/core/projectAgentsCache.js",
@@ -40,11 +40,15 @@ export async function mountProjectFlow(page, basePath, options = {}) {
 }
 
 async function seedFlow({ supported, greeting, theme }) {
-  const { app, cache, feed, contexts, events, directory, scope, project, shell, merge,
+  const { app, cache, feed, contexts, events, directory, scope, project, workspace, shell, merge,
     changesSupport, terminalSupport, filesSupport, roster, terminalRpc } = window.__layoutModules;
   document.documentElement.dataset.theme = theme;
   document.head.insertAdjacentHTML("afterbegin", '<meta name="viewport" content="width=device-width, initial-scale=1">');
   const patch = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-old wording\n+shared source wording\n";
+  const patchOf = (path, before, after) => {
+    const lines = (text, prefix) => text.trimEnd().split("\n").filter(Boolean).map((line) => `${prefix}${line}\n`).join("");
+    return `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n${lines(before, "-")}${lines(after, "+")}`;
+  };
   const agent = (id, name, purpose) => ({ id, name, topic: name, project_role: purpose,
     conversation_id: `conversation-${id}`, provider: "codex", ordinal: purpose === "coordinator" ? 1 : 2,
     state: "live", watched: true, working: false, unread_count: 0 });
@@ -73,10 +77,34 @@ async function seedFlow({ supported, greeting, theme }) {
     window.__flowDevices[deviceId] = { supported, record,
       roster: { entity_id: "project-owner", pinned_agent_id: pin.id, agents: [sibling, pin] },
       files: new Map(sources.map((source) => [source.id, `# ${label} ${source.id} source\n`])),
+      staged: new Map(), committed: new Map(),
       statuses: new Map(sources.filter((source) => source.is_git).map((source) => [source.id, status(source.id)])),
       terminals: new Map(sources.map((source) => [source.id, []])),
+      child: merge.stampWorkspace({ id: "child", workspace_id: "child", project_id: "p", entity_id: "child-owner",
+        name: "Local commit workspace", root: "/fixture/child", status: "ready", directories: [
+          { id: "child-code", source_id: "code", name: "Child Code", path: "/fixture/child/code", is_git: true, status: "ready" },
+          { id: "child-assets", source_id: "assets", name: "Child Assets", path: "/fixture/child/assets", is_git: false, status: "ready" },
+        ] }, deviceId),
     };
   }
+  const childFile = { ...dirtyFile, path: "CHILD.md", content_key: "child-content-key" };
+  const childStatus = { ...status("code"), branch: "build/local-commit-workspace", status_key: "child-status-key", files: [childFile] };
+  const childRefs = { current: { name: childStatus.branch, kind: "branch" }, refs: [
+    { name: childStatus.branch, full_ref: `refs/heads/${childStatus.branch}`, kind: "branch", current: true },
+  ] };
+  const childPatch = patchOf("CHILD.md", "previous child wording\n", "child checkout wording\n");
+  const childReply = (held, method) => {
+    const replies = {
+      "workspace.get": held.child,
+      "workspace.git_init_options": { source: { is_git: true }, workspace: { is_git: true } },
+      "git.status": childStatus, "git.refs": childRefs,
+      "git.log": { commits: [{ ...recentCommit, hash: "c".repeat(40), short: "ccccccc", subject: "Child isolated commit" }] },
+      "git.diff": { patch: childPatch, files: [{ ...childFile, patch: childPatch, truncated: false }] },
+      "git.unpushed": { commits: [] }, "term.list": { tabs: [] },
+    };
+    if (!Object.hasOwn(replies, method)) throw new Error(`Unexpected child fixture RPC: ${method}`);
+    return replies[method];
+  };
   const supportFor = (enabled) => enabled ? ["fs.projectSources", "fs.projectSourcePath", "git.projectSources",
     "term.projectSources", "changes.projectSources", "agents.projectWorkers", "tasks.assignProjectAgent",
     "sources.syncBase", "sources.syncBasePath"] : [];
@@ -87,6 +115,10 @@ async function seedFlow({ supported, greeting, theme }) {
       throw new Error("Legacy protocol fixture refuses project source and worker fields");
     }
     const sourceId = params.source_id || "code";
+    if (params.workspace_id) {
+      if (params.workspace_id !== "child") throw new Error("Unknown fixture workspace");
+      return childReply(held, method);
+    }
     if (method === "session.hello") return { api_version: held.supported ? "3.22.0" : "3.20.0", capabilities: supportFor(held.supported), push_events: false };
     if (method === "models.list") return { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] };
     if (method === "agent.list") {
@@ -118,11 +150,29 @@ async function seedFlow({ supported, greeting, theme }) {
       return { task, dispatch: { agent_id: params.assignee.agent_id, conversation_id: "conversation-project-created" } };
     }
     if (method === "git.status") return held.statuses.get(sourceId);
-    if (method === "git.log") return { commits: sourceId === "unborn" ? [] : [recentCommit] };
-    if (method === "git.diff") return { patch, files: [{ ...dirtyFile, patch, truncated: false }] };
+    if (method === "git.log") return { commits: [held.committed.get(sourceId)?.commit, sourceId === "unborn" ? null : recentCommit].filter(Boolean) };
+    if (method === "git.diff") {
+      const body = held.files.get(sourceId);
+      const currentPatch = sourceId === "code" ? patchOf("README.md", `# ${held.record.name} code source\n`, body) : patch;
+      return { patch: currentPatch, files: [{ ...dirtyFile, patch: currentPatch, truncated: false }] };
+    }
+    if (method === "git.show") {
+      const committed = held.committed.get(sourceId);
+      if (!committed || committed.commit.hash !== params.hash) throw new Error("Unknown fixture commit");
+      return { ...committed.commit, patch: committed.patch, truncated: false };
+    }
     if (method === "git.refs") return { current: { name: "main", kind: "branch" }, refs: [{ name: "main", full_ref: "refs/heads/main", kind: "branch", current: true }] };
-    if (method === "git.stage") return {};
+    if (method === "git.stage") {
+      held.staged.set(sourceId, Object.fromEntries(params.paths.map((path) => [path, held.files.get(sourceId)])));
+      return {};
+    }
     if (method === "git.commit") {
+      const staged = held.staged.get(sourceId);
+      if (!staged) throw new Error("Fixture commit requires staged bytes");
+      held.committed.set(sourceId, { files: { ...staged },
+        commit: { ...recentCommit, hash: "e".repeat(40), short: "eeeeeee", subject: params.message },
+        patch: patchOf("README.md", `# ${held.record.name} ${sourceId} source\n`, staged["README.md"]),
+      });
       held.statuses.set(sourceId, status(sourceId, false));
       return { status: held.statuses.get(sourceId) };
     }
@@ -178,7 +228,10 @@ async function seedFlow({ supported, greeting, theme }) {
     await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, [held.record]);
     await cache.writeCached({ deviceId, entityId: "project-owner", kind: "project-agents" }, held.roster);
     await cache.writeCached({ deviceId, entityId: "project-owner", kind: "row" }, { kind: "project", entity_id: "project-owner", project_id: "p", agents: [pin] });
-    await cache.writeCached({ deviceId, entityId: "", kind: "workspaces" }, [merge.stampWorkspace({ id: "child", workspace_id: "child", project_id: "p", entity_id: "child-owner", name: "Local commit workspace", status: "ready" }, deviceId)]);
+    await cache.writeCached({ deviceId, entityId: "", kind: "workspaces" }, [held.child]);
+    await cache.writeCached({ deviceId, entityId: "child-owner", kind: "status" }, childStatus);
+    await cache.writeCached({ deviceId, entityId: "child-owner", kind: "log" }, childReply(held, "git.log"));
+    await cache.writeCached({ deviceId, entityId: "child-owner", kind: "refs" }, childRefs);
     await cache.writeCached({ deviceId, entityId: "child-owner", kind: "row" }, { kind: "workspace", entity_id: "child-owner", project_id: "p", workspace_id: "child", agents: [agent("child-agent", "Isolated editor", null)] });
     for (const person of held.roster.agents) await cache.writeCached({ deviceId, entityId: "project-owner", kind: "thread", sub: person.conversation_id },
       { items: [{ type: "message", data: { sequence: 1, role: "agent", body: `Cached ${held.record.name}: ${person.name}`, created_at: "2026-10-12T18:00:00Z" } }] });
@@ -206,7 +259,8 @@ async function seedFlow({ supported, greeting, theme }) {
     history.replaceState(null, "", window.__layoutModules.router.hashFromRoute(route));
     shell.standShell(route);
     if (route.name === "project") await project.renderProject();
-    else document.querySelector("#root").textContent = "Local commit workspace · Changes";
+    else if (route.name === "workspace") await workspace.renderWorkspace();
+    else throw new Error(`Unexpected fixture route: ${route.name}`);
   };
   // Used for production RPC and cache operations in the compatibility matrix.
   window.__flowDependencies = { scope, contexts };

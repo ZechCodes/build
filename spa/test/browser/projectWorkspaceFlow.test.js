@@ -13,6 +13,7 @@ const CHILD_PIN = '[data-bubble="project"][data-agent="project-owner"]';
 const SIBLING = '[data-bubble="agent"][data-agent="project-sibling"]';
 const CREATED = '[data-bubble="agent"][data-agent="project-created"]';
 const INPUT = ".thread-composer textarea";
+const SAVED_CONTENT = "# shared source wording\n";
 const callsTo = (page, method) => page.evaluate((method) => window.__flowCalls.filter((call) => call.method === method), method);
 
 async function selectAgent(page, selector) {
@@ -58,11 +59,17 @@ for (const width of [390, 1280]) {
       if (width === 390) await page.getByRole("button", { name: "Show files", exact: true }).click();
       await page.locator('[data-root="code"] .frow[data-path="README.md"]').dblclick();
       await page.locator('[data-file-mode="edit"]').click();
-      await page.locator(".file-editor").fill("# shared source wording\n");
+      await page.locator(".file-editor").fill(SAVED_CONTENT);
       await page.locator(".file-save").click();
       await page.waitForFunction(() => window.__flowCalls.some((call) => call.method === "fs.write"));
-      expect((await callsTo(page, "fs.write"))[0]).toMatchObject({ deviceId: "flow-device",
+      const write = (await callsTo(page, "fs.write"))[0];
+      expect(write).toMatchObject({ deviceId: "flow-device",
         params: { project_id: "p", source_id: "code", source_path: "/fixture/code", path: "README.md", expected_revision: "revision-1" } });
+      expect(Buffer.from(write.params.content_b64, "base64").toString("utf8")).toBe(SAVED_CONTENT);
+      const saved = await page.evaluate(() => window.__flowCall("flow-device", "fs.read", {
+        project_id: "p", source_id: "code", source_path: "/fixture/code", path: "README.md",
+      }));
+      expect(Buffer.from(saved.content_b64, "base64").toString("utf8")).toBe(SAVED_CONTENT);
       await page.locator('[data-tab="changes"]').click();
       await page.locator('[data-surface="code"] .csinput').fill("Commit the shared source edit");
       await page.locator('[data-surface="code"] .csbox-actions button').filter({ hasText: "Commit" }).click();
@@ -71,6 +78,16 @@ for (const width of [390, 1280]) {
         params: { project_id: "p", source_id: "code", source_path: "/fixture/code", paths: ["README.md"] } }]);
       expect(await callsTo(page, "git.commit")).toEqual([{ deviceId: "flow-device", method: "git.commit",
         params: { project_id: "p", source_id: "code", source_path: "/fixture/code", message: "Commit the shared source edit" } }]);
+      const bytes = await page.evaluate(() => {
+        const held = window.__flowDevices["flow-device"];
+        return { saved: held.files.get("code"), staged: held.staged.get("code"), committed: held.committed.get("code").files };
+      });
+      expect(bytes).toEqual({ saved: SAVED_CONTENT, staged: { "README.md": SAVED_CONTENT }, committed: { "README.md": SAVED_CONTENT } });
+      const committed = await page.evaluate(() => window.__flowCall("flow-device", "git.show", {
+        project_id: "p", source_id: "code", source_path: "/fixture/code", hash: "e".repeat(40),
+      }));
+      expect(committed.subject).toBe("Commit the shared source edit");
+      expect(committed.patch).toBe("diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# Build code source\n+# shared source wording\n");
       await page.locator('[data-directory="docs"]').click();
       await page.waitForFunction(() => document.querySelector('[data-surface="docs"]')?.textContent.includes("shared source wording"));
       await page.locator('[data-surface="docs"] .csinput').fill("Keep the Docs commit draft");
@@ -121,9 +138,20 @@ for (const width of [390, 1280]) {
       if (width === 390) await selectAgent(page, CREATED);
       await page.locator(INPUT).fill("Keep this worker draft on return");
 
-      // The Rust companion verifies real cut bytes and lifecycle admission.
-      // Here the cached child uses the production shell and exact rail host.
-      await page.evaluate(() => window.__flowNavigate({ name: "workspace", deviceId: "flow-device", projectId: "p", workspaceId: "child", agent: "child-agent" }));
+      // Mount the real child Changes view with colliding source IDs, so its
+      // checkout content must remain separate from the original sources.
+      await page.evaluate(() => window.__flowNavigate({ name: "workspace", deviceId: "flow-device", projectId: "p", workspaceId: "child", tab: "changes", sourceId: "code", agent: "child-agent" }));
+      await page.locator('[data-surface="code"] .workspace-refbar').waitFor();
+      expect(await page.locator('[data-directory="code"]').textContent()).toContain("Child Code");
+      expect(await page.locator('[data-surface="code"] .workspace-refbar').textContent()).toContain("build/local-commit-workspace");
+      if (width === 390) await page.getByRole("button", { name: "Show commits", exact: true }).click();
+      await page.locator('[data-surface="code"] [data-sel="uncommitted"]').click();
+      await page.waitForFunction(() => document.querySelector('[data-surface="code"]')?.textContent.includes("child checkout wording"));
+      expect(await page.locator('[data-surface="code"]').textContent()).toContain("CHILD.md");
+      expect((await callsTo(page, "git.diff")).filter((call) => call.params.workspace_id === "child")).toContainEqual({ deviceId: "flow-device", method: "git.diff",
+        params: { workspace_id: "child", source_id: "code", entity_id: "child-owner", paths: ["CHILD.md"] } });
+      await page.locator('[data-directory="assets"]').click();
+      expect(await page.locator('[data-surface="assets"]').textContent()).toContain("Child Assets has no Git repository");
       await page.locator('[data-agent="child-agent"]').waitFor();
       expect(await page.locator(CREATED).count()).toBe(0);
       expect(await page.locator(SIBLING).count()).toBe(0);
@@ -145,6 +173,9 @@ for (const width of [390, 1280]) {
       await page.locator(CREATED).waitFor();
       await page.locator(INPUT).waitFor();
       expect(await page.locator(INPUT).inputValue()).toBe("Keep this worker draft on return");
+      expect(await page.locator('[data-directory="code"]').textContent()).toContain("Code");
+      expect(await page.locator('[data-directory="docs"]').count()).toBe(1);
+      expect(await page.locator("#root").textContent()).not.toContain("child checkout wording");
       expect(await page.locator('[data-surface="docs"] .csinput').inputValue()).toBe("Keep the Docs commit draft");
       expect(await page.locator(".console-tab-name").allTextContents()).toEqual(["Code · Source shell", "Assets · Source shell"]);
       expect(await callsTo(page, "term.close")).toEqual([]);

@@ -63,6 +63,18 @@ beforeEach(async () => {
 });
 
 describe("late project console roster responses", () => {
+  it("retries a failed missing roster on a later cache update", async () => {
+    manager.listTerminals.mockRejectedValueOnce(new Error("socket lost"))
+      .mockResolvedValueOnce([{ term_id: "retried-term" }]);
+    await deleteCached([rosterAddress]); await flush();
+    expect(manager.listTerminals).toHaveBeenCalledTimes(1);
+    expect(await readCached(rosterAddress)).toBeUndefined();
+    await writeCached({ deviceId: "dev-1", entityId: "unrelated", kind: "tasks" }, []);
+    await flush();
+    expect(manager.listTerminals).toHaveBeenCalledTimes(2);
+    expect((await readCached(rosterAddress)).value.tabs).toEqual([{ term_id: "retried-term" }]);
+  });
+
   it("does not cache a source list response after the source moved", async () => {
     let finish;
     manager.listTerminals.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
@@ -138,6 +150,22 @@ describe("project terminal device authority", () => {
 afterEach(() => { panel?.dispose(); panel = null; });
 
 describe("project console pane authority", () => {
+  it("keeps its pending pane across connection transitions with unchanged cache", async () => {
+    panel.toggle(); await flush();
+    const pane = document.querySelector(".console-pane");
+    const before = document.getElementById("console-region").innerHTML;
+    expect(harness.starts).toHaveLength(1);
+    for (const status of ["connected", "disconnected", "connecting", "connected"]) {
+      harness.status = status;
+      for (const listener of harness.statusListeners) listener(status);
+      await flush();
+      expect(document.querySelector(".console-pane")).toBe(pane);
+      expect(document.getElementById("console-region").innerHTML).toBe(before);
+      expect(harness.starts).toHaveLength(1);
+    }
+    expect(harness.subscriptions).toBe(0);
+  });
+
   it("settles a connected status without continuously subscribing again", async () => {
     harness.status = "connected";
     for (const listener of harness.statusListeners) listener("connected");

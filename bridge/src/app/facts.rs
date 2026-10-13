@@ -32,14 +32,27 @@ pub(in crate::app) struct CheckoutSubject {
     /// The cache namespace the scope's own `git.*` verbs key under, so a
     /// pushed key is the key a pull would answer.
     namespace: Option<String>,
+    terminal_source: Option<crate::changes::ProjectSourceScope>,
 }
 
 impl CheckoutSubject {
+    fn terminal_scope(&self) -> super::runtime::terminals::TerminalScope {
+        super::runtime::terminals::TerminalScope {
+            root: self.root.clone(),
+            source: self.terminal_source.clone(),
+        }
+    }
+
     /// One original project source: its uncommitted work read as the
     /// primary checkout's is, keys in the namespace its `git.*` verbs use,
     /// and no Git at all for a plain folder.
     fn of_project_source(source: super::projects::ResolvedProjectSource) -> Self {
         let namespace = project_source_namespace(&source);
+        let terminal_source = crate::changes::ProjectSourceScope::new(
+            source.project_id.clone(),
+            source.source_id.clone(),
+            source.source_path.clone(),
+        );
         let diff = source.is_git.then(|| ReadSubject::Project {
             project_id: source.project_id,
             repo_path: source.root.clone(),
@@ -50,6 +63,7 @@ impl CheckoutSubject {
             base_branch: None,
             diff,
             namespace: Some(namespace),
+            terminal_source: Some(terminal_source),
         }
     }
 
@@ -192,7 +206,7 @@ fn locked_facts(
             .terminals
             .then(|| subjects.get(&request.entity_id))
             .flatten()
-            .map(|subject| json!({ "tabs": app.shell_tabs_at(&subject.root) })),
+            .map(|subject| json!({ "tabs": app.shell_tabs_for(&subject.terminal_scope()) })),
         ..EntityFacts::default()
     }
 }
@@ -416,6 +430,7 @@ impl AppState {
                         base_branch,
                     }),
                     namespace: None,
+                    terminal_source: None,
                 },
             );
         }
@@ -431,6 +446,7 @@ impl AppState {
                         key_namespace: None,
                     }),
                     namespace: None,
+                    terminal_source: None,
                 },
             );
             let Some(scan) = self.board.diff().external_scan_cache(&project.id) else {
@@ -447,6 +463,7 @@ impl AppState {
                             base_branch: project.base_branch.clone(),
                         }),
                         namespace: None,
+                        terminal_source: None,
                     },
                 );
             }

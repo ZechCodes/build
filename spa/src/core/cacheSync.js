@@ -35,6 +35,7 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { directoryCacheId } from "./directoryScope.js";
 import { trailingRead } from "./trailingRead.js";
 import { createSyncPhases } from "./syncPhases.js";
 import { createBackgroundStreams } from "./syncBackgroundStreams.js";
@@ -1420,6 +1421,7 @@ async function applyChanges(items, deviceId) {
 }
 
 async function applyItem(context, item) {
+  if (item.project_source) return applyProjectSourceItem(context, item);
   const entityId = String(item.entity_id || "");
   if (!entityId) return;
   if (entityId === BOARD_ENTITY) {
@@ -1430,6 +1432,64 @@ async function applyItem(context, item) {
     if (!scoped.active()) return;
     if (item[field]) await apply(scoped, entityId, item[field]);
   }
+}
+
+/** Source subscriptions are owned by their mounted panes; writes still go
+ * through the shared sync layer and the source's captured directory address. */
+export async function applyProjectSourceChanges(items, deviceId) {
+  const context = syncContext(contextFor(deviceId));
+  if (!context) return;
+  for (const item of items) {
+    if (!context.active()) return;
+    if (item.project_source) await applyProjectSourceItem(context, item);
+  }
+}
+
+async function applyProjectSourceItem(context, item) {
+  if (!bridgeCapabilities(context.deviceId).changes.projectSources) return;
+  const source = item.project_source;
+  const projects = await heldValue(context, "", "projects");
+  const project = (projects || []).find((row) => (row.id || row.project_id) === source.project_id);
+  const registered = (project?.sources || []).find((row) => row.id === source.source_id && row.path === source.source_path);
+  if (!registered || !context.active()) return;
+  const entityId = directoryCacheId(source);
+  if (item.git) await applySourceGit(context, entityId, item.git, source);
+}
+
+async function invalidateSourceHistory(context, entityId, status) {
+  const held = await heldValue(context, entityId, "status");
+  if (!held || status.status_key === held.status_key) return;
+  for (const kind of ["log", "refs"]) {
+    if (!context.active()) return;
+    const address = addressOf(context, entityId, kind);
+    notePush(address);
+    await mergeCached(address, (current) => context.active() ? staleDiffRecord(current) : null);
+  }
+}
+
+async function applySourceGit(context, entityId, git, source) {
+  if (git.status) await invalidateSourceHistory(context, entityId, git.status);
+  if (!context.active()) return;
+  for (const [kind, value] of [["status", git.status], ["unpushed", git.unpushed && unpushedRecord(git.unpushed)]]) {
+    if (!context.active()) return;
+    if (value) await writePushed(addressOf(context, entityId, kind), value);
+  }
+  if (!context.active()) return;
+  if (git.log) {
+    const address = addressOf(context, entityId, "log");
+    notePush(address);
+    await mergeCached(address, (current) => context.active() ? { ...windowedLog(current, git.log), stale: false } : null);
+  }
+  if (!context.active()) return;
+  await applySourceDiff(context, entityId, git.diff, source);
+}
+
+async function applySourceDiff(context, entityId, diff, source) {
+  if (diff) return writePushedDiff(context, entityId, diff, source);
+  if (diff !== null) return;
+  const address = addressOf(context, entityId, "diff");
+  notePush(address);
+  await mergeCached(address, (current) => context.active() ? staleDiffRecord(current) : null);
 }
 
 /** The board item: which entities left the board, and the two lists when they

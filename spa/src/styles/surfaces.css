@@ -271,3 +271,17 @@
 .project-files-page { height:100%; min-height:0; display:flex; flex-direction:column; }
 .project-files-body { flex:1; min-height:0; }
 .project-files-support { margin:0; padding:8px var(--pane-gutter); }
+
+/* Original source context stays above the source tabs on every screen size. */
+.project-changes-container { height:100%; min-height:0; }
+.project-changes-page { display:flex; flex-direction:column; height:100%; min-height:0; }
+.project-changes-context { flex:0 0 auto; padding:8px var(--pane-gutter); border-bottom:1px solid var(--line); font-size:var(--small); }
+.project-changes-context p { margin:0 0 4px; }
+.project-changes-context [data-project-source-context] { color:var(--muted); }
+.project-changes-context [data-project-sync-error] { margin-left:8px; }
+.project-changes-drafts { flex:0 0 auto; max-height:30%; overflow:auto; padding:8px var(--pane-gutter); border-bottom:1px solid var(--line); font-size:var(--small); }
+.project-changes-drafts h3, .project-changes-drafts p { margin:0 0 6px; }
+.project-changes-drafts label { display:block; margin-top:8px; }
+.project-changes-drafts label span { display:block; overflow-wrap:anywhere; color:var(--muted); }
+.project-changes-drafts textarea { display:block; width:100%; margin-top:4px; }
+[data-project-changes-body] { flex:1 1 auto; min-height:0; }

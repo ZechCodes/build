@@ -13,7 +13,7 @@ const SHA = vi.hoisted(() => ({ repo: "a1".repeat(20), site: "b2".repeat(20), la
 vi.mock("../src/core/gitPane.js", () => ({
   mountGitPane: vi.fn((host, { scope, viewingContext }) => {
     host.innerHTML = `<aside class="crail-host">${scope.source_id}</aside>`;
-    const pane = { say: (sha) => viewingContext.set({ kind: "commit", sha }), dispose: vi.fn() };
+    const pane = { say: (sha) => viewingContext.set({ kind: "commit", sha }), dispose: vi.fn(), setVisible: vi.fn() };
     panes.set(scope.source_id, pane);
     pane.say(SHA[scope.source_id]);
     return pane;
@@ -79,6 +79,18 @@ describe("selecting a directory", () => {
   const surface = (sourceId) => document.querySelector(`[data-surface="${sourceId}"]`);
   const tab = (sourceId) => document.querySelector(`.workspace-dirtab[data-directory="${sourceId}"]`);
   const saying = (viewingContext) => viewingContext.snapshot()?.items.map((item) => item.sha);
+
+  it("suspends the kept source panes when the whole Changes face is hidden", () => {
+    const { changes, viewingContext } = mount();
+    changes.setVisible(false);
+    expect(panes.get("repo").setVisible).toHaveBeenLastCalledWith(false);
+    panes.get("repo").say(SHA.later);
+    changes.setVisible(true);
+    expect(panes.get("repo").setVisible).toHaveBeenLastCalledWith(true);
+    expect(saying(viewingContext)).toEqual([SHA.later]);
+    expect(panes.get("repo").dispose).not.toHaveBeenCalled();
+    changes.dispose();
+  });
 
   it("keeps each directory's surface, and shows it again rather than mounting it again", () => {
     const { changes, onSelectDirectory } = mount();

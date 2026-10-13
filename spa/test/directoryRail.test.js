@@ -382,12 +382,12 @@ describe("the project's rail", () => {
     return { ...mounted, onOpen, settings: () => mounted.host.querySelector("[data-rail-settings]") };
   };
 
-  it("lists Tasks and Workspaces and nothing of a checkout's", () => {
-    expect(PROJECT_TABS.map((tab) => tab.id)).toEqual(["tasks", "files", "workspaces"]);
+  it("lists the four project workspace faces", () => {
+    expect(PROJECT_TABS.map((tab) => tab.id)).toEqual(["tasks", "changes", "files", "workspaces"]);
     const { tabs } = mountProject();
-    expect(tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Tasks", "Files", "Workspaces"]);
+    expect(tabs().map((tab) => tab.getAttribute("aria-label"))).toEqual(["Tasks", "Changes", "Files", "Workspaces"]);
     expect(tabs()[0].querySelector(".badge.dirtab-count")).not.toBeNull();
-    expect(tabs()[2].innerHTML).toContain("lucide-folders");
+    expect(tabs()[3].innerHTML).toContain("lucide-folders");
   });
 
   it("names its own settings at the foot, and draws no sidebar toggle", () => {

@@ -97,6 +97,8 @@ pub(in crate::app) struct Tab {
     pub(in crate::app) tab_id: String,
     pub(in crate::app) root: std::path::PathBuf,
     pub(in crate::app) role: TabRole,
+    /// Immutable original-source ownership. Legacy shells remain root aliases.
+    pub(in crate::app) project_source: Option<crate::changes::ProjectSourceScope>,
     /// Surfaced by `term.list` so a reloaded client can order the tab row the
     /// way the human opened it.
     pub(in crate::app) created_at: String,
@@ -324,6 +326,7 @@ impl Tab {
                 tab_id,
                 root,
                 role,
+                project_source: None,
                 created_at: now_rfc3339(),
                 screen,
                 session,

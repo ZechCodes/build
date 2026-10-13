@@ -11,7 +11,7 @@ export function projectFilesRoots(project, projectId) {
   if (!project) return [];
   if (Array.isArray(project.sources)) {
     return project.sources.map((source) => ({
-      ...root(source.id, source.name || source.mount || source.id, { project_id: projectId, source_id: source.id }),
+      ...root(source.id, source.name || source.mount || source.id, { project_id: projectId, source_id: source.id, ...(source.path ? { source_path: source.path } : null) }),
       ...(source.path ? { cacheEntityId: `project:${JSON.stringify([projectId, source.id, source.path])}` } : null),
     }));
   }

@@ -20,6 +20,7 @@
 // option lists) are exported for unit tests; mountGitPane is the only
 // DOM-touching entry point.
 
+import { applyProjectSourceChanges } from "./cacheSync.js";
 import { workspaceCommentMessages } from "./workspaceCommentMessages.js";
 import { reviewCommentContext } from "./reviewCommentContext.js";
 import { esc } from "./text.js";
@@ -83,6 +84,9 @@ import { DIFF_SORT_LATEST } from "./diffSort.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { watchUiState } from "./localUiState.js";
 import { registerSyncRead, syncPaneShown } from "./syncVisibleScopes.js";
+import { App } from "../appState.js";
+const projectSourceWatchScope = (scope) => scope.project_id && scope.source_id && scope.source_path
+  ? { kind: "project_source", project_id: scope.project_id, source_id: scope.source_id, source_path: scope.source_path } : undefined;
 const alwaysActive = () => true;
 const workspaceDiffKeyFields = (ifDiffKey, address, before) =>
   ifDiffKey && (!address || before?.value) ? { if_diff_key: ifDiffKey } : {};
@@ -428,21 +432,33 @@ export function freshLogPage(held, page) {
   return { ...page, commits: [...(page.commits || []), ...behind], more: held.more ?? page.more };
 }
 
-/** The stash key for a scope's in-progress commit-message draft: drafts live in
- *  a module-level Map so tab switches and view-shell rebuilds (which remount the
- *  pane from scratch) restore them transparently. Keyed on the narrowest id the
+/** The persisted namespace for a scope's in-progress commit-message draft.
+ *  The memory stash adds its device/account ownership to this same namespace
+ *  so tab switches and view-shell rebuilds restore drafts transparently.
+ *  Keyed on the narrowest id the
  *  scope carries — a worktree scope names its project too, and keying on that
  *  would pool every worktree's draft with the project's own. */
 export function gitDraftKey(scope) {
-  if (scope.workspace_id) return directoryCacheId(scope);
+  if (scope.workspace_id || (scope.project_id && scope.source_id)) return directoryCacheId(scope);
   if (scope.run_id) return `run:${scope.run_id}`;
   if (scope.worktree_id) return `worktree:${scope.worktree_id}`;
   return `project:${scope.project_id || ""}`;
 }
 
-// scope draft key -> the commit message typed so far. Module-level on purpose:
+// Account/device/scope draft key -> the commit message typed so far.
+// Persisted UI addresses still use gitDraftKey, for reload compatibility.
+// Module-level on purpose:
 // the pane is disposed and remounted on every tab switch and shell rebuild.
 const commitDraftStash = new Map();
+let commitDraftEpoch = App.accountEpoch;
+
+function commitDraftStashKey(cacheScope, scope) {
+  if (commitDraftEpoch !== App.accountEpoch) {
+    commitDraftStash.clear();
+    commitDraftEpoch = App.accountEpoch;
+  }
+  return JSON.stringify([App.accountEpoch, cacheScope?.deviceId || "", gitDraftKey(scope)]);
+}
 
 /** The draft a fresh render should show: a live box is the freshest truth (even
  *  when deliberately cleared); only a remount with no box falls back to the stash. */
@@ -641,14 +657,17 @@ export function mountGitPane(
       if (!bodiesUnpainted) render();
     },
   });
-  const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
+  const draftKey = gitDraftKey(scope); // persisted address, kept across reloads
+  const stashKey = commitDraftStashKey(cacheScope, scope);
+  const draftEpoch = App.accountEpoch;
+  const draftActive = () => draftEpoch === App.accountEpoch && cacheScope?.active?.() !== false;
   const draftAddress = cacheAddress("ui-draft", draftKey);
   const draftRecord = draftAddress ? watchUiState(draftAddress, (saved) => {
-    if (disposed || typeof saved?.text !== "string") return;
-    syncCommitDraft(commitDraftStash, draftKey, saved.text);
+    if (disposed || !draftActive() || typeof saved?.text !== "string") return;
+    syncCommitDraft(commitDraftStash, stashKey, saved.text);
     const field = messageBox();
     if (field && field !== field.ownerDocument.activeElement) field.value = saved.text;
-  }, { debounceMs: 180 }) : null;
+  }, { debounceMs: 180, active: draftActive }) : null;
   let composer = null; // the one box under the diff, mounted once
   // What the reviewer has approved and selected on this surface's files. One
   // set of marks for every changeset it draws, its own and the review plug's,
@@ -1090,11 +1109,12 @@ export function mountGitPane(
       composer = mountChangesComposer(commitHost, {
         offers: composerOffer,
         run: runComposerVerb,
-        readDraft: () => resolveCommitDraft(null, commitDraftStash, draftKey),
+        readDraft: () => resolveCommitDraft(null, commitDraftStash, stashKey),
         // Every keystroke lands in the stash so tab switches and view-shell
         // rebuilds (which remount the pane from scratch) restore the draft.
         writeDraft: (value) => {
-          syncCommitDraft(commitDraftStash, draftKey, value);
+          if (!draftActive()) return;
+          syncCommitDraft(commitDraftStash, stashKey, value);
           if (value) draftRecord?.schedule({ text: value });
           else void draftRecord?.write({ text: "" });
           // `runWith` writes the stash before it clears the live textarea; wait
@@ -1354,7 +1374,8 @@ export function mountGitPane(
 
   /** Drop the scope's draft everywhere it lives: the stash and the live box. */
   const clearCommitDraft = () => {
-    commitDraftStash.delete(draftKey);
+    if (!draftActive()) return;
+    commitDraftStash.delete(stashKey);
     void draftRecord?.write({ text: "" });
     const box = messageBox();
     if (box) box.value = "";
@@ -2267,7 +2288,15 @@ export function mountGitPane(
   const checkoutWatcher = readsForItself
     ? watchChanges({
         refresh: refreshCheckout,
-        onChanges: () => refreshCheckout(true),
+        onChanges: async (items) => {
+          if (scope.project_id && scope.source_path) await applyProjectSourceChanges(items, cacheScope?.deviceId);
+          if (!disposed) refreshCheckout(true);
+        },
+        deviceId: cacheScope?.deviceId,
+        scope: projectSourceWatchScope(scope),
+        // Storage and RPC identity remain source/location-qualified. Older
+        // bridges announce this checkout through board state instead.
+        legacyBoardFallback: Boolean(projectSourceWatchScope(scope)),
         entity: watchedEntity,
         // Focus tier. A checkout the bridge names no entity for watches the
         // board — where `state` is all there is, and the manager trims the ask
@@ -2332,7 +2361,7 @@ export function mountGitPane(
     dispose() {
       disposed = true;
       unregisterSyncReads.forEach((unregister) => unregister());
-      draftRecord?.dispose();
+      draftRecord?.dispose({ flushPending: draftActive() });
       uiRecord?.dispose();
       stopCommitMeasurement();
       stopToolbarMeasurement();

@@ -19,6 +19,7 @@ describe("shared destination route links", () => {
     "#/device/d/project/p/workspace/w/tasks/task-7?view=board&agent=a",
     "#/device/d/project/p/tasks/task-7/c/tc-9",
     "#/device/d/project/p/files?source=s&path=a%2Fb&line=9&agent=a",
+    "#/device/d/project/p/changes?source=s&commit=deadbeef&agent=a",
   ])("preserves Current link %s", (currentHash) => {
     const route = routeFromHash(currentHash);
     const catalog = navigationCatalog({ projects: [{ id: "p", deviceId: "d" }], workspaces: [{ id: "w", deviceId: "d", project_id: "p" }] },
@@ -41,6 +42,14 @@ const workRoute = (hash) => {
 };
 
 describe("routeFromHash", () => {
+  it("round-trips project Changes source, commit and conversation on the exact device", () => {
+    const route = { name: "project", deviceId: "d 1", projectId: "p", tab: "changes", sourceId: "source / 🦊", commit: "deadbeef", agent: "a1" };
+    expect(hashFromRoute(route)).toBe("#/device/d%201/project/p/changes?agent=a1&source=source+%2F+%F0%9F%A6%8A&commit=deadbeef");
+    expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    expect(workRoute("#/project/p/changes?source=docs&commit=abc")).toEqual({ name: "project", projectId: "p", tab: "changes", sourceId: "docs", commit: "abc" });
+    expect(workRoute("#/project/p?source=docs&commit=abc")).toEqual({ name: "project", projectId: "p", tab: "tasks" });
+    expect(workRoute("#/project/p/files?source=docs&commit=abc").commit).toBeUndefined();
+  });
   it("round-trips project Files source, path, line and conversation", () => {
     const route = { name: "project", deviceId: "d1", projectId: "p", tab: "files", sourceId: "docs", file: "src/a b.js", line: 7, agent: "a1" };
     expect(hashFromRoute(route)).toBe("#/device/d1/project/p/files?agent=a1&source=docs&path=src%2Fa+b.js&line=7");
@@ -282,11 +291,9 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     });
   });
 
-  // A project has a page of its own: its workspaces in the main pane, its agent
-  // in the rail. Its base checkout has no surface — that is what workspaces are
-  // cut from — so every URL that used to open the checkout opens the page.
+  // Canonical project URLs open Tasks; explicit checkout faces name themselves.
   it("lands every base-project URL on the project's own page", () => {
-    for (const hash of ["#/project/p", "#/project/p/changes", "#/project/p/bogus"]) {
+    for (const hash of ["#/project/p", "#/project/p/bogus"]) {
       expect([hash, workRoute(hash)]).toEqual([hash, { name: "project", projectId: "p", tab: "tasks" }]);
     }
     // A collection under a project with nothing named in it says the project and

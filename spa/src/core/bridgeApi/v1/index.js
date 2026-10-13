@@ -154,6 +154,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       projectSources: names.has("changes.projectSources"),
     },
     git: { projectSources: names.has("git.projectSources") },
+    term: { projectSources: names.has("term.projectSources") },
     fs: {
       projectSources: names.has("fs.projectSources"),
       projectSourcePath: names.has("fs.projectSourcePath"),
@@ -187,7 +188,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     branches: { finishDelete: names.has("branches.finishDelete") },
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
     agents: { createdBy: names.has("agents.createdBy") },
-    projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase") },
+    projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase"), syncBasePath: names.has("sources.syncBasePath") },
     workspaces: { measureSizes: names.has("workspace.measure_sizes"), setLocked: names.has("workspace.set_locked") },
   };
 }

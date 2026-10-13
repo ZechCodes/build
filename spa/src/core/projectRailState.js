@@ -4,7 +4,7 @@ import { projectLayoutCacheId } from "./directoryScope.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { projectRoute } from "./projectModel.js";
 
-const FACES = new Set(["tasks", "files", "workspaces"]);
+const FACES = new Set(["tasks", "changes", "files", "workspaces"]);
 const pendingWrites = new Map();
 const addressOf = (route) => uiAddress({
   deviceId: route.deviceId, entityId: projectLayoutCacheId(route.projectId),
@@ -12,16 +12,22 @@ const addressOf = (route) => uiAddress({
 });
 const keyOf = (route) => JSON.stringify([route.deviceId, route.projectId]);
 
-function locationOf(route) {
-  const tab = FACES.has(route.tab) ? route.tab : "tasks";
-  if (tab === "tasks") return { tab, ...(route.view ? { view: route.view } : {}) };
-  if (tab !== "files") return { tab };
+function filesPlace(route) {
   return {
-    tab,
-    ...(route.sourceId ? { sourceId: route.sourceId } : {}),
     ...(route.file ? { file: route.file } : {}),
     ...(route.file && Number.isInteger(route.line) && route.line > 0 ? { line: route.line } : {}),
   };
+}
+
+function sourcePlace(route, tab) {
+  const place = tab === "changes" ? { ...(route.commit ? { commit: route.commit } : {}) } : filesPlace(route);
+  return { tab, ...(route.sourceId ? { sourceId: route.sourceId } : {}), ...place };
+}
+
+function locationOf(route) {
+  const tab = FACES.has(route.tab) ? route.tab : "tasks";
+  if (tab === "tasks") return { tab, ...(route.view ? { view: route.view } : {}) };
+  return tab === "files" || tab === "changes" ? sourcePlace(route, tab) : { tab };
 }
 
 async function storeLocation(route, location) {

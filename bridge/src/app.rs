@@ -186,6 +186,9 @@ use projects::{
 };
 pub(crate) use projects::{MOVED_GIT_SOURCE, NOT_GIT_SOURCE};
 pub use push_keys::PushKeyRefusal;
+pub(crate) use runtime::terminals::{
+    MOVED_TERMINAL_SOURCE, SOURCE_SHELLS_LIVE, SOURCE_TERMINAL_BUSY,
+};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -376,6 +379,9 @@ pub struct AppState {
     /// prove the mutex is free.
     #[cfg(test)]
     off_lock_project_list_gate: Option<OffLockGate>,
+    /// Pause a terminal create after RPC admission, before its spawn guard.
+    #[cfg(test)]
+    terminal_create_admission_gate: Option<OffLockGate>,
     /// The git work a verb handed to the drain, to run with this mutex
     /// released. Set by exactly one verb per dispatch and taken by the drain
     /// in the same breath, so the `Ok` the verb returned meanwhile is a
@@ -689,6 +695,8 @@ impl AppState {
             inline_deferred: false,
             #[cfg(test)]
             off_lock_project_list_gate: None,
+            #[cfg(test)]
+            terminal_create_admission_gate: None,
             deferred_work: None,
             deferred_result_check: None,
             pending_rows: Vec::new(),

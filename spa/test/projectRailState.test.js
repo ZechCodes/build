@@ -29,14 +29,21 @@ describe("returning to a project's rail", () => {
     expect((await projectReturnTarget(project, { route: tracker })).route).toEqual(saved);
   });
 
-  it("keeps a project self-link exact and does not invent a project Changes return", async () => {
+  it("keeps a project self-link exact and restores an explicit Changes return", async () => {
     const project = { id: "p", deviceId: "d" };
     const route = { name: "project", deviceId: "d", projectId: "p", tab: "files", file: "a/b", line: 2, agent: "a" };
     const currentHash = "#/device/d/project/p/files?path=a%2fb&line=2&agent=a";
     expect(await projectReturnTarget(project, { route, currentHash })).toEqual({ current: true, route, hash: currentHash });
-    await rememberProjectRailRoute({ ...route, tab: "changes" });
-    expect(await projectReturnRoute(project)).toEqual({ name: "project", deviceId: "d", projectId: "p", tab: "tasks" });
+    await rememberProjectRailRoute({ ...route, tab: "changes", sourceId: "repo", commit: "abc" });
+    expect(await projectReturnRoute(project)).toEqual({ name: "project", deviceId: "d", projectId: "p", tab: "changes", sourceId: "repo", commit: "abc" });
   });
+  it("keeps Changes returns separate for equal source IDs on different devices", async () => {
+    await rememberProjectRailRoute({ name: "project", deviceId: "one", projectId: "p", tab: "changes", sourceId: "repo", commit: "first" });
+    await rememberProjectRailRoute({ name: "project", deviceId: "two", projectId: "p", tab: "changes", sourceId: "repo", commit: "second" });
+    expect(await projectReturnRoute({ id: "p", deviceId: "one" })).toMatchObject({ deviceId: "one", tab: "changes", sourceId: "repo", commit: "first" });
+    expect(await projectReturnRoute({ id: "p", deviceId: "two" })).toMatchObject({ deviceId: "two", tab: "changes", sourceId: "repo", commit: "second" });
+  });
+
   it("restores the Files face and source without changing ordinary project links", async () => {
     const project = { id: "p", deviceId: "d" };
     const files = { name: "project", deviceId: "d", projectId: "p", tab: "files", sourceId: "docs", file: "README.md", line: 4 };

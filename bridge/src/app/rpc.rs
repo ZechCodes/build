@@ -202,7 +202,7 @@ pub(in crate::app) fn dispatch_frame(
                 // reserved: try again in a moment.
                 ApiError::busy(error)
             } else {
-                conversation_session_refusal(error)
+                terminal_session_refusal(&method, &params, error)
             }
         }),
         // The caller is named for the frame: the `changes.*` verbs push to
@@ -222,6 +222,16 @@ fn conversation_session_refusal(error: String) -> ApiError {
         ApiError::classify(error)
     } else {
         ApiError::from(error)
+    }
+}
+
+fn terminal_session_refusal(method: &str, params: &Value, error: String) -> ApiError {
+    if (method.starts_with("term.") && super::runtime::terminals::source_scope_requested(params))
+        || error == crate::app::SOURCE_TERMINAL_BUSY
+    {
+        ApiError::classify(error)
+    } else {
+        conversation_session_refusal(error)
     }
 }
 
@@ -306,6 +316,8 @@ fn session_scoped(
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
+            #[cfg(test)]
+            pause_terminal_create_after_admission(state, timer);
             let created = term_create(state, params, timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
@@ -421,8 +433,16 @@ pub(in crate::app) fn missing_param(key: &str) -> String {
     format!("missing required param: {key}")
 }
 
-const PROJECT_DELETION_IN_PROGRESS: &str =
+pub(in crate::app) const PROJECT_DELETION_IN_PROGRESS: &str =
     "a project is being deleted; retry after deletion completes";
+
+#[cfg(test)]
+fn pause_terminal_create_after_admission(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
+    let gate = timer.lock(state).terminal_create_admission_gate.clone();
+    if let Some(gate) = gate {
+        gate.arrive();
+    }
+}
 
 /// Keep observations and session subscriptions available during filesystem cleanup.
 /// New verbs default to blocked until their read-only behavior is established.
@@ -637,7 +657,9 @@ impl AppState {
             return answered;
         }
         match self.route_legacy(method, params) {
-            Some(outcome) => outcome.map_err(conversation_session_refusal),
+            Some(outcome) => {
+                outcome.map_err(|error| terminal_session_refusal(method, params, error))
+            }
             None => Err(ApiError::unknown_method(method)),
         }
     }

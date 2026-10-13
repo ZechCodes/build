@@ -25,11 +25,14 @@ vi.mock("../src/core/projectFilesSupport.js", async (importOriginal) => ({
   ...await importOriginal(), readProjectFilesSupport: (...args) => readProjectFilesSupport(...args),
 }));
 
-const renderFilesTab = vi.fn(() => ({ dispose: vi.fn(), canLeave: vi.fn(async () => true), hasUnsavedChanges: () => false }));
+const renderFilesTab = vi.fn(() => ({ dispose: vi.fn(), updateRoots: vi.fn(), canLeave: vi.fn(async () => true), hasUnsavedChanges: () => false }));
 vi.mock("../src/views/files.js", () => ({ renderFilesTab: (...args) => renderFilesTab(...args) }));
 
 const mountTasksPane = vi.fn(() => ({ feedMoved: vi.fn(), dispose: vi.fn() }));
 vi.mock("../src/core/trackerTasksPane.js", () => ({ mountTasksPane: (...args) => mountTasksPane(...args) }));
+
+const mountProjectChanges = vi.fn(() => ({ update: vi.fn(), setVisible: vi.fn(), dispose: vi.fn() }));
+vi.mock("../src/views/projectChanges.js", () => ({ mountProjectChanges: (...args) => mountProjectChanges(...args) }));
 
 let subscribers = [];
 let snapshot = { items: [], projects: [], workspaces: [], pending: [], devices: {} };
@@ -111,6 +114,7 @@ beforeEach(() => {
   collapseChat.mockClear();
   mountTasksPane.mockClear();
   renderFilesTab.mockClear();
+  mountProjectChanges.mockClear();
   readProjectFilesSupport.mockReset().mockResolvedValue(false);
   openCreateWork.mockClear();
   openProjectSettings.mockClear();
@@ -392,23 +396,23 @@ describe("the project's two tabs", () => {
 describe("the project's rail", () => {
   const faces = () => [...rail().querySelectorAll("[data-tab]")].map((cell) => [cell.dataset.tab, cell.getAttribute("aria-selected")]);
 
-  it("stands Tasks, Workspaces and Settings on the shell's rail, and nothing else", async () => {
+  it("stands Tasks, Changes, Files, Workspaces and Settings on the shell's rail", async () => {
     await openProject();
     await flush();
-    expect(faces()).toEqual([["tasks", "true"], ["files", "false"], ["workspaces", "false"]]);
-    expect(rail().querySelectorAll("button")).toHaveLength(4);
+    expect(faces()).toEqual([["tasks", "true"], ["changes", "false"], ["files", "false"], ["workspaces", "false"]]);
+    expect(rail().querySelectorAll("button")).toHaveLength(5);
     expect(rail().querySelector("[data-rail-settings]").getAttribute("aria-label")).toBe("Project settings");
-    expect(rail().querySelector("[data-tab=changes], [data-sidebar-toggle]")).toBeNull();
+    expect(rail().querySelector("[data-sidebar-toggle]")).toBeNull();
   });
 
   it("marks the face the route stands on, and follows a press", async () => {
     App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab: "workspaces" };
     await openProject();
     await flush();
-    expect(faces()).toEqual([["tasks", "false"], ["files", "false"], ["workspaces", "true"]]);
+    expect(faces()).toEqual([["tasks", "false"], ["changes", "false"], ["files", "false"], ["workspaces", "true"]]);
     pressProjectTab("tasks");
     await flush();
-    expect(faces()).toEqual([["tasks", "true"], ["files", "false"], ["workspaces", "false"]]);
+    expect(faces()).toEqual([["tasks", "true"], ["changes", "false"], ["files", "false"], ["workspaces", "false"]]);
     expect(location.hash).toBe("#/device/dev-1/project/proj-1");
   });
 
@@ -664,6 +668,24 @@ describe("the Reclaimable filter and the size column", () => {
 
 
 describe("project Files", () => {
+  it.each(["removed primary", "cold mount"])("dispatches the reconciled Files root after a %s", async (caseName) => {
+    snapshot = { ...snapshot, projects: caseName === "cold mount" ? [] : [{ ...project, sources: [
+      { id: "code", name: "Code", path: "/code" }, { id: "docs", name: "Docs", path: "/docs" },
+    ] }] };
+    App.route = { ...App.route, tab: "files" };
+    await openProject();
+    const explorer = renderFilesTab.mock.results[0].value;
+    const options = renderFilesTab.mock.calls[0][1];
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "docs", name: "Documents", path: "/docs" }] }] };
+    deliver();
+    const roots = explorer.updateRoots.mock.calls.at(-1)[0];
+    expect(roots.map((root) => [root.id, root.label])).toEqual([["docs", "Documents"]]);
+    here.mockClear();
+    await options.callRpc("fs.tree", { ...roots[0].scope, path: "" });
+    expect(here).toHaveBeenCalledExactlyOnceWith("fs.tree", { project_id: "proj-1", path: "" });
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(explorer.dispose).not.toHaveBeenCalled();
+  });
   it("does not overwrite a newer surface when the cold support read finishes", async () => {
     let finishRead;
     readProjectFilesSupport.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
@@ -678,7 +700,7 @@ describe("project Files", () => {
     expect(App.viewDispose).toBe(nextDispose);
     expect(renderFilesTab).not.toHaveBeenCalled();
   });
-  it("keeps dirty drafts and warns when a source folder moves, and remounts clean folders", async () => {
+  it("keeps dirty drafts and warns when a source folder moves, and reconciles clean folders", async () => {
     snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "docs", name: "Docs", path: "/old" }] }] };
     App.route = { ...App.route, tab: "files" };
     await openProject();
@@ -692,9 +714,9 @@ describe("project Files", () => {
     expect(document.querySelector("[data-project-files-support]").hidden).toBe(false);
     explorer.hasUnsavedChanges = () => false;
     deliver();
-    expect(explorer.dispose).toHaveBeenCalledTimes(1);
-    expect(renderFilesTab).toHaveBeenCalledTimes(2);
-    expect(renderFilesTab.mock.calls[1][1].roots[0].cacheEntityId).toBe('project:["proj-1","docs","/new"]');
+    expect(explorer.dispose).not.toHaveBeenCalled();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(explorer.updateRoots.mock.calls.at(-1)[0][0].cacheEntityId).toBe('project:["proj-1","docs","/new"]');
   });
   beforeEach(() => {
     snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "code", name: "Code" }, { id: "docs", name: "Docs" }] }] };
@@ -741,5 +763,43 @@ describe("project Files", () => {
     await flush();
     expect(explorer.dispose).toHaveBeenCalledTimes(1);
     expect(App.routeLeaveGuard).toBeNull();
+  });
+});
+
+describe("project Changes face lifetime", () => {
+  it("opens direct source/commit links and reconciles cache feed without remounting", async () => {
+    App.route = { ...App.route, tab: "changes", sourceId: "docs", commit: "abc" };
+    await openProject();
+    expect(mountProjectChanges).toHaveBeenCalledTimes(1);
+    expect(mountProjectChanges.mock.calls[0][1]).toMatchObject({ route: App.route });
+    const changes = mountProjectChanges.mock.results[0].value;
+    const chatMounts = mountAgentRail.mock.calls.length;
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "docs", path: "/docs", name: "Documents" }] }] };
+    deliver();
+    expect(changes.update).toHaveBeenCalled();
+    expect(mountProjectChanges).toHaveBeenCalledTimes(1);
+    expect(mountAgentRail).toHaveBeenCalledTimes(chatMounts);
+    pressProjectTab("tasks");
+    await flush();
+    expect(changes.dispose).not.toHaveBeenCalled();
+    expect(changes.setVisible).toHaveBeenCalledWith(false);
+    pressProjectTab("changes");
+    await flush();
+    expect(mountProjectChanges).toHaveBeenCalledTimes(1);
+    expect(changes.setVisible).toHaveBeenCalledWith(true);
+    expect(App.route).toMatchObject({ tab: "changes", sourceId: "docs", commit: "abc" });
+  });
+  it("reconciles source additions and labels in the shared Files explorer", async () => {
+    snapshot = { ...snapshot, projects: [{ ...project, sources: [{ id: "code", name: "Code", path: "/code" }] }] };
+    App.route = { ...App.route, tab: "files" };
+    await openProject();
+    const explorer = renderFilesTab.mock.results[0].value;
+    snapshot = { ...snapshot, projects: [{ ...snapshot.projects[0], sources: [
+      { id: "code", name: "Renamed code", path: "/code" }, { id: "docs", name: "Docs", path: "/docs" },
+    ] }] };
+    deliver();
+    expect(renderFilesTab).toHaveBeenCalledTimes(1);
+    expect(explorer.updateRoots).toHaveBeenCalled();
+    expect(explorer.updateRoots.mock.calls.at(-1)[0].map((root) => root.label)).toEqual(["Renamed code", "Docs"]);
   });
 });

@@ -66,7 +66,7 @@ impl FileScope {
             }),
             (Some(_), None) => Err("missing required param: source_id".to_string()),
             (None, Some(_)) => Err("missing required param: workspace_id".to_string()),
-            (None, None) => TermScope::parse(params).map(Self::Legacy),
+            (None, None) => TermScope::parse_legacy(params).map(Self::Legacy),
         }
     }
 
@@ -407,7 +407,7 @@ impl AppState {
             }
             // The project's own checkout carries no board summary of its
             // own: the board lists workspaces.
-            FileScope::Legacy(TermScope::Primary { .. }) => {}
+            FileScope::Legacy(TermScope::Primary { .. } | TermScope::ProjectSource(_)) => {}
         }
         self.note_board_changed();
     }

@@ -9,6 +9,7 @@
 // clock left in any of them.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { worktreeOf } from "./gitWireFixture.js";
 
 const settle = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
@@ -68,7 +69,7 @@ async function mountPane(scope = { run_id: "run-7" }) {
   const pane = mountGitPane(container, { scope, callRpc });
   await settle();
   const reads = () => callRpc.mock.calls.filter(([method]) => method === "git.status").length;
-  return { pane, reads };
+  return { pane, reads, callRpc, container };
 }
 
 /** One flush off a machine: the bodies of what moved, addressed by entity. */
@@ -123,6 +124,33 @@ describe("a surface against a bridge that pushes", () => {
     pane.dispose();
   });
 
+  it("refreshes the stable primary source scope from a legacy board subscription", async () => {
+    const events = await import("../src/core/changeEvents.js");
+    const { projectChangesDirectories } = await import("../src/core/projectChangesModel.js");
+    const bridge = vi.fn(async (method, params) => method === "session.hello" ? {
+      push_events: true, api_version: "2.0.0", capabilities: ["changes.subscriptions"],
+      changes: { subscriptions: true, mode: params.changes, kinds: ["state", "git", "files"] },
+    } : {});
+    await events.greetBridge(bridge);
+    const scope = projectChangesDirectories({ sources: [{ id: "code", path: "/repo" }] }, "p1", false)[0].scope;
+    const { pane, reads, callRpc, container } = await mountPane(scope);
+    try {
+      await events.subscriptionsSettled();
+      expect(bridge.mock.calls.filter(([method]) => method === "changes.subscribe").map(([, params]) => params))
+        .toContainEqual(expect.objectContaining({ scope: { kind: "board" }, kinds: ["state"] }));
+      const before = reads();
+      const changed = worktreeOf({ "external-update.txt": "External edit" });
+      callRpc.mockImplementation(async (method, params) => {
+        if (method === "git.status") return changed.status();
+        if (method === "git.diff") return changed.diff(params);
+        return log;
+      });
+      boardMoved();
+      await vi.waitFor(() => expect(reads()).toBe(before + 1));
+      await vi.waitFor(() => expect(container.textContent).toContain("external-update.txt"));
+    } finally { pane.dispose(); }
+  });
+
   it("watches the board when its scope is a workspace source, which the bridge names no entity for", async () => {
     // A durable workspace id is not an id the bridge ever puts on an item:
     // its git subjects are runs, projects and external worktrees, and a
@@ -137,6 +165,44 @@ describe("a surface against a bridge that pushes", () => {
     await settle();
     expect(reads()).toBe(before + 1);
     pane.dispose();
+  });
+
+  it("reconciles source event coverage across greetings without changing checkout identity", async () => {
+    const events = await import("../src/core/changeEvents.js");
+    let capable = true;
+    const bridge = vi.fn(async (method, params) => method === "session.hello" ? {
+      push_events: true, api_version: "2.0.0",
+      capabilities: ["changes.subscriptions", ...(capable ? ["changes.projectSources", "git.projectSources"] : [])],
+      changes: { subscriptions: true, mode: params.changes, kinds: ["state", "git", "files"] },
+    } : {});
+    const scope = { project_id: "p1", source_id: "code", source_path: "/repo" };
+    await events.greetBridge(bridge);
+    const { pane, reads } = await mountPane(scope);
+    try {
+      await events.subscriptionsSettled();
+      expect(bridge.mock.calls.filter(([method]) => method === "changes.subscribe").at(-1)[1])
+        .toMatchObject({ scope: { kind: "project_source", ...scope }, kinds: ["git"] });
+      const before = reads();
+      boardMoved();
+      flush([{ project_source: { ...scope, source_path: "/moved" }, git: {} }]);
+      await settle();
+      expect(reads()).toBe(before);
+      flush([{ project_source: scope, git: {} }]);
+      await vi.waitFor(() => expect(reads()).toBe(before + 1));
+      capable = false;
+      await events.greetBridge(bridge);
+      await events.subscriptionsSettled();
+      expect(bridge.mock.calls.filter(([method]) => method === "changes.subscribe").at(-1)[1])
+        .toMatchObject({ scope: { kind: "board" }, kinds: ["state"] });
+      const downgraded = reads();
+      boardMoved();
+      await vi.waitFor(() => expect(reads()).toBe(downgraded + 1));
+      capable = true;
+      await events.greetBridge(bridge);
+      await events.subscriptionsSettled();
+      expect(bridge.mock.calls.filter(([method]) => method === "changes.subscribe").at(-1)[1])
+        .toMatchObject({ scope: { kind: "project_source", ...scope }, kinds: ["git"] });
+    } finally { pane.dispose(); }
   });
 
   it("has no clock at all, not even the safety poll's", async () => {

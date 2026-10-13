@@ -215,5 +215,24 @@ npm/PyPI packages as part of this task. Historical links remain valid provenance
 #572 inspects tracked source, manifests, license text, existing tests and CI. It
 runs only documentation/static consistency checks. No dependency installation,
 crypto/runtime test, container build, full gate, live pairing or deployment is
-part of this pass. All runtime acceptance evidence remains explicitly pending in
-the companion ledger and implementation children.
+part of that planning pass. At #572, runtime acceptance evidence was explicitly
+pending in the companion ledger and implementation children.
+
+## Migration-wide security evidence (#613)
+
+The migration contract is 100/100 at main
+`88de458fb1c18964211c1ab6824928f2484e84c1`, based on the
+[acceptance evidence ledger](Secure%20Transport%20Consolidation%20Evidence.md#acceptance-evidence-ledger)
+and its [exact landings, reviews and main-CI observations](Secure%20Transport%20Consolidation%20Evidence.md#landed-plan-items).
+This assessment closes the original migration requirements; historical planning
+and local receipts above retain their original scope.
+
+| Security requirement | Assessment | Row evidence |
+| --- | --- | --- |
+| Canonical import and scoped license/package contents | 100/100 | P1/P2: #575 hashes, exclusions and artifact receipts; landing `99eaab74`; #580 independent audit |
+| Baseline and mandatory cross-language compatibility | 100/100 | C1–C3: #576 receipts and #606 review, landing `6335adbe`; #607 uv prerequisite at `877563ae`; #612 test-only amendment at `88de458f`, recorded in UPSTREAM; final Transport compatibility green in CI 38327313972 |
+| Portable locked consumers and sodium resolution | 100/100 | D1/D2: #577 clean-checkout/install/build receipts, #608 review and cohort landing `eaf01df8` |
+| Checkout-based images and private-file exclusions | 100/100 | B1/B2: #578 clean-context image/content receipts, #609 review and cohort landing `eaf01df8`; final app build/deploy green in CI 38327313972 |
+| Required-check routing and failure/cancellation guards | 100/100 | G1/G2: #578 selector/workflow regressions and #609 review; main-CI failure blocked images before the final successful run |
+| Ownership, reporting and historical-reference boundaries | 100/100 | O1: #579 exact-head approval #579/c/tc-01M4S8C6ES9QWV97NP943GVCXD and landing `3234572f`; legacy-pointer draft remains for Zech to apply manually |
+| Independent review and final integration evidence | 100/100 | R1/R2: #580/c/tc-01M4S8DQP887S8R0KWPYS78QMZ, per-child reviews and #612 review/merge receipts; recorded landing gates and main CI 38323193123, 38324285377, then successful 38327313972 at `88de458f` |

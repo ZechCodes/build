@@ -2,7 +2,9 @@
 // global surfaces, and that is the whole vocabulary:
 //   #/inbox                                     — the landing surface
 //   #/project/<projectId>[?view=list|board]     — the project: its task tracker
-//   #/project/<projectId>/workspaces            — the project: its workspaces
+//   #/project/<projectId>/changes[?source=<id>&commit=<sha>] — original-source Git
+//   #/project/<projectId>/files[?source=<id>&path=<path>&line=<n>] — original-source files
+//   #/project/<projectId>/workspaces            — the project: its named children
 //   #/project/<projectId>/tasks[?view=board]    — an alias for the tracker
 //   #/project/<projectId>/tasks/<taskId>[/c/<commentId>]
 //   #/project/<projectId>/workspace/<id>[/directory/<sourceId>]/<tab>[?commit=<sha>]
@@ -94,12 +96,10 @@ const inbox = () => ({ name: "inbox" });
 const inboxIn = (projectId) => (projectId ? { name: "inbox", projectId } : inbox());
 
 /**
- * The project's own page: its workspaces in the main pane, its agent in the rail.
- *
- * A project is a template — the base checkout is what workspaces are cut FROM,
- * and it is not a place to work — so this page is about the project and never
- * about that checkout. Every URL that used to open the checkout
- * (`#/project/<id>` and the retired tabs that hung off it) lands here.
+ * The project workspace: Tasks by default, Changes and Files on its original
+ * sources, and Workspaces for the named children cut from them. The source
+ * checkouts are a shared place to work; they keep the project's existing ID.
+ * Retired checkout tabs still land on this project page.
  */
 const projectPage = (projectId, tab = TASKS_TAB) => (projectId ? { name: "project", projectId, tab } : inbox());
 
@@ -196,8 +196,8 @@ function branchRoute(projectId, tailSegments) {
  * A URL that names a project and nothing inside it, plus every tab that used to
  * hang off its base checkout.
  *
- * The checkout has no surface of its own any more, so they all land on the
- * project's page. The exception is the retired right-cluster tabs, which named
+ * Changes and Files open the original-source checkout on the project's page;
+ * other checkout tabs retain their Tasks landing. The retired right-cluster tabs named
  * a project-wide pane rather than the checkout: Archive has a surface of its own
  * to go to, and the two that named the inbox go to the rail standing here.
  */
@@ -205,7 +205,7 @@ function projectSurface(projectId, tabSegment) {
   if (!projectId) return inbox();
   const cluster = clusterRoute(tabSegment);
   if (cluster) return cluster.name === "inbox" ? inboxIn(projectId) : cluster;
-  return projectPage(projectId, tabSegment === "files" ? "files" : TASKS_TAB);
+  return projectPage(projectId, BRANCH_TABS.has(tabSegment) ? tabSegment : TASKS_TAB);
 }
 
 /** A legacy entity URL whose branch this module cannot know. `kind` says what
@@ -286,21 +286,21 @@ function placeInSurface(route, query) {
   const place = FILE_TAB_SURFACES.has(route.name) && route.tab === "files" ? tabPlace(query) : null;
   const commit = commitPlace(route, query);
   const agent = AGENT_SURFACES.has(route.name) ? railAgent(query) : null;
-  // Both surfaces that HAVE a tasks tab read it: the project's own, and a
-  // workspace's (#29). They are the same tracker laid out the same two ways.
+  // Both Tasks faces read their layout; the project opens Dashboard and a
+  // named workspace opens List. Board is available on either face.
   const view = TASKS_SURFACES.has(route.name) && route.tab === TASKS_TAB ? tasksView(query, route) : null;
   const position = { ...place, ...agent, ...view, ...commit, ...projectSourcePlace(route, query) };
   return Object.keys(position).length ? position : null;
 }
 
 function projectSourcePlace(route, query) {
-  if (route.name !== "project" || route.tab !== "files") return null;
+  if (route.name !== "project" || !BRANCH_TABS.has(route.tab)) return null;
   const sourceId = new URLSearchParams(query || "").get("source");
   return sourceId ? { sourceId } : null;
 }
 
 function commitPlace(route, query) {
-  if (route.name !== "workspace" || route.tab !== "changes" || !query) return null;
+  if (!["workspace", "project"].includes(route.name) || route.tab !== "changes" || !query) return null;
   const commit = new URLSearchParams(query).get("commit");
   return commit ? { commit } : null;
 }
@@ -453,10 +453,15 @@ const tasksViewPairs = (route, standing = TASKS_TAB) => {
   return [["view", ""]];
 };
 
-/// Which of the project page's two tabs a route stands on. Tasks is the
-/// default (#46), so it writes nothing and a bare project link opens it;
-/// Workspaces is the one that has to name itself.
-const projectTabPath = (route) => ([WORKSPACES_TAB, "files"].includes(route.tab) ? `/${route.tab}` : "");
+/// Tasks is the project default and writes no path. The checkout faces and
+/// the named-child collection write their own names.
+const projectTabPath = (route) => ([WORKSPACES_TAB, ...BRANCH_TABS].includes(route.tab) ? `/${route.tab}` : "");
+
+function projectPlacePairs(route) {
+  if (!BRANCH_TABS.has(route.tab)) return [];
+  const place = route.tab === "changes" ? [["commit", route.commit || ""]] : tabPlacePairs(route, route.tab);
+  return [["source", route.sourceId || ""], ...place];
+}
 
 /// Everything a work URL says before the branch or the task: the machine the
 /// project is on, when the route names one, and the project itself. A route
@@ -489,11 +494,11 @@ const HASH_WRITERS = Object.freeze({
   // link would land scoped and then immediately re-parse as the whole
   // account's inbox. The plain inbox writes nothing and takes the fallback.
   inbox: (route) => (route.projectId ? `${projectPrefix(route)}/inbox` : null),
-  // The project's own page is the project, the tab it stands on when that is
-  // not the workspaces it opens on, and the query each of those two reads.
+  // The project's workspace writes its face plus that face's source/place.
+  // Tasks remains the ordinary project landing.
   project: (route) =>
     route.projectId
-      ? `${projectPrefix(route)}${projectTabPath(route)}${hashQuery([...railAgentPairs(route), ...tasksViewPairs(route), ...(route.tab === "files" ? [["source", route.sourceId || ""], ...tabPlacePairs(route, route.tab)] : [])])}`
+      ? `${projectPrefix(route)}${projectTabPath(route)}${hashQuery([...railAgentPairs(route), ...tasksViewPairs(route), ...projectPlacePairs(route)])}`
       : null,
   // One task of the tracker, under the project it belongs to and never moves
   // between.

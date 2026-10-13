@@ -1,7 +1,7 @@
 // The project's own surface: what the project holds, and who you talk to about
 // it.
 //
-// Tasks, Files and Workspaces share the project's rail. Files mounts the same
+// Tasks, Changes, Files and Workspaces share the project's rail. Files mounts the same
 // explorer as the workspace surface, over the source directories workspaces
 // are cut from. Each face rewrites its URL without remounting the agent rail.
 // The toolbar's + creates a workspace; Settings remains at the rail's foot.
@@ -14,6 +14,7 @@ import { surfaceContext } from "../core/surfaceContext.js";
 import { mountDeviceNotice, mountDeviceStrip } from "../core/deviceNotice.js";
 import { clearToolbarVerb, setToolbarVerb } from "../core/toolbar.js";
 import { openCreateWork } from "../core/createWork.js";
+import { mountProjectChanges } from "./projectChanges.js";
 import { renderFilesTab } from "./files.js";
 import { rememberProjectRailRoute } from "../core/projectRailState.js";
 import { projectFilesRoots } from "../core/filesRoots.js";
@@ -43,8 +44,9 @@ import "../styles/surfaces.css";
 const WORKSPACES_TAB = "workspaces";
 const TASKS_TAB = "tasks";
 const FILES_TAB = "files";
+const CHANGES_TAB = "changes";
 /// Tasks is the default, so a route that names no tab is on it (#46).
-const tabOf = (route) => ([FILES_TAB, WORKSPACES_TAB].includes(route.tab) ? route.tab : TASKS_TAB);
+const tabOf = (route) => ([FILES_TAB, WORKSPACES_TAB, CHANGES_TAB].includes(route.tab) ? route.tab : TASKS_TAB);
 
 /** Line two of a workspace row: what it is standing on, what its checkout is
  *  doing when that is not simply "ready", and what the work weighs. The same
@@ -96,7 +98,7 @@ const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.mute
  *  points at the control that does it. */
 const emptyHtml = () => `<div class="empty project-empty">
     <h2>No workspaces yet</h2>
-    <p>A workspace is where the work happens in this project. The + above makes the first one.</p>
+    <p>The + above creates a separate checkout of the project sources.</p>
   </div>`;
 
 /** One of the two filters (#167), as first stood up; `paintFilters` says
@@ -184,6 +186,10 @@ function paint(state) {
     state.tasks?.feedMoved();
     return;
   }
+  if (state.tab === CHANGES_TAB) {
+    paintChanges(state, pane);
+    return;
+  }
   if (state.tab === FILES_TAB) {
     paintFiles(state, pane);
     return;
@@ -215,16 +221,19 @@ async function openTab(state, tab) {
   }
 }
 
+const paneClass = (tab) => ({ files: "project-files-page", changes: "project-changes-container" }[tab] || "project-page");
+
 function switchTab(state, tab) {
   disposeFiles(state);
   state.tasks?.dispose();
   state.tasks = null;
+  keepChanges(state, tab);
   state.tab = tab;
   askForSizesWhileOpen(state);
   state.rail.paint(tab);
   const pane = $("#project-pane");
-  pane.innerHTML = "";
-  pane.className = tab === FILES_TAB ? "project-files-page" : "project-page";
+  pane.replaceChildren();
+  pane.className = paneClass(tab);
   delete pane.dataset.rows;
   if (tab === TASKS_TAB) mountTasks(state, pane);
   else paint(state);
@@ -237,6 +246,7 @@ function writeTabHash(state) {
   // The tab is always named on the route; it is the URL that leaves the default
   // out (core/router.js `projectTabPath`).
   const route = { ...state.route, tab: state.tab, view: state.view };
+  if (state.tab === CHANGES_TAB) Object.assign(route, state.changesRoute);
   App.route = route;
   state.route = route;
   void rememberProjectRailRoute(route);
@@ -277,23 +287,76 @@ function paintFiles(state, pane) {
   const project = projectRecord(state);
   const roots = projectFilesRoots(project, state.route.projectId);
   const signature = JSON.stringify(roots);
-  if (signature !== state.filesSignature && !state.files?.hasUnsavedChanges()) {
-    disposeFiles(state);
-    pane.className = "project-files-page";
-    pane.innerHTML = '<p class="dim project-files-support" data-project-files-support>Update the bridge to browse additional project folders.</p><div class="project-files-body"></div>';
-    state.filesSignature = signature;
-    state.files = renderFilesTab(pane.querySelector(".project-files-body"), {
-      roots,
-      layoutEntityId: projectLayoutCacheId(state.route.projectId),
-      callRpc: projectFilesRpc(state.context, roots[0]?.id, { project, currentProject: () => projectRecord(state) }),
-      cacheScope: state.context.cacheScope,
-      openAt: state.route.file ? { rootId: state.route.sourceId, path: state.route.file, line: state.route.line || null } : null,
-      onFileOpen: (path, sourceId) => markFile(state, path, sourceId),
-      viewingContext: App.viewingContext,
-    });
-    App.routeLeaveGuard = state.files.canLeave;
+  if (!state.files) mountFiles(state, pane, project, roots);
+  else if (signature !== state.filesSignature) {
+    const next = safeFilesRoots(state, roots);
+    state.files.updateRoots?.(next);
+    state.filesRoots = next;
+    state.filesSignature = JSON.stringify(next);
   }
   paintFilesSupport(state, pane, roots, signature !== state.filesSignature);
+}
+
+// Reconcile add/remove/labels immediately. A moved folder with unsaved edits
+// keeps its captured root so the editor cannot save into a replacement path.
+function safeFilesRoots(state, roots) {
+  if (!state.files.hasUnsavedChanges()) return roots;
+  return roots.map((root) => {
+    const held = state.filesRoots.find((candidate) => candidate.id === root.id);
+    return held && held.cacheEntityId !== root.cacheEntityId ? held : root;
+  });
+}
+
+function mountFiles(state, pane, project, roots) {
+  pane.className = "project-files-page";
+  pane.innerHTML = '<p class="dim project-files-support" data-project-files-support></p><div class="project-files-body"></div>';
+  state.filesSignature = JSON.stringify(roots);
+  state.filesRoots = roots;
+  state.files = renderFilesTab(pane.querySelector(".project-files-body"), {
+    roots,
+    layoutEntityId: projectLayoutCacheId(state.route.projectId),
+    callRpc: projectFilesRpc(state.context, roots[0]?.id, { project, currentProject: () => projectRecord(state) }),
+    cacheScope: state.context.cacheScope,
+    openAt: state.route.file ? { rootId: state.route.sourceId, path: state.route.file, line: state.route.line || null } : null,
+    onFileOpen: (path, sourceId) => markFile(state, path, sourceId),
+    viewingContext: App.viewingContext,
+  });
+  App.routeLeaveGuard = state.files.canLeave;
+}
+
+function keepChanges(state, tab) {
+  state.changes?.setVisible(tab === CHANGES_TAB);
+  // A detached host keeps source panes, drafts and scroll while another face
+  // occupies the page; chat continues to belong to the shell.
+  state.changesHost?.remove();
+}
+
+function markChanges(state, sourceId, commit) {
+  state.changesRoute = { sourceId, commit: commit || undefined };
+  if (state.tab === CHANGES_TAB) writeTabHash(state);
+}
+
+function openChangesFile(state, { sourceId, path, line }) {
+  state.route = { ...state.route, sourceId, file: path, line: line || undefined };
+  void openTab(state, FILES_TAB);
+}
+
+function paintChanges(state, pane) {
+  pane.className = paneClass(CHANGES_TAB);
+  if (!state.changesHost) {
+    state.changesHost = document.createElement("div");
+    state.changesHost.className = "project-changes-page";
+    state.changes = mountProjectChanges(state.changesHost, {
+      project: projectRecord(state), route: state.route, context: state.context,
+      viewingContext: App.viewingContext, agentSelection: state.selection,
+      onSourceSelection: (sourceId, commit) => markChanges(state, sourceId, commit),
+      onCommitSelection: (commit) => markChanges(state, state.changesRoute.sourceId, commit),
+      onOpenFile: (file) => openChangesFile(state, file),
+    });
+  }
+  if (state.changesHost.parentElement !== pane) pane.replaceChildren(state.changesHost);
+  state.changes.update(projectRecord(state));
+  state.changes.setVisible(true);
 }
 
 function watchProjectFilesSupport(state) {
@@ -424,11 +487,12 @@ export async function renderProject() {
     page: projectPageModel(null, route), verb: null,
     tab: tabOf(route), view: route.view || "dashboard", feed: null, tasks: null, rail: null,
     reclaiming: new Set(), reclaimErrors: new Map(), filter: ALL_WORKSPACES,
-    measuresSizes: false, sizeAsk: null, files: null, filesSignature: null, switching: false, projectSources,
+    measuresSizes: false, sizeAsk: null, files: null, filesSignature: null, filesRoots: [], switching: false, projectSources,
+    changes: null, changesHost: null, changesRoute: { sourceId: route.sourceId, commit: route.commit },
   };
   state.verb = (host) => paintProjectVerbs(host, state);
   root.innerHTML = `<div id="tabbody" class="flush"><div id="project-pane" class="project-page"></div></div>`;
-  // The three tabs are the rail's faces. A press switches in place rather than
+  // The four tabs are the rail's faces. A press switches in place rather than
   // navigating, because a navigation would remount the agent rail beside the
   // page; the shell's route rule never sees it (#62), so where the chat lies
   // over the page the press puts it away itself.
@@ -448,6 +512,7 @@ export async function renderProject() {
     if (state.disposed) return;
     state.feed = feed;
     rebuildPage(state);
+    state.changes?.update(projectRecord(state));
     paint(state);
   });
   const unwatchSizeSupport = watchSizeSupport(state);
@@ -461,6 +526,7 @@ export async function renderProject() {
     unwatchSizeSupport();
     unwatchFilesSupport();
     disposeFiles(state);
+    state.changes?.dispose();
     state.sizeAsk?.stop();
     deviceStrip();
     state.tasks?.dispose();

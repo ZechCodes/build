@@ -633,6 +633,41 @@ captured `source_path` (`sources.syncBasePath`, wire 3.21.0, #530). A manual
 request captures the registered location and configured base through the
 service queue; after acquiring the source lock the service rechecks both,
 refusing a moved source rather than syncing either its old or new folder.
+
+`term.create`, `term.list`, `term.attach` and source-asserted `term.close`
+accept the same exact original-source selector under `term.projectSources`
+(wire 3.21.0, #531). Plain folders support shells too. Terminal scope parsing
+in `app/runtime/terminals/scope.rs` rejects malformed, foreign, mixed selectors
+and caller roots before opening a PTY; `source_path` asserts the registered
+location, and a moved location returns `conflict`. Each explicit source shell
+keeps immutable project/source/location ownership beside its canonical cwd.
+Lists and `terminals` facts use that ownership, so registered aliases sharing
+a folder still have separate explicit tab rows. Legacy scopes remain canonical
+root aliases, including shells opened before an explicit source selector was
+available; input/resize/ack continue to address the captured terminal ID.
+
+Client detach or reconnect keeps the shell and ID. Explicit tab close, EOF,
+a missing root and project deletion use the existing kill/reap and screen
+closure lifecycle. Source move/remove refuses while shells stand in that
+source folder, naming their IDs. Create and move/remove admission run under
+the app lock; shell spawn stays under that guard, and the existing Updating
+reservation blocks shell starts and source removal throughout deferred source
+update work and settlement. The spawn guard also rechecks project deletion:
+a create admitted earlier refuses before opening a PTY if deletion has already
+collected retirements. A create that spawns first is included in that collection,
+even when its original source folder survives deletion.
+Label changes leave live shells alone. These holds
+keep the source's membership/location consistent; they do not restrict shell
+commands or serialize them with Git/base sync. Worker holds also permit
+source shells and base sync; both shell and worker holds must end before
+relocation or removal.
+A worker-held source can open and attach a shell while base sync waits on its
+Git lock, and sync can fast-forward with that shell still open. Closing the
+shell leaves the worker's location hold intact. An already-admitted terminal
+create rechecks Updating at spawn: a move's reservation holds it back during
+the SyncLock wait and after work completes, until config settlement. The old
+selector then conflicts; a fresh selector opens at the settled location.
+
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.
@@ -1998,6 +2033,67 @@ transport lock; Node resolves the binding's dependencies from `transport/js`.
 | `spa/src/styles.css`, `spa/src/styles/*.css` | tokens and styles |
 | `spa/public/` | `theme-boot.js`, service worker, manifest, icons |
 
+### Project workspace surfaces
+
+The project view (`spa/src/views/projectView.js`) has Tasks, Changes, Files and
+Workspaces faces on one kept shell. Tasks remains project-wide and is the
+canonical project URL's default. Workspaces lists named child workspaces only;
+its lifecycle, size, filtering and Reclaim controls do not describe the original
+sources. The project has no synthetic workspace record. `projectRailState.js`
+remembers local returns by device/project, including the Changes source and
+commit; explicit links take precedence. Breadcrumb and sibling navigation are
+owned separately by #523.
+
+`spa/src/views/projectChanges.js` mounts the shared kept directory panes from
+`workspaceChanges.js`, one per configured source. Each Git pane works on that
+source's actual checkout HEAD, with ordinary history and commit-all actions,
+without isolated-workspace review semantics. The context names the shared
+checkout, configured base and cached sync outcome separately from HEAD. Plain
+folders remain visible with an honest no-Git explanation and no initialization
+action. A Changes diff opens Files with the same source, path and line.
+
+Project list cache writes reconcile added, relabelled, removed and moved sources
+in place. Surviving panes keep their drafts, selected commits and scroll; moving
+a source gives it a new location namespace. Face changes retain the shell's
+conversation and console. Project source terminal selection (#535) and the
+project-worker rail (#536) have separate implementations.
+
+Commit drafts keep device and account-epoch ownership in the in-memory stash
+as well as their device-scoped `build-ui` records. Old account panes cannot
+publish or clear a replacement account's draft after reset. Account reset
+retires live UI writers and clears the page-exit journal before wiping `build-ui`,
+so a remount cannot replay the previous account's pending text. A moved or removed
+source's saved commit message remains under its old project/source/location
+address. `projectChangesDrafts.js` exposes those messages in read-only recovery
+fields labelled with the old path, for explicit copying; it never attaches them
+to a replacement source's commit action. Recovery listens to UI-store writes so
+a draft flushed during reconciliation becomes visible, and a restored exact
+source/location resumes normal draft ownership. Source/location namespaces are
+independent of bridge capabilities. Older project-only drafts appear as read-only
+recovery fields with an unknown source location, for explicit copying rather than
+assignment to today's primary source. Changes deep links keep their requested
+source and commit until the source location resolves from the project cache;
+commit-only links wait for the default source.
+If a requested source is absent from a populated cached roster, surviving
+sources still mount alongside a visible missing-source warning. The URL and
+requested commit remain pending until that exact source resolves or the user
+chooses a surviving source; the missing source's commit is never applied to it.
+
+Source Git records use `directoryCacheId`'s project/source/captured-location
+entity inside the device cache scope; status keys alone never select a source.
+`cacheSync.js` verifies the source against cached project membership
+before writing pushed records and keeps legacy project records separate.
+Source-qualified subscriptions match device, project, source and captured path.
+Git panes select event coverage separately from their stable storage/RPC scope:
+bridges without `changes.projectSources` retain board/state subscriptions, while
+source-capable sessions use exact source/Git subscriptions. Greetings reconcile
+that coverage without moving draft addresses or weakening captured-path guards.
+The mounted pane writes read results to the cache before painting; disposal and
+conditional writes fence obsolete reads. Source moves cannot apply an old reply
+to the replacement namespace. `projectChangesRpc.js` captures the opened source
+and rechecks membership/location and current capabilities at dispatch, including
+after a queued greeting. Stale source writes refuse instead of following a move.
+
 ### Files
 
 Workspace directory edits publish their completed workspace result to the
@@ -2481,8 +2577,15 @@ refuses when that device cannot answer.
 - Surfaces read the flags with `bridgeCapabilities(deviceId)`
   (`spa/src/core/changeEvents.js`), which falls back to `NO_CAPABILITIES`.
   Wire 3.21.0's `git.projectSources` and `changes.projectSources` are
-  `git.projectSources` and `changes.projectSources` there; no surface sends a
-  project source Git scope or subscription yet (#534 does).
+  `git.projectSources` and `changes.projectSources` there. Project Changes reads
+  its rendering support from the per-device `project-changes-support` cache
+  record (`projectChangesSupport.js`) on cold mounts; greetings update that
+  record. RPC and subscription dispatch still require the current greeting's
+  corresponding capability. Without source Git support, the first source keeps
+  the legacy `project_id` scope and additional Git sources explain the update
+  requirement. No new source selectors go to an older bridge. Sync base uses
+  `sources.syncBase`; its captured-path precondition additionally requires
+  `sources.syncBasePath`.
 - `conversation.reset` also gates the generation fields added to existing
   conversation requests in wire 3.11. The adapter restores their old shapes
   with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the
@@ -2556,8 +2659,8 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Tasks list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerTasksPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
 | Task page | `spa/src/views/trackerTaskView.js` → `spa/src/core/trackerTaskPage.js` |
 | Workspace navigation | the toolbar's `project / workspace` picker in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`); the rail down the left edge (Changes, Files, Tasks, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
-| Project navigation | the rail down the left edge (Tasks, Workspaces, Settings) in `spa/src/core/projectRail.js` over `directoryRail.js`, mounted from `spa/src/views/projectView.js` and `spa/src/views/trackerTaskView.js` |
-| Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/workspaceChanges.js` (a workspace, under its directory tab row, one pane per directory shown, kept while another stands; hide/show suspends owned editors, dialogs, listeners and layout work while preserving drafts, scroll and cache subscriptions) and `spa/src/views/branchView.js` |
+| Project navigation | the rail down the left edge (Tasks, Changes, Files, Workspaces, Settings) in `spa/src/core/projectRail.js` over `directoryRail.js`, mounted from `spa/src/views/projectView.js` and `spa/src/views/trackerTaskView.js`; local return state in `spa/src/core/projectRailState.js` |
+| Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/projectChanges.js` (original configured sources), `spa/src/views/workspaceChanges.js` (named workspace directories) and `spa/src/views/branchView.js`; project and workspace directory panes are kept while another stands, and hide/show suspends owned editors, dialogs, listeners and layout work while preserving drafts, scroll and cache subscriptions |
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |

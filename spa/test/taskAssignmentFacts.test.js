@@ -20,6 +20,14 @@ const lists = [
 ];
 
 describe("assignment facts across cached task replicas", () => {
+  it.each(lists)("lets a newer current-wire empty waiting list beat an older %s blocker and opened task", async (_kind, address) => {
+    const blocked = { ...row(true), dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+    await writeCached(address, { tasks: [blocked] });
+    const ready = { ...row(false, "2026-10-13T01:01:00Z"), dependencies: { blocked: false, waiting_on: [], blocks: [], blocks_next_cursor: null } };
+    await writeCached(taskAddress("device", "project", "task"), { task: ready });
+    expect((await read(blocked)).dependencies).toEqual(ready.dependencies);
+  });
+
   it("arbitrates the opened task with older cached facts after a legacy detail refresh", async () => {
     const opened = row(true, "2026-10-13T01:01:00Z");
     await writeCached(lists[1][1], { tasks: [row(false)] });

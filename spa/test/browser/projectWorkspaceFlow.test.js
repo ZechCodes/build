@@ -72,6 +72,7 @@ for (const width of [390, 1280]) {
       expect(await callsTo(page, "git.commit")).toEqual([{ deviceId: "flow-device", method: "git.commit",
         params: { project_id: "p", source_id: "code", source_path: "/fixture/code", message: "Commit the shared source edit" } }]);
       await page.locator('[data-directory="docs"]').click();
+      await page.waitForFunction(() => document.querySelector('[data-surface="docs"]')?.textContent.includes("shared source wording"));
       await page.locator('[data-surface="docs"] .csinput').fill("Keep the Docs commit draft");
       await selectAgent(page, SIBLING);
       await page.locator(INPUT).fill("Keep this sibling conversation draft");
@@ -122,11 +123,21 @@ for (const width of [390, 1280]) {
 
       // The Rust companion verifies real cut bytes and lifecycle admission.
       // Here the cached child uses the production shell and exact rail host.
-      await page.evaluate(() => window.__flowNavigate({ name: "workspace", deviceId: "flow-device", projectId: "p", workspaceId: "child", agent: "project-pin" }));
+      await page.evaluate(() => window.__flowNavigate({ name: "workspace", deviceId: "flow-device", projectId: "p", workspaceId: "child", agent: "child-agent" }));
       await page.locator('[data-agent="child-agent"]').waitFor();
       expect(await page.locator(CREATED).count()).toBe(0);
       expect(await page.locator(SIBLING).count()).toBe(0);
       expect(await page.locator(CHILD_PIN).count()).toBe(1);
+      await selectAgent(page, CHILD_PIN);
+      expect(await page.locator(".thread-items").textContent()).toContain("Cached Build: Build coordinator");
+      await page.locator(INPUT).fill("Check this child from the coordinator conversation");
+      await page.locator(".composer-send").click();
+      await page.waitForFunction(() => window.__flowCalls.some((call) => call.method === "thread.post"
+        && call.params.body === "Check this child from the coordinator conversation"));
+      const childPost = (await callsTo(page, "thread.post")).find((call) => call.params.body === "Check this child from the coordinator conversation");
+      expect(childPost.params).toMatchObject({ entity_id: "project-owner", agent_id: "project-pin", conversation_id: "conversation-project-pin" });
+      expect(await page.locator(CREATED).count()).toBe(0);
+      expect(await page.locator(SIBLING).count()).toBe(0);
       await page.evaluate(async () => {
         const route = await window.__layoutModules.returnRoute.projectReturnRoute(window.__flowDevices["flow-device"].record);
         await window.__flowNavigate({ ...route, agent: "project-created" });
@@ -152,7 +163,12 @@ for (const width of [390, 1280]) {
       await page.evaluate(() => window.__flowNavigate({ name: "project", deviceId: "flow-device", projectId: "p", tab: "changes", sourceId: "docs", agent: "project-created" }));
       await page.locator(INPUT).waitFor();
       await settled(page);
+      // The shared Git pane holds async repaints while a commit draft exists.
+      // Explicitly revisit Docs to paint its retained body with that draft.
+      await page.locator('[data-directory="code"]').click();
+      await page.locator('[data-directory="docs"]').click();
       if (!await page.locator(INPUT).isVisible()) await selectAgent(page, CREATED);
+      await page.waitForFunction(() => document.querySelector('[data-surface="docs"]')?.textContent.includes("shared source wording"));
       await captureLayout(page, `538-agent-separator-${width}.png`);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.locator(".rail-remove").click();
@@ -273,5 +289,48 @@ it("keeps plain sources usable and commits an unborn secondary without fabricati
     await page.locator('[data-surface="unborn"] .csbox-actions button').filter({ hasText: "Commit" }).click();
     await page.waitForFunction(() => window.__flowCalls.some((call) => call.method === "git.commit"));
     expect((await callsTo(page, "git.commit"))[0].params).toEqual({ project_id: "p", source_id: "unborn", source_path: "/fixture/unborn", message: "First source commit" });
+  });
+}, 60_000);
+
+// Frozen pre-project-worker requests replay the legacy client contract. The
+// bridge is an isolated protocol fixture, not an old executable or live device.
+const LEGACY_PROJECT_REQUESTS = [
+  { method: "git.status", params: { project_id: "p" } },
+  { method: "fs.read", params: { project_id: "p", path: "README.md" } },
+  { method: "agent.list", params: { entity_id: "project-owner" } },
+  { method: "thread.post", params: { entity_id: "project-owner", agent_id: "project-pin",
+    conversation_id: "conversation-project-pin", body: "Legacy pin message" } },
+].map((request) => Object.freeze({ ...request, params: Object.freeze(request.params) }));
+
+it.each([false, true])("replays the frozen legacy client contract against a %s worker-capable protocol fixture", async (supported) => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountProjectFlow(page, basePath, { supported });
+    const result = await page.evaluate(async ({ requests, supported }) => {
+      // The current production adapter negotiates either frozen old greeting
+      // or the new greeting while these legacy caller bytes stay unchanged.
+      const context = window.__layoutModules.contexts.knownDeviceContext("flow-device");
+      const replies = [];
+      const first = window.__flowCalls.length;
+      for (const request of requests) replies.push(await context.rpc(request.method, request.params));
+      const calls = window.__flowCalls.slice(first);
+      const forbidden = [];
+      if (!supported) {
+        for (const params of [{ project_id: "p", source_id: "code" }, { project_id: "p", source_path: "/fixture/code" }]) {
+          try { await window.__flowCall("flow-device", "git.status", params); forbidden.push("accepted"); }
+          catch { forbidden.push("refused"); }
+        }
+      }
+      return { replies, calls, forbidden };
+    }, { requests: LEGACY_PROJECT_REQUESTS, supported });
+    expect(result.calls).toEqual(LEGACY_PROJECT_REQUESTS.map((request) => ({ deviceId: "flow-device", ...request })));
+    expect(result.replies[0].branch).toBe("main");
+    expect(result.replies[1].revision).toBe("revision-1");
+    expect(result.replies[2].agents.map((agent) => agent.id)).toEqual(["project-pin"]);
+    expect(result.replies[3]).toMatchObject({ entity_id: "project-owner", agent_id: "project-pin", conversation_id: "conversation-project-pin" });
+    if (!supported) {
+      expect(result.replies[2]).not.toHaveProperty("pinned_agent_id");
+      expect(result.replies[2].agents[0]).not.toHaveProperty("project_role");
+      expect(result.forbidden).toEqual(["refused", "refused"]);
+    }
   });
 }, 60_000);

@@ -83,12 +83,20 @@ async function seedFlow({ supported, greeting, theme }) {
   window.__flowCall = async (deviceId, method, params = {}) => {
     const held = window.__flowDevices[deviceId];
     window.__flowCalls.push({ deviceId, method, params });
+    if (!held.supported && ["source_id", "source_path", "include_project_workers", "project_role"].some((key) => Object.hasOwn(params, key))) {
+      throw new Error("Legacy protocol fixture refuses project source and worker fields");
+    }
     const sourceId = params.source_id || "code";
     if (method === "session.hello") return { api_version: held.supported ? "3.22.0" : "3.20.0", capabilities: supportFor(held.supported), push_events: false };
     if (method === "models.list") return { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] };
-    if (method === "agent.list") return params.entity_id === "child-owner"
-      ? { entity_id: "child-owner", agents: [agent("child-agent", "Isolated editor", null)] }
-      : params.include_project_workers ? held.roster : { ...held.roster, agents: [pin] };
+    if (method === "agent.list") {
+      if (params.entity_id === "child-owner") return { entity_id: "child-owner", agents: [agent("child-agent", "Isolated editor", null)] };
+      if (params.include_project_workers) return held.roster;
+      if (held.supported) return { ...held.roster, agents: [pin] };
+      const legacyPin = { ...pin };
+      delete legacyPin.project_role;
+      return { entity_id: "project-owner", agents: [legacyPin] };
+    }
     if (method === "agent.add") {
       const created = agent("project-created", params.name, "worker");
       held.roster = { ...held.roster, agents: [created, ...held.roster.agents] };

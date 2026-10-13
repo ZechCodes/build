@@ -11,6 +11,33 @@ Sign-in opens the existing passkey flow in the system browser through Skrift's
 OAuth 2.0 Authorization Code flow with PKCE. Access and refresh tokens remain in
 the Electron main process and are never exposed to the hosted renderer.
 
+The refresh token is encrypted with Electron `safeStorage` and saved as
+`refresh-token.enc` under the app's `userData` directory with mode 0600 (on
+POSIX systems). Startup silently refreshes it before opening the app. Each
+rotated token atomically replaces the previous file. If secure storage is
+unavailable, including Linux's `basic_text` fallback, credentials remain in
+memory and the next launch requires browser sign-in. See Electron's
+[safeStorage documentation](https://www.electronjs.org/docs/latest/api/safe-storage)
+for the OS key providers and protection boundaries.
+
+The server's pinned Skrift 0.2.0a10 implementation gives refresh tokens a
+**30-day sliding lifetime**, and access tokens a 15-minute lifetime. Each
+successful refresh issues a replacement valid for another 30 days. With secure
+storage available, you stay signed in across launches for up to 30 days since
+the last successful refresh; using the app regularly extends that period.
+Expiry or revocation (`invalid_grant`) clears the saved token and opens browser
+sign-in. A network/server failure retains the token and offers a refresh retry;
+it does not start browser sign-in. A failed response after server rotation can
+still require sign-in on retry because the previous token is already invalid.
+
+**Account → Sign Out** clears the saved token, credentials and refresh timer,
+closes the app window, and quits. This signs out this desktop installation;
+it does not sign out the system browser or revoke other sessions. If the disk
+cannot be cleared, the app reports that sign-out failed before quitting.
+
+Authentication regression tests stub Electron, encryption, token HTTP responses,
+browser handoff and timers. They never start Electron or perform a real sign-in.
+
 ## Develop
 
 ```bash

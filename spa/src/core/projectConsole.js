@@ -25,7 +25,7 @@ export function mountProjectConsole(host, context) {
   const address = (scope) => ({ deviceId: context.deviceId, entityId: directoryCacheId(scope), kind: "terminals" });
   const projectsAddress = { deviceId: context.deviceId, entityId: "", kind: "projects" };
   const state = { disposed: false, sources: [], tabs: [], selected: null, sourceId: null, supported: false,
-    size: "collapsed", reopen: "half", pane: null, paneKey: null, mounting: 0, listeners: new Set(), records: new Map() };
+    size: "collapsed", reopen: "half", pane: null, paneKey: null, mountAbort: null, mounting: 0, listeners: new Set(), records: new Map() };
   let reading = null;
   let again = false;
   let uiReady = false;
@@ -46,19 +46,22 @@ export function mountProjectConsole(host, context) {
 
   function disposePane() {
     state.mounting += 1;
+    state.mountAbort?.abort();
     state.pane?.dispose();
     if (state.paneKey) manager.detach(state.paneKey.termId);
-    state.pane = null; state.paneKey = null;
+    state.pane = null; state.paneKey = null; state.mountAbort = null;
   }
 
   async function mountPane(region, tab) {
     disposePane();
     state.paneKey = tab;
+    state.mountAbort = new AbortController();
     const generation = state.mounting;
     region.innerHTML = '<div class="termpane console-pane"></div>';
     const target = region.firstElementChild;
     try {
-      const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, deviceId: context.deviceId, stands: () => active() && generation === state.mounting, onExit: () => void remove(tab) });
+      const pane = await mountUserTerminalPane(target, tab.termId, { scope: tab.scope, deviceId: context.deviceId, signal: state.mountAbort.signal,
+        stands: () => active() && generation === state.mounting, onExit: () => void remove(tab) });
       if (state.disposed || generation !== state.mounting) { pane.dispose(); return; }
       state.pane = pane;
     } catch (error) {

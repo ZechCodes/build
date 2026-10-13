@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { assigneePickerBodyHtml, openAssigneePicker } from "../src/core/trackerAssigneePicker.js";
+import { writeTaskRecord } from "../src/core/trackerCache.js";
 import { assigneeOptions } from "../src/core/trackerAssignee.js";
 import { emptyAssigneeDraft } from "../src/core/trackerAssigneeControl.js";
 
@@ -47,6 +48,28 @@ describe("waiting assignment form", () => {
     expect(document.querySelector("#task-assign-note").value).toBe("Check the closed prerequisite");
     expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
     expect(document.querySelector(".create-error").textContent).toMatch(/update|bridge/i);
+  });
+
+  it("retains a ready form when cached facts reblock it before submission to an older greeting", async () => {
+    const task = { id: "task-reblocked", project_id: "project", number: 2,
+      title: "Build it", dependencies: { blocked: false, waiting_on: [] } };
+    await writeTaskRecord("device", "project", task.id, { task, timeline: [] });
+    const call = vi.fn();
+    handle = openAssigneePicker({ deviceId: "device", projectId: "project", task,
+      options: assigneeOptions([]), current: "new_workspace", callRpc: call });
+    const note = document.querySelector("#task-assign-note");
+    note.value = "Assess the prerequisite";
+    note.dispatchEvent(new Event("input"));
+    await writeTaskRecord("device", "project", task.id, {
+      task: { ...task, dependencies: { blocked: true, waiting_on: [{ task_id: "new-prerequisite", resolved: false }] } }, timeline: [],
+    });
+    greeting.supported = false;
+    document.querySelector("[data-assign-go]").click();
+    await settle();
+    expect(call).not.toHaveBeenCalled();
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
   });
 
   it("accepts a saved creating assignment with a null dispatch", async () => {

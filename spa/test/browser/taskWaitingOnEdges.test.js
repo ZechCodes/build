@@ -182,7 +182,7 @@ it("keeps the picker draft when cached closure resolution changes and explains r
 
 it("keeps legacy assignment usable on an older greeting while hiding edge controls", async () => {
   await session.withPage(async ({ page, basePath }) => {
-    await mountWaitingOnFixture(page, basePath, { old: true });
+    await mountWaitingOnFixture(page, basePath, { old: true, legacy: true });
     expect(await page.locator("[data-task-waiting-on]").isVisible()).toBe(false);
     await page.locator("[data-task-assign]").click();
     await page.locator("#task-assign-assignee").selectOption("user");
@@ -193,5 +193,23 @@ it("keeps legacy assignment usable on an older greeting while hiding edge contro
       task_id: "task-waiting", assignee: { kind: "user" },
     });
     expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method.startsWith("tasks.waiting_on.") || call.params.retry_deferred_id || call.params.waiting_on))).toEqual([]);
+  });
+}, 30_000);
+
+
+it("retains cached waiting copy and refuses an assignment under an older greeting", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWaitingOnFixture(page, basePath, { old: true });
+    expect(await page.locator("[data-task-waiting-on]").isVisible()).toBe(false);
+    await page.locator("[data-task-assign]").click();
+    await page.locator("#task-assign-assignee").selectOption("user");
+    await page.locator("#task-assign-note").fill("Keep the waiting assignment");
+    expect(await page.locator("#task-assign-scrim").textContent()).toContain("Done or closed");
+    await page.locator("[data-assign-go]").click();
+    await page.locator("#task-assign-scrim .create-error").waitFor({ state: "visible" });
+    expect(await page.locator("#task-assign-scrim .create-error").textContent()).toMatch(/update.*bridge/i);
+    expect(await page.locator("#task-assign-note").inputValue()).toBe("Keep the waiting assignment");
+    expect(await page.locator("#task-assign-assignee").inputValue()).toBe("user");
+    expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method === "tasks.assign" || call.method.startsWith("tasks.waiting_on.")))).toEqual([]);
   });
 }, 30_000);

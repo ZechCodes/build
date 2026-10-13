@@ -23,6 +23,7 @@ import {
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { readTaskRecord } from "./trackerCache.js";
 import { createTaskWaitingOnActions } from "./taskWaitingOnActions.js";
 
 const PREFIX = "task-assign";
@@ -66,6 +67,12 @@ function prerequisiteCopy(state) {
   if (!state.task.dependencies) return "";
   const user = state.draft.optionId === "user" ? " No agent starts for a user assignment." : "";
   return `<p class="sub task-assign-prerequisites">Prerequisites must be Done or closed. Requested workspaces and agents are created when the task unblocks. The assigned agent assesses prerequisites closed without Done before proceeding.${user}</p>`;
+}
+
+async function assignmentNeedsWaitingOn(deviceId, projectId, taskId, capturedWait, assignee) {
+  if (assignee === null) return false;
+  const cached = await readTaskRecord(deviceId, projectId, taskId);
+  return capturedWait || Boolean(cached?.task?.dependencies?.blocked);
 }
 
 export function assigneePickerBodyHtml(state) {
@@ -132,7 +139,8 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
         taskId: task.id,
         note: state.note,
       });
-      const answer = await actions.assign(params, { requiresWaitingOn: requiresWaitingOn && params.assignee !== null });
+      const waiting = await assignmentNeedsWaitingOn(deviceId, projectId, task.id, requiresWaitingOn, params.assignee);
+      const answer = await actions.assign(params, { requiresWaitingOn: waiting });
       if (dismissed) return;
       await close();
       onAssigned?.(answer);

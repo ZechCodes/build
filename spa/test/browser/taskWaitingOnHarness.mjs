@@ -2,7 +2,7 @@ import { loadBrowserModules, mountLayout } from "./layoutHarness.mjs";
 
 /** A fixture bridge with the real greeting authority, cache and task-page code.
  * Only the authenticated device recovery lifecycle is replaced by deviceShim. */
-export async function mountWaitingOnFixture(page, basePath, { theme = "light", assigned = false, failed = false, old = false, cachedOnly = false } = {}) {
+export async function mountWaitingOnFixture(page, basePath, { theme = "light", assigned = false, failed = false, old = false, legacy = false, cachedOnly = false } = {}) {
   await mountLayout(page, '<main id="task"></main>', {
     basePath,
     styles: `@import url("${basePath}src/styles/tasks.css"); body{display:block;margin:0;padding:12px} #task{height:calc(100dvh - 24px);overflow:auto;max-width:1240px;margin:auto}`,
@@ -11,7 +11,7 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
     cache: "src/core/trackerCache.js", taskPage: "src/core/trackerTaskPage.js",
     contexts: "src/core/deviceContexts.js", events: "src/core/changeEvents.js",
   }, basePath);
-  await page.evaluate(async ({ theme, assigned, failed, old, cachedOnly }) => {
+  await page.evaluate(async ({ theme, assigned, failed, old, legacy, cachedOnly }) => {
     document.documentElement.dataset.theme = theme;
     const { cache, taskPage, contexts, events } = window.__layoutModules;
     const deviceId = "device-waiting";
@@ -42,6 +42,7 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
         ...(failed ? { error: "Could not start the saved assignment" } : {}),
       } } : {}),
     });
+    if (legacy) delete current.dependencies;
     const tasks = [current, blocker, closed, done, hostile, candidate, foreign];
     const fixture = { tasks, current, calls: [], navigations: [], refusal: null, readsHeld: cachedOnly, old };
     fixture.call = async (method, params) => {
@@ -100,6 +101,6 @@ export async function mountWaitingOnFixture(page, basePath, { theme = "light", a
       navigate: (url) => fixture.navigations.push(url),
     });
     window.__waiting = fixture;
-  }, { theme, assigned, failed, old, cachedOnly });
+  }, { theme, assigned, failed, old, legacy, cachedOnly });
   await page.locator(".task-page-title").waitFor({ timeout: 5000 });
 }

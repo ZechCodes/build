@@ -42,6 +42,23 @@ it("preserves a commit-only deep link until the default source resolves", async 
   expect(selected).toHaveBeenLastCalledWith("code", "abc");
 });
 
+it.each([null, { id: "p", sources: [] }, project, { id: "p", sources: [{ id: "docs", is_git: true }] }])("keeps an explicit source and commit pending until their source location resolves (%j)", async (initial) => {
+  const selected = mount(initial, { sourceId: "docs", commit: "abc" });
+  await vi.waitFor(() => expect(host.querySelector("[data-project-source-context]").textContent).not.toBe(""));
+  expect(selected).not.toHaveBeenCalled();
+  const resolved = { ...project, sources: [...project.sources, { id: "docs", name: "Docs", path: "/docs", is_git: true }] };
+  handle.update(resolved);
+  await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
+  const options = mountWorkspaceChanges.mock.calls.at(-1)[1];
+  expect(options.current).toBe("docs");
+  expect(options.git("docs").requestedCommit).toBe("abc");
+  expect(selected).toHaveBeenLastCalledWith("docs", "abc");
+  handle.update({ ...resolved, name: "Relabelled project" });
+  expect(options.git("docs").requestedCommit).toBe("abc");
+  handle.update(project);
+  expect(selected).toHaveBeenLastCalledWith("code", null);
+});
+
 it("visibly recovers persisted moved and removed source drafts without retargeting them", async () => {
   await writeUiRecord(draftAddress("d", "p", "code", "/old-code"), { text: "Moved draft" });
   await writeUiRecord(draftAddress("d", "p", "docs", "/docs"), { text: "Removed draft" });

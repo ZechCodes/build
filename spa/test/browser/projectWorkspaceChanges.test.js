@@ -21,7 +21,7 @@ async function mountProject(page, basePath, options = {}) {
   await page.evaluate(seedProject, { theme: "dark", sourceId: "code", supported: true, greeting: true, patch: PATCH, ...options });
 }
 
-async function seedProject({ theme, sourceId, supported, greeting, commit, patch }) {
+async function seedProject({ theme, sourceId, supported, greeting, commit, patch, lateProject }) {
   document.documentElement.dataset.theme = theme;
   document.head.insertAdjacentHTML("afterbegin", '<meta name="viewport" content="width=device-width, initial-scale=1">');
   const { app, project, contexts, cache, feed, adapter, support, filesSupport, directory, changes } = window.__layoutModules;
@@ -61,7 +61,7 @@ async function seedProject({ theme, sourceId, supported, greeting, commit, patch
     window.__project = { ...window.__project, sources };
     await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, [window.__project]);
   };
-  await window.__writeProject(window.__project.sources);
+  if (!lateProject) await window.__writeProject(window.__project.sources);
   for (const source of window.__project.sources.filter((source) => source.is_git)) {
     const scope = supported ? { project_id: "p", source_id: source.id, source_path: source.path } : { project_id: "p" };
     const entityId = directory.directoryCacheId(scope);
@@ -85,6 +85,20 @@ it("opens a source-qualified commit deep link and carries its diff location to F
     expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ tab: "files", sourceId: "docs", file: "README.md", line: 7 });
     expect(await page.evaluate(() => location.hash)).toContain("/files?source=docs&path=README.md&line=7");
     expect(await page.evaluate(() => document.querySelector("#agent-rail") === window.__chat && document.querySelector("#console") === window.__console)).toBe(true);
+  });
+}, 60_000);
+
+it("resolves an explicit source and commit when the cached project arrives after mount", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountProject(page, basePath, { sourceId: "docs", commit: COMMIT, lateProject: true });
+    await page.waitForFunction(() => document.querySelector("[data-project-source-context]")?.textContent);
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ sourceId: "docs", commit: COMMIT });
+    expect(await page.locator('[data-surface="code"]').count()).toBe(0);
+    await page.evaluate(() => window.__writeProject(window.__project.sources));
+    await page.locator(`[data-surface="docs"] .commitheader[data-hash="${COMMIT}"]`).waitFor({ timeout: 3000 });
+    expect(await page.locator('[data-directory="docs"]').getAttribute("aria-selected")).toBe("true");
+    expect(await page.evaluate(() => location.hash)).toContain(`/changes?source=docs&commit=${COMMIT}`);
+    expect(await page.evaluate(() => window.__calls.find((call) => call.method === "git.show").params)).toMatchObject({ source_id: "docs", source_path: "/docs", hash: COMMIT });
   });
 }, 60_000);
 

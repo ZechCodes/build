@@ -21,12 +21,21 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   let pending = false;
   let visible = true;
   let lastSelection = null;
+  let supportLoaded = false;
   const commits = new Map();
   let defaultCommit = !route.sourceId ? route.commit : null;
+  let requestedSource = route.sourceId ? { id: route.sourceId, commit: route.commit } : null;
   const sourceOf = (id) => project?.sources?.find((source) => source.id === id)
     || (!project?.sources && id === "primary" ? { id, name: project?.name, path: project?.path } : null);
   const sourceKey = (id) => JSON.stringify([id, sourceOf(id)?.path]);
-  if (route.commit && standing) commits.set(sourceKey(standing), route.commit);
+  const resolveRequestedSource = () => {
+    if (!requestedSource) return true;
+    if (!sourceOf(requestedSource.id)?.path) return false;
+    standing = requestedSource.id;
+    if (requestedSource.commit) commits.set(sourceKey(standing), requestedSource.commit);
+    requestedSource = null;
+    return true;
+  };
   const rpcFor = (id) => projectChangesRpc(context, sourceOf(id), { projectId: route.projectId, currentProject: () => project });
   const paintContext = () => {
     const source = sourceOf(standing);
@@ -53,6 +62,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     navigate: { openFile: ({ path, line }) => onOpenFile({ sourceId: id, path, line }) },
   });
   function reconcile() {
+    if (!resolveRequestedSource()) { paintContext(); return; }
     const directories = projectChangesDirectories(project, route.projectId, support.projectSources);
     if (!directories.some((directory) => directory.sourceId === standing)) standing = directories[0]?.sourceId || null;
     if (defaultCommit && standing) {
@@ -84,6 +94,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     const next = await readProjectChangesSupport(context.deviceId);
     if (disposed || read !== revision) return;
     support = next;
+    supportLoaded = true;
     reconcile();
   };
   const unwatch = subscribeCache({ deviceId: context.deviceId }, (address) => {
@@ -91,7 +102,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
   });
   void readSupport();
   return {
-    update(next) { project = next; drafts.update(next); if (pane) reconcile(); },
+    update(next) { project = next; drafts.update(next); if (supportLoaded) reconcile(); },
     setVisible(shown) { visible = shown; pane?.setVisible?.(shown); },
     dispose() { disposed = true; unwatch(); drafts.dispose(); pane?.dispose(); },
   };

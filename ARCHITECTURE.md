@@ -2001,8 +2001,12 @@ address. `projectChangesDrafts.js` exposes those messages in read-only recovery
 fields labelled with the old path, for explicit copying; it never attaches them
 to a replacement source's commit action. Recovery listens to UI-store writes so
 a draft flushed during reconciliation becomes visible, and a restored exact
-source/location resumes normal draft ownership. A commit-only Changes deep link
-waits for the default source to resolve from the project cache.
+source/location resumes normal draft ownership. Source/location namespaces are
+independent of bridge capabilities. Older project-only drafts appear as read-only
+recovery fields with an unknown source location, for explicit copying rather than
+assignment to today's primary source. Changes deep links keep their requested
+source and commit until the source location resolves from the project cache;
+commit-only links wait for the default source.
 
 Source Git records use `directoryCacheId`'s project/source/captured-location
 entity inside the device cache scope; status keys alone never select a source.

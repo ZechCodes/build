@@ -105,6 +105,40 @@ fn stored_project_worker_purpose_backfills_older_task_identities() {
     let read = project
         .state
         .handle(req("tasks.get", json!({ "task_id": task })));
+    let identity = &read["result"]["task"]["identities"][&worker];
+    assert_worker_identity(identity, &worker, false);
+    assert_eq!(identity["workspace_id"], Value::Null);
+    assert_eq!(identity["workspace_name"], Value::Null);
+    let saved = project
+        .state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_task(&task)
+        .unwrap()
+        .unwrap();
+    let saved_identity = json!(saved.identities[&worker]);
+    assert_worker_identity(&saved_identity, &worker, false);
+    assert_eq!(saved_identity["workspace_id"], Value::Null);
+    assert_eq!(saved_identity["workspace_name"], Value::Null);
+}
+
+#[test]
+fn stored_project_purpose_removes_legacy_workspace_identity_fields() {
+    let mut project = WorkerProject::new();
+    let (worker, task) = unnamed_worker_task(&mut project);
+    let store = project.state.tracker_store().unwrap();
+    let mut saved = store.load_tracker_task(&task).unwrap().unwrap();
+    for agent in [&worker, &project.pin] {
+        let identity = saved.identities.get_mut(agent).unwrap();
+        identity.project_role = None;
+        identity.workspace_id = Some("legacy-synthetic-workspace".into());
+        identity.workspace_name = Some("project-scratch".into());
+    }
+    store.save_tracker_task_activity(&saved, &[], &[]).unwrap();
+    project.state.runs.remove(&project.owner);
+    let read = project
+        .state
+        .handle(req("tasks.get", json!({ "task_id": task })));
     assert_worker_identity(
         &read["result"]["task"]["identities"][&worker],
         &worker,
@@ -117,7 +151,17 @@ fn stored_project_worker_purpose_backfills_older_task_identities() {
         .load_tracker_task(&task)
         .unwrap()
         .unwrap();
-    assert_worker_identity(&json!(saved.identities[&worker]), &worker, false);
+    for agent in [&worker, &project.pin] {
+        let identity = &read["result"]["task"]["identities"][agent];
+        assert_eq!(identity["workspace_id"], Value::Null);
+        assert_eq!(identity["workspace_name"], Value::Null);
+        assert_eq!(saved.identities[agent].workspace_id, None);
+        assert_eq!(saved.identities[agent].workspace_name, None);
+    }
+    assert_eq!(
+        read["result"]["task"]["identities"][&project.pin]["project_role"],
+        "coordinator"
+    );
 }
 
 #[test]

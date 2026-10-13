@@ -102,21 +102,22 @@ fn retain_known_fields(
     mut current: TaskAgentIdentity,
 ) -> TaskAgentIdentity {
     current.project_role = current.project_role.or(prior.project_role);
-    if current.available {
-        return current;
-    }
-    TaskAgentIdentity {
-        agent_id: current.agent_id,
-        name: current.name.or_else(|| prior.name.clone()),
-        project_role: current.project_role,
-        ordinal: current.ordinal.or(prior.ordinal),
-        workspace_id: current.workspace_id.or_else(|| prior.workspace_id.clone()),
-        workspace_name: current
+    if !current.available {
+        current.name = current.name.or_else(|| prior.name.clone());
+        current.ordinal = current.ordinal.or(prior.ordinal);
+        current.workspace_id = current.workspace_id.or_else(|| prior.workspace_id.clone());
+        current.workspace_name = current
             .workspace_name
-            .or_else(|| prior.workspace_name.clone()),
-        provider: current.provider.or_else(|| prior.provider.clone()),
-        available: false,
+            .or_else(|| prior.workspace_name.clone());
+        current.provider = current.provider.or_else(|| prior.provider.clone());
     }
+    // Older snapshots mistook the project owner's scratch folder for a
+    // workspace. Durable project purpose supersedes those legacy fields.
+    if current.project_role.is_some() {
+        current.workspace_id = None;
+        current.workspace_name = None;
+    }
+    current
 }
 
 /// Every agent the stored plans name, as the identity a task shows.
@@ -293,8 +294,15 @@ impl AppState {
                     name: member.name,
                     project_role: member.project_role,
                     ordinal: Some(member.ordinal),
-                    workspace_id: workspace_id.clone(),
-                    workspace_name: Some(run.worktree_name.clone()),
+                    // A project owner's scratch folder is not a workspace.
+                    // Persisted purpose distinguishes it from genuine members.
+                    workspace_id: workspace_id
+                        .clone()
+                        .filter(|_| member.project_role.is_none()),
+                    workspace_name: member
+                        .project_role
+                        .is_none()
+                        .then(|| run.worktree_name.clone()),
                     provider: Some(member.provider.wire_id().to_string()),
                     available: false,
                 })

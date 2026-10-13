@@ -70,7 +70,10 @@ export async function readTaskWaitingOnEverSupported(deviceId) {
   if (seen.has(deviceId)) return true;
   const era = accountEra;
   const { committed, result } = await readCachedOutcome(taskWaitingOnSupportAddress(deviceId));
-  if (!committed || era !== accountEra) return null;
+  if (era !== accountEra) return null;
+  // Channel evidence received during the read outranks its older record.
+  if (seen.has(deviceId)) return true;
+  if (!committed) return null;
   const history = historyOf(result?.value);
   if (history === true) seen.add(deviceId);
   return uncertain.has(deviceId) && history !== true ? null : history;

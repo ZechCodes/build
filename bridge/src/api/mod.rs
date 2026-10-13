@@ -120,7 +120,6 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "tasks.doneSinceLeft",
     "tasks.listPaged", // Since 1.25.0: limit/cursor and next_cursor on tasks.list.
     "tasks.unreadCounts", // Since 1.29.0: unread_count on a watched task (tasks.list, tasks.get).
-    "tasks.waitingOn", // Since 3.21.0: scoped dependencies, saved delivery/retry and quiet notices (#558/#562).
     "tasks.watching",
     "messages.context",
     "messages.fromAgent",

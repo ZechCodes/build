@@ -2206,12 +2206,24 @@ In practice:
   the per-device `task-waiting-on-support` cache record beside other capability
   flags. `waitingOn` describes the latest greeting for rendering Waiting on /
   Blocks controls; `everWaitingOn` records that this device has advertised
-  `tasks.waitingOn` at least once. An admitted capable greeting sets history,
-  including when a later greeting overtakes its storage transaction. Incapable
-  greetings never clear it. Existing cached `waitingOn: true` records count as
+  `tasks.waitingOn` at least once. Every authenticated capable greeting for the
+  original account/device sets history, even if a newer greeting has already
+  superseded its hello or overtakes its storage transaction. Incapable
+  greetings never clear it. Evidence updates in memory before persistence;
+  a refused write cannot erase it. Admission distinguishes a committed absent
+  record from an unavailable/error read; unknown or malformed history refuses
+  new-workspace assignment under an incapable greeting with the update message
+  and a retry/refresh hint. Account reset retires pending evidence and its
+  in-memory history. Existing cached `waitingOn: true` records count as
   history without a schema bump. Task lists, detail and reverse pages remain
   the sources of displayed dependency facts; assignment admission does not
   arbitrate task replicas or maintain per-task dependency knowledge.
+  **Accepted residual risk:** history belongs to the paired device UUID.
+  Re-pairing the same machine creates a fresh UUID, so its previous capability
+  history does not follow it. Downgrading the bridge and then re-pairing it are
+  two deliberate actions on an unsupported downgrade path; the old bridge
+  cannot enforce waiting-on prerequisites whatever the client does. This
+  limitation is accepted; the client does not link identities across pairings.
 - **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
   keeps unsent drafts, folds, menus and the other `ui-*` records in their own
   database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
@@ -2674,7 +2686,9 @@ refuses when that device cannot answer.
   dependency writes, reverse reads, saved-id retries and workspace assignment.
   A capable current greeting admits assignment normally: the bridge enforces
   prerequisites. An incapable greeting admits legacy workspace assignment only
-  if the device has never advertised waiting-on support. A previously capable
+  if the history confirms the device has never advertised waiting-on support.
+  Failed history reads/writes and unknown records fail closed, with a retry or
+  refresh hint alongside the update message. A previously capable
   device is downgraded: board/list and task-page new-workspace pickers refuse
   with an inline update message and retain note/selection without sending.
   Even a ready task is refused on that device; legacy writes can erase graph

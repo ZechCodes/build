@@ -11,7 +11,7 @@ const hasCurrentSupport = (deviceId) => Boolean(contextFor(deviceId)) && bridgeC
 
 function requireSupport(capable, createsWorkspace, seen, requiresWaitingOn) {
   if (capable) return;
-  if (createsWorkspace && seen) throw new Error(TASK_WAITING_ON_DOWNGRADED);
+  if (createsWorkspace && seen !== false) throw new Error(TASK_WAITING_ON_DOWNGRADED);
   if (requiresWaitingOn) throw new Error(TASK_WAITING_ON_UPDATE);
 }
 

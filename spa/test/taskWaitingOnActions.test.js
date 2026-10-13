@@ -98,3 +98,10 @@ it("keeps established non-workspace assignment and unassignment shapes on a down
   }
   expect(mocks.seen).not.toHaveBeenCalled();
 });
+
+it.each([null, undefined])("refuses unknown history (%s) and offers retry/refresh", async (history) => {
+  mocks.capabilities = { tasks: {} };
+  mocks.seen.mockResolvedValue(history);
+  await expect(actions.assign({ assignee: { kind: "new_workspace" } })).rejects.toThrow(/retry|refresh/i);
+  expect(call).not.toHaveBeenCalled();
+});

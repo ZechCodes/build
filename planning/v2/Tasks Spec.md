@@ -670,8 +670,13 @@ when the graph, deferred delivery and read summaries all work. New verbs also ha
 their own capability names. Cached capabilities govern rendering; the current
 greeting must advertise the feature before sending any new parameter. An older
 bridge receives ordinary new-workspace assignment only if it has never
-advertised `tasks.waitingOn`. The SPA persists the highest support seen per
-device beside its cached capability flags. A previously capable device with
+advertised `tasks.waitingOn`, as confirmed by a successful history read. The SPA
+persists the highest support seen per device beside its cached capability flags.
+An authenticated capable hello remains evidence even if a newer hello superseded
+it; this does not grant the old greeting dispatch or rendering authority. Evidence
+updates in memory even if its put fails. Unknown/malformed history or failed
+history reads/writes refuse new-workspace assignment under an incapable greeting
+with the update message and a retry/refresh hint. A previously capable device with
 an incapable current greeting is downgraded: board/list and task-page pickers
 refuse new-workspace assignment with an inline update message and retain their
 drafts. Current capable greetings admit assignment normally; the bridge

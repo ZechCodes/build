@@ -897,7 +897,8 @@ function abandonBridge(state) {
  * @param deviceId the machine this session is on; every fact the greeting
  *   settles is kept under it.
  * @param isCurrent whether the session greeted still owns this device when its
- *   greeting lands; a late one is dropped whole.
+ *   greeting lands; a late one retains only historical capability evidence.
+ * @param isHistoryCurrent whether its original account/device still exists.
  * @param onGreeting hears the greeting a current session got, as sent.
  * @param install is handed what `selectAdapter` picked — `{ create }` or
  *   `{ unsupported }` — and returns the adapter now installed, or null. The
@@ -909,12 +910,14 @@ export async function greetBridge(
   {
     deviceId = null,
     isCurrent = () => true,
+    isHistoryCurrent,
     onGreeting = () => {},
     install = (selection) => (selection.unsupported ? null : selection.create(call)),
     strict = false,
   } = {},
 ) {
   const { greeting, current } = await negotiate(call, isCurrent, strict);
+  rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent);
   if (!current || !isCurrent()) return changeEventsArmed(deviceId);
   const adapter = install(selectAdapter(greeting));
   // Installing announces device state; a listener may issue another greeting
@@ -922,6 +925,14 @@ export async function greetBridge(
   if (!isCurrent()) return changeEventsArmed(deviceId);
   rememberGreetedReviews(deviceId, adapter, isCurrent);
   return publishGreeting(call, deviceId, greeting, adapter, onGreeting);
+}
+
+function rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent) {
+  // Hello already rides the authenticated device session. Supersession revokes
+  // its dispatch authority, but does not erase its capability evidence.
+  if (isHistoryCurrent && !isHistoryCurrent()) return;
+  const waitingOn = Array.isArray(greeting?.capabilities) && greeting.capabilities.includes("tasks.waitingOn");
+  void rememberTaskWaitingOnSupport(deviceId, { tasks: { waitingOn } }, isCurrent);
 }
 
 // Storage recovery must never hold a greeting open. Refresh again after the
@@ -979,7 +990,6 @@ function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
   void rememberFileUploadSupport(deviceId, state.adapter.capabilities);
   // And whether task body writes compare their original hash (#347).
   void rememberTaskChecklistSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
-  void rememberTaskWaitingOnSupport(deviceId, state.adapter.capabilities, () => bridgeFor(deviceId)?.adapter === adapter);
   onGreeting(greeting);
   armChangeEvents(greeting, deviceId);
   adoptGreetedSession(state, call);

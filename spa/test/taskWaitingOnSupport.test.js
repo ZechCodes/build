@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 let support, cache;
 beforeEach(async () => {
@@ -64,7 +64,40 @@ it("remembers an admitted capable greeting even if it is superseded before stora
   expect(await support.readTaskWaitingOnEverSupported("d")).toBe(true);
 });
 
-it("never records an unadmitted stale capable greeting", async () => {
+it("records historical evidence from a superseded capable greeting without rendering it", async () => {
   await support.rememberTaskWaitingOnSupport("d", { tasks: { waitingOn: true } }, () => false);
+  expect(await support.readTaskWaitingOnEverSupported("d")).toBe(true);
+  expect(await support.readTaskWaitingOnSupport("d")).toBe(false);
+});
+
+it("answers unknown when history storage is unavailable", async () => {
+  globalThis.indexedDB = undefined;
+  expect(await support.readTaskWaitingOnEverSupported("d")).toBe(null);
+});
+
+it("answers unknown for a malformed history record", async () => {
+  await cache.writeCached(support.taskWaitingOnSupportAddress("d"), {});
+  expect(await support.readTaskWaitingOnEverSupported("d")).toBe(null);
+});
+
+it("keeps failed-write history unknown until a committed retry, including no-op commits", async () => {
+  const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(() => {
+    throw new DOMException("Refused history", "QuotaExceededError");
+  });
+  try {
+    expect(await support.rememberTaskWaitingOnSupport("d", {})).toBe(false);
+    expect(await support.readTaskWaitingOnEverSupported("d")).toBe(null);
+  } finally { put.mockRestore(); }
+  expect(await support.rememberTaskWaitingOnSupport("d", {})).toBe(true);
+  expect(await support.readTaskWaitingOnEverSupported("d")).toBe(false);
+  expect(await support.rememberTaskWaitingOnSupport("d", {})).toBe(true);
+  expect(await support.readTaskWaitingOnEverSupported("d")).toBe(false);
+});
+
+it("updates capable evidence synchronously and retires pending history on account reset", async () => {
+  const pending = support.rememberTaskWaitingOnSupport("d", { tasks: { waitingOn: true } });
+  expect(await support.readTaskWaitingOnEverSupported("d")).toBe(true);
+  support.resetTaskWaitingOnHistory();
+  await pending;
   expect(await support.readTaskWaitingOnEverSupported("d")).toBe(false);
 });

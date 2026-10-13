@@ -130,7 +130,15 @@ bound. W2 delivery authorization and W3 caller-facing evidence are verified belo
 | TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 / #564 verifies the cached armed/unassigned removal consequence in `taskWaitingOnModel.test.js`, `taskWaitingOnPage.test.js` and keyboard browser cases in `taskWaitingOnEdges.test.js`; removal sends only the edge command and does not invent an assignment or worker. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
 | TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
-| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; a downgraded device cannot receive ordinary new-workspace assignment. | W5 / #564 round 9: `taskWaitingOnSupport.test.js` verifies highest-seen per-device support, incapable greetings, admitted-greeting races, existing cached support and reload. `taskWaitingOnActions.test.js` admits capable/never-upgraded assignment, refuses only previously capable devices, preserves greeting authority, and gates graph verbs/parameters. `taskWaitingAssignmentDowngrade.test.js` contains the six real-picker legacy-erasure reproductions (detail/catalogue/query × absent/first-ready knowledge); `trackerTasksPaneDom.test.js` and `taskWaitingOnEdges.test.js` verify inline board/list/task-page refusal with retained drafts, including ready tasks. Per-task arbitration and dependency-knowledge records are removed. `trackerAssignmentDetailRefresh.test.js` verifies post-assignment trailing detail refresh restores concurrent unread mentions while rejecting the pre-response read. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js`, `taskWaitingOnPage.test.js` and `trackerTaskChecklistDom.test.js` retain cache/reverse-page fences and edge-mutation timeline refresh. Browser fixtures retain escaped titles, same-project keyboard editing, Done/close presentation, navigation, exact saved-id retries and legacy shapes at 390/1280 light/dark. W4 / #563 cache/group evidence and the combined journey remain applicable. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; a downgraded device cannot receive ordinary new-workspace assignment. | W5 / #564 round 10: `taskWaitingAssignmentHistory.test.js` exercises real greeting authority, device RPC and the picker for superseded capable hellos, a refused IndexedDB history put and refused reads, plus capable/confirmed-legacy and retired-account controls. `taskWaitingOnSupport.test.js` verifies monotonic evidence before persistence, failed writes, unknown/unavailable/malformed reads, committed retries/no-ops, account reset, existing cached support and reload. `taskWaitingOnActions.test.js` admits capable/never-upgraded assignment, refuses previously capable devices and unknown history with retry/refresh copy, preserves greeting authority, and gates graph verbs/parameters. `taskWaitingAssignmentDowngrade.test.js` contains the six real-picker legacy-erasure reproductions (detail/catalogue/query × absent/first-ready knowledge); `trackerTasksPaneDom.test.js` and `taskWaitingOnEdges.test.js` verify inline board/list/task-page refusal with retained drafts, including ready tasks. Per-task arbitration and dependency-knowledge records are removed. `trackerAssignmentDetailRefresh.test.js` verifies post-assignment trailing detail refresh restores concurrent unread mentions while rejecting the pre-response read. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js`, `taskWaitingOnPage.test.js` and `trackerTaskChecklistDom.test.js` retain cache/reverse-page fences and edge-mutation timeline refresh. Browser fixtures retain escaped titles, same-project keyboard editing, Done/close presentation, navigation, exact saved-id retries and legacy shapes at 390/1280 light/dark. W4 / #563 cache/group evidence and the combined journey remain applicable. |
+
+TS558-7 accepted residual risk: capability history is keyed by the paired device
+UUID. Re-pairing a machine mints a fresh UUID, so the previous device's history
+does not follow it and a downgraded bridge can appear never upgraded. Downgrading
+the bridge and then re-pairing it are two deliberate actions on an unsupported
+downgrade path; the old bridge cannot enforce waiting-on prerequisites whatever
+the client does. This limitation is accepted, with no identity linking across
+pairings.
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
 gate exit 0 (4,592 library tests passed, 9 ignored; integration tests include
@@ -610,3 +618,28 @@ picker migration/record-ranking cases in `taskWaitingAssignment.test.js` and
 `trackerTasksPaneDom.test.js`. The six writer-loss reproductions and ordinary
 picker refusal/draft tests remain under the device rule. No complexity caps
 or ratchet entries change. Final gate and publication evidence is on #564.
+
+W5 round 10 / #564 (2026-10-13) closes the late authenticated hello and storage
+refusal gaps from round 9. The real greeting-authority/device-RPC/picker
+reproductions failed first on forbidden assignment sends (late capable hello,
+one refused history put, refused history read); the superseded-history and
+unavailable/malformed-history units failed too: **6 failures, exit 1**.
+Historical capability updates synchronously in memory, survives refused puts,
+and is merged monotonically even when hello is already superseded. Current
+rendering and dispatch remain with the newest greeting. Successful absence is
+distinct from read failure; uncertain history fails closed with the same update
+message plus retry/refresh advice. Account reset retires pending and in-memory
+history, and old-account greetings cannot introduce evidence.
+
+Node **22.23.3** / npm **12.0.2**, every gate under `nice -n 10`: transport ci
+`--ignore-scripts`, SPA ci `--legacy-peer-deps`, lint, focused units/browser
+(**19 files / 285 tests**), all three `test:captures` scripts and build exit **0**.
+Extra fixture captures reproduce both late-hello and history-put refusal at
+390/1280 light/dark, retaining the note and selection with zero assignment sends
+(**8 captures**, exit **0**). Complexity caps and ratchet entries are unchanged.
+Semgrep on **47 changed tracked files**, **200 rules / zero findings**, exits
+**0**. The full suite is intentionally deferred to the serial gate. Final
+Gitleaks, diff-check, pushed SHA and snapshot evidence are recorded on #564.
+TS558-7 includes the explicitly accepted re-pair UUID/history loss described
+above; identity linking is outside this fix. No bridge execution, pairing,
+private-directory access, install scripts or independent Astra review occurred.

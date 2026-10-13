@@ -885,7 +885,7 @@ impl DoneServer {
                 // means it is the ONE statement guaranteed to still be
                 // in context when an ambiguous message actually arrives.
                 // A pointer would resolve to nothing exactly then.
-                "description": "Send a message in this thread. The user reads this thread and the Build tasks they are on. In this thread, this tool is the only way they see what you say; terminal output and ordinary assistant responses are not visible to them. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
+                "description": "Send a message in this thread. The user reads this thread and the Build tasks they are on. In this thread, this tool is the only way they see what you say; terminal output and ordinary assistant responses are not visible to them. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task. Comment on the task with comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Every call needs a status: Complete when the objective is met, Blocked when an environment or implementation problem prevents progress, Waiting when you need a user response, or Working for a progress update while you continue. Always call it once with Complete or Blocked as the final outcome.",
                 "inputSchema": Self::message_input_schema()
             }),
             json!({
@@ -1159,7 +1159,7 @@ impl DoneServer {
             }),
             json!({
                 "name": "comment_task",
-                "description": "Say something on a task. This is how progress on a task you were handed becomes visible: the conversation you are in is yours, and the task is where the user and the other agents look. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. When they write on it, reply there. A question asked in your thread is answered in your thread, even when it is about a task. The task is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. When you answer what the user wrote, move it forward: settle the question, make the call, or add the detail that was missing. Do not quote it or say it back. Pass mention_user: true for a decision or feedback you need from the user now; it puts the task in Needs you until they read it. On a comment, notify_user is only for feedback you need from the user; leave it off for progress on a task the user follows, since watching already shows it. A question left only in the task body does not ask them.",
+                "description": "Say something on a task. The task is where the user and the other agents look. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task. Comment on the task with comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working. When they write on it, reply there. A question asked in your thread is answered in your thread, even when it is about a task. The task is also where you ANSWER: a comment on a task you hold is a question, and it is answered here rather than in your own thread. The same goes for asking: a question about a task that came from outside your conversation goes here, because the assigner and the user both read the task and the answer comes back to you. When you answer what the user wrote, move it forward: settle the question, make the call, or add the detail that was missing. Do not quote it or say it back. Pass mention_user: true for a decision or feedback you need from the user now; it puts the task in Needs you until they read it. On a comment, notify_user is only for feedback you need from the user; leave it off for progress on a task the user follows, since watching already shows it. A question left only in the task body does not ask them.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1701,7 +1701,7 @@ impl DoneServer {
             }
         }), compaction::compact_agent_tool(), json!({
             "name": "post_thread_message",
-            "description": "Send a message in your thread with the user. In this thread it is the only way they see what you say. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task: questions, results and meaningful progress, not every step. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
+            "description": "Send a message in your thread with the user. In this thread it is the only way they see what you say. Once the user is on a task (they filed it, commented on it, were asked on it, or asked to follow it), talk to them about it on the task with comment_task. Comment on the task with comment_task when something changes what the reader should know: a decision or finding that changes the plan, a question (use mention_user only when it is the user's call), a handoff, or the final result with its evidence. The board already shows the task's column and assignee; do not comment to say you are still working. A question asked in your thread is answered in your thread, even when it is about a task. When the result is on a task the user is on, the Complete in your thread is one line that points to it. Use status=Complete for an outcome or an answer, Waiting when the next step is the user's call, Blocked when you cannot proceed without them, or Working only while a long read on their question is still going, never as a progress report.",
             "inputSchema": Self::project_message_input_schema()
         }), json!({
             "name": "message_agent",
@@ -3359,7 +3359,12 @@ mod tests {
                 (
                     "post_thread_message",
                     thread,
-                    &[ON_A_TASK, ASKED_IN_THREAD, RESULT_ON_TASK],
+                    &[
+                        ON_A_TASK,
+                        TASK_COMMENT_EVENTS,
+                        ASKED_IN_THREAD,
+                        RESULT_ON_TASK,
+                    ],
                 ),
                 (
                     "post_thread_message.body",
@@ -3390,6 +3395,7 @@ mod tests {
                     text(&comment["description"]),
                     &[
                         ON_A_TASK,
+                        TASK_COMMENT_EVENTS,
                         REPLY_THERE,
                         ASKED_IN_THREAD,
                         "The task is also where you ANSWER",

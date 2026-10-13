@@ -2204,14 +2204,20 @@ In practice:
   dependency summary and the source task's `updated_at`, independently of
   replaceable list/detail replicas. Detail, catalogue, query, paged reads and
   task responses update it in the same IndexedDB transaction as their admitted
-  replica writes. Omitted/null summaries and summaries without boolean
-  `blocked` never update it, even at newer task versions. Waiting knowledge
+  replica writes. Omitted/null/partial summaries never update it, even at newer
+  task versions: capable facts report blocked, or explicitly report
+  `blocked: false, waiting_on: []`. Waiting knowledge
   survives until a dependency-capable source has a strictly newer task version
   reporting ready (including `blocked: false, waiting_on: []`). Tied or unknown
   versions retain waiting. Project eviction removes the record with the other
-  tracker data. Views still paint committed replicas; the send-time assignment
-  guard reads this cached knowledge. A cache without knowledge retains the
-  conservative replica/opened-task fallback.
+  tracker data. Views still paint committed replicas. The send-time assignment
+  guard always unions this record with every capable detail/catalogue/query/page
+  replica and the opened picker task, including replicas that predate the
+  record. `selectTaskAssignmentFacts` is pure: the highest capable task version
+  wins, blocked wins ties, and unknown timestamps retain waiting. Only a newer
+  explicit ready fact clears older waiting; unknown/legacy facts never prove
+  ready or veto that clear. No capable facts retains the conservative absence
+  rule. The record is durable evidence, never exclusive authority.
 - **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
   keeps unsent drafts, folds, menus and the other `ui-*` records in their own
   database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
@@ -2672,21 +2678,27 @@ refuses when that device cannot answer.
   Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
   current greeting before dependency writes, paged reverse reads, saved-id
   retries and assignments from waiting forms. After greeting settlement, the
-  assignment sender reads the scoped dependency-knowledge record through
+  assignment sender reads the scoped dependency fact union through
   `taskAssignmentFacts.js` and checks the same greeting authority again before
   capability validation and the RPC send, with no intervening wait. The picker
   passes the target/note without a submit-time readiness decision. A reblock
   learned during greeting waits survives later legacy list/detail refreshes
   and cannot silently start work on an older bridge. Only newer capable task
   versions can clear waiting knowledge; an explicit current-wire
-  `blocked: false, waiting_on: []` remains authoritative. With no knowledge
-  record, conservative timestamp arbitration of detail/catalogue/query/page
-  replicas and the opened task remains for older cached data. Unknown
+  `blocked: false, waiting_on: []` remains authoritative. The record, every
+  detail/catalogue/query/page replica and the opened task participate even when
+  the record exists, so an older first record cannot hide a retained blocker.
+  Unknown
   dependency summaries never assert ready; ties and unknown task timestamps
   retain waiting evidence. Source read/write orders are never compared.
   `taskDependencyKnowledge.test.js` covers legacy retention, older/newer
   capable clears, all writer paths, concurrent writers, reload and eviction;
   `taskAssignmentFacts.test.js` retains the pre-knowledge conflict regressions.
+  `taskAssignmentFactUnion.test.js` covers record/replica version arbitration,
+  ties, unknown summaries/versions and conservative absence. Round-8 real picker
+  and list/board tests retain pre-record detail/catalogue/query/page blockers
+  after an older ready query establishes the first record; opened-only waiting
+  and the prior legacy-overwrite cases remain covered.
   The real list/board picker tests in `trackerTasksPaneDom.test.js` keep drafts
   when every blocking replica is overwritten by a legacy refresh. Successful
   responses update tracker detail and list replicas through

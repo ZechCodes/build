@@ -249,3 +249,33 @@ describe("a watched task's running state", () => {
     expect(rowFor(null)).toMatchObject({ working: false, state: "inactive" });
   });
 });
+
+
+describe("waiting-on watched rows (#563)", () => {
+  const blocked = { blocked: true, waiting_on: [
+    { task_id: "blocker-12", number: 12, title: "<script>evil()</script>", resolved: false },
+    { task_id: "closed-18", number: 18, title: "Closed already", resolved: true, resolved_by: "close" },
+  ] };
+  const list = (one, details = new Map()) => watchedTaskEntries([{ ...source([one], details), askedOnly: true, runningAgentIds: new Set(["busy"]) }])[0];
+  it("names only unresolved blockers and gives a running holder zero Working", () => {
+    const one = watched({ assignee: { kind: "agent", agent_id: "busy" }, dependencies: blocked });
+    const row = list(one);
+    expect(row).toMatchObject({ working: false, taskGroup: "blocked", facts: "Blocked · Waiting on #12" });
+    const html = inboxRowHtml(row);
+    expect(html).toContain("Waiting on #12");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("inbox-status-working");
+  });
+  it.each(["waiting", "queued", "provisioning", "failed"])("keeps %s as Assigned", (state) => {
+    const row = list(watched({ assignee: { kind: "agent", agent_id: "busy" }, dependencies: { blocked: false },
+      deferred_assignment: { id: "saved", state, target: { kind: "agent", agent_id: "busy" } } }));
+    expect(row).toMatchObject({ working: false, taskGroup: "assigned", facts: "Assigned" });
+  });
+  it("suppresses assignment-only attention while blocked, retains a question, and restores it on unblock", () => {
+    const one = watched({ id: "mine", assignee: { kind: "user" }, dependencies: blocked });
+    expect(list(one)).toMatchObject({ quiet: true, facts: "Blocked · Waiting on #12" });
+    const timeline = [comment({ id: "tc-Z", author: { kind: "agent", agent_id: "busy" }, mentions_user: true })];
+    expect(list(one, new Map([[one.id, taskDetail(one, timeline)]]))).toMatchObject({ quiet: false, facts: "Blocked · Waiting on #12 · Mentioned you" });
+    expect(list({ ...one, dependencies: { ...blocked, blocked: false } })).toMatchObject({ quiet: false, facts: "Assigned · Assigned to you" });
+  });
+});

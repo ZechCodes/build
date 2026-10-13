@@ -1548,3 +1548,32 @@ describe("what the tab opens on", () => {
     expect(host.querySelector(".task-empty h2").textContent).toBe("No tasks yet");
   });
 });
+
+
+describe("cached Backlog readiness headings (#563)", () => {
+  it("moves assigned and unassigned cards between headings without writing stored columns or labels", async () => {
+    const dependencies = { blocked: true, waiting_on: [{ task_id: "blocker", number: 12, title: "<img onerror=evil()>", resolved: false }] };
+    const blocked = task({ id: "blocked", number: 90, assignee: { kind: "user" }, dependencies, labels: ["kept"] });
+    const ready = task({ id: "ready", number: 89, dependencies: { blocked: false, waiting_on: [] } });
+    call = vi.fn(() => new Promise(() => {}));
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [ready, blocked], columns: columns() });
+    await mount({ view: "board" });
+    const groups = () => [...host.querySelectorAll('[data-column="backlog"] [data-backlog-group]')].map(g => [g.dataset.backlogGroup, [...g.querySelectorAll('[data-task]')].map(c => c.dataset.task)]);
+    expect(groups()).toEqual([["blocked", ["blocked"]], ["ready", ["ready"]]]);
+    expect(host.querySelector('[data-task="blocked"]').textContent).toContain("Waiting on #12");
+    expect(host.querySelector('[data-task="blocked"] img')).toBeNull();
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [ready, { ...blocked, dependencies: { ...dependencies, blocked: false } }], columns: columns() });
+    await flush();
+    expect(groups()).toEqual([["ready", ["blocked", "ready"]]]);
+    expect(listed("tasks.update")).toHaveLength(0);
+    const stored = (await trackerCache.readTasksCached("dev-1", "proj-1")).value.tasks;
+    expect(stored.find(t => t.id === "blocked")).toMatchObject({ status: "backlog", labels: ["kept"] });
+  });
+  it("still draws an empty Backlog column and hides its empty readiness headings", async () => {
+    call = vi.fn(() => new Promise(() => {}));
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [], columns: columns() });
+    await mount({ view: "board" });
+    expect(host.querySelector('[data-column="backlog"]')).not.toBeNull();
+    expect(host.querySelectorAll('[data-backlog-group]')).toHaveLength(0);
+  });
+});

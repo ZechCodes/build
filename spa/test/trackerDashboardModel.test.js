@@ -488,3 +488,49 @@ describe("Active and unassigned Backlog", () => {
     expect(ids(sections.backlog)).toEqual(["ready-high"]);
   });
 });
+
+
+describe("waiting-on cached Dashboard groups (#563)", () => {
+  const deps = (blocked = true) => ({ blocked, waiting_on: [
+    { task_id: "blocker", number: 12, title: "<img onerror=evil()>", resolved: !blocked },
+    { task_id: "closed", number: 18, title: "Already closed", resolved: true, resolved_by: "close" },
+  ] });
+  const held = (id, fields = {}) => task(id, { assignee: { kind: "agent", agent_id: "busy" }, dependencies: deps(false), ...fields });
+  const feed = { items: [{ projectKey: PROJECT, agents: [{ id: "busy", working: true }] }] };
+  it("orders Working, Assigned, Blocked, keeping priority stable and including user and creating holders", () => {
+    const tasks = [held("blocked-low", { priority: "low", dependencies: deps() }), held("work"),
+      held("blocked-high", { priority: "high", dependencies: deps() }),
+      held("missing", { assignee: { kind: "agent", agent_id: "missing" } }),
+      held("user", { assignee: { kind: "user" }, dependencies: deps() }),
+      held("creating", { assignee: null, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } }, dependencies: deps() }),
+      held("user-ready", { assignee: { kind: "user" } }),
+      held("history", { status: "done", dependencies: deps() }), held("closed", { state: "closed", dependencies: deps() })];
+    const sections = dashboardSections(tasks, { feed, projectKey: PROJECT, askedOnly: true });
+    expect(sections.activeGroups.map(g => [g.title, g.entries.map(e => e.task.id)])).toEqual([
+      ["Working", ["work"]], ["Assigned", ["missing", "user-ready"]],
+      ["Blocked", ["blocked-high", "blocked-low", "user", "creating"]],
+    ]);
+    expect(sections.activeGroups.at(-1).entries.every(e => !e.working)).toBe(true);
+    expect(sections.needsYou.map(e => e.task.id)).toEqual(["user-ready"]);
+    expect(sections.backlog).toEqual([]);
+  });
+  it.each(["waiting", "queued", "provisioning", "failed"])("never counts %s delivery as Working", (state) => {
+    const sections = dashboardSections([held("pending", { deferred_assignment: { id: "saved", target: { kind: "agent", agent_id: "busy" }, state } })], { feed, projectKey: PROJECT });
+    expect(sections.activeGroups.map(g => g.title)).toEqual(["Assigned"]);
+  });
+  it("partitions unassigned Backlog by authoritative readiness without rewriting labels or stored columns", () => {
+    const tasks = [task("ready-column", { status: "ready", dependencies: deps(false) }),
+      task("blocked", { labels: ["real-label"], dependencies: deps() }), task("empty", { dependencies: deps(false) })];
+    const before = JSON.stringify(tasks);
+    const sections = dashboardSections(tasks, { askedOnly: true });
+    expect(sections.backlogGroups.map(g => [g.title, g.entries.map(e => e.task.id)])).toEqual([
+      ["Blocked", ["blocked"]], ["Ready", ["ready-column", "empty"]],
+    ]);
+    expect(JSON.stringify(tasks)).toBe(before);
+    expect(dashboardSections([], { askedOnly: true }).backlogGroups).toEqual([]);
+  });
+  it("does not guess readiness from absent cached blockers", () => {
+    const sections = dashboardSections([held("summary-only", { dependencies: { blocked: true } })], { feed, projectKey: PROJECT });
+    expect(sections.activeGroups.map(g => g.title)).toEqual(["Blocked"]);
+  });
+});

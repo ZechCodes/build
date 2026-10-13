@@ -66,9 +66,7 @@ pub(in crate::store) fn reconcile_task(
     if let Some(event) = transition {
         let unassigned_release =
             event.kind == TaskEventKind::Unblocked && task.assignee.is_none() && current.is_none();
-        let consumed_holder = current
-            .as_ref()
-            .is_some_and(|intent| intent.state == "delivered");
+        let consumed_holder = has_admitted_holder(tx, current.as_ref())?;
         let blocked_notice =
             event.kind == TaskEventKind::Blocked && (consumed_holder || !task.trackers.is_empty());
         if blocked_notice || unassigned_release {
@@ -76,6 +74,16 @@ pub(in crate::store) fn reconcile_task(
         }
     }
     Ok(())
+}
+
+fn has_admitted_holder(
+    tx: &Transaction,
+    intent: Option<&DeliveryIntent>,
+) -> Result<bool, StoreError> {
+    let Some(intent) = intent else {
+        return Ok(false);
+    };
+    Ok(intent.state == "delivered" || has_receipt(tx, intent)?)
 }
 
 /// Retirement and project history deletion share one transaction, so neither

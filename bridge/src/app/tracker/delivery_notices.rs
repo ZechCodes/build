@@ -2,7 +2,7 @@
 use super::dispatch::envelope_of;
 use super::StoredAnswer;
 use crate::app::AppState;
-use crate::store::DeliveryNotice;
+use crate::store::{DeliveryIntent, DeliveryNotice};
 use crate::tracker::{Assignee, Task, TaskEvent, TaskEventKind};
 use serde_json::{json, Value};
 
@@ -127,10 +127,7 @@ impl AppState {
             .tracker_store()?
             .current_delivery_intent(&task.id)
             .stored()?;
-        if intent
-            .as_ref()
-            .is_some_and(|intent| intent.state != "delivered")
-        {
+        if self.task_delivery_notice_holder_is_pending(intent.as_ref())? {
             let holder = self.pending_delivery_holder(project, task, intent.as_ref().unwrap());
             recipients.retain(|agent| Some(agent.as_str()) != holder.as_deref());
             return Ok(recipients);
@@ -150,11 +147,21 @@ impl AppState {
         Ok(recipients)
     }
 
+    fn task_delivery_notice_holder_is_pending(
+        &self,
+        intent: Option<&DeliveryIntent>,
+    ) -> Result<bool, String> {
+        let Some(intent) = intent else {
+            return Ok(false);
+        };
+        Ok(intent.state != "delivered" && self.operation_receipt(&intent.operation_id)?.is_none())
+    }
+
     fn pending_delivery_holder(
         &self,
         project: &str,
         task: &Task,
-        intent: &crate::store::DeliveryIntent,
+        intent: &DeliveryIntent,
     ) -> Option<String> {
         if let Some(agent) = intent.reservation["agent_id"].as_str() {
             return Some(agent.to_string());

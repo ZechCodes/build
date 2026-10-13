@@ -106,8 +106,7 @@ fn allows_retry(code: Option<&str>, info: Option<&Value>) -> bool {
             | "responseStreamConnectionFailed"
             | "responseStreamDisconnected"
             | "responseTooManyFailedAttempts"
-            | "internalServerError"
-            | "other"),
+            | "internalServerError"),
         ) => info.is_some_and(|info| recognized_retry_shape(info, code)),
         None => info.is_none_or(Value::is_null),
         _ => false,
@@ -189,8 +188,17 @@ fn text_http_statuses(text: &str) -> Vec<u16> {
 }
 
 fn refusal_hint(text: &str) -> bool {
-    let normalized = text.to_ascii_lowercase().replace(['_', '-'], " ");
+    let normalized = text
+        .to_ascii_lowercase()
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     [
+        "context window",
+        "context length",
+        "contextwindow",
+        "contextlength",
         "quota",
         "usage limit",
         "usagelimit",
@@ -235,7 +243,8 @@ fn explicit_transient_hint(text: &str) -> bool {
 /// Remove secret values before truncation, so bounding never exposes a token
 /// prefix. This also serves protocol-violation and lifecycle diagnostics.
 pub(super) fn sanitize_error(text: &str) -> String {
-    let normalized: String = text
+    let without_body = strip_request_body(text);
+    let normalized: String = without_body
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
@@ -254,6 +263,37 @@ pub(super) fn sanitize_error(text: &str) -> String {
     }
     let sanitized = replace_secrets(&normalized, secrets);
     bounded_text(&sanitized)
+}
+
+/// A body can be structured, quoted, malformed or plain text. Discarding its
+/// entire suffix avoids depending on that untrusted representation's syntax.
+fn strip_request_body(text: &str) -> String {
+    let mut previous = String::new();
+    for fragment in fragments(text) {
+        let label: String = text[fragment.clone()]
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        let request_body = label == "requestbody"
+            || (label == "body" && (previous == "request" || assigned_label(text, fragment.end)));
+        if request_body {
+            let start = label_value_start(text, fragment.end);
+            return format!("{}{REDACTED}", &text[..start]);
+        }
+        previous = label;
+    }
+    text.to_string()
+}
+
+fn assigned_label(text: &str, after: usize) -> bool {
+    let after = after + usize::from(text[after..].starts_with(['\'', '"']));
+    text[after..].trim_start().starts_with([':', '='])
+}
+
+fn label_value_start(text: &str, after: usize) -> usize {
+    let after = after + usize::from(text[after..].starts_with(['\'', '"']));
+    skip_value_separators(text, after)
 }
 
 fn boundary(c: char) -> bool {
@@ -298,7 +338,7 @@ fn secret_shape(word: &str) -> bool {
 }
 
 fn credential_label(word: &str) -> bool {
-    let lower = word.to_ascii_lowercase();
+    let lower = word.to_ascii_lowercase().replace('-', "_");
     matches!(
         lower.as_str(),
         "authorization"
@@ -318,11 +358,7 @@ fn credential_label(word: &str) -> bool {
 }
 
 fn credential_value(text: &str, after: usize, label: &str) -> Option<Range<usize>> {
-    let mut cursor = after;
-    if text[cursor..].starts_with(['\'', '"']) {
-        cursor += 1;
-    }
-    cursor = skip_value_separators(text, cursor);
+    let mut cursor = label_value_start(text, after);
     if label.eq_ignore_ascii_case("authorization") {
         let scheme_end = text[cursor..]
             .find(boundary)
@@ -629,12 +665,10 @@ mod tests {
             "provider is overloaded",
             "server temporarily unavailable",
         ] {
-            for info in [Value::Null, json!("other")] {
-                assert!(
-                    error(message, info.clone(), None).is_transient(),
-                    "{message}: {info}"
-                );
-            }
+            assert!(
+                error(message, Value::Null, None).is_transient(),
+                "{message}"
+            );
         }
         for message in [
             "failed",
@@ -645,6 +679,106 @@ mod tests {
             assert!(
                 !error(message, Value::Null, None).is_transient(),
                 "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn revision_context_window_refusals_veto_stream_retry_in_message_and_details() {
+        for hint in [
+            "context_length_exceeded",
+            "Your input exceeds the context window of this model",
+            "maximum context length exceeded",
+            "CONTEXT-WINDOW-EXCEEDED",
+            "contextWindowExceeded",
+            "contextLengthExceeded",
+            "maximum CONTEXT\n  LENGTH exceeded",
+        ] {
+            let code = json!({"responseStreamDisconnected":{"httpStatusCode":503}});
+            assert!(
+                !error(&format!("request timed out: {hint}"), code.clone(), None).is_transient(),
+                "message: {hint}"
+            );
+            assert!(
+                !error("stream disconnected before completion", code, Some(hint)).is_transient(),
+                "details: {hint}"
+            );
+            assert!(
+                !error("request timed out", Value::Null, Some(hint)).is_transient(),
+                "fallback: {hint}"
+            );
+        }
+    }
+
+    #[test]
+    fn revision_other_never_retries_even_with_explicit_transient_text_and_status() {
+        for info in [
+            json!("other"),
+            json!({"other":{}}),
+            json!({"other":{"httpStatusCode":503}}),
+            json!({"other":{},"httpStatusCode":408}),
+        ] {
+            for message in [
+                "request timed out",
+                "server overloaded",
+                "HTTP 503 temporarily unavailable",
+            ] {
+                assert!(
+                    !error(message, info.clone(), Some("timeout")).is_transient(),
+                    "{message}: {info}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn revision_request_bodies_are_removed_before_bounding() {
+        let long_body = format!("HTTP 500; request body: {{\"input\":\"confidential-request\",\"padding\":\"{}\",\"customer\":\"private-customer\"}}", "x".repeat(2048));
+        for message in [
+            "HTTP 500; request body: {\"input\":\"confidential-request\",\"metadata\":{\"customer\":\"private-customer\"}}".to_string(),
+            "HTTP 500; REQUEST BODY = [\"confidential-request\"]".to_string(),
+            "HTTP 500; request_body=\"confidential-request\"".to_string(),
+            "HTTP 500; request-body: confidential-request".to_string(),
+            "HTTP 500; requestBody: 'confidential-request'".to_string(),
+            "HTTP 500; Request\r\n  Body:\n{\"input\":\"confidential-request\"}".to_string(),
+            "HTTP 500; {\"request\":{\"method\":\"POST\",\"body\":{\"input\":\"confidential-request\"}}}".to_string(),
+            "HTTP 500; body={\"input\":\"confidential-request\"}".to_string(),
+            "HTTP 500; REQUEST_BODY: {\"input\":\"confidential-request".to_string(),
+            long_body,
+        ] {
+            let safe = sanitize_error(&message);
+            assert!(safe.starts_with("HTTP 500"), "{safe}");
+            assert!(safe.contains("[REDACTED]"), "{safe}");
+            assert!(!safe.contains("confidential-request") && !safe.contains("private-customer"), "{safe}");
+            assert!(!safe.contains("\"input\"") && !safe.contains("\"metadata\""), "{safe}");
+            assert!(safe.len() <= 1024 && !safe.chars().any(char::is_control), "{safe}");
+        }
+    }
+
+    #[test]
+    fn revision_api_key_headers_are_removed_before_bounding() {
+        let long_key = format!(
+            "HTTP 500; X-API-KEY: \"opaque-fixture-secret{}private-customer\"",
+            "x".repeat(2048)
+        );
+        for message in [
+            "HTTP 500; x-api-key: opaque-fixture-secret".to_string(),
+            "HTTP 500; X-API-KEY = 'opaque-fixture-secret'".to_string(),
+            "HTTP 500; {\"X-API-KEY\":\"opaque-fixture-secret\"}".to_string(),
+            "HTTP 500;\nx-Api-Key:\n\"opaque-fixture-secret\"".to_string(),
+            "HTTP 500; X_API_KEY: opaque-fixture-secret".to_string(),
+            long_key,
+        ] {
+            let safe = sanitize_error(&message);
+            assert!(safe.starts_with("HTTP 500"), "{safe}");
+            assert!(safe.contains("[REDACTED]"), "{safe}");
+            assert!(
+                !safe.contains("opaque-fixture-secret") && !safe.contains("private-customer"),
+                "{safe}"
+            );
+            assert!(
+                safe.len() <= 1024 && !safe.chars().any(char::is_control),
+                "{safe}"
             );
         }
     }

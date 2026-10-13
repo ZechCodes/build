@@ -211,10 +211,10 @@ afterEach(() => {
 describe("device-scoped waiting assignments from the pane", () => {
   let context, contexts;
 
-  const greet = (waitingOn) => {
+  const greet = (waitingOn, authority = contexts.greetingInFlight(context)) => {
     carriesWaitingOn = waitingOn;
     contexts.adoptBridgeSelection(context, { version: "3.21.0", unsupported: null },
-      { capabilities: { tasks: { waitingOn } } });
+      { capabilities: { tasks: { waitingOn } } }, authority);
   };
 
   const openRealPicker = async (held, view, { holdDetail = false } = {}) => {
@@ -284,6 +284,27 @@ describe("device-scoped waiting assignments from the pane", () => {
     expect((await trackerCache.readTaskRecord("dev-1", "proj-1", held.id)).task.dependencies.blocked).toBe(false);
     greet(false);
     document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+  });
+
+  it.each(["list", "board"])("rechecks the %s assignment after a pending greeting and retains its reblocked draft", async (view) => {
+    const held = task({ id: "task-regreeting-reblocked", dependencies: { blocked: false, waiting_on: [] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });
+    await openRealPicker(held, view, { holdDetail: true });
+    const authority = contexts.greetingInFlight(context);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("[data-assign-go]").disabled).toBe(true);
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [{ ...held,
+      updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] },
+    }] });
+    greet(false, authority);
     await flush();
     expect(listed("tasks.assign")).toEqual([]);
     expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");

@@ -406,3 +406,15 @@ prerequisite facts; no cached-capability downgrade invents immediate work.
 All prior assignment/cache freshness regressions, the new pending-greeting
 cases, and unchanged ratchet pass (six files / 127 tests, exit **0**); lint
 exits **0**. Final fresh broad gates and publication evidence follow on #564.
+
+Revision-5 fresh final gates, pinned Node 22.23.3/npm 12.0.2 under
+`nice -n 10`: transport ci (`--ignore-scripts`), SPA ci
+(`--legacy-peer-deps`, install scripts disabled), all-source lint, captures,
+build and full Chromium-inclusive `npm test` all exit **0**. All **671 files /
+10,446 tests passed**; #614 did not fail, so isolated reruns were unnecessary.
+Semgrep exits **0** (38 changed tracked js/mjs/css targets, 200 rules, no
+findings). Gitleaks `origin/main..HEAD` and diff-check exit **0**, with exact-head
+publication evidence attached on #564. The W5-owned TS558-4/7 score remains
+**100/100** after the send-time race is closed. No bridge files, complexity
+caps or ratchet entries changed. Source stayed fixed throughout these gates;
+the final follow-up only records this evidence.

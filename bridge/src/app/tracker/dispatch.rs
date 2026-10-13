@@ -272,6 +272,15 @@ impl AppState {
         if !matches!(target, AssignTarget::Nobody | AssignTarget::User) {
             return self.accept_task_delivery(project_id, task, target, handoff, actor, sender);
         }
+        if matches!(target, AssignTarget::User) && task.is_finished() {
+            let dependencies = self
+                .tracker_store()?
+                .waiting_on_summary(&task.project_path, &task.id)
+                .map_err(|error| error.to_string())?;
+            if dependencies.waiting_on.iter().any(|edge| !edge.resolved) {
+                return Err(crate::store::StoreError::WaitingOnConflict.to_string());
+            }
+        }
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(actor.clone(), task);
         self.settle_assignment(&mut write, &target, &None, &actor, &now)?;

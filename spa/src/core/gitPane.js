@@ -2294,11 +2294,14 @@ export function mountGitPane(
         },
         deviceId: cacheScope?.deviceId,
         scope: projectSourceWatchScope(scope),
+        // Storage and RPC identity remain source/location-qualified. Older
+        // bridges announce this checkout through board state instead.
+        legacyBoardFallback: Boolean(projectSourceWatchScope(scope)),
         entity: watchedEntity,
         // Focus tier. A checkout the bridge names no entity for watches the
         // board — where `state` is all there is, and the manager trims the ask
         // to it.
-        kinds: scope.source_path && scope.project_id ? ["git"] : ["state", "git", "files"],
+        kinds: ["state", "git", "files"],
         mode: "realtime",
       })
     : null;

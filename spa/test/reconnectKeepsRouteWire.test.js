@@ -177,6 +177,11 @@ afterEach(async () => {
   sync.stopCacheSync();
   feed.stopFeed();
   (await import("../src/core/inboxView.js")).unmountInboxList();
+  App.viewDispose?.();
+  App.viewDispose = null;
+  // Pending cache reads must lose their mounted owners before jsdom removes
+  // this case's document, including the kept project console and its rail.
+  (await import("../src/core/shell.js")).stopShell();
   delete globalThis.RTCPeerConnection;
 });
 

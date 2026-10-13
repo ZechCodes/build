@@ -30,10 +30,10 @@ vi.mock("../src/core/peerLink.js", () => ({ openPeerLink: (options) => wire.open
 // in-memory double instead — same addresses, same announcements.
 vi.mock("../src/core/localCache.js", () => import("./memoryCache.js"));
 vi.mock("../src/core/localUiStore.js", () => import("./memoryUiStore.js"));
-const account = vi.hoisted(() => ({ fetchDevices: null }));
+const account = vi.hoisted(() => ({ fetchDevices: null, fetchIceServers: vi.fn() }));
 vi.mock("../src/api.js", () => ({
   fetchGatewayToken: async () => "tok",
-  fetchIceServers: async () => [],
+  fetchIceServers: (...args) => account.fetchIceServers(...args),
   fetchDevices: (...args) => account.fetchDevices(...args),
 }));
 vi.mock("../src/terminal/manager.js", () => ({
@@ -89,6 +89,7 @@ const { mountConnectionStatus, unmountConnectionStatus } = await import("../src/
 const { deviceWatch } = await import("../src/core/deviceReconnect.js");
 const { createReadRetry } = await import("../src/core/transientRead.js");
 const { rememberRtcClientSupport, rtcClientId } = await import("../src/core/rtcClientHint.js");
+const { clearConnectionDiagnosticHistory, connectionDiagnosticHistory } = await import("../src/core/connectionDiagnostics.js");
 
 const flush = () => vi.advanceTimersByTimeAsync(0);
 const reachNextRecoveryAttempt = async () => {
@@ -308,6 +309,8 @@ beforeEach(async () => {
   terminals.followTerminalDevice.mockClear();
   captures.flush.mockClear();
   account.fetchDevices = vi.fn(async () => devices);
+  account.fetchIceServers.mockReset().mockResolvedValue([]);
+  clearConnectionDiagnosticHistory();
   wire.openSession.mockReset();
   wire.openSession.mockImplementation(async (options) => {
     opened.push(options);
@@ -328,6 +331,53 @@ beforeEach(async () => {
     return fakePeerLink(deviceId);
   });
   unsubscribe = subscribeFeed((snapshot) => (feed = snapshot));
+});
+
+describe("dial failure diagnostics", () => {
+  const failures = () => connectionDiagnosticHistory().filter((entry) => entry.event === "dial-failed");
+
+  it("records an ICE authorization failure once for callers sharing the dial, without error contents", async () => {
+    account.fetchIceServers.mockRejectedValueOnce(Object.assign(new Error("private response with credentials"), { status: 401 }));
+    wire.openPeerLink.mockImplementationOnce(async ({ fetchIceServers }) => {
+      await fetchIceServers();
+    });
+    const first = connectDevice("dev-a");
+    const joined = connectDevice("dev-a");
+    expect(joined).toBe(first);
+    await Promise.allSettled([first, joined]);
+
+    expect(failures()).toEqual([{ at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason: "ice-servers", status: 401 }]);
+    expect(JSON.stringify(failures())).not.toContain("private response");
+    expect(contextFor("dev-a").blocked).toBe("ice-servers");
+  });
+
+  it.each([
+    ["unreached", () => unreachable.add("dev-a")],
+    ["timeout", () => unlinkable.add("dev-a")],
+    ["refused", () => impostors.add("dev-a")],
+    ["no-webrtc", () => { delete globalThis.RTCPeerConnection; }],
+  ])("records the %s failure category without raw error text", async (reason, fail) => {
+    fail();
+    await expect(connectDevice("dev-a")).rejects.toThrow();
+    expect(failures()).toEqual([{ at: expect.any(Number), connection: "dev-a:dial", event: "dial-failed", reason, status: null }]);
+  });
+
+  it("does not report a cancelled dial as a failure after account reset", async () => {
+    let rejectSession;
+    wire.openSession.mockImplementationOnce(() => new Promise((resolve, reject) => { rejectSession = reject; }));
+    const pending = connectDevice("dev-a");
+    const rejected = expect(pending).rejects.toThrow(/retired|cancelled/);
+    resetApplication();
+    rejectSession(new Error("device did not answer"));
+    await rejected;
+    await flush();
+    expect(failures()).toEqual([]);
+  });
+
+  it("does not report a successful dial as failed", async () => {
+    await connectDevice("dev-a");
+    expect(failures()).toEqual([]);
+  });
 });
 
 afterEach(() => {

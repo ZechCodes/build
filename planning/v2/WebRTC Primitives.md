@@ -274,7 +274,8 @@ Cloudflare's array verbatim, or `STUN_ONLY` when no key is configured; an error 
 against a fake `send`, so no test reaches the network.
 
 ### `RtcController` — `skriftapp/buildapp/rtc_controller.py` (new, stage 3)
-One route: `@post("/api/rtc/ice-servers", guards=[auth_guard])` with `require_user(request)`, answering the array under
+One route: `@post("/api/rtc/ice-servers", guards=[build_auth_guard])` with browser-session or desktop-bearer authentication and active alpha membership,
+then `require_user(request)`, answering the array under
 `iceServers`. Registered in `app.yaml`, `app.dev.yaml` and `app.mail.yaml` beside `DevicesController`; the existing
 guard is the only auth. **Hides** `CF_TURN_KEY_ID` / `CF_TURN_KEY_API_TOKEN`, read from the environment (the `build-app`
 Secret) and never returned. Sibling of `PushController`, replacing nothing.

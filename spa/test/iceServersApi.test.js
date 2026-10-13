@@ -20,7 +20,14 @@ afterEach(() => {
 });
 
 describe("fetchIceServers", () => {
-  it("posts to the session-authed ice-servers route and returns the array", async () => {
+  it("names the HTTP refusal without retaining the response or credentials", async () => {
+    const json = vi.fn();
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 401, json }));
+    await expect(fetchIceServers()).rejects.toMatchObject({ message: "could not mint ICE servers", status: 401 });
+    expect(json).not.toHaveBeenCalled();
+  });
+
+  it("posts to the authenticated ice-servers route and returns the array", async () => {
     const fetchSpy = vi.fn(async () => ({
       ok: true,
       json: async () => ({ iceServers: SERVERS }),
@@ -32,7 +39,7 @@ describe("fetchIceServers", () => {
     expect(request.method).toBe("POST");
   });
 
-  it("throws when the api refuses, so the caller stays on the relay", async () => {
+  it("throws when the api refuses, so negotiation cannot proceed", async () => {
     globalThis.fetch = vi.fn(async () => ({ ok: false, status: 502 }));
     await expect(fetchIceServers()).rejects.toThrow();
   });

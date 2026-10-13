@@ -753,6 +753,17 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .tb-verb .btn:hover:not(:disabled) { border-color:var(--line); }
 #inbox-open:focus-visible, .tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
   outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
+/* Only the docked header shares the bar's row. Floating cards and phone
+   overlays keep their own hover treatment below it. Selection keeps its fill. */
+@media (min-width: 901px) {
+  body:not(.inbox-collapsed) .inbox-head button:hover:not(:disabled, [aria-disabled="true"]) {
+    color:var(--accent); box-shadow:none; }
+  body:not(.inbox-collapsed) .inbox-head button:not(.on):hover:not(:disabled, [aria-disabled="true"]) {
+    background:transparent; }
+  body:not(.inbox-collapsed) .inbox-new-project:hover { border-color:var(--line); }
+  body:not(.inbox-collapsed) .inbox-head button:focus-visible {
+    outline:2px solid var(--accent); outline-offset:-2px; }
+}
 .tb-task-ancestry ol { row-gap:0; }
 /* Keep a phone task's project/workspace identity together. Tasks and the
    current task then occupy their own row instead of fragmenting into three. */

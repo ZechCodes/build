@@ -320,6 +320,99 @@ fn deferred_delivery_revalidates_foreign_target_before_admission() {
 }
 
 #[test]
+fn admitted_delivery_reblocked_before_settlement_notifies_holder_after_restart() {
+    reblocked_admitted_holder_notice(false);
+}
+
+#[test]
+fn admitted_delivery_reblocked_before_settlement_notifies_tracking_holder_after_restart() {
+    reblocked_admitted_holder_notice(true);
+}
+
+fn reblocked_admitted_holder_notice(tracking: bool) {
+    let mut fixture = WaitingDelivery::new();
+    let config = fixture.root.path().join("config.json");
+    fixture.app = fixture.app.with_config(&config).unwrap();
+    fixture.app.persist();
+    let intent = fixture.assign(json!({"kind":"agent","agent_id":fixture.pin}));
+    if tracking {
+        let store = fixture.app.tracker_store().unwrap();
+        let mut task = store.load_tracker_task(&fixture.task).unwrap().unwrap();
+        task.trackers = vec![fixture.pin.clone()];
+        store.save_tracker_task_activity(&task, &[], &[]).unwrap();
+    }
+    fixture.release();
+    fixture
+        .app
+        .stop_task_delivery_after_for_test(DeferredDeliveryBoundary::Posted);
+    assert!(fixture.app.pump_task_deliveries_for_test().unwrap());
+    let store = fixture.app.tracker_store().unwrap();
+    assert!(store.operation(&intent.operation_id).unwrap().is_some());
+    assert_ne!(fixture.load(&intent.id).state, "delivered");
+    assert_eq!(fixture.event_count(TaskEventKind::Dispatched), 0);
+    fixture.call(
+        "tasks.update",
+        json!({"task_id":fixture.blocker,"status":"ready"}),
+    );
+    fixture.reconcile();
+    assert_eq!(
+        fixture
+            .app
+            .tracker_store()
+            .unwrap()
+            .delivery_notices_ready(100)
+            .unwrap()
+            .len(),
+        1,
+        "an admitted holder needs a durable Blocked notice before receipt settlement"
+    );
+    restart_waiting_delivery(&mut fixture, &config);
+    fixture.pump();
+    assert_eq!(fixture.load(&intent.id).state, "delivered");
+    assert_eq!(fixture.event_count(TaskEventKind::Dispatched), 1);
+    let messages = fixture.messages(&fixture.owner.clone(), &fixture.pin.clone());
+    assert_reblocked_holder_messages(&messages, &intent.operation_id);
+    restart_waiting_delivery(&mut fixture, &config);
+    fixture.pump();
+    assert_eq!(
+        fixture.messages(&fixture.owner.clone(), &fixture.pin.clone()),
+        messages,
+        "settlement and repeated startup must not duplicate assignment or Blocked notice"
+    );
+}
+
+fn restart_waiting_delivery(fixture: &mut WaitingDelivery, config: &Path) {
+    let root = fixture.root.path().to_path_buf();
+    let old = std::mem::replace(&mut fixture.app, rooted(&root));
+    drop(old);
+    fixture.app = rooted(&root)
+        .with_config(config)
+        .unwrap()
+        .with_task_store(root.join("store"))
+        .unwrap();
+}
+
+fn assert_reblocked_holder_messages(messages: &[Value], assignment: &str) {
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message["operation_id"] == assignment)
+            .count(),
+        1
+    );
+    let notices: Vec<_> = messages
+        .iter()
+        .filter(|message| message["body"].as_str().unwrap().contains("blocked again"))
+        .collect();
+    assert_eq!(notices.len(), 1, "{messages:?}");
+    assert!(notices[0]["operation_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("task-dependency-notice-"));
+}
+
+#[test]
 fn deferred_delivery_operation_id_cannot_admit_a_forged_payload_or_foreign_owner() {
     let mut fixture = WaitingDelivery::new();
     let frozen = fixture.frozen(json!({"kind":"agent","agent_id":fixture.pin}));

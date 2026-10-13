@@ -3744,7 +3744,7 @@ function mountRailOnContext(host, context, swap) {
   const projectWorkerCreationParams = (workerCreation) => {
     if (!workerCreation) return {};
     if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) {
-      throw new Error("Update this device to add project workers.");
+      throw new Error("Update this device to use project agents.");
     }
     return { project_role: "worker" };
   };

@@ -247,8 +247,8 @@ function tabPlace(query) {
   return { file: path, ...(Number.isFinite(line) && line > 0 ? { line } : null) };
 }
 
-// The surfaces whose Files tab stands in a file: both are a checkout with a
-// tree, and both carry the file as a query rather than a path segment.
+// Files on a branch page, named workspace or project workspace carries the
+// selected file as a query rather than a path segment.
 const FILE_TAB_SURFACES = new Set(["branch", "workspace", "project"]);
 
 // The surfaces whose rail can be opened on a named conversation: the two pages

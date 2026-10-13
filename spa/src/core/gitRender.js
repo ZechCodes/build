@@ -10,7 +10,7 @@ import { selectionBarHtml } from "./changesRender.js";
 
 /** The exact canned instruction "Ask agent to commit" sends via task.message. */
 export const AGENT_COMMIT_MESSAGE =
-  "Commit all outstanding changes in this worktree as a single atomic commit with a clear, descriptive commit message. Do not make any other changes.";
+  "Commit all outstanding changes in this checkout as a single atomic commit with a clear, descriptive commit message. Do not make any other changes.";
 
 /** Where the branch stands, on the left of the bar and never covered: how far
  *  it is from its upstream, and how much its working tree weighs. Facts, not

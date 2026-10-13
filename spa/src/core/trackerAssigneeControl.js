@@ -61,12 +61,12 @@ const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for=
  * chosen so far; `catalog` is the creation device's `models.list`. An option
  * that starts nothing shows no extra fields — there is no agent to configure.
  */
-export function assigneeControlHtml(options, draft, { prefix, catalog, label = "Assignee" }) {
+export function assigneeControlHtml(options, draft, { prefix, catalog, label = "Assignee", hint }) {
   const option = optionOf(options, draft.optionId);
   return `<div class="task-assignee-control" data-assignee-control="${esc(prefix)}">
     <label class="create-label" for="${esc(prefix)}-assignee">${esc(label)}</label>
     <select id="${esc(prefix)}-assignee" data-assignee-select>${optionsHtml(options, draft.optionId)}</select>
-    <p class="sub task-assignee-hint">${esc(option?.hint || "")}</p>
+    <p class="sub task-assignee-hint">${esc(hint ?? option?.hint ?? "")}</p>
     ${option?.form === WORKSPACE_FORM ? workspaceFieldsHtml(draft, prefix) : ""}
     ${option?.form ? agentChoicePanelHtml(catalog, draft.choice, { prefix: `${prefix}-choice`, open: draft.choiceOpen }) : ""}
   </div>`;

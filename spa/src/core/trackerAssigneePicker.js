@@ -23,6 +23,7 @@ import {
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { createTaskWaitingOnActions } from "./taskWaitingOnActions.js";
 
 const PREFIX = "task-assign";
 
@@ -37,6 +38,9 @@ const PREFIX = "task-assign";
  * its label at all.
  */
 const pressLabel = (state) => {
+  if (state.task.dependencies?.blocked && draftStartsWork(state.options, state.draft)) {
+    return state.busy ? "saving assignment…" : "Assign when ready";
+  }
   if (state.busy) return waitingOnAWorkspace(state) ? "cutting the workspace…" : "assigning…";
   return draftStartsWork(state.options, state.draft) ? "Assign and start" : "Assign";
 };
@@ -47,16 +51,28 @@ const waitingOnAWorkspace = (state) => draftWaitsOnAWorkspace(state.options, sta
  *  is happening and that leaving is safe, because the two questions a reader
  *  asks of a dialog that has not moved are "is it stuck" and "can I go". */
 const waitingHtml = (state) =>
-  state.busy && waitingOnAWorkspace(state)
+  state.busy && waitingOnAWorkspace(state) && !state.task.dependencies?.blocked
     ? `<p class="sub task-assign-waiting" role="status">Cutting the checkout and starting the agent. This can take a minute on a large repository.</p>`
     : "";
 
 const titleOf = (task) => `Assign #${task.number ?? ""}`;
 
+function prerequisiteHint(state) {
+  if (!state.task.dependencies?.blocked || !draftStartsWork(state.options, state.draft)) return undefined;
+  return "Saves this assignment until its prerequisites are Done or closed.";
+}
+
+function prerequisiteCopy(state) {
+  if (!state.task.dependencies) return "";
+  const user = state.draft.optionId === "user" ? " No agent starts for a user assignment." : "";
+  return `<p class="sub task-assign-prerequisites">Prerequisites must be Done or closed. Requested workspaces and agents are created when the task unblocks. The assigned agent assesses prerequisites closed without Done before proceeding.${user}</p>`;
+}
+
 export function assigneePickerBodyHtml(state) {
   return `<h3>${esc(titleOf(state.task))}</h3>
     <p class="sub create-hint">${esc(state.task.title || "")}</p>
-    ${assigneeControlHtml(state.options, state.draft, { prefix: PREFIX, catalog: state.catalog })}
+    ${assigneeControlHtml(state.options, state.draft, { prefix: PREFIX, catalog: state.catalog, hint: prerequisiteHint(state) })}
+    ${prerequisiteCopy(state)}
     <label class="create-label" for="${PREFIX}-note">Note <span class="sub">(delivered with the task, not stored on it)</span></label>
     <textarea id="${PREFIX}-note" rows="2" ${fieldTraits("prose")} placeholder="Anything the task itself does not say">${esc(state.note)}</textarea>
     <div class="warn create-error"${state.error ? "" : " hidden"}>${esc(state.error)}</div>
@@ -76,7 +92,11 @@ export function assigneePickerBodyHtml(state) {
  * task AND the dispatch — because what was started is the half the caller most
  * needs to say something about.
  */
-export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null, note = "" }) {
+export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null, note = "", deviceId = "", projectId = task.project_id }) {
+  const actions = createTaskWaitingOnActions({ deviceId, projectId, taskId: task.id, call: callRpc });
+  // Capture the wait when the form opens. A downgraded cached capability or
+  // later repaint cannot turn this choice into an immediate assignment.
+  const requiresWaitingOn = Boolean(task.dependencies?.blocked);
   const state = {
     task,
     options,
@@ -112,7 +132,7 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
         taskId: task.id,
         note: state.note,
       });
-      const answer = await callRpc("tasks.assign", params);
+      const answer = await actions.assign(params, { requiresWaitingOn: requiresWaitingOn && params.assignee !== null });
       if (dismissed) return;
       await close();
       onAssigned?.(answer);

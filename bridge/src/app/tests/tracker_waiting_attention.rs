@@ -433,11 +433,9 @@ fn waiting_reads_bound_reverse_preview_and_share_summaries() {
         .iter()
         .find(|t| t["id"] == blocker)
         .unwrap();
-    assert_eq!(task["dependencies"]["blocks_count"], 21);
-    assert!(task["dependencies"].get("blocks").is_none());
+    assert_eq!(&task["dependencies"], dependencies);
     let watched = row(&mut app, &blocker);
-    assert_eq!(watched["dependencies"]["blocks_count"], 21);
-    assert!(watched["dependencies"].get("blocks").is_none());
+    assert_eq!(&watched["dependencies"], dependencies);
 }
 
 #[test]

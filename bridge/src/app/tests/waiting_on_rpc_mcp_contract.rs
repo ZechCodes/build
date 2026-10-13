@@ -18,6 +18,31 @@ fn rpc(app: &mut AppState, name: &str, params: Value) -> Value {
 }
 
 #[test]
+fn waiting_on_rpc_mcp_contract_unknown_params_use_canonical_refusals() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(tmp.path());
+    let task = filed(&mut app, &project, "canonical refusal");
+    for method in [
+        "tasks.waiting_on.add",
+        "tasks.waiting_on.remove",
+        "tasks.waiting_on.blocks",
+    ] {
+        let mut params = json!({"task_id":task["id"], "zeta":true, "alpha":null});
+        if method != "tasks.waiting_on.blocks" {
+            params["waiting_on"] = json!([]);
+        }
+        let refused = app.handle(req(method, params));
+        assert_eq!(refused["error_code"], "invalid_params", "{method}");
+        assert_eq!(refused["error"], "unknown params: alpha, zeta", "{method}");
+        assert_eq!(
+            refused["details"],
+            json!({"params":["alpha", "zeta"]}),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn waiting_on_rpc_mcp_contract_round_trips_and_keeps_tasks_link_retired() {
     let tmp = tempfile::tempdir().unwrap();
     let (_home, mut app, project) = tracked(tmp.path());

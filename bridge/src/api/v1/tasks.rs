@@ -362,7 +362,6 @@ pub struct TasksCloseParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct TasksWaitingOnParams {
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
@@ -370,7 +369,6 @@ pub struct TasksWaitingOnParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct TasksBlocksParams {
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,

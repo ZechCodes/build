@@ -1,7 +1,8 @@
-"""The ICE servers a browser opens its WebRTC peer connection to its bridge with.
+"""The ICE servers a Build client opens its WebRTC peer connection to its bridge with.
 
-One route, session-authenticated by the reusable ``auth_guard``, answering
-``{"iceServers": [...]}``. The browser fetches it once per peer connection and
+One route, authenticated by ``build_auth_guard`` with a browser session or desktop
+OAuth bearer and alpha membership, answering ``{"iceServers": [...]}``.
+The client fetches it once per peer connection and
 forwards the list to the bridge inside the sealed E2EE session, so the bridge
 needs no Cloudflare access and the relay never sees a credential.
 
@@ -21,9 +22,8 @@ from litestar.exceptions import HTTPException
 from litestar.response import Response
 from litestar.status_codes import HTTP_502_BAD_GATEWAY
 
-from skrift.auth.guards import auth_guard
-
 from buildapp import ice_servers
+from buildapp.desktop_auth import build_auth_guard
 from buildapp.session_auth import require_user
 
 ICE_SERVERS_ROUTE_PATH = "/api/rtc/ice-servers"
@@ -34,7 +34,7 @@ class RtcController(Controller):
 
     path = ""
 
-    @post(ICE_SERVERS_ROUTE_PATH, guards=[auth_guard])
+    @post(ICE_SERVERS_ROUTE_PATH, guards=[build_auth_guard])
     async def mint_ice_servers(self, request: Request) -> Response:
         """The ICE servers this user's peer connection should use."""
         require_user(request)

@@ -76,7 +76,7 @@ export async function renameDevice(deviceId, name) {
 
 export async function fetchIceServers() {
   const response = await fetch("/api/rtc/ice-servers", { method: "POST" });
-  if (!response.ok) throw new Error("could not mint ICE servers");
+  if (!response.ok) throw Object.assign(new Error("could not mint ICE servers"), { status: response.status });
   return (await response.json()).iceServers;
 }
 

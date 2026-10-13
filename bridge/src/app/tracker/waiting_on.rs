@@ -34,11 +34,8 @@ impl AppState {
                 "provisioning" => "queued",
                 state => state,
             };
-            let mut public = json!({"id":intent.id,"target":intent.target,"state":state});
-            if let Some(error) = intent.error {
-                public["error"] = json!(error);
-            }
-            row["deferred_assignment"] = public;
+            row["deferred_assignment"] =
+                json!({"id":intent.id,"target":intent.target,"state":state,"error":intent.error});
         }
         Ok(())
     }

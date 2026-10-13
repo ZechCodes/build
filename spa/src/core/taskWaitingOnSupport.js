@@ -3,6 +3,7 @@
 import { mergeCachedAtomically, readCached } from "./localCache.js";
 
 export const taskWaitingOnSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "task-waiting-on-support" });
+export const TASK_WAITING_ON_UPDATE = "Update this device's bridge to edit prerequisites or save assignments that wait.";
 
 export function rememberTaskWaitingOnSupport(deviceId, capabilities, current = () => true) {
   if (!deviceId) return Promise.resolve(false);

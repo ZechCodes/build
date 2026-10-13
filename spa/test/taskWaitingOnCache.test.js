@@ -57,3 +57,36 @@ it("reverse pages append by id and a fresh first page replaces the cached revers
   await edges.cacheTaskWaitingOnBlocks(device, project, "t", { blocks: [] });
   expect((await edges.readTaskWaitingOnBlocks(device, project, "t")).blocks).toEqual([]);
 });
+
+it("files a task into the catalog and matching queries, retaining filtered membership", async () => {
+  const matches = tracker.tasksQueryAddress(device, project, { state: "open", assignee: { kind: "user" } });
+  const misses = tracker.tasksQueryAddress(device, project, { state: "open", assignee: "none" });
+  await cache.writeCached(matches, tracker.tasksRecord([], []));
+  await cache.writeCached(misses, tracker.tasksRecord([], []));
+  const filed = { ...task, assignee: { kind: "user" } };
+  await edges.cacheTaskWaitingOnResponse(device, project, { task: filed });
+  expect((await tracker.readTasksRecord(device, project)).tasks.map((row) => row.id)).toEqual([task.id]);
+  expect((await cache.readCached(matches)).value.tasks.map((row) => row.id)).toEqual([task.id]);
+  expect((await cache.readCached(misses)).value.tasks).toEqual([]);
+  await edges.cacheTaskWaitingOnResponse(device, project, { task: { ...task, assignee: null } });
+  expect((await cache.readCached(matches)).value.tasks).toEqual([]);
+  expect((await cache.readCached(misses)).value.tasks.map((row) => row.id)).toEqual([task.id]);
+});
+
+it("a reverse continuation starts from the authoritative detail preview", async () => {
+  await tracker.writeTaskRecord(device, project, "t", tracker.taskRecord({ ...task, dependencies: {
+    blocks: [{ task_id: "preview" }], blocks_next_cursor: "preview-cursor", blocks_count: 2,
+  } }));
+  await edges.cacheTaskWaitingOnBlocks(device, project, "t", { blocks: [{ task_id: "later" }] }, { cursor: "preview-cursor" });
+  expect((await edges.readTaskWaitingOnBlocks(device, project, "t")).blocks.map((row) => row.task_id)).toEqual(["preview", "later"]);
+});
+
+it("new detail dependency facts retire the old reverse chain, and stale first pages cannot replace a newer read", async () => {
+  const older = await edges.captureTaskWaitingOnBlocksRead(device, project, "t");
+  const newerRead = await edges.captureTaskWaitingOnBlocksRead(device, project, "t");
+  await edges.cacheTaskWaitingOnBlocks(device, project, "t", { blocks: [{ task_id: "fresh" }] }, newerRead);
+  await edges.cacheTaskWaitingOnBlocks(device, project, "t", { blocks: [{ task_id: "stale" }] }, older);
+  expect((await edges.readTaskWaitingOnBlocks(device, project, "t")).blocks.map((row) => row.task_id)).toEqual(["fresh"]);
+  await tracker.writeTaskRecord(device, project, "t", tracker.taskRecord({ ...task, dependencies: { blocks: [], blocks_count: 0 } }));
+  expect(await edges.readTaskWaitingOnBlocks(device, project, "t")).toBeNull();
+});

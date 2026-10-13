@@ -2,13 +2,17 @@
 // cache records, including after a refusal leaves the form's draft intact.
 import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
-import { cacheTaskWaitingOnBlocks, cacheTaskWaitingOnResponse } from "./taskWaitingOnCache.js";
-
-export const TASK_WAITING_ON_UPDATE = "Update this device's bridge to edit prerequisites or save assignments that wait.";
+import { cacheTaskWaitingOnBlocks, cacheTaskWaitingOnResponse, captureTaskWaitingOnBlocksRead } from "./taskWaitingOnCache.js";
+import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
+export { TASK_WAITING_ON_UPDATE };
 
 export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }) {
-  async function ask(method, params, { requiresWaitingOn = true, cursor } = {}) {
+  async function ask(method, params, options = {}) {
+    const requiresWaitingOn = options.requiresWaitingOn !== false;
     const context = contextFor(deviceId);
+    if (!context && requiresWaitingOn) throw new Error(TASK_WAITING_ON_UPDATE);
+    const basis = method === "tasks.waiting_on.blocks"
+      ? await captureTaskWaitingOnBlocksRead(deviceId, projectId, taskId) : {};
     // Established commands retain their before-greeting behavior for callers
     // with no session context. New graph contracts always need a greeting.
     if (!context && !requiresWaitingOn) {
@@ -25,9 +29,9 @@ export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }
     if (!request) throw new Error("This machine is unavailable. Try again when it returns.");
     const answer = await request.sent;
     if (!request.stands()) throw new Error("This machine's greeting changed while the request was running. Reload the task before trying again.");
-    const options = { accept: request.stands, cursor };
-    if (method === "tasks.waiting_on.blocks") await cacheTaskWaitingOnBlocks(deviceId, projectId, taskId, answer, options);
-    else await cacheTaskWaitingOnResponse(deviceId, projectId, answer, options);
+    const writeOptions = { ...basis, accept: request.stands, cursor: options.cursor };
+    if (method === "tasks.waiting_on.blocks") await cacheTaskWaitingOnBlocks(deviceId, projectId, taskId, answer, writeOptions);
+    else await cacheTaskWaitingOnResponse(deviceId, projectId, answer, writeOptions);
     return answer;
   }
 

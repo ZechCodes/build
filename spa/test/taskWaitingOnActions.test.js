@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({ context: {}, capabilities: { tasks: { waitingOn: true } }, cache: vi.fn(), blocks: vi.fn(), greet: vi.fn(), stands: vi.fn(() => true) }));
 vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => mocks.context, whenGreeted: (...args) => mocks.greet(...args) }));
 vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: () => mocks.capabilities }));
-vi.mock("../src/core/taskWaitingOnCache.js", () => ({ cacheTaskWaitingOnResponse: (...args) => mocks.cache(...args), cacheTaskWaitingOnBlocks: (...args) => mocks.blocks(...args) }));
+vi.mock("../src/core/taskWaitingOnCache.js", () => ({ captureTaskWaitingOnBlocksRead: async () => ({ readOrder: 1 }), cacheTaskWaitingOnResponse: (...args) => mocks.cache(...args), cacheTaskWaitingOnBlocks: (...args) => mocks.blocks(...args) }));
 import { createTaskWaitingOnActions } from "../src/core/taskWaitingOnActions.js";
 
 let call, actions;

@@ -19,7 +19,7 @@ const NONE = {
   bodies: { pages: false, mediaRawPages: false },
   reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-  tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+  tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false },
   conversations: { settings: false, reset: false },
   github: { repos: false },
   messages: { context: false },
@@ -82,7 +82,7 @@ describe("the adapter a greeting selects", () => {
   reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       // A greeting that names no task feature carries none of them.
-      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, waitingOn: false },
       conversations: { settings: false, reset: false },
       github: { repos: false },
       messages: { context: false },

@@ -1,4 +1,4 @@
-"""The ICE-servers route: session-authenticated by the reusable guard, answering
+"""The ICE-servers route: browser/desktop-authenticated by the shared guard, answering
 the minted array under ``iceServers``, and turning a Cloudflare failure into a
 502 rather than a silently degraded list.
 
@@ -8,22 +8,35 @@ Cloudflare is never called — ``ice_servers`` is replaced at the seam it expose
 from __future__ import annotations
 
 import asyncio
-import os
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from litestar import Litestar
 from litestar.exceptions import HTTPException, NotAuthorizedException
 from litestar.handlers import HTTPRouteHandler
-from litestar.middleware.session.client_side import CookieBackendConfig
-from litestar.status_codes import HTTP_401_UNAUTHORIZED, HTTP_502_BAD_GATEWAY
+from litestar.status_codes import (
+    HTTP_201_CREATED,
+    HTTP_401_UNAUTHORIZED,
+    HTTP_403_FORBIDDEN,
+    HTTP_502_BAD_GATEWAY,
+)
 from litestar.testing import TestClient
 
-from skrift.auth.guards import auth_guard
 from skrift.auth.session_keys import SESSION_USER_ID
+from skrift.auth.tokens import create_signed_token
 
 from buildapp import ice_servers as ice_servers_module
+from buildapp.alpha_membership import INVITE_ONLY_DETAIL
+from buildapp.db_test_support import (
+    asgi_app,
+    in_memory_session_maker,
+    revoke_every_invite,
+    session_backend_config,
+    sign_in,
+    sign_in_member,
+    sign_out,
+)
+from buildapp.desktop_auth import DESKTOP_CLIENT_ID, build_auth_guard
 from buildapp.ice_servers import (
     CF_TURN_KEY_API_TOKEN_ENV,
     CF_TURN_KEY_ID_ENV,
@@ -34,6 +47,7 @@ from buildapp.rtc_controller import ICE_SERVERS_ROUTE_PATH, RtcController
 
 KEY_ID = "key-abc"
 API_TOKEN = "token-xyz"
+OAUTH_SECRET = "test-server-secret-for-desktop-access-tokens"
 MINTED_SERVERS = [
     {
         "urls": ["turn:turn.cloudflare.com:3478?transport=udp"],
@@ -109,8 +123,8 @@ def test_an_anonymous_session_is_refused_before_any_key_is_read():
         _mint({})
 
 
-def test_the_route_carries_the_reusable_auth_guard():
-    assert auth_guard in (_route_handler().guards or [])
+def test_the_route_carries_the_shared_browser_and_desktop_guard():
+    assert _route_handler().guards == [build_auth_guard]
 
 
 def test_the_turn_key_never_reaches_the_browser(monkeypatch):
@@ -121,10 +135,92 @@ def test_the_turn_key_never_reaches_the_browser(monkeypatch):
     assert API_TOKEN not in str(_mint(_signed_in()).content)
 
 
-def test_an_unauthenticated_request_is_rejected_by_the_guard():
-    app = Litestar(
-        route_handlers=[RtcController],
-        middleware=[CookieBackendConfig(secret=os.urandom(16)).middleware],
+@pytest.fixture()
+def client(monkeypatch):
+    monkeypatch.setattr(
+        "buildapp.desktop_auth.get_settings",
+        lambda: SimpleNamespace(secret_key=OAUTH_SECRET),
     )
-    with TestClient(app=app) as client:
-        assert client.post(ICE_SERVERS_ROUTE_PATH).status_code == HTTP_401_UNAUTHORIZED
+    session_config = session_backend_config()
+    app = asgi_app(
+        [RtcController],
+        session_maker=in_memory_session_maker(),
+        session_config=session_config,
+    )
+    with TestClient(app=app, session_config=session_config) as test_client:
+        yield test_client
+
+
+def _desktop_headers(client, user_id):
+    token = create_signed_token(
+        {
+            "type": "access",
+            "client_id": DESKTOP_CLIENT_ID,
+            "scope": "openid profile email",
+            "user_id": str(user_id),
+        },
+        OAUTH_SECRET,
+        900,
+    )
+    sign_out(client)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.mark.parametrize("desktop", [False, True], ids=["browser", "desktop"])
+def test_a_member_gets_minted_ice_servers(client, monkeypatch, desktop):
+    user_id = sign_in_member(client)
+    headers = _desktop_headers(client, user_id) if desktop else {}
+    _configure_key(monkeypatch)
+    monkeypatch.setattr(
+        ice_servers_module, "ice_servers", lambda *_: MINTED_SERVERS
+    )
+
+    response = client.post(ICE_SERVERS_ROUTE_PATH, headers=headers)
+
+    assert response.status_code == HTTP_201_CREATED
+    assert response.json() == {"iceServers": MINTED_SERVERS}
+    assert API_TOKEN not in response.text
+
+
+@pytest.mark.parametrize("desktop", [False, True], ids=["browser", "desktop"])
+@pytest.mark.parametrize("revoked", [False, True], ids=["uninvited", "revoked"])
+def test_accounts_outside_the_alpha_are_refused_before_minting(
+    client, monkeypatch, desktop, revoked
+):
+    if revoked:
+        user_id = sign_in_member(client)
+        revoke_every_invite(client)
+    else:
+        user_id = sign_in(client, "uninvited@example.com")
+    headers = _desktop_headers(client, user_id) if desktop else {}
+
+    mint_calls = []
+
+    def unexpected_mint(*args):
+        mint_calls.append(args)
+        return []
+
+    monkeypatch.setattr(ice_servers_module, "ice_servers", unexpected_mint)
+    response = client.post(ICE_SERVERS_ROUTE_PATH, headers=headers)
+    assert response.status_code == HTTP_403_FORBIDDEN
+    assert response.json()["detail"] == INVITE_ONLY_DETAIL
+    assert mint_calls == []
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer invalid-desktop-token"])
+def test_an_unauthenticated_request_is_rejected_by_the_guard(
+    client, monkeypatch, authorization
+):
+    mint_calls = []
+
+    def unexpected_mint(*args):
+        mint_calls.append(args)
+        return []
+
+    monkeypatch.setattr(ice_servers_module, "ice_servers", unexpected_mint)
+    headers = {"Authorization": authorization} if authorization else {}
+    assert (
+        client.post(ICE_SERVERS_ROUTE_PATH, headers=headers).status_code
+        == HTTP_401_UNAUTHORIZED
+    )
+    assert mint_calls == []

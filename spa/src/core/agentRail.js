@@ -104,7 +104,7 @@ import {
 } from "./threadSend.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
-import { hashFromRoute } from "./router.js";
+import { hashFromRoute, routeFromHash } from "./router.js";
 import { registerSyncThread, syncPaneShown } from "./syncVisibleScopes.js";
 import { createRailWorkItem } from "./railWorkItem.js";
 import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
@@ -2211,6 +2211,16 @@ function mountRailOnContext(host, context, swap) {
     closePanel({ restoreFocus });
   };
 
+  // Native hash navigation reaches this listener before the shell finishes
+  // its navigation guards. Keep the exact pin visible during that interval;
+  // the shell will retarget it once the destination is accepted.
+  const dismissOnNavigation = () => {
+    const route = routeFromHash(location.hash);
+    const kind = route.name === "trackerTask" ? "project" : route.name;
+    if (!route.newAgent && canRetarget({ ...route, kind, openAgentId: route.agent, chatRepository })) return;
+    dismissPopover();
+  };
+
   const dismissOnEscape = (event) => {
     if (event.key !== "Escape" || event.defaultPrevented) return;
     dismissPopover({ restoreFocus: true });
@@ -4269,7 +4279,7 @@ function mountRailOnContext(host, context, swap) {
   const stopWaitingForReader = onReaderReturns(paintChat);
   document.addEventListener("keydown", dismissOnEscape);
   document.addEventListener("pointerdown", dismissOnOutsidePointer);
-  window.addEventListener("hashchange", dismissPopover);
+  window.addEventListener("hashchange", dismissOnNavigation);
   const cancelPanelMotion = () => panelMotion.cancel();
   panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
   window.addEventListener("resize", cancelPanelMotion);
@@ -4374,7 +4384,7 @@ function mountRailOnContext(host, context, swap) {
       releaseFaces();
       document.removeEventListener("keydown", dismissOnEscape);
       document.removeEventListener("pointerdown", dismissOnOutsidePointer);
-      window.removeEventListener("hashchange", dismissPopover);
+      window.removeEventListener("hashchange", dismissOnNavigation);
       window.removeEventListener("resize", cancelPanelMotion);
       unwatchResetSupport();
       if (ownsChatRepository) chatRepository.dispose();

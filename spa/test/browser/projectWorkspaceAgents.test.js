@@ -98,6 +98,7 @@ async function mountWorkers(page, basePath) {
   await loadChatOverviewModules(page, basePath, {
     contexts: "src/core/deviceContexts.js", events: "src/core/changeEvents.js",
     scope: "src/core/cacheScope.js", shell: "src/core/shell.js", viewing: "src/core/viewingContext.js",
+    router: "src/core/router.js",
   });
   await page.evaluate(seedProjectWorkers);
   await page.locator(WORKER).waitFor();
@@ -230,7 +231,7 @@ it("keeps project task workers and draft, while a named workspace shows its pin 
 
 
 for (const viewport of VIEWPORTS) {
-  it(`keeps the exact focused pin conversation mounted throughout host changes (${viewport.width})`, async () => {
+  it(`keeps the exact focused pin conversation mounted throughout native hash host changes (${viewport.width})`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       await mountWorkers(page, basePath);
       await page.evaluate(async () => {
@@ -246,6 +247,7 @@ for (const viewport of VIEWPORTS) {
           entity_id: "workspace-b-owner", name: "Workspace B" }, "workers-device")]);
         window.__workerRail.dispose();
         app.App.route.agent = "project-pin";
+        history.replaceState(null, "", window.__layoutModules.router.hashFromRoute(app.App.route));
         shell.standShell(app.App.route);
       });
       await page.waitForFunction(() => document.querySelector(".thread-items")?.textContent.includes("Cached Build coordinator"));
@@ -292,12 +294,22 @@ for (const viewport of VIEWPORTS) {
         { name: "workspace", workspaceId: "workspace-b", own: "workspace-b-agent", stamp: "from Workspace B" },
         { name: "project", own: "project-worker", stamp: null },
       ]) {
-        await page.evaluate((step) => {
-          const { app, shell } = window.__layoutModules;
-          app.App.route = { name: step.name, workspaceId: step.workspaceId, deviceId: "workers-device",
+        await page.evaluate(async (step) => {
+          const { app, router, shell } = window.__layoutModules;
+          const destination = { name: step.name, workspaceId: step.workspaceId, deviceId: "workers-device",
             projectId: "workers-project", agent: "project-pin", tab: "changes" };
+          const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+          location.hash = router.hashFromRoute(destination);
+          window.__continuity.sample("synchronous hash assignment");
+          await changed;
+          // The app router awaits navigation guards before standing the shell.
+          // Sample the native event and a frame before that destination render.
+          window.__continuity.sample("native hashchange");
+          await new Promise(requestAnimationFrame);
+          window.__continuity.sample("before destination render");
+          app.App.route = router.routeFromHash(location.hash);
           shell.standShell(app.App.route);
-          window.__continuity.sample("synchronous navigation");
+          window.__continuity.sample("synchronous destination render");
         }, step);
         await page.locator(`[data-agent="${step.own}"]`).waitFor();
         await settled(page);
@@ -359,4 +371,36 @@ it("refuses continuity for workers, unknown identity and unrelated navigation", 
     expect(cold).toBe(false);
     await page.evaluate(() => window.__workerRail.dispose());
   }, { width: 1280, height: 900 });
+}, 40_000);
+
+
+it("dismisses the default mobile panel when native navigation leaves the canonical pin", async () => {
+  for (const destination of [
+    { agent: "project-worker" }, { agent: null }, { agent: null, newAgent: true },
+    { projectId: "other-project" }, { deviceId: "other-device" }, { name: "inbox" },
+  ]) {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountWorkers(page, basePath);
+      await page.evaluate(() => {
+        const { app, router, shell } = window.__layoutModules;
+        window.__workerRail.dispose();
+        app.App.route.agent = "project-pin";
+        history.replaceState(null, "", router.hashFromRoute(app.App.route));
+        shell.standShell(app.App.route);
+      });
+      await page.locator(INPUT).fill("Draft on the pin");
+      await page.locator(INPUT).focus();
+      expect(await page.locator(".rail-head .pinbtn").getAttribute("aria-pressed")).toBe("false");
+      await page.evaluate(async (destination) => {
+        const { app, router } = window.__layoutModules;
+        const changed = new Promise((resolve) => window.addEventListener("hashchange", resolve, { once: true }));
+        location.hash = router.hashFromRoute({ ...app.App.route, ...destination });
+        await changed;
+      }, destination);
+      await settled(page);
+      expect(await page.locator(INPUT).isVisible(), JSON.stringify(destination)).toBe(false);
+      expect(await page.locator(INPUT).evaluate((node) => document.activeElement === node)).toBe(false);
+      await page.evaluate(() => window.__layoutModules.shell.stopShell());
+    }, { width: 390, height: 844 });
+  }
 }, 40_000);

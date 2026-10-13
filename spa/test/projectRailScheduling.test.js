@@ -7,24 +7,28 @@ const { createRailWorkItem } = await import("../src/core/railWorkItem.js");
 it("starts the independent legacy project row while its roster/support snapshot is pending", async () => {
   const legacy = { entity_id: "owner", agents: [{ id: "pin" }] };
   const roster = { entity_id: "owner", pinned_agent_id: "pin", agents: [{ id: "worker" }, { id: "pin" }] };
-  cache.readCached.mockResolvedValue({ value: legacy });
+  cache.readCached.mockImplementation(async (address) => ({
+    value: address.kind === "project-agents-support" ? { projectWorkers: true } : legacy,
+  }));
   let finishRoster;
   cache.readCachedMany.mockImplementation(() => new Promise((resolve) => { finishRoster = resolve; }));
   const records = createRailWorkItem({ context: { kind: "project", deviceId: "device", projectId: "project" },
     railContext: {}, cacheScope: { address: (parts) => ({ deviceId: "device", ...parts }) }, alive: () => true });
 
-  const pending = records.read("owner");
+  let settled = false;
+  const pending = records.read("owner").then((row) => { settled = true; return row; });
   for (let turn = 0; turn < 5; turn += 1) await Promise.resolve();
   const startedReads = cache.readCached.mock.calls.map(([address]) => address.kind);
+  expect(startedReads).toEqual(["row", "project-agents-support"]);
+  expect(settled).toBe(false);
   finishRoster([{ value: { projectWorkers: true } }, { value: roster }]);
   const row = await pending;
 
-  expect(startedReads).toEqual(["row"]);
   expect(cache.readCachedMany).toHaveBeenCalledWith([
     { deviceId: "device", entityId: "", kind: "project-agents-support" },
     { deviceId: "device", entityId: "owner", kind: "project-agents" },
   ]);
-  expect(row).toEqual({ ...roster, project_id: "project" });
+  expect(row).toEqual({ ...roster, project_id: "project", projectWorkersSupported: true });
 });
 
 it("independent project row consumers do not invalidate each other's owner read", async () => {

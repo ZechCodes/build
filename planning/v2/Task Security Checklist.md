@@ -67,6 +67,28 @@ C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
   `a_stale_worker_session_cannot_assign`, and
   `project_deletion_retires_workers_and_preserves_sources` (tokens revoked,
   queued turns dropped).
+### C8 / #536 scoped verification — 2026-10-13
+
+TS522-1's SPA contribution scores **25/25**: cached assignee groups include only
+the exact project's workers; creation retains its operation identity on retry;
+a removed selection refuses instead of selecting another agent. The shared
+device RPC boundary waits for the current greeting and refuses
+`new_project_agent` creation when `tasks.assignProjectAgent` is absent, including
+a retained picker caller after downgrade. Ordinary existing-agent assignment
+keeps its existing contract. Inherited C4/C5 tests above supply bridge purpose,
+same-project authorization and server idempotence evidence.
+
+Focused device-context, worker-assignee and review-feedback suites ran under
+`nice -n 10` and passed 51 tests (exit 0); both new current-greeting regressions
+failed first (exit 1). Scoped source lint passed (exit 0). Rail/shell coverage
+passed 385 tests (exit 0), and the project-worker Chromium suite passed four
+tests (exit 0). Final broad gates and scans are recorded on #536 when complete.
+
+TS522-1 plus the three Chat Isolation C8 controls (25 points each) score
+**100/100 within C8's implemented scope**. The combined #522 extension and
+TS522-2's C10 lifecycle evidence remain pending; this entry does not mark them
+complete.
+
 ## #558 planned extension — not yet verified
 
 These rows follow Zech's 2026-10-12 decisions in

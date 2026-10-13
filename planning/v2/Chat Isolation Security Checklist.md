@@ -166,3 +166,29 @@ C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
   sessions in the project's folder; removing one worker and resetting another
   leave the pin's session, token, history and launch config and an
   uncommitted source edit untouched).
+
+### C8 / #536 scoped verification — 2026-10-13
+
+The SPA contribution verifies the following controls; the combined #522
+extension remains pending its C10 evidence. These results supplement the
+existing C4/C5 bridge authority and shared-cwd cleanup evidence, without
+rescoring those implementations.
+
+| Control | C8 evidence | Scoped score |
+| --- | --- | ---: |
+| CI522-1 | Rail model/DOM tests and the worker-first Chromium fixture keep the persisted pin above the separator, refuse its removal, and exclude project workers from named-workspace rails. Project-hosted tasks retain the project rail. | 25/25 |
+| CI522-2 | Exact worker conversation sends, independent drafts, cached support downgrade, same-owner/device isolation and retired-reader tests. Generation-admission regressions pause a roster read across a real reset: both absent and present initial thread records refuse the retired digest and admit a fresh retry. Roster and captured thread writes are fenced in one transaction. | 25/25 |
+| CI522-3 | Resetting one shared-owner worker invalidates its captured submission while sibling and pin drafts survive. DOM removal and Chromium navigation preserve separate drafts and the canonical pin conversation across surfaces. Provider/source preservation remains covered by inherited C5 evidence. | 25/25 |
+
+Focused gates ran under `nice -n 10`: rail DOM/isolation and shell project/link
+suites passed 385 tests (exit 0); `browser/projectWorkspaceAgents.test.js`
+passed all four Chromium tests (exit 0). Cache/reset/activity regressions
+passed 29 tests (exit 0), after both new concurrent-reset regressions failed
+first (exit 1). The route scheduling regression failed first (exit 1), then
+passed all ten route/rail-reading tests (exit 0); it restores independent
+parallel route-cache reads without weakening assertions. Scoped source lint
+passed (exit 0). Final broad gates and scans are recorded on #536 when complete.
+
+Together with TS522-1's 25/25 recorded in the Task checklist, the four applicable
+C8 controls score **100/100 within C8's implemented scope**. This is not a
+completion claim for the combined #522/C10 extension.

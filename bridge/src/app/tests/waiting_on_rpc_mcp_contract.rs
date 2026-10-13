@@ -1,11 +1,11 @@
 use super::tracker::{filed, tracked};
 use super::tracker_tools::{call, coding_agent};
 use super::{req, AppState};
-use crate::mcp::{BridgeAction, DoneServer, McpSurface};
+use crate::mcp::{BridgeAction, DoneServer};
 use serde_json::{json, Value};
 
 fn tool(name: &str, arguments: Value) -> BridgeAction {
-    let server = DoneServer { owner_id: "test".into(), surface: McpSurface::Coding };
+    let server = DoneServer::new("test");
     let handled = server.handle_message(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string());
     handled.action.unwrap_or_else(|| panic!("{name} refused: {:?}", handled.reply))
 }

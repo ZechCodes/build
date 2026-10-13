@@ -21,8 +21,8 @@ fn waiting_on_rpc_mcp_contract_round_trips_and_keeps_tasks_link_retired() {
     let (_home, mut app, project) = tracked(tmp.path());
     let blocker = filed(&mut app, &project, "prerequisite");
     let task = rpc(&mut app, "tasks.create", json!({"project_id":project,"title":"waiting","waiting_on":[blocker["id"]],"assignee":{"kind":"new_project_agent","agent_name":"Held worker"}}));
-    assert_eq!(task["task"]["blocked"], true);
-    assert_eq!(task["task"]["waiting_on"][0]["task_id"], blocker["id"]);
+    assert_eq!(task["task"]["dependencies"]["blocked"], true);
+    assert_eq!(task["task"]["dependencies"]["waiting_on"][0]["task_id"], blocker["id"]);
     assert_eq!(task["task"]["deferred_assignment"]["state"], "waiting");
     assert_eq!(task["dispatch"], Value::Null);
     let reverse = rpc(&mut app, "tasks.waiting_on.blocks", json!({"task_id":blocker["id"],"limit":1}));
@@ -33,7 +33,7 @@ fn waiting_on_rpc_mcp_contract_round_trips_and_keeps_tasks_link_retired() {
     let other = filed(&mut app, &project, "other prerequisite");
     call(&mut app, &who, tool("link_task", json!({"task_id":task["task"]["id"],"waiting_on":[other["id"]]}))).unwrap();
     let removed = call(&mut app, &who, tool("unlink_task", json!({"task_id":task["task"]["id"],"waiting_on":[other["id"]]}))).unwrap();
-    assert_eq!(removed["task"]["waiting_on"].as_array().unwrap().len(), 1);
+    assert_eq!(removed["task"]["dependencies"]["waiting_on"].as_array().unwrap().len(), 1);
     let retired = app.handle(req("tasks.link", json!({"task_id":task["task"]["id"],"branch":"test"})));
     assert_eq!(retired["error_code"], "unknown_method");
 }
@@ -49,7 +49,7 @@ fn waiting_on_rpc_mcp_contract_refusals_are_atomic_and_scoped() {
     assert!(cycle.is_err(), "{cycle:?}");
     let reread = rpc(&mut app, "tasks.get", json!({"task_id":task["id"]}));
     assert_eq!(reread["task"]["links"]["branches"], json!([]));
-    assert_eq!(reread["task"]["waiting_on"], json!([]));
+    assert_eq!(reread["task"]["dependencies"]["waiting_on"], json!([]));
     let refused = app.handle(req("tasks.create", json!({"project_id":project,"title":"must not exist","waiting_on":[blocker["id"],"task-missing"],"assignee":{"kind":"new_project_agent","agent_name":"must not start"}})));
     assert_eq!(refused["ok"], false, "{refused}");
     assert_eq!(rpc(&mut app, "tasks.list", json!({"project_id":project}))["tasks"].as_array().unwrap().len(), 2);
@@ -59,5 +59,5 @@ fn waiting_on_rpc_mcp_contract_refusals_are_atomic_and_scoped() {
         assert_eq!(app.handle(req("tasks.waiting_on.add", params))["error_code"], "invalid_params");
     }
     let removed = rpc(&mut app, "tasks.waiting_on.remove", json!({"task_id":task["id"],"waiting_on":[blocker["id"]]}));
-    assert_eq!(removed["task"]["waiting_on"], json!([]));
+    assert_eq!(removed["task"]["dependencies"]["waiting_on"], json!([]));
 }

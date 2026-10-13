@@ -324,3 +324,74 @@ fn closed_blocker_notice_contract() {
         "one durable coordinator notice"
     );
 }
+
+#[test]
+fn waiting_notices_and_reminders_undelivered_states() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let (owner, agent) = project_agent(&mut app, &project);
+    let dependent = id(&filed(&mut app, &project, "queued task"));
+    let blocker = id(&filed(&mut app, &project, "last blocker"));
+    edges(&app, &project, &dependent, &[blocker.clone()]);
+    call(
+        &mut app,
+        "tasks.assign",
+        json!({"task_id":dependent,"assignee":{"kind":"agent","agent_id":agent}}),
+    );
+    call(
+        &mut app,
+        "tasks.update",
+        json!({"task_id":blocker,"status":"done"}),
+    );
+    while app
+        .tracker_store()
+        .unwrap()
+        .reconcile_waiting_on(100)
+        .unwrap()
+        .pending
+    {}
+    let intent = app
+        .tracker_store()
+        .unwrap()
+        .current_delivery_intent(&dependent)
+        .unwrap()
+        .unwrap();
+    assert_eq!(intent.state, "queued");
+    app.remind_of_open_tasks(&owner, &agent);
+    assert!(
+        !has_reminder(&mut app, &owner, &agent),
+        "queued assignment is still undelivered"
+    );
+    app.tracker_store()
+        .unwrap()
+        .fail_delivery_intent(&intent.id, intent.generation, "temporary fixture failure")
+        .unwrap();
+    app.remind_of_open_tasks(&owner, &agent);
+    assert!(
+        !has_reminder(&mut app, &owner, &agent),
+        "failed assignment is still undelivered"
+    );
+    app.retry_task_delivery(&intent.id).unwrap();
+    pump(&mut app);
+    app.remind_of_open_tasks(&owner, &agent);
+    assert!(
+        has_reminder(&mut app, &owner, &agent),
+        "delivered actionable task still produces reminder"
+    );
+}
+fn has_reminder(app: &mut AppState, owner: &str, agent: &str) -> bool {
+    call(
+        app,
+        "thread.page",
+        json!({"entity_id":owner,"agent_id":agent,"limit":100}),
+    )["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| {
+            m["data"]["body"]
+                .as_str()
+                .unwrap_or("")
+                .contains("reported Complete")
+        })
+}

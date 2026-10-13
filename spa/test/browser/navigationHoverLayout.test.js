@@ -28,12 +28,13 @@ for (const width of [390, 1280]) for (const theme of ["light", "dark"]) {
       for (const kind of ["workspace", "projectTask", "branch"]) {
         await mountNavigationBreadcrumbs(page, basePath, { theme, kind });
         if (kind === "branch") {
-          await page.evaluate(async (basePath) => {
-            const { mountSplitButton } = await import(`${basePath}src/core/splitButton.js`);
-            mountSplitButton(document.querySelector("#tb-verb"), {
+          await page.addScriptTag({ type: "module", content: `import { mountSplitButton } from '${basePath}src/core/splitButton.js'; window.__navigationSplit = mountSplitButton;` });
+          await page.waitForFunction(() => !!window.__navigationSplit);
+          await page.evaluate(() => {
+            window.__navigationSplit(document.querySelector("#tb-verb"), {
               options: [{ id: "done", label: "Done" }, { id: "keep", label: "Keep branch" }], variant: "mini", run() {},
             });
-          }, basePath);
+          });
         }
         const controls = page.locator('.toolbar button:not(:disabled), .toolbar a[href]');
         for (let index = 0; index < await controls.count(); index++) {
@@ -45,6 +46,7 @@ for (const width of [390, 1280]) for (const theme of ["light", "dark"]) {
           const hovered = await appearance(control);
           expect(hovered.colour).toBe(hovered.accent);
           expect(hovered.background).toBe("rgba(0, 0, 0, 0)");
+          expect(hovered.background).toBe(before.background);
           expect(hovered.shadow).toBe("none");
           expect(hovered.icons.every((colour) => colour === hovered.accent)).toBe(true);
           expect(hovered.bounds).toEqual(before.bounds);
@@ -56,6 +58,7 @@ for (const width of [390, 1280]) for (const theme of ["light", "dark"]) {
           expect(focused.outline).toBe("solid");
           expect(focused.outlineWidth).toBeGreaterThanOrEqual(2);
           expect(focused.outlineColour).toBe(focused.accent);
+          expect(focused.background).toBe("rgba(0, 0, 0, 0)");
           expect(focused.bounds).toEqual(before.bounds);
         }
       }

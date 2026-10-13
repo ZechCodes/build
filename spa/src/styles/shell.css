@@ -710,7 +710,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .device-strip .device-retry { flex:none; margin-left:auto; }
 
 /* ---- the view area's toolbar ----
-   The up arrow is separate from the text-width project link. Workspace names
+   The left chevron is separate from the text-width project link. Workspace names
    yield independently; ordinary rows are 44px, while task ancestry and tightly
    constrained controls can wrap. The controller measures the mounted height
    for the view's conversation and console overlays. */
@@ -721,9 +721,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   --tb-project-cap:min(96px, calc((100cqw - var(--inbox-open-clear) - 10px) / 4)); }
 @media (prefers-reduced-motion: reduce) { .toolbar { transition:none; } }
-.tb-switch { display:flex; align-items:center; justify-content:center; flex:none;
+.tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
   width:44px; height:44px; padding:0; border:0; border-radius:6px;
   background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }
+/* Keep the 44px target; align the glyph near the project instead of shrinking it. */
+.tb-switch > span { display:flex; }
+.tb-switch svg { width:18px; height:18px; }
 .tb-breadcrumbs { flex:0 1 auto; min-width:0; max-width:calc(100% - 96px); }
 .tb-breadcrumbs ol { display:flex; flex-wrap:wrap; align-items:flex-start; gap:4px;
   list-style:none; padding:0; margin:0; min-width:0; }
@@ -742,8 +745,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .tb-workspace .tb-name { white-space:pre; }
 .tb-caret { flex:none; width:12px; color:var(--dim); }
 .tb-sep { flex:none; width:12px; text-align:center; color:var(--dim); }
-.tb-switch:hover, .tb-sel:hover { background:var(--panel2); }
-.tb-project:hover, .tb-leaf:hover, .tb-tasks:hover { color:var(--accent); }
+/* All bar actions share ink-only feedback, including the global interaction
+   sheet's inset tint and view-owned verb buttons. Popup menus keep their own style. */
+.toolbar :is(button, a[href]):not(.splitmenu *):hover:not(:disabled, [aria-disabled="true"]) {
+  color:var(--accent); background:transparent; box-shadow:none; }
+.tb-sel:hover .tb-caret { color:inherit; }
+.tb-verb .btn:hover:not(:disabled) { border-color:var(--line); }
 .tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
   outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
 .tb-task-ancestry ol { row-gap:0; }
@@ -767,7 +774,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
    down from the surface's old primary-button treatment: this is a fact in a
    bar of facts, not the loudest thing on the page. */
 .tb-verb:empty { display:none; }
-.tb-verb .btn { padding:4px 10px; font-size:12px; border-radius:7px; }
+.tb-verb .btn { padding:4px 10px; font-size:12px; border-radius:7px; background:transparent; }
 .tb-verb .splitbtn .caret { padding:4px 6px; }
 .tb-verb .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto; }
 

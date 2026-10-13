@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 const flush = async () => {
@@ -17,10 +17,10 @@ const tokens = (suffix = "rotated") => ({
 const response = (payload, ok = true) => ({ ok, json: async () => payload });
 let sequence = 0;
 
-async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch } = {}) {
-  const directory = mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
+async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {} } = {}) {
+  const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
-  if (stored) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
+  if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
   const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [] };
   const app = new EventEmitter();
   Object.assign(app, {
@@ -50,6 +50,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       getSelectedStorageBackend: () => "gnome_libsecret",
       encryptString: (value) => Buffer.from(`encrypted:${value}`),
       decryptString: (bytes) => bytes.toString().slice(10),
+      ...safeStorage,
     },
     dialog: { showMessageBox: async (options) => {
       calls.dialogs.push(options);
@@ -64,7 +65,10 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       setPermissionCheckHandler() {}, setPermissionRequestHandler() {},
       webRequest: { onBeforeSendHeaders: (_filter, handler) => { calls.headers = handler; } },
     } },
-    shell: { openExternal: async (url) => { calls.browser.push(url); } },
+    shell: { openExternal: async (url) => {
+      calls.browser.push(url);
+      if (openExternal) return openExternal(calls.browser.length);
+    } },
   };
   const id = ++sequence;
   const key = `__desktopElectron${id}`;
@@ -82,7 +86,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       return nextLoad(url, context);
     },
   });
-  t.mock.timers.enable({ apis: ["setTimeout"] });
+  if (!userData) t.mock.timers.enable({ apis: ["setTimeout"] });
   t.after(() => {
     hook.deregister();
     delete globalThis[key];
@@ -234,4 +238,75 @@ test("sign-out ignores a late authorization-code exchange", async (t) => {
   assert.equal(existsSync(path), false);
   assert.equal(header(), undefined);
   assert.equal(calls.windows.length, 0);
+});
+
+
+test("a second launch uses the last rotated token without browser sign-in", async (t) => {
+  const first = await launch(t);
+  const second = await launch(t, { userData: dirname(first.path), fetch: () => response(tokens("second-launch")) });
+  assert.equal(second.calls.fetch[0].body.get("refresh_token"), "fixture-refresh-rotated");
+  assert.deepEqual(second.calls.browser, []);
+  assert.equal(second.calls.windows.length, 1);
+  assert.equal(readFileSync(first.path, "utf8"), "encrypted:fixture-refresh-second-launch");
+});
+
+test("activation during authorization-code exchange cannot start another sign-in", async (t) => {
+  let resolveExchange;
+  const pending = new Promise((resolve) => { resolveExchange = resolve; });
+  const { app, calls, callback } = await launch(t, { stored: null, fetch: () => pending });
+  callback();
+  await flush();
+  app.emit("activate");
+  await flush();
+  assert.equal(calls.browser.length, 1);
+  assert.equal(calls.fetch.length, 1);
+  resolveExchange(response(tokens()));
+  await flush();
+  assert.equal(calls.windows.length, 1);
+});
+
+test("browser-open failure can retry with a fresh authorization request", async (t) => {
+  const { calls, app } = await launch(t, {
+    stored: null,
+    openExternal: (count) => { if (count === 1) throw new Error("fixture browser unavailable"); },
+  });
+  // Quit was selected in the error dialog; emulate a later activation instead.
+  app.emit("activate");
+  await flush();
+  assert.equal(calls.browser.length, 2);
+  assert.notEqual(new URL(calls.browser[0]).searchParams.get("state"), new URL(calls.browser[1]).searchParams.get("state"));
+});
+
+test("a scheduled refresh rotates the stored token and sends the latest token", async (t) => {
+  const { calls, path, header } = await launch(t, { fetch: (count) => response(tokens(`rotation-${count}`)) });
+  t.mock.timers.tick(840_000);
+  await flush();
+  assert.equal(calls.fetch[1].body.get("refresh_token"), "fixture-refresh-rotation-1");
+  assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-rotation-2");
+  assert.equal(header(), "Bearer fixture-access-rotation-2");
+});
+
+test("scheduled invalid_grant clears the old account window before reauthentication", async (t) => {
+  const { calls, path, header } = await launch(t, {
+    fetch: (count) => count === 1 ? response(tokens()) : response({ error: "invalid_grant" }, false),
+  });
+  t.mock.timers.tick(840_000);
+  await flush();
+  assert.equal(existsSync(path), false);
+  assert.equal(header(), undefined);
+  assert.equal(calls.windows[0].destroyed, true);
+  assert.equal(calls.browser.length, 1);
+});
+
+test("an encryption failure falls back to memory and discards the stale rotated token", async (t) => {
+  const logs = [];
+  t.mock.method(console, "error", (...args) => logs.push(args));
+  const { calls, path, header } = await launch(t, {
+    safeStorage: { encryptString: () => { throw new Error("fixture-secret-must-not-be-logged"); } },
+  });
+  assert.equal(calls.windows.length, 1);
+  assert.equal(existsSync(path), false);
+  assert.equal(header(), "Bearer fixture-access-rotated");
+  assert.equal(logs.length, 1);
+  assert.equal(JSON.stringify(logs).includes("fixture-secret"), false);
 });

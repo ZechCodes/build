@@ -34,9 +34,20 @@ still require sign-in on retry because the previous token is already invalid.
 
 **Account → Sign Out** clears the saved token, credentials and refresh timer,
 retires the app window, then awaits clearing the default session’s cookies,
-localStorage, IndexedDB and HTTP cache before quitting. This signs out this desktop installation;
-it does not sign out the system browser or revoke other sessions. If saved credentials, session storage or the HTTP cache cannot be cleared,
-the app reports that sign-out failed before quitting.
+localStorage, IndexedDB and HTTP cache before quitting. Native Quit (including
+Cmd-Q or the dock) waits for this cleanup and any failure report. Each storage,
+cache and failure-dialog wait has a five-second deadline, so Sign Out waits at
+most 15 seconds for those operations. A timeout is reported as a cleanup
+failure, not success. The failure dialog uses a native parent without a
+renderer so it remains asynchronous and abortable on macOS.
+
+Token exchanges use a separate in-memory session with cookies omitted and HTTP
+caching disabled. Sign Out aborts outstanding exchanges before clearing the
+persistent window session; even a response that races cancellation cannot
+rewrite that session. This signs out this desktop installation; it does not
+sign out the system browser or revoke other sessions. If saved credentials,
+session storage or the HTTP cache cannot be cleared, the app reports that
+sign-out failed before quitting.
 
 Authentication regression tests stub Electron, encryption, token HTTP responses,
 browser handoff and timers. They never start Electron or perform a real sign-in.

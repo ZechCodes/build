@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { app, BrowserWindow, dialog, Menu, net, safeStorage, session, shell } from "electron";
+import { app, BaseWindow, BrowserWindow, dialog, Menu, safeStorage, session, shell } from "electron";
 
 import {
   APP_URL,
@@ -38,6 +38,10 @@ let refreshInFlight = null;
 let starting = true;
 let signingOut = false;
 let credentialGeneration = 0;
+let tokenSession = null;
+const tokenRequests = new Set();
+const SIGN_OUT_WAIT_MS = 5_000;
+let signOutComplete = false;
 
 function openOutsideElectron(url) {
   if (classifyNavigation(url) !== "external") return;
@@ -70,21 +74,31 @@ function authorizationCallbackFromArguments(arguments_) {
 }
 
 async function requestTokens(body) {
-  const response = await net.fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    const error = new Error("Build could not obtain credentials. Please try again.");
-    error.code = payload.error;
-    throw error;
+  const controller = new AbortController();
+  tokenRequests.add(controller);
+  try {
+    // Token responses must never share the renderer's persistent session.
+    const response = await tokenSession.fetch(TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+      credentials: "omit",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      const error = new Error("Build could not obtain credentials. Please try again.");
+      error.code = payload.error;
+      throw error;
+    }
+    if (!payload.access_token || !payload.refresh_token) {
+      throw new Error("Build sign-in returned incomplete credentials");
+    }
+    return payload;
+  } finally {
+    tokenRequests.delete(controller);
   }
-  if (!payload.access_token || !payload.refresh_token) {
-    throw new Error("Build sign-in returned incomplete credentials");
-  }
-  return payload;
 }
 
 function persistRefreshToken(token) {
@@ -180,10 +194,42 @@ async function startAuthentication() {
   }
 }
 
+async function waitForSignOutOperation(operation) {
+  let timer;
+  try {
+    const timeout = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Build sign-out timed out.")), SIGN_OUT_WAIT_MS);
+    });
+    return await Promise.race([operation(), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function reportSignOutFailures(failures) {
+  const title = "Build sign-out failed";
+  const message = `Build could not clear ${failures.join(" and ")}. Please try signing out again after restarting.`;
+  // Unparented macOS message boxes block synchronously. A native parent
+  // without a renderer lets the deadline and AbortSignal close this dialog.
+  const parent = new BaseWindow({ title: message, width: 480, height: 180 });
+  const controller = new AbortController();
+  try {
+    await waitForSignOutOperation(() => dialog.showMessageBox(parent, {
+      type: "error", title, message, buttons: ["Quit"], signal: controller.signal,
+    }));
+  } catch {
+    console.error(message);
+  } finally {
+    controller.abort();
+    parent.destroy();
+  }
+}
+
 async function signOut() {
   if (signingOut) return;
   signingOut = true;
   clearCredentials();
+  for (const controller of tokenRequests) controller.abort();
   // Retire the renderer before clearing persistent storage so it cannot
   // rewrite account content while cleanup awaits Electron.
   mainWindow?.destroy();
@@ -199,20 +245,17 @@ async function signOut() {
   ];
   for (const [name, cleanup] of cleanupOperations) {
     try {
-      await cleanup();
+      await waitForSignOutOperation(cleanup);
     } catch {
       failures.push(name);
     }
   }
-  if (failures.length) {
-    await dialog.showMessageBox({
-      type: "error",
-      title: "Build sign-out failed",
-      message: `Build could not clear ${failures.join(" and ")}. Please try signing out again after restarting.`,
-      buttons: ["Quit"],
-    });
+  try {
+    if (failures.length) await reportSignOutFailures(failures);
+  } finally {
+    signOutComplete = true;
+    app.quit();
   }
-  app.quit();
 }
 
 async function showAuthenticationError(error, retry = beginAuthentication) {
@@ -335,6 +378,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.whenReady().then(() => {
+    tokenSession = session.fromPartition("build-oauth", { cache: false });
     tokenStore = createTokenStore({ userData: app.getPath("userData"), safeStorage });
     installPermissionPolicy();
     installAuthorizationHeader(session.defaultSession.webRequest, () => accessToken);
@@ -346,6 +390,10 @@ if (!hasSingleInstanceLock) {
       if (accessToken) mainWindow = createWindow();
       else if (!pendingAuthorization) void startAuthentication();
     });
+  });
+
+  app.on("before-quit", (event) => {
+    if (signingOut && !signOutComplete) event.preventDefault();
   });
 
   app.on("window-all-closed", () => {

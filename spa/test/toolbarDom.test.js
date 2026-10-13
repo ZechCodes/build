@@ -221,6 +221,17 @@ describe("the project's pages", () => {
     toolbarRouteChanged();
   };
 
+  it("keeps the project name on every face while naming the original-source destination", () => {
+    for (const tab of ["tasks", "changes", "files", "workspaces"]) {
+      standOn({ name: "project", deviceId: "dev-1", projectId: "p1", tab });
+      const project = bar().querySelector("[data-project-return]");
+      expect(project.textContent.trim()).toBe("relaydb");
+      expect(project.getAttribute("aria-label")).toBe("Open project workspace relaydb");
+      expect(bar().querySelector('[data-select="project"]').getAttribute("aria-label")).toBe("Switch project or workspace");
+      expect(bar().querySelector('[data-select="workspace"]').getAttribute("aria-label")).toBe("Switch workspace in relaydb");
+    }
+  });
+
   it("keeps face tabs in the rail while offering a local workspace shortcut", async () => {
     standOn({ name: "project", deviceId: "dev-1", projectId: "p1" });
     expect(names()).toEqual(["relaydb"]);

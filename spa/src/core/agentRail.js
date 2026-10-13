@@ -1464,11 +1464,11 @@ function mountRailOnContext(host, context, swap) {
   const railWorkspaceKey = () =>
     railContext.kind === "workspace" ? workspaceKey(railContext.deviceId, railContext.workspaceId) : null;
 
-  /** Which preference a new agent on this rail leads with: on a project's rail
-   *  the DEVICE's project-agent setting (core/projectAgentSetting.js), inside a
-   *  workspace that workspace's own slot, the account's anywhere else. A
-   *  project agent talks ABOUT a project rather than working in a checkout, so
-   *  what it starts on is the machine's answer and not this browser's. */
+  /** Which preference a new agent leads with: the project's initial coordinator
+   *  uses the DEVICE's project-agent setting (core/projectAgentSetting.js).
+   *  Source-writing project workers use account defaults; named workspace
+   *  agents layer that workspace's slot over the account's. The coordinator
+   *  talks about the project and retains its separate device preference. */
   const onProjectRail = () => railContext.kind === "project";
   const deviceProjectAgent = () => projectAgentSetting || NO_AGENT_CHOICE;
   const workerCreationNotice = () => entity.kind === "project" && entity.pinnedAgentId
@@ -2451,7 +2451,7 @@ function mountRailOnContext(host, context, swap) {
     if (notice) return;
     const message = document.createElement("p");
     message.className = "sub rail-project-agents-update";
-    message.textContent = "Update this computer's Build bridge to use project agents.";
+    message.textContent = "Update this device to use project agents.";
     panel.querySelector(".rail-head")?.after(message);
   };
 
@@ -3744,7 +3744,7 @@ function mountRailOnContext(host, context, swap) {
   const projectWorkerCreationParams = (workerCreation) => {
     if (!workerCreation) return {};
     if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) {
-      throw new Error("Update this device to add project workers.");
+      throw new Error("Update this device to use project agents.");
     }
     return { project_role: "worker" };
   };

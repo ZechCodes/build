@@ -1,21 +1,22 @@
 # Build v1 — Scope Document
 
-## Project workspace scope — #522 planning amendment (2026-10-12)
+## Project workspace scope — #522 implementation amendment (2026-10-13)
 
-Proposed, not shipped: see [Project workspace](Project%20Workspace%20Spec.md)
-for decisions, exact contracts and separately reviewed implementation children.
+Implemented by #529–#536 under the settled decisions in
+[Project workspace](Project%20Workspace%20Spec.md), which records the exact
+contracts and separately reviewed implementation children.
 The project workspace exposes Changes and a per-source shell over the original
 configured sources, alongside Tasks, Files, Workspaces and project-owned agents.
 The existing project conversation owner already holds a multi-agent roster;
-this requires an explicit pinned coordinator/worker distinction, not a new
-owner kind. Persist one protected pin; workers share source checkouts and use
-the workspace/coding tool set with a source-writing prompt.
+the implementation adds an explicit pinned coordinator/worker distinction
+within that owner kind. One persisted pin is protected; workers share source
+checkouts and use the workspace/coding tool set with a source-writing prompt.
 
 The older worktree-per-task and “no agent touches main” statements do not apply
 to these workers. Direct source edits are enforcement by observation only;
 independent work uses a named isolated workspace. Existing base-sync safeguards,
 workspace-cut rules and source-preserving project deletion remain requirements.
-The linked amendment records proposed changes and compatibility gates; older
+The linked amendment records settled changes and compatibility gates; older
 relay-fallback, PTY-only and single-MCP-tool prose below is historical and must
 not override current code or ARCHITECTURE.md.
 

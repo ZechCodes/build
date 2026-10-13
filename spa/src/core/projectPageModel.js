@@ -1,5 +1,5 @@
-// The project page's main pane, as a pure model: the workspaces one project
-// holds, in the order they already stand in.
+// The project workspace's Workspaces face, as a pure model: its named children
+// in their existing management order.
 //
 // Named-child membership, names and open targets come from the same cached
 // catalog as the sibling selector (core/navigationModel.js). Activity and row

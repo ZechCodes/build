@@ -67,6 +67,15 @@ describe("a reference in a chat message", () => {
     { place },
   );
 
+  it("keeps entity reference names and routes distinct from the Project workspace destination label", () => {
+    const [project, workspace] = anchors(said("See @project:Build and @workspace:tasks-spa."));
+    expect(project).toMatchObject({ text: "Build", href: "#/device/dev-1/project/proj-1" });
+    expect(project.title).toContain("Project Build");
+    expect(workspace).toMatchObject({ text: "tasks-spa" });
+    expect(workspace.href).toContain("/project/proj-1/workspace/ws-1/");
+    expect(workspace.title).toContain("Workspace tasks-spa");
+  });
+
   for (const { name, wrote, reads } of FORMS) {
     it(`links ${name}`, () => {
       const [anchor] = anchors(said(wrote));

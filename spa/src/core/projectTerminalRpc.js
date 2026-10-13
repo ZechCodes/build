@@ -19,7 +19,7 @@ export async function projectTerminalRpc(context, method, params, call = context
   if (!context) throw new Error("This machine is unavailable.");
   const request = await whenGreeted(context, async (stands) => {
     if (!bridgeCapabilities(context.deviceId).term?.projectSources) {
-      throw new Error("Update this device to use project source terminals.");
+      throw new Error("Update this device to use project Terminal.");
     }
     const source = await projectTerminalSource(context, params);
     if (!source) throw new Error("This project source moved or was removed. Reopen Terminal before using it.");

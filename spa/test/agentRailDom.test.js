@@ -7265,7 +7265,7 @@ describe("cached project worker rail", () => {
     const notice = () => panel().querySelector(".rail-project-agents-update");
     expect(notice()).toBeNull();
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
-    await vi.waitFor(() => expect(notice()?.textContent).toBe("Update this computer's Build bridge to use project agents."));
+    await vi.waitFor(() => expect(notice()?.textContent).toBe("Update this device to use project agents."));
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(panel().querySelector(".thread-items")).toBe(thread);
     expect(input.value).toBe("keep this draft");
@@ -7296,11 +7296,24 @@ describe("cached project worker rail", () => {
     expect(panel().querySelector(".rail-project-agents-update")).toBeNull();
   });
 
-  it("explains shared source writes when adding a worker", async () => {
+  it("uses project-agent update copy when a cached chooser reaches an older bridge", async () => {
     await mountWorkers();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
-    expect(panel().querySelector(".rail-worker-notice")?.textContent).toContain("original project sources");
+    panel().querySelector("#railinput").value = "work in the original source";
+    panel().querySelector("#railsend").click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "Update this device to use project agents."));
+    expect(callsTo("agent.add")).toEqual([]);
+    expect(callsTo("thread.post")).toEqual([]);
+  });
+
+  it.each([true, false])("explains shared source writes when adding a worker (workers present: %s)", async (workersPresent) => {
+    await mountWorkers();
+    if (!workersPresent) await writeRoster([pin()]);
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(panel().querySelector(".rail-worker-notice")?.textContent).toBe("Works in the original project sources. Files, Git index and current branch are shared with you and other project workers.");
+    expect(railHost().querySelector('[data-bubble="add"]').getAttribute("aria-label")).toBe("Add agent");
   });
 
   it("keeps project workers out of a named workspace including worker deep links", async () => {

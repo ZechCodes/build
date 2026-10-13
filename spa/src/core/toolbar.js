@@ -1,8 +1,8 @@
 // The view area's toolbar: where you are standing, how to go somewhere else,
 // and what the work you are standing in is doing.
 //
-// Left: independent project ancestry and local workspace selection. The up
-// arrow opens all cached project/workspace destinations. Both searches mount and focus
+// Left: independent project ancestry and local workspace selection. The left
+// chevron opens all cached project/workspace destinations. Both searches mount and focus
 // inside the activating gesture, with persistence following the interaction.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's

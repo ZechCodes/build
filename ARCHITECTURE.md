@@ -2070,8 +2070,14 @@ canonical project URL's default. Workspaces lists named child workspaces only;
 its lifecycle, size, filtering and Reclaim controls do not describe the original
 sources. The project has no synthetic workspace record. `projectRailState.js`
 remembers local returns by device/project, including the Changes source and
-commit; explicit links take precedence. Breadcrumb and sibling navigation are
-owned separately by #523.
+commit; explicit links take precedence. The toolbar links the project
+ancestor, offers a local workspace selector and opens a global switcher with
+the leading left-chevron action. `toolbarBreadcrumbs.js` derives ancestry
+from the URL; `navigationModel.js` and `navigationRoutes.js` share cached
+destinations and return behavior. The original-source destination says
+“Project workspace”; project bars and inbox heads retain the project name.
+Named children use their given workspace names; their collection is
+“Workspaces” and creation is “New workspace”.
 
 `spa/src/views/projectChanges.js` mounts the shared kept directory panes from
 `workspaceChanges.js`, one per configured source. Each Git pane works on that
@@ -2170,8 +2176,8 @@ pin present in its agents. Without cached support it paints only the legacy
 pin. Current greetings additionally gate worker creation and new-worker task
 assignment, including a retained picker caller after a capability downgrade.
 The pin's tooltip reads “Project agent”. An explicit cached
-`projectWorkers: false` shows “Update this computer's Build bridge to use
-project agents.” on a project host; unknown support and workspace pins keep
+`projectWorkers: false` shows “Update this device to use project agents.”
+on a project host; unknown support and workspace pins keep
 that notice absent. Rendering the notice does not replace the mounted
 composer or thread, and never waits for connection state.
 
@@ -2780,7 +2786,7 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Conversation and agent rail | `spa/src/core/shell.js`, `spa/src/core/agentRail.js` (+ `agentRailModel.js`, `agentRailRender.js`), `spa/src/core/chatRepository.js`, `spa/src/core/thread*.js` |
 | Tasks list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerTasksPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
 | Task page | `spa/src/views/trackerTaskView.js` → `spa/src/core/trackerTaskPage.js` |
-| Workspace navigation | the toolbar's `project / workspace` picker in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`); the rail down the left edge (Changes, Files, Tasks, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
+| Workspace navigation | linked project ancestry, the local workspace selector and global project/workspace switcher in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`, `toolbarBreadcrumbs.js`, `navigationModel.js`, `navigationRoutes.js`); the rail down the left edge (Changes, Files, Tasks, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
 | Project navigation | the rail down the left edge (Tasks, Changes, Files, Workspaces, Settings) in `spa/src/core/projectRail.js` over `directoryRail.js`, mounted from `spa/src/views/projectView.js` and `spa/src/views/trackerTaskView.js`; local return state in `spa/src/core/projectRailState.js` |
 | Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/projectChanges.js` (original configured sources), `spa/src/views/workspaceChanges.js` (named workspace directories) and `spa/src/views/branchView.js`; project and workspace directory panes are kept while another stands, and hide/show suspends owned editors, dialogs, listeners and layout work while preserving drafts, scroll and cache subscriptions |
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |

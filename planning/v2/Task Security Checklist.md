@@ -343,7 +343,8 @@ only the newer list cache, and downgrade the current greeting. Both failed
 before the fix (exit **1**, unwanted `tasks.assign`), then passed in the
 109-test assignment/pane/unchanged-ratchet run (exit **0**). The shared guard
 reads detail and catalogue/query/page replicas together, prefers newer task
-facts and uses cache write order for timestamp ties; it retains the captured
+facts and uses list read order for timestamp ties, falling back to cache write
+time for detail/legacy records and write order for remaining ties; it retains the captured
 wait and the note/target on refusal. Older blockers do not defeat newer ready
 facts, and missing legacy fields do not erase known prerequisites. No ratchet
 annotation or cap changed.
@@ -364,3 +365,14 @@ The combined UI portion of TS558-4/7 is now verified, preserving the W5-owned
 **100/100** score. Final merged-head gate and scan exit codes are attached on
 #564. No bridge files changed from origin/main; no live bridge or user browser
 was used.
+
+W5 revision 4 / #564 closes the delayed-page freshness gap in
+`taskAssignmentFacts.js`. Three regressions failed before the fix (exit **1**,
+commit `5bdd675d`): an older page arriving after newer catalogue/query facts
+must not clear a blocker with the same task timestamp, nor revive an older
+blocker over newer ready facts. Commit `772f6e1b` reuses `listAskedAt` so list
+`read_order` takes precedence over arrival time when task timestamps tie.
+Newer task timestamps still win; detail and legacy lists retain the cache
+write-time fallback. The assignment facts/picker/waiting/unchanged-ratchet
+gate exits **0** (116 tests). No cap or ratchet entry changed. Fresh final
+gate results and security scan evidence are recorded on #564.

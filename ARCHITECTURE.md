@@ -2658,7 +2658,11 @@ refuses when that device cannot answer.
   Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
   current greeting before dependency writes, paged reverse reads, saved-id
   retries and assignments from waiting forms. The form captures its waiting
-  requirement so a downgraded greeting cannot silently start work. Successful
+  requirement and checks current detail/catalogue/query/page facts before
+  submitting, so a cached reblock followed by a downgraded greeting cannot
+  silently start work. `taskAssignmentFacts.js` prefers task timestamps, then
+  list read order (detail/legacy write time), then cache write order, keeping
+  delayed same-stamp pages from replacing newer list facts. Successful
   responses update tracker detail and list replicas through
   `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in

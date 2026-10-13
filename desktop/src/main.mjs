@@ -136,6 +136,7 @@ function clearCredentials() {
 }
 
 function openAuthenticatedWindow() {
+  if (signingOut) return;
   if (!mainWindow) mainWindow = createWindow();
   else loadInsideElectron(mainWindow, APP_URL);
 }
@@ -259,6 +260,7 @@ async function signOut() {
 }
 
 async function showAuthenticationError(error, retry = beginAuthentication) {
+  if (signingOut) return;
   const result = await dialog.showMessageBox({
     type: "error",
     title: "Build sign-in failed",
@@ -285,7 +287,7 @@ async function beginAuthentication() {
 }
 
 async function handleAuthorizationCallback(url) {
-  if (!pendingAuthorization) return;
+  if (signingOut || !pendingAuthorization) return;
   const authorization = pendingAuthorization;
   const generation = credentialGeneration;
   pendingAuthorization = null;
@@ -366,6 +368,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("second-instance", (_event, commandLine) => {
+    if (signingOut) return;
     const callback = authorizationCallbackFromArguments(commandLine);
     if (callback) {
       void handleAuthorizationCallback(callback);

@@ -4,7 +4,7 @@
 // which a fetched detail reaches a reader.
 
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
-import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord } from "./trackerCache.js";
+import { TRACKER_TASK_KIND, taskAddress, taskRecord, writeTaskRecord, captureTaskDetailRead } from "./trackerCache.js";
 import { changedSince } from "./trackerModel.js";
 
 const MAX_READS = 4;
@@ -60,21 +60,23 @@ export function createTrackerTaskDetailsFeed({ deviceId, projectId, callRpc, onC
     }
   }
 
-  async function writeAnswer(id, version, answer, before) {
+  async function writeAnswer(id, version, answer, before, detailBasis) {
     if (!stillWanted(id, version)) return;
     if (answer?.task?.id !== id) return;
     // A page or another tab may have written a newer detail while this read
     // was in flight. Leave its record in place rather than replacing it.
     const current = await readCached(address(id));
     if (!stillWanted(id, version) || currentRecordWins(current, before, answer)) return;
-    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline));
+    await writeTaskRecord(deviceId, projectId, id, taskRecord(answer?.task, answer?.timeline), { detailBasis });
   }
 
   async function fetchDetail(id, version) {
     try {
       const before = cached.get(id)?.at || 0;
+      const detailBasis = await captureTaskDetailRead(deviceId, projectId, id);
+      if (!stillWanted(id, version)) return;
       const answer = await callRpc("tasks.get", { task_id: id });
-      await writeAnswer(id, version, answer, before);
+      await writeAnswer(id, version, answer, before, detailBasis);
     } catch {
       // The list remains useful offline. A later list version can retry.
     } finally {

@@ -44,14 +44,15 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   const listed = (await cachedAddresses({ deviceId, entityId: projectId })).filter((address) => listKinds.has(address.kind));
   const catalogue = tasksAddress(deviceId, projectId);
   if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
-  const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId)];
+  const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
   return mergeCachedRecordsTogether(addresses, (records) => {
     if (!accept()) return null;
     const detail = detailWithResponse(records[0]?.value, answer);
     const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read));
     const notes = lists.map((list, index) => list ? withWritten(records[listed.length + index + 1]?.value, [task.id], read) : null);
-    return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-1)?.value) : null];
+    return [detail, ...lists, ...notes, detail ? nextReverseGeneration(records.at(-2)?.value) : null,
+      detail ? withWritten(records.at(-1)?.value, [task.id], read) : null];
   });
 }
 

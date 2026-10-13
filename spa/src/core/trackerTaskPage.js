@@ -17,6 +17,7 @@ import { tasksPushKinds } from "./trackerPush.js";
 import { notifyError } from "./notify.js";
 import {
   advanceTaskReadThrough,
+  captureTaskDetailRead,
   taskAddress,
   taskRecord,
   taskRecordAt,
@@ -540,13 +541,16 @@ export function mountTaskPage(host, options) {
   async function readTask() {
     if (state.disposed) return;
     try {
-      const checklistBasis = await checklist.readBasis();
+      const [checklistBasis, detailBasis] = await Promise.all([
+        checklist.readBasis(), captureTaskDetailRead(state.deviceId, state.projectId, state.taskId),
+      ]);
       if (state.disposed) return;
       const answer = await state.callRpc("tasks.get", { task_id: state.taskId });
       if (state.disposed) return;
       // The pull is a writer. The subscription above owns the read and paint.
       await writeTaskRecord(state.deviceId, state.projectId, state.taskId, taskRecord(answer.task, answer.timeline), {
         accept: (held) => !state.disposed && checklist.acceptsRead(checklistBasis, held),
+        detailBasis,
       });
     } catch (error) {
       if (state.disposed) return;

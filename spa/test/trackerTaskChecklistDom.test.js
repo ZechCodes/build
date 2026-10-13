@@ -260,3 +260,31 @@ it("restores checkbox availability if the browser refuses its write lock", async
     else delete navigator.locks;
   }
 });
+
+
+it.each(["edge addition", "saved assignment"])("a pre-mutation detail read cannot undo accepted %s facts", async (kind) => {
+  await mount();
+  await vi.waitFor(() => expect(reads).toHaveLength(1));
+  const waiting = await import("../src/core/taskWaitingOnCache.js");
+  const next = { ...saved.task, dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+  if (kind === "saved assignment") next.deferred_assignment = { id: "saved-assignment", state: "waiting", assignee: { kind: "user" }, user_note: "Continue after release" };
+  await waiting.cacheTaskWaitingOnResponse(DEVICE, PROJECT, { task: next });
+  const admission = vi.spyOn(cache, "writeTaskRecord");
+  reads[0].resolve(saved);
+  await vi.waitFor(() => expect(admission).toHaveBeenCalled());
+  await admission.mock.results[0].value;
+  const detail = await cached();
+  const list = await cache.readTasksRecord(DEVICE, PROJECT);
+  expect(detail.task.dependencies).toEqual(next.dependencies);
+  expect(detail.task.deferred_assignment).toEqual(next.deferred_assignment);
+  expect(list.tasks[0].dependencies).toEqual(next.dependencies);
+  expect(list.tasks[0].deferred_assignment).toEqual(next.deferred_assignment);
+  expect(detail.task.body).toBe(BODY);
+  expect(detail.timeline).toEqual(saved.timeline);
+  push();
+  await vi.waitFor(() => expect(reads).toHaveLength(2));
+  reads[1].resolve({ task: { ...next, title: "Fresh detail after mutation" }, timeline: saved.timeline });
+  await vi.waitFor(async () => expect((await cached()).task.title).toBe("Fresh detail after mutation"));
+  expect((await cached()).task.dependencies).toEqual(next.dependencies);
+  expect((await cached()).task.deferred_assignment).toEqual(next.deferred_assignment);
+});

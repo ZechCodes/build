@@ -6,7 +6,8 @@ import { attentionGroups, attentionReasonLabel } from "./trackerAttentionModel.j
 import { agentLabels, projectName, workspaceAgents } from "./trackerAssignee.js";
 import { actorName } from "./trackerLineWords.js";
 import { firstLine } from "./activityDigest.js";
-import { PRIORITIES, columnName } from "./trackerModel.js";
+import { columnName } from "./trackerModel.js";
+import { taskActivityGroup, taskHasReadiness, taskIsHeld, taskReadinessGroups, tasksByPriority } from "./trackerTaskReadiness.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { markdownHtml } from "./markdown.js";
 import { splitDeviceKey } from "./deviceKey.js";
@@ -180,47 +181,43 @@ const activityReader = (activityByAgent, projectKey) => {
 /** Who holds a task, as its Assigned row says it: the name every other
  *  surface gives that agent, read off the cached task's own identities. */
 const holderOf = (task, reading) =>
-  actorName(task.assignee, { ...reading, identities: task.identities || {} }) || null;
+  actorName(task.assignee || task.deferred_assignment?.target, { ...reading, identities: task.identities || {} }) || null;
 
 /** A task assigned to the user is theirs to act on, so it stands in Needs you
  *  ("Assigned to you") and nowhere else: Active lists only agents' tasks. */
-const belongsInActiveOrBacklog = (task) => task && !isFinished(task) && task.assignee?.kind !== "user";
+const belongsInActiveOrBacklog = (task) => task && !isFinished(task) &&
+  (task.assignee?.kind !== "user" || taskHasReadiness(task));
 
-/** How pressing a priority is, highest first; an unknown one reads as none. */
-const priorityRank = (priority) => -Math.max(0, PRIORITIES.findIndex((candidate) => candidate.id === priority));
-
-/** One priority-ordered pass partitions every open task not assigned to the
- *  user by holder and live agent state. An assigned agent absent from the feed
- *  is still assigned. */
+/** One stable priority pass uses cached readiness before holder activity. */
 function activeAndBacklog(tasks, grouped, reading, activityOf, columns) {
-  const working = [];
-  const assigned = [];
+  const buckets = { working: [], assigned: [], blocked: [] };
   const backlog = [];
-  const open = (tasks || []).filter(belongsInActiveOrBacklog);
-  open.sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority));
-  for (const task of open) {
+  for (const task of tasksByPriority((tasks || []).filter(belongsInActiveOrBacklog))) {
     const column = columnName(columns, task.status);
-    if (!task.assignee?.kind) {
+    if (!taskIsHeld(task)) {
       backlog.push({ task, columnName: column });
       continue;
     }
     const holding = grouped.attentionById.get(task.id)?.holdingAgent;
-    if (!holding?.working) {
-      assigned.push({ task, holder: holderOf(task, reading), columnName: column });
-      continue;
-    }
-    working.push({
+    const group = taskActivityGroup(task, holding?.working);
+    const entry = group === "working" ? {
       task,
       agentName: actorName({ kind: "agent", agent_id: holding.agent.id }, reading),
       activity: activityOf(holding.agent.id),
       working: true,
-    });
+    } : { task, holder: holderOf(task, reading), columnName: column };
+    buckets[group].push(entry);
   }
-  const activeGroups = [
-    { id: "working", title: "Working", entries: working },
-    { id: "assigned", title: "Assigned", entries: assigned },
-  ].filter((group) => group.entries.length);
-  return { active: [...working, ...assigned], activeGroups, backlog };
+  const activeGroups = ["working", "assigned", "blocked"].map((id) => ({
+    id, title: id[0].toUpperCase() + id.slice(1), entries: buckets[id],
+  })).filter((group) => group.entries.length);
+  const entriesById = new Map(backlog.map((entry) => [entry.task.id, entry]));
+  // Older cached task lists retain their flat Backlog presentation.
+  const backlogGroups = backlog.some((entry) => taskHasReadiness(entry.task))
+    ? taskReadinessGroups(backlog.map((entry) => entry.task)).map(({ id, title, tasks: held }) => ({
+      id, title, entries: held.map((task) => entriesById.get(task.id)),
+    })) : undefined;
+  return { active: activeGroups.flatMap((group) => group.entries), activeGroups, backlog, ...(backlogGroups ? { backlogGroups } : {}) };
 }
 
 /** Four sections of the same cached task list. Active and Backlog put the

@@ -3,6 +3,7 @@
 
 import { KEYED_LIST_ATTRIBUTE, patchInnerHtml } from "./domPatch.js";
 import { patchList } from "./patchList.js";
+import { taskWaitingHtml } from "./trackerTaskReadinessRender.js";
 import { esc } from "./text.js";
 import { taskBubbleHtml } from "./taskUnread.js";
 
@@ -34,7 +35,7 @@ const secondaryText = {
 
 /** The sections drawn as titled groups, each with the attribute its group
  *  blocks are keyed by. */
-const GROUP_ATTRIBUTES = { active: "data-active-group", done: "data-done-group" };
+const GROUP_ATTRIBUTES = { backlog: "data-backlog-group", active: "data-active-group", done: "data-done-group" };
 
 /** A row: the number and title, what the section says of it under them, and
  *  a watched task's unread bubble at the right (#104). */
@@ -46,6 +47,7 @@ const dashboardRowHtml = (entry, context, section) => {
       <span class="task-dashboard-title">${esc(task.title)}</span>${taskBubbleHtml(task, context.unreadOf)}
       <span class="task-dashboard-detail">${esc(secondaryText[section](entry))}</span>
     </a>
+    ${taskWaitingHtml(task, context)}
   </li>`;
 };
 
@@ -79,7 +81,7 @@ export function paintTaskDashboard(body, sections, context) {
   const selected = shown.find((section) => section.id === context.dashboardTab) || shown[0];
   const entries = sections[selected.id] || [];
   const groups = GROUP_ATTRIBUTES[selected.id] ? sections[`${selected.id}Groups`] : null;
-  const grouped = Array.isArray(groups) && entries.length > 0;
+  const grouped = Array.isArray(groups) && groups.length > 0 && entries.length > 0;
   const tabs = shown.map((section) => `<button type="button" class="task-dashboard-tab" role="tab"
     id="task-dashboard-tab-${section.id}" data-dashboard-tab="${section.id}"
     aria-controls="task-dashboard-panel" aria-selected="${section.id === selected.id}"

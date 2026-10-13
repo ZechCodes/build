@@ -527,10 +527,17 @@ describe("waiting-on cached Dashboard groups (#563)", () => {
       ["Blocked", ["blocked"]], ["Ready", ["ready-column", "empty"]],
     ]);
     expect(JSON.stringify(tasks)).toBe(before);
-    expect(dashboardSections([], { askedOnly: true }).backlogGroups).toEqual([]);
+    expect((dashboardSections([], { askedOnly: true }).backlogGroups || [])).toEqual([]);
   });
   it("does not guess readiness from absent cached blockers", () => {
     const sections = dashboardSections([held("summary-only", { dependencies: { blocked: true } })], { feed, projectKey: PROJECT });
     expect(sections.activeGroups.map(g => g.title)).toEqual(["Blocked"]);
   });
+});
+
+
+it.each([["new_workspace", "New workspace"], ["new_agent", "New agent"]])("names a pending %s holder in reader's words", (kind, holder) => {
+  const sections = dashboardSections([task("future", { dependencies: { blocked: true },
+    deferred_assignment: { id: "saved", state: "waiting", target: { kind } } })]);
+  expect(sections.activeGroups[0].entries[0].holder).toBe(holder);
 });

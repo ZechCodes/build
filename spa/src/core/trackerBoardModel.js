@@ -12,6 +12,7 @@
 //
 // No DOM, no app imports.
 
+import { taskHasReadiness, taskReadinessGroups } from "./trackerTaskReadiness.js";
 import { columnsOf } from "./trackerModel.js";
 
 /** The board: one entry per column, in the columns' own order, each carrying
@@ -27,10 +28,13 @@ export function boardColumns(columns, tasks) {
     else strays.set(status, [...(strays.get(status) || []), task]);
   }
   return [
-    ...listed.map((column) => ({ ...column, unknown: false, tasks: buckets.get(column.id) })),
+    ...listed.map((column) => ({ ...column, unknown: false, tasks: buckets.get(column.id), ...backlogGroups(column.id, buckets.get(column.id)) })),
     ...[...strays.entries()].map(([status, held]) => ({ id: status, name: status, unknown: true, tasks: held })),
   ];
 }
+
+const backlogGroups = (id, tasks) => id === "backlog" && tasks.some(taskHasReadiness)
+  ? { groups: taskReadinessGroups(tasks) } : {};
 
 /** Which column a task stands in, or null when its status names none. What a
  *  card reads to draw the column it is about to leave. */

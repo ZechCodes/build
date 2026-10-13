@@ -1562,6 +1562,7 @@ describe("cached Backlog readiness headings (#563)", () => {
     expect(groups()).toEqual([["blocked", ["blocked"]], ["ready", ["ready"]]]);
     expect(host.querySelector('[data-task="blocked"]').textContent).toContain("Waiting on #12");
     expect(host.querySelector('[data-task="blocked"] img')).toBeNull();
+    expect(host.querySelector('[data-task="blocked"] .task-blocker-link')?.getAttribute("title")).toBe("<img onerror=evil()>");
     await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [ready, { ...blocked, dependencies: { ...dependencies, blocked: false } }], columns: columns() });
     await flush();
     expect(groups()).toEqual([["ready", ["blocked", "ready"]]]);
@@ -1575,5 +1576,14 @@ describe("cached Backlog readiness headings (#563)", () => {
     await mount({ view: "board" });
     expect(host.querySelector('[data-column="backlog"]')).not.toBeNull();
     expect(host.querySelectorAll('[data-backlog-group]')).toHaveLength(0);
+  });
+});
+
+
+describe("waiting assignment picker context (#564 integration)", () => {
+  it("supplies the device and project to current-greeting-gated assignment actions", async () => {
+    await mount();
+    host.querySelector("[data-task-assign]").click();
+    expect(openAssigneePicker.mock.calls.at(-1)[0]).toMatchObject({ deviceId: "dev-1", projectId: "proj-1" });
   });
 });

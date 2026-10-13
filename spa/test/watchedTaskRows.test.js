@@ -262,7 +262,9 @@ describe("waiting-on watched rows (#563)", () => {
     const row = list(one);
     expect(row).toMatchObject({ working: false, taskGroup: "blocked", facts: "Blocked · Waiting on #12" });
     const html = inboxRowHtml(row);
-    expect(html).toContain("Waiting on #12");
+    expect(html).toContain("Waiting on");
+    expect(html).toContain('title="&lt;script&gt;evil()&lt;/script&gt;"');
+    expect(html).toContain('class="task-blocker-link"');
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("inbox-status-working");
   });

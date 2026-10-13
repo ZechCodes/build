@@ -13,6 +13,7 @@ import { TRACKER_TASK, byAnchor, entryKeyOf, entryRoute } from "./inbox.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { taskUnreadCount } from "./taskUnread.js";
 import { ATTENTION_REASONS, watchedTaskReasons } from "./trackerAttentionModel.js";
+import { taskActivityGroup, taskHasReadiness, taskIsHeld, taskWaitingText, unresolvedTaskBlockers } from "./trackerTaskReadiness.js";
 import { changedSince } from "./trackerModel.js";
 
 /** Why the row is there, in the inbox's words. */
@@ -58,7 +59,7 @@ export function taskAgentIsRunning(task, runningAgentIds, projectAgentId = null)
   const assignee = task?.assignee;
   const agentId = assignee?.kind === "project_agent" ? projectAgentId
     : assignee?.kind === "agent" ? assignee.agent_id : null;
-  return runningAgentIds.has(agentId);
+  return taskActivityGroup(task, runningAgentIds.has(agentId)) === "working";
 }
 
 function inboxTaskRoute(project, task, detail, workspaces) {
@@ -71,7 +72,9 @@ function inboxTaskRoute(project, task, detail, workspaces) {
 }
 
 function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, projectAgentId, workspaces) {
-  const facts = reasons.map((reason) => reasonWord(reason, askedOnly)).join(" · ");
+  const group = taskIsHeld(task) ? taskActivityGroup(task, taskAgentIsRunning(task, runningAgentIds, projectAgentId)) : "backlog";
+  const activity = taskHasReadiness(task) ? { working: "Working", assigned: "Assigned", blocked: "Blocked" }[group] : "";
+  const facts = [activity, taskWaitingText(task), ...reasons.map((reason) => reasonWord(reason, askedOnly))].filter(Boolean).join(" · ");
   const unreadCount = taskUnreadCount(task, detail);
   const working = taskAgentIsRunning(task, runningAgentIds, projectAgentId);
   return {
@@ -93,6 +96,8 @@ function toEntry(project, task, detail, reasons, askedOnly, runningAgentIds, pro
     // Attention, running, and unread are independent facts about a watched task.
     state: working ? "working" : unreadCount > 0 ? "unread" : "inactive",
     working,
+    taskGroup: group,
+    taskBlockers: unresolvedTaskBlockers(task),
     quiet: reasons.length === 0,
     reason: facts,
     facts,

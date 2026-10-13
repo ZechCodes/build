@@ -9,13 +9,15 @@ const output = resolve(process.argv[3] || "/tmp/navigation-618-evidence");
 await mkdir(output, { recursive: true });
 const session = await openLayoutSession({ plugins: [navigationAppShim] });
 const measurements = [];
-const states = [["rest", null], ["chevron-hover", ".tb-switch"], ["project-hover", ".tb-project"],
+const states = [["rest", null], ["inbox-hover", "#inbox-open"], ["inbox-focus", "#inbox-open"], ["chevron-hover", ".tb-switch"], ["project-hover", ".tb-project"],
   ["tasks-hover", ".tb-tasks"], ["leaf-hover", ".tb-leaf"], ["workspace-hover", ".tb-workspace"],
   ["keyboard-focus", ".tb-switch"]];
 try {
   for (const width of [390, 1280]) for (const theme of ["light", "dark"]) {
     await session.withPage(async ({ page, basePath }) => {
       await mountNavigationBreadcrumbs(page, basePath, { theme, kind: "projectTask" });
+      await page.evaluate(() => document.body.classList.add("inbox-collapsed"));
+      await page.waitForTimeout(300);
       const spacing = await page.evaluate(() => {
         const switcher = document.querySelector('[data-select="project"]');
         const icon = switcher.querySelector("svg, span").getBoundingClientRect();
@@ -25,10 +27,13 @@ try {
       });
       for (const [state, selector] of states) {
         await page.mouse.move(0, 0);
-        if (state === "keyboard-focus") { await page.keyboard.press("Tab"); await page.locator(selector).focus(); }
+        if (state.endsWith("focus")) { await page.keyboard.press("Tab"); await page.locator(selector).focus(); }
         else if (selector) await page.locator(selector).hover();
         await page.waitForTimeout(200);
         const clip = await page.locator("#toolbar").boundingBox();
+        // #inbox-open is in the bar visually, outside the toolbar's DOM and box.
+        clip.width += clip.x;
+        clip.x = 0;
         await page.screenshot({ path: `${output}/${phase}-${width}px-${theme}-${state}.png`, clip, animations: "disabled" });
       }
       measurements.push({ phase, width, theme, ...spacing });

@@ -1680,3 +1680,6 @@ body.gated #inbox-rail { display:none; }
   margin:0 0 8px; padding:4px 0;
   font-size:11px; line-height:1.4; color:var(--dim);
 }
+
+.console-source { min-width: 0; max-width: 9rem; font-size: var(--font-small, 12px); padding: 2px; }
+@media (max-width: 600px) { .console-source { max-width: 5rem; } }

@@ -36,6 +36,8 @@ describe("what a route stands on", () => {
     const page = shellPartsForRoute({ name: "project", deviceId: "d1", projectId: "p-1", tab: "tasks" });
     const task = shellPartsForRoute({ name: "trackerTask", deviceId: "d1", projectId: "p-1", taskId: "i-1" });
     expect(task.key).toBe(page.key);
+    expect(task.console).toEqual(page.console);
+    expect(task.console).toMatchObject({ kind: "project", projectId: "p-1", deviceId: "d1" });
   });
 
   it("keeps the legacy task page on the task's own conversation", () => {

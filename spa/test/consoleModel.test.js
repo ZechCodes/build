@@ -193,3 +193,15 @@ describe("a legacy term-<n> URL", () => {
     expect(takeConsoleTerminal()).toBeNull();
   });
 });
+
+
+describe("project console identity", () => {
+  it("shares the project console across sources and distinguishes devices", () => {
+    const base = { kind: "project", projectId: "p1", deviceId: "d1" };
+    expect(consoleKey(base)).toBe("project:d1/p1");
+    expect(consoleKey({ ...base, sourceId: "docs" })).toBe(consoleKey(base));
+    expect(consoleKey({ ...base, deviceId: "d2" })).not.toBe(consoleKey(base));
+    expect(consoleScope({ ...base, sourceId: "code", sourcePath: "/code" })).toEqual({ project_id: "p1", source_id: "code", source_path: "/code" });
+    expect(consoleScope(base)).toBeNull();
+  });
+});

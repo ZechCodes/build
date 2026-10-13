@@ -13,6 +13,7 @@
 // machine nothing to paint — `term.create` and `term.close` are the only two
 // calls left, and both are mutations the reader pressed for.
 
+import { mountProjectConsole } from "./projectConsole.js";
 import {
   DEFAULT_OPEN_SIZE,
   consoleFeedRoute,
@@ -138,6 +139,7 @@ export function consoleHeadHtml(size) {
  */
 export function mountConsole(host, context) {
   if (!host) return { dispose() {}, toggle() {}, size: () => "collapsed" };
+  if (context.kind === "project") { takeConsoleTerminal(); return mountProjectConsole(host, context); }
   const cacheScope = context.cacheScope;
   const key = consoleKey(context);
   const manager = terminalManager();

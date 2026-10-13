@@ -113,7 +113,7 @@ const projectStanding = (route) =>
     key: `project:${deviceKey(route.deviceId, route.projectId)}`,
     mintsProjectConversation: true,
     rail: { kind: "project", projectId: route.projectId },
-    console: null,
+    console: { kind: "project", projectId: route.projectId, sourceId: route.sourceId },
   };
 
 /**

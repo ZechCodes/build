@@ -4,15 +4,16 @@ Companion to [the #572 migration plan](Secure%20Transport%20Consolidation%20Plan
 Inspection date: 2026-10-12. The original #572 planning inventory is retained;
 #575 receipts cover P1/P2; #576 covers C1–C3; #577 covers D1–D2;
 #578 covers B1/B2/G1/G2. Those implementations are landed. #579 records the
-operational/reference reconciliation here; #580 exact-head independent review
-and the final migration-wide handoff remain pending. Local receipts and
-main integration are distinct from observing the live main CI workflow.
+operational/reference reconciliation here. #613 closes R1/R2 using the #580
+independent audit, recorded integration receipts and observed main CI through
+`88de458fb1c18964211c1ab6824928f2484e84c1`. Local receipts, main integration
+and observed main CI remain distinct evidence.
 Paths below are relative to Build unless prefixed `upstream:`.
 
 ## Landed plan items
 
-The recorded commits below are ancestors of the #579 starting main
-`eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f`. Landing receipts are on the named
+The recorded landing commits below are ancestors of the #613 starting main
+`88de458fb1c18964211c1ab6824928f2484e84c1`. Landing receipts are on the named
 tasks; the detailed local evidence below remains historical at each checkpoint.
 
 | Plan item | Implementation/review head | Main landing | State |
@@ -23,17 +24,43 @@ tasks; the detailed local evidence below remains historical at each checkpoint.
 | #607 required CI uv 0.12.13 prerequisite | `fe7b3e91e35d9cf2dc46939c8d0ca953fb2d8332` | `877563ae47aa22b4ca0a81de26e51b72cb141b96` | landed |
 | #577 in-tree consumers and locks, D1/D2 | `0e5636e44864d9765c2abcbe2d0c267220cadc94`, included in cohort below | `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f` | landed with #578 |
 | #578 checkout-based images/CI/routing, B1/B2/G1/G2 | `96dce16db21d03ecfe0902c84e8ffd7883f6b9d0` | `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f` | landed with #577 |
-| #579 ownership/contributor/reference reconciliation, O1 | this branch; exact head and check receipts on #579 | pending review/integration | documentation prepared |
-| #580 final independent review and integration handoff, R1 | pending | pending | not yet completed |
+| #579 ownership/contributor/reference reconciliation, O1 | `0c33e4d0f4cf15726cd32ea3d732e7274626e828` | `3234572fbdb707f665fc4b08716d8c641e2a1999` | landed |
+| #580 final independent review and integration handoff, R1 | audit of `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f` and #579 head above | review-only; see R1 | no implementation defect; acceptance reconciled by #613 |
+| #612 imported tamper-test determinism correction | `73cf8190c5a474a9e13cb3f7d3ad30abd6a44d7a` | `88de458fb1c18964211c1ab6824928f2484e84c1` | landed; test-only amendment |
 
 The #576 landing ran full bridge/clippy/fmt/vendor and SPA lint/test/capture/build
 candidate gates with uv on PATH, plus scans/diff-check (all exit 0, task receipt).
 #607 corrected the missing uv prerequisite subsequently exposed on main CI.
 The #577/#578 landing ran the same candidate gates with transport installed
 before frozen SPA, plus scans/diff-check (all exit 0, task receipt). These are
-recorded coordinator results, not reruns by #579. Main CI observation at the
-cohort landing remains with the coordinator; this document does not invent a
-successful run or migration-wide final approval.
+recorded coordinator results, not reruns by #613. The landing tasks #575,
+#576, #607, #577/#578, #579 and #612 retain the exact candidate/base, merge-gate
+commands, exit statuses, scan logs and integration receipts. R2 cites those
+historical receipts together with these main-CI observations (read-only
+`gh run view <run> --json headSha,conclusion,url,jobs`, exit 0 for all three):
+
+| Main CI | Exact main head | Observed result |
+| --- | --- | --- |
+| [38323193123](https://github.com/ZechCodes/build/actions/runs/38323193123) | `eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f` | All executed checks succeeded except Web client unit tests, cancelled by the next push; run cancelled, app build/deploy skipped; relay build/deploy unselected. |
+| [38324285377](https://github.com/ZechCodes/build/actions/runs/38324285377) | `3234572fbdb707f665fc4b08716d8c641e2a1999` | Web client unit tests succeeded via replay; Transport compatibility failed on the imported flaky tamper assertion; other executed checks succeeded, app build/deploy blocked; relay build/deploy unselected. |
+| [38327313972](https://github.com/ZechCodes/build/actions/runs/38327313972) | `88de458fb1c18964211c1ab6824928f2484e84c1` | Run succeeded; every selected check succeeded, including Transport compatibility and Web client unit tests; app image built and deployed. Relay build/deploy unselected. |
+
+R1's independent audit is #580/c/tc-01M4S8DQP887S8R0KWPYS78QMZ:
+no implementation defect on exact main `eaf01df8`; #579 exact-head approval
+is #579/c/tc-01M4S8C6ES9QWV97NP943GVCXD. Per-child review records are
+#576 → #606, #577 → #608 and #578 → #609; their reviewed heads and landings
+are recorded above. The audit's outstanding ledger/integration-evidence finding
+is resolved by O1/R1/R2 here, rather than treating that audit as a full-gate rerun.
+
+#612 is the one post-landing correction: the imported Python tamper test now
+flips an authenticated ciphertext byte instead of possibly changing only unused
+Base64 padding bits. This test-only change and its original/current digests are
+recorded in [transport/UPSTREAM.md](../../transport/UPSTREAM.md#612-tamper-test-amendment).
+The #612 review/merge receipts and final successful main CI cover the amendment;
+no runtime crypto or dependency change is inferred from it. The legacy repository
+pointer remains a manual step for Zech, using the draft on #579; the repository
+remains untouched. This external step is not required to close O1's draft/review
+obligation and is not claimed complete.
 
 ## Inspected baseline
 
@@ -141,13 +168,16 @@ out-of-tree paths must have no surviving operational use.
 Each item must name exact commit, command/environment, exit status and attached
 log or artifact when completed. No row is marked passed from source inspection.
 These are the migration security requirements; all must be satisfied before
-reporting the implementation's security checklist complete.
+reporting the implementation's security checklist complete. At the #613
+checkpoint all 14 rows are supported, including the #612 test amendment and
+final main-CI observation; migration evidence is 100/100. This score concerns
+the consolidation contract, not new protocol security guarantees.
 
 | ID | Required evidence | Owner | Status |
 | --- | --- | --- | --- |
 | P1 | Imported canonical file hashes match pinned source; exclusions verified | #575 | landed; #575 receipts and landing commit above |
 | P2 | Scoped BSL notice retained; npm tarball and Python sdist/wheel include correct source/license; no generated duplicate sources | #575 | landed; #575 receipts and landing commit above |
-| C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | landed; #576 receipts and landing commit above |
+| C1 | Python 5-case and JS 4-test baselines retained/passing; later added cases separately counted | #576 | landed; #576 receipts and landing commit above; #612 preserves five Python cases while correcting the tamper assertion (UPSTREAM amendment); final CI 38327313972 passes |
 | C2 | Rust transport tests and actual Rust/Python + JS/Python exchanges pass; missing prerequisite fails | #576 | landed; #576 receipts and landing commit above |
 | C3 | Non-secret old/new vectors cover identity/bootstrap/accept/data/close and malformed inputs, Unicode/nested payloads; no nonce reuse introduced | #576 | landed; #576 receipts and landing commit above |
 | D1 | Independent clean checkout paths install from locks and resolve in-tree source without sibling symlinks or old dependencies | #577 | landed; #577 receipts and landing commit above |
@@ -156,9 +186,9 @@ reporting the implementation's security checklist complete.
 | B2 | Root Docker/Podman ignores and narrow COPY rules exclude environments/private files and retain necessary locks | #578 | landed; #578 receipts and landing commit above |
 | G1 | JS-only, Python-only, Rust, fixture, workflow/selector and unrelated-doc path cases select intended checks/images | #578 | landed; #578 receipts and landing commit above |
 | G2 | Failed/skipped/canceled/missing compatibility evidence blocks owed image builds, including a later app-only commit | #578 | landed; #578 receipts and landing commit above |
-| O1 | One-checkout docs, reporting destination and remaining historical references reviewed; old repo untouched | #579 | prepared for review; exact head/check receipts on task; not landed |
-| R1 | Independent approval names exact feature SHA and resolves findings | #580 | pending |
-| R2 | #569 records final candidate/base, required full gates plus transport checks, scans and actual integration outcome | coordinator/#569 | pending |
+| O1 | One-checkout docs, reporting destination and remaining historical references reviewed; old repo untouched | #579 | complete; exact-head approval #579/c/tc-01M4S8C6ES9QWV97NP943GVCXD; landing `3234572f`; manual pointer draft remains on #579 |
+| R1 | Independent approval names exact feature SHA and resolves findings | #580 | complete; #580/c/tc-01M4S8DQP887S8R0KWPYS78QMZ on `eaf01df8`, #576 → #606, #577 → #608, #578 → #609, #579 exact-head opinion above; #612 review receipts cover the subsequent test-only amendment; ledger finding resolved here |
+| R2 | #569 records final candidate/base, required full gates plus transport checks, scans and actual integration outcome | coordinator/#569 | complete; exact landings and merge-gate receipts on #575/#576/#607/#577/#578/#579/#612; main CI 38323193123 → 38324285377 → 38327313972 as recorded above; final head `88de458f` green with app built/deployed |
 
 Current focused entrypoints and prerequisites are documented in
 [transport/README.md](../../transport/README.md#development-and-compatibility).

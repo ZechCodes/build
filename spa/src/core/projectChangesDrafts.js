@@ -9,17 +9,29 @@ const validSourceAddress = ([owner, sourceId, path, extra], projectId) => owner 
 
 function sourceDraft(entry, projectId) {
   const { address, record } = entry;
-  if (address.sub !== address.entityId || !address.entityId.startsWith("project:")) return null;
+  if (!address.entityId.startsWith("project:")) return null;
+  if (typeof record.value?.text !== "string" || !record.value.text) return null;
   try {
     const parts = JSON.parse(address.entityId.slice("project:".length));
-    if (!validSourceAddress(parts, projectId)) return null;
-    if (typeof record.value?.text !== "string" || !record.value.text) return null;
+    // Legacy project-only drafts captured no location. Offer explicit copying;
+    // assigning one to today's primary source could target a different checkout.
+    if (JSON.stringify(parts) === JSON.stringify([projectId]) && address.sub === `project:${projectId}`) {
+      return { sourceId: "legacy", path: null, text: record.value.text, legacy: true };
+    }
+    if (address.sub !== address.entityId || !validSourceAddress(parts, projectId)) return null;
     const [, sourceId, path] = parts;
     return { sourceId, path, text: record.value.text };
   } catch { return null; }
 }
 
+function draftCaption(draft, project) {
+  if (draft.legacy) return "Legacy project draft · source location unknown";
+  const source = project.sources?.find((item) => item.id === draft.sourceId);
+  return `${source?.name || draft.sourceId} · ${draft.path} · source ${source ? "moved" : "removed"}`;
+}
+
 export function recoverableSourceDrafts(entries, project) {
+  if (!project) return [];
   return entries.map((entry) => sourceDraft(entry, project.id || project.project_id)).filter((draft) => draft
     && !project.sources?.some((source) => source.id === draft.sourceId && source.path === draft.path));
 }
@@ -27,9 +39,8 @@ export function recoverableSourceDrafts(entries, project) {
 function draftRow(draft, project) {
   const row = document.createElement("label");
   row.dataset.recoveredDraft = draft.sourceId;
-  const source = project.sources?.find((item) => item.id === draft.sourceId);
   const caption = document.createElement("span");
-  caption.textContent = `${source?.name || draft.sourceId} · ${draft.path} · source ${source ? "moved" : "removed"}`;
+  caption.textContent = draftCaption(draft, project);
   const field = document.createElement("textarea");
   applyFieldTraits(field, "prose");
   field.className = "csinput";
@@ -46,7 +57,7 @@ function paintDrafts(host, drafts, project) {
   const title = document.createElement("h3");
   title.textContent = "Saved commit drafts";
   const help = document.createElement("p");
-  help.textContent = "Copy the text from a previous source location to recover its draft.";
+  help.textContent = "Copy the text from a previous or unknown source location to recover its draft.";
   host.append(title, help, ...drafts.map((draft) => draftRow(draft, project)));
 }
 
@@ -57,10 +68,11 @@ export function mountProjectChangesDrafts(host, { deviceId, project }) {
   let painted = "";
   const read = async () => {
     const current = ++revision;
+    if (!project) return;
     const entries = await uiDraftRecords(deviceId);
     if (disposed || current !== revision || accountEpoch !== App.accountEpoch) return;
     const drafts = recoverableSourceDrafts(entries, project);
-    const next = JSON.stringify([drafts, project.sources]);
+    const next = JSON.stringify([drafts, project?.sources]);
     if (next === painted) return;
     painted = next;
     paintDrafts(host, drafts, project);

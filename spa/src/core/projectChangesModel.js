@@ -5,7 +5,7 @@ export function projectChangesDirectories(project, projectId, supported) {
     sourceId: source.id,
     label: source.name || source.mount || source.id,
     is_git: source.is_git,
-    scope: supported ? { project_id: projectId, source_id: source.id, source_path: source.path } : { project_id: projectId },
+    scope: { project_id: projectId, source_id: source.id, source_path: source.path },
     ...(!supported && index > 0 && source.is_git !== false
       ? { status: "unsupported", error: "Update this device to use Changes for this project source." } : {}),
   }));

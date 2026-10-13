@@ -25,10 +25,18 @@ it("models every registered source with captured location, including plain folde
 });
 it("keeps legacy primary readable and additional sources visibly unavailable", () => {
   const dirs = projectChangesDirectories(project, "p", false);
-  expect(dirs[0].scope).toEqual({ project_id: "p" });
+  expect(dirs[0].scope).toEqual({ project_id: "p", source_id: "code", source_path: "/code" });
   expect(dirs[1]).toMatchObject({ status: "unsupported" });
   expect(dirs[1].error).toMatch(/Update/);
   expect(dirs[2].is_git).toBe(false);
+});
+it("keeps a primary draft's location namespace across capability changes", () => {
+  const legacy = projectChangesDirectories(project, "p", false)[0];
+  const upgraded = projectChangesDirectories(project, "p", true)[0];
+  expect(directoryCacheId(legacy.scope)).toBe(directoryCacheId(upgraded.scope));
+  const moved = { ...project, sources: [{ ...project.sources[0], path: "/moved" }] };
+  expect(directoryCacheId(projectChangesDirectories(moved, "p", false)[0].scope))
+    .not.toBe(directoryCacheId(legacy.scope));
 });
 it("namespaces source records by source and captured folder", () => {
   const scope = { project_id: "p", source_id: "code", source_path: "/code" };

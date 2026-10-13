@@ -286,6 +286,41 @@ impl Store {
         seek: TaskSeek,
         mut keep: impl FnMut(&Task) -> bool,
     ) -> Result<TaskStretch, StoreError> {
+        self.list_tracker_tasks_below_using(project_path, filter, seek, |_, task| Ok(keep(task)))
+    }
+
+    /// The saved target participates in filtering before the bounded page is
+    /// counted. Read it through this same connection rather than relocking
+    /// the store from a callback, and never load tasks outside the scan bound.
+    pub fn list_tracker_tasks_with_assignment_below(
+        &self,
+        project_path: &str,
+        filter: TaskFilter<'_>,
+        seek: TaskSeek,
+        mut keep: impl FnMut(&Task, Option<&serde_json::Value>) -> bool,
+    ) -> Result<TaskStretch, StoreError> {
+        self.list_tracker_tasks_below_using(project_path, filter, seek, |conn, task| {
+            let intent = super::delivery_intents::current(conn, &task.id)?;
+            let target = intent
+                .as_ref()
+                .filter(|intent| {
+                    matches!(
+                        intent.state.as_str(),
+                        "waiting" | "queued" | "provisioning" | "failed"
+                    )
+                })
+                .map(|intent| &intent.target);
+            Ok(keep(task, target))
+        })
+    }
+
+    fn list_tracker_tasks_below_using(
+        &self,
+        project_path: &str,
+        filter: TaskFilter<'_>,
+        seek: TaskSeek,
+        mut keep: impl FnMut(&rusqlite::Connection, &Task) -> Result<bool, StoreError>,
+    ) -> Result<TaskStretch, StoreError> {
         let (sql, values) = stretch_query(project_path, filter, seek.below);
         let conn = self.connection();
         let mut statement = conn.prepare(&sql)?;
@@ -305,7 +340,7 @@ impl Store {
             let (id, number, raw): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
             last_read = u64::try_from(number).ok();
             let task = decode(&raw, "tracker_tasks", &id)?;
-            if keep(&task) {
+            if keep(&conn, &task)? {
                 stretch.tasks.push(task);
             }
         }

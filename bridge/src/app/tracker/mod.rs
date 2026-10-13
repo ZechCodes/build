@@ -165,7 +165,7 @@ impl AppState {
         )?;
         let stretch = self
             .tracker_store()?
-            .list_tracker_tasks_below(
+            .list_tracker_tasks_with_assignment_below(
                 &project_path,
                 TaskFilter {
                     state,
@@ -176,7 +176,7 @@ impl AppState {
                     take: page.rows_to_keep(),
                     scan: page.rows_to_scan(),
                 },
-                |task| assignee.matches(task) && edits::carries_label(task, label),
+                |task, target| assignee.matches(task, target) && edits::carries_label(task, label),
             )
             .stored()?;
         let mut tasks = stretch.tasks;

@@ -7,7 +7,7 @@ import { columns, comment, task } from "./trackerWireFixture.js";
 let watchers = [];
 vi.mock("../src/core/changeEvents.js", () => ({
   onBridgeGreeted: () => () => {},
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["tasks"] }, tasks: {} }),
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["tasks"] }, tasks: { waitingOn: true } }),
   watchChanges: (registration) => {
     watchers.push(registration);
     return { dispose: () => {} };
@@ -16,6 +16,10 @@ vi.mock("../src/core/changeEvents.js", () => ({
 vi.mock("../src/core/deviceReconnect.js", () => ({
   deviceSession: () => null,
   deviceWatch: () => ({ away: () => true, reconnecting: () => true, moved: () => () => {} }),
+}));
+vi.mock("../src/core/deviceContexts.js", async (original) => ({
+  ...await original(), contextFor: () => ({}),
+  whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
 }));
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -287,4 +291,53 @@ it.each(["edge addition", "saved assignment"])("a pre-mutation detail read canno
   await vi.waitFor(async () => expect((await cached()).task.title).toBe("Fresh detail after mutation"));
   expect((await cached()).task.dependencies).toEqual(next.dependencies);
   expect((await cached()).task.deferred_assignment).toEqual(next.deferred_assignment);
+});
+
+it("refreshes the timeline after an edge mutation fences out the push-triggered detail read", async () => {
+  const { rememberTaskWaitingOnSupport } = await import("../src/core/taskWaitingOnSupport.js");
+  await rememberTaskWaitingOnSupport(DEVICE, { tasks: { waitingOn: true } });
+  saved.task.dependencies = {
+    blocked: true,
+    waiting_on: [{ task_id: "blocker", number: 1, title: "Prerequisite", resolved: false }],
+    blocks: [], blocks_count: 0,
+  };
+  await cache.writeTaskRecord(DEVICE, PROJECT, TASK, saved);
+  const mutation = deferred();
+  call.mockImplementation((method) => {
+    if (method === "tasks.waiting_on.remove") return mutation.promise;
+    if (method === "tasks.get") { const pending = deferred(); reads.push(pending); return pending.promise; }
+    return Promise.resolve({});
+  });
+  await mount();
+  await vi.waitFor(() => expect(reads).toHaveLength(1));
+  reads[0].resolve(saved);
+  await vi.waitFor(() => expect(host.querySelector("[data-waiting-remove]")).not.toBeNull());
+  // Let the initial detail read settle before starting the mutation.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  host.querySelector("[data-waiting-remove]").click();
+  host.querySelector("[data-waiting-confirm-remove]").click();
+  await vi.waitFor(() => expect(call).toHaveBeenCalledWith("tasks.waiting_on.remove", {
+    task_id: TASK, waiting_on: ["blocker"],
+  }));
+  const updated = {
+    ...saved.task, updated_at: "2030-01-01T00:00:00Z",
+    dependencies: { blocked: false, waiting_on: [], blocks: [], blocks_count: 0 },
+  };
+  // The committed mutation pushes before its reply advances the detail fence.
+  push();
+  await vi.waitFor(() => expect(reads).toHaveLength(2));
+  mutation.resolve({ task: updated });
+  await vi.waitFor(async () => expect((await cached()).task.dependencies.blocked).toBe(false));
+  const freshTimeline = [...saved.timeline, comment({
+    id: "tc-after-removal", task_id: TASK, body: "New timeline after removing prerequisite",
+  })];
+  reads[1].resolve({ task: updated, timeline: freshTimeline });
+  await vi.waitFor(() => expect(reads).toHaveLength(3));
+  // The fence still rejects the read begun before the mutation reply.
+  expect((await cached()).timeline).toEqual(saved.timeline);
+  expect(host.textContent).not.toContain("New timeline after removing prerequisite");
+  reads[2].resolve({ task: updated, timeline: freshTimeline });
+  await vi.waitFor(async () => expect((await cached()).timeline).toEqual(freshTimeline));
+  await vi.waitFor(() => expect(host.textContent).toContain("New timeline after removing prerequisite"));
+  expect(notifyError).not.toHaveBeenCalled();
 });

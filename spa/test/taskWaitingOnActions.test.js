@@ -1,10 +1,12 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ context: {}, capabilities: { tasks: { waitingOn: true } }, cache: vi.fn(), blocks: vi.fn(), facts: vi.fn(), greet: vi.fn(), stands: vi.fn(() => true) }));
+const mocks = vi.hoisted(() => ({ context: {}, capabilities: { tasks: { waitingOn: true } }, cache: vi.fn(), blocks: vi.fn(), seen: vi.fn(), greet: vi.fn(), stands: vi.fn(() => true) }));
 vi.mock("../src/core/deviceContexts.js", () => ({ contextFor: () => mocks.context, whenGreeted: (...args) => mocks.greet(...args) }));
 vi.mock("../src/core/changeEvents.js", () => ({ bridgeCapabilities: () => mocks.capabilities }));
 vi.mock("../src/core/taskWaitingOnCache.js", () => ({ captureTaskWaitingOnBlocksRead: async () => ({ readOrder: 1 }), cacheTaskWaitingOnResponse: (...args) => mocks.cache(...args), cacheTaskWaitingOnBlocks: (...args) => mocks.blocks(...args) }));
-vi.mock("../src/core/taskAssignmentFacts.js", () => ({ readTaskAssignmentFacts: (...args) => mocks.facts(...args) }));
+vi.mock("../src/core/taskWaitingOnSupport.js", async (original) => ({
+  ...await original(), readTaskWaitingOnEverSupported: (...args) => mocks.seen(...args),
+}));
 import { createTaskWaitingOnActions } from "../src/core/taskWaitingOnActions.js";
 
 let call, actions;
@@ -12,7 +14,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.capabilities = { tasks: { waitingOn: true } };
   mocks.context = {};
-  mocks.facts.mockResolvedValue(null);
+  mocks.seen.mockResolvedValue(false);
   mocks.stands.mockReturnValue(true);
   mocks.greet.mockImplementation(async (_context, dispatch) => ({ sent: dispatch(mocks.stands), stands: mocks.stands }));
   call = vi.fn(async () => ({ task: { id: "t" } }));
@@ -34,8 +36,8 @@ it("waits for greeting then checks current support, preserving old request shape
   await expect(actions.add(["a"])).rejects.toThrow(/Update.*bridge/);
   await expect(actions.create({ title: "Work", waiting_on: ["a"] })).rejects.toThrow(/Update.*bridge/);
   await expect(actions.retry("intent")).rejects.toThrow(/Update.*bridge/);
-  mocks.facts.mockResolvedValue({ dependencies: { blocked: true } });
-  await expect(actions.assign({ assignee: { kind: "agent", agent_id: "a" } })).rejects.toThrow(/Update.*bridge/);
+  mocks.seen.mockResolvedValue(true);
+  await expect(actions.assign({ assignee: { kind: "new_workspace" } })).rejects.toThrow(/downgraded.*update/i);
   expect(call).not.toHaveBeenCalled();
   await actions.create({ title: "Legacy" });
   expect(call).toHaveBeenCalledWith("tasks.create", { project_id: "p", title: "Legacy" });
@@ -43,12 +45,12 @@ it("waits for greeting then checks current support, preserving old request shape
 
 it("retains greeting authority across the asynchronous send-time cache read", async () => {
   let finish;
-  mocks.facts.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  mocks.seen.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   const request = actions.assign({ assignee: { kind: "new_workspace" } });
-  await vi.waitFor(() => expect(mocks.facts).toHaveBeenCalledWith("d", "p", "t", null));
+  await vi.waitFor(() => expect(mocks.seen).toHaveBeenCalledWith("d"));
   expect(call).not.toHaveBeenCalled();
   mocks.stands.mockReturnValue(false);
-  finish({ dependencies: { blocked: false } });
+  finish(false);
   await expect(request).rejects.toThrow(/changed|superseded/);
   expect(call).not.toHaveBeenCalled();
   expect(mocks.cache).not.toHaveBeenCalled();
@@ -71,4 +73,28 @@ it("caches reverse paging independently and never caches a refused or superseded
   mocks.stands.mockReturnValue(false);
   await expect(actions.remove(["a"])).rejects.toThrow(/changed|superseded/);
   expect(mocks.cache).not.toHaveBeenCalled();
+});
+
+it("refuses ordinary new-workspace assignment only on a previously capable device", async () => {
+  mocks.capabilities = { tasks: {} };
+  await actions.assign({ assignee: { kind: "new_workspace" }, note: "Legacy note" });
+  expect(call).toHaveBeenLastCalledWith("tasks.assign", { task_id: "t", assignee: { kind: "new_workspace" }, note: "Legacy note" });
+  call.mockClear();
+  mocks.seen.mockResolvedValue(true);
+  await expect(actions.assign({ assignee: { kind: "new_workspace" } })).rejects.toThrow(/downgraded.*update/i);
+  expect(call).not.toHaveBeenCalled();
+  expect(mocks.cache).toHaveBeenCalledTimes(1);
+  mocks.capabilities = { tasks: { waitingOn: true } };
+  await actions.assign({ assignee: { kind: "new_workspace" } });
+  expect(call).toHaveBeenCalledExactlyOnceWith("tasks.assign", { task_id: "t", assignee: { kind: "new_workspace" } });
+});
+
+it("keeps established non-workspace assignment and unassignment shapes on a downgraded device", async () => {
+  mocks.capabilities = { tasks: {} };
+  mocks.seen.mockResolvedValue(true);
+  for (const assignee of [null, { kind: "user" }, { kind: "agent", agent_id: "a" }]) {
+    await actions.assign({ assignee });
+    expect(call).toHaveBeenLastCalledWith("tasks.assign", { task_id: "t", assignee });
+  }
+  expect(mocks.seen).not.toHaveBeenCalled();
 });

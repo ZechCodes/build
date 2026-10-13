@@ -369,3 +369,25 @@ fn waiting_on_rpc_mcp_contract_rejected_new_edges_name_proposed_scoped_blockers(
         assert_eq!(reread["task"]["status"], status);
     }
 }
+
+#[test]
+fn waiting_on_rpc_mcp_contract_every_raw_waiting_refusal_is_a_conflict() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(tmp.path());
+    let blocker = filed(&mut app, &project, "unfinished blocker");
+    for finished in ["closed", "done"] {
+        let created = rpc(&mut app, "tasks.create", json!({"project_id":project,"title":finished,"waiting_on":[blocker["id"]]}));
+        let id = &created["task"]["id"];
+        if finished == "closed" { rpc(&mut app, "tasks.close", json!({"task_id":id})); }
+        else { rpc(&mut app, "tasks.update", json!({"task_id":id,"status":"done"})); }
+        let assigned = app.handle(req("tasks.assign",json!({"task_id":id,"assignee":{"kind":"user"}})));
+        assert_eq!(assigned["error_code"], "conflict", "{assigned}");
+        assert_eq!(assigned["details"]["waiting_on"][0]["task_id"], blocker["id"], "{assigned}");
+    }
+    let before = rpc(&mut app, "tasks.list", json!({"project_id":project}))["tasks"].as_array().unwrap().len();
+    for status in ["in_progress", "in_review", "done"] {
+        let created = app.handle(req("tasks.create",json!({"project_id":project,"title":"must not persist","status":status,"waiting_on":[blocker["id"]]})));
+        assert_eq!(created["error_code"], "conflict", "{created}");
+    }
+    assert_eq!(rpc(&mut app,"tasks.list",json!({"project_id":project}))["tasks"].as_array().unwrap().len(),before);
+}

@@ -108,7 +108,7 @@ fn unblock_preserves_user_attention() {
         .unwrap()
         .save_tracker_task_activity(&saved, &[], &[])
         .unwrap();
-    edges(&app, &project, &dependent, &[blocker.clone()]);
+    edges(&app, &project, &dependent, std::slice::from_ref(&blocker));
     pump(&mut app);
     let blocked = row(&mut app, &dependent);
     assert_eq!(blocked["dependencies"]["blocked"], true);
@@ -332,7 +332,7 @@ fn waiting_notices_and_reminders_undelivered_states() {
     let (owner, agent) = project_agent(&mut app, &project);
     let dependent = id(&filed(&mut app, &project, "queued task"));
     let blocker = id(&filed(&mut app, &project, "last blocker"));
-    edges(&app, &project, &dependent, &[blocker.clone()]);
+    edges(&app, &project, &dependent, std::slice::from_ref(&blocker));
     call(
         &mut app,
         "tasks.assign",
@@ -419,7 +419,7 @@ fn waiting_reads_bound_reverse_preview_and_share_summaries() {
     let blocker = id(&filed(&mut app, &project, "one shared blocker"));
     for number in 0..21 {
         let dependent = id(&filed(&mut app, &project, &format!("dependent {number}")));
-        edges(&app, &project, &dependent, &[blocker.clone()]);
+        edges(&app, &project, &dependent, std::slice::from_ref(&blocker));
     }
     let read = call(&mut app, "tasks.get", json!({"task_id":blocker}));
     let dependencies = &read["task"]["dependencies"];
@@ -448,7 +448,7 @@ fn waiting_on_invalidation_fanout_contract() {
     let mut dependents = Vec::new();
     for number in 0..crate::changes::TASKS_PER_FLUSH + 1 {
         let dependent = id(&filed(&mut app, &project, &format!("fanout {number}")));
-        edges(&app, &project, &dependent, &[blocker.clone()]);
+        edges(&app, &project, &dependent, std::slice::from_ref(&blocker));
         dependents.push(dependent);
     }
     let state = app.shared();

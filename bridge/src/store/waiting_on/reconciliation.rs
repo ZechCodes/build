@@ -151,6 +151,7 @@ pub(super) fn reconcile_task(
     let (before, removed) = readiness(tx, &task.id)?;
     save_readiness(tx, &task.id, blocked, if blocked { &removed } else { &[] })?;
     if before == blocked || task.is_finished() {
+        super::super::delivery_intents::reconcile_task(tx, task, blocked, None)?;
         return Ok(None);
     }
     let causes = current_causes(tx, &forward, causes)?;
@@ -162,6 +163,7 @@ pub(super) fn reconcile_task(
     )?;
     tx.execute("UPDATE tracker_tasks SET updated_at = ?1, record = json_set(record, '$.updated_at', ?1) WHERE id = ?2", params![now, task.id])?;
     changed(tx, &task.id)?;
+    super::super::delivery_intents::reconcile_task(tx, task, blocked, Some(&event))?;
     Ok(Some(event))
 }
 

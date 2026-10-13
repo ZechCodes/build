@@ -122,7 +122,7 @@ impl Store {
         mut snapshot: ReviewSnapshot,
         events: &[TaskEvent],
     ) -> Result<crate::reviews::records::Review, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             let mut opening = load_opening(tx, project_path, request_id)?
                 .ok_or_else(|| invalid("unknown opening request"))?;
             if opening.state == ReviewOpeningState::Published {

@@ -539,6 +539,9 @@ impl AppState {
         self.compactions.forget(&agent.owner_id, &agent.id);
         self.usage_limits.forget_agent(&agent.owner_id, &agent.id);
         self.dispatched_task.remove(&agent.id);
+        self.task_completion_authority.remove(&agent.id);
+        self.spent_task_completion_operations.remove(&agent.id);
+        self.pending_task_completion_authority.remove(&agent.id);
         self.reminded_holdings.remove(&agent.id);
         let owner = agent.owner_id.clone();
         let id = agent.id.clone();

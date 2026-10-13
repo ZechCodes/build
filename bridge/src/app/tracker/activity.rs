@@ -60,19 +60,22 @@ impl AppState {
                 return;
             }
         }
-        if let Err(error) = self.hand_held_task_on(&project_id, task) {
+        if let Err(error) = self.hand_held_task_on(&project_id, agent_id, task) {
             eprintln!("move the task {agent_id} holds on its report: {error}");
         }
     }
 
-    fn hand_held_task_on(&mut self, project_id: &str, task: Task) -> Result<(), String> {
+    fn hand_held_task_on(
+        &mut self,
+        project_id: &str,
+        agent_id: &str,
+        task: Task,
+    ) -> Result<(), String> {
         if !task.is_open() {
             return Ok(());
         }
         let actor = Actor::Agent {
-            agent_id: self
-                .task_holder(&task)
-                .unwrap_or_else(|| "agent".to_string()),
+            agent_id: agent_id.to_string(),
         };
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(actor.clone(), task);
@@ -112,32 +115,12 @@ impl AppState {
         entity_id: &str,
         agent_id: &str,
     ) -> Option<(String, Task)> {
-        let task_id = self.dispatched_task.remove(agent_id)?;
+        let task = self.take_task_completion_authority(entity_id, agent_id)?;
         let project_id = self.projects.project_id_of(entity_id)?.to_string();
-        let task = self
-            .tracker_store()
-            .ok()?
-            .load_tracker_task(&task_id)
-            .ok()??;
-        // Still this agent's. A reassignment between the dispatch and the
-        // report means somebody else holds it now, and their card is not this
-        // report's to move.
-        if task
-            .assignee
-            .as_ref()
-            .and_then(crate::tracker::Assignee::agent_id)
-            != Some(agent_id)
-        {
+        if self.tracker_project_path(&project_id).ok()? != task.project_path {
             return None;
         }
         Some((project_id, task))
-    }
-
-    fn task_holder(&self, task: &Task) -> Option<String> {
-        task.assignee
-            .as_ref()
-            .and_then(crate::tracker::Assignee::agent_id)
-            .map(str::to_string)
     }
 
     /// A merged workspace is being finished: close every open task linking it.

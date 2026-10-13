@@ -168,7 +168,7 @@ impl Store {
         snapshot: ReviewSnapshot,
         bindings: &[ReviewBranchBinding],
     ) -> Result<Review, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             save_received(tx, task_id, expected_version, snapshot, bindings, false)
         })
     }
@@ -182,7 +182,7 @@ impl Store {
         snapshot: ReviewSnapshot,
         bindings: &[ReviewBranchBinding],
     ) -> Result<Review, StoreError> {
-        self.in_transaction(|tx| {
+        self.in_waiting_on_transaction(|tx| {
             require_publication(tx, task_id, expected_version)?;
             save_received(tx, task_id, expected_version, snapshot, bindings, true)
         })

@@ -566,7 +566,7 @@ fn a_new_workspace_is_cut_an_agent_added_and_the_task_handed_over() {
 /// A `new_workspace` dispatch that cannot cut its checkout leaves the task
 /// untouched: nothing may be assigned to an agent that was never made.
 #[test]
-fn a_workspace_that_cannot_be_cut_leaves_the_task_unassigned() {
+fn a_workspace_that_cannot_be_cut_keeps_a_failed_saved_assignment() {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(tmp.path()).unwrap();
     let (_home, mut state, project_id) = tracked(&state_root);
@@ -591,7 +591,10 @@ fn a_workspace_that_cannot_be_cut_leaves_the_task_unassigned() {
     let after = state.handle(req("tasks.get", json!({ "task_id": id })));
     assert_eq!(after["result"]["task"]["assignee"], Value::Null);
     assert_eq!(after["result"]["task"]["status"], "backlog");
-    assert_eq!(event_kinds(&mut state, &id), vec!["created"]);
+    assert_eq!(
+        event_kinds(&mut state, &id),
+        vec!["created", "assigned", "dispatch_failed"]
+    );
 }
 
 /// Handing a task to an agent that already exists records the workspace that

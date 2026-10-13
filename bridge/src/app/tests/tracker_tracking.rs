@@ -744,6 +744,7 @@ fn reported(
             json!({ "task_id": id, "status": column }),
         ));
     }
+    super::tracker_activity::consume_assignment_turns(state);
     state.done_deferring_for_agent(
         &entity_id,
         &agent_id,

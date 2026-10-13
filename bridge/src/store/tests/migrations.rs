@@ -1,6 +1,173 @@
 use super::support::*;
 use super::*;
 
+fn tracker_task_records(conn: &Connection) -> Vec<(String, String)> {
+    let mut statement = conn
+        .prepare("SELECT id,record FROM tracker_tasks ORDER BY id")
+        .unwrap();
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+fn create_v16_fixture(dir: &std::path::Path) -> Vec<(String, String)> {
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/store/tests/schema_v16.sql");
+    let schema = std::fs::read_to_string(fixture).expect("dedicated schema 16 fixture exists");
+    let conn = Connection::open(dir.join(DB_FILE)).unwrap();
+    conn.execute_batch(&schema).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let delivery_tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' \
+             AND name IN ('tracker_delivery_intents', 'tracker_delivery_notices')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        delivery_tables, 0,
+        "the fixture predates delivery authority"
+    );
+    conn.execute_batch(
+        "INSERT INTO meta(key,value) VALUES ('schema_version','16');
+         INSERT INTO tracker_tasks(id,project_key,number,state,status,created_at,updated_at,record)
+         VALUES ('task-waiting','/repo',1,'open','ready','t0','t1',
+                 '{\"id\":\"task-waiting\",\"project_path\":\"/repo\",\"number\":1,\"title\":\"Waiting\",\"body\":\"kept\",\"state\":\"open\",\"status\":\"ready\",\"assignee\":{\"kind\":\"project_agent\"},\"created_by\":{\"kind\":\"user\"},\"created_at\":\"t0\",\"updated_at\":\"t1\"}'),
+                ('task-blocker','/repo',2,'open','ready','t0','t1',
+                 '{\"id\":\"task-blocker\",\"project_path\":\"/repo\",\"number\":2,\"title\":\"Blocker\",\"body\":\"kept\",\"state\":\"open\",\"status\":\"ready\",\"created_by\":{\"kind\":\"user\"},\"created_at\":\"t0\",\"updated_at\":\"t1\"}');
+         INSERT INTO tracker_task_dependencies(task_id,waiting_on_task_id,position,task_number)
+             VALUES ('task-waiting','task-blocker',0,1);
+         INSERT INTO tracker_dependency_readiness(task_id,blocked)
+             VALUES ('task-waiting',1);
+         INSERT INTO tracker_dependency_readiness(task_id) VALUES ('task-blocker');
+         INSERT INTO tracker_dependency_reconcile(source_task_id,at)
+             VALUES ('task-blocker','t1');",
+    )
+    .unwrap();
+    tracker_task_records(&conn)
+}
+
+fn assert_v17_task_preservation(store: &Store, records: &[(String, String)]) {
+    use crate::tracker::Assignee;
+
+    let waiting = store.load_tracker_task("task-waiting").unwrap().unwrap();
+    assert_eq!(waiting.assignee, Some(Assignee::ProjectAgent));
+    assert_eq!(waiting.body, "kept");
+    assert!(store
+        .current_delivery_intent(&waiting.id)
+        .unwrap()
+        .is_none());
+    assert!(store.delivery_notices_ready(10).unwrap().is_empty());
+    let summary = store.waiting_on_summary("/repo", &waiting.id).unwrap();
+    assert!(summary.blocked);
+    assert_eq!(summary.waiting_on.len(), 1);
+    assert_eq!(summary.waiting_on[0].task_id, "task-blocker");
+    assert!(!summary.waiting_on[0].resolved);
+    let blocker = store.load_tracker_task("task-blocker").unwrap().unwrap();
+    assert_eq!(blocker.assignee, None);
+    assert!(blocker.labels.is_empty());
+    assert!(!blocker.watched);
+
+    let conn = store.connection();
+    assert_eq!(tracker_task_records(&conn).as_slice(), records);
+}
+
+fn assert_v17_delivery_tables(conn: &Connection) {
+    let version: i64 = conn
+        .query_row(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key='schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, 17);
+    for table in ["tracker_delivery_intents", "tracker_delivery_notices"] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0, "migration grants no authority from history");
+    }
+    let indexes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN \
+             ('tracker_deliveries_ready','tracker_deliveries_current','tracker_delivery_notices_ready')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexes, 3);
+}
+
+fn assert_v17_dependency_preservation(conn: &Connection) {
+    let edge: (String, i64, i64) = conn
+        .query_row(
+            "SELECT waiting_on_task_id,position,task_number FROM tracker_task_dependencies \
+             WHERE task_id='task-waiting'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(edge, ("task-blocker".into(), 0, 1));
+    for (id, blocked) in [("task-waiting", 1), ("task-blocker", 0)] {
+        let readiness: (i64, String) = conn
+            .query_row(
+                "SELECT blocked,removed_task_ids FROM tracker_dependency_readiness WHERE task_id=?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(readiness, (blocked, "[]".into()));
+    }
+    let reconcile: (i64, i64, i64, i64, String) = conn
+        .query_row(
+            "SELECT after_number,self_done,fanout,resolution_changed,cause_event_ids \
+             FROM tracker_dependency_reconcile WHERE source_task_id='task-blocker'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(reconcile, (0, 0, 1, 0, "[]".into()));
+    assert!(conn
+        .prepare("PRAGMA foreign_key_check")
+        .unwrap()
+        .query([])
+        .unwrap()
+        .next()
+        .unwrap()
+        .is_none());
+}
+
+fn assert_v17_delivery_migration(store: &Store, records: &[(String, String)]) {
+    assert_v17_task_preservation(store, records);
+    let conn = store.connection();
+    assert_v17_delivery_tables(&conn);
+    assert_v17_dependency_preservation(&conn);
+}
+
+#[test]
+fn a_v16_database_migrates_to_v17_without_arming_existing_assignments() {
+    let dir = tempfile::tempdir().unwrap();
+    let records = create_v16_fixture(dir.path());
+    let store = Store::new(dir.path()).unwrap();
+    assert_v17_delivery_migration(&store, &records);
+    drop(store);
+    let reopened = Store::new(dir.path()).unwrap();
+    assert_v17_delivery_migration(&reopened, &records);
+}
+
 #[test]
 fn v5_raw_agent_settings_and_surviving_primary_alias_are_frozen_once() {
     let dir = tempfile::tempdir().unwrap();

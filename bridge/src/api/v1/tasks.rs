@@ -568,6 +568,9 @@ const UNAVAILABLE: [&str; 1] = ["tasks need a durable store"];
 /// [`ApiError::classify`]: crate::api::ApiError::classify
 fn refine(error: ApiError) -> ApiError {
     let message = error.message().to_string();
+    if message == "conflict: operation_id already used with different assignment" {
+        return ApiError::conflict(message, None);
+    }
     if message.starts_with("stale_body:") {
         return ApiError::StaleBody {
             message,

@@ -357,6 +357,11 @@ fn waiting_notices_and_reminders_undelivered_states() {
         .unwrap()
         .unwrap();
     assert_eq!(intent.state, "queued");
+    assert_eq!(
+        call(&mut app, "tasks.get", json!({"task_id":dependent}))["task"]["deferred_assignment"]
+            ["state"],
+        "queued"
+    );
     app.remind_of_open_tasks(&owner, &agent);
     assert!(
         !has_reminder(&mut app, &owner, &agent),
@@ -366,6 +371,11 @@ fn waiting_notices_and_reminders_undelivered_states() {
         .unwrap()
         .fail_delivery_intent(&intent.id, intent.generation, "temporary fixture failure")
         .unwrap();
+    assert_eq!(
+        call(&mut app, "tasks.get", json!({"task_id":dependent}))["task"]["deferred_assignment"]
+            ["state"],
+        "failed"
+    );
     app.remind_of_open_tasks(&owner, &agent);
     assert!(
         !has_reminder(&mut app, &owner, &agent),
@@ -373,6 +383,11 @@ fn waiting_notices_and_reminders_undelivered_states() {
     );
     app.retry_task_delivery(&intent.id).unwrap();
     pump(&mut app);
+    assert_eq!(
+        call(&mut app, "tasks.get", json!({"task_id":dependent}))["task"]["deferred_assignment"]
+            ["state"],
+        "delivered"
+    );
     app.remind_of_open_tasks(&owner, &agent);
     assert!(
         has_reminder(&mut app, &owner, &agent),
@@ -394,4 +409,32 @@ fn has_reminder(app: &mut AppState, owner: &str, agent: &str) -> bool {
                 .unwrap_or("")
                 .contains("reported Complete")
         })
+}
+
+#[test]
+fn waiting_reads_bound_reverse_preview_and_share_summaries() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let blocker = id(&filed(&mut app, &project, "one shared blocker"));
+    for number in 0..21 {
+        let dependent = id(&filed(&mut app, &project, &format!("dependent {number}")));
+        edges(&app, &project, &dependent, &[blocker.clone()]);
+    }
+    let read = call(&mut app, "tasks.get", json!({"task_id":blocker}));
+    let dependencies = &read["task"]["dependencies"];
+    assert_eq!(dependencies["blocks_count"], 21);
+    assert_eq!(dependencies["blocks"].as_array().unwrap().len(), 20);
+    assert!(dependencies["blocks_next_cursor"].is_string());
+    let list = call(&mut app, "tasks.list", json!({"project_id":project}));
+    let task = list["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == blocker)
+        .unwrap();
+    assert_eq!(task["dependencies"]["blocks_count"], 21);
+    assert!(task["dependencies"].get("blocks").is_none());
+    let watched = row(&mut app, &blocker);
+    assert_eq!(watched["dependencies"]["blocks_count"], 21);
+    assert!(watched["dependencies"].get("blocks").is_none());
 }

@@ -13,22 +13,10 @@ impl AppState {
         }
         let workspace = self.workspaces.claim_delivery_workspace(reserved)?;
         let sources = WorkspaceRegistry::retry_sources(&workspace);
-        let current_sources = self.sources_for(&workspace.project_id)?;
-        let unchanged_sources = current_sources.len() == sources.len()
-            && current_sources
-                .iter()
-                .zip(&sources)
-                .all(|(current, saved)| {
-                    current.id == saved.id
-                        && current.path == saved.path
-                        && current.base_branch == saved.base_branch
-                        && current.is_git == saved.is_git
-                });
-        let base_syncs = if unchanged_sources {
-            self.cut_sync_subjects(&workspace.project_id)
-        } else {
-            Vec::new()
-        };
+        // Delivery reservations retain their saved source inputs across settings
+        // edits and restart, just like explicit manifest retries. Prepare only
+        // unfinished inputs, always pinning Git bases under their shared lock.
+        let base_syncs = self.retry_sync_subjects(&workspace.project_id, &sources);
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
@@ -47,6 +35,9 @@ impl AppState {
                 sources,
                 isolation: workspace.isolation,
                 base_syncs,
+                source_state: self.source_validation_handle(),
+                #[cfg(test)]
+                prepared_gate: self.off_lock_workspace_prepared_gate.take(),
                 synced: Default::default(),
             }),
             params: Value::Null,
@@ -157,7 +148,15 @@ mod tests {
             workspace_name,
             Isolation::Worktree,
             temp.path(),
-            None,
+            Some(
+                &git2::Repository::open(&source.path)
+                    .unwrap()
+                    .head()
+                    .unwrap()
+                    .target()
+                    .unwrap()
+                    .to_string(),
+            ),
         )
         .unwrap();
         std::fs::write(destination.join("tracked"), b"user edits").unwrap();

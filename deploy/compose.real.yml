@@ -113,10 +113,8 @@ services:
   # workspace lifecycle verification inside the compose network.
   qa:
     build:
-      context: ../web
-      # Explicit: docker compose (CI) only auto-discovers "Dockerfile"; podman
-      # accepts Containerfile without this.
-      dockerfile: Containerfile
+      context: ..
+      dockerfile: web/Containerfile
     profiles:
       - qa
     environment:

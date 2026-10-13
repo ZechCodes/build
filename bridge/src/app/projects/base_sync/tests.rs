@@ -73,8 +73,14 @@ impl Fixture {
 
     fn settle(&mut self, origin: SyncOrigin, report: SyncReport, now_ms: i64) {
         let subject = self.subject(origin);
-        self.state
-            .settle_source_syncs(vec![Synced { subject, report }], now_ms);
+        self.state.settle_source_syncs(
+            vec![Synced {
+                subject,
+                report,
+                start: None,
+            }],
+            now_ms,
+        );
     }
 
     fn timer_takes_it(&mut self, now_ms: i64) -> bool {
@@ -83,6 +89,48 @@ impl Fixture {
             .source_sync_subjects(SyncPass::Due, now_ms)
             .is_empty()
     }
+}
+
+#[test]
+fn a_cut_fetch_uses_only_the_budget_left_after_waiting() {
+    let fixture = fixture();
+    // A listening loopback endpoint that never answers the Git protocol.
+    // No real remote, helper, or serving bridge participates in this test.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("git://{}/project", listener.local_addr().unwrap());
+    git_in(&fixture.source().path, &["remote", "add", "origin", &url]);
+    let mut subject = fixture.subject(SyncOrigin::Cut);
+    subject.fetch = Fetch::Within(Duration::from_secs(2));
+    let local_base = git2::Repository::open(&subject.path)
+        .unwrap()
+        .revparse_single("main")
+        .unwrap()
+        .id()
+        .to_string();
+    let (held, _) = SyncLock::acquire(&subject.path, Duration::ZERO).unwrap();
+    let path = subject.path.clone();
+    let (ready, waiting) = std::sync::mpsc::channel();
+    let waiter = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_millis(300);
+        ready.send(()).unwrap();
+        let (_held, waited) = SyncLock::acquire(&path, Duration::from_millis(300)).unwrap();
+        assert!(waited);
+        let started = Instant::now();
+        let synced = sync_for_a_cut(subject, deadline, None).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(matches!(
+            synced.report.outcome,
+            SyncOutcome::Failed(Failure {
+                timed_out: true,
+                ..
+            })
+        ));
+        assert_eq!(synced.start.as_deref(), Some(local_base.as_str()));
+    });
+    waiting.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
+    drop(held);
+    waiter.join().unwrap();
 }
 
 #[test]
@@ -236,7 +284,7 @@ fn a_cut_leaves_a_slow_checkout_to_the_service() {
 
     let started = std::time::Instant::now();
     let subjects = state.lock().unwrap().cut_sync_subjects(&project_id);
-    let synced = sync_before_cut(&subjects);
+    let synced = sync_before_cut(&subjects, None).unwrap();
     let took = started.elapsed();
 
     assert!(took < CUT_FETCH_DEADLINE, "the cut waited {took:?}");
@@ -264,4 +312,75 @@ fn a_cut_leaves_a_slow_checkout_to_the_service() {
         .clone()
         .unwrap();
     assert_eq!(status.state, SyncState::Synced, "{status:?}");
+}
+
+#[test]
+fn cut_oid_is_pinned_before_materialization_even_with_sync_off() {
+    let mut fixture = fixture();
+    let source = fixture
+        .state
+        .projects
+        .source_mut(&fixture.project_id, "source-1")
+        .unwrap();
+    source.sync_base = Some(false);
+    let path = source.path.clone();
+    let expected = head_of(&path, "main");
+    let subjects = fixture.state.cut_sync_subjects(&fixture.project_id);
+    let prepared = sync_before_cut(&subjects, None).unwrap();
+    std::fs::write(path.join("later.txt"), "later\n").unwrap();
+    git_in(&path, &["add", "."]);
+    git_in(&path, &["commit", "-q", "-m", "later"]);
+    let source = crate::workspace::WorkspaceSource {
+        id: "source-1".into(),
+        name: "code".into(),
+        mount: "code".into(),
+        path,
+        is_git: true,
+        base_branch: "main".into(),
+    };
+    assert_eq!(cut_start(&prepared, &source), Some(expected));
+}
+
+#[test]
+fn cut_aliases_of_a_common_git_directory_do_not_reenter_the_lock() {
+    let fixture = fixture();
+    let mut alias = fixture.subject(SyncOrigin::Cut);
+    alias.source_id = "alias".into();
+    let prepared = sync_before_cut(&[fixture.subject(SyncOrigin::Cut), alias], None).unwrap();
+    assert_eq!(prepared.len(), 2);
+    assert_eq!(prepared[0].start, prepared[1].start);
+}
+
+#[test]
+fn cut_settlement_does_not_request_sync_for_a_moved_source() {
+    let mut fixture = fixture();
+    let subject = fixture.subject(SyncOrigin::Cut);
+    let cut_from = head_of(&subject.path, "main");
+    let replacement = init_repo_named(fixture._dir.path(), "replacement");
+    fixture
+        .state
+        .projects
+        .source_mut(&fixture.project_id, "source-1")
+        .unwrap()
+        .path = replacement;
+    fixture.state.settle_source_syncs(
+        vec![Synced {
+            subject,
+            report: SyncReport {
+                outcome: SyncOutcome::CheckoutLeft { cut_from },
+                ahead: 0,
+                behind: 1,
+                fetched: true,
+            },
+            start: None,
+        }],
+        START_MS,
+    );
+    assert!(
+        fixture
+            .state
+            .source_sync_subjects(SyncPass::Requested, START_MS)
+            .is_empty(),
+        "settling a saved input queued a sync of the replacement repository"
+    );
 }

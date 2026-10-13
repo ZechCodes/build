@@ -916,10 +916,13 @@ impl WorkspaceRegistry {
             .collect()
     }
 
+    /// Only unfinished directories need their saved inputs on retry. Ready
+    /// directories retain their checkouts even if the original source is gone.
     pub fn retry_sources(workspace: &Workspace) -> Vec<WorkspaceSource> {
         workspace
             .directories
             .iter()
+            .filter(|directory| directory.status != DirectoryStatus::Ready)
             .map(|directory| WorkspaceSource {
                 id: directory.source_id.clone(),
                 name: directory.name.clone(),

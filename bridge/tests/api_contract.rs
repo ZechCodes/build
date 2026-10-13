@@ -1503,6 +1503,29 @@ fn project_workers_are_announced_with_their_roster_read_and_purposes() {
     assert_eq!(remove["pinned_coordinator"]["since"], "3.21.0");
 }
 
+#[test]
+fn sync_base_path_precondition_is_announced_and_typed() {
+    assert!(capabilities(false).contains(&"sources.syncBasePath"));
+    let fixture = read_json(&fixtures_root().join("v1/project.sync_source.json"));
+    assert_eq!(fixture["source_path"]["capability"], "sources.syncBasePath");
+    assert_eq!(fixture["source_path"]["since"], "3.21.0");
+    let handler = &v1::methods()
+        .iter()
+        .find(|(method, _)| *method == "project.sync_source")
+        .unwrap()
+        .1;
+    assert!(
+        handler.parse_params(&fixture["params"]).is_ok(),
+        "legacy sync remains valid"
+    );
+    assert!(handler
+        .parse_params(&fixture["examples"][0]["params"])
+        .is_ok());
+    let mut malformed = fixture["examples"][0]["params"].clone();
+    malformed["source_path"] = serde_json::json!(5);
+    assert!(handler.parse_params(&malformed).is_err());
+}
+
 /// A task handed to a new project worker, and an assignment a client can
 /// retry, ride one capability: the `new_project_agent` assignee kind and
 /// `operation_id` on `tasks.assign`, whose dispatch names no workspace and

@@ -1,23 +1,79 @@
 # Build secure transport
 
-The JS binding and Python reference live here, imported from
-`ZechCodes/build-secure-transport` commit
+Build owns maintenance, audit and review of the JS binding and Python reference
+in this directory and the Rust implementation at `bridge/src/transport.rs`.
+The original import came from `ZechCodes/build-secure-transport` commit
 `4bce3aacebd66a9674aaa96c6ec0d97ab4bcd793`. Package names and versions remain
 `@build/secure-transport` / `build-secure-transport` 0.1.0.
-[UPSTREAM.md](UPSTREAM.md) records the explicit file allowlist, hashes and
-amendments; the initial import commit preserves every selected file byte.
+[UPSTREAM.md](UPSTREAM.md) records the allowlist, hashes and later amendments;
+the initial import `496716692caa3a711a7f627952d711adfa52ac73` preserves every
+selected byte. The completed consumer/CI/image cutover landed on Build main at
+`eaf01df8d2ed3e0ef252edbcc38124d14bf2de0f`. The Build commit now pins shipped
+transport source; the old pin is provenance, not a container build argument.
 
-The Rust implementation remains in `bridge/src/transport.rs`. Build's API owns
-presence and device keys; the relay handles signaling and application traffic
-uses WebRTC data channels. [ARCHITECTURE.md](../ARCHITECTURE.md#system-topology)
-describes the current system. [E2E-MVP.md](E2E-MVP.md) is a historical protocol
-document, with an annotation distinguishing its older topology.
+The legacy repository stays available and untouched for history and rollback;
+it is no longer the maintenance source of truth. The plan does not archive it
+or assert that GitHub has made it read-only. A legacy README pointer is drafted
+on #579 for Zech to apply manually, as a separate action. New fixes and reviews
+belong in Build. Report vulnerabilities privately through
+[Build’s security policy](../SECURITY.md), including transport findings.
 
-This import is the first step of the
-[consolidation plan](../planning/v2/Secure%20Transport%20Consolidation%20Plan.md).
-Consumers still use the existing sibling dependency until the later cutover.
-The imported JS/Python tests retain their baseline bytes; the portable interop
-launcher and mandatory runtime compatibility evidence belong to #576.
+Build’s API owns presence and device keys. The relay handles session setup and
+signaling; application traffic uses WebRTC DataChannels, directly or through
+TURN, with no relay data-plane fallback.
+[ARCHITECTURE.md](../ARCHITECTURE.md#system-topology) describes the current
+system. [E2E-MVP.md](E2E-MVP.md) preserves the historical envelope document,
+with an annotation distinguishing its older topology. The bindings do not
+provide replay filtering or authenticate outer `route_to` routing metadata.
+The move changes no protocol, API, session, identity or network behavior.
+
+The imported [JS README](js/README.md) and [Python README](python/README.md)
+are pinned baseline artifacts: imported, do not edit here. Ownership, setup
+and current compatibility instructions live in this README so their original
+bytes remain auditable. Future source imports require a separate reviewed
+change with an explicit pin, allowlist, hashes and compatibility evidence;
+see [the import policy](UPSTREAM.md#maintenance-and-future-imports).
+
+## Development and compatibility
+
+SPA and web resolve `file:../transport/js` with committed portable consumer
+locks. Use Node 22.23.3/npm 12.0.2 and install the binding first from Build’s root:
+
+```sh
+nice -n 10 npm ci --prefix transport/js --ignore-scripts
+nice -n 10 npm ci --prefix spa --legacy-peer-deps
+nice -n 10 npm ci --prefix web
+```
+
+Consumer `.npmrc` files suppress lifecycle scripts and require seven days before
+new registry resolutions; SPA also records legacy peer resolution. Dependency
+edits use SPA `npm install --legacy-peer-deps` or web `npm install` and commit
+the lock. The [SPA](../spa/README.md#prereqs) and
+[web](../web/README.md#the-suites) READMEs document the reviewed one-command
+exact-package release-age exception. Node resolves sodium from transport’s own
+installed dependencies; Vite’s existing shim uses SPA-local sodium. Both locks
+retain libsodium/libsodium-wrappers 0.7.16.
+
+Python is a reference/test dependency, not a production app or bridge runtime
+dependency. CI pins uv 0.12.13 and uses frozen resolution. From Build’s root:
+
+```sh
+nice -n 10 uv sync --frozen --project transport/python
+nice -n 10 uv run --frozen --project transport/python python -m unittest discover -s transport/python/tests -v
+nice -n 10 uv run --frozen --project transport/python python -m unittest discover -s transport/compatibility -v
+nice -n 10 npm test --prefix transport/js
+nice -n 10 cargo test --locked --manifest-path bridge/Cargo.toml --lib transport
+nice -n 10 cargo test --locked --manifest-path bridge/Cargo.toml --test transport_vectors --test interop_python
+```
+
+The original five Python and four JS cases remain; four added Python vector cases
+and four added JS cases are separately counted. The Rust/Python and JS/Python
+launchers default to this checkout and fail on missing uv or reference files.
+`BUILD_SECURE_TRANSPORT_PY` and `BST_UV` are deliberate test overrides. These
+checks establish JS/Python and Rust/Python compatibility, not a direct JS/Rust
+runtime exchange. [Fixtures](fixtures/README.md) preserve old/new evidence.
+The dedicated transport CI job runs the contracts, units, vectors and exchanges;
+owed transport checks must succeed before either image builds.
 
 ## License scope
 

@@ -63,7 +63,7 @@ assert_tiers() {
     at_name="$1"
     at_out="$2"
     at_want="$3"
-    at_got="$(grep -E '^(app|relay|bridge|e2e|desktop|scripts|shell)=' "$at_out" | sort | tr '\n' ' ')"
+    at_got="$(grep -E '^(app|relay|bridge|e2e|desktop|scripts|shell|transport)=' "$at_out" | sort | tr '\n' ' ')"
     at_want_sorted="$(printf '%s\n' "$at_want" | tr ' ' '\n' | sort | tr '\n' ' ')"
     [ "$at_got" = "$at_want_sorted" ] && return 0
     fail "$at_name" "got '$at_got', wanted '$at_want_sorted'"
@@ -81,35 +81,35 @@ RELAY="ghcr.io/zechcodes/build-relay"
 
 name="nothing known about production: everything moved"
 run_case "$REPO" "$WORK/1" "" ""
-assert_tiers "$name" "$WORK/1" "app=true relay=true bridge=true e2e=true desktop=true scripts=true shell=true" && pass "$name"
+assert_tiers "$name" "$WORK/1" "app=true relay=true bridge=true e2e=true desktop=true scripts=true shell=true transport=true" && pass "$name"
 
 name="a :latest tag says nothing about the commit: everything moved"
 run_case "$REPO" "$WORK/2" "$APP:latest" "$RELAY:latest"
-assert_tiers "$name" "$WORK/2" "app=true relay=true bridge=true e2e=true desktop=true scripts=true shell=true" && pass "$name"
+assert_tiers "$name" "$WORK/2" "app=true relay=true bridge=true e2e=true desktop=true scripts=true shell=true transport=true" && pass "$name"
 
 name="both tiers on HEAD: nothing moved"
 run_case "$REPO" "$WORK/3" "$APP:$C3" "$RELAY:$C3"
-assert_tiers "$name" "$WORK/3" "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false" && pass "$name"
+assert_tiers "$name" "$WORK/3" "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=false" && pass "$name"
 
 name="a relay tag behind only bridge-only commits is current: with the app on HEAD nothing rolls or rechecks"
 run_case "$REPO" "$WORK/4" "$APP:$C3" "$RELAY:$C0"
-assert_tiers "$name" "$WORK/4" "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false" && pass "$name"
+assert_tiers "$name" "$WORK/4" "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=false" && pass "$name"
 
 name="app behind by a spa commit, relay current: app alone"
 run_case "$REPO" "$WORK/5" "$APP:$C1" "$RELAY:$C3"
-assert_tiers "$name" "$WORK/5" "app=true relay=false bridge=false e2e=true desktop=true scripts=true shell=true" && pass "$name"
+assert_tiers "$name" "$WORK/5" "app=true relay=false bridge=false e2e=true desktop=true scripts=true shell=true transport=false" && pass "$name"
 
 name="a cancelled run's bridge checks are still owed when the next merge touches only spa, and roll no relay"
 run_case "$REPO" "$WORK/6" "$APP:$C0" "$RELAY:$C0"
-assert_tiers "$name" "$WORK/6" "app=true relay=false bridge=true e2e=true desktop=true scripts=true shell=true" && pass "$name"
+assert_tiers "$name" "$WORK/6" "app=true relay=false bridge=true e2e=true desktop=true scripts=true shell=true transport=false" && pass "$name"
 
 name="checks that deploy nothing diff from the older of the two tiers"
 run_case "$REPO" "$WORK/7" "$APP:$C2" "$RELAY:$C2"
-assert_tiers "$name" "$WORK/7" "app=false relay=false bridge=false e2e=true desktop=true scripts=true shell=true" && pass "$name"
+assert_tiers "$name" "$WORK/7" "app=false relay=false bridge=false e2e=true desktop=true scripts=true shell=true transport=false" && pass "$name"
 
 name="a deployed commit this history does not contain moves that tier and every check, not the tier that is current"
 run_case "$REPO" "$WORK/8" "$APP:0123456789abcdef0123456789abcdef01234567" "$RELAY:$C3"
-assert_tiers "$name" "$WORK/8" "app=true relay=false bridge=true e2e=true desktop=true scripts=true shell=true" && pass "$name"
+assert_tiers "$name" "$WORK/8" "app=true relay=false bridge=true e2e=true desktop=true scripts=true shell=true transport=true" && pass "$name"
 
 # The landing page is built into the app image by skriftapp/Containerfile, so a
 # page-only commit has to move the app tier — and only that tier.
@@ -122,7 +122,7 @@ git -C "$LANDING_REPO" add -A && git -C "$LANDING_REPO" commit -qm C4
 
 name="the landing page ships in the app image: a page-only commit moves the app tier"
 run_case "$LANDING_REPO" "$WORK/9" "$APP:$LANDING_BASE" "$RELAY:$LANDING_BASE"
-assert_tiers "$name" "$WORK/9" "app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false" && pass "$name"
+assert_tiers "$name" "$WORK/9" "app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false transport=false" && pass "$name"
 
 # The relay deploys only when a file it is built from moved (relay-sources);
 # every other bridge change is checked and end-to-end tested, and rolls nothing.
@@ -141,8 +141,8 @@ change_case() {
     if assert_tiers "$cc_name" "$cc_repo.out" "$cc_want"; then pass "$cc_name"; fi
 }
 
-MOVED_BRIDGE="app=false relay=false bridge=true e2e=true desktop=false scripts=false shell=false"
-MOVED_RELAY="app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false"
+MOVED_BRIDGE="app=false relay=false bridge=true e2e=true desktop=false scripts=false shell=false transport=false"
+MOVED_RELAY="app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=false"
 
 change_case "a bridge-only change is checked and never rolls the relay" \
     bridge/src/store.rs "$MOVED_BRIDGE" store
@@ -153,11 +153,15 @@ change_case "the relay bin moves the relay" \
 change_case "a bridge module the relay uses moves the relay" \
     bridge/src/relay_server.rs "$MOVED_RELAY" relay-server
 change_case "a module the relay reaches through relay_server moves the relay" \
-    bridge/src/transport.rs "$MOVED_RELAY" transport
+    bridge/src/transport.rs "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" transport
 change_case "the relay manifest alone moves the relay, and the checks that gate its image" \
     deploy/k8s/relay.yaml "$MOVED_RELAY" manifest
 change_case "a lockfile change moves the relay" \
-    bridge/Cargo.lock "$MOVED_RELAY" lockfile
+    bridge/Cargo.lock "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" lockfile
+change_case "the crate manifest gates transport dependencies and the relay" \
+    bridge/Cargo.toml "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" crate-manifest
+change_case "the crate exports gate transport and the relay" \
+    bridge/src/lib.rs "app=false relay=true bridge=true e2e=true desktop=false scripts=false shell=false transport=true" crate-exports
 change_case "the image recipe moves the relay" \
     bridge/Containerfile "$MOVED_RELAY" containerfile
 change_case "a path that only contains a relay source's name is not one" \
@@ -165,6 +169,108 @@ change_case "a path that only contains a relay source's name is not one" \
 
 change_case "an edit to relay-sources alone runs the guard that checks it" \
     .github/relay-sources "$MOVED_BRIDGE" relay-sources-list
+
+# Transport has an independent checks baseline: an unchanged relay cannot
+# certify Python/fixture checks, since those paths deploy no image.
+MOVED_TRANSPORT="app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=true"
+MOVED_JS="app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false transport=true"
+
+for path in .dockerignore .containerignore; do
+    change_case "root image context inputs gate app, E2E and transport: $path" \
+        "$path" "$MOVED_JS" "ignore-$(basename "$path")"
+done
+for path in transport/js/src/index.js transport/js/test/index.test.js transport/js/testing/python.mjs \
+    transport/js/package.json transport/js/package-lock.json transport/js/.npmrc transport/js/LICENSE.md; do
+    change_case "the local JS binding moves app, E2E and transport: $path" \
+        "$path" "$MOVED_JS" "js-$(basename "$path")"
+done
+for path in transport/python/src/build_secure_transport/device.py transport/python/pyproject.toml \
+    transport/python/uv.lock transport/tests/test_import.py transport/fixtures/v1.json \
+    transport/compatibility/test_vectors.py transport/testing/generate_vectors.py; do
+    change_case "transport evidence moves no production image: $path" \
+        "$path" "$MOVED_TRANSPORT" "evidence-$(basename "$path")"
+done
+for path in bridge/tests/interop_python.rs bridge/tests/transport_vectors.rs bridge/tests/transport_report.rs; do
+    change_case "the Rust transport harness is checked with the bridge: $path" \
+        "$path" "app=false relay=false bridge=true e2e=true desktop=false scripts=false shell=false transport=true" \
+        "rust-$(basename "$path")"
+done
+for path in .github/changed-tiers.sh .github/test-changed-tiers.sh; do
+    change_case "the selector cannot skip its transport regressions: $path" \
+        "$path" "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=true transport=true" \
+        "selector-$(basename "$path")"
+done
+change_case "CI changes check transport and preserve desktop selection" \
+    .github/workflows/ci.yml "app=false relay=false bridge=false e2e=false desktop=true scripts=false shell=false transport=true" ci
+change_case "timing CI changes check transport" \
+    .github/workflows/timing.yml "$MOVED_TRANSPORT" timing
+for path in scripts/transport_import.py scripts/transport_packages.py; do
+    change_case "transport package runners cannot skip transport: $path" \
+        "$path" "app=false relay=false bridge=false e2e=false desktop=false scripts=true shell=false transport=true" \
+        "package-runner-$(basename "$path")"
+done
+change_case "the app recipe gates transport delivery" \
+    skriftapp/Containerfile "$MOVED_JS" app-recipe
+for path in web/Containerfile deploy/compose.real.yml; do
+    change_case "QA delivery inputs check E2E and transport: $path" \
+        "$path" "app=false relay=false bridge=false e2e=true desktop=false scripts=false shell=false transport=true" \
+        "qa-$(basename "$path")"
+done
+change_case "the workflow transport contract checks itself" \
+    .github/test-transport-workflow.py "$MOVED_TRANSPORT" workflow-contract
+change_case "JS documentation alone does not rebuild the app" \
+    transport/js/README.md "$MOVED_TRANSPORT" js-docs
+change_case "the transport runner checks itself" \
+    scripts/test-transport.sh "app=false relay=false bridge=false e2e=false desktop=false scripts=true shell=true transport=true" runner
+change_case "the canonical transport notice ships with the app" \
+    transport/LICENSE.md "$MOVED_JS" canonical-license
+change_case "transport provenance gates its source contract" \
+    transport/UPSTREAM.md "$MOVED_TRANSPORT" provenance
+change_case "transport documentation alone deploys and checks no code" \
+    transport/README.md "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=false" transport-docs
+
+TRANSPORT_REPO="$WORK/transport-sequence"
+make_repo "$TRANSPORT_REPO"
+TRANSPORT_BASE="$(sha_of "$TRANSPORT_REPO" HEAD)"
+mkdir -p "$TRANSPORT_REPO/transport/python"
+echo pending > "$TRANSPORT_REPO/transport/python/pyproject.toml"
+git -C "$TRANSPORT_REPO" add -A && git -C "$TRANSPORT_REPO" commit -qm Python
+TRANSPORT_PYTHON="$(sha_of "$TRANSPORT_REPO" HEAD)"
+name="failed or canceled Python-only evidence remains owed before an app change"
+run_case "$TRANSPORT_REPO" "$WORK/transport-pending" "$APP:$TRANSPORT_BASE" "$RELAY:$TRANSPORT_BASE"
+assert_tiers "$name" "$WORK/transport-pending" "$MOVED_TRANSPORT" && pass "$name"
+echo newer > "$TRANSPORT_REPO/spa/src/main.js"
+git -C "$TRANSPORT_REPO" add -A && git -C "$TRANSPORT_REPO" commit -qm App
+TRANSPORT_APP="$(sha_of "$TRANSPORT_REPO" HEAD)"
+name="a newer app deployment cannot forgive Python evidence against an unchanged relay"
+run_case "$TRANSPORT_REPO" "$WORK/transport-app" "$APP:$TRANSPORT_APP" "$RELAY:$TRANSPORT_BASE"
+assert_tiers "$name" "$WORK/transport-app" "$MOVED_TRANSPORT" && pass "$name"
+name="the older app deployment also preserves transport evidence when relay is newer"
+run_case "$TRANSPORT_REPO" "$WORK/transport-relay" "$APP:$TRANSPORT_BASE" "$RELAY:$TRANSPORT_APP"
+assert_tiers "$name" "$WORK/transport-relay" "$MOVED_JS" && pass "$name"
+name="known deployments past the transport commit clear the transport tier"
+run_case "$TRANSPORT_REPO" "$WORK/transport-current" "$APP:$TRANSPORT_APP" "$RELAY:$TRANSPORT_PYTHON"
+assert_tiers "$name" "$WORK/transport-current" "app=false relay=false bridge=false e2e=false desktop=false scripts=false shell=false transport=false" && pass "$name"
+name="an unknown relay forces transport without rebuilding a current app"
+run_case "$TRANSPORT_REPO" "$WORK/transport-unknown" "$APP:$TRANSPORT_APP" "$RELAY:latest"
+assert_tiers "$name" "$WORK/transport-unknown" "app=false relay=true bridge=true e2e=true desktop=true scripts=true shell=true transport=true" && pass "$name"
+
+# Both tags can be ancestors of a merge without having an ordered relationship.
+# Such deployments cannot provide a single conservative transport baseline.
+DIVERGED_REPO="$WORK/diverged-repo"
+make_repo "$DIVERGED_REPO"
+git -C "$DIVERGED_REPO" checkout -qb relay-deploy
+echo relay > "$DIVERGED_REPO/relay-note.md"
+git -C "$DIVERGED_REPO" add -A && git -C "$DIVERGED_REPO" commit -qm RelayDocs
+DIVERGED_RELAY="$(sha_of "$DIVERGED_REPO" HEAD)"
+git -C "$DIVERGED_REPO" checkout -q main
+echo app > "$DIVERGED_REPO/app-note.md"
+git -C "$DIVERGED_REPO" add -A && git -C "$DIVERGED_REPO" commit -qm AppDocs
+DIVERGED_APP="$(sha_of "$DIVERGED_REPO" HEAD)"
+git -C "$DIVERGED_REPO" merge -q --no-ff relay-deploy -m Merge
+name="incomparable known deployment commits force transport checks"
+run_case "$DIVERGED_REPO" "$WORK/transport-diverged" "$APP:$DIVERGED_APP" "$RELAY:$DIVERGED_RELAY"
+assert_tiers "$name" "$WORK/transport-diverged" "$MOVED_TRANSPORT" && pass "$name"
 
 # Bridge commit B, then spa commits S and T (#251). B's checks are cancelled,
 # S's run owes them and deploys the app, T cancels S's Rust jobs. The tiers
@@ -185,7 +291,7 @@ git -C "$SEQ_REPO" add -A && git -C "$SEQ_REPO" commit -qm T
 
 name="an app deployed past a bridge commit certifies its checks: T owes the app alone"
 run_case "$SEQ_REPO" "$WORK/sequence" "$APP:$SEQ_S" "$RELAY:$SEQ_BASE"
-assert_tiers "$name" "$WORK/sequence" "app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false" && pass "$name"
+assert_tiers "$name" "$WORK/sequence" "app=true relay=false bridge=false e2e=true desktop=false scripts=false shell=false transport=false" && pass "$name"
 
 # build-app's job block in ci.yml, from its key to the next job's.
 build_app_job() {

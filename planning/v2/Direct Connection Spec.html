@@ -255,7 +255,7 @@ compile time, so <code>spa/</code> keeps building into one place). At boot the S
 </ul>
 
 <h2 id="threat">11. Threat model</h2>
-<p>Amends <code>build-secure-transport/E2E-MVP.md</code> with a new party, the local network / tailnet, and removes two (relay, Cloudflare) from the direct path.</p>
+<p>Amends <a href="../../transport/E2E-MVP.md"><code>transport/E2E-MVP.md</code></a> (historical protocol document) with a new party, the local network / tailnet, and removes two (relay, Cloudflare) from the direct path.</p>
 <table>
   <tr><th>Attacker</th><th>Can</th><th>Cannot, and why</th></tr>
   <tr><td>Someone on the same tailnet (a shared or compromised node)</td><td>Reach the port; see TLS metadata; attempt pairing</td><td>Open a session: no authorized key. Pair: no invite secret (256-bit, single use, rate-limited). Substitute the bridge: the page is served over Tailscale's cert and the invite pins the identity fingerprint.</td></tr>
@@ -285,7 +285,7 @@ the same choice SSH makes with <code>authorized_keys</code>.</div>
   <li>All direct frames bounded (16 KiB pairing, 8 MiB session, the same reassembly cap as the channels).</li>
   <li>Client key non-exportable through the UI; stored under the bridge origin only.</li>
   <li>The E2EE envelope is unchanged; <code>interop_python.rs</code> keeps passing.</li>
-  <li>Threat-model amendment landed in <code>build-secure-transport/E2E-MVP.md</code> (separate repo) and referenced from README.</li>
+  <li>Threat-model amendment landed in <a href="../../transport/E2E-MVP.md"><code>transport/E2E-MVP.md</code></a> (historical protocol document) and referenced from README; Build now maintains the bindings in-tree. Current topology is documented in <a href="../../ARCHITECTURE.md#system-topology">ARCHITECTURE.md</a>.</li>
 </ol>
 
 <h2 id="stages">13. Stages</h2>

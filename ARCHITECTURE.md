@@ -27,7 +27,7 @@ relative to the repository root.
 | relay | `bridge/src/bin/relay.rs`, logic in `bridge/src/relay_server.rs` | relay.getbuild.ing (`deploy/k8s/relay.yaml`) |
 | bridge | `bridge/src/main.rs`, library in `bridge/src/lib.rs` | the user's machine |
 | desktop app | `desktop/` (Electron; loads the hosted SPA, see `desktop/src/security-policy.mjs`) | the user's desktop |
-| E2EE protocol | separate repo `build-secure-transport`: the SPA imports its JS binding; the bridge carries a Rust port in `bridge/src/transport.rs`, checked by `bridge/tests/interop_python.rs` | both ends |
+| E2EE protocol | `transport/js/` (SPA/web binding), `transport/python/` (reference/tests); Rust in `bridge/src/transport.rs`. Compatibility tests and fixtures live in this checkout | both ends; Python is test-only |
 
 A session goes like this:
 
@@ -129,6 +129,12 @@ prerequisite closed without Done and direct assessment and user escalation.
 `completion_authority.rs` binds Complete to the assignment operation actually
 consumed through Sent/Seen; a queued replacement cannot authorize an older
 turn's report. The RPC and push layer remains separate from this service.
+Background provisioning owns the ordinary filesystem-job count until settlement,
+so lock, rename and reclaim refuse while it waits for source synchronization.
+Reserved deferred workspaces prepare their unfinished saved sources through the
+same manifest retry path and canonical SyncLock as workspace retry; changed
+project settings cannot redirect the saved cut or leave Git materialization
+without a pinned commit. Worker source-location holds remain independent.
 
 **Frames.** A request is `{id, method, params}`; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
@@ -407,6 +413,8 @@ runtime that starts them.
   `source_path` for one original project source, and `changes.subscribe`
   takes scope `{kind: "project_source", project_id, source_id, source_path}`,
   whose items carry `project_source`. See Projects and sources.
+  3.21.0 adds `sources.syncBasePath` (#530): optional captured `source_path`
+  on `project.sync_source`, checked on admission and after queue/lock waits.
   3.21.0 adds `agents.projectWorkers` (#532): `agent.list {entity_id,
   include_project_workers}` (a verb again, after 3.0 retired the old one),
   `project_role` (`coordinator` or `worker`) on a project owner's agent
@@ -620,8 +628,11 @@ app lock: a source moved or removed by then comes back `withdrawn`, and its
 item is dropped. A frame whose facts passed that check just before the move
 can still go out just after it. It carries what the old folder held before
 the move, under the old `project_source`. Nothing collected after the move
-goes out for the old folder. `project.sync_source` does not yet take
-`source_path`; that precondition, with the sync lock, is #530.
+goes out for the old folder. `project.sync_source` also accepts an optional
+captured `source_path` (`sources.syncBasePath`, wire 3.21.0, #530). A manual
+request captures the registered location and configured base through the
+service queue; after acquiring the source lock the service rechecks both,
+refusing a moved source rather than syncing either its old or new folder.
 `project.update_source` (`bridge/src/app/projects/source_update.rs`, git in
 `bridge/src/lifecycle/source_update.rs`) edits a source in place:
 - A new base branch must be a branch the checkout has.
@@ -700,6 +711,46 @@ the backoff is at its longest, plus up to 10 s at each workspace cut. One sync r
 time. Each row's `sync` is kept in the store's `meta` table
 (`bridge/src/store/source_sync.rs`), and a sync that lands notes the project
 list changed.
+
+Build-managed Git mutations across all resolved scopes (including legacy
+first-source verbs and adopted workspace aliases),
+source settings edits and base sync share `source_sync::SyncLock`, keyed by
+canonical common Git directory (#530). Linked worktrees share that lock;
+independent workspace repositories have their own. They acquire it off the app mutex and
+revalidate source membership/location after waiting. A settings edit locks
+its old/new repositories and affected independent workspace repositories in
+canonical order, deduplicating aliases, through config settlement. Reads and
+unrelated RPCs continue while an operation waits. Shell Git and file edits
+remain outside this lock.
+
+Worker holds pin source locations without preventing Git or base sync. Admitted
+source moves retain their counted worker-start hold across repository-lock waits;
+settlement releases only that move's count on success or failure, while retaining
+its Git locks through source-record settlement.
+
+Cut preparation groups aliases by common Git directory and pins exact configured
+base OIDs under that lock, including when automatic sync is disabled. It keeps
+#271's fetched OID when safe; otherwise it uses the configured base's committed
+state, including local commits, never another checked-out branch's HEAD. Cut
+warnings disclose local commits and a stale remote separately. Materialization
+uses the pinned OID after releasing the lock and retains existing worktree/Rift
+copy rules. Adding a local Git directory to an existing workspace also pins its
+base before materialization. A lock wait beyond the cut's ten-second deadline
+refuses creation rather than resolving an unprotected mutable base ref; a fetch
+failure still cuts the pinned local base with its existing warning. Contention
+does not prove a fetch occurred: a requested fetch uses only the budget remaining
+after the lock wait. Refused preparation removes only that create request's
+unpublished root and preserves existing workspace files.
+
+Retry preparation uses only unfinished directories in the saved workspace
+manifest. Their saved source identity, path and base remain the inputs after a
+project source moves, is removed or changes base; those changes alone do not
+refuse retry. A matching current source supplies its sync policy, while a
+detached saved input is pinned locally without automatic sync. Every Git
+directory requires an exact prepared OID before materialization. Failure to
+access or resolve a saved input preserves the published retry root and all
+ready directories. Settling an old cut never requests sync for a moved or
+rebased replacement source.
 
 `project.set_remote` is the same edit on the first source, kept for older
 clients. Every remote a client names, on any verb, passes
@@ -1512,6 +1563,14 @@ the trackers left on tasks that finished before this rule. The user's watch
 
 ### Relay and direct connection
 
+Build maintains the crypto bindings in [transport/](transport/README.md) and
+`bridge/src/transport.rs`. The historical [E2E-MVP](transport/E2E-MVP.md)
+describes the envelope protocol; its older relay/presence topology does not
+replace the signaling-only relay and API-owned device keys described here.
+The bindings do not enforce replay protection or authenticate the outer
+`route_to` field. Moving them into Build changes ownership and build inputs,
+not the protocol, sessions or network behavior.
+
 - **Relay client**: `bridge/src/relay.rs` holds a `wss` connection to
   `/ws/device` (default `wss://relay.getbuild.ing`, `DEFAULT_RELAY_URL` in
   `bridge/src/config.rs`) and authenticates with the device's Ed25519 identity.
@@ -1886,9 +1945,13 @@ Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in
 `bridge/tests/`: the wire contract (`api_contract.rs`), relay (`relay_*.rs`),
 WebRTC (`rtc_peer.rs`), presence (`presence.rs`, `device_presence.rs`), E2EE
-interop (`interop_python.rs`, which needs a `build-secure-transport` checkout),
+interop (`interop_python.rs`, using the required in-tree `transport/python`
+reference through frozen uv resolution), compatibility vectors (`transport_vectors.rs`),
 store migration and the complexity ratchet (`complexity_ratchet.rs`). The
-complexity threshold is in `bridge/clippy.toml`.
+complexity threshold is in `bridge/clippy.toml`. Missing uv or reference files
+fail the actual Rust/Python round trip; the test does not silently skip. JS/Python
+interop and Python/JS vectors run in the dedicated transport CI job. These
+are JS/Python and Rust/Python checks, not a direct JS/Rust runtime exchange.
 
 Git fixtures set a local test identity and `commit.gpgsign=false` through
 `git_fixture::configure_repo`, so product commits in the repository and its
@@ -1909,8 +1972,13 @@ signing config. None of this changes Git configuration for `cargo run`.
 Vanilla JavaScript ES modules with no framework, bundled by Vite
 (`spa/vite.config.js`, `base: "/app/static/"`). The build output goes to
 `skriftapp/buildapp/static/`, which skriftapp serves at `/app/`. Every
-dependency is self-hosted. `@build/secure-transport` is a `file:` dependency on
-a sibling `build-secure-transport` checkout (`spa/package.json`).
+dependency is self-hosted. `@build/secure-transport` is a `file:../transport/js`
+dependency within this checkout (`spa/package.json`). SPA and web commit their
+portable npm locks; install `transport/js` from its own lock before either
+consumer, using Node 22.23.3/npm 12.0.2 and the install sequence in
+[AGENTS.md](AGENTS.md#working-rules). App and QA images build the binding from
+this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
+transport lock; Node resolves the binding's dependencies from `transport/js`.
 
 ### Module layout
 

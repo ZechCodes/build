@@ -571,17 +571,19 @@ impl AppState {
         agent_id: &str,
         action: BridgeAction,
     ) -> Result<Value, String> {
-        let (answered, deferred) = self.agent_action_deferring(entity_id, agent_id, action);
-        let Some(mut deferred) = deferred else {
-            return answered;
-        };
-        loop {
-            let done = deferred.run();
-            match self.apply_deferred_stage(MCP_CONTROL_METHOD, &Value::Null, done) {
-                DeferredNext::Answered(answer) => return answer,
-                DeferredNext::Again(next) => deferred = next,
+        self.with_inline_deferred(|app| {
+            let (answered, deferred) = app.agent_action_deferring(entity_id, agent_id, action);
+            let Some(mut deferred) = deferred else {
+                return answered;
+            };
+            loop {
+                let done = deferred.run();
+                match app.apply_deferred_stage(MCP_CONTROL_METHOD, &Value::Null, done) {
+                    DeferredNext::Answered(answer) => return answer,
+                    DeferredNext::Again(next) => deferred = next,
+                }
             }
-        }
+        })
     }
 
     /// The project-scoped tools, each a thin wrapper over the verb the client
@@ -818,21 +820,23 @@ impl AppState {
     /// does with the guard released.
     #[cfg(test)]
     pub(in crate::app) fn on_agent_done(&mut self, entity_id: &str, report: DoneReport) {
-        let agent_id = self
-            .entity_agents(entity_id)
-            .ok()
-            .and_then(|agents| agents.primary())
-            .map(|agent| agent.id.clone());
-        let deferred = match agent_id {
-            Some(agent_id) => self.done_deferring_for_agent(entity_id, &agent_id, report),
-            None => self.done_deferring(entity_id, report),
-        };
-        if let Some(deferred) = deferred {
-            let done = deferred.run();
-            if let Err(error) = self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done) {
-                eprintln!("on_agent_done {entity_id}: {error}");
+        self.with_inline_deferred(|app| {
+            let agent_id = app
+                .entity_agents(entity_id)
+                .ok()
+                .and_then(|agents| agents.primary())
+                .map(|agent| agent.id.clone());
+            let deferred = match agent_id {
+                Some(agent_id) => app.done_deferring_for_agent(entity_id, &agent_id, report),
+                None => app.done_deferring(entity_id, report),
+            };
+            if let Some(deferred) = deferred {
+                let done = deferred.run();
+                if let Err(error) = app.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done) {
+                    eprintln!("on_agent_done {entity_id}: {error}");
+                }
             }
-        }
+        })
     }
 }
 

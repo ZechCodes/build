@@ -132,11 +132,14 @@ to.
 | `web/` | dev only | Node E2EE test/QA harnesses |
 | `deploy/` | | podman compose stack + k8s manifests and the cutover runbook |
 
-The E2EE crypto layer lives in the separate
-[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
-repo (Python + JS bindings; the bridge carries an interop-verified Rust port),
-published under its own licence (see its
-[LICENSE.md](https://github.com/ZechCodes/build-secure-transport/blob/main/LICENSE.md)).
+Build maintains the E2EE crypto layer in [`transport/`](transport/README.md):
+the JS binding serves SPA and web; Python is the compatibility reference, not
+an app runtime dependency. The Rust implementation remains in
+`bridge/src/transport.rs`. Consumers, CI and app/QA images use this checkout,
+with committed locks and no first-party sibling clone. The
+[original repository and pin](transport/UPSTREAM.md) remain provenance; Build
+is the maintenance and audit source of truth. The imported JS/Python work
+retains its [own license notice](transport/LICENSE.md).
 
 **A second infrastructure party.** Browser and bridge negotiate direct WebRTC DataChannels and
 use Cloudflare TURN only when neither peer can hole-punch, which makes Cloudflare a second

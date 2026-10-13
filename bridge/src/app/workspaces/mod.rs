@@ -36,8 +36,11 @@ struct WorkspaceCreateWork {
     isolation: Isolation,
     /// The sources whose base is brought up to date before the cut (#267).
     base_syncs: Vec<SyncSubject>,
+    source_state: Option<std::sync::Weak<std::sync::Mutex<AppState>>>,
     /// What those syncs concluded, for the settlement to write.
     synced: std::sync::Mutex<Vec<Synced>>,
+    #[cfg(test)]
+    prepared_gate: Option<crate::app::OffLockGate>,
 }
 
 impl DeferredGitWork for WorkspaceCreateWork {
@@ -46,28 +49,21 @@ impl DeferredGitWork for WorkspaceCreateWork {
     }
 
     fn run(&self, _params: &Value) -> Result<Value, String> {
+        let prepared = match sync_before_cut(&self.base_syncs, self.source_state.as_ref()) {
+            Ok(prepared) => prepared,
+            Err(error) => return self.preparation_failed(error),
+        };
         *self
             .synced
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = sync_before_cut(&self.base_syncs);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = prepared;
+        #[cfg(test)]
+        if let Some(gate) = &self.prepared_gate {
+            gate.arrive();
+        }
         let mut registry = match WorkspaceRegistry::load(&self.registry_root) {
             Ok(registry) => registry,
-            Err(error) => {
-                if !self.unpublished {
-                    return Err(error);
-                }
-                let cleanup = std::fs::remove_dir_all(&self.workspace.root);
-                return match cleanup {
-                    Ok(()) => Err(error),
-                    Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => {
-                        Err(error)
-                    }
-                    Err(cleanup_error) => Err(format!(
-                        "{error}; additionally could not remove {}: {cleanup_error}",
-                        self.workspace.root.display()
-                    )),
-                };
-            }
+            Err(error) => return self.preparation_failed(error),
         };
         self.claim_saved_reservation(&mut registry)?;
         if !self.unpublished {
@@ -158,6 +154,14 @@ pub(super) fn materialize_source(
     start: Option<&str>,
 ) -> Result<(Option<String>, Isolation), String> {
     if source.is_git {
+        let start = start.ok_or_else(|| {
+            format!(
+                "cannot pin workspace base: no prepared OID for Git source {}",
+                source.id
+            )
+        })?;
+        git2::Oid::from_str(start)
+            .map_err(|error| format!("cannot pin workspace base: {error}"))?;
         let manager =
             WorktreeManager::new(&source.path, destination.parent().unwrap_or(destination))
                 .with_rift_registry_root(rift_root);
@@ -170,7 +174,7 @@ pub(super) fn materialize_source(
             .create_workspace_checkout_from(
                 workspace_name,
                 &source.base_branch,
-                start,
+                Some(start),
                 destination,
                 effective,
             )
@@ -190,6 +194,22 @@ impl WorkspaceCreateWork {
             registry.claim_delivery_workspace(&self.workspace)?;
         }
         Ok(())
+    }
+
+    /// Nothing has materialized yet. Only a root this create privately
+    /// prepared may be removed; an existing workspace retains its files.
+    fn preparation_failed(&self, error: String) -> Result<Value, String> {
+        if !self.unpublished {
+            return Err(error);
+        }
+        match std::fs::remove_dir_all(&self.workspace.root) {
+            Ok(()) => Err(error),
+            Err(cleanup) if cleanup.kind() == std::io::ErrorKind::NotFound => Err(error),
+            Err(cleanup) => Err(format!(
+                "{error}; additionally could not remove {}: {cleanup}",
+                self.workspace.root.display()
+            )),
+        }
     }
 
     fn materialize(
@@ -637,7 +657,10 @@ impl AppState {
                 sources,
                 isolation,
                 base_syncs: self.cut_sync_subjects(&project_id),
+                source_state: self.source_validation_handle(),
                 synced: Default::default(),
+                #[cfg(test)]
+                prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
             params: params.clone(),
             invalidates: true,
@@ -805,6 +828,7 @@ impl AppState {
             return Err("workspace.retry: adopted workspaces require no provisioning".to_string());
         }
         let sources = WorkspaceRegistry::retry_sources(&workspace);
+        let base_syncs = self.retry_sync_subjects(&workspace.project_id, &sources);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(WorkspaceCreateWork {
                 registry_root: self.workspaces.root().to_path_buf(),
@@ -821,8 +845,11 @@ impl AppState {
                 recover_existing: false,
                 sources,
                 isolation: workspace.isolation,
-                base_syncs: self.cut_sync_subjects(&workspace.project_id),
+                base_syncs,
+                source_state: self.source_validation_handle(),
                 synced: Default::default(),
+                #[cfg(test)]
+                prepared_gate: self.off_lock_workspace_prepared_gate.take(),
             }),
             params: params.clone(),
             invalidates: true,

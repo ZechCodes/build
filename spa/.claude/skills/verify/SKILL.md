@@ -7,13 +7,21 @@ description: Build/launch/drive recipe for verifying spa/ changes end-to-end in 
 
 ## Setup
 
-`@build/secure-transport` is a file dep two levels above the repo root. Before
-`npm install` in a fresh worktree:
+`@build/secure-transport` resolves as `file:../transport/js` within this
+checkout. Use Node 22.23.3/npm 12.0.2 and the committed portable locks. From
+the repository root, install the binding before SPA:
 
 ```sh
-ln -sfn ~/Projects/build-secure-transport "$(git rev-parse --show-toplevel)/../build-secure-transport"
-cd spa && npm install
+nice -n 10 npm ci --prefix transport/js --ignore-scripts
+cd spa && nice -n 10 npm ci --legacy-peer-deps
 ```
+
+No external transport clone or sibling symlink is required. Consumer `.npmrc`
+disables lifecycle scripts and records SPA’s legacy peer policy and seven-day
+release-age threshold. For dependency edits use `npm install
+--legacy-peer-deps` and commit the manifest and lock. See
+[SPA prerequisites](../../../README.md#prereqs) and
+[transport ownership/setup](../../../../transport/README.md).
 
 ## Launching without the full E2EE stack
 

@@ -58,6 +58,7 @@ jobs:
       desktop: ${{ steps.filter.outputs.desktop }}
       scripts: ${{ steps.filter.outputs.scripts }}
       shell: ${{ steps.filter.outputs.shell }}
+      transport: ${{ steps.filter.outputs.transport }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -80,6 +81,9 @@ jobs:
 
       - name: The tier filter does what it promises
         run: .github/test-changed-tiers.sh
+
+      - name: Transport workflow contracts
+        run: python3 .github/test-transport-workflow.py
 
       - id: filter
         run: |
@@ -128,6 +132,11 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.12.13"
 
       - name: Test
         run: cargo test --all
@@ -183,13 +192,84 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-      - name: Clone build-secure-transport reference
-        run: git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git /tmp/bst
+        with:
+          version: "0.12.13"
       - name: Live cross-language round-trip
         working-directory: bridge
-        env:
-          BUILD_SECURE_TRANSPORT_PY: /tmp/bst/python
         run: cargo test --test interop_python -- --nocapture
+
+  # This job is independently owed by transport changes, even when neither
+  # image moves. All language bindings and retained fixtures use this checkout.
+  transport:
+    name: Transport compatibility
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-transport
+      cancel-in-progress: true
+    needs: [changes]
+    if: ${{ needs.changes.outputs.transport == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          version: "0.12.13"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Match locked npm
+        run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
+      - name: Source and harness contracts
+        run: |
+          python3 scripts/transport_import.py check
+          python3 -m unittest discover -s transport/tests -v
+      - name: Install transport
+        run: npm ci --prefix transport/js --ignore-scripts --no-audit --no-fund
+      - name: Python units
+        env:
+          PYTHONPATH: transport/python/src
+        run: uv run --project transport/python --frozen python -m unittest discover -s transport/python/tests -v
+      - name: Python compatibility vectors
+        env:
+          PYTHONPATH: transport/python/src
+        run: uv run --project transport/python --frozen python -m unittest discover -s transport/compatibility -v
+      - name: JS units, Python interop and compatibility vectors
+        run: npm test --prefix transport/js
+      - name: Rust transport units
+        working-directory: bridge
+        run: cargo test --locked --lib transport
+      - name: Rust compatibility vectors
+        working-directory: bridge
+        run: cargo test --locked --test transport_vectors
+      - name: Rust Python interop
+        working-directory: bridge
+        run: cargo test --locked --test interop_python
+
+  web:
+    name: QA client unit tests
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-web
+      cancel-in-progress: true
+    needs: [changes]
+    if: ${{ needs.changes.outputs.e2e == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.3"
+      - name: Match locked npm
+        run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
+      - name: Install transport
+        run: npm ci --prefix transport/js --ignore-scripts --no-audit --no-fund
+      - name: Install
+        working-directory: web
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Test
+        working-directory: web
+        run: npm test
 
   web-e2e:
     name: Browser client end-to-end
@@ -240,25 +320,14 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('bridge/Cargo.lock') }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
-          # No `cache: npm`. It keys on a lockfile, and spa/package-lock.json is
-          # deliberately gitignored (.gitignore) — `@build/secure-transport` is a
-          # file: dep whose resolved path is machine-specific, so the lock is not
-          # shareable. setup-node fails hard rather than skipping when its cache
-          # key cannot be resolved.
-      # `@build/secure-transport` is `file:../../build-secure-transport/js` — a
-      # SIBLING of the repo root, the same convention skriftapp/Containerfile
-      # satisfies by cloning it next to the source. npm resolves the path at
-      # install time, so it has to exist on disk before the install runs.
-      - name: Clone build-secure-transport beside the checkout
-        run: |
-          git clone --depth 1 https://github.com/ZechCodes/build-secure-transport.git \
-            "${{ github.workspace }}/../build-secure-transport"
-          npm install --no-audit --no-fund \
-            --prefix "${{ github.workspace }}/../build-secure-transport/js"
+          node-version: "22.23.3"
+      - name: Match locked npm
+        run: npm install -g npm@12.0.2 --ignore-scripts --no-audit --no-fund
+      - name: Install transport
+        run: npm ci --prefix transport/js --ignore-scripts --no-audit --no-fund
       - name: Install
         working-directory: spa
-        run: npm install --legacy-peer-deps --no-audit --no-fund
+        run: npm ci --legacy-peer-deps --ignore-scripts --no-audit --no-fund
       # The complexity gate (CLAUDE.md "Complexity gates"). It runs BEFORE the
       # suite: a function past the cap is a review finding, and a two-second
       # answer beats waiting out 2,500 tests to hear it.
@@ -452,12 +521,14 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-app
       cancel-in-progress: true
-    needs: [changes, spa, landing, skriftapp, scripts, shell, bridge, bridge-macos, interop, secrets]
+    needs: [changes, spa, landing, skriftapp, scripts, shell, bridge, bridge-macos, interop, transport, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.app == 'true'
+          && (needs.changes.outputs.transport != 'true'
+              || needs.transport.result == 'success')
           && (needs.changes.outputs.bridge != 'true'
               || (needs.bridge.result == 'success'
                   && needs['bridge-macos'].result == 'success'
@@ -502,15 +573,18 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build-relay
       cancel-in-progress: true
-    needs: [changes, bridge, bridge-macos, interop, web-e2e, secrets]
+    needs: [changes, bridge, bridge-macos, interop, transport, web, web-e2e, secrets]
     if: >-
       ${{ !cancelled()
           && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
           && github.ref == 'refs/heads/main'
           && needs.changes.outputs.relay == 'true'
+          && (needs.changes.outputs.transport != 'true'
+              || needs.transport.result == 'success')
           && needs.bridge.result == 'success'
           && needs['bridge-macos'].result == 'success'
           && needs.interop.result == 'success'
+          && needs.web.result == 'success'
           && needs['web-e2e'].result == 'success'
           && needs.secrets.result == 'success' }}
     runs-on: ubuntu-latest

@@ -425,9 +425,29 @@ fn held_checkouts() -> &'static (
 }
 
 impl SyncLock {
-    /// The checkout at `path`, once no other sync holds it, waiting at most
-    /// `within`. The flag says whether another sync had it first, so a cut
-    /// that waited can take what that sync fetched instead of fetching again.
+    /// Acquire a set in common-Git-dir order, with aliases deduplicated.
+    /// The whole acquisition has one bounded deadline; partial holds drop on failure.
+    pub(crate) fn acquire_many(paths: &[PathBuf], within: Duration) -> Result<Vec<Self>, String> {
+        let mut identities: Vec<_> = paths.iter().map(|path| sync_lock_identity(path)).collect();
+        identities.sort();
+        identities.dedup();
+        let deadline = std::time::Instant::now() + within;
+        identities
+            .iter()
+            .map(|path| {
+                Self::acquire(
+                    path,
+                    deadline.saturating_duration_since(std::time::Instant::now()),
+                )
+                .map(|(held, _)| held)
+                .ok_or_else(|| "Another source operation is still running; try again.".to_string())
+            })
+            .collect()
+    }
+
+    /// The repository at `path`, once no other source operation holds it,
+    /// waiting at most `within`. The flag reports contention only; the prior
+    /// holder might have mutated Git without fetching.
     pub fn acquire(path: &Path, within: Duration) -> Option<(Self, bool)> {
         let path = sync_lock_identity(path);
         let (held, released) = held_checkouts();
@@ -450,7 +470,7 @@ impl SyncLock {
     }
 }
 
-fn sync_lock_identity(path: &Path) -> PathBuf {
+pub(crate) fn sync_lock_identity(path: &Path) -> PathBuf {
     git2::Repository::open(path)
         .ok()
         .and_then(|repository| repository.commondir().canonicalize().ok())

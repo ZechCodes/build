@@ -12,6 +12,12 @@ Wire 3.21.0.
 
 ### Fixed
 
+- Source Git mutations and settings edits serialize with base sync off the app
+  mutex. Queued syncs and mutations recheck source location after waiting;
+  `project.sync_source` accepts captured `source_path` (`sources.syncBasePath`).
+  Workspace cuts pin configured-base commits, include and disclose local base
+  commits, and retain the fetched fast-forward cut path (#530).
+
 - Claude headless agents show as working when the child resumes a turn itself
   after a result, including the elapsed clock and interrupt control (#553).
 - Centre the collapsed inbox popover and hover-peek carets beneath the inbox
@@ -23,6 +29,14 @@ Wire 3.21.0.
   bridges (#474).
 
 ### Added
+
+- Secure transport is maintained in this checkout (`transport/js`, Python
+  reference/tests, and the existing Rust implementation). SPA/web locks, CI and
+  app/QA images use the in-tree binding; developers no longer need a sibling
+  clone. Build is the maintenance/audit and private vulnerability-reporting
+  destination. The imported JS/Python BSL notice and original pinned repository
+  history remain intact; no protocol, session, identity or root-license change
+  accompanies this consolidation (#572, #575–#579).
 
 - Project sources in Git and pushes (wire 3.21.0, #529): every Git verb
   project Changes uses addresses one original source by `project_id`,

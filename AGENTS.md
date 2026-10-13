@@ -65,10 +65,23 @@ Design rules:
   places today's code departs from it are listed under "Current exceptions" in
   [Render from cache](ARCHITECTURE.md#render-from-cache). They are not
   precedent.
-- Never run `npm ci` in `spa/`: `spa/package-lock.json` is gitignored because
-  `@build/secure-transport` is a `file:` dependency with a machine-specific
-  path. Use `npm install --legacy-peer-deps`, and never commit that lockfile.
-  (`landing/` and `desktop/` do commit their lockfiles and use `npm ci`.)
+- SPA and web use Node 22.23.3 and npm 12.0.2 (their `.nvmrc` and
+  `packageManager` pins). Their portable `package-lock.json` files are committed.
+  From the repo root, first run `nice -n 10 npm ci --prefix transport/js
+  --ignore-scripts`, then `cd spa && nice -n 10 npm ci --legacy-peer-deps`
+  or `cd web && nice -n 10 npm ci`. SPA `.npmrc` also records
+  `legacy-peer-deps=true`; both consumer `.npmrc` files disable install scripts.
+  They also require registry versions to be at least seven days old when
+  resolving new dependencies; existing locked resolutions remain frozen.
+  When changing dependencies, use `npm install --legacy-peer-deps` in SPA or
+  `npm install` in web and commit the corresponding lock with the manifest.
+  A deliberately reviewed younger release may use a one-command exact-package
+  `--min-release-age-exclude=package-name` exception with `--ignore-scripts`;
+  the SPA/web READMEs show the command. Never persist an exception or wildcard
+  in `.npmrc`; record the reason and exact version in the dependency review.
+  Keep transport's own locked dependencies installed: npm links the local
+  binding to `transport/js`, whose dependencies resolve from that directory.
+  (`landing/` and `desktop/` retain their own committed locks and install policy.)
 
 ## Code rules
 
@@ -116,7 +129,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | --- | --- | --- |
 | bridge | `bridge/` | `nice -n 10 cargo test` · `nice -n 10 cargo clippy --all-targets -- -D warnings` · `nice -n 10 cargo fmt --check` |
 | bridge vendored webrtc | `bridge/` | `nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib` (the patched webrtc on the patched rtc, `bridge/vendor/README.md`) |
-| SPA | `spa/` | `nice -n 10 npm install --legacy-peer-deps` (when `package.json` changed) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
+| SPA | `spa/` | `nice -n 10 npm ci --legacy-peer-deps` (fresh install; transport first) · `nice -n 10 npm install --legacy-peer-deps` (dependency edits; commit lock) · `nice -n 10 npm run lint` · `nice -n 10 npm test` · `nice -n 10 npm run build` |
 | skriftapp | `skriftapp/` | `nice -n 10 uv run --frozen ruff check buildapp` · `nice -n 10 uv run --frozen pytest buildapp -q` |
 | landing | `landing/` | `nice -n 10 npm ci` · `nice -n 10 npm test` (builds the Astro page, then reads it back) |
 | landing in a browser | repo root | `skriftapp/.venv/bin/python scripts/preview-landing.py`, then `CHROMIUM_PATH=/usr/bin/chromium nice -n 10 node web/landing-check.mjs` |
@@ -126,11 +139,13 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 
 The two `#[ignore]`d timing tests (git child cost, daemon under PTY flood) are out of `cargo test`; `.github/workflows/timing.yml` runs them nightly and by hand.
 
-The SPA needs a checkout of
-[`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport)
-beside the repo root (`spa/package.json` resolves it as
-`file:../../build-secure-transport/js`); without it `npm run build` cannot
-resolve `@build/secure-transport` and vitest fails wholesale. `npm test`
+Transport is maintained in this checkout; [transport/README.md](transport/README.md)
+records ownership, tests and the historical source pin. The dedicated CI job
+requires JS/Python and Rust/Python compatibility; missing uv/reference files fail.
+
+The SPA resolves `@build/secure-transport` from `file:../transport/js` within
+this checkout. Install that package's locked dependencies before the SPA as
+described above. `npm test`
 includes the Chromium browser tests (`spa/test/browser/`), which need Chromium
 on `PATH` or `CHROMIUM_PATH`. Run `npx vitest` only from inside `spa/`, so the
 repo's own vitest runs.

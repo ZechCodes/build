@@ -37,15 +37,14 @@ export function blockedTasks({ legacy = false } = {}) {
 
 /** Mock wire is held open while production cache observers mount. */
 export async function mountBlockedTasks(page, basePath, { legacy = false, theme = "dark" } = {}) {
-  await mountLayout(page, '<main id="blocked-tasks"></main><aside id="blocked-agent-rail" aria-label="Agent tasks"><h2>Agent tasks</h2><div class="surface-rows"></div></aside>', {
+  await mountLayout(page, '<main id="blocked-tasks"></main><aside id="blocked-agent-rail" aria-label="Agent tasks"><h2>Agent tasks</h2><div id="blocked-rail-viewer"></div></aside>', {
     basePath, styles: `@import url("${basePath}src/styles/tasks.css"); body{display:block;padding:16px} #blocked-tasks{max-width:900px;margin:auto} #blocked-agent-rail{max-width:900px;margin:24px auto}.surface-rows{display:grid;gap:8px}`,
   });
   await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
   await loadBrowserModules(page, { cache: "src/core/localCache.js", tracker: "src/core/trackerCache.js", tasksPane: "src/core/trackerTasksPane.js",
-    changes: "src/core/changeEvents.js", railTasks: "src/core/trackerAgentTasksEntry.js", surfaceModel: "src/core/agentSurfacesModel.js",
-    surfaceRender: "src/core/agentSurfacesRender.js", rule: "src/core/needsYouRule.js" }, basePath);
+    changes: "src/core/changeEvents.js", railTasks: "src/core/trackerAgentTasksEntry.js", surfaces: "src/core/agentSurfaces.js", rule: "src/core/needsYouRule.js" }, basePath);
   await page.evaluate(async ({ tasks, deviceId, projectId }) => {
-    const { cache, tracker, tasksPane, changes, railTasks, surfaceModel, surfaceRender, rule } = window.__layoutModules;
+    const { cache, tracker, tasksPane, changes, railTasks, surfaces, rule } = window.__layoutModules;
     const projectKey = `${deviceId}/${projectId}`;
     const owner = { run_id: "blocked-run", project_id: projectId, projectKey, deviceId,
       agents: [{ id: "busy-agent", name: "Implementer", working: true, watched: true }, { id: "idle-agent", name: "Reviewer", working: false, watched: true }] };
@@ -54,9 +53,8 @@ export async function mountBlockedTasks(page, basePath, { legacy = false, theme 
     window.__blockedTasks = tasks;
     window.__blockedCalls = [];
     window.__blockedWireOpen = false;
-    const call = async (method, params) => {
-      window.__blockedCalls.push({ method, params });
-      if (!window.__blockedWireOpen) return new Promise(() => {});
+    const pending = [];
+    const reply = (method, params) => {
       if (method === "session.hello") return { api_version: "3.21.0", push_events: true,
         capabilities: ["tasks.waitingOn", "tasks.commentUserNotifies", "changes.subscriptions"], change_kinds: ["tasks"] };
       if (method === "tasks.list") return { tasks: window.__blockedTasks };
@@ -64,19 +62,28 @@ export async function mountBlockedTasks(page, basePath, { legacy = false, theme 
       if (method === "tasks.get") return { task: window.__blockedTasks.find((task) => task.id === params.task_id), timeline: [] };
       return {};
     };
+    const call = async (method, params) => {
+      window.__blockedCalls.push({ method, params });
+      if (!window.__blockedWireOpen) return new Promise((resolve) => pending.push(() => resolve(reply(method, params))));
+      return reply(method, params);
+    };
     await cache.writeCached({ deviceId, entityId: owner.run_id, kind: "row" }, owner);
     await tracker.writeTasksRecord(deviceId, projectId, tracker.tasksRecord(tasks, []));
     for (const task of tasks) await tracker.writeTaskRecord(deviceId, projectId, task.id, tracker.taskRecord(task, []));
     await rule.rememberNeedsYouRule(deviceId, { tasks: { commentUserNotifies: true } });
+    const viewer = surfaces.mountSurfaceViewer(document.querySelector("#blocked-rail-viewer"), "tasks", {});
+    addEventListener("pagehide", () => viewer.dispose(), { once: true });
     const paintRail = () => {
-      if (!window.__blockedRail) return;
-      const rows = surfaceModel.surfaceRows("tasks", { tasks: window.__blockedRail.entriesFor("busy-agent", true) || [] });
-      document.querySelector("#blocked-agent-rail .surface-rows").innerHTML = rows.map(surfaceRender.taskSurfaceRowHtml).join("");
+      if (window.__blockedRail) viewer.set({ tasks: window.__blockedRail.entriesFor("busy-agent", true) || [] });
     };
     window.__blockedRail = railTasks.mountAgentTasks({ deviceId, projectId, onChanged: paintRail });
     window.__blockedPane = tasksPane.mountTasksPane(document.querySelector("#blocked-tasks"), { deviceId, projectId, projectName: "Build", projectKey,
       defaultView: "dashboard", feed: () => feed, callRpc: call, catalog: () => ({ providers: [] }), refreshCatalog: async () => ({ providers: [] }), navigate: () => {} });
-    window.__blockedGreet = async () => { window.__blockedWireOpen = true; await changes.greetBridge(call, { deviceId }); };
+    window.__blockedGreet = async () => {
+      window.__blockedWireOpen = true;
+      for (const resolve of pending.splice(0)) resolve();
+      await changes.greetBridge(call, { deviceId });
+    };
   }, { tasks: blockedTasks({ legacy }), deviceId: BLOCK_DEVICE, projectId: BLOCK_PROJECT });
   await page.locator('[data-dashboard-tab="active"]').waitFor();
   await page.locator('#blocked-agent-rail .surface-task').first().waitFor();

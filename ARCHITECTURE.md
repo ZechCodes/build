@@ -2198,6 +2198,20 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Task dependency knowledge** (#564). `taskDependencyKnowledge.js` keeps
+  one `tracker-task-dependencies` record per task, under its device/project
+  and task sub-key, beside tracker detail and read metadata. It stores the
+  dependency summary and the source task's `updated_at`, independently of
+  replaceable list/detail replicas. Detail, catalogue, query, paged reads and
+  task responses update it in the same IndexedDB transaction as their admitted
+  replica writes. Omitted/null summaries and summaries without boolean
+  `blocked` never update it, even at newer task versions. Waiting knowledge
+  survives until a dependency-capable source has a strictly newer task version
+  reporting ready (including `blocked: false, waiting_on: []`). Tied or unknown
+  versions retain waiting. Project eviction removes the record with the other
+  tracker data. Views still paint committed replicas; the send-time assignment
+  guard reads this cached knowledge. A cache without knowledge retains the
+  conservative replica/opened-task fallback.
 - **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
   keeps unsent drafts, folds, menus and the other `ui-*` records in their own
   database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
@@ -2658,33 +2672,30 @@ refuses when that device cannot answer.
   Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
   current greeting before dependency writes, paged reverse reads, saved-id
   retries and assignments from waiting forms. After greeting settlement, the
-  assignment sender reads current detail/catalogue/query/page facts and the
-  picker's opened task through
+  assignment sender reads the scoped dependency-knowledge record through
   `taskAssignmentFacts.js` and checks the same greeting authority again before
   capability validation and the RPC send, with no intervening wait. The picker
-  passes the target/note without a submit-time readiness decision; its opened
-  task participates in the same scoped timestamp arbitration as cached facts.
-  A reblock during greeting waits cannot silently start work on an older bridge.
-  When the sources know readiness, `taskAssignmentFacts.js` compares the task's
-  own timestamps across replicas, discarding strictly older stamped facts.
-  Ties and unknown timestamps retain
-  waiting evidence: if the remaining sources disagree, waiting wins. Source
-  read/write orders are never compared; an unrelated catalogue mutation cannot
-  promote stale ready facts. Omitted/null dependency summaries or summaries
-  without the wire's boolean `blocked` flag are unknown and never assert ready.
-  While any source is unknown, any known blocker retains waiting. An explicit
-  current-wire `blocked: false` with `waiting_on: []` is known ready and ranks
-  by timestamp normally; its newer version supersedes older known blockers.
-  An older bridge may refuse a ready task until
-  ambiguous caches converge, preserving the waiting-on capability guard.
-  `taskAssignmentFacts.test.js` covers timestamp/tie/unknown conflicts, and
-  `trackerTasksPaneDom.test.js` exercises unrelated-mutation refusal and kept
-  drafts through both list and board pickers, including a legacy refresh that
-  omits the newer opened task's dependency facts. These and the authoritative
-  empty-list regressions pass in #564's 10,462-test Chromium-inclusive suite.
-  Successful
+  passes the target/note without a submit-time readiness decision. A reblock
+  learned during greeting waits survives later legacy list/detail refreshes
+  and cannot silently start work on an older bridge. Only newer capable task
+  versions can clear waiting knowledge; an explicit current-wire
+  `blocked: false, waiting_on: []` remains authoritative. With no knowledge
+  record, conservative timestamp arbitration of detail/catalogue/query/page
+  replicas and the opened task remains for older cached data. Unknown
+  dependency summaries never assert ready; ties and unknown task timestamps
+  retain waiting evidence. Source read/write orders are never compared.
+  `taskDependencyKnowledge.test.js` covers legacy retention, older/newer
+  capable clears, all writer paths, concurrent writers, reload and eviction;
+  `taskAssignmentFacts.test.js` retains the pre-knowledge conflict regressions.
+  The real list/board picker tests in `trackerTasksPaneDom.test.js` keep drafts
+  when every blocking replica is overwritten by a legacy refresh. Successful
   responses update tracker detail and list replicas through
   `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.
+  Successful edge add/remove requests another detail through the task page's
+  existing trailing reader. A push-triggered read begun before the mutation
+  reply is still rejected by the detail fence, then replaced by the trailing
+  read so link/readiness timeline history arrives. The page/button/action/cache
+  race is covered in `trackerTaskChecklistDom.test.js`.
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in
   `spa/src/core/needsYouRule.js`, read by the Tasks tab and the inbox's
   watched tasks; `branches.finishDelete` becomes whether Done deletes the

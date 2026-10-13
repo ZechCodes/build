@@ -24,13 +24,14 @@
 // held row written after the page's copy of it keeps its place, and so does a
 // row the page does not name that was written after the page was read.
 
-import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
+import { cachedSubKeys, deleteCached, readCached } from "./localCache.js";
 import { lastSayIn, nextTaskRead, readsAddress, withStretch } from "./taskReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortTasks } from "./trackerFilters.js";
 import {
   TRACKER_TASKS_PAGE_KIND, tasksPageAddress, tasksRecord, listAskedAt, preserveReviewSummary, preserveTaskReviewSummary,
 } from "./trackerCache.js";
+import { mergeTaskDependencyRecords } from "./taskDependencyKnowledge.js";
 import { userSessionOf } from "./userSessionCache.js";
 
 /** Tasks per page. A tenth of a large tracker, and one page of a small one. */
@@ -120,7 +121,7 @@ function foldedTaskRows(held, stretch, reads) {
  *  list held already — its number, or the cache's stamp on one that has none —
  *  where that is newer. A page never makes a list look older than it was. */
 export const foldTasksPage = (address, stretch, columnsOf) =>
-  mergeCachedRecordsTogether([address, readsAddress(address)], ([heldRecord, readsRecord]) => {
+  mergeTaskDependencyRecords([address, readsAddress(address)], stretch.tasks || [], ([heldRecord, readsRecord]) => {
     const held = heldRecord?.value;
     const reads = readsRecord?.value;
     return [
@@ -179,8 +180,8 @@ const coversNumbers = (stretch) => stretch.through < stretch.above;
  * other's body or cursor. */
 async function landPage(deviceId, projectId, asked, answer, read) {
   const address = tasksPageAddress(deviceId, projectId, { ...asked, read_order: read });
-  await mergeCachedAtomically(address, (held) =>
-    Number(held?.read_order) > read ? null : { ...answer, read_order: read });
+  await mergeTaskDependencyRecords([address], answer.tasks || [], ([held]) =>
+    Number(held?.value?.read_order) > read ? null : [{ ...answer, read_order: read }]);
   return { sub: address.sub, page: (await readCached(address))?.value };
 }
 

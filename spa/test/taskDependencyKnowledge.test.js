@@ -25,6 +25,10 @@ const writes = {
   page: (row) => pages.foldTasksPage(tracker.tasksAddress("device", "project"), {
     tasks: [row], above: Infinity, through: -Infinity, read: 1,
   }, () => []),
+  pageRecord: (row) => pages.pullTaskPages({
+    deviceId: "device", projectId: "project", params: { project_id: "project" },
+    ask: async () => ({ tasks: [row] }), fold: async () => {},
+  }),
   response: (row, options) => edges.cacheTaskWaitingOnResponse("device", "project", { task: row }, options),
 };
 
@@ -74,4 +78,16 @@ it("knowledge shares task scope and project cache eviction", async () => {
   expect(await knowledge.readTaskDependencyKnowledge("device", "project", "other")).toBeNull();
   await cache.evictEntity("device", "project");
   expect(await read()).toBeNull();
+});
+
+it("concurrent writers and a fresh module instance retain the newest capable knowledge", async () => {
+  await Promise.all([
+    writes.detail(task(false)),
+    writes.catalogue(task(true, "2026-10-13T01:01:00Z")),
+    writes.query(task(false)),
+  ]);
+  await writes.detail({ ...task(false, "2026-10-13T01:02:00Z"), dependencies: null });
+  vi.resetModules();
+  const fresh = await import("../src/core/taskAssignmentFacts.js");
+  expect((await fresh.readTaskAssignmentFacts("device", "project", "task")).dependencies.blocked).toBe(true);
 });

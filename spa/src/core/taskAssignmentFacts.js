@@ -1,5 +1,6 @@
-// Assignment can outlive the row that opened its picker. Consult every list
-// replica as well as detail: a pushed list may reblock before tasks.get lands.
+// Assignment reads durable dependency knowledge. Pre-upgrade caches without
+// that record retain conservative arbitration of replicas and the opened row.
+import { readTaskDependencyKnowledge } from "./taskDependencyKnowledge.js";
 import { cachedAddresses, readCachedMany } from "./localCache.js";
 import { taskAddress, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND } from "./trackerCache.js";
 
@@ -13,6 +14,8 @@ const taskInRecord = (record, taskId) => record?.value?.task
 const hasDependencyFacts = (task) => typeof task.dependencies?.blocked === "boolean";
 
 export async function readTaskAssignmentFacts(deviceId, projectId, taskId, opened = null) {
+  const knowledge = await readTaskDependencyKnowledge(deviceId, projectId, taskId);
+  if (knowledge) return { id: knowledge.task_id, updated_at: knowledge.updated_at, dependencies: knowledge.dependencies };
   const addresses = (await cachedAddresses({ deviceId, entityId: projectId }))
     .filter((address) => listKinds.includes(address.kind));
   const records = await readCachedMany([taskAddress(deviceId, projectId, taskId), ...addresses]);

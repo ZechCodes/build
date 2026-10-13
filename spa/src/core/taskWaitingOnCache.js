@@ -6,6 +6,7 @@ import {
   TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND,
   taskAddress, tasksAddress, preserveTaskFloors, preserveTaskReviewSummary,
 } from "./trackerCache.js";
+import { mergeTaskDependencyRecords } from "./taskDependencyKnowledge.js";
 import { filterTasks, sortTasks } from "./trackerFilters.js";
 import { assigneeKey } from "./trackerModel.js";
 
@@ -46,7 +47,7 @@ export async function cacheTaskWaitingOnResponse(deviceId, projectId, answer, { 
   if (!listed.some((address) => address.kind === TRACKER_TASKS_KIND)) listed.push(catalogue);
   const addresses = [taskAddress(deviceId, projectId, task.id), ...listed, ...listed.map(readsAddress), taskWaitingOnGenerationAddress(deviceId, projectId), readsAddress(taskAddress(deviceId, projectId, task.id))];
   const read = await nextTaskRead();
-  return mergeCachedRecordsTogether(addresses, (records) => {
+  return mergeTaskDependencyRecords(addresses, [task], (records) => {
     if (!accept()) return null;
     const detail = detailWithResponse(records[0]?.value, answer);
     const lists = listed.map((address, index) => listWithResponse(address, records[index + 1]?.value, task, read));

@@ -201,7 +201,6 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   grid-template:1fr / 1fr;
   background:none; border:0;
   transition:color 180ms ease; }
-#inbox-open:hover { background:none; color:var(--ink2); }
 .inbox-open-icon, .inbox-open-count { grid-area:1 / 1; transition:opacity 180ms ease, transform 220ms ease; }
 .inbox-open-icon { display:grid; place-items:center; }
 .inbox-open-count { display:flex; align-items:center; justify-content:center;
@@ -747,11 +746,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .tb-sep { flex:none; width:12px; text-align:center; color:var(--dim); }
 /* All bar actions share ink-only feedback, including the global interaction
    sheet's inset tint and view-owned verb buttons. Popup menus keep their own style. */
-.toolbar :is(button, a[href]):not(.splitmenu *):hover:not(:disabled, [aria-disabled="true"]) {
+.toolbar :is(button, a[href]):not(.splitmenu *):hover:not(:disabled, [aria-disabled="true"]),
+#inbox-open:hover:not(:disabled, [aria-disabled="true"]) {
   color:var(--accent); background:transparent; box-shadow:none; }
 .tb-sel:hover .tb-caret { color:inherit; }
 .tb-verb .btn:hover:not(:disabled) { border-color:var(--line); }
-.tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
+#inbox-open:focus-visible, .tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
   outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
 .tb-task-ancestry ol { row-gap:0; }
 /* Keep a phone task's project/workspace identity together. Tasks and the

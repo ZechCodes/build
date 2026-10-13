@@ -32,13 +32,13 @@ describe("assignment facts across cached task replicas", () => {
     expect((await read()).dependencies.blocked).toBe(false);
   });
 
-  it("uses cache write order when task timestamps tie in the same millisecond", async () => {
+  it("keeps waiting when timestamps tie, regardless of cache write order", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
     await writeCached(taskAddress("device", "project", "task"), { task: row(false) });
     await writeCached(lists[1][1], { tasks: [row(true)] });
     expect((await read()).dependencies.blocked).toBe(true);
     await writeCached(taskAddress("device", "project", "task"), { task: row(false) });
-    expect((await read()).dependencies.blocked).toBe(false);
+    expect((await read()).dependencies.blocked).toBe(true);
   });
 
   it.each(lists.slice(0, 2))("keeps newer %s facts when a same-stamp older page lands late", async (_kind, address) => {
@@ -49,9 +49,24 @@ describe("assignment facts across cached task replicas", () => {
     expect((await read()).dependencies.blocked).toBe(true);
   });
 
-  it("ignores a delayed same-stamp blocker after a newer ready query", async () => {
+  it("keeps a delayed same-stamp blocker despite a later ready query read", async () => {
     await writeCached(lists[1][1], { tasks: [row(false)], read_order: 1_800_000_000_002 });
     await writeCached(lists[2][1], { tasks: [row(true)], read_order: 1_800_000_000_001 });
+    expect((await read()).dependencies.blocked).toBe(true);
+  });
+
+  it.each([undefined, "invalid"])("keeps waiting when either source has timestamp %s", async (stamp) => {
+    for (const blocked of [true, false]) {
+      await writeCached(taskAddress("device", "project", "task"), { task: { ...row(blocked), updated_at: stamp } });
+      await writeCached(lists[1][1], { tasks: [row(!blocked, "2026-10-13T01:01:00Z")] });
+      expect((await read()).dependencies.blocked).toBe(true);
+    }
+  });
+
+  it("discards older stamped blockers before resolving unknown timestamps", async () => {
+    await writeCached(lists[0][1], { tasks: [row(true)] });
+    await writeCached(lists[1][1], { tasks: [row(false, "2026-10-13T01:01:00Z")] });
+    await writeCached(taskAddress("device", "project", "task"), { task: { ...row(false), updated_at: undefined } });
     expect((await read()).dependencies.blocked).toBe(false);
   });
 

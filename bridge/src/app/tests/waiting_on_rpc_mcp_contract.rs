@@ -391,3 +391,23 @@ fn waiting_on_rpc_mcp_contract_every_raw_waiting_refusal_is_a_conflict() {
     }
     assert_eq!(rpc(&mut app,"tasks.list",json!({"project_id":project}))["tasks"].as_array().unwrap().len(),before);
 }
+
+#[test]
+fn waiting_on_rpc_mcp_contract_create_refusals_name_proposed_blockers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(tmp.path());
+    let blocker = filed(&mut app, &project, "prerequisite");
+    for status in ["in_progress", "in_review", "done"] {
+        let refusal = app.handle(req("tasks.create",json!({"project_id":project,"title":"must not persist","status":status,"waiting_on":[blocker["id"]]})));
+        assert_eq!(refusal["error_code"], "conflict", "{refusal}");
+        assert_eq!(refusal["details"]["waiting_on"][0]["task_id"],blocker["id"],"{refusal}");
+    }
+}
+
+#[test]
+fn waiting_on_rpc_mcp_contract_malformed_mcp_cursor_is_refused() {
+    for cursor in [json!(42), json!(true), Value::Null, json!("")] {
+        let parsed = DoneServer::new("test").handle_message(&json!({"id":1,"method":"tools/call","params":{"name":"list_task_dependents","arguments":{"task_id":"task-test","cursor":cursor}}}).to_string());
+        assert!(parsed.action.is_none(),"malformed cursor was forwarded: {:?}",parsed.action);
+    }
+}

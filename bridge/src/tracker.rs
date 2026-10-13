@@ -252,12 +252,15 @@ impl TaskLinks {
     }
 }
 
-/// The last known identity of an agent mentioned by a task. The four
-/// optional words are absent on old records when the agent cannot be found.
+/// The last known identity of an agent mentioned by a task. Optional facts
+/// are absent on old records when the agent cannot be found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskAgentIdentity {
     pub agent_id: String,
     pub name: Option<String>,
+    /// A project agent's durable purpose, independent of its optional name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_role: Option<crate::project_roster::ProjectRole>,
     pub ordinal: Option<u32>,
     pub workspace_id: Option<String>,
     pub workspace_name: Option<String>,

@@ -97,13 +97,18 @@ fn add_actor(ids: &mut BTreeSet<String>, actor: &Actor) {
     }
 }
 
-fn retain_known_fields(prior: &TaskAgentIdentity, current: TaskAgentIdentity) -> TaskAgentIdentity {
+fn retain_known_fields(
+    prior: &TaskAgentIdentity,
+    mut current: TaskAgentIdentity,
+) -> TaskAgentIdentity {
+    current.project_role = current.project_role.or(prior.project_role);
     if current.available {
         return current;
     }
     TaskAgentIdentity {
         agent_id: current.agent_id,
         name: current.name.or_else(|| prior.name.clone()),
+        project_role: current.project_role,
         ordinal: current.ordinal.or(prior.ordinal),
         workspace_id: current.workspace_id.or_else(|| prior.workspace_id.clone()),
         workspace_name: current
@@ -120,6 +125,7 @@ fn plan_identities(plans: &[PersistedPlan]) -> impl Iterator<Item = TaskAgentIde
         plan.members().into_iter().map(|member| TaskAgentIdentity {
             agent_id: member.id,
             name: member.name,
+            project_role: member.project_role,
             ordinal: Some(member.ordinal),
             workspace_id: None,
             workspace_name: None,
@@ -228,6 +234,7 @@ impl AppState {
         Some(TaskAgentIdentity {
             agent_id: agent_id.to_string(),
             name: agent.name.clone(),
+            project_role: agent.project_role,
             ordinal: Some(agent.ordinal),
             workspace_id: workspace.map(|workspace| workspace.id.clone()),
             workspace_name: workspace.map(|workspace| workspace.name.clone()),
@@ -284,6 +291,7 @@ impl AppState {
                 .map(move |member| TaskAgentIdentity {
                     agent_id: member.id,
                     name: member.name,
+                    project_role: member.project_role,
                     ordinal: Some(member.ordinal),
                     workspace_id: workspace_id.clone(),
                     workspace_name: Some(run.worktree_name.clone()),
@@ -369,6 +377,7 @@ impl AppState {
                     .or_insert_with(|| TaskAgentIdentity {
                         agent_id: id,
                         name: None,
+                        project_role: None,
                         ordinal: None,
                         workspace_id: None,
                         workspace_name: None,
@@ -390,6 +399,41 @@ impl AppState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn retained_purpose_is_independent_of_name_and_current_availability() {
+        let prior = TaskAgentIdentity {
+            agent_id: "project-worker".into(),
+            name: None,
+            project_role: Some(crate::project_roster::ProjectRole::Worker),
+            ordinal: Some(2),
+            workspace_id: None,
+            workspace_name: None,
+            provider: Some("codex".into()),
+            available: true,
+        };
+        for available in [true, false] {
+            let mut current = prior.clone();
+            current.project_role = None;
+            current.available = available;
+            let retained = retain_known_fields(&prior, current);
+            assert_eq!(retained.project_role, prior.project_role);
+            assert_eq!(retained.name, None);
+            assert_eq!(retained.available, available);
+        }
+    }
+
+    #[test]
+    fn older_identity_records_deserialize_without_inventing_purpose() {
+        let old = json!({
+            "agent_id": "project-unknown", "name": null, "ordinal": 2,
+            "workspace_id": null, "workspace_name": null,
+            "provider": "codex", "available": false
+        });
+        let identity: TaskAgentIdentity = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(identity.project_role, None);
+        assert_eq!(json!(identity), old);
+    }
 
     #[test]
     fn assignment_history_keeps_agent_ids_after_reassignment() {

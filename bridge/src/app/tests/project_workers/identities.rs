@@ -77,7 +77,10 @@ fn unnamed_project_worker_identity_survives_removal() {
         "tasks.list",
         json!({ "project_id": project.project_id }),
     ));
-    assert_eq!(listed["result"]["tasks"][0]["identities"][&worker], *identity);
+    assert_eq!(
+        listed["result"]["tasks"][0]["identities"][&worker],
+        *identity
+    );
     let saved = project
         .state
         .tracker_store()
@@ -134,11 +137,8 @@ fn inline_task_notice_names_an_unnamed_project_worker_by_its_purpose() {
             },
         )
         .unwrap();
-    let items = super::super::project_agent::items(
-        &mut project.state,
-        &project.owner,
-        &project.pin,
-    );
+    let items =
+        super::super::project_agent::items(&mut project.state, &project.owner, &project.pin);
     let notice = items
         .iter()
         .find(|item| item["data"]["task_notice"]["action"] == "moved")

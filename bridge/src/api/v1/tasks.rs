@@ -459,7 +459,8 @@ pub struct TaskView {
     /// to answer it".
     pub trackers: Vec<String>,
     /// Last known identities of agents this task mentions, keyed by agent id.
-    /// Captured on writes so a finished workspace still names its agents.
+    /// Captured on writes so a finished workspace still names its agents,
+    /// and an unnamed project worker keeps its purpose after removal.
     #[serde(default)]
     pub identities: std::collections::BTreeMap<String, crate::tracker::TaskAgentIdentity>,
     /// The files filed with it. Always present for the same reason `trackers`

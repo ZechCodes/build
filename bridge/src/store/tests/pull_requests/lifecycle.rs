@@ -428,6 +428,7 @@ fn stale_read_backfill_preserves_merge_lifecycle_and_other_live_fields() {
     let identity = crate::tracker::TaskAgentIdentity {
         agent_id: "reviewer".into(),
         name: Some("Reviewer".into()),
+        project_role: None,
         ordinal: Some(1),
         workspace_id: None,
         workspace_name: None,

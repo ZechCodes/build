@@ -148,7 +148,9 @@ that an `e2ee_envelope` passed.
 The Cloudflare TURN key is a long-lived secret. It lives in the `build-app` Secret as
 `CF_TURN_KEY_ID` and `CF_TURN_KEY_API_TOKEN` and never reaches a browser or bridge.
 
-New api route, session-cookie authenticated, using the existing auth decorator:
+The API route uses `build_auth_guard`: a browser session or the desktop app's
+OAuth bearer access token, followed by active alpha membership. Anonymous callers
+receive 401; uninvited or revoked accounts receive 403 before credentials are minted:
 
 ```
 POST /api/rtc/ice-servers  →  { "iceServers": [ ...Cloudflare response verbatim... ] }

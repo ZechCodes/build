@@ -344,8 +344,8 @@ before the fix (exit **1**, unwanted `tasks.assign`), then passed in the
 109-test assignment/pane/unchanged-ratchet run (exit **0**). The shared guard
 reads detail and catalogue/query/page replicas together, prefers newer task
 facts and uses list read order for timestamp ties, falling back to cache write
-time for detail/legacy records and write order for remaining ties; it retains the captured
-wait and the note/target on refusal. Older blockers do not defeat newer ready
+time for detail/legacy records and write order for remaining ties; it retains
+the captured wait and the note/target on refusal. Older blockers do not defeat newer ready
 facts, and missing legacy fields do not erase known prerequisites. No ratchet
 annotation or cap changed.
 
@@ -376,3 +376,16 @@ Newer task timestamps still win; detail and legacy lists retain the cache
 write-time fallback. The assignment facts/picker/waiting/unchanged-ratchet
 gate exits **0** (116 tests). No cap or ratchet entry changed. Fresh final
 gate results and security scan evidence are recorded on #564.
+
+Revision-4 fresh gates use Node 22.23.3/npm 12.0.2 under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, scripts disabled),
+all-source lint, captures and build each exit **0**. The full Chromium-inclusive
+suite exits **1**: 670 files / 10,441 tests pass; its sole failure is known #614,
+`workspaceDirectories.test.js`'s kept-Changes-directory rebind timeout. The
+exact failing case was rerun alone three times: exits **0 / 0 / 0**, each one
+test passed and 12 skipped. The complete suite is recorded as failed, with
+that isolated flake evidence attached on #564. Semgrep exits **0** (38 changed
+tracked targets, 200 rules, no findings); Gitleaks `origin/main..HEAD` and
+diff-check exit **0**. The W5-owned TS558-4/7 score remains **100/100**.
+Fetched origin/main remains `0ee0188f`, already merged; no bridge files,
+complexity caps or ratchet entries changed.

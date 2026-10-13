@@ -161,7 +161,6 @@ for (const [name, fetch] of [
 }
 
 test("Try Again on a startup outage retries refresh instead of browser sign-in", async (t) => {
-  let resolveDialog;
   let attempts = 0;
   // Hold the first request until the launch fixture is available to select retry.
   let rejectFirst;

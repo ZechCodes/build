@@ -71,6 +71,22 @@ it("reconciles away the last survivor while keeping an unresolved bookmark pendi
   expect(host.querySelector("[data-project-use-source]").hidden).toBe(true);
 });
 
+it("selects the exact pending source even when reconciliation first promotes another survivor", async () => {
+  const selected = mount(project, { sourceId: "docs", commit: "abc" });
+  await vi.waitFor(() => expect(mountWorkspaceChanges).toHaveBeenCalled());
+  const options = mountWorkspaceChanges.mock.calls[0][1];
+  const pane = mountWorkspaceChanges.mock.results[0].value;
+  pane.workspaceMoved.mockImplementation((directories) => options.onSelectDirectory(directories[0].sourceId));
+  handle.update({ ...project, sources: [
+    { id: "assets", path: "/assets", is_git: false },
+    { id: "docs", path: "/docs", is_git: true },
+  ] });
+  expect(pane.selectDirectory).toHaveBeenLastCalledWith("docs");
+  expect(selected).toHaveBeenLastCalledWith("docs", "abc");
+  expect(selected.mock.calls).toEqual([["docs", "abc"]]);
+  expect(options.git("docs").requestedCommit).toBe("abc");
+});
+
 it.each([null, { id: "p", sources: [] }, project, { id: "p", sources: [{ id: "docs", is_git: true }] }])("keeps an explicit source and commit pending until their source location resolves (%j)", async (initial) => {
   const selected = mount(initial, { sourceId: "docs", commit: "abc" });
   await vi.waitFor(() => expect(host.querySelector("[data-project-source-context]").textContent).not.toBe(""));

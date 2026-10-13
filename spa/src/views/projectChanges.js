@@ -62,7 +62,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     standing = id;
     error.textContent = "";
     paintContext();
-    if (!requestedSource) onSourceSelection(id, commits.get(sourceKey(id)) || null);
+    if (!requestedSource && !reconciling) onSourceSelection(id, commits.get(sourceKey(id)) || null);
   };
   const git = (id, gatedContext) => ({
     scope: projectChangesDirectories(project, route.projectId, support.projectSources).find((dir) => dir.sourceId === id).scope,
@@ -82,7 +82,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
       if (!pane) pane = mountWorkspaceChanges(body, { directories, current: standing, git, viewingContext, onSelectDirectory: selectSource });
       else {
         pane.workspaceMoved(directories);
-        if (selectRequested) pane.selectDirectory(standing);
+        if (selectRequested) pane.selectDirectory(selectRequested);
       }
     } finally { reconciling = false; }
   };
@@ -104,7 +104,7 @@ export function mountProjectChanges(host, { project, route, context, viewingCont
     if (!resolved && !directories.length && !pane) { paintContext(); return; }
     if (!directories.some((directory) => directory.sourceId === standing)) standing = directories[0]?.sourceId || null;
     resolveDefaultCommit();
-    reconcilePane(directories, requested && resolved);
+    reconcilePane(directories, resolved && requested);
     publishSelection();
     pane.setVisible(visible);
     paintContext();

@@ -126,14 +126,16 @@ it.each([390, 1280])("recovers a fresh removed-source bookmark without blocking 
   });
 }, 60_000);
 
-it("opens the pending exact commit when its source arrives after surviving tabs mounted", async () => {
+it.each(["empty", "promoted"])("opens the pending exact commit after survivor reconciliation (%s)", async (roster) => {
   await session.withPage(async ({ page, basePath }) => {
     await mountProject(page, basePath, { sourceId: "docs", commit: COMMIT, removedSource: "docs" });
     await page.locator('[data-surface="code"] .csinput').first().waitFor();
-    await page.evaluate(() => window.__writeProject([]));
-    await page.waitForFunction(() => !document.querySelector('[data-surface="code"]'));
-    expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ sourceId: "docs", commit: COMMIT });
-    await page.evaluate(() => window.__writeProject([...window.__project.sources,
+    if (roster === "empty") {
+      await page.evaluate(() => window.__writeProject([]));
+      await page.waitForFunction(() => !document.querySelector('[data-surface="code"]'));
+      expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toMatchObject({ sourceId: "docs", commit: COMMIT });
+    }
+    await page.evaluate(() => window.__writeProject([...window.__project.sources.filter((source) => source.id !== "code"),
       { id: "docs", name: "Docs", path: "/docs", is_git: true, base_branch: "main" }]));
     await page.locator(`[data-surface="docs"] .commitheader[data-hash="${COMMIT}"]`).waitFor();
     expect(await page.locator('[data-directory="docs"]').getAttribute("aria-selected")).toBe("true");

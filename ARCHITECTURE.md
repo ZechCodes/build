@@ -2055,8 +2055,36 @@ action. A Changes diff opens Files with the same source, path and line.
 Project list cache writes reconcile added, relabelled, removed and moved sources
 in place. Surviving panes keep their drafts, selected commits and scroll; moving
 a source gives it a new location namespace. Face changes retain the shell's
-conversation and console. Project source terminal selection (#535) and the
-project-worker rail (#536) have separate implementations.
+conversation and console. The project-worker rail (#536) has a separate implementation.
+
+The project and its project-hosted task pages share `console: {kind: "project"}`
+in `shell.js`. The Terminal rail button sits outside the face tablist and
+reports the console's expanded state. It opens the existing console and never
+creates a shell. `projectConsole.js` paints source-labelled tabs from each
+source's `terminals` cache record at device/project/source/captured-path addresses.
+A remembered source picker chooses only the next new shell; changing it or
+changing faces leaves the selected shell and pane standing. Explicit tab close
+uses the tab's captured source assertion and updates only that roster. Collapse
+and navigation detach client screens without closing server shells.
+
+`projectTerminalSupport.js` remembers `term.projectSources` for cold rendering.
+`projectTerminalRpc.js` checks the current compatible greeting and exact cached
+source membership before list/create/attach/close, including reconnect attach.
+Unsupported bridges retain cached tabs and an update notice, receiving no new
+terminal selectors. The shared terminal manager fences requests and pane input
+against device changes. Pane cancellation crosses connection waits, source/greeting
+validation and attach replies; detach releases only the requesting registration.
+Failed or cancelled pane setup releases every acquired terminal resource. Channel
+recovery stays in the terminal lifecycle; the project console neither reads
+connection status nor changes its presentation on disconnect/reconnect.
+`cacheSync.js` prepares original-source subscriptions with the ownership lists
+when `changes.projectSources` is present. On sync/reconnect, `syncPhases.js`
+reads all source terminal rosters after the foreground and inbox, through the
+same two background streams as checkout warming. Their exact terminal record
+identities share the planner's completion and visibility promotion, so an
+unrelated source reply never blocks a newly selected foreground. Source push
+and list writes check membership/location transactionally and keep equal IDs on
+other devices and paths separate. No project terminal polling is introduced.
 
 Commit drafts keep device and account-epoch ownership in the in-memory stash
 as well as their device-scoped `build-ui` records. Old account panes cannot
@@ -2220,8 +2248,9 @@ In practice:
   and written independently as they land. `syncPhases.js` then reads the open
   conversation, the open checkout and project's first task page, the inbox's
   other conversations and remaining task pages/review metadata, and finally
-  background checkout records and bodies. `syncBackgroundStreams.js` drains
-  that final phase through two streams per device, retaining each checkout's
+  source terminal rosters, then background checkout records and bodies.
+  `syncBackgroundStreams.js` drains that final phase through two streams per
+  device, retaining each checkout's
   read/write order and letting a free stream advance past a slow checkout.
   Inbox and push-triggered background RPCs share those two wire slots per
   device/session/restored path. A failed first task page still waits for its

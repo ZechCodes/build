@@ -199,10 +199,16 @@ async function readBackgroundEntity(state, entityId) {
 }
 
 async function readBackground(state) {
+  const reads = (state.sourceTerminalReads || []).map(({ entityId, read }) => async () => {
+    await state.foreground();
+    await takeJob(state, { key: keyOf(entityId, "terminals"), read });
+    return true;
+  });
+  reads.push(...state.pass.order.map((entityId) => () => readBackgroundEntity(state, entityId)));
   const recovered = await drainBackgroundStreams({
-    items: state.pass.order,
+    items: reads,
     active: state.context.active,
-    read: (entityId) => readBackgroundEntity(state, entityId),
+    read: (read) => read(),
   });
   await state.foreground();
   return recovered;

@@ -13,6 +13,7 @@
 // machine nothing to paint — `term.create` and `term.close` are the only two
 // calls left, and both are mutations the reader pressed for.
 
+import { mountProjectConsole } from "./projectConsole.js";
 import {
   DEFAULT_OPEN_SIZE,
   consoleFeedRoute,
@@ -31,7 +32,7 @@ import { hide, motionHooks, motionSettled, reveal } from "./motion.js";
 import { notifyError } from "./notify.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
-import { terminalManager } from "../terminal/manager.js";
+import { terminalManager, terminalDeviceId } from "../terminal/manager.js";
 import { branchRowIn } from "./feedRows.js";
 import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { routedEntityId } from "./inbox.js";
@@ -39,6 +40,7 @@ import { directoryCacheId } from "./directoryScope.js";
 import { mergeCached, readCached, subscribeCache, writeCached } from "./localCache.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
+import { attachUserTerminal } from "../terminal/userAttachment.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import "../styles/shell.css";
 
@@ -86,13 +88,22 @@ export function terminalTabsController() {
 }
 
 /** Mount a user-terminal pane bound to `termId` on the shared socket. */
-export function mountUserTerminalPane(host, termId, { scope = {}, onExit }) {
+export function mountUserTerminalPane(host, termId, { scope = {}, onExit, stands = () => true, deviceId = null, signal, recover = false }) {
   const manager = terminalManager();
+  const current = () => stands() && (!deviceId || terminalDeviceId() === deviceId);
+  let detach = () => {};
+  // Older console surfaces own their existing retry controller. The project
+  // surface delegates recovery to the resource and never reads socket status.
+  const attach = recover ? attachUserTerminal : (owner, id, at, options) => owner.attachTerminal(id, at, options);
   return mountTerminalPane(host, {
-    attach: (opts) => manager.attachTerminal(termId, scope, opts),
-    input: (data) => manager.input(termId, data),
-    resize: (cols, rows) => manager.resize(termId, cols, rows),
-    onExit,
+    signal, isCurrent: current,
+    attach: (opts) => current() ? attach(manager, termId, scope, { ...opts, signal, isCurrent: current, onRegistered: (dispose) => { detach = dispose; } }) : Promise.reject(new Error("This terminal pane closed.")),
+    input: (data) => current() ? manager.input(termId, data) : Promise.resolve(),
+    resize: (cols, rows) => current() ? manager.resize(termId, cols, rows) : Promise.resolve(),
+    onExit: (...args) => { if (current()) onExit?.(...args); },
+  }).then((pane) => ({ ...pane, dispose() { detach(); pane.dispose(); } }), (error) => {
+    detach();
+    throw error;
   });
 }
 
@@ -107,7 +118,7 @@ export function consoleTabHtml(tab, selected) {
   return (
     `<span class="console-tab${tab.id === selected ? " active" : ""}" data-motion>` +
     `<button type="button" class="console-tab-name" data-term="${esc(tab.id)}">${esc(tab.label)}</button>` +
-    `<span class="tx" data-close="${esc(tab.id)}" title="Close this terminal">×</span></span>`
+    `<button type="button" class="tx" data-close="${esc(tab.id)}" title="Close this terminal" aria-label="Close ${esc(tab.label)}">×</button></span>`
   );
 }
 
@@ -138,6 +149,7 @@ export function consoleHeadHtml(size) {
  */
 export function mountConsole(host, context) {
   if (!host) return { dispose() {}, toggle() {}, size: () => "collapsed" };
+  if (context.kind === "project") { takeConsoleTerminal(); return mountProjectConsole(host, context); }
   const cacheScope = context.cacheScope;
   const key = consoleKey(context);
   const manager = terminalManager();
@@ -164,6 +176,7 @@ export function mountConsole(host, context) {
   let terminalsAt; // write time of the terminal record the strip last read
   let scrollToTerminal = null; // a created tab to reveal after its record lands
   let pane = null;
+  let paneAbort = null;
   let paneTermId = null; // which terminal the mounted pane is showing
   let connection = null;
   let reconnectWatch = null; // the one-shot wait for the socket to come back
@@ -583,11 +596,14 @@ export function mountConsole(host, context) {
   const mountPane = (region, termId) => {
     disposePane();
     paneTermId = termId;
+    const abort = new AbortController();
+    paneAbort = abort;
+    const current = () => !disposed && paneAbort === abort;
     region.innerHTML = `<div class="termpane console-pane"></div>`;
     const paneHost = region.querySelector(".console-pane");
-    mountUserTerminalPane(paneHost, termId, { scope, onExit: () => void afterTerminalGone(termId) }).then(
+    mountUserTerminalPane(paneHost, termId, { scope, signal: abort.signal, stands: current, onExit: () => void afterTerminalGone(termId) }).then(
       (mounted) => {
-        if (disposed || paneTermId !== termId) {
+        if (!current()) {
           mounted.dispose();
           return;
         }
@@ -595,7 +611,7 @@ export function mountConsole(host, context) {
         connection = attachConnectionOverlay(paneHost);
       },
       (error) => {
-        if (disposed || paneTermId !== termId) return;
+        if (!current()) return;
         // The socket died under the attach: the PTY is fine, this browser just
         // cannot see it. Say so where the screen would be, and mount again when
         // the socket is back — a terminal called "unavailable" here would stay
@@ -619,10 +635,12 @@ export function mountConsole(host, context) {
   };
 
   const disposePane = () => {
+    paneAbort?.abort();
     if (connection) connection.dispose();
     if (pane) pane.dispose();
     // Deregister the screen — the server PTY keeps running.
-    if (paneTermId) manager.detach(paneTermId);
+    if (paneTermId) manager.detach(paneTermId, paneAbort?.signal);
+    paneAbort = null;
     connection = null;
     pane = null;
     paneTermId = null;

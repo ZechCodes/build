@@ -35,6 +35,8 @@
 // read it followed, so a read never writes over a record a push wrote after it
 // was asked, or under an entity a push took away since (core/pushFence.js).
 
+import { projectTerminalRpc } from "./projectTerminalRpc.js";
+import { projectTerminalScopes, writeProjectTerminalRoster } from "./projectTerminalCache.js";
 import { directoryCacheId } from "./directoryScope.js";
 import { trailingRead } from "./trailingRead.js";
 import { createSyncPhases } from "./syncPhases.js";
@@ -162,6 +164,7 @@ let stopLandingWatch = null;
 let lifetime = 0;
 const syncedSessions = new Map(); // deviceId → the session its last pass ran on
 const passes = new Map(); // deviceId → the pass running on it, so triggers never stack
+const projectTerminalSubscriptions = new Map();
 const subscriptions = new Map(); // deviceId → its three watchers
 const restoredScopes = new Map(); // deviceId → fresh read identity for an ICE-restored session
 const fileReads = new Map(); // file address → the newest reader allowed to write its body
@@ -410,6 +413,7 @@ async function orderedSync(deviceId, turn) {
   const pass = await workspacesToRead(context, view);
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route,
+    sourceTerminalReads: lists.sourceTerminalReads,
     entityContext: (id) => whileOnBoard(context, id, fence),
     readers: workspaceReaders,
     tasks: createTaskPhases(context, { ask, readReviews: (context, projectId) => readReviews(context, projectId),
@@ -512,7 +516,10 @@ async function readLists(context, fence) {
     },
     landList: (kind, rows, before) => landOwnershipList(reading, kind, rows, before, fence),
   });
-  if (lists) await refreshWorkspaceSummaries(reading, lists.view, fence);
+  if (lists) {
+    await refreshWorkspaceSummaries(reading, lists.view, fence);
+    lists.sourceTerminalReads = await projectTerminalReads(context);
+  }
   return lists;
 }
 
@@ -863,6 +870,7 @@ const entitiesTheBoardNames = (view) => {
   // (core/trackerCache.js) — so a project the lists still name is still named
   // here, and one that has gone takes its tasks with it.
   for (const projectId of projectIds(view)) named.add(projectId);
+  for (const scope of projectTerminalScopes(view.projects)) named.add(directoryCacheId(scope));
   return named;
 };
 
@@ -952,6 +960,60 @@ async function syncTerminals(context, entityId, row, priority) {
     { method: "term.list", params: scope, priority },
     (answer) => ({ tabs: answer.terminals || [] }),
   );
+}
+
+/** Original project sources are separate terminal owners, even plain folders. */
+async function projectTerminalReads(context) {
+  const capabilities = bridgeCapabilities(context.deviceId);
+  const scopes = capabilities.term?.projectSources ? projectTerminalScopes(await heldValue(context, "", "projects")) : [];
+  if (!context.active()) return [];
+  reconcileProjectTerminalSubscriptions(context, capabilities.changes?.projectSources ? scopes : []);
+  // Subscriptions are prepared with the ownership lists, but roster reads
+  // belong to the planner. Their readiness must never delay its foreground.
+  let readiness;
+  return scopes.map((scope) => ({
+    entityId: directoryCacheId(scope),
+    async read() {
+      readiness ??= settledWithin(subscriptionsSettledFor(context.deviceId), GREETING_WAIT_MS);
+      await readiness;
+      await readProjectTerminals(context, scope);
+    },
+  }));
+}
+
+async function syncProjectTerminals(context) {
+  for (const read of await projectTerminalReads(context)) await read.read();
+}
+
+async function readProjectTerminals(context, scope) {
+  if (!context.active() || !bridgeCapabilities(context.deviceId).term?.projectSources) return;
+  const fence = pushFence();
+  const address = addressOf(context, directoryCacheId(scope), "terminals");
+  const guarded = { ...context, call: (method, params, envelope) =>
+    projectTerminalRpc(contextFor(context.deviceId), method, params, (verb, fields) => {
+      if (!context.active()) throw new Error("Project terminal roster read was superseded.");
+      return context.call(verb, fields, envelope);
+    }) };
+  const answer = await ask(guarded, "term.list", scope, "background", address);
+  if (answer && context.active()) await writeProjectTerminalRoster(context, scope, answer.terminals || [], { fence });
+}
+
+function reconcileProjectTerminalSubscriptions(context, scopes) {
+  const deviceId = context.deviceId;
+  let held = projectTerminalSubscriptions.get(deviceId);
+  if (!held) projectTerminalSubscriptions.set(deviceId, held = new Map());
+  const wanted = new Map(scopes.map((scope) => [directoryCacheId(scope), scope]));
+  for (const [id, watcher] of held) {
+    if (wanted.has(id)) continue;
+    watcher.dispose();
+    held.delete(id);
+  }
+  for (const [id, scope] of wanted) {
+    if (held.has(id)) continue;
+    held.set(id, watchChanges({ ...subscriptionShape(deviceId), id: `s-project-term:${id}`,
+      scope: { kind: "project_source", ...scope }, kinds: ["terminals"],
+      mode: { batch_ms: BACKGROUND_COOLDOWN_MS }, priority: "background" }));
+  }
 }
 
 /** The commits this checkout has that its push target does not, newest first.
@@ -1454,6 +1516,11 @@ async function applyProjectSourceItem(context, item) {
   if (!registered || !context.active()) return;
   const entityId = directoryCacheId(source);
   if (item.git) await applySourceGit(context, entityId, item.git, source);
+  await applySourceTerminals(context, source, item.terminals);
+}
+
+async function applySourceTerminals(context, source, terminals) {
+  if (terminals && context.active()) await writeProjectTerminalRoster(context, source, terminals.tabs || [], { pushed: true });
 }
 
 async function invalidateSourceHistory(context, entityId, status) {
@@ -1498,9 +1565,16 @@ async function applySourceDiff(context, entityId, diff, source) {
 async function applyBoard(context, state) {
   notePushedLists(context, state);
   const before = {};
+  const previousSources = state.projects ? projectTerminalScopes(await heldValue(context, "", "projects")) : null;
   await writePushedBoard(context, state, before);
+  await refreshChangedProjectTerminals(context, state.projects, previousSources);
   if (context.active() && state.workspaces) await readWorkspaceReviews(context, state.workspaces);
   return removedOwnerId(before, state) ? before : null;
+}
+
+async function refreshChangedProjectTerminals(context, projects, previousSources) {
+  if (!projects || !context.active()) return;
+  if (JSON.stringify(projectTerminalScopes(projects)) !== JSON.stringify(previousSources)) await syncProjectTerminals(context);
 }
 
 async function writePushedBoard(context, state, before) {
@@ -2040,6 +2114,13 @@ export function startCacheSync() {
   acquireLock();
 }
 
+function disposeProjectTerminalSubscriptions() {
+  for (const held of projectTerminalSubscriptions.values()) {
+    for (const watcher of held.values()) watcher.dispose();
+  }
+  projectTerminalSubscriptions.clear();
+}
+
 export function stopCacheSync() {
   if (stopDeviceWatch) stopDeviceWatch();
   stopDeviceWatch = null;
@@ -2051,6 +2132,7 @@ export function stopCacheSync() {
     held.active?.dispose();
   }
   subscriptions.clear();
+  disposeProjectTerminalSubscriptions();
   syncedSessions.clear();
   restoredScopes.clear();
   readingSessions.clear();

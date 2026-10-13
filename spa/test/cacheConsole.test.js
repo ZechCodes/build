@@ -30,7 +30,7 @@ const manager = {
 vi.mock("../src/terminal/manager.js", () => ({
   terminalManager: () => manager,
   subscribeTerminalStatus: () => () => {},
-  terminalDeviceId: () => null,
+  terminalDeviceId: () => "dev-1",
   followTerminalDevice: () => {},
   resetTerminalManager: () => {},
   provideTerminalSessions: () => {},
@@ -397,5 +397,37 @@ describe("a checkout the board names no entity for", () => {
     const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "terminals" });
     expect(record.value.tabs).toEqual([{ term_id: "term-1" }]);
     expect(tabs()).toEqual(["Terminal 1"]);
+  });
+});
+
+describe("project source cache rosters", () => {
+  const source = (path = "/code") => ({ id: "code", name: "Code", path });
+  const projectAddress = (deviceId) => ({ deviceId, entityId: "", kind: "projects" });
+  const roster = (deviceId, path = "/code") => ({ deviceId, entityId: `project:${JSON.stringify(["p1", "code", path])}`, kind: "terminals" });
+  const projectContext = (deviceId) => ({ kind: "project", projectId: "p1", deviceId, cacheScope: scopeFor(deviceId) });
+  async function seedProject(deviceId, termId) {
+    await writeCached(projectAddress(deviceId), [{ id: "p1", sources: [source()] }]);
+    await writeCached({ deviceId, entityId: "", kind: "project-terminal-support" }, { projectSources: true });
+    await writeCached(roster(deviceId), { tabs: [{ term_id: termId }] });
+  }
+  it("paints identical IDs on their own device without sharing console state", async () => {
+    await seedProject("dev-1", "term-1"); await seedProject("dev-2", "term-1");
+    panel = mountConsole(region(), projectContext("dev-1")); await flush();
+    panel.toggle(); await flush();
+    expect(manager.attachTerminal).toHaveBeenLastCalledWith("term-1", { project_id: "p1", source_id: "code", source_path: "/code" }, expect.any(Object));
+    await writeCached(roster("dev-2"), { tabs: [{ term_id: "term-2" }] }); await flush();
+    expect(tabs()).toEqual(["Code · Terminal 1"]);
+    expect(region().querySelector(".console-tab-name").dataset.term).toContain("term-1");
+    panel.dispose(); panel = mountConsole(region(), projectContext("dev-2")); await flush();
+    expect(region().querySelector(".console-tab-name").dataset.term).toContain("term-2");
+    expect(region().dataset.size).toBe("collapsed");
+  });
+  it("leaves another source location's roster unchanged after cache removal", async () => {
+    await seedProject("dev-1", "term-1");
+    panel = mountConsole(region(), projectContext("dev-1")); await flush();
+    await writeCached(projectAddress("dev-1"), [{ id: "p1", sources: [source("/replacement")] }]);
+    await writeCached(roster("dev-1", "/replacement"), { tabs: [{ term_id: "term-9" }] }); await flush();
+    expect(region().querySelector(".console-tab-name").dataset.term).toContain("term-9");
+    expect((await readCached(roster("dev-1"))).value.tabs).toEqual([{ term_id: "term-1" }]);
   });
 });

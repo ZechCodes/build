@@ -16,6 +16,7 @@ export const SELECT_SOURCES = {
   "core/harnessDefaults.js": "local settings / workspace settings",
   "core/isolation.js": "device settings / project settings",
   "core/projectAgentSetting.js": "device settings",
+  "core/projectConsole.js": "project Terminal",
   "core/taskReviewActions.js": "task review",
   "core/taskReviewControls.js": "task review",
   "core/taskReviewFeedback.js": "task review",
@@ -30,6 +31,7 @@ export const SELECT_SOURCES = {
 };
 
 export const SELECT_SURFACES = [
+  { name: "project Terminal", selectors: ['[aria-label="Terminal source"]'] },
   { name: "local settings", selectors: ["#creationdev", "#defprovider", "[data-harness-model]", "[data-harness-effort]"] },
   { name: "device settings", selectors: ["[data-agent-mode]", "#defaultharness", "#projectagentharness", "#projectagentmodel", "#projectagenteffort", "[data-capability]", '[data-isolation="select"]'] },
   { name: "task controls", selectors: ["#task-status", "#task-priority", "#assign-assignee", "#assign-isolation", "#assign-choice-provider", "#assign-choice-model", "#assign-choice-effort", "#capture-project", "#create-work-isolation", ".diffsort-select", "select.mini"] },
@@ -171,7 +173,33 @@ async function seedSelectSurface({ name, theme, catalog, device, project, settin
   }
 }
 
+async function mountProjectTerminalSelect(page, basePath, theme, preserveDocument) {
+  await mountLayout(page, '<div id="shell"><div id="view"><main id="root"></main><div id="console-region"></div></div></div>', {
+    basePath, preserveDocument, styles: '#shell{--inbox-space:0px;height:100vh} #view{min-width:0}',
+  });
+  await loadBrowserModules(page, { app: "src/app.js" }, basePath);
+  await loadBrowserModules(page, { app: "src/app.js", cache: "src/core/localCache.js", feed: "src/core/taskFeed.js",
+    console: "src/core/console.js", scope: "src/core/cacheScope.js", directory: "src/core/directoryScope.js", support: "src/core/projectTerminalSupport.js" }, basePath);
+  await page.evaluate(async ({ theme, device, project }) => {
+    document.documentElement.dataset.theme = theme;
+    const m = window.__layoutModules;
+    m.app.App.devices = [device];
+    m.app.App.route = { name: "project", deviceId: device.id, projectId: project.id };
+    await m.cache.writeCached({ deviceId: device.id, entityId: "", kind: "projects" }, [project]);
+    for (const source of project.sources) await m.cache.writeCached({ deviceId: device.id,
+      entityId: m.directory.directoryCacheId({ project_id: project.id, source_id: source.id, source_path: source.path }), kind: "terminals" }, { tabs: [] });
+    await m.support.rememberProjectTerminalSupport(device.id, { term: { projectSources: true } });
+    const mounted = m.console.mountConsole(document.querySelector("#console-region"), {
+      kind: "project", deviceId: device.id, projectId: project.id, cacheScope: m.scope.scopeFor(device.id),
+    });
+    window.__selectDispose = () => mounted.dispose();
+  }, { theme, device, project });
+  await page.waitForSelector('[aria-label="Terminal source"]');
+  await settled(page);
+}
+
 export async function mountSelectSurface(page, basePath, name, theme, { preserveDocument = false } = {}) {
+  if (name === "project Terminal") return mountProjectTerminalSelect(page, basePath, theme, preserveDocument);
   page.setDefaultTimeout(5000);
   if (name.endsWith("conversation")) {
     await mountChatMenu(page, basePath, "phone", { theme, bigCounts: false, resetCapable: true }, { preserveDocument });

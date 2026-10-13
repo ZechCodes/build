@@ -191,3 +191,47 @@ console/source tabs and PS522-5/6 terminal behavior; #536 owns the project-worke
 rail/roster. Combined live compatibility and lifecycle acceptance remains #538.
 The original implemented checklist's 100/100 score is unchanged; the broader
 PS522-6 row stays pending for its remaining terminal owners.
+
+
+### #535 (C7) evidence — project console and source ownership
+
+C7 completes the SPA portion of PS522-5 and terminal compatibility in PS522-6.
+It relies on C3's bridge ownership/lifecycle enforcement recorded above; it adds
+no process isolation or terminal engine. Exact-head gate receipts and the four
+390/1280 light/dark captures are filed on #535. Worker rail (#536), vocabulary
+and documentation acceptance (#537), and integrated live acceptance (#538)
+remain separate.
+
+- `consoleModel`, `consoleDom`, `cacheConsole` and `shellParts` cover device/project
+  identity, captured-source cache namespaces, cached tabs on older bridges,
+  source-qualified create/close and kept console standing on project task pages.
+- `projectConsoleAuthority` covers delayed pane loading and real socket connection
+  waits after collapse/removal, replacement registration ownership, pending-pane
+  identity through connection transitions, cache-driven roster retries and device
+  changes during terminal requests. Shared pane input/resize callbacks require
+  their captured device and standing pane authority.
+- `terminal` exercises cancellation during connection/source-validation/reply and
+  reconnect waits, identity-owned detach and retirement of replaced cursor timers.
+  `paneDom` and `userPaneCleanup` exercise the production pane's failed/cancelled
+  loads, partial setup, rejected attach, and failure after successful attach;
+  terminal instances, listeners, touch momentum and QA ownership are released.
+  `userTerminalAttachment` keeps channel recovery below the cached view.
+- `projectTerminalRpc`, `projectTerminalSupport`, `terminal`,
+  `terminalReconnectIntegration` and `terminalFollowAuthority` cover current
+  greeting capability, captured source assertions, source/device changes during
+  waits and reconnect, and capability downgrade refusal. Legacy scopes retain
+  their established wire shapes.
+- `cacheSyncChanges` covers source roster pull/push membership, late moved-source
+  responses, equal terminal IDs on different devices, plain folders and older
+  bridges. Source caches survive ordinary sync eviction.
+- `browser/projectWorkspaceTerminal` exercises the Terminal action outside the
+  face tablist, keyboard expanded state, no shell creation on page load, source
+  labels and new-tab source selection, kept active pane through Files navigation,
+  cached old-bridge rendering, unchanged cached DOM across disconnect/reconnect,
+  New terminal focus and Enter activation across unrelated cache writes and roster
+  moves, and phone/desktop overflow. `selectStylesLayout`
+  includes the source picker under the shared select styling contract.
+
+These are fixture and isolated Chromium tests; no live bridge, paired client,
+user browser or original source process was used. The broader integrated
+PS522-6 acceptance stays pending for #538.

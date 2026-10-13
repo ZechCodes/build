@@ -278,6 +278,9 @@ describe("the panel under the head", () => {
     await settleMotion();
     expect(body().hidden).toBe(true);
     expect(body().innerHTML).toBe("");
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
   });
 });

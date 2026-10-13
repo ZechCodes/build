@@ -350,10 +350,20 @@ fn waiting_on_rpc_mcp_contract_rejected_new_edges_name_proposed_scoped_blockers(
     let (_home, mut app, project) = tracked(tmp.path());
     let blocker = filed(&mut app, &project, "proposed blocker");
     for status in ["in_progress", "in_review", "done"] {
-        let task = rpc(&mut app, "tasks.create", json!({"project_id":project,"title":status,"status":status}));
-        let refused = app.handle(req("tasks.waiting_on.add", json!({"task_id":task["task"]["id"],"waiting_on":[blocker["id"]]})));
+        let task = rpc(
+            &mut app,
+            "tasks.create",
+            json!({"project_id":project,"title":status,"status":status}),
+        );
+        let refused = app.handle(req(
+            "tasks.waiting_on.add",
+            json!({"task_id":task["task"]["id"],"waiting_on":[blocker["id"]]}),
+        ));
         assert_eq!(refused["error_code"], "conflict", "{refused}");
-        assert_eq!(refused["details"]["waiting_on"][0]["task_id"], blocker["id"], "{refused}");
+        assert_eq!(
+            refused["details"]["waiting_on"][0]["task_id"], blocker["id"],
+            "{refused}"
+        );
         let reread = rpc(&mut app, "tasks.get", json!({"task_id":task["task"]["id"]}));
         assert_eq!(reread["task"]["dependencies"]["waiting_on"], json!([]));
         assert_eq!(reread["task"]["status"], status);

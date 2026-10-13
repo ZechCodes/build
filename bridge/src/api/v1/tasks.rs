@@ -6,11 +6,9 @@
 //! `tasks.*` here — so no name can be registered by both, and the test at the
 //! bottom of `api/v1/mod.rs` proves it.
 //!
-//! Same shape as the workspace family: the implementations under
-//! `app/tracker/` are untouched, each handler resolves its typed params, hands
-//! them to the implementation, and names the shape that implementation answers
-//! in. Nothing here defers — a tracker verb is a SQLite write and an in-memory
-//! lookup, with no git to hand to the drain.
+//! Each handler resolves typed params, invokes the tracker service and names
+//! its answer shape. Assignment records durable delivery authority before
+//! dispatch; checkout work uses the ordinary deferred Git drain.
 //!
 //! On the nullable fields: a task writes its absences as explicit `null`s
 //! (`assignee`, `closed_at`, `links.parent_task_id`) rather than leaving the
@@ -747,16 +745,7 @@ fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiErr
         return error;
     };
     let waiting_on = if blocked {
-        read["task"]["dependencies"]["waiting_on"]
-            .as_array()
-            .map(|edges| {
-                edges
-                    .iter()
-                    .filter(|edge| edge["resolved"] == false)
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+        scoped_waiting_blockers(app, &read["task"], params)
     } else {
         params["waiting_on"].as_array().cloned().unwrap_or_default()
     };
@@ -766,6 +755,47 @@ fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiErr
     } else {
         ApiError::InvalidParams { message, details }
     }
+}
+
+/// A refused new edge is absent from storage; include its scoped proposal too.
+fn scoped_waiting_blockers(app: &mut AppState, task: &Value, params: &Value) -> Vec<Value> {
+    let mut blockers = task["dependencies"]["waiting_on"]
+        .as_array()
+        .map(|edges| {
+            edges
+                .iter()
+                .filter(|edge| edge["resolved"] == false)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let Some(proposed) = params["waiting_on"].as_array() else {
+        return blockers;
+    };
+    for id in proposed {
+        if blockers.iter().any(|blocker| blocker["task_id"] == *id) {
+            continue;
+        }
+        if let Some(blocker) = proposed_waiting_blocker(app, task, id) {
+            blockers.push(blocker)
+        }
+    }
+    blockers
+}
+
+fn proposed_waiting_blocker(app: &mut AppState, task: &Value, id: &Value) -> Option<Value> {
+    let id = id.as_str()?;
+    let read = app.tasks_get(&serde_json::json!({"task_id":id})).ok()?;
+    let prerequisite = &read["task"];
+    if prerequisite["project_id"] != task["project_id"]
+        || prerequisite["state"] != "open"
+        || prerequisite["status"] == "done"
+    {
+        return None;
+    }
+    Some(
+        serde_json::json!({"task_id":id,"number":prerequisite["number"],"title":prerequisite["title"],"state":prerequisite["state"],"status":prerequisite["status"],"resolved":false,"resolved_by":null}),
+    )
 }
 
 // -------------------------------------------------------------- handlers ---

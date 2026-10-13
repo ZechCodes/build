@@ -1,12 +1,13 @@
 # Device pairing security checklist
 
-**Status:** verified (18/18 controls)
+**Status:** verified — 100/100 (21/21 controls)
 
 **Scope:** what `build-bridge pair` prints and the approve link it prints,
 #319. The bridge registers as pending with only the hash of a fresh pairing
 code and a signature binding its keys to it, and a signed-in person approves
 the code in Build (`bridge/src/pairing.rs`, `skriftapp/buildapp/devices_controller.py`).
-That flow is unchanged here and not rescored. #372 additionally covers the
+That flow is unchanged here and not rescored. #616 additionally covers desktop
+authentication at the ICE API and content-free dial failure diagnostics. #372 additionally covers the
 per-pairing browser hint used only for LAN discovery. #374 also covers bounded
 credential-free conntrack probes during an encrypted peer negotiation. #373 covers closing a superseded failed peer by that hint. This checklist covers the link
 `<web>/app/#/pair/<code>`, the screen it opens, and the terminal output around it.
@@ -121,6 +122,19 @@ client's newer session.
 | # | Control | Status | Required evidence |
 | --- | --- | --- | --- |
 | 18 | A peer is closed as superseded only when a newer open session presenting the same hint holds a peer and, under the negotiation lock every offer holds, both of these reads hold, in this order: the driver has delivered every have-remote-offer event the connection's core has queued (counted by `answer()` under that lock), and one statistics snapshot then shows the core's drained ICE state as `failed`. Every native ICE restart happens inside `set_remote_description` after that event is queued, and the agent leaves `failed` only through a restart, which queues `checking` behind it. So the failure was recorded after the latest restart, whatever order the callbacks arrived in. State callbacks only prompt a look. A delivered failure, or the restart's offer delivered after it, prompts a look, so a peer that really fails is closed even when idle or after a restart that queued no `checking`. An offer the core refuses after leaving stable is counted as well, since it may already have restarted ICE, and `answer()` then wakes the driver, which the vendored wrapper does not do for a refused description, so its event is delivered and the look follows. An offer never closes the peer it answers through, and an offer whose peer was closed mid-answer answers through a fresh registered peer. A hint holder can therefore close only another session's peer whose core has failed since its latest restart, never a connected or checking one; the session itself stays open. Sessions without a hint are unaffected. The close logs no hint. | [x] | `rtc/superseded_tests.rs`: `the_hint_alone_never_closes_a_session_whose_ice_has_not_failed`, `a_peer_that_recovers_before_its_queued_close_runs_is_kept`, `a_real_peer_is_never_closed_on_failure_its_native_core_does_not_show`, `a_delayed_failure_callback_must_not_retire_an_accepted_restart`, `a_refused_second_restart_keeps_the_accepted_restart`, `r4_actual_close_must_not_combine_old_native_failure_with_new_checking`, `r4_actual_close_retires_and_closes_a_genuine_native_failure`, `r4_answer_must_not_mask_a_current_failure_forever`, `r4_refused_second_restart_preserves_actual_stale_failure_hold`, `r4_checking_restart_with_stats_before_failure_still_closes_idle_peer`, `a_restart_offer_delivered_after_its_failure_prompts_the_close`, `r5_refused_offer_wakes_the_driver_of_an_idle_failed_peer`, `r5_refusal_after_native_restart_must_still_protect_checking`, `a_retired_real_peer_refuses_to_answer`, `an_older_sessions_first_hinted_offer_answers_through_a_registered_peer`, `an_offer_whose_peer_is_closed_mid_answer_answers_through_a_fresh_peer`, `a_failed_session_is_never_closed_for_an_older_one`, `sessions_without_a_shared_hint_keep_todays_behaviour`. |
+
+## Desktop RTC authentication (#616)
+
+Verified 2026-10-13 with local test clients and mocked TURN minting. The shared
+`build_auth_guard` admits either browser sessions or desktop OAuth access tokens,
+then checks active alpha membership. Server deployment delivers the fix to
+existing desktop apps; no desktop rebuild is required.
+
+| # | Control | Status | Required evidence |
+| --- | --- | --- | --- |
+| 19 | ICE credential minting requires a signed-in active alpha member through either a browser session or desktop bearer. Missing/invalid authentication is 401; uninvited/revoked membership is 403 before minting. | [x] | `test_rtc_controller.py`: `test_a_member_gets_minted_ice_servers`, `test_accounts_outside_the_alpha_are_refused_before_minting`, `test_an_unauthenticated_request_is_rejected_by_the_guard`, `test_the_route_carries_the_shared_browser_and_desktop_guard`. |
+| 20 | Every `/api/*` route called by SPA source carries the desktop-capable shared guard, without an additional cookie-only guard. Build admin pages and invitation creation retain session authentication plus administrator permission. | [x] | `test_spa_api_guards.py`: `test_every_spa_api_route_accepts_desktop_authentication` discovers SPA calls and configured routes; `test_administrator_routes_keep_session_and_administrator_permission`. |
+| 21 | A failed dial records its failure category and HTTP status, never raw error/response contents or credentials. Joined callers produce one outcome; cancelled old-account attempts and successful dials produce none. | [x] | `connectionOffline.test.js`: “dial failure diagnostics” tests ICE 401, unreachable, timeout, refusal, unavailable WebRTC, single-flight, account reset and success; `iceServersApi.test.js`: “names the HTTP refusal without retaining the response or credentials”. |
 
 ## Accepted
 

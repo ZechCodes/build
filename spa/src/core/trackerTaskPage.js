@@ -375,6 +375,9 @@ export function mountTaskPage(host, options) {
       waitingEditor = mountTaskWaitingOn(host.querySelector("[data-task-waiting-on]"), {
         deviceId: state.deviceId, projectId: state.projectId, taskId: state.taskId,
         call: (method, params) => state.callRpc(method, params),
+        // The mutation reply fences older reads, including its push's read.
+        // Ask the trailing reader for a detail begun after that cache write.
+        onEdgesChanged: () => void refresh(),
       });
     }
     waitingEditor?.update(state.task);

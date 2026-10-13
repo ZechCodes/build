@@ -9,7 +9,7 @@ import { blockerChoices, removalConsequence, waitingOnEdges, waitingOnNotice } f
 import { blockerOptionsHtml, dependencyRowsHtml, waitingOnFrameHtml } from "./taskWaitingOnRender.js";
 import { messageOf } from "./text.js";
 
-export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) {
+export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call, onEdgesChanged = () => {} }) {
   const actions = createTaskWaitingOnActions({ deviceId, projectId, taskId, call });
   const place = { deviceId, projectId };
   let task = null, tasks = [], pages = null;
@@ -106,7 +106,7 @@ export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) 
   find("[data-waiting-picker]").onsubmit = (event) => {
     event.preventDefault();
     const id = select.value;
-    if (id) void perform(() => actions.add([id]));
+    if (id) void perform(() => actions.add([id]), onEdgesChanged);
   };
   host.onclick = (event) => {
     const button = event.target.closest("[data-waiting-remove]");
@@ -117,7 +117,7 @@ export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) 
   find("[data-waiting-cancel]").onclick = () => { removing = null; paintPending(); };
   find("[data-waiting-confirm-remove]").onclick = () => {
     const id = removing;
-    if (id) void perform(() => actions.remove([id]), () => { removing = null; });
+    if (id) void perform(() => actions.remove([id]), () => { removing = null; onEdgesChanged(); });
   };
   find("[data-blocks-more]").onclick = () => {
     const cursor = nextCursor();

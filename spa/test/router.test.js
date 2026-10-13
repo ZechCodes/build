@@ -2,6 +2,24 @@ import { describe, it, expect } from "vitest";
 import { navigationCatalog } from "../src/core/navigationModel.js";
 
 describe("shared destination route links", () => {
+  it("keeps route identities for the project workspace, named child, branch page and hosted task", () => {
+    const urls = [
+      ["#/device/d/project/p", "project"],
+      ["#/device/d/project/p/workspace/w/changes", "workspace"],
+      ["#/device/d/project/p/branch/main/files", "branch"],
+      ["#/device/d/project/p/tasks/task-7", "trackerTask"],
+      ["#/device/d/project/p/plan/old-plan", "task"],
+    ];
+    for (const [hash, name] of urls) {
+      const route = routeFromHash(hash);
+      expect(route.name).toBe(name);
+      expect(routeFromHash(hashFromRoute(route))).toEqual(route);
+    }
+    // Retired project terminal tabs retain their Tasks alias. Terminal is a
+    // console action; vocabulary does not turn the alias into a new page.
+    expect(routeFromHash("#/device/d/project/p/term-2")).toEqual({ name: "project", deviceId: "d", projectId: "p", tab: "tasks" });
+  });
+
   it("round-trips duplicate device-qualified workspace IDs with encoded source IDs", () => {
     const projects = ["one", "two"].map((deviceId) => ({ id: "proj-1", deviceId, name: "Build" }));
     const workspaces = ["one", "two"].map((deviceId) => ({ id: "ws-1", deviceId, project_id: "proj-1", name: "工作 / 🦊",
@@ -260,7 +278,7 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     expect(routeFromHash("#/worktree/proj-1")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/main")).toEqual({ name: "inbox" });
     // `#/main/<id>` was the base checkout under an older spelling. That checkout
-    // has no surface, and the spelling named no machine, so it is gone whole.
+    // spelling has no device/project resolution contract and remains retired.
     expect(routeFromHash("#/main/p")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/main/p/files")).toEqual({ name: "inbox" });
     expect(routeFromHash("#/project")).toEqual({ name: "inbox" });
@@ -335,9 +353,8 @@ describe("legacy routes canonicalize to the nearest new route", () => {
       expect([tab, routeFromHash(`#/task/r/${tab}`).tab]).toEqual([tab, "changes"]);
       expect([tab, routeFromHash(`#/worktree/p/w/${tab}`).tab]).toEqual([tab, "changes"]);
       expect([tab, workRoute(`#/project/p/branch/main/${tab}`).tab]).toEqual([tab, "changes"]);
-      // Under a BARE project these named the base checkout's tabs, and that
-      // checkout has no surface any more: they land on the project's own page,
-      // which has no tab at all.
+      // Retired tabs under a bare project keep their Tasks landing. The
+      // project workspace now exposes Changes and Files explicitly.
       expect([tab, workRoute(`#/project/p/${tab}`)]).toEqual([tab, { name: "project", projectId: "p", tab: "tasks" }]);
     }
     expect(workRoute("#/project/p/plan")).toEqual({ name: "project", projectId: "p", tab: "tasks" });
@@ -357,8 +374,8 @@ describe("legacy routes canonicalize to the nearest new route", () => {
     expect(routeFromHash("#/worktree/p/w/term-12")).toEqual({
       name: "resolve", kind: "worktree", projectId: "p", id: "w", tab: "changes", term: "term-12",
     });
-    // A terminal named on a base-project URL had nothing to open it on: the
-    // project's checkout is not a surface, so there is no console to put it in.
+    // Retired base-project terminal aliases keep their Tasks landing and do
+    // not select a source shell; the project's Terminal action opens the console.
     expect(workRoute("#/project/p/term-2")).toEqual({ name: "project", projectId: "p", tab: "tasks" });
     // Every other tab names no terminal.
     expect(routeFromHash("#/project/p/branch/main/diff").term).toBeUndefined();

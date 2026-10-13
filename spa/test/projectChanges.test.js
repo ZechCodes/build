@@ -27,7 +27,7 @@ it("keeps legacy primary readable and additional sources visibly unavailable", (
   const dirs = projectChangesDirectories(project, "p", false);
   expect(dirs[0].scope).toEqual({ project_id: "p", source_id: "code", source_path: "/code" });
   expect(dirs[1]).toMatchObject({ status: "unsupported" });
-  expect(dirs[1].error).toMatch(/Update/);
+  expect(dirs[1].error).toBe("Update this device to use project Changes.");
   expect(dirs[2].is_git).toBe(false);
 });
 it("keeps a primary draft's location namespace across capability changes", () => {
@@ -81,7 +81,7 @@ it("never sends new selectors to a legacy bridge, refusing secondary and moved p
   await rpc("git.status", { project_id: "p", source_id: "code", source_path: "/code" });
   expect(machine.rpc).toHaveBeenLastCalledWith("git.status", { project_id: "p" });
   const other = projectChangesRpc(machine, project.sources[1], { projectId: "p", currentProject: () => project });
-  await expect(other("git.commit", { project_id: "p", source_id: "docs" })).rejects.toThrow(/Update/);
+  await expect(other("git.commit", { project_id: "p", source_id: "docs" })).rejects.toThrow("Update this device to use project Changes.");
 });
 it("rechecks the source and capabilities when a queued greeting dispatches", async () => {
   const machine = context();

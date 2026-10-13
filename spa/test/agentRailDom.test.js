@@ -7265,7 +7265,7 @@ describe("cached project worker rail", () => {
     const notice = () => panel().querySelector(".rail-project-agents-update");
     expect(notice()).toBeNull();
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
-    await vi.waitFor(() => expect(notice()?.textContent).toBe("Update this computer's Build bridge to use project agents."));
+    await vi.waitFor(() => expect(notice()?.textContent).toBe("Update this device to use project agents."));
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(panel().querySelector(".thread-items")).toBe(thread);
     expect(input.value).toBe("keep this draft");
@@ -7300,7 +7300,8 @@ describe("cached project worker rail", () => {
     await mountWorkers();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
-    expect(panel().querySelector(".rail-worker-notice")?.textContent).toContain("original project sources");
+    expect(panel().querySelector(".rail-worker-notice")?.textContent).toBe("Works in the original project sources. Files, Git index and current branch are shared with you and other project workers.");
+    expect(railHost().querySelector('[data-bubble="add"]').getAttribute("aria-label")).toBe("Add agent");
   });
 
   it("keeps project workers out of a named workspace including worker deep links", async () => {

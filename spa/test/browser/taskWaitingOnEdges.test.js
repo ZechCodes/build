@@ -48,6 +48,12 @@ for (const width of [390, 1280]) {
         expect(await page.locator('[data-waiting-list] a[href*="prerequisite"]').first().getAttribute("href")).toContain("/tasks/prerequisite");
         expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
         await captureLayout(page, `task-waiting-on-${width}-${theme}.png`);
+        await reverse.focus();
+        await page.keyboard.press("Enter");
+        expect(await page.evaluate(() => location.hash)).toContain("/tasks/dependent-page-two");
+        await forward.locator('a[href*="closed-prerequisite"]').focus();
+        await page.keyboard.press("Enter");
+        expect(await page.evaluate(() => location.hash)).toContain("/tasks/closed-prerequisite");
       }, { width, height: width === 390 ? 844 : 900 });
     }, 30_000);
   }
@@ -143,6 +149,48 @@ it("refuses a captured waiting form under an older greeting despite previously c
       fixture.calls.length = 0;
       await fixture.capturedSubmit?.({ preventDefault() {} });
       await fixture.capturedRetry?.();
+    });
+    expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method.startsWith("tasks.waiting_on.") || call.params.retry_deferred_id || call.params.waiting_on))).toEqual([]);
+  });
+}, 30_000);
+
+
+it("keeps the picker draft when cached closure resolution changes and explains reopening after delivery", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWaitingOnFixture(page, basePath);
+    await page.locator("[data-waiting-search]").fill("integration");
+    await page.locator("[data-waiting-choice]").selectOption("candidate");
+    await page.evaluate(async () => {
+      const fixture = window.__waiting;
+      fixture.searchNode = document.querySelector("[data-waiting-search]");
+      fixture.choiceNode = document.querySelector("[data-waiting-choice]");
+      fixture.current.status = "in_progress";
+      fixture.current.assignee = { kind: "project_agent" };
+      const closed = fixture.current.dependencies.waiting_on.find((edge) => edge.task_id === "closed-prerequisite");
+      Object.assign(closed, { state: "open", status: "ready", resolved: false, resolved_by: null });
+      await fixture.writeCurrent();
+    });
+    await page.waitForFunction(() => document.querySelector("[data-waiting-notice]")?.textContent.includes("does not stop a running turn"));
+    expect(await page.locator('[data-waiting-list] a[href*="closed-prerequisite"]').locator("..").textContent()).toContain("Waiting");
+    expect(await page.locator("[data-waiting-search]").inputValue()).toBe("integration");
+    expect(await page.locator("[data-waiting-choice]").inputValue()).toBe("candidate");
+    expect(await page.evaluate(() => window.__waiting.searchNode === document.querySelector("[data-waiting-search]")
+      && window.__waiting.choiceNode === document.querySelector("[data-waiting-choice]"))).toBe(true);
+    expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method === "tasks.assign"))).toEqual([]);
+  });
+}, 30_000);
+
+it("keeps legacy assignment usable on an older greeting while hiding edge controls", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWaitingOnFixture(page, basePath, { old: true });
+    expect(await page.locator("[data-task-waiting-on]").isVisible()).toBe(false);
+    await page.locator("[data-task-assign]").click();
+    await page.locator("#task-assign-assignee").selectOption("user");
+    expect(await page.locator("#task-assign-scrim").textContent()).not.toContain("Done or closed");
+    await page.locator("[data-assign-go]").click();
+    await page.locator("#task-assign-scrim").waitFor({ state: "detached" });
+    expect(await page.evaluate(() => window.__waiting.calls.find((call) => call.method === "tasks.assign").params)).toEqual({
+      task_id: "task-waiting", assignee: { kind: "user" },
     });
     expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method.startsWith("tasks.waiting_on.") || call.params.retry_deferred_id || call.params.waiting_on))).toEqual([]);
   });

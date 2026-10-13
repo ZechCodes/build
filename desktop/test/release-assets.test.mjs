@@ -91,6 +91,7 @@ test("default Mac packages are ARM64 and package versions agree", () => {
   assert.deepEqual(pkg.build.mac.target, [
     { target: "dmg", arch: ["arm64"] }, { target: "zip", arch: ["arm64"] },
   ]);
+  assert.equal(pkg.version, "0.1.3");
   assert.equal(pkg.version, lock.version);
   assert.equal(pkg.version, lock.packages[""].version);
 });

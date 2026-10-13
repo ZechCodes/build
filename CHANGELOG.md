@@ -6,6 +6,19 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## Desktop [0.1.3] - Unreleased
+
+### Fixed
+
+- Stay signed in across launches with secure credential storage for 30 days
+  since the last successful refresh; regular use extends that period (#615).
+- Desktop connections authenticate correctly when obtaining WebRTC connection
+  credentials (#616). This server-side fix is already live.
+
+### Added
+
+- Account → Sign Out clears saved credentials and the desktop session (#615).
+
 ## [0.2.13] - Unreleased
 
 Wire 3.21.0.

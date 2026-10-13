@@ -343,6 +343,34 @@ describe("device-scoped waiting assignments from the pane", () => {
     expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
   });
 
+  it.each(["list", "board"])("keeps the %s draft when a legacy refresh omits newer opened waiting facts", async (view) => {
+    const ready = task({ id: "task-legacy-refresh", labels: ["bug"], dependencies: { blocked: false, waiting_on: [] } });
+    const params = { project_id: "proj-1", state: "open", label: "bug" };
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", params, trackerCache.tasksRecord([ready], columns()));
+    const blocked = { ...ready, updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: blocked, timeline: [] });
+    await openRealPicker(blocked, view, { holdDetail: true });
+    expect(openAssigneePicker.mock.lastCall[0].task).toMatchObject(blocked);
+    greet(false);
+    const legacy = { ...blocked };
+    delete legacy.dependencies;
+    // The older bridge refreshes its active list and detail without graph
+    // fields, leaving the older filtered query and the picker's opened task.
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", trackerCache.tasksRecord([legacy], columns()));
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { project_id: "proj-1", state: "open" },
+      trackerCache.tasksRecord([legacy], columns()));
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: legacy, timeline: [] });
+    expect((await trackerCache.readTaskRecord("dev-1", "proj-1", blocked.id)).task).not.toHaveProperty("dependencies");
+    expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks).toEqual([ready]);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+  });
+
 });
 
 describe("painting before the bridge is asked", () => {

@@ -33,7 +33,8 @@ const optionOf = (options, optionId) => options.find((option) => option.id === o
  *  form and a future menu all group the same way without re-deriving it. */
 function optionsHtml(options, chosen) {
   let openGroup = "";
-  const parts = [];
+  const parts = options.some((option) => option.id === chosen) ? []
+    : [`<option value="${esc(chosen)}" selected disabled>Selected assignee is unavailable</option>`];
   for (const option of options) {
     if (option.group !== openGroup) {
       if (openGroup) parts.push("</optgroup>");
@@ -54,6 +55,12 @@ const workspaceFieldsHtml = (draft, prefix) => `<label class="create-label" for=
   <label class="create-label" for="${esc(prefix)}-isolation">Isolation</label>
   <select id="${esc(prefix)}-isolation">${isolationOptionsHtml(draft.isolation, null, { inheritLabel: "Inherit project setting" })}</select>`;
 
+const workerFieldsHtml = (draft, prefix) => `<label class="create-label" for="${esc(prefix)}-worker">Worker name</label>
+  <input id="${esc(prefix)}-worker" type="text" ${fieldTraits("identifier")} placeholder="Name this worker" value="${esc(draft.name)}" />
+  <p class="sub">Project workers share source files and checked-out branches.</p>`;
+
+const assigneeHint = (hint, option) => hint ?? option?.hint ?? "";
+
 /**
  * The control.
  *
@@ -66,8 +73,9 @@ export function assigneeControlHtml(options, draft, { prefix, catalog, label = "
   return `<div class="task-assignee-control" data-assignee-control="${esc(prefix)}">
     <label class="create-label" for="${esc(prefix)}-assignee">${esc(label)}</label>
     <select id="${esc(prefix)}-assignee" data-assignee-select>${optionsHtml(options, draft.optionId)}</select>
-    <p class="sub task-assignee-hint">${esc(hint ?? option?.hint ?? "")}</p>
+    <p class="sub task-assignee-hint">${esc(assigneeHint(hint, option))}</p>
     ${option?.form === WORKSPACE_FORM ? workspaceFieldsHtml(draft, prefix) : ""}
+    ${option?.kind === "new_project_agent" ? workerFieldsHtml(draft, prefix) : ""}
     ${option?.form ? agentChoicePanelHtml(catalog, draft.choice, { prefix: `${prefix}-choice`, open: draft.choiceOpen }) : ""}
   </div>`;
 }
@@ -81,7 +89,7 @@ export function readAssigneeDraft(root, draft, prefix) {
   return {
     ...draft,
     optionId: valueOf(root, `${prefix}-assignee`) || draft.optionId,
-    name: valueOf(root, `${prefix}-workspace`),
+    name: valueOf(root, `${prefix}-workspace`) || valueOf(root, `${prefix}-worker`),
     isolation: valueOf(root, `${prefix}-isolation`),
   };
 }
@@ -99,7 +107,7 @@ export function wireAssigneeControl(root, draft, { prefix, onDraft }) {
   if (!control) return;
   control.querySelector("[data-assignee-select]").onchange = () =>
     onDraft({ ...readAssigneeDraft(root, draft, prefix), choiceOpen: draft.choiceOpen });
-  const name = root.querySelector(`#${prefix}-workspace`);
+  const name = root.querySelector(`#${prefix}-workspace`) || root.querySelector(`#${prefix}-worker`);
   if (name) name.oninput = () => onDraft(readAssigneeDraft(root, draft, prefix));
   const isolation = root.querySelector(`#${prefix}-isolation`);
   if (isolation) isolation.onchange = () => onDraft(readAssigneeDraft(root, draft, prefix));
@@ -135,13 +143,14 @@ function wireChoice(root, draft, { prefix, onDraft }) {
  * it on this" from "run it on whatever the workspace runs on". An option that
  * starts nothing is asked for no choice at all.
  */
-export function draftAssignParams(options, draft, catalog, { taskId, note = "" } = {}) {
+export function draftAssignParams(options, draft, catalog, { taskId, note = "", operationId = "" } = {}) {
   const option = optionOf(options, draft.optionId);
   return assignParams(taskId, option, {
     name: draft.name,
     isolation: draft.isolation,
     choice: option?.form ? agentChoiceParams(catalog, draft.choice) : null,
     note,
+    operationId,
   });
 }
 

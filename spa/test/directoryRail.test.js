@@ -34,6 +34,17 @@ const mount = (options = {}) => {
 const press = (element, key) => element.dispatchEvent(new window.KeyboardEvent("keydown", { key, bubbles: true }));
 
 describe("the directory rail's markup", () => {
+  it.each([
+    [PROJECT_TABS, ["Tasks", "Changes", "Files", "Workspaces"]],
+    [WORKSPACE_TABS, ["Changes", "Files", "Tasks"]],
+  ])("keeps workspace face names in titles and accessible names", (tabs, names) => {
+    const host = document.createElement("nav");
+    host.innerHTML = directoryRailHtml(tabs, tabs[0].id);
+    const buttons = [...host.querySelectorAll('[role="tab"]')];
+    expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual(names);
+    expect(buttons.map((button) => button.title)).toEqual(names);
+  });
+
   it("offers what changed before what is there, each as an icon and nothing else", () => {
     expect(DIRECTORY_TABS.map((tab) => tab.id)).toEqual(["changes", "files"]);
     const host = document.createElement("nav");

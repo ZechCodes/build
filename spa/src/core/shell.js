@@ -168,14 +168,15 @@ export function shellSelection() {
 export function standShell(route) {
   const fromNotification = takeNotificationOpen();
   const reopensAgent = linkReopensAgent(route, fromNotification);
-  collapseChatOnNavigation(route);
   const parts = shellPartsForRoute(route, { fromNotification });
   // The rail and the console page what they show out of the records, so they
   // stand beside a surface whether or not its machine can answer, exactly as
   // the surface does (core/surfaceContext.js). Only a machine nothing here has
   // ever held stands the reader nowhere; the page names it (core/deviceNotice.js).
-  const context = parts ? surfaceContext(route) : null;
-  const key = parts && context ? parts.key : null;
+  const { context, key } = shellStanding(route, parts);
+  const kept = keepLinkedPin(parts, context, key);
+  if (kept) { stoodAt = hashFromRoute(route); return live.selection; }
+  collapseChatOnNavigation(route);
   // The same standing over the same machine's context is kept. A machine
   // retired and landed anew is a new context, and the rail over the old one
   // stands on a retired repository (core/agentRail.js `standing`), so the
@@ -192,6 +193,30 @@ export function standShell(route) {
   if (!key) return live.selection;
   mountShellParts(parts, context);
   return live.selection;
+}
+
+function shellStanding(route, parts) {
+  const context = parts ? surfaceContext(route) : null;
+  return { context, key: parts && context ? parts.key : null };
+}
+
+function keepLinkedPin(parts, context, key) {
+  if (!key || !live || live.key === key || live.context !== context) return false;
+  const kept = live.rail?.retarget?.({ ...parts.rail, call: context.rpc,
+    cacheScope: context.cacheScope, chatRepository: context.chatRepository });
+  if (!kept) return false;
+  ++generation;
+  live.key = key;
+  live.late = {};
+  retargetConsole(parts, context);
+  return true;
+}
+
+function retargetConsole(parts, context) {
+  live.console?.dispose?.();
+  live.console = parts.console ? mountConsole($("#console-region"), {
+    ...parts.console, call: context.rpc, cacheScope: context.cacheScope,
+  }) : null;
 }
 
 function mountShellParts(parts, context) {

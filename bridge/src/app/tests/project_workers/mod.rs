@@ -8,6 +8,7 @@ use super::*;
 
 mod assignment;
 mod cleanup;
+mod identities;
 mod lifecycle;
 mod returning_folder;
 mod sources;

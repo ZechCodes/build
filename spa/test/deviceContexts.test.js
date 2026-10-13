@@ -88,6 +88,33 @@ describe("the device context registry", () => {
     expect(session.call).toHaveBeenCalledWith("tasks.update", { task_id: "task-347", priority: "high" });
   });
 
+  it("waits for the current worker-assignment greeting before sending the exact creation request", async () => {
+    const session = fakeSession("dev-a");
+    const context = adoptDeviceSession(session);
+    const params = { task_id: "task-536", assignee: { kind: "new_project_agent", agent_name: "Ada" }, operation_id: "op-536" };
+    const sent = context.rpc("tasks.assign", params);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.call).not.toHaveBeenCalled();
+    adoptBridgeSelection(context, { version: "3.22.0", unsupported: null }, { capabilities: { tasks: { assignProjectAgent: true } } });
+    await sent;
+    expect(session.call).toHaveBeenCalledExactlyOnceWith("tasks.assign", params);
+  });
+
+  it("refuses a retained worker-creation caller after downgrade while preserving ordinary assignment", async () => {
+    const context = adoptDeviceSession(fakeSession("dev-a"));
+    adoptBridgeSelection(context, { version: "3.22.0", unsupported: null }, { capabilities: { tasks: { assignProjectAgent: true } } });
+    const call = context.rpc;
+    const replacement = fakeSession("dev-a");
+    adoptDeviceSession(replacement);
+    adoptBridgeSelection(context, { version: "3.21.0", unsupported: null }, { capabilities: { tasks: {} } });
+    await expect(call("tasks.assign", { task_id: "task-536", assignee: { kind: "new_project_agent" }, operation_id: "op-536" }))
+      .rejects.toThrow("Update this device's bridge to assign tasks to new project workers.");
+    expect(replacement.call).not.toHaveBeenCalled();
+    const params = { task_id: "task-536", assignee: { kind: "agent", agent_id: "project-worker" } };
+    await call("tasks.assign", params);
+    expect(replacement.call).toHaveBeenCalledExactlyOnceWith("tasks.assign", params);
+  });
+
   it("gives every adopted session its own context", () => {
     const first = adoptDeviceSession(fakeSession("dev-a"));
     const second = adoptDeviceSession(fakeSession("dev-b"));

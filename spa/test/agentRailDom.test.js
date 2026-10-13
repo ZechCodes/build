@@ -1850,7 +1850,7 @@ describe("the bubble strip", () => {
     expect(bubbles()[0].classList.contains("working")).toBe(true);
     // Working outranks the unread it left before this run (#201); the count says it.
     expect(bubbles()[0].title).toMatch(/— working$/);
-    expect(bubbles()[0].getAttribute("aria-label")).toMatch(/— working$/);
+    expect(bubbles()[0].getAttribute("aria-label")).toBe(`${bubbles()[0].title}, 3 unread`);
 
     // …and back again: the count goes, the animation stops where it was.
     payload = branchRow({ agents: [agent()] });
@@ -2206,7 +2206,7 @@ describe("the strip's watched agents (#105)", () => {
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
-      expect(projectBubble().title).toMatch(/Not watching$/);
+      expect(projectBubble().title).toBe("Project agent");
 
       bubbleOf("ag-one").click();
       await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
@@ -2226,7 +2226,7 @@ describe("the strip's watched agents (#105)", () => {
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
-      expect(projectBubble().title).toMatch(/Not watching$/);
+      expect(projectBubble().title).toBe("Project agent");
 
       bubbleOf("ag-one").click();
       await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
@@ -7174,4 +7174,189 @@ it("re-reports the now-safe tail after returning from overview to the same conve
   } finally {
     geometry.mockRestore();
   }
+});
+
+describe("cached project worker rail", () => {
+  const owner = "run-project";
+  const pin = () => agent({ id: "project-pin", conversation_id: "pin-chat", project_role: "coordinator", name: "Coordinator" });
+  const worker = (id = "project-worker") => agent({ id, conversation_id: `${id}-chat`, project_role: "worker", name: "Source worker", ordinal: 2 });
+  const writeRoster = async (agents = [worker(), pin()]) => {
+    await writeCached({ deviceId: "dev-1", entityId: owner, kind: "project-agents" }, { entity_id: owner, pinned_agent_id: "project-pin", agents });
+    await flush();
+  };
+  const mountWorkers = async () => {
+    payload = { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] };
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    await writeRoster();
+    await mount({ kind: "project", entityId: owner, openAgentId: "project-worker" });
+  };
+  const workerBubble = () => railHost().querySelector('[data-agent="project-worker"][data-bubble="agent"]');
+
+  it("paints cached workers before any worker-capable greeting and keeps legacy summaries separate", async () => {
+    await mountWorkers();
+    expect(workerBubble()).toBeTruthy();
+    expect(workerBubble().title).toContain("Source worker");
+    expect(railHost().querySelector(".rail-strip").children[1].getAttribute("role") === "separator").toBe(true);
+    expect(railHost().querySelector('[data-bubble="add"]')).toBeTruthy();
+    await pushRow({ ...payload, agents: [pin()] });
+    expect(workerBubble()).toBeTruthy();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+    await flush();
+    expect(workerBubble()).toBeNull();
+    expect(railHost().querySelector('[data-bubble="add"]')).toBeNull();
+  });
+
+  it("sends on the exact worker conversation and preserves sibling drafts when it leaves", async () => {
+    await mountWorkers();
+    await vi.waitFor(() => expect(panel()?.querySelector("#railinput")).toBeTruthy());
+    panel().querySelector("#railinput").value = "edit original source";
+    panel().querySelector("#railsend").click();
+    await vi.waitFor(() => expect(callsTo("thread.post")).toHaveLength(1));
+    expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: owner, agent_id: "project-worker", conversation_id: "project-worker-chat" });
+    railHost().querySelector('[data-agent="project-pin"][data-bubble="agent"]').click();
+    await flush();
+    const draft = panel().querySelector("#railinput");
+    draft.value = "coordinator draft";
+    draft.dispatchEvent(new Event("input", { bubbles: true }));
+    workerBubble().click();
+    await flush();
+    await writeRoster([pin()]);
+    expect(workerBubble()).toBeNull();
+    expect(panel().querySelector("#railinput").value).toBe("coordinator draft");
+  });
+
+  it("a delayed cached roster read cannot repaint workers after a support downgrade", async () => {
+    await mountWorkers();
+    const cache = await import("../src/core/localCache.js");
+    const readMany = cache.readCachedMany;
+    let release;
+    const spy = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await readMany(addresses);
+      if (!release && addresses[0]?.kind === "project-agents-support") {
+        await new Promise((resolve) => { release = resolve; });
+      }
+      return records;
+    });
+    try {
+      await writeRoster();
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+      await vi.waitFor(() => expect(workerBubble()).toBeNull());
+      release();
+      await flush();
+      expect(workerBubble()).toBeNull();
+    } finally { release?.(); spy.mockRestore(); }
+  });
+
+  it("names the project pin exactly Project agent", async () => {
+    await mountWorkers();
+    expect(railHost().querySelector('[data-agent="project-pin"]').title).toBe("Project agent");
+  });
+
+  it("adds the cached old-bridge notice without replacing the pin conversation", async () => {
+    await mountWorkers();
+    railHost().querySelector('[data-agent="project-pin"]').click();
+    await flush();
+    const input = panel().querySelector("#railinput");
+    const thread = panel().querySelector(".thread-items");
+    input.value = "keep this draft";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    const notice = () => panel().querySelector(".rail-project-agents-update");
+    expect(notice()).toBeNull();
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+    await vi.waitFor(() => expect(notice()?.textContent).toBe("Update this device to use project agents."));
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(panel().querySelector(".thread-items")).toBe(thread);
+    expect(input.value).toBe("keep this draft");
+    expect(document.activeElement).toBe(input);
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    await vi.waitFor(() => expect(notice()).toBeNull());
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(panel().querySelector(".thread-items")).toBe(thread);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("does not call an unknown cached bridge outdated", async () => {
+    payload = { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] };
+    await mount({ kind: "project", entityId: owner, openAgentId: "project-pin" });
+    expect(panel().querySelector(".rail-project-agents-update")).toBeNull();
+  });
+
+  it("does not show a project agents update notice on a workspace host", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: false });
+    payload = { kind: "workspace", entity_id: "workspace-owner", project_id: "p1", agents: [agent({ id: "workspace-agent" })] };
+    await writeRailBoard({ items: [payload, { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] }],
+      projects: [{ project_id: "p1", name: "Project", entity_id: owner }],
+      workspaces: [{ workspace_id: "ws", project_id: "p1", entity_id: "workspace-owner", name: "Child" }] });
+    await mount({ kind: "workspace", workspaceId: "ws", openAgentId: "workspace-agent", projectAgent: { projectId: "p1", entityId: owner, name: "Project" } });
+    railHost().querySelector('[data-bubble="project"]').click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(panel().querySelector(".rail-project-agents-update")).toBeNull();
+  });
+
+  it("uses project-agent update copy when a cached chooser reaches an older bridge", async () => {
+    await mountWorkers();
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    panel().querySelector("#railinput").value = "work in the original source";
+    panel().querySelector("#railsend").click();
+    await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "Update this device to use project agents."));
+    expect(callsTo("agent.add")).toEqual([]);
+    expect(callsTo("thread.post")).toEqual([]);
+  });
+
+  it.each([true, false])("explains shared source writes when adding a worker (workers present: %s)", async (workersPresent) => {
+    await mountWorkers();
+    if (!workersPresent) await writeRoster([pin()]);
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(panel().querySelector(".rail-worker-notice")?.textContent).toBe("Works in the original project sources. Files, Git index and current branch are shared with you and other project workers.");
+    expect(railHost().querySelector('[data-bubble="add"]').getAttribute("aria-label")).toBe("Add agent");
+  });
+
+  it("keeps project workers out of a named workspace including worker deep links", async () => {
+    await mountWorkers();
+    rail.dispose();
+    payload = { kind: "workspace", entity_id: "workspace-owner", project_id: "p1", agents: [agent({ id: "workspace-agent" })] };
+    await writeRailBoard({ items: [payload, { kind: "project", entity_id: owner, project_id: "p1", agents: [pin()] }],
+      projects: [{ project_id: "p1", name: "Project", entity_id: owner }],
+      workspaces: [{ workspace_id: "ws", project_id: "p1", entity_id: "workspace-owner", name: "Child" }] });
+    await mount({ kind: "workspace", workspaceId: "ws", openAgentId: "project-worker", projectAgent: { projectId: "p1", entityId: owner, name: "Project" } });
+    expect(workerBubble()).toBeNull();
+    expect(railHost().querySelector('[data-agent="workspace-agent"]')).toBeTruthy();
+  });
+});
+
+
+describe("cached project worker notice labels", () => {
+  const workerId = "project-notice-worker";
+  const projectKey = "dev-1/p1";
+  const rosterProject = (key, name) => ({ projectKey: key, name: "Build", projectRoster: {
+    entity_id: "run-project", pinned_agent_id: "project-pin", agents: [
+      agent({ id: "project-pin", project_role: "coordinator" }),
+      agent({ id: workerId, project_role: "worker", provider: "codex_app_server", name }),
+    ],
+  } });
+  const snapshot = (name) => ({ items: [], workspaces: [], projects: [
+    rosterProject(projectKey, name), rosterProject("dev-1/p2", "Other project worker"),
+    rosterProject("dev-2/p1", "Other device worker"),
+  ] });
+
+  it("uses the exact complete roster and repaints its cached worker name", async () => {
+    const notice = { type: "message", data: { id: "worker-notice", sequence: 1, role: "user", from_build: true,
+      body: "", from_task: { task_id: "task-worker", number: 536, title: "Worker identity" },
+      task_notice: { actor: workerId, action: "commented" } } };
+    payload = branchRow({ run: { run_id: "run-3", thread: { items: [notice], sessions: [] } } });
+    await pushFeed(snapshot("Astra"));
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    const name = () => panel()?.querySelector('[data-task-notice="task-worker"] .thread-task-agent-name');
+    await vi.waitFor(() => expect(name()?.textContent).toBe("Astra"));
+    expect(panel().querySelector('[data-task-notice="task-worker"] [data-harness-icon="codex_app_server"]')).toBeTruthy();
+    expect(panel().querySelector('[data-task-notice="task-worker"] .is-project')).toBeNull();
+    await pushFeed(snapshot("Sol"));
+    await vi.waitFor(() => expect(name()?.textContent).toBe("Sol"));
+    expect(panel().querySelector('[data-task-notice="task-worker"]').textContent).not.toContain("Other");
+  });
 });

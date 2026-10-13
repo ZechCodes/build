@@ -7,7 +7,7 @@ export function projectChangesDirectories(project, projectId, supported) {
     is_git: source.is_git,
     scope: { project_id: projectId, source_id: source.id, source_path: source.path },
     ...(!supported && index > 0 && source.is_git !== false
-      ? { status: "unsupported", error: "Update this device to use Changes for this project source." } : {}),
+      ? { status: "unsupported", error: "Update this device to use project Changes." } : {}),
   }));
 }
 export function projectSourceContext(source, now = Date.now()) {

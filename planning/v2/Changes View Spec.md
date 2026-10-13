@@ -1,9 +1,10 @@
 # Changes View Spec
 
-## Project source Changes — #522 planning amendment (2026-10-12)
+## Project source Changes — #522 implementation amendment (2026-10-13)
 
-Proposed extension: [Project workspace](Project%20Workspace%20Spec.md) specifies
-Changes over each original project source using the existing Git pane. Scope
+Implemented by #529–#536 under the settled
+[Project workspace](Project%20Workspace%20Spec.md) decisions:
+Changes uses the existing Git pane over each original project source. Scope
 is project + registered source + captured location; this is additional Git
 support, not implied by the existing Files capability. Current checkout HEAD
 and configured sync/cut base are distinct. Sync base remains safe fast-forward

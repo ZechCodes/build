@@ -27,15 +27,12 @@ import { harnessIconHtml } from "./harnessIcon.js";
 import { projectInitial } from "./agentRailModel.js";
 import { actorInitials } from "./trackerModel.js";
 import { actorName } from "./trackerLineWords.js";
+import { isProjectActor } from "./projectActor.js";
+export { isProjectActor } from "./projectActor.js";
 
 /** The id a project's own agent is minted under. The bridge writes it as an
  *  ordinary agent actor on some paths and as its own actor kind on others, so
  *  both are asked about — one agent must not have two faces. */
-const PROJECT_AGENT_PREFIX = "project-";
-
-export const isProjectActor = (actor) =>
-  actor?.kind === "project_agent" || String(actor?.agent_id || "").startsWith(PROJECT_AGENT_PREFIX);
-
 /**
  * The mark for one author.
  *
@@ -51,7 +48,7 @@ export function taskAvatarHtml(actor, context = {}) {
   // The label the card already shows in its head, as hover text: the picture
   // is a hint, and a hint nobody can resolve is a worse one.
   const title = ` title="${esc(actorName(actor, context))}"`;
-  if (isProjectActor(actor)) return projectMarkHtml(actor, title, context.projectName);
+  if (isProjectActor(actor, context)) return projectMarkHtml(actor, title, context.projectName);
   const provider = harnessOf(actor, context.agentProviders || {}, context.identities || {});
   if (provider) return `<span class="task-avatar is-harness"${title} aria-hidden="true">${harnessIconHtml(provider)}</span>`;
   return `<span class="task-avatar"${title} aria-hidden="true">${esc(actorInitials(actor))}</span>`;
@@ -66,4 +63,4 @@ const projectMarkHtml = (actor, title, projectName) =>
 
 /** The harness an agent author runs on, as far as this client knows. */
 const harnessOf = (actor, agentProviders, identities) =>
-  (actor?.kind === "agent" ? identities[actor.agent_id]?.provider || agentProviders[actor.agent_id] || "" : "");
+  (actor?.kind === "agent" ? actor.identity?.provider || identities[actor.agent_id]?.provider || agentProviders[actor.agent_id] || "" : "");

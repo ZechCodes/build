@@ -31,5 +31,7 @@ export function agentModelsFromFeed(feed, projectKey) {
   const rosterOf = freshestRosters(rows);
   const newest = rows.map((row) => entityIdOf(row) ? rosterOf(projectKey, entityIdOf(row)) : row);
   const agents = newest.flatMap((row) => row?.agents || []);
-  return Object.fromEntries(agents.map((agent) => [agent.id, agent]));
+  const projectAgents = (feed?.projects || []).filter((project) => project.projectKey === projectKey)
+    .flatMap((project) => project.projectRoster?.agents || []);
+  return Object.fromEntries([...agents, ...projectAgents].map((agent) => [agent.id, agent]));
 }

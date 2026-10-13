@@ -67,6 +67,59 @@ C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
   `a_stale_worker_session_cannot_assign`, and
   `project_deletion_retires_workers_and_preserves_sources` (tokens revoked,
   queued turns dropped).
+### C8 / #536 scoped verification — 2026-10-13
+
+Fix-round checkpoint: findings 1–6 and copy have focused passing evidence.
+The full SPA gate pass and final scans remain pending at the mandatory
+context-limit handoff; this entry makes no final verification claim.
+
+Final fix-round revalidation remains pending.
+
+TS522-1's SPA contribution scores **25/25**: cached assignee groups include only
+the exact project's workers; creation retains its operation identity on retry;
+a removed selection refuses instead of selecting another agent. The shared
+device RPC boundary waits for the current greeting and refuses
+`new_project_agent` creation when `tasks.assignProjectAgent` is absent, including
+a retained picker caller after downgrade. Ordinary existing-agent assignment
+keeps its existing contract. Inherited C4/C5 tests above supply bridge purpose,
+same-project authorization and server idempotence evidence.
+
+Focused device-context, worker-assignee and review-feedback suites ran under
+`nice -n 10` and passed 51 tests (exit 0); both new current-greeting regressions
+failed first (exit 1). Scoped source lint passed (exit 0). Rail/shell coverage
+passed 385 tests (exit 0), and the project-worker Chromium suite passed four
+tests (exit 0). Final broad gates and scans are recorded on #536 when complete.
+
+Fix-round identity evidence supplements truthful task presentation: a removed
+unnamed worker keeps its ordinal and harness instead of becoming the pin; an
+older captured identity without a role remains generic unless exact cached
+membership establishes the pin. The identity regression failed first, then
+37 task identity/notice tests passed; the legacy fallback brought the focused
+set to 38 passing tests. The additive 3.21.0 `project_role` API contract
+regression failed first, then all 46 API contract tests passed; client/contract
+coverage passed 71 tests. All green focused runs exited 0 under `nice -n 10`.
+The legacy project-purpose metadata regression failed first (exit 101), then
+11 bridge identity tests passed (exit 0). Durable live/stored project identity
+backfill clears synthetic workspace ids/names even when an older snapshot
+retained them. Finding 5's same-pin mounted-continuity regressions failed first
+at 390/1280 widths (exit 1), then all seven worker Chromium tests passed
+(exit 0); nine focused rail/shell/browser suites passed 452 tests (exit 0)
+and scoped lint passed (exit 0). Finding 6's notice/task-line regressions
+failed first (seven semantic failures, exit 1), as did the cached rail notice
+regression. Three focused suites then passed 403 tests (exit 0), and scoped
+lint passed (exit 0). Shared purpose-aware identity keeps a named Codex
+worker's own harness and cached name in inline task lines and rail notices;
+project-worker fixture cases also cover removed durable workers, cached bare
+actors/assignees and the coordinator. Copy/cache notice regressions failed
+first (exit 1), then the focused project/pin suites passed 102 tests (exit 0)
+and scoped lint passed (exit 0). Final broad gates remain pending; earlier
+evidence does not certify the final revision.
+
+TS522-1 plus the three Chat Isolation C8 controls (25 points each) score
+**100/100 within C8's implemented scope**. The combined #522 extension and
+TS522-2's C10 lifecycle evidence remain pending; this entry does not mark them
+complete.
+
 ## #558 extension — bridge verified; browser evidence pending
 
 These rows follow Zech's 2026-10-12 decisions in

@@ -1,5 +1,5 @@
-// Hash routes for the three-panel shell. There are two work items and two
-// global surfaces, and that is the whole vocabulary:
+// Hash routes for the three-panel shell. Project workspaces, named child
+// workspaces, branch views and task pages keep their existing route identities:
 //   #/inbox                                     — the landing surface
 //   #/project/<projectId>[?view=list|board]     — the project: its task tracker
 //   #/project/<projectId>/changes[?source=<id>&commit=<sha>] — original-source Git
@@ -33,7 +33,7 @@ import { currentId } from "./renamedIds.js";
 const BRANCH_TABS = new Set(["changes", "files"]);
 const ACCOUNT_PAGES = new Set(["settings", "devices", "archive"]);
 
-/// The project page's second tab, and the collection the tracker lives under.
+/// The project workspace's default Tasks face and tracker collection.
 /// One word for both, because `#/project/<p>/tasks` IS that tab.
 const TASKS_TAB = "tasks";
 
@@ -45,7 +45,7 @@ const LEGACY_TASKS_TAB = "issues";
 const LEGACY_PLAN_COLLECTION = "issue";
 const isTasksSegment = (segment) => segment === TASKS_TAB || segment === LEGACY_TASKS_TAB;
 
-/// The project page's other tab. Tasks is first and is what a project link
+/// The named-child Workspaces face. Tasks is what a canonical project link
 /// opens on (#46), so Tasks writes nothing and this one names itself: a URL
 /// says only what is not the default. `#/project/<p>` IS the Tasks tab, and
 /// every `/tasks` link written before the flip still parses to the same place.
@@ -247,8 +247,8 @@ function tabPlace(query) {
   return { file: path, ...(Number.isFinite(line) && line > 0 ? { line } : null) };
 }
 
-// The surfaces whose Files tab stands in a file: both are a checkout with a
-// tree, and both carry the file as a query rather than a path segment.
+// Files on a branch page, named workspace or project workspace carries the
+// selected file as a query rather than a path segment.
 const FILE_TAB_SURFACES = new Set(["branch", "workspace", "project"]);
 
 // The surfaces whose rail can be opened on a named conversation: the two pages

@@ -53,6 +53,15 @@ beforeEach(() => {
 });
 
 describe("workspace creation", () => {
+  it("names a new workspace and explains its separate checkout", () => {
+    const host = document.createElement("div");
+    host.innerHTML = createWorkHtml({ projectName: "Payments", name: "", isolation: "", busy: false, error: "" });
+    expect(host.querySelector("h3").textContent).toBe("New workspace in Payments");
+    expect(host.querySelector(".create-hint").textContent).toBe("Creates a separate checkout of the project sources.");
+    expect(host.querySelector('label[for="create-work-input"]').textContent).toBe("Workspace label");
+    expect(host.querySelector("[data-create-go]").textContent).toBe("Create workspace");
+  });
+
   it("is the only active creation kind and omits inherited optional values", () => {
     expect(CREATE_KINDS).toEqual(["workspace"]);
     expect(workspaceCreateParams({ projectId: "p1", name: "", isolation: "" })).toEqual({ project_id: "p1", name: "" });

@@ -3,8 +3,8 @@ import { directoryTab } from "./workspaceModel.js";
 /** Where an ordinary project link opens: its Tasks face and the agent you
  * talk to about it. Explicit toolbar returns use projectRailState instead.
  *
- * The project page also offers its original sources in Files and the
- * workspaces cut from them (core/router.js writes it as `#/project/<id>`).
+ * The project workspace also offers original-source Changes and Files, a
+ * source terminal console, and Workspaces for the named children cut from them (core/router.js writes it as `#/project/<id>`).
  *
  * The route names the machine the project is on, since every machine mints a
  * `proj-1` of its own. A project the feed has not stamped — the answer to a

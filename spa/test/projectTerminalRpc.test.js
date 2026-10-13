@@ -24,7 +24,7 @@ describe("project terminal dispatch", () => {
   it("refuses an older bridge and never sends project source selectors", async () => {
     state.capability = false;
     const call = vi.fn();
-    await expect(projectTerminalRpc(context, "term.create", scope, call)).rejects.toThrow(/Update/);
+    await expect(projectTerminalRpc(context, "term.create", scope, call)).rejects.toThrow("Update this device to use project Terminal.");
     expect(call).not.toHaveBeenCalled();
   });
   it.each([{ source_path: "/moved" }, { source_id: "other" }, { project_id: "other" }])("refuses absent or changed membership %j", async (over) => {

@@ -422,8 +422,16 @@ runtime that starts them.
   on `agent.add`, which accepts only `"worker"` and only on a project's
   conversation owner. Every roster read that predates workers (board rows,
   the project list's conversations, `agent.remove`, and `agent.list` without
-  the flag) carries a project owner's pinned coordinator alone. See MCP
-  tools. 3.21.0 also adds `tasks.assignProjectAgent` (#533): the
+  the flag) carries a project owner's pinned coordinator alone. Task agent
+  identities and inline task-notice identities also carry optional
+  `project_role` (#536), retained independently of an optional name or live
+  membership. This additive field shares the unreleased 3.21.0 minor; clients
+  read it when present and need no separate dispatch capability. Without the
+  field or exact cached pin membership, a captured project identity stays a
+  generic agent with its saved ordinal/harness rather than claiming to be the
+  coordinator. The `project_identities` contract entries on `tasks.get`,
+  `tasks.list` and `thread.page` record the field and its `since: 3.21.0`.
+  See MCP tools. 3.21.0 also adds `tasks.assignProjectAgent` (#533): the
   `new_project_agent` assignee kind on `tasks.assign` and `tasks.create`,
   and `operation_id` on `tasks.assign`, which a retry answers with the
   dispatch already made. A reused id asked of a different assignment is
@@ -2066,8 +2074,14 @@ canonical project URL's default. Workspaces lists named child workspaces only;
 its lifecycle, size, filtering and Reclaim controls do not describe the original
 sources. The project has no synthetic workspace record. `projectRailState.js`
 remembers local returns by device/project, including the Changes source and
-commit; explicit links take precedence. Breadcrumb and sibling navigation are
-owned separately by #523.
+commit; explicit links take precedence. The toolbar links the project
+ancestor, offers a local workspace selector and opens a global switcher with
+the leading left-chevron action. `toolbarBreadcrumbs.js` derives ancestry
+from the URL; `navigationModel.js` and `navigationRoutes.js` share cached
+destinations and return behavior. The original-source destination says
+“Project workspace”; project bars and inbox heads retain the project name.
+Named children use their given workspace names; their collection is
+“Workspaces” and creation is “New workspace”.
 
 `spa/src/views/projectChanges.js` mounts the shared kept directory panes from
 `workspaceChanges.js`, one per configured source. Each Git pane works on that
@@ -2080,7 +2094,7 @@ action. A Changes diff opens Files with the same source, path and line.
 Project list cache writes reconcile added, relabelled, removed and moved sources
 in place. Surviving panes keep their drafts, selected commits and scroll; moving
 a source gives it a new location namespace. Face changes retain the shell's
-conversation and console. The project-worker rail (#536) has a separate implementation.
+conversation and console. The project-worker rail is described below.
 
 The project and its project-hosted task pages share `console: {kind: "project"}`
 in `shell.js`. The Terminal rail button sits outside the face tablist and
@@ -2146,6 +2160,70 @@ conditional writes fence obsolete reads. Source moves cannot apply an old reply
 to the replacement namespace. `projectChangesRpc.js` captures the opened source
 and rechecks membership/location and current capabilities at dispatch, including
 after a queued greeting. Stale source writes refuse instead of following a move.
+
+### Project agent rail and rosters
+
+The project and its project-hosted tasks show one protected pin above the
+separator and every project worker below it, including unwatched workers.
+The pin's identity comes from `pinned_agent_id`, independently of roster
+ordering. Named workspace pages show their own agents and the project pin;
+project workers stay on project hosts. The assignee picker includes workers
+from that exact project's complete cached roster, with new-worker assignment
+separately gated by `tasks.assignProjectAgent`.
+
+`projectAgentsCache.js` stores complete rosters at
+`deviceId|entityId|project-agents` separately from legacy pinned-only rows.
+The per-device `project-agents-support` record holds the greeting's
+`agents.projectWorkers` and `tasks.assignProjectAgent` support. Rendering reads
+support and roster together; a valid roster must name that exact owner and a
+pin present in its agents. Without cached support it paints only the legacy
+pin. Current greetings additionally gate worker creation and new-worker task
+assignment, including a retained picker caller after a capability downgrade.
+The pin's tooltip reads “Project agent”. An explicit cached
+`projectWorkers: false` shows “Update this device to use project agents.”
+on a project host; unknown support and workspace pins keep
+that notice absent. Rendering the notice does not replace the mounted
+composer or thread, and never waits for connection state.
+
+`cachedFeedView()` projects complete rosters onto `projects[].projectRoster`;
+`projectRosterRows()` supplies complete owner rows to lineage, task activity,
+attention and sync without replacing pinned-only inbox summaries. Overview
+reads the same complete roster directly. Overview, lineage and the task feed
+hear both roster and support invalidations; task activity follows canonical
+conversation addresses, and watched-task running state follows the exact
+worker or persisted pin. Route discovery keeps its separate legacy owner-list
+path, so reading every worker roster never delays finding the selected
+conversation. The rail's `railWorkItem.js` reads the same complete
+record on project hosts and filters it to the exact pin on a workspace host.
+
+Roster pulls use the sync planner and its two shared background wire slots.
+The selected project's roster has foreground authority; unrelated held roster
+replies cannot delay selected thread, Git or task recovery. Landing a complete
+roster extends that pass's conversation jobs before it reads worker histories.
+State and thread invalidations refresh the complete record through the same
+scheduler. Roster admission captures every named thread generation and checks
+the roster write and those generation records in one transaction; a late
+pre-reset reply cannot restore a retired worker conversation. Removal and
+reset target the exact worker, preserving sibling and pin drafts.
+
+When a project/workspace host changes while the route explicitly selects
+the same canonical pin, the shell retargets the mounted rail instead of
+disposing it. The composer, thread and focus remain mounted throughout
+navigation; the viewing
+workspace and host-specific Overview/console change with the host. A different
+agent, device or repository still selects its own controller.
+
+`projectActor.js` supplies shared purpose checks for task rows, comments,
+avatars and thread notices. Durable `TaskAgentIdentity.project_role` survives
+removal; older stored identities are backfilled from a persisted roster role
+when one is available. A recovered project purpose clears synthetic workspace
+identity fields, including fields retained by older snapshots: the owner's
+scratch directory is not a named workspace. A named worker keeps its own name
+and harness mark. An unnamed worker uses its captured ordinal and harness;
+an older captured
+identity with unknown purpose uses the same generic presentation unless exact
+cached membership confirms the pin. Deleted identities retain their label and
+have no conversation link.
 
 ### Files
 
@@ -2779,7 +2857,7 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Conversation and agent rail | `spa/src/core/shell.js`, `spa/src/core/agentRail.js` (+ `agentRailModel.js`, `agentRailRender.js`), `spa/src/core/chatRepository.js`, `spa/src/core/thread*.js` |
 | Tasks list, board, dashboard | `spa/src/views/projectView.js` → `spa/src/core/trackerTasksPane.js`; `trackerListRender.js`, `trackerBoardRender.js`, `trackerDashboardRender.js` in `spa/src/core/` |
 | Task page | `spa/src/views/trackerTaskView.js` → `spa/src/core/trackerTaskPage.js` |
-| Workspace navigation | the toolbar's `project / workspace` picker in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`); the rail down the left edge (Changes, Files, Tasks, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
+| Workspace navigation | linked project ancestry, the local workspace selector and global project/workspace switcher in `spa/src/core/toolbar.js` (+ `toolbarModel.js`, `toolbarRender.js`, `toolbarBreadcrumbs.js`, `navigationModel.js`, `navigationRoutes.js`); the rail down the left edge (Changes, Files, Tasks, Settings) in `spa/src/core/workspaceRail.js` over `directoryRail.js`, mounted from `spa/src/views/workspaceView.js`; inside Changes, the per-directory tab row in `spa/src/views/workspaceChanges.js` |
 | Project navigation | the rail down the left edge (Tasks, Changes, Files, Workspaces, Settings) in `spa/src/core/projectRail.js` over `directoryRail.js`, mounted from `spa/src/views/projectView.js` and `spa/src/views/trackerTaskView.js`; local return state in `spa/src/core/projectRailState.js` |
 | Changes and git | `spa/src/core/gitPane.js`, `gitRender.js`, `changesReview.js`, `changesModel.js`, `changesRender.js`, mounted from `spa/src/views/projectChanges.js` (original configured sources), `spa/src/views/workspaceChanges.js` (named workspace directories) and `spa/src/views/branchView.js`; project and workspace directory panes are kept while another stands, and hide/show suspends owned editors, dialogs, listeners and layout work while preserving drafts, scroll and cache subscriptions |
 | Files | `spa/src/views/files.js`, `spa/src/core/fileRoots.js` (a workspace's one root per directory), `spa/src/core/fileTree.js` (+ `fileTreeModel.js`), `spa/src/core/fileTabs.js` (+ `fileTabsModel.js`), `spa/src/core/fileViewer.js`, `spa/src/core/fileEditor.js` |

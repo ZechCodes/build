@@ -1,8 +1,9 @@
 # Build v1 — UI Design Brief & User Stories
 
-## Workspace views — #522 planning amendment (2026-10-12)
+## Workspace views — #522 implementation amendment (2026-10-13)
 
-Proposed design, pending the decisions in [Project workspace](Project%20Workspace%20Spec.md).
+The decisions in [Project workspace](Project%20Workspace%20Spec.md) are settled;
+#529–#536 implement the bridge and SPA behavior described here.
 “Workspace” names the rail-based view: Tasks, Changes, Files, attached agents
 and a terminal console. The project workspace uses the original sources and
 adds Workspaces, the management face for its named child checkouts. Project
@@ -17,7 +18,7 @@ whichever agent happens to be selected. The original source trees are shared;
 Changes makes the work visible, without promising worker isolation.
 
 The linked amendment supplies the copy/route inventory, code contradictions,
-open decisions and child acceptance tests. It supersedes the early Information
+settled decisions and child acceptance tests. It supersedes the early Information
 Architecture, Task view and Terminal descriptions below within this scope.
 #523 owns navigation and breadcrumbs; its sibling picker shares cached
 workspace identities with the Workspaces face and does not duplicate its

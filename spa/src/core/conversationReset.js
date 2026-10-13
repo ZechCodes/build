@@ -86,13 +86,14 @@ async function publishAliasGeneration(ownership, agent) {
   const { deviceId, entityId, conversationId, threadId } = ownership;
   const threadAddress = { deviceId, entityId, kind: "thread", sub: conversationId };
   const rowAddress = { deviceId, entityId, kind: "row", sub: "" };
+  const rosterAddress = { deviceId, entityId, kind: "project-agents", sub: "" };
   notePush(threadAddress); notePush(rowAddress);
   const answer = { agent, entity_id: entityId, conversation_id: conversationId, previous_thread_id: threadId,
     thread: { thread_id: agent.thread_id, thread_generation_revision: agent.thread_generation_revision || 0, items: [], sessions: [] } };
-  await mergeCachedTogether([threadAddress, rowAddress], ([thread, row]) => {
+  await mergeCachedTogether([threadAddress, rowAddress, rosterAddress], ([thread, row, roster]) => {
     if (obsoleteGeneration(thread, agent)) return null;
     const replacement = heldThreadId(thread) === agent.thread_id ? null : replacementGenerationWindow(thread, agent, threadId);
-    return [replacement, row ? resetAliasesInRow(row, answer) : null];
+    return [replacement, row ? resetAliasesInRow(row, answer) : null, roster ? resetAliasesInRow(roster, answer) : null];
   });
 }
 
@@ -116,7 +117,7 @@ function resetAliasAgent(agent, answer) {
 function conversationAliases(records, ownership) {
   const aliases = new Map([[`${ownership.entityId}:${ownership.agentId}`, ownership]]);
   for (const { address, value } of records) {
-    if (address.kind !== "row") continue;
+    if (address.kind !== "row" && address.kind !== "project-agents") continue;
     for (const agent of value?.agents || []) {
       if ((agent.conversation_id || agent.id) !== ownership.conversationId) continue;
       aliases.set(`${address.entityId}:${agent.id}`, { ...ownership, entityId: address.entityId, agentId: agent.id });

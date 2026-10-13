@@ -36,3 +36,26 @@ describe("the project agent's own unread activity", () => {
     expect(entry.watchedWorking).toBe(false);
   });
 });
+
+
+describe("cached project worker unread (#536)", () => {
+  const pin = { id: "pin", conversation_id: "pin-history", watched: true, unread_count: 2 };
+  const worker = { id: "worker", conversation_id: "worker-history", watched: true, unread_count: 3, working: true };
+  const withRoster = (agents) => ({ ...project, projectRoster: {
+    entity_id: project.entity_id, pinned_agent_id: pin.id, agents,
+  } });
+
+  it("counts each watched canonical conversation once, separate from task news", () => {
+    const unseen = { id: "unwatched", watched: false, unread_count: 20, working: true };
+    const alias = { ...worker, id: "alias" };
+    const stale = { projectKey: project.projectKey, run_id: project.entity_id, agents: [{ ...pin, unread_count: 50 }] };
+    const [entry] = projectAgentEntries([withRoster([pin, worker, alias, unseen])], [stale], [stale], () => 4);
+    expect(entry).toMatchObject({ ownUnreadCount: 5, unreadCount: 9, working: true, watchedWorking: true });
+  });
+
+  it("does not revive stale summary news after the cached complete roster becomes empty", () => {
+    const stale = { projectKey: project.projectKey, run_id: project.entity_id, agents: [worker], unread_count: 30, working: true };
+    const [entry] = projectAgentEntries([withRoster([])], [stale]);
+    expect(entry).toMatchObject({ ownUnreadCount: 0, unreadCount: 0, working: false, watchedWorking: false });
+  });
+});

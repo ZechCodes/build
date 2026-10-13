@@ -19,7 +19,7 @@ function syncParams(source, owner, capabilities, params) {
 function gitParams(source, owner, capabilities, params, primary) {
   const { source_id: _id, source_path: _path, ...legacy } = params;
   if (capabilities.git?.projectSources) return { ...legacy, project_id: owner.projectId, source_id: source.id, source_path: source.path };
-  if (!primary) throw new Error("Update this device to use Changes for this project source.");
+  if (!primary) throw new Error("Update this device to use project Changes.");
   return { ...legacy, project_id: owner.projectId };
 }
 export function projectChangesRpc(context, source, owner) {

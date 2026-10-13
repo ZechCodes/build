@@ -5,6 +5,7 @@
 // workspace once, its agents nested under it, ordered so that what needs the
 // reader comes first, then what is working, then the quiet, then the empty.
 // Watching is a mark on the agent, not a section of its own.
+import { projectAgentsAddress, projectAgentsSupportAddress, readProjectAgents } from "./projectAgentsCache.js";
 import { readCachedMany, subscribeCache } from "./localCache.js";
 import { threadCacheAddress } from "./conversationCache.js";
 import { AGENT_STARTING, agentIsRunning, isFailedReason, providerLabel, railEntity } from "./agentRailModel.js";
@@ -373,6 +374,21 @@ function rosterEntries(sources, records, feed, decorate = asRead) {
   });
 }
 
+// Keep legacy row records for fallback; complete rosters are capability-aware.
+function rosterAddresses(sources, scope) {
+  return sources.flatMap((source) => source.kind === "project"
+    ? [source.address, projectAgentsAddress(scope.deviceId, source.entityId), projectAgentsSupportAddress(scope.deviceId)]
+    : [source.address]).filter(Boolean);
+}
+
+async function overviewRosters(sources, scope) {
+  const records = await readCachedMany(sources.map((source) => source.address));
+  return Promise.all(sources.map(async (source, index) => {
+    const roster = source.kind === "project" && await readProjectAgents(scope.deviceId, source.entityId);
+    return roster ? { value: roster } : records[index];
+  }));
+}
+
 function threadEntries(entries, scope) {
   return entries.map(({ agent, state, entityId, agentId, source, conversationId, workspaceId, section, sectionName }) => ({
     agent, state, source, workspaceId, section, sectionName,
@@ -432,16 +448,16 @@ export function createAgentOverview({ sources, scope, onRows, projectId = null, 
     const current = ++generation;
     const stale = () => !active || current !== generation;
     const { workspaceAddress, listed, listAddresses } = listAddressesFor(includesWorkspaces());
-    watch([...sources().map((source) => source.address).filter(Boolean), ...listAddresses]);
+    watch([...rosterAddresses(sources(), scope), ...listAddresses]);
     const [workspaceRecord, feedRecord, tasksRecord] = await readListed(listed);
     if (stale()) return;
     const workspaces = workspaceAddress ? (workspaceRecord?.value || []) : [];
     const rosterSources = projectWorkspaceSources(workspaces, sources().filter((source) => source.address), projectId, scope);
-    watch([...rosterSources.map((source) => source.address), ...listAddresses]);
-    const rosterRecords = await readCachedMany(rosterSources.map((source) => source.address));
+    watch([...rosterAddresses(rosterSources, scope), ...listAddresses]);
+    const rosterRecords = await overviewRosters(rosterSources, scope);
     if (stale()) return;
     const addressed = threadEntries(rosterEntries(rosterSources, rosterRecords, feedRecord?.value, decorate), scope);
-    watch([...rosterSources.map((source) => source.address), ...addressed.map((entry) => entry.address), ...listAddresses]);
+    watch([...rosterAddresses(rosterSources, scope), ...addressed.map((entry) => entry.address), ...listAddresses]);
     const threadRecords = await readCachedMany(addressed.map((entry) => entry.address));
     if (stale()) return;
     onRows(overviewRows(addressed, threadRecords.map((record) => record?.value)),

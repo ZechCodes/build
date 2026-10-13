@@ -10,6 +10,8 @@
 // Nothing here knows which agent is in focus: the rail asks per agent at
 // paint time (core/agentLineageModel.js holds the answers).
 
+import { PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND } from "./projectAgentsCache.js";
+import { projectRosterRows } from "./projectRosterFeed.js";
 import { subscribeCache } from "./localCache.js";
 import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
@@ -18,7 +20,7 @@ import { agentLineage, buildAgentEntries, lineageMembers, lineagePrint, withRoll
 /** The cache writes a read answers to: a row, the workspace and project lists
  *  that say whose run a row is (#226), or what a greeting said about whether
  *  the bridge names makers. */
-const REREAD_KINDS = new Set([ROW_RECORD_KIND, "workspaces", "projects", AGENT_LINEAGE_SUPPORT_KIND]);
+const REREAD_KINDS = new Set([ROW_RECORD_KIND, "workspaces", "projects", AGENT_LINEAGE_SUPPORT_KIND, PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND]);
 
 /**
  * Mount the reader. `onChanged` is called when a read lands whose answers
@@ -49,9 +51,9 @@ export function mountAgentLineage({ deviceId, projectId, onChanged } = {}) {
   /** The rows, the lists that say where each lives, and whether the bridge
    *  that wrote them names makers (`agents.createdBy`, #221): all off the cache. */
   async function readOnce() {
-    const [{ items, workspaces, projects }, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
+    const [feed, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
     if (state.disposed) return;
-    const members = lineageMembers(items, { projectId, workspaces, projects });
+    const members = lineageMembers(projectRosterRows(feed), { projectId, workspaces: feed.workspaces, projects: feed.projects });
     const print = `${namesMakers}${lineagePrint(members)}`;
     if (print === state.print) return;
     state.print = print;

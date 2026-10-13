@@ -595,5 +595,29 @@
     "not_found",
     "invalid_params",
     "internal"
-  ]
+  ],
+  "project_identities": {
+    "since": "3.21.0",
+    "fields": [
+      "items.*.data.task_notice.actor.identity.project_role"
+    ],
+    "note": "Inline task notice actors carry the same optional durable purpose as task identities; an unnamed worker remains a worker after roster removal.",
+    "notice": {
+      "actor": {
+        "kind": "agent",
+        "agent_id": "project-removed-worker",
+        "identity": {
+          "agent_id": "project-removed-worker",
+          "name": null,
+          "project_role": "worker",
+          "ordinal": 2,
+          "workspace_id": null,
+          "workspace_name": null,
+          "provider": "codex",
+          "available": false
+        }
+      },
+      "action": "moved"
+    }
+  }
 }

@@ -80,8 +80,14 @@ const asking = (context, transport) => (...asked) => {
   if (asked[0] === "tasks.update" && Object.hasOwn(asked[1] || {}, "expected_body_hash")) {
     return askTaskBodyUpdate(context, transport, asked);
   }
+  if (needsProjectWorkerAssignment(asked[0], asked[1])) {
+    return askProjectWorkerAssignment(context, transport, asked);
+  }
   return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
 };
+
+const needsProjectWorkerAssignment = (method, params) => method === "tasks.assign"
+  && params?.assignee?.kind === "new_project_agent";
 
 const needsTaskWaitingOn = (method, params = {}) => method.startsWith("tasks.waiting_on.")
   || method === "tasks.create" && Object.hasOwn(params, "waiting_on")
@@ -92,6 +98,17 @@ const needsTaskWaitingOn = (method, params = {}) => method.startsWith("tasks.wai
 async function askTaskWaitingOn(context, transport, asked) {
   const request = await whenGreeted(context, () => {
     if (context.adapter?.capabilities?.tasks?.waitingOn !== true) throw new Error(TASK_WAITING_ON_UPDATE);
+    return transport()(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
+}
+
+async function askProjectWorkerAssignment(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    if (context.adapter?.capabilities?.tasks?.assignProjectAgent !== true) {
+      throw new Error("Update this device's bridge to assign tasks to new project workers.");
+    }
     return transport()(...asked);
   });
   if (!request) throw new Error(deviceAwayMark(context));

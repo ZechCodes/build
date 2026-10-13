@@ -7,6 +7,7 @@ import { called, passesSettled } from "./waits.js";
 const App = { route: {}, devices: [{ id: "dev-1" }] };
 const watchers = [];
 let leanActivity = false;
+let projectWorkers = false;
 vi.mock("../src/appState.js", () => ({ App }));
 vi.mock("../src/app.js", () => ({ App }));
 vi.mock("../src/core/changeEvents.js", () => ({
@@ -14,6 +15,7 @@ vi.mock("../src/core/changeEvents.js", () => ({
     changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] },
     tasks: { listPaged: true },
     threads: { leanActivity },
+    agents: { projectWorkers },
   }),
   subscriptionsSettledFor: async () => {},
   onSubscriptionHeld: () => () => {},
@@ -96,6 +98,7 @@ beforeEach(async () => {
   delete navigator.locks;
   script = {};
   leanActivity = false;
+  projectWorkers = false;
   watchers.length = 0;
   disposers = [];
   abandonedPass = false;
@@ -741,5 +744,72 @@ describe("list replies paint independently", () => {
       held.release();
       await finish();
     }
+  });
+});
+
+
+describe("complete roster background admission", () => {
+  it("bounds held unrelated rosters while navigation completes thread, Git and tasks and promotes a queued owner", async () => {
+    projectWorkers = true;
+    App.route = { name: "inbox", deviceId: "dev-1" };
+    const owners = [1, 2, 3].map((number) => ({
+      project_id: `p${number}`, name: `Project ${number}`, entity_id: `owner-${number}`,
+    }));
+    const pin = (number) => ({ id: `pin-${number}`, conversation_id: `pin-chat-${number}`, watched: true });
+    const worker = { id: "worker-3", conversation_id: "worker-chat-3", watched: true, project_role: "worker" };
+    const roster = (number) => ({ entity_id: `owner-${number}`, pinned_agent_id: pin(number).id,
+      agents: number === 3 ? [pin(number), worker] : [pin(number)] });
+    script["thread.page"] = ({ agent_id: id }) => ({ items: [{ type: "message", data: { sequence: 1, role: "agent", body: id } }], has_more: false });
+    script["project.list"] = () => ({ projects: owners });
+    script["board.list"] = () => ({ items: [...board, ...owners.map((owner, index) => ({
+      kind: "branch", project_id: owner.project_id, run_id: owner.entity_id, branch: "build",
+      state: "building", agents: [pin(index + 1)],
+    }))] });
+    await cache.writeCached(address("", "project-agents-support"), { projectWorkers: true });
+    const held = gate();
+    let outstanding = 0, peak = 0;
+    script["agent.list"] = async ({ entity_id: entityId }) => {
+      peak = Math.max(peak, ++outstanding);
+      try {
+        const number = Number(entityId.split("-")[1]);
+        if (number !== 3) await held.promise;
+        return roster(number);
+      } finally { outstanding -= 1; }
+    };
+    const traffic = backgroundTraffic();
+    start();
+    try {
+      await called(rpc, () => calls("agent.list").length >= 2);
+      // Give every queued owner an admission turn without releasing either
+      // unrelated wire response. A third dispatch would exceed the bound.
+      for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(calls("agent.list")).toHaveLength(2);
+      expect(outstanding).toBe(2);
+      expect(traffic.pending).toBe(2);
+      App.route = routeTo(10);
+      sync.routeChanged();
+      await vi.waitFor(async () => {
+        expect((await cache.readCached(address("run-10", "thread", "ag-10-b")))?.value).toBeTruthy();
+        expect((await cache.readCached(address("run-10", "status")))?.value.head).toBe("head");
+        expect((await cache.readCached(address("p2", "tracker-tasks")))?.value.tasks).toHaveLength(1);
+      });
+      expect(outstanding).toBe(2);
+      App.route = { name: "project", deviceId: "dev-1", projectId: "p3", agent: worker.id };
+      sync.routeChanged();
+      await vi.waitFor(async () => {
+        expect((await cache.readCached(address("owner-3", "project-agents")))?.value).toEqual(roster(3));
+        expect((await cache.readCached(address("owner-3", "thread", worker.conversation_id)))?.value).toBeTruthy();
+        expect((await cache.readCached(address("p3", "tracker-tasks")))?.value.tasks).toHaveLength(1);
+      });
+      expect(outstanding).toBe(2);
+      expect(traffic.pending).toBe(2);
+      expect(traffic.peak).toBe(2);
+    } finally {
+      held.release();
+      await finish();
+    }
+    expect(peak).toBe(3); // the selected owner bypassed two occupied slots
+    expect(traffic.peak).toBe(2);
+    expect(outstanding).toBe(0);
   });
 });

@@ -27,6 +27,7 @@ async function mountWorkspace(page, basePath, tab, directories = null) {
       if (method === "workspace.get") return window.__workspace;
       if (method === "workspace.add_directory" || method === "workspace.remove_directory") return window.__mutation;
       if (method === "workspace.git_init_options") return { source: { is_git: false }, workspace: { is_git: false } };
+      if (method === "git.unpushed" && window.__holdReboundReview && params.source_id === "b" && params.entity_id === "workspace-run") return new Promise(() => {});
       if (method === "git.log") return { commits: [] };
       if (method === "git.status") return { staged: [], unstaged: [], untracked: [] };
       return {};
@@ -164,21 +165,53 @@ it("keeps an open surviving file subscribed when removing the first Git director
   });
 }, 60_000);
 
-it("rebinds a kept Changes directory when it becomes the workspace's first Git directory", async () => {
-  await session.withPage(async ({ page, basePath }) => {
-    await mountWorkspace(page, basePath, "changes", [
-      { id: "dir-a", source_id: "a", name: "Alpha", is_git: true, status: "ready" },
-      { ...added, is_git: true, status: "ready" },
-    ]);
-    await page.locator('[data-directory="b"]').click();
-    await page.locator('[data-surface="b"] .crail-host').waitFor();
-    await page.evaluate(() => { window.__beta = document.querySelector('[data-surface="b"]'); });
-    await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));
-    await page.waitForFunction(() => window.__calls.some((call) => call.method === "git.log" && call.params.source_id === "b" && call.params.entity_id === "workspace-run"), null, { timeout: 3000 });
-    expect(await page.evaluate(() => window.__beta === document.querySelector('[data-surface="b"]'))).toBe(true);
-    expect(await page.locator('[data-directory="b"]').getAttribute("aria-selected")).toBe("true");
-  });
-}, 60_000);
+for (const warmRunCache of [false, true]) {
+  it(`rebinds a kept Changes directory when it becomes the workspace's first Git directory (${warmRunCache ? "warm" : "cold"} run cache)`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountWorkspace(page, basePath, "changes", [
+        { id: "dir-a", source_id: "a", name: "Alpha", is_git: true, status: "ready" },
+        { ...added, is_git: true, status: "ready" },
+      ]);
+      // Let Alpha's startup writes settle before choosing the cache path. A
+      // populated run cache makes a new git.log RPC unnecessary on rebind.
+      await page.waitForFunction(async () => {
+        const { cache } = window.__layoutModules;
+        const address = { deviceId: "directory-refresh", entityId: "workspace-run" };
+        const [status, log, unpushed] = await Promise.all(["status", "log", "unpushed"].map((kind) => cache.readCached({ ...address, kind })));
+        return Boolean(status && log && unpushed && !status.value.stale && !log.value.stale);
+      });
+      await page.locator('[data-directory="b"]').click();
+      await page.locator('[data-surface="b"] .crail-host').waitFor();
+      await page.evaluate(async (warmRunCache) => {
+        const { cache } = window.__layoutModules;
+        const address = { deviceId: "directory-refresh", entityId: "workspace-run" };
+        if (!warmRunCache) await cache.deleteCached(["status", "log"].map((kind) => ({ ...address, kind })));
+        // A review reply can invalidate history and request it again. Hold it
+        // on the warm path so that refresh cannot mask the optional mount pull.
+        window.__holdReboundReview = warmRunCache;
+        window.__beta = document.querySelector('[data-surface="b"]');
+      }, warmRunCache);
+      await page.evaluate(() => window.__writeWorkspace(window.__workspace.directories.filter((dir) => dir.source_id !== "a")));
+      await page.locator('[data-directory="a"]').waitFor({ state: "detached" });
+      // Only the deliberately emptied cache guarantees a pull. Let that miss
+      // reach the reader before publishing, so this case stays cold on startup.
+      if (!warmRunCache) await page.waitForFunction(() => window.__calls.some((call) => call.method === "git.log" && call.params.source_id === "b" && call.params.entity_id === "workspace-run"), null, { timeout: 3000 });
+      // Observe the new cache subscription, rather than a conditional startup
+      // RPC. Publish a second log after the first paint to exercise live writes.
+      for (const hash of ["b".repeat(40), "c".repeat(40)]) {
+        await page.evaluate(async (hash) => {
+          const { cache } = window.__layoutModules;
+          const address = { deviceId: "directory-refresh", entityId: "workspace-run" };
+          await cache.writeCached({ ...address, kind: "status" }, { staged: [], unstaged: [], untracked: [] });
+          await cache.writeCached({ ...address, kind: "log" }, { commits: [{ hash, short: hash.slice(0, 7), subject: "Rebound history", author: "Developer", time: 1 }] });
+        }, hash);
+        await page.locator(`[data-surface="b"] .crow[data-hash="${hash}"]`).waitFor({ timeout: 3000 });
+      }
+      expect(await page.evaluate(() => window.__beta === document.querySelector('[data-surface="b"]'))).toBe(true);
+      expect(await page.locator('[data-directory="b"]').getAttribute("aria-selected")).toBe("true");
+    });
+  }, 60_000);
+}
 
 
 it("shows the cached surviving file when removing the active file's directory", async () => {

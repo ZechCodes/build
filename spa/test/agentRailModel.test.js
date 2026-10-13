@@ -333,7 +333,7 @@ describe("the strip's watched agents (#105)", () => {
     expect(types(project(true, false))).toEqual([["project", false], ["separator", false], ["agent", false], ["add", false]]);
     expect(types(project(false, false))).toEqual([["agent", false], ["add", false]]);
     expect(types(project(false, true))).toEqual([["project", true], ["separator", false], ["agent", false], ["add", false]]);
-    expect(railBubbles({ agents: [], kind: "workspace", projectAgent: project(false, true) })[0].title).toMatch(/Not watching$/);
+    expect(railBubbles({ agents: [], kind: "workspace", projectAgent: project(false, true) })[0].title).toBe("Project agent");
     expect(types({ name: "build", entityId: null, agents: [], active: false })[0]).toEqual(["project", false]);
   });
 
@@ -342,7 +342,7 @@ describe("the strip's watched agents (#105)", () => {
       agents: [agent({ id: "ag-lead", watched: true }), agent({ id: "ag-helper", ordinal: 2, watched: false })] });
     const [openHelper] = railBubbles({ agents: [agent()], kind: "workspace", projectAgent: project("ag-helper") });
     expect(openHelper.unwatched).toBe(true);
-    expect(openHelper.title).toMatch(/Not watching$/);
+    expect(openHelper.title).toBe("Project agent");
     expect(railBubbles({ agents: [agent()], kind: "workspace", projectAgent: project("ag-lead") })[0].unwatched).toBe(false);
     expect(railBubbles({ agents: [agent()], kind: "workspace", projectAgent: project(null, false) })[0].unwatched).toBe(false);
   });
@@ -366,6 +366,24 @@ describe("the strip's watched agents (#105)", () => {
 // is what makes it the PROJECT's — so a workspace's strip carries it above a
 // line, with the workspace's own agents below.
 describe("the project's own page", () => {
+  it("places the persisted pin above workers regardless of roster order", () => {
+    const agents = [agent({ id: "worker", name: "Source worker", project_role: "worker" }),
+      agent({ id: "pin", project_role: "coordinator" })];
+    const bubbles = railBubbles({ agents, selectedId: "worker", kind: "project", projectName: "build", pinnedAgentId: "pin", canAdd: true });
+    expect(bubbles.map((bubble) => [bubble.type, bubble.id])).toEqual([["agent", "pin"], ["separator", ""], ["agent", "worker"], ["add", ""]]);
+    expect(bubbles[0]).toMatchObject({ project: true, active: false });
+    expect(bubbles[2]).toMatchObject({ initials: "SW", active: true });
+    expect(bubbles[2].project).toBeUndefined();
+  });
+
+  it("offers a first worker below the pin and protects the pin from removal", () => {
+    const agents = [agent({ id: "pin", project_role: "coordinator" })];
+    expect(railBubbles({ agents, kind: "project", pinnedAgentId: "pin", canAdd: true }).map((bubble) => bubble.type)).toEqual(["agent", "separator", "add"]);
+    expect(canRemoveAgent({ agents, kind: "project", agentId: "pin", pinnedAgentId: "pin" })).toBe(false);
+    expect(canRemoveAgent({ agents: [...agents, agent({ id: "worker", project_role: "worker" })], kind: "project", agentId: "worker", pinnedAgentId: "pin" })).toBe(true);
+    expect(railEntity({ entity_id: "owner", pinned_agent_id: "pin", agents }, "project")).toMatchObject({ pinnedAgentId: "pin", canAdd: true });
+  });
+
   // The page and the strip agree about whose agent this is: on the project's
   // own conversation the bubbles wear what the project's bubble wears above
   // the line on a workspace — the initial, squared off — not a work item's face.
@@ -410,9 +428,9 @@ describe("the project's agent on a workspace's strip", () => {
   // It is there before the project has a conversation at all: an agent nobody
   // has started is still the project's agent, and the bubble says how to start
   // it rather than reading as an empty ghost.
-  it("says how to start a project nobody has talked to yet", () => {
+  it("names the project agent before anyone has talked to it", () => {
     const [bubble] = railBubbles({ agents: [agent()], kind: "workspace", projectAgent: projectAgent() });
-    expect(bubble.title).toBe("Project agent for build: send a message to start it");
+    expect(bubble.title).toBe("Project agent");
     expect(bubble.unread).toBe(0);
     expect(bubble.working).toBe(false);
   });
@@ -428,7 +446,7 @@ describe("the project's agent on a workspace's strip", () => {
     });
     expect(bubble.unread).toBe(2);
     expect(bubble.working).toBe(true);
-    expect(bubble.title).toBe("Project agent for build — working");
+    expect(bubble.title).toBe("Project agent");
   });
 
   it("is the open conversation while the panel is on it, and nothing else is", () => {

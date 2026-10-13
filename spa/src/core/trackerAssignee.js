@@ -72,6 +72,22 @@ export function workspaceAgents(feed, projectKey) {
     });
 }
 
+/** Project workers stand on the project's owner, without a workspace. The
+ * cached complete roster is present only on worker-capable devices. */
+export function assignableAgents(feed, projectKey) {
+  const project = (feed?.projects || []).find((row) => row.projectKey === projectKey);
+  const roster = project?.projectRoster;
+  const projectGroups = roster ? [{
+    kind: "project",
+    pinnedAgentId: roster.pinned_agent_id,
+    name: "Project workers",
+    assignProjectAgent: project.assignProjectAgent === true,
+    agents: (roster.agents || []).filter((agent) => agent.id !== roster.pinned_agent_id && agent.project_role === "worker")
+      .map((agent, index) => ({ ...agent, label: agentDisplayName(agent, index + 1) })),
+  }] : [];
+  return [...projectGroups, ...workspaceAgents(feed, projectKey)];
+}
+
 /** Every agent of the project by id, named. What `actorName`
  *  (core/trackerLineWords.js) is handed so an assignee, a comment's author and
  *  an event's actor all read as the same agent. */
@@ -144,6 +160,21 @@ const workspaceOptions = (group) => [
   },
 ];
 
+const projectOptions = (group) => [
+  ...group.agents.map((agent) => ({
+    id: `agent:${agent.id}`, kind: "agent", agentId: agent.id,
+    label: agent.label, group: group.name,
+    hint: "Delivers the task into this agent's conversation.",
+  })),
+  ...(group.assignProjectAgent ? [{
+    id: "new_project_agent", kind: "new_project_agent", label: "New project worker",
+    group: group.name, form: AGENT_FORM,
+    hint: "Starts a worker in the project's shared checkout and hands it the task.",
+  }] : []),
+];
+
+const groupOptions = (group) => group.kind === "project" ? projectOptions(group) : workspaceOptions(group);
+
 const newWorkspaceOption = () => ({
   id: "new_workspace",
   kind: "new_workspace",
@@ -163,7 +194,7 @@ const newWorkspaceOption = () => ({
 export function assigneeOptions(groups) {
   return [
     ...standingOptions(),
-    ...(groups || []).flatMap(workspaceOptions),
+    ...(groups || []).flatMap(groupOptions),
     newWorkspaceOption(),
   ];
 }
@@ -195,6 +226,11 @@ const ASSIGNEE_BY_KIND = Object.freeze({
   new_agent: (option, extras) => ({
     kind: "new_agent",
     workspace_id: option.workspaceId,
+    ...agentChoiceFields(extras.choice),
+  }),
+  new_project_agent: (_option, extras) => ({
+    kind: "new_project_agent",
+    ...namedField("agent_name", String(extras.name || "").trim()),
     ...agentChoiceFields(extras.choice),
   }),
   new_workspace: (option, extras) => ({
@@ -232,6 +268,7 @@ export function assignParams(taskId, option, extras = {}) {
     task_id: taskId,
     assignee: assigneeFor(option, extras),
     ...(note ? { note } : null),
+    ...(option?.kind === "new_project_agent" && extras.operationId ? { operation_id: extras.operationId } : null),
   };
 }
 

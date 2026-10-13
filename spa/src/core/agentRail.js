@@ -78,6 +78,7 @@ import {
   removeRecord,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
+import { syncProjectAgents } from "./projectAgentsCache.js";
 import { mountUsageLimitBanner } from "./usageLimits.js";
 import { createTimelineSlice } from "./timelineSlice.js";
 import { hide, motionSettled, reveal, setMotionRowHtml } from "./motion.js";
@@ -103,7 +104,7 @@ import {
 } from "./threadSend.js";
 import { createChatRepository } from "./chatRepository.js";
 import { createAgentRailContext } from "./agentRailContext.js";
-import { hashFromRoute } from "./router.js";
+import { hashFromRoute, routeFromHash } from "./router.js";
 import { registerSyncThread, syncPaneShown } from "./syncVisibleScopes.js";
 import { createRailWorkItem } from "./railWorkItem.js";
 import { forgetRevisionBodies, revisionContents } from "./revisionBodies.js";
@@ -114,7 +115,7 @@ import { bridgeCapabilities } from "./changeEvents.js";
 import { fetchThreadAttachment } from "./threadAttachmentPages.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { subscribeReferenceIndex } from "./referenceIndex.js";
-import { agentLabels as agentLabelsOf, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels as agentLabelsOf, assignableAgents } from "./trackerAssignee.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
@@ -343,28 +344,31 @@ function railChatDependencies(context) {
  *  back the indices it rendered, so the stamp's place comes off them on the way
  *  down.
  */
-function stampedViewingContext(store, stamp) {
-  if (!store || !stamp) return store;
+function stampedViewingContext(store, initialStamp) {
+  let stamp = initialStamp;
+  const listeners = new Set();
+  const offset = () => stamp && store?.isEnabled?.() !== false ? 1 : 0;
   const wrapped = {
     ...store,
     snapshot() {
-      const held = store.snapshot?.();
-      // Nothing is sent to a bridge that takes no context, so nothing is shown.
-      if (store.isEnabled?.() === false) return held;
-      return { version: 1, items: [stamp, ...(held?.items || [])] };
+      const held = store?.snapshot?.();
+      return offset() ? { version: 1, items: [stamp, ...(held?.items || [])] } : held;
     },
-    remove: (index) => store.remove?.(index - 1),
-    removeMany: (indices) => store.removeMany?.(indices.map((index) => index - 1)),
-    // The store announces its own snapshot; this tray paints from ours.
-    subscribe: (listener) => store.subscribe?.(() => listener(wrapped.snapshot())),
+    remove: (index) => store?.remove?.(index - offset()),
+    removeMany: (indices) => store?.removeMany?.(indices.map((index) => index - offset())),
+    subscribe(listener) {
+      listeners.add(listener);
+      const stop = store?.subscribe?.(() => listener(wrapped.snapshot()));
+      return () => { listeners.delete(listener); stop?.(); };
+    },
+    retarget(next) {
+      stamp = next;
+      for (const listener of listeners) listener(wrapped.snapshot());
+    },
   };
   return wrapped;
 }
 
-/** Where this rail is standing, when that is a workspace it reached the
- *  project's conversation from: what every message sent from here wears, and
- *  the store the composer's tray paints it from. Null and the store itself for
- *  every other rail. */
 const railStandingPlace = (context) => {
   const fromWorkspace = context.fromWorkspace || null;
   const store = context.viewingContext || App.viewingContext;
@@ -533,6 +537,11 @@ const bubbleClasses = (bubble) => {
   return classes.join(" ");
 };
 
+// Keep the tooltip while announcing every unread badge in the accessible name,
+// which an aria-label would otherwise override.
+const bubbleAccessibleName = (bubble) =>
+  bubble.unread ? `${bubble.title}, ${bubble.unread} unread` : bubble.title;
+
 export function bubbleHtml(bubble) {
   // The line between the project's agent and this work item's own. It says
   // nothing and is pressed by nobody, so it is not a button.
@@ -548,7 +557,7 @@ export function bubbleHtml(bubble) {
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
     data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
-    aria-label="${esc(bubble.title)}" aria-expanded="${Boolean(bubble.expanded)}"
+    aria-label="${esc(bubbleAccessibleName(bubble))}" aria-expanded="${Boolean(bubble.expanded)}"
     aria-controls="rail-panel">${bubbleFaceHtml(bubble)}</button>`;
 }
 
@@ -727,6 +736,7 @@ const projectAgentContext = (context, known, workspaceName, openAgentId = null) 
   projectId: context.projectAgent.projectId,
   entityId: known.entityId,
   workspaceId: null,
+  pinnedOnly: true,
   fromWorkspace: workspaceStamp(context, workspaceName),
   selection: null,
   openAgentId,
@@ -765,13 +775,18 @@ const workItemContext = (context, known, { openAgentId = null, addingAgent = fal
  * not hold, this wrapper does: whether the panel is out, and what each side was
  * last read to be, so the rail that comes up is the one that went down.
  */
+const initialProjectFacts = (context) => ({
+  entityId: context.projectAgent?.entityId || (context.kind === "project" ? context.entityId : null) || null,
+  name: context.projectAgent?.name || context.projectName || "",
+});
+
 export function mountAgentRail(host, context) {
   if (!host) return { dispose() {} };
-  if (!context.projectAgent?.projectId) return mountRailOnContext(host, context, null);
+  context = { ...context };
   // What the rail has learned about the project: its name, and the conversation
   // owner — minted by the press that opens it, never by a render. Held out here
   // so a swap does not ask for either of them again.
-  let known = { entityId: context.projectAgent.entityId || null, name: context.projectAgent.name || "" };
+  let known = initialProjectFacts(context);
   // The last payload read for each side, kept by the kind it answers for. The
   // rail reads both — the one it stands on and the one beside it — so a swap
   // has what the side it is standing up already is, and hands it over as that
@@ -796,7 +811,7 @@ export function mountAgentRail(host, context) {
   // page's too (#148): both sides remember it under the page's key, so an
   // overview opened on the project's side is the overview a fresh mount of
   // this page comes back to.
-  const pageKey = createAgentRailContext(context).key;
+  let pageKey = createAgentRailContext(context).key;
   const stand = (standing, alongside, { panelOpen = null, selectedKind = null } = {}) => {
     live?.dispose();
     live = mountRailOnContext(host, {
@@ -806,11 +821,11 @@ export function mountAgentRail(host, context) {
       // conversation selected on its strip.
       overviewPageKind: context.kind,
       pageKey,
-      payload: payloads.get(standing.kind) || null,
-      alongside: { ...alongside, payload: payloads.get(alongside.kind) || null },
+      payload: payloads.get(standing.kind) || standing.payload || null,
+      alongside: alongside ? { ...alongside, payload: payloads.get(alongside.kind) || null } : null,
       panelOpen,
       selectedKind,
-    }, swap);
+    }, context.projectAgent ? swap : null);
   };
   const swap = {
     learned: (facts) => {
@@ -836,9 +851,24 @@ export function mountAgentRail(host, context) {
   // conversation. It may be the project's — the project's agent is reachable
   // from every workspace in the project — and the side that finds it in its own
   // half of the strip is the side that stands the rail there.
-  stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
+  if (context.projectAgent) stand(workItemContext(context, known, { openAgentId: context.openAgentId || null,
     addingAgent: context.addingAgent === true }), projectSide());
+  else stand(context, null);
   return {
+    retarget(next) {
+      if (!live?.canRetarget(next)) return false;
+      context = { ...context, ...next, entityId: next.entityId || null,
+        workspaceId: next.workspaceId || null, payload: null };
+      payloads.clear();
+      workspaceName = "";
+      pageKey = createAgentRailContext(context).key;
+      const project = context.kind === "workspace" ? projectSide(next.openAgentId) : {
+        ...context, entityId: known.entityId, projectAgent: null, alongside: null, pinnedOnly: false, fromWorkspace: null,
+      };
+      live.retarget({ ...project, pageKey, overviewPageKind: context.kind,
+        alongside: context.kind === "workspace" ? workItemContext(context, known) : null }, swap);
+      return true;
+    },
     collapse() {
       live?.collapse();
     },
@@ -977,7 +1007,8 @@ function mountRailOnContext(host, context, swap) {
   const railContext = createAgentRailContext(context);
   const key = railContext.key;
   const { cacheScope, ownsRepository: ownsChatRepository, repository: chatRepository } = railChatDependencies(context);
-  const { fromWorkspace, composerViewingContext } = railStandingPlace(context);
+  let fromWorkspace = context.fromWorkspace || null;
+  const { composerViewingContext } = railStandingPlace(context);
   const {
     isPending,
     projectOptimistic,
@@ -989,7 +1020,7 @@ function mountRailOnContext(host, context, swap) {
   const railView = chatRepository.railView(key);
   // Where the kind of selection is kept: the page's view, which is this rail's
   // own unless it stands on the project's side of a workspace page.
-  const pageView = context.pageKey ? chatRepository.railView(context.pageKey) : railView;
+  let pageView = context.pageKey ? chatRepository.railView(context.pageKey) : railView;
   const selection = context.selection || createAgentSelection();
   // What the side this mount stands on was last read to be, where a swap put
   // this rail here holding it. The strip paints its agents — their unread,
@@ -1055,7 +1086,8 @@ function mountRailOnContext(host, context, swap) {
       if (standing()) notifyCommandFailure(error, COMPACTION_REFUSED, COMPACTION_UNSUPPORTED);
     },
   });
-  const { projectAgent, standing: onProjectAgentRail, entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
+  let { projectAgent, standing: onProjectAgentRail } = projectAgentState(context);
+  const { entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
   let projectOwner = knownOwner;
   let projectName = knownName;
   let mintingProjectAgent = false;
@@ -1074,14 +1106,15 @@ function mountRailOnContext(host, context, swap) {
   // it, or one workspace's. It opens as the page's own and moves only when the
   // reader moves it; the choice is cached per page so a remount — a swap to the
   // project's agent is one — keeps it.
-  const overviewPage = overviewPageOf(context, alongside, projectId);
+  let overviewPage = overviewPageOf(context, alongside, projectId);
   let overviewScope = overviewPage.scope;
   let overviewRead = { rows: [], workspaces: [], tasks: [] };
-  const overviewScopeRecord = overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
+  const watchOverviewScope = () => overviewPage.address ? watchUiState(overviewPage.address, (saved) => {
     if (!isOverviewScope(saved) || JSON.stringify(saved) === JSON.stringify(overviewScope)) return;
     overviewScope = saved;
     showOverviewScope();
   }) : NO_SCOPE_RECORD;
+  let overviewScopeRecord = watchOverviewScope();
   const panelOut = () => panelVisible;
   let mode = railView.panelMode();
   let disposed = false;
@@ -1314,7 +1347,8 @@ function mountRailOnContext(host, context, swap) {
     const agents = visibleAgents();
     const wanted = selectionFromMemory ? rememberedAgentId(agents, selectedId) : selectedId;
     if (agents.length) selectionFromMemory = false;
-    chooseAgent(selectAgentId(agents, wanted));
+    const target = agents.some((agent) => agent.id === wanted) ? wanted : entity.pinnedAgentId || wanted;
+    chooseAgent(selectAgentId(agents, target));
   };
   const syncWatchFromAgent = () => {
     const current = watchStateFor(agentOf(selectedId));
@@ -1430,22 +1464,24 @@ function mountRailOnContext(host, context, swap) {
   const railWorkspaceKey = () =>
     railContext.kind === "workspace" ? workspaceKey(railContext.deviceId, railContext.workspaceId) : null;
 
-  /** Which preference a new agent on this rail leads with: on a project's rail
-   *  the DEVICE's project-agent setting (core/projectAgentSetting.js), inside a
-   *  workspace that workspace's own slot, the account's anywhere else. A
-   *  project agent talks ABOUT a project rather than working in a checkout, so
-   *  what it starts on is the machine's answer and not this browser's. */
+  /** Which preference a new agent leads with: the project's initial coordinator
+   *  uses the DEVICE's project-agent setting (core/projectAgentSetting.js).
+   *  Source-writing project workers use account defaults; named workspace
+   *  agents layer that workspace's slot over the account's. The coordinator
+   *  talks about the project and retains its separate device preference. */
   const onProjectRail = () => railContext.kind === "project";
   const deviceProjectAgent = () => projectAgentSetting || NO_AGENT_CHOICE;
+  const workerCreationNotice = () => entity.kind === "project" && entity.pinnedAgentId
+    ? '<p class="sub rail-worker-notice">Works in the original project sources. Files, Git index and current branch are shared with you and other project workers.</p>' : "";
   const newAgentDefaults = (catalogOffered) =>
-    onProjectRail()
+    onProjectRail() && !entity.pinnedAgentId
       ? deviceProjectAgent()
       : agentDefaultsInWorkspace(railWorkspaceKey(), catalogOffered);
   /** The same, for a harness the human has just pressed. A model belongs to its
    *  harness, so the device's model travels only onto the harness the device
    *  named; any other leads with that harness's own default. */
   const newAgentDefaultsFor = (providerId) =>
-    onProjectRail()
+    onProjectRail() && !entity.pinnedAgentId
       ? { ...(deviceProjectAgent().provider === providerId ? deviceProjectAgent() : NO_AGENT_CHOICE), provider: providerId }
       : agentDefaultsForWorkspace(railWorkspaceKey(), providerId);
 
@@ -1781,16 +1817,27 @@ function mountRailOnContext(host, context, swap) {
   /// bubbles say. Its row, out of the same cache this rail's own comes from.
   /// There is nothing to read while the project has no owner: that bubble says
   /// how to start one instead, which is not a read.
+  const refreshWorkspaceStamp = async (captured) => {
+    if (captured.kind !== "workspace") return;
+    const listed = await readCached(cacheScope.address({ entityId: "", kind: "workspaces" }));
+    if (!standing() || captured !== alongside) return;
+    const row = listed?.value?.find((workspace) => (workspace.workspace_id || workspace.id) === captured.workspaceId);
+    fromWorkspace = workspaceStamp(captured, row?.name);
+    composerViewingContext.retarget(fromWorkspace);
+  };
+
   const refreshAlongside = async () => {
-    if (!alongside || (alongside.kind === "project" && !projectOwner)) return;
-    const entityId = await records.entityIdFor(alongside);
-    if (!standing()) return;
+    const captured = alongside;
+    if (!captured || (captured.kind === "project" && !projectOwner)) return;
+    const entityId = await records.entityIdFor(captured);
+    if (!standing() || captured !== alongside) return;
     watchAlongsideRow(entityId);
+    await refreshWorkspaceStamp(captured);
     // A row this device does not hold leaves the strip saying what it said: a
     // bubble that blanks because one record is cold is worse than one behind.
     const row = await records.cachedRow(entityId);
-    if (!standing() || !row) return;
-    alongsideEntity = railEntity(row, alongside.kind);
+    if (!standing() || captured !== alongside || !row) return;
+    alongsideEntity = railEntity(row, captured.kind);
     keepForSwap(alongside.kind, row);
     paint();
     overview.refresh();
@@ -2056,7 +2103,8 @@ function mountRailOnContext(host, context, swap) {
       // this rail is standing on.
       agents: withRollups(onProjectAgentRail ? alongsideEntity.agents : stripAgents()),
       selectedId, selectedKind, kind: below.kind, chatCapable: below.chatCapable !== false,
-      canAdd: onProjectAgentRail ? below.canAdd : null,
+      canAdd: below.kind === "project" ? below.canAdd : onProjectAgentRail ? below.canAdd : null,
+      pinnedAgentId: below.pinnedAgentId,
       projectAgent: projectAgentEntry(),
       projectName,
     });
@@ -2166,6 +2214,16 @@ function mountRailOnContext(host, context, swap) {
   const dismissPopover = ({ restoreFocus = false } = {}) => {
     if (pinned || !panelVisible) return;
     closePanel({ restoreFocus });
+  };
+
+  // Native hash navigation reaches this listener before the shell finishes
+  // its navigation guards. Keep the exact pin visible during that interval;
+  // the shell will retarget it once the destination is accepted.
+  const dismissOnNavigation = () => {
+    const route = routeFromHash(location.hash);
+    const kind = route.name === "trackerTask" ? "project" : route.name;
+    if (!route.newAgent && canRetarget({ ...route, kind, openAgentId: route.agent, chatRepository })) return;
+    dismissPopover();
   };
 
   const dismissOnEscape = (event) => {
@@ -2278,6 +2336,7 @@ function mountRailOnContext(host, context, swap) {
       agents: visibleAgents(),
       agentId: settled ? settled.id : null,
       kind: entity.kind,
+      pinnedAgentId: entity.pinnedAgentId,
     });
     const hasTerminal = !!agent && agentHasTerminal(agent);
     // Which face this agent can actually wear. `mode` is remembered per work
@@ -2383,10 +2442,24 @@ function mountRailOnContext(host, context, swap) {
     usageLimitBanner.sync();
   };
 
+  const syncProjectAgentsUpdateNotice = () => {
+    const panel = host.querySelector(".rail-panel");
+    if (!panel) return;
+    const notice = panel.querySelector(".rail-project-agents-update");
+    const outdated = context.kind === "project" && !context.pinnedOnly && entity.projectWorkersSupported === false;
+    if (!outdated) { notice?.remove(); return; }
+    if (notice) return;
+    const message = document.createElement("p");
+    message.className = "sub rail-project-agents-update";
+    message.textContent = "Update this device to use project agents.";
+    panel.querySelector(".rail-head")?.after(message);
+  };
+
   /** The panel, painted for whatever the rail has selected. */
   const paintPanel = () => {
     if (selectedKind === "overview") paintOverviewPanel();
     else paintConversationPanel();
+    syncProjectAgentsUpdateNotice();
     syncThreadTimeVisibility();
   };
 
@@ -2607,6 +2680,7 @@ function mountRailOnContext(host, context, swap) {
     const choices = harnessChoicesHtml(providers, chosen);
     body.innerHTML = `<div class="rail-newagent">
       <p>Start a new conversation</p>
+      ${workerCreationNotice()}
       <div class="rail-harness-picker" role="group" aria-label="Agent harness">${choices}</div>
       <label class="rail-newagent-name">
         <span>Label <em>optional</em></span>
@@ -2776,7 +2850,7 @@ function mountRailOnContext(host, context, swap) {
   const conversationAgentLabels = () => {
     const place = conversationPlace();
     if (!place.projectId || !place.deviceId) return {};
-    return agentLabelsOf(workspaceAgents(feedView, deviceKey(place.deviceId, place.projectId)));
+    return agentLabelsOf(assignableAgents(feedView, deviceKey(place.deviceId, place.projectId)));
   };
 
   /** Current cached models for message attribution. The fingerprint below
@@ -3667,6 +3741,19 @@ function mountRailOnContext(host, context, swap) {
   const startingRecord = (agentId) =>
     patchRecord(agentId, { state: AGENT_STARTING }, { scope: pendingAgentsScope(), clearedBy: agentSessionAnswered });
 
+  const projectWorkerCreationParams = (workerCreation) => {
+    if (!workerCreation) return {};
+    if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) {
+      throw new Error("Update this device to use project agents.");
+    }
+    return { project_role: "worker" };
+  };
+
+  const refreshCompleteRoster = () => entity.kind === "project" && entity.pinnedAgentId
+    ? syncProjectAgents({ deviceId: context.deviceId, entityId: entity.entityId,
+      capabilities: () => bridgeCapabilities(context.deviceId), call: chatRepository.currentCall(), active: standing }).catch(() => null)
+    : Promise.resolve();
+
   const createAgentWithMessage = (controller, submission, { retry = false } = {}) => {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
@@ -3698,6 +3785,7 @@ function mountRailOnContext(host, context, swap) {
       const added = await creationCall("agent.add", {
         entity_id: entityId,
         creation_id: submission.creationId,
+        ...projectWorkerCreationParams(choice.projectWorkerCreation),
         ...newAgentParams(choice),
       });
       const createdAgent = (added && added.agent) || null;
@@ -3711,6 +3799,7 @@ function mountRailOnContext(host, context, swap) {
       };
       chatOwnership.resolve(controller, resolvedIdentity);
       controller.absorbAgent(createdAgent);
+      void refreshCompleteRoster();
       controller.clearOperationKind(submission);
       handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id, createdAgent.thread_id));
       renameAgentIdentity(provisionalAgentId, createdAgent.id, controller);
@@ -3851,7 +3940,7 @@ function mountRailOnContext(host, context, swap) {
     if (resettingConversation) return undefined;
     const message = stamped({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
     if (!controller.identity.agentId) {
-      const submission = controller.captureProvisionalSubmission(message, newAgentChoice());
+      const submission = controller.captureProvisionalSubmission(message, { ...newAgentChoice(), projectWorkerCreation: entity.kind === "project" && !!entity.pinnedAgentId });
       return postProvisional(controller, submission);
     }
     return deliverSubmission(controller, controller.captureSubmission(message));
@@ -4035,6 +4124,7 @@ function mountRailOnContext(host, context, swap) {
         paint();
       },
     });
+    await refreshCompleteRoster();
     await refreshFeed();
     await refresh();
   };
@@ -4194,7 +4284,7 @@ function mountRailOnContext(host, context, swap) {
   const stopWaitingForReader = onReaderReturns(paintChat);
   document.addEventListener("keydown", dismissOnEscape);
   document.addEventListener("pointerdown", dismissOnOutsidePointer);
-  window.addEventListener("hashchange", dismissPopover);
+  window.addEventListener("hashchange", dismissOnNavigation);
   const cancelPanelMotion = () => panelMotion.cancel();
   panelMotion = createChatPanelMotion(host, { onPhase: syncPopover });
   window.addEventListener("resize", cancelPanelMotion);
@@ -4233,7 +4323,42 @@ function mountRailOnContext(host, context, swap) {
   };
   const stopHearingRetirement = chatRepository.onRetired(stopListening);
 
+  // A host change may alter the strip and workspace stamp while the exact
+  // canonical project conversation, composer and thread remain mounted.
+  const selectedIsProjectPin = () => entity.pinnedAgentId
+    ? selectedId === entity.pinnedAgentId : agentOf(selectedId)?.project_role === "coordinator";
+
+  const canRetarget = (next) => standing() && context.kind === "project" && selectedKind === "agent"
+    && selectedIsProjectPin() && next.openAgentId === selectedId
+    && next.deviceId === context.deviceId && next.projectId === projectId
+    && next.chatRepository === chatRepository && ["project", "workspace"].includes(next.kind);
+
+  const retarget = (next, nextSwap) => {
+    swap = nextSwap;
+    Object.assign(context, { projectAgent: null, alongside: null, fromWorkspace: null }, next);
+    ({ projectAgent, standing: onProjectAgentRail } = projectAgentState(context));
+    pageView = chatRepository.railView(context.pageKey || key);
+    pageView.chooseKind(selectedKind);
+    fromWorkspace = context.fromWorkspace;
+    composerViewingContext.retarget(fromWorkspace);
+    panelVisible = true;
+    unwatchAlongsideRow?.();
+    unwatchAlongsideRow = null;
+    watchedAlongsideId = undefined;
+    alongside = context.alongside ? createAgentRailContext(context.alongside) : null;
+    alongsideEntity = railEntity(null, alongsideKind(context));
+    overviewScopeRecord.dispose({ flushPending: false });
+    overviewPage = overviewPageOf(context, alongside, projectId);
+    overviewScope = overviewPage.scope;
+    overviewScopeRecord = watchOverviewScope();
+    paint();
+    void refresh();
+    overview.refresh();
+  };
+
   return {
+    canRetarget,
+    retarget,
     /** Put the panel away without touching the docked/card preference — what a
      *  toolbar tab press means on a phone, where the chat covers the page it
      *  is about to change (#62). Unlike `dismissPopover` this does not spare a
@@ -4264,7 +4389,7 @@ function mountRailOnContext(host, context, swap) {
       releaseFaces();
       document.removeEventListener("keydown", dismissOnEscape);
       document.removeEventListener("pointerdown", dismissOnOutsidePointer);
-      window.removeEventListener("hashchange", dismissPopover);
+      window.removeEventListener("hashchange", dismissOnNavigation);
       window.removeEventListener("resize", cancelPanelMotion);
       unwatchResetSupport();
       if (ownsChatRepository) chatRepository.dispose();

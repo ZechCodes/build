@@ -1,7 +1,6 @@
-// Pure identities and menu rows for the view-area toolbar. Workspace routes
-// show one picker reading `project / workspace`; its popup moves between the
-// scoped project's workspaces and the project list, and reaches the project's
-// own page. core/toolbar.js renders and wires it.
+// Pure identities and cached destination models for the view-area toolbar.
+// Linked project ancestry, a local workspace selector and the global switcher
+// share device-qualified destinations. core/toolbar.js renders and wires them.
 
 import { fuzzyRank } from "./fuzzy.js";
 import { byProjectName, deviceTags, projectNameOf } from "./inboxProjects.js";
@@ -10,10 +9,10 @@ import { workspaceDisplayName } from "./workspaceModel.js";
 import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { navigationCatalog, navigationPickerModel } from "./navigationModel.js";
 
-/** The destination contract for the replacement toolbar pickers. Global
- * and sibling scopes use one complete catalog, ready in the activating turn;
- * opening/focusing controls belongs to the toolbar controller, not this model.
- * The older menu models below remain for the renderer's separate migration. */
+/** The destination contract for the toolbar pickers. Global and sibling
+ * scopes use one complete catalog, ready in the activating turn; opening and
+ * focusing controls belong to the toolbar controller, not this model.
+ * Legacy menu projections below remain compatibility helpers. */
 export function toolbarDestinationModel(route, feed, options = {}) {
   return navigationPickerModel(navigationCatalog(feed, { ...options, route }), options);
 }
@@ -45,8 +44,8 @@ const unreadOf = (item) => conversationSummaryUnreadCount(item, true);
  *  once says nothing, so a one-device account reads as it always has.
  *
  *  A project's counter is the unread of everything inside it — the work rows
- *  and the captures waiting to be routed there — because the project itself
- *  holds no conversation of its own to be unread in. */
+ *  and the captures waiting to be routed there — including project-owned
+ *  conversations represented in those feed rows. */
 export function projectMenuModel({ projects = [], items = [], devices = [], projectKey = null, query = "" } = {}) {
   const tags = deviceTags(projects, devices);
   const entries = projects.map((project) => ({
@@ -108,9 +107,9 @@ const STANDING = {
     // is the only honest stand-in.
     label: (route, row, carried) =>
       (carried.workspace ? workspaceDisplayName(carried.workspace, route.workspaceId) : route.workspaceId) ?? "Workspace",
-    // The picker is the bar's one control on a workspace: the directories, the
-    // Tasks and the settings are the workspace's navigation, and stand in its
-    // rail (core/directoryRail.js), not here.
+    // The workspace selector names the child beside its linked project
+    // ancestor. Directory faces, Tasks and settings remain in its rail
+    // (core/directoryRail.js).
     carries: (route, { workspaces }) => ({
       workspaceId: route.workspaceId,
       workspace: workspaces.find((candidate) => candidate.workspaceKey === routeWorkspaceKey(route)) || null,
@@ -127,15 +126,15 @@ const STANDING = {
     label: (route) => route.branch || "",
   },
   task: {
-    // A task id is a uuid: it names one task wherever it is.
+    // This is the legacy task route, not a trackerTask detail page; its
+    // run-backed task ID names the feed row on the route's device.
     rowIs: (route) => (item) => item.kind === "task" && item.task_id === route.id && item.deviceId === route.deviceId,
     label: (route, row) => (row && row.title) || "Task",
   },
   project: {
-    // A project is the block the rows sit in rather than a row of its own, and
-    // the page is about the project and nothing inside it: the bar says its
-    // name through the project selector. Its two pages are the faces of its
-    // rail (core/projectRail.js, #274).
+    // The project name labels its breadcrumb. Its workspace has Tasks,
+    // Changes, Files and Workspaces faces on one kept shell, without a
+    // synthetic child workspace record (core/projectRail.js).
     rowIs: () => () => false,
     label: () => "",
   },

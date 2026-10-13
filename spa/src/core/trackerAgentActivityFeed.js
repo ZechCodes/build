@@ -5,6 +5,7 @@
 
 import { threadCacheAddress } from "./conversationCache.js";
 import { entityIdOf } from "./entityId.js";
+import { projectRosterRows } from "./projectRosterFeed.js";
 import { readCached, readCachedMany, subscribeCache } from "./localCache.js";
 import { latestCachedAgentActivity } from "./trackerDashboardModel.js";
 
@@ -16,7 +17,7 @@ const workingAgents = (row) => (row.agents || []).filter((agent) => agent?.id &&
 
 const addressesFor = (feed, projectKey, deviceId) => {
   const found = new Map();
-  for (const row of feed?.items || []) {
+  for (const row of projectRosterRows(feed)) {
     if (row.projectKey !== projectKey) continue;
     const entityId = entityIdOf(row);
     if (!entityId) continue;

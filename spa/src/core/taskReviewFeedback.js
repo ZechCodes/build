@@ -5,7 +5,7 @@ import { fieldTraits } from "./fieldTraits.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { readUiRecord, writeUiRecordIfUnwritten } from "./localUiStore.js";
 import { notifyError } from "./notify.js";
-import { agentLabels, assigneeOptions, selectedOptionId, workspaceAgents, projectName } from "./trackerAssignee.js";
+import { agentLabels, assigneeOptions, selectedOptionId, assignableAgents, projectName } from "./trackerAssignee.js";
 import { openAssigneePicker } from "./trackerAssigneePicker.js";
 import { readTaskRecord, taskAddress } from "./trackerCache.js";
 import { subscribeCache } from "./localCache.js";
@@ -65,7 +65,7 @@ export function mountTaskReviewFeedback(host, {
     const heldFeed = typeof feed === "function" ? feed() : feed;
     return commentReplyLabel(replyIndex.comments.get(draft.replyTo), {
       deviceId, projectId, identities: taskRecord?.task?.identities || {},
-      projectName: projectName(heldFeed, projectKey), agentLabels: agentLabels(workspaceAgents(heldFeed, projectKey)),
+      projectName: projectName(heldFeed, projectKey), agentLabels: agentLabels(assignableAgents(heldFeed, projectKey)),
     });
   };
   const paint = (saved) => keepReadingPlace(() => {
@@ -149,7 +149,7 @@ export function mountTaskReviewFeedback(host, {
 
 /** Route a saved snapshot to any ordinary task assignee. */
 export function openTaskReviewer({ task, snapshot, feed, projectKey, deviceId, projectId, catalog = null, callRpc, onAssigned = null }) {
-  const groups = workspaceAgents(typeof feed === "function" ? feed() : feed, projectKey);
+  const groups = assignableAgents(typeof feed === "function" ? feed() : feed, projectKey);
   const number = snapshot?.number ?? snapshot?.snapshot_number ?? snapshotIdOf(snapshot);
   return openAssigneePicker({
     task,

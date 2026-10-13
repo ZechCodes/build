@@ -217,13 +217,16 @@ describe("device-scoped waiting assignments from the pane", () => {
       { capabilities: { tasks: { waitingOn } } });
   };
 
-  const openRealPicker = async (held, view) => {
+  const openRealPicker = async (held, view, { holdDetail = false } = {}) => {
     const { fakeSession } = await import("./deviceSessionFixture.js");
     contexts = await import("../src/core/deviceContexts.js");
     const session = fakeSession("dev-1");
-    call = vi.fn(async (method) => method === "tasks.list" ? { tasks: [held] } : {
+    call = vi.fn(async (method) => {
+      if (holdDetail && method === "tasks.get") return new Promise(() => {});
+      return method === "tasks.list" ? { tasks: [held] } : {
       task: { ...held, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } } },
       dispatch: null,
+      };
     });
     session.call = call;
     context = contexts.adoptDeviceSession(session);
@@ -270,6 +273,24 @@ describe("device-scoped waiting assignments from the pane", () => {
     expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
     expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
   });
+  it.each(["list", "board"])("keeps the %s draft after a list-first reblock while detail is pending", async (view) => {
+    const held = task({ id: "task-list-reblocked", dependencies: { blocked: false, waiting_on: [] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });
+    await openRealPicker(held, view, { holdDetail: true });
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [{ ...held,
+      updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] },
+    }] });
+    expect((await trackerCache.readTaskRecord("dev-1", "proj-1", held.id)).task.dependencies.blocked).toBe(false);
+    greet(false);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+  });
+
 });
 
 describe("painting before the bridge is asked", () => {

@@ -674,7 +674,12 @@ advertised `tasks.waitingOn`, as confirmed by a successful history read. The SPA
 persists the highest support seen per device beside its cached capability flags.
 An authenticated capable hello remains evidence even if a newer hello superseded
 it; this does not grant the old greeting dispatch or rendering authority. Evidence
-updates in memory even if its put fails. Unknown/malformed history or failed
+updates in memory even if its put fails; every capable greeting retries the put
+and shares monotonic evidence over the existing cache channel with listening
+tabs. Evidence that never persisted lasts only for informed pages' lifetimes:
+refused storage plus a reload/uninformed tab and a bridge downgrade is an
+accepted residual risk, since the client cannot retain what the browser will
+not persist. Unknown/malformed history or failed
 history reads/writes refuse new-workspace assignment under an incapable greeting
 with the update message and a retry/refresh hint. A previously capable device with
 an incapable current greeting is downgraded: board/list and task-page pickers

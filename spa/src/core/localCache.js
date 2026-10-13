@@ -112,6 +112,10 @@ const { announce, subscribe } = createAnnouncer("build-cache");
  *  listening. */
 export const subscribeCache = subscribe;
 
+/** Share monotonic admission evidence with open tabs even if storage refused
+ * its record. This transient metadata never replaces a cached render value. */
+export const announceCacheEvidence = (address, evidence) => announce(addressParts(address), true, evidence);
+
 /** Read one record: `{ at, value }`, or undefined when it was never written,
  *  the cache is unavailable, or anything went wrong. */
 export function readCached(address) {

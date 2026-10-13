@@ -130,7 +130,7 @@ bound. W2 delivery authorization and W3 caller-facing evidence are verified belo
 | TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 / #564 verifies the cached armed/unassigned removal consequence in `taskWaitingOnModel.test.js`, `taskWaitingOnPage.test.js` and keyboard browser cases in `taskWaitingOnEdges.test.js`; removal sends only the edge command and does not invent an assignment or worker. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
 | TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
-| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; a downgraded device cannot receive ordinary new-workspace assignment. | W5 / #564 round 10: `taskWaitingAssignmentHistory.test.js` exercises real greeting authority, device RPC and the picker for superseded capable hellos, a refused IndexedDB history put and refused reads, plus capable/confirmed-legacy and retired-account controls. `taskWaitingOnSupport.test.js` verifies monotonic evidence before persistence, failed writes, unknown/unavailable/malformed reads, committed retries/no-ops, account reset, existing cached support and reload. `taskWaitingOnActions.test.js` admits capable/never-upgraded assignment, refuses previously capable devices and unknown history with retry/refresh copy, preserves greeting authority, and gates graph verbs/parameters. `taskWaitingAssignmentDowngrade.test.js` contains the six real-picker legacy-erasure reproductions (detail/catalogue/query × absent/first-ready knowledge); `trackerTasksPaneDom.test.js` and `taskWaitingOnEdges.test.js` verify inline board/list/task-page refusal with retained drafts, including ready tasks. Per-task arbitration and dependency-knowledge records are removed. `trackerAssignmentDetailRefresh.test.js` verifies post-assignment trailing detail refresh restores concurrent unread mentions while rejecting the pre-response read. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js`, `taskWaitingOnPage.test.js` and `trackerTaskChecklistDom.test.js` retain cache/reverse-page fences and edge-mutation timeline refresh. Browser fixtures retain escaped titles, same-project keyboard editing, Done/close presentation, navigation, exact saved-id retries and legacy shapes at 390/1280 light/dark. W4 / #563 cache/group evidence and the combined journey remain applicable. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; a downgraded device cannot receive ordinary new-workspace assignment. | W5 / #564 round 11: `taskWaitingOnSharing.test.js` verifies shared evidence under refused/unavailable storage, no echoes, device isolation and preserved rendering support; the Chromium sharing suite verifies native-channel evidence and refusal through the other tab’s real picker. `taskWaitingOnSupport.test.js` verifies a later capable greeting retries a refused first put and persists across reload. `taskWaitingAssignmentHistory.test.js` exercises real greeting authority, device RPC and the picker for superseded capable hellos, a refused IndexedDB history put and refused reads, plus capable/confirmed-legacy and retired-account controls. `taskWaitingOnSupport.test.js` verifies monotonic evidence before persistence, failed writes, unknown/unavailable/malformed reads, committed retries/no-ops, account reset, existing cached support and reload. `taskWaitingOnActions.test.js` admits capable/never-upgraded assignment, refuses previously capable devices and unknown history with retry/refresh copy, preserves greeting authority, and gates graph verbs/parameters. `taskWaitingAssignmentDowngrade.test.js` contains the six real-picker legacy-erasure reproductions (detail/catalogue/query × absent/first-ready knowledge); `trackerTasksPaneDom.test.js` and `taskWaitingOnEdges.test.js` verify inline board/list/task-page refusal with retained drafts, including ready tasks. Per-task arbitration and dependency-knowledge records are removed. `trackerAssignmentDetailRefresh.test.js` verifies post-assignment trailing detail refresh restores concurrent unread mentions while rejecting the pre-response read. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js`, `taskWaitingOnPage.test.js` and `trackerTaskChecklistDom.test.js` retain cache/reverse-page fences and edge-mutation timeline refresh. Browser fixtures retain escaped titles, same-project keyboard editing, Done/close presentation, navigation, exact saved-id retries and legacy shapes at 390/1280 light/dark. W4 / #563 cache/group evidence and the combined journey remain applicable. |
 
 TS558-7 accepted residual risk: capability history is keyed by the paired device
 UUID. Re-pairing a machine mints a fresh UUID, so the previous device's history
@@ -139,6 +139,18 @@ the bridge and then re-pairing it are two deliberate actions on an unsupported
 downgrade path; the old bridge cannot enforce waiting-on prerequisites whatever
 the client does. This limitation is accepted, with no identity linking across
 pairings.
+
+TS558-7 accepted residual risk: evidence that could never be written to storage
+lasts only for that page's lifetime.
+Failed writes cannot erase monotonic evidence in the observing page, and open
+tabs listening on the existing `build-cache` BroadcastChannel retain shared
+evidence for their own lifetimes. Each authenticated capable greeting retries
+persistence. New or uninformed tabs cannot recover unpersisted evidence, nor can
+a reload after all informed page lifetimes end. This residual requires refused
+storage, a reload or uninformed tab, and a bridge downgrade: the client cannot
+retain across reload what the browser will not persist. The limitation is
+accepted with these retry and open-tab mitigations, with no new channel or
+durable fallback.
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
 gate exit 0 (4,592 library tests passed, 9 ignored; integration tests include
@@ -643,3 +655,34 @@ Gitleaks, diff-check, pushed SHA and snapshot evidence are recorded on #564.
 TS558-7 includes the explicitly accepted re-pair UUID/history loss described
 above; identity linking is outside this fix. No bridge execution, pairing,
 private-directory access, install scripts or independent Astra review occurred.
+
+W5 round 11 / #564 (2026-10-13) accepts the unpersisted-evidence lifetime
+residual described beside TS558-7, with retry and existing-channel mitigations.
+The later-capable-greeting retry test already passed on round 10: that path
+always attempts the atomic merge again, and a successful retry survives module
+reload. The new independent-tab refused-put test failed first because the
+listening tab had no evidence (**1 failure, exit 1**). It now passes: capable
+observations publish transient monotonic evidence through the existing
+`build-cache` BroadcastChannel before storage, and open listening tabs retain
+it without changing rendering support or granting greeting authority. Receipt
+never echoes the message. No new channel or durable fallback is introduced.
+
+`taskWaitingOnSharing.test.js` covers refused/unavailable storage, device
+isolation, unchanged rendering support and a missing-channel local fallback.
+`browser/taskWaitingOnSharing.test.js` uses two fixture Chromium tabs sharing
+IndexedDB and the native channel, injects refused capability persistence, then
+verifies the other tab's real picker sends no assignment and retains its note.
+`taskWaitingOnSupport.test.js` proves a later capable greeting retries a refused
+first put, persists history, and refuses downgrade after module reload.
+
+Node **22.23.3** / npm **12.0.2**, all gates under `nice -n 10`: lint,
+focused units/browser (**21 files / 290 tests**) and build exit **0**. Semgrep
+on **50 changed tracked files**, **200 rules / zero findings**, exits **0**.
+The prior late-hello, storage-refusal, detail-refresh and complexity-ratchet
+checks remain in the focused run. Full suite and captures were not requested
+for this narrow round; the serial gate owns full-suite verification. TS558-7
+is verified with the two explicitly accepted residuals (re-pair UUID loss and
+unpersisted evidence after page lifetimes end). Final Gitleaks, diff-check,
+pushed SHA and snapshot evidence are recorded on #564. No new complexity
+exceptions, ratchet entries, independent Astra review or security-constraint
+exceptions.

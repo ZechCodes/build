@@ -2210,8 +2210,12 @@ In practice:
   original account/device sets history, even if a newer greeting has already
   superseded its hello or overtakes its storage transaction. Incapable
   greetings never clear it. Evidence updates in memory before persistence;
-  a refused write cannot erase it. Admission distinguishes a committed absent
-  record from an unavailable/error read; unknown or malformed history refuses
+  a refused write cannot erase it within that page's lifetime. Every
+  authenticated capable greeting retries persistence. The existing `build-cache`
+  BroadcastChannel shares monotonic evidence with open tabs that are listening,
+  so those informed tabs also retain it in memory if persistence fails. Admission
+  distinguishes a committed absent record from an unavailable/error read;
+  unknown or malformed history refuses
   new-workspace assignment under an incapable greeting with the update message
   and a retry/refresh hint. Account reset retires pending evidence and its
   in-memory history. Existing cached `waitingOn: true` records count as
@@ -2224,6 +2228,15 @@ In practice:
   two deliberate actions on an unsupported downgrade path; the old bridge
   cannot enforce waiting-on prerequisites whatever the client does. This
   limitation is accepted; the client does not link identities across pairings.
+  **Accepted residual risk:** evidence that could never be written to storage
+  lasts only for that page's lifetime.
+  Open listening tabs can retain shared evidence for their own lifetimes, but
+  new or uninformed tabs cannot recover it, nor can a reload after all informed
+  page lifetimes end. The residual requires refused storage, a reload or
+  uninformed tab, and a bridge downgrade. The client cannot retain across reload
+  what the browser will not persist. Retrying on every authenticated capable
+  greeting and sharing over the existing channel mitigate this limitation;
+  there is no new channel or durable fallback.
 - **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
   keeps unsent drafts, folds, menus and the other `ui-*` records in their own
   database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
@@ -2687,8 +2700,11 @@ refuses when that device cannot answer.
   A capable current greeting admits assignment normally: the bridge enforces
   prerequisites. An incapable greeting admits legacy workspace assignment only
   if the history confirms the device has never advertised waiting-on support.
-  Failed history reads/writes and unknown records fail closed, with a retry or
-  refresh hint alongside the update message. A previously capable
+  Failed history reads/writes and unknown records fail closed in the page that
+  observes them; shared in-memory capability evidence also refuses assignment
+  in informed open tabs. Refusals include a retry or refresh hint alongside the
+  update message. Evidence that never persisted has the page-lifetime residual
+  described under Waiting-on capability history. A previously capable
   device is downgraded: board/list and task-page new-workspace pickers refuse
   with an inline update message and retain note/selection without sending.
   Even a ready task is refused on that device; legacy writes can erase graph

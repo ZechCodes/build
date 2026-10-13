@@ -1,14 +1,17 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 let support, cache;
 beforeEach(async () => {
   vi.resetModules();
+  // These module-reload tests model a page whose old channels have ended.
+  vi.stubGlobal("BroadcastChannel", undefined);
   globalThis.indexedDB = new IDBFactory();
   globalThis.IDBKeyRange = IDBKeyRange;
   support = await import("../src/core/taskWaitingOnSupport.js");
   cache = await import("../src/core/localCache.js");
 });
+afterEach(() => vi.unstubAllGlobals());
 
 it("sets the highest-seen flag on a capable greeting, scoped per device", async () => {
   expect(await support.readTaskWaitingOnEverSupported("d")).toBe(false);
@@ -100,4 +103,20 @@ it("updates capable evidence synchronously and retires pending history on accoun
   support.resetTaskWaitingOnHistory();
   await pending;
   expect(await support.readTaskWaitingOnEverSupported("d")).toBe(false);
+});
+
+it("retries a refused capable-history put on the next capable greeting and survives reload", async () => {
+  const put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementationOnce(() => {
+    throw new DOMException("Refused first history put", "QuotaExceededError");
+  });
+  try {
+    expect(await support.rememberTaskWaitingOnSupport("retry", { tasks: { waitingOn: true } })).toBe(false);
+    expect(await cache.readCached(support.taskWaitingOnSupportAddress("retry"))).toBeUndefined();
+    expect(await support.rememberTaskWaitingOnSupport("retry", { tasks: { waitingOn: true } })).toBe(true);
+    expect((await cache.readCached(support.taskWaitingOnSupportAddress("retry"))).value.everWaitingOn).toBe(true);
+  } finally { put.mockRestore(); }
+  vi.resetModules();
+  support = await import("../src/core/taskWaitingOnSupport.js");
+  await support.rememberTaskWaitingOnSupport("retry", {});
+  expect(await support.readTaskWaitingOnEverSupported("retry")).toBe(true);
 });

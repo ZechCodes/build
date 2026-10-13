@@ -1,6 +1,6 @@
 // Greetings persist current rendering support and the highest support seen.
 // Assignment admission reads that history after the current greeting settles.
-import { mergeCachedAtomically, readCached, readCachedOutcome } from "./localCache.js";
+import { announceCacheEvidence, mergeCachedAtomically, readCached, readCachedOutcome, subscribeCache } from "./localCache.js";
 
 export const taskWaitingOnSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "task-waiting-on-support" });
 export const TASK_WAITING_ON_UPDATE = "Update this device's bridge to edit prerequisites or save assignments that wait.";
@@ -9,6 +9,14 @@ const everSupported = (value) => value?.everWaitingOn === true || value?.waiting
 const seen = new Set();
 const uncertain = new Set();
 let accountEra = 0;
+
+// The cache already owns this same-origin channel. Receiving evidence grants
+// neither rendering support nor greeting authority, and never broadcasts back.
+subscribeCache({}, (address, evidence) => {
+  if (address.kind === "task-waiting-on-support" && address.deviceId && evidence?.waitingOnSeen === true) {
+    seen.add(address.deviceId);
+  }
+});
 
 export function resetTaskWaitingOnHistory() {
   accountEra += 1;
@@ -30,8 +38,13 @@ export function rememberTaskWaitingOnSupport(deviceId, capabilities, current = (
   const era = accountEra;
   // Authenticated evidence is monotonic, regardless of session supersession
   // or a refused put. Only the rendering flag belongs to the current hello.
-  if (waitingOn) seen.add(deviceId);
+  if (waitingOn) {
+    seen.add(deviceId);
+    announceCacheEvidence(taskWaitingOnSupportAddress(deviceId), { waitingOnSeen: true });
+  }
   uncertain.add(deviceId);
+  // Every capable greeting retries this transaction, including evidence already
+  // held in memory after a refused put. A committed equal value is a safe no-op.
   return mergeCachedAtomically(taskWaitingOnSupportAddress(deviceId), (held) => {
     if (era !== accountEra) return null;
     if (everSupported(held)) seen.add(deviceId);

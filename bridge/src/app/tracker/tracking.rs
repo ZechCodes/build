@@ -38,7 +38,7 @@ impl AppState {
             // set does not record being told twice, and a timeline that said
             // otherwise would be claiming a second fact for one truth.
             return Ok(json!({
-                "task": self.task_json_with_live_identities(project_id, &write.task),
+                "task": self.task_json_with_live_identities(project_id, &write.task)?,
             }));
         }
         let mut payload = json!({ "agent_id": agent_id });
@@ -99,7 +99,7 @@ impl AppState {
         let mut write = TaskWrite::by(actor.clone(), task);
         if !write.task.set_watched(watching) {
             return Ok(json!({
-                "task": self.task_json_with_live_identities(project_id, &write.task),
+                "task": self.task_json_with_live_identities(project_id, &write.task)?,
             }));
         }
         write.task.watch_started_after = baseline.map(str::to_string);
@@ -129,7 +129,7 @@ impl AppState {
             |read: &str| super::inbox::when(read) >= super::inbox::when(event_id.as_str());
         if write.task.read_through.as_deref().is_some_and(already_read) {
             return Ok(json!({
-                "task": self.task_json_with_live_identities(&project_id, &write.task),
+                "task": self.task_json_with_live_identities(&project_id, &write.task)?,
             }));
         }
         write.task.read_through = Some(event_id);

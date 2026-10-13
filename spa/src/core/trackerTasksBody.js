@@ -95,8 +95,15 @@ export function paintTaskBoard(body, board, context, wire) {
   patchInnerHtml(body, boardFrameHtml(board, context));
   const cardLists = cardListsIn(body);
   for (const column of board) {
-    const cards = cardLists.get(column.id);
-    if (!cards) continue;
-    patchList(cards, column.tasks, { keyOf, render: (task) => taskCardHtml(task, context), wire });
+    if (column.groups) {
+      const section = [...body.querySelectorAll("[data-column]")].find((element) => element.dataset.column === column.id);
+      for (const group of column.groups) {
+        const cards = [...section.querySelectorAll("[data-backlog-cards]")].find((element) => element.dataset.backlogCards === group.id);
+        patchList(cards, group.tasks, { keyOf, render: (task) => taskCardHtml(task, context), wire });
+      }
+    } else {
+      const cards = cardLists.get(column.id);
+      if (cards) patchList(cards, column.tasks, { keyOf, render: (task) => taskCardHtml(task, context), wire });
+    }
   }
 }

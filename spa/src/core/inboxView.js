@@ -480,7 +480,7 @@ const LIST_CONTROLS = [...ROW_CONTROLS, ...CAPTURE_CONTROLS, ...BLOCK_CONTROLS];
 /// row was spoken for.
 function onListClick(event) {
   const { target } = event;
-  if (pressed(LIST_CONTROLS, target)) return;
+  if (target.closest("a") || pressed(LIST_CONTROLS, target)) return;
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
   if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));

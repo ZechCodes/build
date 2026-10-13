@@ -51,14 +51,16 @@ const AGENT_STATE_MARKS = {
   ...RUN_STATE_MARKS,
 };
 
-/** What a task's standing means to the fold. In progress is the only one
- *  that counts as running — it is the only one the agent is actually doing —
+/** What a task's standing means to the fold. Working (or legacy In progress)
+ *  counts as running — it is the only one the agent is actually doing —
  *  and the three it is finished with carry the done mark, which is what puts
  *  them under the fold. In review is among them: the agent has said the work
  *  is ready to be looked at and has nothing more to do with it. */
 const TASK_STATE_MARKS = {
+  working: { mark: RUNNING_MARK, label: "Working" },
   in_progress: { mark: RUNNING_MARK, label: "In progress" },
   assigned: { mark: PENDING_STATE, label: "Assigned" },
+  blocked: { mark: "blocked", label: "Blocked" },
   tracked: { mark: PENDING_STATE, label: "Tracking" },
   in_review: { mark: DONE_MARK, label: "In review" },
   done: { mark: DONE_MARK, label: "Done" },
@@ -374,6 +376,10 @@ const ROW_NORMALISERS = {
     number: Number.isFinite(entry.number) ? entry.number : null,
     title: entry.title || "",
     movedAt: entry.updated_at || null,
+    blockers: entry.blockers || [],
+    readinessAware: entry.readinessAware === true,
+    projectId: entry.projectId || null,
+    deviceId: entry.deviceId || null,
   }),
 };
 
@@ -383,8 +389,8 @@ export function surfaceRows(kind, surfaces, reading = {}) {
   const normalise = ROW_NORMALISERS[kind];
   if (!normalise) return [];
   const rows = keyedRows(kind, kind, entries, normalise, reading);
-  // The tasks arrive already in the order they read in — in progress, then
-  // assigned, then tracked, then the three the agent is finished with — and
+  // The tasks arrive already in the order they read in — Working, Assigned, Blocked, then
+  // tracked, then the three the agent is finished with — and
   // reordering them here would fight the model that built them.
   if (kind !== CHECKLIST_ENTRY_KIND) return rows;
   return [

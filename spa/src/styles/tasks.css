@@ -843,3 +843,11 @@ a.thread-task-action:focus-visible, a.thread-task-notice:focus-visible {
   .task-waiting-on { flex:1 1 100%; }
   .task-dependency .btn { min-height:36px; }
 }
+
+
+/* Readiness headings and linked cached blockers share the task surfaces. */
+.task-backlog-group-title { margin:12px 0 8px; color:var(--ink2); font-size:11px; font-weight:600; }
+.task-waiting { display:block; min-width:0; color:var(--ink2); font-size:11px; overflow-wrap:anywhere; }
+.task-dashboard-row > .task-waiting { padding:0 12px 10px 48px; }
+.task-blocker-link { color:var(--ink2); text-decoration:underline; text-underline-offset:2px; }
+.task-blocker-link:hover, .task-blocker-link:focus-visible { color:var(--ink); }

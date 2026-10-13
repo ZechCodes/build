@@ -130,7 +130,7 @@ bound. W2 delivery authorization and W3 caller-facing evidence are verified belo
 | TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 / #564 verifies the cached armed/unassigned removal consequence in `taskWaitingOnModel.test.js`, `taskWaitingOnPage.test.js` and keyboard browser cases in `taskWaitingOnEdges.test.js`; removal sends only the edge command and does not invent an assignment or worker. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
 | TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
-| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W5 / #564: `taskWaitingOnEdges.test.js` verifies escaped hostile titles, cached edges with held reads, distinct Done/close presentation, same-project keyboard editing and reverse navigation at 390/1280 light/dark, exact saved-id retry, current-greeting refusal and legacy request shapes. `taskWaitingAssignment.test.js` verifies ready-form reblock-at-submit refusal with note/target retention. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js` and `taskWaitingOnPage.test.js` fence reverse page generations, unmounted production task pushes and mounted off-preview stale tails/cursors. W4 grouping evidence belongs to #563; the second landing verifies the combined journey. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W5 / #564: `taskWaitingOnEdges.test.js` verifies escaped hostile titles, cached edges with held reads, distinct Done/close presentation, same-project keyboard editing and reverse navigation at 390/1280 light/dark, exact saved-id retry, current-greeting refusal and legacy request shapes. `taskWaitingAssignment.test.js` verifies ready-form reblock-at-submit refusal with note/target retention. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js` and `taskWaitingOnPage.test.js` fence reverse page generations, unmounted production task pushes and mounted off-preview stale tails/cursors. W4 / #563 grouping evidence below verifies cached Blocked/Ready groups, history precedence and older-capability rendering; the second landing verifies the combined journey. |
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
 gate exit 0 (4,592 library tests passed, 9 ignored; integration tests include
@@ -308,3 +308,29 @@ Expanded DOM/churn/read-order/cache/ratchet coverage exits 0 (117 tests); source
 lint and diff checks exit 0. No complexity cap, annotation or ratchet changed.
 The W5-owned TS558-4/7 score remains 100/100 with these gaps closed; revision-2
 broad gates and security scan logs are attached to the new #564 review head.
+
+W4 / #563 cached-rendering evidence (2026-10-13): the rendering portion of
+TS558-7 is verified by `taskBlockedSections.test.js` (six Chromium tests,
+exit **0**). The 390px and 1280px fixtures mount from cached tasks while
+reads are pending. Normal task pushes update Dashboard, watched inbox and
+agent rail through Done, close, unblock and reopen; project and board Backlog
+move between Blocked and Ready without any label or column write. Hostile
+cached blocker titles remain escaped text, legacy capability fixtures retain
+their existing groups, explicit questions retain attention, and Done/closed
+history takes precedence over readiness. Blocking links preserve their own
+pointer and keyboard navigation instead of also opening the dependent row.
+That regression was observed failing before the inbox click guard (exit **1**)
+and passing afterwards (isolated exit **0**, full six-test suite exit **0**).
+
+The Dashboard-model pending creating-target name regressions likewise failed
+before the fix (exit **1**, two tests), then passed with all 48 model tests
+(exit **0**). The grouping, rail, inbox and board unit evidence is recorded
+on #563 alongside the browser red/green logs and 390px/1280px light/dark
+fixture screenshots. The real-wire watched-inbox fixture additionally verifies
+the unblocked dependency digest and `Assigned · Assigned to you` group-plus-ask
+facts (four tests, exit **0**); its stale pre-grouping expectation was first
+observed failing (isolated exit **1**).
+These renderers introduce no write authority or
+connection-state branch. This evidence verifies the complete W4 cached-rendering
+scope; TS558-7's W5 write-capability and edge-control scope remains owned by
+#564 and is not claimed here.

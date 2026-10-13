@@ -153,3 +153,12 @@ describe("when the row says it moved", () => {
     expect(entry.lastActivityMs).toBe(Date.parse("2026-09-21T00:08:00Z"));
   });
 });
+
+
+it("uses cached blocked summaries on wire inbox rows instead of user assignment-only attention", () => {
+  const [row] = listed([taskRow({ assigned_to_user: true, assignee: { kind: "user" }, dependencies: {
+    blocked: true, waiting_on: [{ task_id: "blocker", number: 12, title: "Prerequisite", resolved: false }],
+  } })]);
+  expect(row).toMatchObject({ assignedToUser: false, taskGroup: "blocked", working: false });
+  expect(row.facts).toContain("Blocked · Waiting on #12");
+});

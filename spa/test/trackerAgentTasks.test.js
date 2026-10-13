@@ -173,3 +173,42 @@ describe("the badge's count", () => {
     expect(agentOpenTaskCount([], ME)).toBe(0);
   });
 });
+
+
+describe("waiting-on task activity (#563)", () => {
+  const prerequisite = { task_id: "blocker-12", number: 12, title: "Prepare API", state: "open", status: "ready", resolved: false, resolved_by: null };
+  const ready = (over = {}) => mine({ dependencies: { blocked: false, waiting_on: [] }, ...over });
+  const blocked = (over = {}) => ready({ dependencies: { blocked: true, waiting_on: [prerequisite] }, ...over });
+
+  it("puts Blocked after Assigned, even when the cached holder is working", () => {
+    const tasks = [blocked({ number: 3 }), ready({ number: 2, deferred_assignment: { state: "queued" } }), ready({ number: 1 })];
+    expect(agentTaskEntries(tasks, ME, { working: true }).map((row) => `${row.state}:${row.number}`))
+      .toEqual(["working:1", "assigned:2", "blocked:3"]);
+    expect(groupOf(blocked(), ME, { working: true })).toBe("blocked");
+    expect(agentOpenTaskCount([blocked()], ME)).toBe(1);
+  });
+
+  it("shows Assigned for idle or missing holders and every undelivered assignment", () => {
+    expect(agentTaskEntries([ready({ status: "in_progress" })], ME)[0].state).toBe("assigned");
+    for (const state of ["waiting", "queued", "provisioning", "failed"]) {
+      expect(agentTaskEntries([ready({ deferred_assignment: { state } })], ME, { working: true })[0].state).toBe("assigned");
+    }
+  });
+
+  it("keeps history ahead of readiness and tracking distinct from holding", () => {
+    expect(agentTaskEntries([blocked({ state: "closed" })], ME, { working: true })[0].state).toBe("closed");
+    expect(agentTaskEntries([blocked({ status: "done" })], ME, { working: true })[0].state).toBe("done");
+    expect(agentTaskEntries([blocked({ status: "in_review" })], ME, { working: true })[0].state).toBe("in_review");
+    expect(agentTaskEntries([blocked({ assignee: { kind: "agent", agent_id: THEM }, trackers: [ME] })], ME)[0].state).toBe("tracked");
+  });
+
+  it("names only unresolved prerequisites", () => {
+    const tasks = [blocked({ dependencies: { blocked: true, waiting_on: [prerequisite, { ...prerequisite, task_id: "resolved-13", number: 13, resolved: true }] } })];
+    expect(agentTaskEntries(tasks, ME)[0].blockers).toEqual([prerequisite]);
+  });
+
+  it("keeps input order within priority, rather than using movement time", () => {
+    const tasks = [ready({ number: 7, priority: "none" }), ready({ number: 9, priority: "high" }), ready({ number: 8, priority: "high" }), ready({ number: 1, priority: "urgent" })];
+    expect(agentTaskEntries(tasks, ME).map((row) => row.number)).toEqual([1, 9, 8, 7]);
+  });
+});

@@ -15,6 +15,7 @@
 //
 // Pure: HTML in, no DOM, no app imports.
 
+import { taskWaitingHtml } from "./trackerTaskReadinessRender.js";
 import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
@@ -56,6 +57,7 @@ export const taskCardHtml = (task, { columns, href, unreadOf, ...context }) => {
     <div class="task-card-head">${stateMarkHtml(task)}${numberHtml(task)}${priorityChipHtml(task.priority)}${taskBubbleHtml(task, unreadOf)}</div>
     <a class="task-card-title" href="${esc(href(task))}">${esc(task.title)}</a>
     ${cardStatusHtml(task, columns, reading)}
+    ${taskWaitingHtml(task, context)}
     ${task.labels?.length ? `<div class="task-card-labels">${labelsHtml(task.labels)}</div>` : ""}
     ${assigneeHref
       ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}">${assigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`
@@ -99,7 +101,10 @@ const columnHtml = (column, context) => {
       ${columnWhyHtml(column, note)}
       <span class="task-column-count">${column.tasks.length}</span>
     </header>
-    <ul class="task-column-cards" role="list" data-column-drop="${esc(column.id)}" ${KEYED_LIST_ATTRIBUTE}></ul>
+    ${column.groups ? column.groups.map((group) => `<div class="task-backlog-group" data-backlog-group="${group.id}">
+      <h4 class="task-backlog-group-title">${group.title}</h4>
+      <ul class="task-column-cards" role="list" data-column-drop="${esc(column.id)}" data-backlog-cards="${group.id}" ${KEYED_LIST_ATTRIBUTE}></ul>
+    </div>`).join("") : `<ul class="task-column-cards" role="list" data-column-drop="${esc(column.id)}" ${KEYED_LIST_ATTRIBUTE}></ul>`}
   </section>`;
 };
 

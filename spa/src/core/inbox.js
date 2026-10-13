@@ -34,6 +34,8 @@
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
+import { taskActivityGroup, taskHasReadiness, taskIsBlocked, taskIsHeld, taskWaitingText, unresolvedTaskBlockers } from "./trackerTaskReadiness.js";
+import { taskInboxFactsHtml } from "./trackerTaskReadinessRender.js";
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE } from "./icons.js";
@@ -604,18 +606,24 @@ function toTrackerTaskEntry(item) {
     title: taskTitleOf(item),
     status: item.status || null,
     // Assignment explains attention but never changes the row's position.
-    assignedToUser: !!item.assigned_to_user,
+    assignedToUser: !!item.assigned_to_user && !taskIsBlocked(item),
+    taskGroup: taskIsHeld(item) ? taskActivityGroup(item, false) : "backlog",
+    taskBlockers: unresolvedTaskBlockers(item),
     state: unread ? "unread" : "idle",
     unreadCount: unread,
     muted: !!item.muted,
     // Done on a task row means the same as on a conversation: cleared until
     // the next event.
     dismissed: !!item.done_until_next,
-    facts: item.last_event?.text || "",
+    facts: wireTaskFacts(item),
     route: entryRoute(item),
     ...times,
   };
 }
+
+const wireTaskFacts = (item) => taskHasReadiness(item)
+  ? [taskIsBlocked(item) ? "Blocked" : taskIsHeld(item) ? "Assigned" : "", taskWaitingText(item), item.last_event?.text].filter(Boolean).join(" · ")
+  : item.last_event?.text || "";
 
 /// The kinds that are their own kind of row. Everything else is a checkout —
 /// a branch or a legacy task — which `toEntry` builds below. A table rather
@@ -1027,7 +1035,7 @@ function twoLineRowHtml(entry, ui, extra = [], facts = entry.facts || GETTING_ST
   return `${rowOpenHtml(entry, ui, extra)}
     <div class="inbox-body">
       <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span></div>
-      ${facts ? `<div class="inbox-facts">${rowReviewSummaryHtml(entry)}${esc(facts)}</div>` : ""}
+      ${facts ? `<div class="inbox-facts">${rowReviewSummaryHtml(entry)}${taskInboxFactsHtml(entry, facts)}</div>` : ""}
       <span class="warn" data-done-error hidden></span>
     </div>
     <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>

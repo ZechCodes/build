@@ -145,7 +145,9 @@ describe("a watched task in the inbox, over the real wire", () => {
     await expect.poll(() => rowFor(taskId)?.classList.contains("inbox-quiet"), WAIT).toBe(true);
 
     await reach(assigned);
-    await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Assigned to you");
+    // The readiness-aware wire names the activity group before the ask.
+    expect(assigned.get.task.dependencies).toMatchObject({ blocked: false });
+    await expect.poll(() => rowFor(taskId)?.querySelector(".inbox-facts")?.textContent, WAIT).toBe("Assigned · Assigned to you");
     const number = assigned.get.task.number;
     expect(rowFor(taskId).querySelector(".stitle").textContent).toBe(`#${number} ${assigned.get.task.title}`);
 

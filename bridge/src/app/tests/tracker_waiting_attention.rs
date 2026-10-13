@@ -510,3 +510,277 @@ fn waiting_on_invalidation_fanout_contract() {
     let summaries = store.waiting_on_summaries(&path, &dependents).unwrap();
     assert!(summaries.values().all(|summary| !summary.blocked));
 }
+
+fn waiting_tool(name: &str, arguments: Value) -> BridgeAction {
+    crate::mcp::DoneServer::new("test").handle_message(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}}).to_string()).action.expect("valid waiting tool")
+}
+fn check_waiting_answer(answer: &Value, blocker: &str, intent: &Value) {
+    assert_eq!(answer["task"]["dependencies"]["blocked"], true, "{answer}");
+    assert!(answer["task"]["dependencies"]["waiting_on"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|edge| edge["task_id"] == blocker));
+    assert_eq!(answer["task"]["deferred_assignment"], *intent);
+}
+#[test]
+fn waiting_review_noop_answers_keep_waiting_contract() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let (owner, agent) = project_agent(&mut app, &project);
+    let dependent = id(&filed(&mut app, &project, "no-op summaries"));
+    let blocker = id(&filed(&mut app, &project, "retained blocker"));
+    let other = id(&filed(&mut app, &project, "editable blocker"));
+    edges(&app, &project, &dependent, std::slice::from_ref(&blocker));
+    let assigned = call(
+        &mut app,
+        "tasks.assign",
+        json!({"task_id":dependent,"assignee":{"kind":"agent","agent_id":agent}}),
+    );
+    let intent = assigned["task"]["deferred_assignment"].clone();
+    app.on_agent_mcp_action(
+        &owner,
+        &agent,
+        BridgeAction::TrackerTrackTask {
+            task_id: dependent.clone(),
+        },
+    )
+    .unwrap();
+    let tracked = app
+        .on_agent_mcp_action(
+            &owner,
+            &agent,
+            BridgeAction::TrackerTrackTask {
+                task_id: dependent.clone(),
+            },
+        )
+        .unwrap();
+    check_waiting_answer(&tracked, &blocker, &intent);
+    for name in ["link_task", "unlink_task"] {
+        let answered = app
+            .on_agent_mcp_action(
+                &owner,
+                &agent,
+                waiting_tool(
+                    name,
+                    json!({"task_id":dependent,"waiting_on":[other],"track":true}),
+                ),
+            )
+            .unwrap();
+        check_waiting_answer(&answered, &blocker, &intent);
+    }
+    let watched = call(&mut app, "tasks.watch", json!({"task_id":dependent}));
+    check_waiting_answer(&watched, &blocker, &intent);
+    let read = call(&mut app, "tasks.get", json!({"task_id":dependent}));
+    let last = read["timeline"].as_array().unwrap().last().unwrap()["id"].clone();
+    call(
+        &mut app,
+        "tasks.read_through",
+        json!({"task_id":dependent,"event_id":last}),
+    );
+    let reread = call(
+        &mut app,
+        "tasks.read_through",
+        json!({"task_id":dependent,"event_id":last}),
+    );
+    check_waiting_answer(&reread, &blocker, &intent);
+}
+#[test]
+fn waiting_review_pending_creating_targets_are_assigned_before_pagination() {
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, mut app, project) = tracked(root.path());
+    let (_, agent) = project_agent(&mut app, &project);
+    let workspace = super::project_agent::workspace(&mut app, &project, "future worker");
+    let blocker = id(&filed(&mut app, &project, "filter blocker"));
+    let mut held = Vec::new();
+    for target in [
+        json!({"kind":"new_workspace","name":"future workspace"}),
+        json!({"kind":"new_agent","workspace_id":workspace}),
+        json!({"kind":"new_project_agent"}),
+    ] {
+        let created = call(
+            &mut app,
+            "tasks.create",
+            json!({"project_id":project,"title":"future assignment","waiting_on":[blocker],"assignee":target}),
+        );
+        assert_eq!(created["task"]["assignee"], Value::Null);
+        held.push(created["task"]["id"].clone());
+    }
+    let unassigned = id(&filed(&mut app, &project, "newest unassigned task"));
+    let mut cursor = Value::Null;
+    let mut found = Vec::new();
+    loop {
+        let mut params = json!({"project_id":project,"assignee":"any","limit":1});
+        if !cursor.is_null() {
+            params["cursor"] = cursor;
+        }
+        let page = call(&mut app, "tasks.list", params);
+        found.extend(
+            page["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|task| task["id"].clone()),
+        );
+        cursor = page["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    assert_eq!(found, held.iter().rev().cloned().collect::<Vec<_>>());
+    let none = call(
+        &mut app,
+        "tasks.list",
+        json!({"project_id":project,"assignee":"none"}),
+    );
+    let ids = none["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|task| task["id"].clone())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&json!(unassigned)));
+    assert!(held.iter().all(|id| !ids.contains(id)));
+    let named = call(
+        &mut app,
+        "tasks.list",
+        json!({"project_id":project,"assignee":{"kind":"agent","agent_id":agent}}),
+    );
+    assert!(named["tasks"].as_array().unwrap().is_empty());
+    call(
+        &mut app,
+        "tasks.assign",
+        json!({"task_id":held[0],"assignee":null}),
+    );
+    let any = call(
+        &mut app,
+        "tasks.list",
+        json!({"project_id":project,"assignee":"any"}),
+    );
+    assert_eq!(
+        any["tasks"].as_array().unwrap().len(),
+        2,
+        "cancellation clears held target"
+    );
+}
+#[test]
+fn waiting_review_unblocked_notifies_other_trackers() {
+    for assigned in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (_repo, mut app, project) = tracked(root.path());
+        let (owner, holder) = project_agent(&mut app, &project);
+        let watcher = app.agent_add(&json!({"entity_id":owner})).unwrap()["agent"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let dependent = id(&filed(&mut app, &project, "watched release"));
+        let first = id(&filed(&mut app, &project, "first release prerequisite"));
+        let last = id(&filed(&mut app, &project, "final release prerequisite"));
+        edges(&app, &project, &dependent, &[first.clone(), last.clone()]);
+        app.on_agent_mcp_action(
+            &owner,
+            &watcher,
+            BridgeAction::TrackerTrackTask {
+                task_id: dependent.clone(),
+            },
+        )
+        .unwrap();
+        if assigned {
+            app.on_agent_mcp_action(
+                &owner,
+                &holder,
+                BridgeAction::TrackerTrackTask {
+                    task_id: dependent.clone(),
+                },
+            )
+            .unwrap();
+            call(
+                &mut app,
+                "tasks.assign",
+                json!({"task_id":dependent,"assignee":{"kind":"agent","agent_id":holder}}),
+            );
+        }
+        pump(&mut app);
+        call(
+            &mut app,
+            "tasks.update",
+            json!({"task_id":first,"status":"done"}),
+        );
+        pump(&mut app);
+        let before = task_messages(&mut app, &owner, &watcher, &dependent).len();
+        call(
+            &mut app,
+            "tasks.update",
+            json!({"task_id":last,"status":"done"}),
+        );
+        pump(&mut app);
+        let messages = task_messages(&mut app, &owner, &watcher, &dependent);
+        let released = messages[before..]
+            .iter()
+            .filter(|message| message["body"].as_str().unwrap().contains("unblocked"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            released.len(),
+            1,
+            "ordinary tracker receives one informational final-release notice: {messages:?}"
+        );
+        let body = released[0]["body"].as_str().unwrap();
+        assert!(body.contains("informational"));
+        assert!(!body.contains("Decide who should take it"));
+        let held = task_messages(&mut app, &owner, &holder, &dependent);
+        assert_eq!(
+            held.len(),
+            1,
+            "holder receives only the assignment brief or unassigned coordinator notice"
+        );
+        pump(&mut app);
+        assert_eq!(
+            task_messages(&mut app, &owner, &watcher, &dependent).len(),
+            messages.len()
+        );
+    }
+}
+#[test]
+fn waiting_review_finished_unresolved_task_refuses_user_assignment() {
+    for finished in ["closed", "done"] {
+        let root = tempfile::tempdir().unwrap();
+        let (_repo, mut app, project) = tracked(root.path());
+        let (owner, agent) = project_agent(&mut app, &project);
+        let dependent = id(&filed(&mut app, &project, "finished waiting task"));
+        let blocker = id(&filed(&mut app, &project, "unfinished prerequisite"));
+        edges(&app, &project, &dependent, std::slice::from_ref(&blocker));
+        call(&mut app, "tasks.unwatch", json!({"task_id":dependent}));
+        let update = if finished == "closed" {
+            json!({"task_id":dependent,"state":"closed"})
+        } else {
+            json!({"task_id":dependent,"status":"done"})
+        };
+        call(&mut app, "tasks.update", update);
+        let before = call(&mut app, "tasks.get", json!({"task_id":dependent}));
+        let refused = app.handle(req(
+            "tasks.assign",
+            json!({"task_id":dependent,"assignee":{"kind":"user"}}),
+        ));
+        assert_eq!(
+            refused["ok"], false,
+            "finished unresolved task cannot be assigned: {refused}"
+        );
+        let tool = app.on_agent_mcp_action(
+            &owner,
+            &agent,
+            BridgeAction::TrackerAssignTask {
+                task_id: dependent.clone(),
+                assignee: json!({"kind":"user"}),
+                note: None,
+                track: Some(true),
+                notify_user: Some(true),
+            },
+        );
+        assert!(tool.is_err());
+        let after = call(&mut app, "tasks.get", json!({"task_id":dependent}));
+        assert_eq!(
+            after, before,
+            "refusal leaves watch, tracker, assignee and timeline untouched"
+        );
+    }
+}

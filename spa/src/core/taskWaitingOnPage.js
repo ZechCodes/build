@@ -21,6 +21,7 @@ export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) 
   const select = find("[data-waiting-choice]");
   let optionsPainted = "";
   let forwardPainted = "", reversePainted = "";
+  let detailSignature = "", pagesRead = 0;
 
   function paintChoices() {
     const html = blockerOptionsHtml(blockerChoices(task, tasks, projectId, input.value));
@@ -140,8 +141,9 @@ export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) 
     paintChoices();
   }
   async function readPages() {
+    const serial = ++pagesRead;
     const value = await readTaskWaitingOnBlocks(deviceId, projectId, taskId);
-    if (disposed) return;
+    if (disposed || serial !== pagesRead) return;
     pages = value;
     paint();
   }
@@ -152,7 +154,16 @@ export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) 
   ];
   void Promise.all([readSupport(), readChoices(), readPages()]);
   return {
-    update(value) { task = value; paint(); },
+    update(value) {
+      const signature = JSON.stringify(value?.dependencies || null);
+      task = value;
+      if (signature !== detailSignature) {
+        detailSignature = signature;
+        pages = null;
+        void readPages();
+      }
+      paint();
+    },
     dispose() { disposed = true; stops.forEach((stop) => stop()); },
   };
 }

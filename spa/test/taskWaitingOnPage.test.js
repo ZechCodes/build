@@ -64,6 +64,17 @@ describe("kept Waiting on editor", () => {
     expect(find("[data-blocks-more]").hidden).toBe(true);
     view.dispose();
   });
+  it("drops a paged reverse chain when fresh task dependencies invalidate its cache generation", async () => {
+    shared.pages = { blocks: [edge("removed-dependent")], next_cursor: null };
+    await mount();
+    expect(find("[data-blocks-list]").querySelectorAll("a")).toHaveLength(1);
+    shared.pages = null;
+    view.update(fixture({ dependencies: { waiting_on: [], blocks: [], blocks_count: 0 } }));
+    await flush();
+    expect(find("[data-blocks-list]").querySelectorAll("a")).toHaveLength(0);
+    view.dispose();
+  });
+
   it("retries a failed intent by its exact saved id", async () => {
     await mount(fixture({ deferred_assignment: { id: "saved-failed-id", state: "failed", error: "workspace unavailable" } }));
     find("[data-waiting-retry]").click(); await flush();

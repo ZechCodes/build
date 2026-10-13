@@ -556,6 +556,17 @@ fn waiting_review_noop_answers_keep_waiting_contract() {
         )
         .unwrap();
     check_waiting_answer(&tracked, &blocker, &intent);
+    let labelled = app
+        .on_agent_mcp_action(
+            &owner,
+            &agent,
+            waiting_tool(
+                "label_task",
+                json!({"task_id": dependent, "add": [], "remove": []}),
+            ),
+        )
+        .unwrap();
+    check_waiting_answer(&labelled, &blocker, &intent);
     for name in ["link_task", "unlink_task"] {
         let answered = app
             .on_agent_mcp_action(

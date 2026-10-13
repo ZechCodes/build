@@ -61,3 +61,73 @@ fn waiting_on_rpc_mcp_contract_refusals_are_atomic_and_scoped() {
     let removed = rpc(&mut app, "tasks.waiting_on.remove", json!({"task_id":task["id"],"waiting_on":[blocker["id"]]}));
     assert_eq!(removed["task"]["dependencies"]["waiting_on"], json!([]));
 }
+
+#[test]
+fn waiting_on_rpc_mcp_contract_foreign_endpoints_and_cursors_are_fenced() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(tmp.path());
+    let (_foreign_home, foreign_repo) = super::init_repo();
+    let foreign_project = super::project_agent::added_project(&mut app, &foreign_repo);
+    let foreign = filed(&mut app, &foreign_project, "secret foreign title");
+    let a = filed(&mut app, &project, "first");
+    let b = filed(&mut app, &project, "second");
+    let blocker = filed(&mut app, &project, "blocker");
+    let who = coding_agent(&mut app, &project, "scoped writer");
+    for name in ["tasks.waiting_on.add", "tasks.waiting_on.remove"] {
+        let response = app.handle(req(name, json!({"task_id":a["id"],"waiting_on":[blocker["id"],foreign["id"]]})));
+        assert_eq!(response["ok"], false, "{response}");
+        assert!(!response.to_string().contains("secret foreign title"));
+    }
+    for (name, args) in [
+        ("link_task", json!({"task_id":a["id"],"branch":"must not persist","waiting_on":[foreign["id"]]})),
+        ("unlink_task", json!({"task_id":a["id"],"waiting_on":[foreign["id"]]})),
+        ("list_task_dependents", json!({"task_id":foreign["id"]})),
+        ("create_task", json!({"title":"must not exist","waiting_on":[foreign["id"]]})),
+    ] {
+        let error = call(&mut app, &who, tool(name, args)).unwrap_err();
+        assert!(error.contains("unknown task_id"), "{error}");
+        assert!(!error.contains("secret foreign title"));
+    }
+    for task in [&a, &b] {
+        rpc(&mut app, "tasks.waiting_on.add", json!({"task_id":task["id"],"waiting_on":[blocker["id"],blocker["id"]]}));
+    }
+    let first = rpc(&mut app, "tasks.waiting_on.blocks", json!({"task_id":blocker["id"],"limit":1}));
+    assert_eq!(first["blocks"].as_array().unwrap().len(), 1);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let second = rpc(&mut app, "tasks.waiting_on.blocks", json!({"task_id":blocker["id"],"limit":1,"cursor":cursor}));
+    assert_eq!(second["blocks"].as_array().unwrap().len(), 1);
+    assert_ne!(first["blocks"][0]["task_id"], second["blocks"][0]["task_id"]);
+    assert_eq!(app.handle(req("tasks.waiting_on.blocks", json!({"task_id":foreign["id"],"cursor":cursor})))["ok"], false);
+    for limit in [0, 101] {
+        assert_eq!(app.handle(req("tasks.waiting_on.blocks", json!({"task_id":blocker["id"],"limit":limit})))["error_code"], "invalid_params");
+    }
+    let too_many = (0..21).map(|n| format!("task-{n}")).collect::<Vec<_>>();
+    assert_eq!(app.handle(req("tasks.waiting_on.add", json!({"task_id":a["id"],"waiting_on":too_many})))["error_code"], "invalid_params");
+    assert_eq!(rpc(&mut app,"tasks.get",json!({"task_id":a["id"]}))["task"]["dependencies"]["waiting_on"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn waiting_on_rpc_mcp_contract_retry_preserves_saved_intent_and_refuses_replacement() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(tmp.path());
+    let blocker = filed(&mut app, &project, "blocker");
+    let created = rpc(&mut app,"tasks.create",json!({"project_id":project,"title":"dependent","waiting_on":[blocker["id"]],"assignee":{"kind":"new_project_agent","agent_name":"Saved target"},"note":"saved note"}));
+    let id = created["task"]["id"].as_str().unwrap();
+    let intent_id = created["task"]["deferred_assignment"]["id"].as_str().unwrap();
+    let saved = app.tracker_store().unwrap().load_delivery_intent(intent_id).unwrap().unwrap();
+    app.tracker_store().unwrap().fail_delivery_intent(intent_id, saved.generation,"injected failure").unwrap();
+    for extra in [json!({"assignee":null}),json!({"note":"forged"}),json!({"operation_id":"replacement"})] {
+        let mut args=json!({"task_id":id,"retry_deferred_id":intent_id});
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        assert_eq!(app.handle(req("tasks.assign",args.clone()))["error_code"],"invalid_params");
+        assert!(DoneServer::new("test").handle_message(&json!({"id":1,"method":"tools/call","params":{"name":"assign_task","arguments":args}}).to_string()).action.is_none());
+    }
+    let retried = rpc(&mut app,"tasks.assign",json!({"task_id":id,"retry_deferred_id":intent_id}));
+    assert_eq!(retried["task"]["deferred_assignment"]["id"],intent_id);
+    assert_eq!(retried["task"]["deferred_assignment"]["state"],"waiting");
+    let after = app.tracker_store().unwrap().load_delivery_intent(intent_id).unwrap().unwrap();
+    assert_eq!(after.target,saved.target); assert_eq!(after.note,saved.note); assert_eq!(after.actor,saved.actor); assert_eq!(after.sender,saved.sender); assert_eq!(after.generation,saved.generation); assert_eq!(after.operation_id,saved.operation_id);
+    assert_eq!(app.handle(req("tasks.assign",json!({"task_id":id,"retry_deferred_id":intent_id})))["ok"], false);
+    rpc(&mut app,"tasks.assign",json!({"task_id":id,"assignee":null}));
+    assert_eq!(app.handle(req("tasks.assign",json!({"task_id":id,"retry_deferred_id":intent_id})))["ok"],false);
+}

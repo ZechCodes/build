@@ -13,7 +13,11 @@ import { attachmentsWentNowhere, composedTaskParams, openTaskComposer } from "..
 import { labelsFromText } from "../src/core/trackerModel.js";
 import { task } from "./trackerWireFixture.js";
 import { called, painted } from "./waits.js";
+import { fakeSession } from "./deviceSessionFixture.js";
+import { greetBridge, resetChangeEvents } from "../src/core/changeEvents.js";
+import { adoptBridgeSelection, adoptDeviceSession, greetingInFlight, resetDeviceContexts } from "../src/core/deviceContexts.js";
 
+const DEVICE_ID = "dev-1";
 const PROJECT_KEY = "dev-1|proj-1";
 
 const feed = {
@@ -45,19 +49,34 @@ const choose = async (id) => {
 
 const press = (selector) => document.querySelector(selector).click();
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = "";
   call = vi.fn(async () => ({ task: task({ id: "task-1" }), dispatch: null }));
+  // Real task hosts always pass their device context, including cached paints.
+  // Give the control fixtures that same identity and current greeting.
+  const context = adoptDeviceSession(fakeSession(DEVICE_ID));
+  const authority = greetingInFlight(context);
+  await greetBridge(async () => ({ api_version: "3.21.0", push_events: false, capabilities: ["tasks.waitingOn"] }), {
+    deviceId: DEVICE_ID, isCurrent: authority.current,
+    install(selection) {
+      const adapter = selection.create(context.call);
+      adoptBridgeSelection(context, selection, adapter, authority);
+      return adapter;
+    },
+  });
 });
 
 afterEach(async () => {
   await handle?.close?.();
   handle = null;
+  resetDeviceContexts();
+  resetChangeEvents();
 });
 
 describe("the picker", () => {
   const open = (over = {}) => {
     handle = openAssigneePicker({
+      deviceId: DEVICE_ID,
       task: task({ id: "task-1", number: 12 }),
       options: options(),
       current: "none",
@@ -449,6 +468,7 @@ describe("the one kind that makes you wait", () => {
 
   const open = (over = {}) => {
     handle = openAssigneePicker({
+      deviceId: DEVICE_ID,
       task: task({ id: "task-1", number: 12 }),
       options: options(),
       current: "none",
@@ -523,6 +543,7 @@ describe("the one kind that makes you wait", () => {
 describe("what the picker leaves to the task", () => {
   const openOn = (over = {}) => {
     handle = openAssigneePicker({
+      deviceId: DEVICE_ID,
       task: task({ id: "task-1", number: 12 }),
       options: options(),
       current: "none",

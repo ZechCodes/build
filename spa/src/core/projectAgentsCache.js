@@ -1,4 +1,4 @@
-import { cachedWriteOf, captureCachedRecord, mergeCachedAtomically, mergeCachedIfUnwritten, readCached, readCachedMany } from "./localCache.js";
+import { cachedWriteOf, captureCachedRecord, isCachedWrite, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf } from "./localCache.js";
 
 export const PROJECT_AGENTS_KIND = "project-agents";
 export const PROJECT_AGENTS_SUPPORT_KIND = "project-agents-support";
@@ -52,23 +52,27 @@ export async function syncProjectAgents(options) {
   const seen = await captureCachedRecord(address);
   if (!active() || !workerRosterAvailable(capabilities)) return;
   const roster = await call("agent.list", { entity_id: entityId, include_project_workers: true });
-  if (!(await acceptableRoster(deviceId, entityId, roster))) return;
-  const written = await mergeCachedIfUnwritten(address, cachedWriteOf(seen), () =>
-    active() && reads.get(key) === token ? roster : null);
+  if (!validProjectRoster(roster, entityId)) return;
+  const generations = await captureRosterGenerations(deviceId, entityId, roster);
+  if (!generations.current) return;
+  // A reset can replace a thread without touching an as-yet empty roster.
+  // Admit the roster only while every generation record is still the one read.
+  const written = await mergeCachedRecordsTogether([address, ...generations.addresses], ([held, ...threads]) =>
+    active() && reads.get(key) === token && isCachedWrite(held, cachedWriteOf(seen))
+      && generationsUnchanged(threads, generations.records) ? [roster] : null);
   if (written) await afterWrite(roster);
 }
 
-async function acceptableRoster(deviceId, entityId, roster) {
-  return validProjectRoster(roster, entityId) && await rosterGenerationsCurrent(deviceId, entityId, roster);
-}
+const generationsUnchanged = (held, seen) => held.every((record, index) => recordWriteOf(record) === recordWriteOf(seen[index]));
 
 const digestNotRetired = (agent, thread) => !thread?.retired_thread_ids?.includes(agent.thread_id)
   && Number(thread?.thread_generation_revision || 0) <= Number(agent.thread_generation_revision || 0);
 
-async function rosterGenerationsCurrent(deviceId, entityId, roster) {
+async function captureRosterGenerations(deviceId, entityId, roster) {
   const agents = roster.agents.filter((agent) => agent.thread_id);
-  const records = await readCachedMany(agents.map((agent) => ({ deviceId, entityId, kind: "thread", sub: agent.conversation_id || agent.id })));
-  return agents.every((agent, index) => digestNotRetired(agent, records[index]?.value));
+  const addresses = agents.map((agent) => ({ deviceId, entityId, kind: "thread", sub: agent.conversation_id || agent.id }));
+  const records = await readCachedMany(addresses);
+  return { addresses, records, current: agents.every((agent, index) => digestNotRetired(agent, records[index]?.value)) };
 }
 
 export async function projectsWithAgentRosters(deviceId, projects) {

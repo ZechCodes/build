@@ -54,6 +54,38 @@ describe("complete cached project agents", () => {
       agents: [{ ...worker, thread_id: "old-thread", thread_generation_revision: 1 }, pin] }) });
     expect((await readCached(projectAgentsAddress("device", "owner")))?.value).toBeFalsy();
   });
+  it.each([false, true])("a reset between generation read and first roster admission cannot revive its old digest (cached thread: %s)", async (hasThread) => {
+    const cache = await import("../src/core/localCache.js");
+    const { applyConversationReset } = await import("../src/core/conversationReset.js");
+    const threadAddress = { deviceId: "device", entityId: "owner", kind: "thread", sub: "worker-chat" };
+    const oldAgent = { ...worker, thread_id: "old-thread", thread_generation_revision: 1 };
+    const freshAgent = { ...oldAgent, thread_id: "fresh-thread", thread_generation_revision: 2 };
+    if (hasThread) await writeCached(threadAddress, { thread_id: oldAgent.thread_id, thread_generation_revision: 1, items: [] });
+    const readMany = cache.readCachedMany;
+    let release;
+    const spy = vi.spyOn(cache, "readCachedMany").mockImplementation(async (addresses) => {
+      const records = await readMany(addresses);
+      if (!release && addresses.some((address) => address.kind === "thread" && address.sub === "worker-chat")) {
+        await new Promise((resolve) => { release = resolve; });
+      }
+      return records;
+    });
+    try {
+      const pending = syncProjectAgents({ deviceId: "device", entityId: "owner", capabilities,
+        call: async () => ({ ...roster, agents: [oldAgent, pin] }) });
+      await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+      await applyConversationReset({ deviceId: "device", active: () => true }, { entity_id: "owner", agent_id: worker.id,
+        conversation_id: worker.conversation_id, previous_thread_id: oldAgent.thread_id,
+        agent: freshAgent });
+      release();
+      await pending;
+      expect((await readCached(projectAgentsAddress("device", "owner")))?.value).toBeFalsy();
+      expect((await readCached(threadAddress)).value.thread_id).toBe("fresh-thread");
+      const freshRoster = { ...roster, agents: [freshAgent, pin] };
+      await syncProjectAgents({ deviceId: "device", entityId: "owner", capabilities, call: async () => freshRoster });
+      expect((await readCached(projectAgentsAddress("device", "owner"))).value).toEqual(freshRoster);
+    } finally { release?.(); spy.mockRestore(); }
+  });
 });
 
 it("feed projections retain exact cached worker models and never duplicate the legacy pin", async () => {

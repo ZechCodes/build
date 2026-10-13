@@ -8,14 +8,15 @@ their separate session and permission guards.
 
 from __future__ import annotations
 
-import importlib
 import re
 from pathlib import Path
 
 import pytest
 import yaml
+from litestar import Litestar
 from litestar.handlers import HTTPRouteHandler
 from skrift.auth.guards import Permission, auth_guard
+from skrift.config import get_settings
 
 from buildapp.desktop_auth import build_auth_guard
 
@@ -39,24 +40,41 @@ def _spa_api_paths() -> list[str]:
     return sorted(paths)
 
 
-def _configured_routes() -> dict[str, list]:
+@pytest.fixture()
+def configured_routes(skrift_app) -> dict[str, list]:
+    # The full-app fixture uses the dev config; keep its controller inventory
+    # identical to production so a newly configured controller cannot be missed.
     config = yaml.safe_load((SKRIFTAPP_DIR / "app.yaml").read_text())
+    assert get_settings().controllers == config["controllers"]
+    return _configured_routes(skrift_app)
+
+
+def _configured_routes(app) -> dict[str, list]:
+    # Skrift wraps the Litestar app in storage middleware.
+    while not isinstance(app, Litestar):
+        app = app.app
     routes = {}
-    for controller_name in config["controllers"]:
-        module_name, class_name = controller_name.split(":")
-        controller = getattr(importlib.import_module(module_name), class_name)(owner=None)
-        for handler in controller.get_route_handlers():
-            if isinstance(handler, HTTPRouteHandler):
-                guards = [*(controller.guards or []), *(handler.guards or [])]
-                for path in handler.paths:
-                    full_path = f"{controller.path.rstrip('/')}/{path.lstrip('/')}"
-                    routes.setdefault(_path_shape(full_path), []).append(guards)
+    for route in app.routes:
+        for handler in getattr(route, "route_handlers", []):
+            # Litestar's generated preflight handler was never a configured
+            # controller handler and does not carry endpoint guards.
+            if (
+                isinstance(handler, HTTPRouteHandler)
+                and getattr(handler.fn, "__qualname__", "")
+                != "HTTPRoute.create_options_handler.<locals>.options_handler"
+            ):
+                guards = [
+                    guard
+                    for layer in handler.ownership_layers
+                    for guard in (layer.guards or [])
+                ]
+                routes.setdefault(_path_shape(route.path), []).append(guards)
     return routes
 
 
 @pytest.mark.parametrize("path", _spa_api_paths())
-def test_every_spa_api_route_accepts_desktop_authentication(path):
-    routes = _configured_routes()
+def test_every_spa_api_route_accepts_desktop_authentication(path, configured_routes):
+    routes = configured_routes
     shape = _path_shape(path)
     assert shape in routes, f"SPA calls an unregistered API: {path}"
     for guards in routes[shape]:
@@ -64,8 +82,8 @@ def test_every_spa_api_route_accepts_desktop_authentication(path):
         assert auth_guard not in guards, f"cookie-only guard blocks desktop: {path}"
 
 
-def test_administrator_routes_keep_session_and_administrator_permission():
-    routes = _configured_routes()
+def test_administrator_routes_keep_session_and_administrator_permission(configured_routes):
+    routes = configured_routes
     paths = [path for path in routes if path.startswith("/admin/")]
     # Skrift's own admin has different per-resource permissions; pin Build's
     # administrator pages and its invitation API, which the SPA does not call.

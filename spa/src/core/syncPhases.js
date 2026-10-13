@@ -63,10 +63,21 @@ function sourceJobs(state, diffOnly = false) {
     }));
 }
 
+const rosterJob = ({ entityId, read }) => ({ key: keyOf(entityId, "project-agents"), read });
+
+function foregroundRosterJobs(state, route) {
+  // Workspace conversations have their own roster. Only standing on a
+  // project's owner makes its complete roster a foreground dependency.
+  const owner = routedEntityId(route, state.view);
+  return (state.projectRosterReads || [])
+    .filter((job) => job.projectId === route.projectId && (route.name === "project" || job.entityId === owner))
+    .map(rosterJob);
+}
+
 function foregroundJobs(state) {
   const route = state.route();
   const routed = route.deviceId === state.context.deviceId;
-  const jobs = routed ? routedJobs(state, route) : [];
+  const jobs = routed ? [...foregroundRosterJobs(state, route), ...routedJobs(state, route)] : [];
   for (const entityId of foregroundDiffEntities(state)) {
     const row = state.pass.rows.get(entityId);
     if (!state.readers.scope(row)) continue;
@@ -226,6 +237,8 @@ export function createSyncPhases(options) {
       envelope?.priority === "background" && foregroundRequest(state, scope)
         ? requestPriorityFields("foreground") : envelope,
     async run() {
+      await state.foreground();
+      await Promise.all((state.projectRosterReads || []).map((read) => takeJob(state, rosterJob(read))));
       await state.foreground();
       await readInbox(state);
       return readBackground(state);

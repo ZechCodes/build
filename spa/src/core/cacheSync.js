@@ -412,11 +412,11 @@ async function orderedSync(deviceId, turn) {
   const lists = await readLists(context, fence);
   if (!lists || !context.active()) return false;
   const { before, ownership } = lists;
-  await refreshProjectAgents(context, lists.view.projects);
   const view = { ...lists.view, projects: await projectsWithAgentRosters(context.deviceId, lists.view.projects) };
   const pass = await workspacesToRead(context, view);
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route,
+    projectRosterReads: projectRosterReads(context, view, pass),
     sourceTerminalReads: lists.sourceTerminalReads,
     entityContext: (id) => whileOnBoard(context, id, fence),
     readers: workspaceReaders,
@@ -536,18 +536,34 @@ async function landOwnershipList(context, kind, rows, before, fence) {
 }
 
 /** Complete rosters have their own cache; board summaries remain pinned-only. */
-async function refreshProjectAgents(context, projects, entityId = null) {
+async function refreshProjectAgents(context, projects, entityId = null, afterWrite = async () => {}) {
   const capabilities = bridgeCapabilities(context.deviceId);
   if (!capabilities.agents?.projectWorkers) return;
   const owners = projects || await heldValue(context, "", "projects") || [];
   await Promise.all(owners.filter((project) => !entityId || (project.entity_id || project.run_id) === entityId)
     .map((project) => syncProjectAgents({ deviceId: context.deviceId,
       entityId: project.entity_id || project.run_id, capabilities: () => bridgeCapabilities(context.deviceId),
-      call: (method, params) => context.call(method, params, "background"), active: context.active,
+      call: (method, params) => callWhileActive(context, method, params, requestPriorityFields("background"),
+        addressOf(context, params.entity_id, "project-agents")), active: context.active,
       afterWrite: async (roster) => {
         await reconcileConversationGenerations(context, roster.entity_id, roster.agents);
         await writeSurfaces(context, roster.entity_id, roster.agents);
+        if (context.active()) await afterWrite();
       } }).catch(() => null)));
+}
+
+/** Roster jobs join the planner before sending. Their cache writes expand the
+ * current pass, so workers discovered on boot receive histories in this pass. */
+function projectRosterReads(context, view, pass) {
+  if (!bridgeCapabilities(context.deviceId).agents?.projectWorkers) return [];
+  return view.projects.filter((project) => project.entity_id || project.run_id).map((project) => ({
+    entityId: project.entity_id || project.run_id,
+    projectId: project.project_id || project.id,
+    read: () => refreshProjectAgents(context, view.projects, project.entity_id || project.run_id, async () => {
+      view.projects = await projectsWithAgentRosters(context.deviceId, view.projects);
+      Object.assign(pass, await workspacesToRead(context, view));
+    }),
+  }));
 }
 
 async function refreshWorkspaceSummaries(context, view, fence) {

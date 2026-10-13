@@ -17,11 +17,11 @@ const tokens = (suffix = "rotated") => ({
 const response = (payload, ok = true) => ({ ok, json: async () => payload });
 let sequence = 0;
 
-async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {} } = {}) {
+async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken } = {}) {
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
   if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
-  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [] };
+  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [] };
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: false,
@@ -44,7 +44,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     destroy() { this.destroyed = true; this.emit("closed"); }
   }
   const fixture = {
-    app, BrowserWindow,
+    app, BrowserWindow, removeSavedToken,
     safeStorage: {
       isEncryptionAvailable: () => available,
       getSelectedStorageBackend: () => "gnome_libsecret",
@@ -62,6 +62,17 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       return fetch ? fetch(calls.fetch.length) : response(tokens());
     } },
     session: { defaultSession: {
+      clearStorageData: async (...args) => {
+        calls.cleanup.push("storage");
+        assert.deepEqual(args, [], "clear every default-session storage type");
+        assert.ok(calls.windows.every((window) => window.destroyed), "renderer must retire first");
+        if (clearStorageData) await clearStorageData();
+      },
+      clearCache: async () => {
+        calls.cleanup.push("cache");
+        assert.ok(calls.windows.every((window) => window.destroyed), "renderer must retire first");
+        if (clearCache) await clearCache();
+      },
       setPermissionCheckHandler() {}, setPermissionRequestHandler() {},
       webRequest: { onBeforeSendHeaders: (_filter, handler) => { calls.headers = handler; } },
     } },
@@ -75,6 +86,10 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
   globalThis[key] = fixture;
   const hook = registerHooks({
     resolve(specifier, context, nextResolve) {
+      if (specifier === "./token-store.mjs") {
+        const resolved = nextResolve(specifier, context);
+        return { ...resolved, url: `${resolved.url}?test=${id}` };
+      }
       if (specifier === "electron") return { url: `stub:electron-${id}`, shortCircuit: true };
       return nextResolve(specifier, context);
     },
@@ -83,7 +98,17 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
         format: "module", shortCircuit: true,
         source: `export const { app, BrowserWindow, safeStorage, dialog, Menu, net, session, shell } = globalThis.${key};`,
       };
-      return nextLoad(url, context);
+      const loaded = nextLoad(url, context);
+      if (url.includes("/src/main.mjs?test=")) {
+        return { ...loaded, source: `${loaded.source}\nexport { refreshTokens as testRefreshTokens };` };
+      }
+      if (removeSavedToken && url.includes("/src/token-store.mjs")) {
+        return { ...loaded, source: String(loaded.source).replace(
+          'const clear = () => rmSync(path, { force: true });',
+          `const clear = () => globalThis.${key}.removeSavedToken();`,
+        ) };
+      }
+      return loaded;
     },
   });
   if (!userData) t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -92,7 +117,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     delete globalThis[key];
     rmSync(directory, { recursive: true, force: true });
   });
-  await import(`../src/main.mjs?test=${id}`);
+  const { testRefreshTokens } = await import(`../src/main.mjs?test=${id}`);
   await flush();
   const header = () => {
     let result;
@@ -104,7 +129,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     const state = new URL(calls.browser.at(-1)).searchParams.get("state");
     app.emit("open-url", { preventDefault() {} }, `getbuilding://oauth/callback?code=fixture-code&state=${state}`);
   };
-  return { app, calls, path, header, signOut, callback };
+  return { app, calls, path, header, signOut, callback, refreshTokens: testRefreshTokens, safeStorage: fixture.safeStorage };
 }
 
 test("launch silently refreshes saved credentials and rotates before opening the app", async (t) => {
@@ -309,4 +334,122 @@ test("an encryption failure falls back to memory and discards the stale rotated 
   assert.equal(header(), "Bearer fixture-access-rotated");
   assert.equal(logs.length, 1);
   assert.equal(JSON.stringify(logs).includes("fixture-secret"), false);
+});
+
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("sign-out retires renderer then awaits storage and HTTP cache cleanup before quit", async (t) => {
+  const storage = deferred();
+  const cache = deferred();
+  const { app, calls, signOut, path, header } = await launch(t, {
+    clearStorageData: () => storage.promise,
+    clearCache: () => cache.promise,
+  });
+  const signingOut = signOut().click();
+  await flush();
+  assert.equal(calls.windows[0].destroyed, true);
+  assert.equal(existsSync(path), false);
+  assert.equal(header(), undefined);
+  assert.deepEqual(calls.cleanup, ["storage"]);
+  assert.equal(calls.quit, undefined);
+  // Window shutdown must not quit the process while cleanup is still pending.
+  app.emit("window-all-closed");
+  app.emit("activate");
+  assert.equal(calls.quit, undefined);
+  storage.resolve();
+  await flush();
+  assert.deepEqual(calls.cleanup, ["storage", "cache"]);
+  assert.equal(calls.quit, undefined);
+  cache.resolve();
+  await signingOut;
+  assert.equal(calls.quit, 1);
+});
+
+for (const operation of ["storage", "cache"]) {
+  test(`sign-out reports ${operation} cleanup failure and attempts both cleanup operations`, async (t) => {
+    const failure = async () => { throw new Error("fixture-sensitive-cleanup-error"); };
+    const { calls, signOut } = await launch(t, {
+      clearStorageData: operation === "storage" ? failure : undefined,
+      clearCache: operation === "cache" ? failure : undefined,
+    });
+    await signOut().click();
+    assert.equal(calls.windows[0].destroyed, true);
+    assert.deepEqual(calls.cleanup, ["storage", "cache"]);
+    assert.equal(calls.dialogs.length, 1);
+    assert.match(calls.dialogs[0].message, /could not.*(?:storage|cache|data)/i);
+    assert.equal(JSON.stringify(calls.dialogs).includes("fixture-sensitive"), false);
+    assert.equal(calls.quit, 1);
+  });
+}
+
+for (const [name, storageOptions] of [
+  ["unavailable encryption", { available: false }],
+  ["basic_text backend", { available: true, safeStorage: { getSelectedStorageBackend: () => "basic_text" } }],
+  ["encryption failure", { safeStorage: { encryptString: () => { throw new Error("fixture encryption failure"); } } }],
+]) {
+  test(`${name} successful account B sign-in prevents account A restoration`, async (t) => {
+    t.mock.method(console, "error", () => {});
+    const first = await launch(t, {
+      stored: "fixture-account-A", available: false,
+      ...storageOptions, fetch: () => response(tokens("account-B")),
+    });
+    assert.equal(first.calls.browser.length, 1);
+    if (name === "encryption failure") first.safeStorage.isEncryptionAvailable = () => true;
+    first.callback();
+    await flush();
+    assert.equal(first.header(), "Bearer fixture-access-account-B");
+    assert.equal(first.calls.windows.length, 1);
+    assert.equal(existsSync(first.path), false, "previous account credential removed");
+    const next = await launch(t, { userData: dirname(first.path) });
+    assert.equal(next.calls.fetch.length, 0, "secure relaunch cannot refresh account A");
+    assert.equal(next.calls.browser.length, 1);
+    assert.equal(next.calls.windows.length, 0);
+  });
+}
+
+for (const [name, storageOptions] of [
+  ["unavailable encryption", { available: false }],
+  ["basic_text backend", { available: true, safeStorage: { getSelectedStorageBackend: () => "basic_text" } }],
+  ["encryption failure", { safeStorage: { encryptString: () => { throw new Error("fixture encryption failure"); } } }],
+]) {
+  test(`${name} reports previous credential deletion failure before opening account B`, async (t) => {
+    t.mock.method(console, "error", () => {});
+    const { calls, path, callback, header, safeStorage } = await launch(t, {
+      stored: "fixture-account-A", available: false,
+      ...storageOptions, fetch: () => response(tokens("account-B")),
+      removeSavedToken: () => { throw new Error("fixture-secret-delete-failure"); },
+    });
+    if (name === "encryption failure") safeStorage.isEncryptionAvailable = () => true;
+    callback();
+    await flush();
+    assert.equal(calls.dialogs.length, 1);
+    assert.match(calls.dialogs[0].detail, /could not remove.*saved sign-in/i);
+    assert.equal(JSON.stringify(calls.dialogs).includes("fixture-secret"), false);
+    assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-account-A");
+    assert.equal(header(), undefined);
+    assert.equal(calls.windows.length, 0);
+  });
+}
+
+test("overlapping refresh requests share one exchange and the next refresh uses its replacement", async (t) => {
+  const pending = deferred();
+  const { calls, path, refreshTokens } = await launch(t, {
+    fetch: (count) => count === 2 ? pending.promise : response(tokens(`overlap-${count}`)),
+  });
+  const first = refreshTokens();
+  const overlapping = refreshTokens();
+  await flush();
+  assert.equal(calls.fetch.length, 2, "one startup refresh plus one shared pending refresh");
+  assert.equal(calls.fetch[1].body.get("refresh_token"), "fixture-refresh-overlap-1");
+  pending.resolve(response(tokens("overlap-2")));
+  assert.deepEqual(await Promise.all([first, overlapping]), [true, true]);
+  assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-overlap-2");
+  await refreshTokens();
+  assert.equal(calls.fetch.length, 3);
+  assert.equal(calls.fetch[2].body.get("refresh_token"), "fixture-refresh-overlap-2");
 });

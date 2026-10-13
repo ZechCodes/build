@@ -221,7 +221,7 @@ async function reportSignOutFailures(failures) {
     console.error(message);
   } finally {
     controller.abort();
-    parent.destroy();
+    if (!parent.isDestroyed()) parent.destroy();
   }
 }
 

@@ -49,6 +49,24 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             TasksAssignParams,
             TaskAssigned
         ),
+        v1_method!(
+            "tasks.waiting_on.add",
+            tasks_waiting_on_add,
+            TasksWaitingOnParams,
+            TaskAnswer
+        ),
+        v1_method!(
+            "tasks.waiting_on.remove",
+            tasks_waiting_on_remove,
+            TasksWaitingOnParams,
+            TaskAnswer
+        ),
+        v1_method!(
+            "tasks.waiting_on.blocks",
+            tasks_waiting_on_blocks,
+            TasksBlocksParams,
+            TaskBlocks
+        ),
         v1_method!("tasks.close", tasks_close, TasksCloseParams, TaskAnswer),
         v1_method!("tasks.reopen", tasks_reopen, TaskIdParams, TaskAnswer),
         v1_method!("tasks.watch", tasks_watch, TaskIdParams, TaskAnswer),
@@ -148,9 +166,12 @@ pub struct TasksAttachmentParams {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TasksCreateParams {
     pub project_id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     /// The column it starts in; `backlog` when absent.
@@ -237,21 +258,37 @@ pub struct TaskAttachmentRef {
 /// carry different fields, and `AssignTarget::parse` is the one place that
 /// reads them, naming each refusal.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TasksAssignParams {
     #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
-    pub assignee: Value,
+    #[serde(
+        default,
+        deserialize_with = "provided_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assignee: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_deferred_id: Option<String>,
     /// Extra instruction delivered under the task. Not stored on the task:
     /// the body is the task, and a hand-off note belongs in the conversation
     /// it was said in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "provided_optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub note: Option<Option<String>>,
     /// The client's id for this assignment (since 3.21.0, announced as
     /// `tasks.assignProjectAgent`). The delivery is queued under it, and
     /// asking again with the same id answers the dispatch it already made
     /// instead of delivering twice.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "provided_optional_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub operation_id: Option<Option<String>>,
 }
 
 /// How far the user has read one task.
@@ -273,6 +310,71 @@ pub struct TasksCloseParams {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TasksWaitingOnParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
+    pub task_id: String,
+    pub waiting_on: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TasksBlocksParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskBlocks {
+    pub blocks: Vec<crate::store::DependencyDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskDependenciesView {
+    pub blocked: bool,
+    pub waiting_on: Vec<crate::store::DependencyDigest>,
+    pub blocks_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<crate::store::DependencyDigest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks_next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeferredAssignmentView {
+    pub id: String,
+    pub target: Value,
+    pub state: DeferredAssignmentState,
+    pub error: Option<String>,
+}
+
+fn provided_optional_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+fn provided_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredAssignmentState {
+    Waiting,
+    Queued,
+    Failed,
+}
+
 // --------------------------------------------------------------- results ---
 
 /// What a task is about, in the repository and in Build.
@@ -289,6 +391,10 @@ pub struct TaskLinks {
 /// One task, as every tracker verb answers it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<TaskDependenciesView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_assignment: Option<DeferredAssignmentView>,
     pub id: String,
     pub project_id: String,
     /// Per-project and sequential, for `#12`.
@@ -526,7 +632,14 @@ const CONFLICT: [&str; 8] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 24] = [
+const INVALID: [&str; 31] = [
+    "a task cannot wait on itself",
+    "waiting_on",
+    "reverse cursor",
+    "limit must",
+    "retry_deferred_id",
+    "only the current failed",
+    "delivery intent",
     "unknown assignee kind:",
     "operation_id exceeds",
     "operation_id contains",
@@ -587,6 +700,25 @@ fn refine(error: ApiError) -> ApiError {
         return ApiError::invalid_params(message);
     }
     error
+}
+
+fn tasks_waiting_on_add(
+    app: &mut AppState,
+    params: TasksWaitingOnParams,
+) -> Result<Answer<TaskAnswer>, ApiError> {
+    answer(app.tasks_waiting_on_edit(&params.wire(), true)).map_err(refine)
+}
+fn tasks_waiting_on_remove(
+    app: &mut AppState,
+    params: TasksWaitingOnParams,
+) -> Result<Answer<TaskAnswer>, ApiError> {
+    answer(app.tasks_waiting_on_edit(&params.wire(), false)).map_err(refine)
+}
+fn tasks_waiting_on_blocks(
+    app: &mut AppState,
+    params: TasksBlocksParams,
+) -> Result<Answer<TaskBlocks>, ApiError> {
+    answer(app.tasks_waiting_on_blocks(&params.wire())).map_err(refine)
 }
 
 // -------------------------------------------------------------- handlers ---

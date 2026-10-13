@@ -222,7 +222,10 @@ impl AppState {
         self.task_delivery_answer(&updated)
     }
 
-    fn task_delivery_answer(&mut self, intent: &DeliveryIntent) -> Result<Value, String> {
+    pub(super) fn task_delivery_answer(
+        &mut self,
+        intent: &DeliveryIntent,
+    ) -> Result<Value, String> {
         let (_, task) = self.tracker_task(&intent.task_id)?;
         let mut answer = self.tasks_get(&json!({"task_id":task.id}))?;
         let dispatch = if intent.state == "delivered" {
@@ -246,12 +249,6 @@ impl AppState {
         answer["dispatch"] = json!(dispatch);
         if let Some(warnings) = intent.reservation.get("warnings") {
             answer["warnings"] = warnings.clone();
-        }
-        if matches!(
-            intent.state.as_str(),
-            "waiting" | "queued" | "provisioning" | "failed"
-        ) {
-            answer["task"]["deferred_assignment"] = json!({"id":intent.id,"target":intent.target,"state":intent.state,"error":intent.error});
         }
         Ok(answer)
     }

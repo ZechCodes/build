@@ -337,7 +337,7 @@ pub(super) fn asked_links(params: &Value) -> Result<AskedLinks, String> {
             asked.push(key, value);
         }
     }
-    if asked.is_empty() {
+    if asked.is_empty() && params.get("waiting_on").is_none() {
         return Err(
             "tasks.link: name a workspace_id, branch, commit, conversation_id or parent_task_id"
                 .to_string(),

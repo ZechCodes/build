@@ -93,7 +93,7 @@ export function assigneePickerBodyHtml(state) {
  * needs to say something about.
  */
 export function openAssigneePicker({ task, options, current = "none", catalog = null, callRpc, onAssigned = null, note = "", deviceId = "", projectId = task.project_id }) {
-  const actions = createTaskWaitingOnActions({ deviceId, projectId, taskId: task.id, task, call: callRpc });
+  const actions = createTaskWaitingOnActions({ deviceId, projectId, taskId: task.id, call: callRpc });
   const state = {
     task,
     options,

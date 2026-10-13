@@ -19,10 +19,9 @@
 // record is written through by the task page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { mergeCachedAtomically, readCached } from "./localCache.js";
+import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
 import { readsAddress } from "./taskReadOrder.js";
-import { mergeTaskDependencyRecords } from "./taskDependencyKnowledge.js";
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
 export const TRACKER_TASKS_QUERY_KIND = "tracker-tasks-query";
@@ -413,7 +412,7 @@ export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
 export const writeTasksRecord = (deviceId, projectId, record) =>
-  mergeTaskDependencyRecords([tasksAddress(deviceId, projectId)], record.tasks || [], ([held]) =>
+  mergeCachedRecordsTogether([tasksAddress(deviceId, projectId)], ([held]) =>
     [preserveListSummaries(held?.value, record)]);
 
 /** Capture the accepted action note before asking for a detail. Ordinary reads
@@ -429,7 +428,7 @@ export async function captureTaskDetailRead(deviceId, projectId, taskId) {
  * tabs' writes obey the same floor. */
 export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis } = {}) => {
   const address = taskAddress(deviceId, projectId, taskId);
-  return mergeTaskDependencyRecords([address, readsAddress(address)], [record.task], ([detail, note]) => {
+  return mergeCachedRecordsTogether([address, readsAddress(address)], ([detail, note]) => {
     const held = detail?.value;
     // A writer can be superseded while waiting for the cache transaction.
     if (!accept(held) || detailBasis !== undefined && detailBasis !== (note?.value?.rows?.[taskId] || 0)) return null;
@@ -450,7 +449,7 @@ export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark) => {
 };
 
 export const writeTasksQueryRecord = (deviceId, projectId, params, record) =>
-  mergeTaskDependencyRecords([tasksQueryAddress(deviceId, projectId, params)], record.tasks || [], ([held]) =>
+  mergeCachedRecordsTogether([tasksQueryAddress(deviceId, projectId, params)], ([held]) =>
     [preserveListSummaries(held?.value, record)]);
 
 /** When the cache last took an answer for a record, or 0 for one it has never

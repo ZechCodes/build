@@ -3,26 +3,27 @@
 import { contextFor, whenGreeted } from "./deviceContexts.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { cacheTaskWaitingOnBlocks, cacheTaskWaitingOnResponse, captureTaskWaitingOnBlocksRead } from "./taskWaitingOnCache.js";
-import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
-import { readTaskAssignmentFacts } from "./taskAssignmentFacts.js";
+import { readTaskWaitingOnEverSupported, TASK_WAITING_ON_UPDATE, TASK_WAITING_ON_DOWNGRADED } from "./taskWaitingOnSupport.js";
 export { TASK_WAITING_ON_UPDATE };
 
-export function createTaskWaitingOnActions({ deviceId, projectId, taskId, task = null, call }) {
-  async function needsWaitingOn(method, params, options) {
-    if (method !== "tasks.assign" || Object.hasOwn(params, "retry_deferred_id")) return options.requiresWaitingOn !== false;
-    if (params.assignee === null) return false;
-    const facts = await readTaskAssignmentFacts(deviceId, projectId, taskId, task);
-    return Boolean(facts?.dependencies?.blocked);
-  }
+const isOrdinaryAssignment = (method, params) => method === "tasks.assign" && !Object.hasOwn(params, "retry_deferred_id");
+const hasCurrentSupport = (deviceId) => Boolean(contextFor(deviceId)) && bridgeCapabilities(deviceId)?.tasks?.waitingOn === true;
 
+function requireSupport(capable, createsWorkspace, seen, requiresWaitingOn) {
+  if (capable) return;
+  if (createsWorkspace && seen) throw new Error(TASK_WAITING_ON_DOWNGRADED);
+  if (requiresWaitingOn) throw new Error(TASK_WAITING_ON_UPDATE);
+}
+
+export function createTaskWaitingOnActions({ deviceId, projectId, taskId, call }) {
   async function send(method, params, options, stands) {
-    // This runs after greeting settlement, not at submit: cache facts may
-    // change while greeting. Retain its authority across the cache read.
-    const requiresWaitingOn = await needsWaitingOn(method, params, options);
+    const assignment = isOrdinaryAssignment(method, params);
+    const createsWorkspace = assignment && params.assignee?.kind === "new_workspace";
+    const seen = createsWorkspace && await readTaskWaitingOnEverSupported(deviceId);
+    // The greeting may change during the cache read. Recheck its authority,
+    // then validate and send without another asynchronous gap.
     if (!stands()) throw new Error("This machine's greeting changed before sending. Try again.");
-    if (requiresWaitingOn && (!contextFor(deviceId) || bridgeCapabilities(deviceId)?.tasks?.waitingOn !== true)) {
-      throw new Error(TASK_WAITING_ON_UPDATE);
-    }
+    requireSupport(hasCurrentSupport(deviceId), createsWorkspace, seen, !assignment && options.requiresWaitingOn !== false);
     return call(method, params);
   }
 

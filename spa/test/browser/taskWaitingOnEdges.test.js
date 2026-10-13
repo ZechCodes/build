@@ -183,33 +183,39 @@ it("keeps the picker draft when cached closure resolution changes and explains r
 it("keeps legacy assignment usable on an older greeting while hiding edge controls", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountWaitingOnFixture(page, basePath, { old: true, legacy: true });
-    expect(await page.locator("[data-task-waiting-on]").isVisible()).toBe(false);
+    await page.locator("[data-task-waiting-on]").waitFor({ state: "hidden" });
     await page.locator("[data-task-assign]").click();
-    await page.locator("#task-assign-assignee").selectOption("user");
+    await page.locator("#task-assign-assignee").selectOption("new_workspace");
     expect(await page.locator("#task-assign-scrim").textContent()).not.toContain("Done or closed");
     await page.locator("[data-assign-go]").click();
     await page.locator("#task-assign-scrim").waitFor({ state: "detached" });
     expect(await page.evaluate(() => window.__waiting.calls.find((call) => call.method === "tasks.assign").params)).toEqual({
-      task_id: "task-waiting", assignee: { kind: "user" },
+      task_id: "task-waiting", assignee: { kind: "new_workspace", provider: "claude_adk" },
     });
     expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method.startsWith("tasks.waiting_on.") || call.params.retry_deferred_id || call.params.waiting_on))).toEqual([]);
   });
 }, 30_000);
 
 
-it("retains cached waiting copy and refuses an assignment under an older greeting", async () => {
+it("retains task-page assignment drafts after a bridge downgrade, even with ready cached facts", async () => {
   await session.withPage(async ({ page, basePath }) => {
-    await mountWaitingOnFixture(page, basePath, { old: true });
-    expect(await page.locator("[data-task-waiting-on]").isVisible()).toBe(false);
+    await mountWaitingOnFixture(page, basePath);
+    await page.evaluate(async () => {
+      const fixture = window.__waiting;
+      fixture.current.dependencies = { blocked: false, waiting_on: [] };
+      await fixture.writeCurrent();
+      await fixture.greet(true);
+    });
+    await page.locator("[data-task-waiting-on]").waitFor({ state: "hidden" });
     await page.locator("[data-task-assign]").click();
-    await page.locator("#task-assign-assignee").selectOption("user");
+    await page.locator("#task-assign-assignee").selectOption("new_workspace");
     await page.locator("#task-assign-note").fill("Keep the waiting assignment");
-    expect(await page.locator("#task-assign-scrim").textContent()).toContain("Done or closed");
+    expect(await page.locator("#task-assign-scrim").textContent()).toContain("Assign and start");
     await page.locator("[data-assign-go]").click();
     await page.locator("#task-assign-scrim .create-error").waitFor({ state: "visible" });
-    expect(await page.locator("#task-assign-scrim .create-error").textContent()).toMatch(/update.*bridge/i);
+    expect(await page.locator("#task-assign-scrim .create-error").textContent()).toMatch(/downgraded.*update/i);
     expect(await page.locator("#task-assign-note").inputValue()).toBe("Keep the waiting assignment");
-    expect(await page.locator("#task-assign-assignee").inputValue()).toBe("user");
+    expect(await page.locator("#task-assign-assignee").inputValue()).toBe("new_workspace");
     expect(await page.evaluate(() => window.__waiting.calls.filter((call) => call.method === "tasks.assign" || call.method.startsWith("tasks.waiting_on.")))).toEqual([]);
   });
 }, 30_000);

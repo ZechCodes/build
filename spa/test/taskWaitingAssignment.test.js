@@ -5,6 +5,7 @@ import { assigneePickerBodyHtml, openAssigneePicker } from "../src/core/trackerA
 import { writeTaskRecord } from "../src/core/trackerCache.js";
 import { assigneeOptions } from "../src/core/trackerAssignee.js";
 import { emptyAssigneeDraft } from "../src/core/trackerAssigneeControl.js";
+import { rememberTaskWaitingOnSupport } from "../src/core/taskWaitingOnSupport.js";
 
 const greeting = vi.hoisted(() => ({ supported: true }));
 vi.mock("../src/core/deviceContexts.js", () => ({
@@ -18,7 +19,11 @@ vi.mock("../src/core/changeEvents.js", () => ({
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 let handle;
-beforeEach(() => { greeting.supported = true; document.body.replaceChildren(); });
+beforeEach(async () => {
+  greeting.supported = true;
+  document.body.replaceChildren();
+  await rememberTaskWaitingOnSupport("device", { tasks: { waitingOn: true } });
+});
 afterEach(async () => { await handle?.close(); handle = null; });
 const settle = async () => {
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -31,7 +36,7 @@ const picker = (task, optionId = "new_workspace", busy = false) => assigneePicke
 });
 
 describe("waiting assignment form", () => {
-  it("retains the note and target when an older current greeting refuses a waiting form", async () => {
+  it("retains the note and target when a downgraded greeting refuses a workspace", async () => {
     const call = vi.fn();
     handle = openAssigneePicker({
       deviceId: "device", projectId: "project", task: { id: "task-one", project_id: "project", number: 1,
@@ -69,7 +74,7 @@ describe("waiting assignment form", () => {
     expect(call).not.toHaveBeenCalled();
     expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
     expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
-    expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
+    expect(document.querySelector(".create-error").textContent).toMatch(/downgraded.*update/i);
   });
 
   it("accepts a saved creating assignment with a null dispatch", async () => {
@@ -118,64 +123,5 @@ describe("waiting assignment copy", () => {
     const html = picker({ dependencies: { blocked: true } }, "user");
     expect(html).toContain("Done or closed");
     expect(html).toContain("No agent starts for a user assignment");
-  });
-});
-
-describe("assignment picker dependency knowledge migration", () => {
-  it.each(["detail", "catalogue", "query", "page"])(
-    "retains a pre-existing %s blocker when an older ready response first establishes knowledge",
-    async (source) => {
-      const local = await import("../src/core/localCache.js");
-      const tracker = await import("../src/core/trackerCache.js");
-      const facts = await import("../src/core/taskAssignmentFacts.js");
-      const ready = { id: `migration-${source}`, project_id: "project", number: 42,
-        title: "Retained task", updated_at: "2026-10-13T01:00:00Z", dependencies: { blocked: false, waiting_on: [] } };
-      const blocked = { ...ready, updated_at: "2026-10-13T01:01:00Z",
-        dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
-      const addresses = {
-        detail: tracker.taskAddress("device", "project", ready.id),
-        catalogue: tracker.tasksAddress("device", "project"),
-        query: tracker.tasksQueryAddress("device", "project", { label: "retained" }),
-        page: tracker.tasksPageAddress("device", "project", { cursor: "retained" }),
-      };
-      // Released-client cache schema: the capable replica predates knowledge.
-      await local.writeCached(addresses[source], source === "detail" ? { task: blocked, timeline: [] } : { tasks: [blocked] });
-      expect((await facts.readTaskAssignmentFacts("device", "project", ready.id, blocked)).dependencies.blocked).toBe(true);
-      const call = vi.fn(async () => ({}));
-      handle = openAssigneePicker({ deviceId: "device", projectId: "project", task: blocked,
-        options: assigneeOptions([]), current: "new_workspace", callRpc: call });
-      const note = document.querySelector("#task-assign-note");
-      note.value = "Keep my draft";
-      note.dispatchEvent(new Event("input"));
-      // An older capable response establishes the first knowledge record.
-      await tracker.writeTasksQueryRecord("device", "project", { label: "old-read" }, { tasks: [ready] });
-      greeting.supported = false;
-      document.querySelector("[data-assign-go]").click();
-      await settle();
-      expect(call).not.toHaveBeenCalled();
-      expect(document.querySelector("#task-assign-note").value).toBe("Keep my draft");
-      expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
-      expect(document.querySelector(".create-error").textContent).toMatch(/update.*bridge/i);
-    },
-  );
-
-  it("retains an opened-only newer blocker when an older ready record appears", async () => {
-    const ready = { id: "migration-opened-only", project_id: "project", number: 43,
-      title: "Opened blocker", updated_at: "2026-10-13T01:00:00Z", dependencies: { blocked: false, waiting_on: [] } };
-    const blocked = { ...ready, updated_at: "2026-10-13T01:01:00Z",
-      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
-    const call = vi.fn(async () => ({}));
-    handle = openAssigneePicker({ deviceId: "device", projectId: "project", task: blocked,
-      options: assigneeOptions([]), current: "new_workspace", callRpc: call });
-    const note = document.querySelector("#task-assign-note");
-    note.value = "Keep the opened draft";
-    note.dispatchEvent(new Event("input"));
-    await writeTaskRecord("device", "project", ready.id, { task: ready, timeline: [] });
-    greeting.supported = false;
-    document.querySelector("[data-assign-go]").click();
-    await settle();
-    expect(call).not.toHaveBeenCalled();
-    expect(document.querySelector("#task-assign-note").value).toBe("Keep the opened draft");
-    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
   });
 });

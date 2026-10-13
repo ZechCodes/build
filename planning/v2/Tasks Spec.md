@@ -669,7 +669,13 @@ out. This planning branch changes no version. Announce `tasks.waitingOn` only
 when the graph, deferred delivery and read summaries all work. New verbs also have
 their own capability names. Cached capabilities govern rendering; the current
 greeting must advertise the feature before sending any new parameter. An older
-bridge must never silently receive an ordinary assignment from a waiting form.
+bridge receives ordinary new-workspace assignment only if it has never
+advertised `tasks.waitingOn`. The SPA persists the highest support seen per
+device beside its cached capability flags. A previously capable device with
+an incapable current greeting is downgraded: board/list and task-page pickers
+refuse new-workspace assignment with an inline update message and retain their
+drafts. Current capable greetings admit assignment normally; the bridge
+enforces dependencies. Display remains cached, without per-task arbitration.
 
 `linked` and `unlinked` carry `{waiting_on: task_id}` on the dependent.
 `blocked` records a false-to-true readiness transition and carries

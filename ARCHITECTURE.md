@@ -449,6 +449,10 @@ runtime that starts them.
   A closed prerequisite resolves with `resolved_by: "close"`; Done resolves
   with `"done"`. Closure briefs ask the recipient to assess and escalate on
   the task when unclear. The retired `tasks.link` public RPC stays retired.
+  The SPA persists whether each device has ever advertised waiting-on support.
+  A later greeting without it marks a downgraded bridge: ordinary new-workspace
+  assignment is refused until current support returns. Never-upgraded devices
+  retain legacy assignment; capable devices enforce prerequisites themselves.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -2198,26 +2202,16 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
-- **Task dependency knowledge** (#564). `taskDependencyKnowledge.js` keeps
-  one `tracker-task-dependencies` record per task, under its device/project
-  and task sub-key, beside tracker detail and read metadata. It stores the
-  dependency summary and the source task's `updated_at`, independently of
-  replaceable list/detail replicas. Detail, catalogue, query, paged reads and
-  task responses update it in the same IndexedDB transaction as their admitted
-  replica writes. Omitted/null/partial summaries never update it, even at newer
-  task versions: capable facts report blocked, or explicitly report
-  `blocked: false, waiting_on: []`. Waiting knowledge
-  survives until a dependency-capable source has a strictly newer task version
-  reporting ready (including `blocked: false, waiting_on: []`). Tied or unknown
-  versions retain waiting. Project eviction removes the record with the other
-  tracker data. Views still paint committed replicas. The send-time assignment
-  guard always unions this record with every capable detail/catalogue/query/page
-  replica and the opened picker task, including replicas that predate the
-  record. `selectTaskAssignmentFacts` is pure: the highest capable task version
-  wins, blocked wins ties, and unknown timestamps retain waiting. Only a newer
-  explicit ready fact clears older waiting; unknown/legacy facts never prove
-  ready or veto that clear. No capable facts retains the conservative absence
-  rule. The record is durable evidence, never exclusive authority.
+- **Waiting-on capability history** (#564). `taskWaitingOnSupport.js` keeps
+  the per-device `task-waiting-on-support` cache record beside other capability
+  flags. `waitingOn` describes the latest greeting for rendering Waiting on /
+  Blocks controls; `everWaitingOn` records that this device has advertised
+  `tasks.waitingOn` at least once. An admitted capable greeting sets history,
+  including when a later greeting overtakes its storage transaction. Incapable
+  greetings never clear it. Existing cached `waitingOn: true` records count as
+  history without a schema bump. Task lists, detail and reverse pages remain
+  the sources of displayed dependency facts; assignment admission does not
+  arbitrate task replicas or maintain per-task dependency knowledge.
 - **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
   keeps unsent drafts, folds, menus and the other `ui-*` records in their own
   database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
@@ -2675,42 +2669,32 @@ refuses when that device cannot answer.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
   `tasks.waitingOn` is persisted by `taskWaitingOnSupport.js` for task-page
-  Waiting on and Blocks controls. `taskWaitingOnActions.js` waits for the
-  current greeting before dependency writes, paged reverse reads, saved-id
-  retries and assignments from waiting forms. After greeting settlement, the
-  assignment sender reads the scoped dependency fact union through
-  `taskAssignmentFacts.js` and checks the same greeting authority again before
-  capability validation and the RPC send, with no intervening wait. The picker
-  passes the target/note without a submit-time readiness decision. A reblock
-  learned during greeting waits survives later legacy list/detail refreshes
-  and cannot silently start work on an older bridge. Only newer capable task
-  versions can clear waiting knowledge; an explicit current-wire
-  `blocked: false, waiting_on: []` remains authoritative. The record, every
-  detail/catalogue/query/page replica and the opened task participate even when
-  the record exists, so an older first record cannot hide a retained blocker.
-  Unknown
-  dependency summaries never assert ready; ties and unknown task timestamps
-  retain waiting evidence. Source read/write orders are never compared.
-  `taskDependencyKnowledge.test.js` covers legacy retention, older/newer
-  capable clears, all writer paths, concurrent writers, reload and eviction;
-  `taskAssignmentFacts.test.js` retains the pre-knowledge conflict regressions.
-  `taskAssignmentFactUnion.test.js` covers record/replica version arbitration,
-  ties, unknown summaries/versions and conservative absence. Round-8 real picker
-  and list/board tests retain pre-record detail/catalogue/query/page blockers
-  after an older ready query establishes the first record; opened-only waiting
-  and the prior legacy-overwrite cases remain covered. Round-8 validation
-  passes 265 focused tests and the full Chromium-inclusive suite (673 files /
-  10,528 tests), plus lint, captures, build and security scans; TS558-7 records
-  the failing reproductions and final evidence.
-  The real list/board picker tests in `trackerTasksPaneDom.test.js` keep drafts
-  when every blocking replica is overwritten by a legacy refresh. Successful
-  responses update tracker detail and list replicas through
-  `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.
-  Successful edge add/remove requests another detail through the task page's
-  existing trailing reader. A push-triggered read begun before the mutation
-  reply is still rejected by the detail fence, then replaced by the trailing
-  read so link/readiness timeline history arrives. The page/button/action/cache
-  race is covered in `trackerTaskChecklistDom.test.js`.
+  Waiting on and Blocks controls, together with the highest support seen on
+  that device. `taskWaitingOnActions.js` waits for the current greeting before
+  dependency writes, reverse reads, saved-id retries and workspace assignment.
+  A capable current greeting admits assignment normally: the bridge enforces
+  prerequisites. An incapable greeting admits legacy workspace assignment only
+  if the device has never advertised waiting-on support. A previously capable
+  device is downgraded: board/list and task-page new-workspace pickers refuse
+  with an inline update message and retain note/selection without sending.
+  Even a ready task is refused on that device; legacy writes can erase graph
+  evidence, so task replicas cannot safely narrow the guard. Unassignment and
+  established non-workspace targets retain their request shapes. New dependency
+  verbs, create-time edges and saved-id retries still require current support.
+  After reading cached device history, the sender rechecks the same greeting
+  authority and validates/sends without another wait. Rendering stays entirely
+  cached. `taskWaitingOnSupport.test.js` covers monotonic history, greeting
+  races, prior cached support and reload; `taskWaitingAssignmentDowngrade.test.js`
+  retains all six round-8 legacy-erasure reproductions through the real picker.
+  Successful responses update tracker detail and list replicas through
+  `taskWaitingOnCache.js`. Edge add/remove requests another detail through the
+  task page's trailing reader. Board/list assignment also requests a detail
+  through `trackerTaskDetailsFeed.js`'s bounded trailing reader: a partial
+  response must not leave an old timeline current at a newer task version.
+  The mutation fence rejects reads begun before the response; the replacement
+  read restores timeline history and unread mentions. Same-clock cache writes
+  are distinguished by record identity. `trackerTaskChecklistDom.test.js` and
+  `trackerAssignmentDetailRefresh.test.js` cover these respective paths.
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in
   `spa/src/core/needsYouRule.js`, read by the Tasks tab and the inbox's
   watched tasks; `branches.finishDelete` becomes whether Done deletes the

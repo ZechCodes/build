@@ -138,6 +138,10 @@ fn unblock_preserves_user_attention() {
     assert_eq!(unblocked["unread"], asked["unread"]);
     assert_eq!(unblocked["anchor"], asked["anchor"]);
     let read = call(&mut app, "tasks.get", json!({"task_id":dependent}));
+    assert_unblocked_attention(&read, &last);
+}
+
+fn assert_unblocked_attention(read: &Value, last: &str) {
     assert_eq!(read["task"]["read_through"], last);
     assert_eq!(read["task"]["dismissed_through"], last);
     assert_eq!(read["task"]["watched"], true);

@@ -226,11 +226,23 @@ fn waiting_on_rpc_mcp_contract_foreign_endpoints_and_cursors_are_fenced() {
         ))["ok"],
         false
     );
+    assert_waiting_bounds_refused(&mut app, &a["id"], &blocker["id"]);
+    assert_eq!(
+        rpc(&mut app, "tasks.get", json!({"task_id":a["id"]}))["task"]["dependencies"]
+            ["waiting_on"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+fn assert_waiting_bounds_refused(app: &mut AppState, task: &Value, blocker: &Value) {
     for limit in [0, 101] {
         assert_eq!(
             app.handle(req(
                 "tasks.waiting_on.blocks",
-                json!({"task_id":blocker["id"],"limit":limit})
+                json!({"task_id":blocker,"limit":limit})
             ))["error_code"],
             "invalid_params"
         );
@@ -239,17 +251,9 @@ fn waiting_on_rpc_mcp_contract_foreign_endpoints_and_cursors_are_fenced() {
     assert_eq!(
         app.handle(req(
             "tasks.waiting_on.add",
-            json!({"task_id":a["id"],"waiting_on":too_many})
+            json!({"task_id":task,"waiting_on":too_many})
         ))["error_code"],
         "invalid_params"
-    );
-    assert_eq!(
-        rpc(&mut app, "tasks.get", json!({"task_id":a["id"]}))["task"]["dependencies"]
-            ["waiting_on"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
     );
 }
 

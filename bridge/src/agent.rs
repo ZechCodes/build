@@ -445,6 +445,7 @@ impl Agent {
 pub struct RosterMember {
     pub id: String,
     pub name: Option<String>,
+    pub project_role: Option<crate::project_roster::ProjectRole>,
     pub ordinal: u32,
     pub provider: crate::models::AgentProvider,
 }
@@ -543,6 +544,7 @@ impl AgentRoster {
             return vec![RosterMember {
                 id: derived_agent_id(owner_id),
                 name: None,
+                project_role: None,
                 ordinal: 1,
                 provider: choice.provider,
             }];
@@ -552,6 +554,7 @@ impl AgentRoster {
             .map(|agent| RosterMember {
                 id: agent.id.clone(),
                 name: agent.name.clone(),
+                project_role: agent.project_role,
                 ordinal: agent.ordinal,
                 provider: agent.choice.provider,
             })

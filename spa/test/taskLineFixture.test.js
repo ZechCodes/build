@@ -23,7 +23,9 @@ import { threadHtml } from "../src/core/thread.js";
 const FIXTURE = resolve(process.cwd(), "../web/fixtures/task-lines.html");
 
 const place = { deviceId: "dev-1", projectId: "proj-1", projectName: "Build" };
-const agentLabels = { "agent-01M2A": "tasks-spa · Agent 1" };
+const agentLabels = { "agent-01M2A": "tasks-spa · Agent 1", "project-worker": "Astra" };
+const workerIdentity = { agent_id: "project-worker", project_role: "worker", name: "Astra", ordinal: 2, provider: "codex_app_server" };
+const agentModels = { "project-worker": workerIdentity };
 
 const message = (sequence, body) => ({ type: "message", data: { id: `m-${sequence}`, sequence, role: "agent", body } });
 const notice = (sequence, title, task_notice) => ({
@@ -90,6 +92,14 @@ export const TASK_LINE_ITEMS = [
     agent_id: "agent-01M2A",
   }),
   notice(45, "Workspace tasks as a tab of the workspace page, with the workspace rail beside it", { actor: "user", action: "closed" }),
+  notice(47, "A named project worker retains its own identity", {
+    actor: { kind: "agent", agent_id: "project-worker", identity: workerIdentity }, action: "commented",
+  }),
+  notice(48, "A cached project worker is named without an inline identity", { actor: "project-worker", action: "moved", to: "in_review" }),
+  notice(49, "A project worker assignee keeps its harness", { actor: "user", action: "assigned",
+    assignee: { kind: "agent", agent_id: "project-worker" }, assignee_identity: workerIdentity }),
+  notice(50, "A removed unnamed worker retains captured purpose", { action: "commented", actor: { kind: "agent", agent_id: "project-removed",
+    identity: { agent_id: "project-removed", project_role: "worker", provider: "codex_app_server", ordinal: 7, deleted: true } } }),
   message(9, "A normal message after the run."),
   // #50: a fenced block far wider than a phone. The block must scroll; the
   // bubble and the column it is in must not grow by a pixel.
@@ -105,7 +115,7 @@ export const TASK_LINE_ITEMS = [
   ),
 ];
 
-const rendered = () => threadHtml({ id: "c-1", items: TASK_LINE_ITEMS }, { place, agentLabels });
+const rendered = () => threadHtml({ id: "c-1", items: TASK_LINE_ITEMS }, { place, agentLabels, agentModels });
 
 // Lucide embeds its package version in the SVG license comment. A dependency
 // update can change that comment without changing the icon the browser draws.
@@ -153,8 +163,22 @@ describe("the markup the browser measurement is taken over", () => {
   it("holds a run of task lines between ordinary messages", () => {
     const host = document.createElement("div");
     host.innerHTML = rendered();
-    expect(host.querySelectorAll(".thread-task-line")).toHaveLength(7);
+    expect(host.querySelectorAll(".thread-task-line")).toHaveLength(11);
     expect(host.querySelectorAll(".thread-action")).toHaveLength(3);
+  });
+
+  it("holds purpose-aware project worker names and harness marks", () => {
+    const host = document.createElement("div");
+    host.innerHTML = rendered();
+    for (const [sequence, name, selector] of [[47, "Astra", ".thread-task-by"], [48, "Astra", ".thread-task-by"],
+      [49, "Astra", ".thread-task-to"], [50, "Agent 7", ".thread-task-by"]]) {
+      const section = host.querySelector(`[data-task-notice="task-${sequence}"] ${selector}`);
+      expect(section.querySelector(".thread-task-agent-name").textContent).toBe(name);
+      expect(section.querySelector('[data-harness-icon="codex_app_server"]')).toBeTruthy();
+      expect(section.querySelector(".is-project")).toBeNull();
+    }
+    expect(host.querySelector('[data-task-notice="task-41"] .thread-task-agent-name').textContent).toBe("Build");
+    expect(host.querySelector('[data-task-notice="task-41"] .is-project')).toBeTruthy();
   });
 
   // #42: one screenshot has to show all four, or it cannot show that no two

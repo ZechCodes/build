@@ -26,19 +26,22 @@ import { ROW_RECORD_KIND, cachedFeedView } from "./cachedRows.js";
 import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
 import { agentLineage, lineageMembers } from "./agentLineageModel.js";
 import { entityIdOf } from "./entityId.js";
+import { projectCoordinatorAgent, projectRosterRows } from "./projectRosterFeed.js";
+import { PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND } from "./projectAgentsCache.js";
 
 const followsDetail = (task) => task?.watched === true && !isFinished(task);
-const AGENT_RECORD_KINDS = new Set([ROW_RECORD_KIND, "projects", "workspaces", AGENT_LINEAGE_SUPPORT_KIND]);
+const AGENT_RECORD_KINDS = new Set([
+  ROW_RECORD_KIND, "projects", "workspaces", AGENT_LINEAGE_SUPPORT_KIND, PROJECT_AGENTS_KIND, PROJECT_AGENTS_SUPPORT_KIND,
+]);
 
-/** Legacy project-agent assignments carry no id. Resolve the project's own
- *  owner roster by the same holder rule the task attention model uses:
- *  prefer its own working agent, otherwise its first agent. */
+/** Legacy project-agent assignments name the persisted coordinator, never a
+ *  currently working worker. Earlier bridges carry only the coordinator. */
 function projectAgentIdOf(project, feed) {
   const owner = feed.projects.find((candidate) => candidate.id === project.id || candidate.project_id === project.id) || project;
   const entityId = owner.entity_id || owner.run_id;
   if (!entityId) return null;
-  const agents = feed.items.find((row) => row.project_id === project.id && entityIdOf(row) === entityId)?.agents || [];
-  return (agents.find((agent) => agent.working === true) || agents[0])?.id || null;
+  const agents = projectRosterRows(feed).find((row) => row.project_id === project.id && entityIdOf(row) === entityId)?.agents || [];
+  return projectCoordinatorAgent(owner, agents)?.id || null;
 }
 
 /** The agents running for this project, including their Build and harness
@@ -46,7 +49,7 @@ function projectAgentIdOf(project, feed) {
 async function readRunningAgents(project) {
   const { deviceId, id: projectId } = project;
   const [feed, namesMakers] = await Promise.all([cachedFeedView(deviceId), readAgentLineageSupport(deviceId)]);
-  const members = lineageMembers(feed.items, { projectId, projects: feed.projects, workspaces: feed.workspaces });
+  const members = lineageMembers(projectRosterRows(feed), { projectId, projects: feed.projects, workspaces: feed.workspaces });
   const lineage = agentLineage(members, { namesMakers });
   return {
     runningAgentIds: new Set(members.filter(({ agent }) => lineage.rollup(agent.id).running).map(({ agent }) => agent.id)),

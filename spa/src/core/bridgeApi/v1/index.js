@@ -174,6 +174,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     },
     tasks: {
       context: names.has("tasks.context"),
+      assignProjectAgent: names.has("tasks.assignProjectAgent"),
       attachments: names.has("tasks.attachments"),
       watching: names.has("tasks.watching"),
       doneSinceLeft: names.has("tasks.doneSinceLeft"),
@@ -187,7 +188,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
     threads: { postOperations: names.has("threads.postOperations"), attachmentChunks: names.has("thread.attachmentChunks"), leanActivity: names.has("threads.leanActivity") },
     branches: { finishDelete: names.has("branches.finishDelete") },
     push: { registerKey: names.has("push.registerKey"), revokeKey: names.has("push.revokeKey") },
-    agents: { createdBy: names.has("agents.createdBy") },
+    agents: { createdBy: names.has("agents.createdBy"), projectWorkers: names.has("agents.projectWorkers") },
     projects: { updateSource: names.has("project.update_source"), syncBase: names.has("sources.syncBase"), syncBasePath: names.has("sources.syncBasePath") },
     workspaces: { measureSizes: names.has("workspace.measure_sizes"), setLocked: names.has("workspace.set_locked") },
   };

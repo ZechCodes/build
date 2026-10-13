@@ -1691,3 +1691,44 @@ fn waiting_on_contract_pins_closed_blocker_notices_and_unblock_payload() {
         assert!(event["payload"][key].is_array(), "missing {key}");
     }
 }
+
+/// Project purpose survives an unnamed worker leaving the roster. These
+/// optional identity facts share the unreleased worker minor and require no
+/// request gating; old task identities remain valid.
+#[test]
+fn project_task_identities_document_purpose_after_worker_removal() {
+    for method in ["tasks.get", "tasks.list"] {
+        let fixture = read_json(&fixtures_root().join("v1").join(format!("{method}.json")));
+        assert_eq!(fixture["project_identities"]["since"], "3.21.0", "{method}");
+        let example = fixture["examples"].as_array().unwrap().last().unwrap();
+        let task = if method == "tasks.get" {
+            &example["result"]["task"]
+        } else {
+            &example["result"]["tasks"][0]
+        };
+        let worker = &task["identities"]["project-removed-worker"];
+        assert_eq!(worker["project_role"], "worker", "{method}");
+        assert_eq!(worker["name"], Value::Null, "{method}");
+        assert_eq!(worker["available"], false, "{method}");
+        assert_eq!(
+            task["identities"]["project-pin"]["project_role"],
+            "coordinator"
+        );
+        let handler = &v1::methods()
+            .iter()
+            .find(|(name, _)| *name == method)
+            .unwrap()
+            .1;
+        assert_eq!(
+            handler.round_trip_result(&example["result"]).unwrap(),
+            example["result"]
+        );
+    }
+    let thread = read_json(&fixtures_root().join("v1/thread.page.json"));
+    assert_eq!(thread["project_identities"]["since"], "3.21.0");
+    let notice = &thread["project_identities"]["notice"];
+    let typed: build_bridge::thread::TaskNotice = serde_json::from_value(notice.clone()).unwrap();
+    assert_eq!(serde_json::to_value(typed).unwrap(), *notice);
+    assert_eq!(notice["actor"]["identity"]["project_role"], "worker");
+    assert_eq!(notice["actor"]["identity"]["name"], Value::Null);
+}

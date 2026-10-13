@@ -36,6 +36,31 @@ afterEach(() => {
 });
 
 describe("the Build agents it supplies", () => {
+  it("rolls up complete project worker descendants and refreshes roster/support changes", async () => {
+    const rosterCache = await import("../src/core/projectAgentsCache.js");
+    const pin = { id: "project-pin" };
+    const worker = { id: "project-worker", created_by: pin.id };
+    const child = { id: "project-child", created_by: worker.id, working: true };
+    await localCache.writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" },
+      [{ id: "proj-1", entity_id: "run-project" }]);
+    await putRow("run-project", { kind: "project", agents: [pin] });
+    await rosterCache.rememberProjectAgentsSupport("dev-1", { agents: { projectWorkers: true } });
+    const address = rosterCache.projectAgentsAddress("dev-1", "run-project");
+    const roster = { entity_id: "run-project", pinned_agent_id: pin.id, agents: [pin, worker, child] };
+    await localCache.writeCached(address, roster);
+    await mount();
+    expect(reader.buildAgentsFor(pin.id)).toEqual([expect.objectContaining({ id: worker.id, state: "running" })]);
+    expect(reader.buildAgentsFor(worker.id)).toEqual([expect.objectContaining({ id: child.id, state: "running" })]);
+    expect(reader.decorate(pin).agents_running).toBe(1);
+    await localCache.writeCached(address, { ...roster, agents: [pin, worker, { ...child, working: false }] });
+    await vi.waitFor(() => expect(reader.decorate(pin).agents_running).toBeUndefined());
+    expect(reader.buildAgentsFor(worker.id)[0].state).not.toBe("running");
+    await rosterCache.rememberProjectAgentsSupport("dev-1", {});
+    await vi.waitFor(() => expect(reader.buildAgentsFor(pin.id)).toBeNull());
+    await rosterCache.rememberProjectAgentsSupport("dev-1", { agents: { projectWorkers: true } });
+    await vi.waitFor(() => expect(reader.buildAgentsFor(pin.id)).toHaveLength(1));
+  });
+
   it("reads nothing until it is started", async () => {
     await putRow("run-a", { kind: "workspace", workspace_id: "ws-a", agents: [{ id: "worker", created_by: "boss" }] });
     reader = mountAgentLineage({ deviceId: "dev-1", projectId: "proj-1", onChanged: () => changes++ });

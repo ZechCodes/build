@@ -19,6 +19,7 @@
 // Pure: no DOM, no app imports.
 
 import { FALLBACK_COLUMNS } from "./trackerModel.js";
+import { isProjectActor } from "./projectActor.js";
 
 /**
  * What the bridge's verb is called on screen.
@@ -105,8 +106,6 @@ const projectAgentName = (projectName) => String(projectName || "").trim() || BU
 /** The id a project's own agent is minted under. The wire writes it as its own
  *  actor kind on some paths and as an ordinary agent actor on others, so the
  *  id is asked about as well as the kind: one agent, one name (#63). */
-const PROJECT_AGENT_PREFIX = "project-";
-
 /** The four characters an agent wears wherever nothing can name it — the same
  *  four a message's sender chip wears (core/thread.js), so one agent reads as
  *  one agent on every surface. */
@@ -121,13 +120,16 @@ const shortAgentLabel = (agentId) => {
 
 /** An agent of a workspace: what the rest of the project calls it, or the
  *  four characters it wears where nothing can. */
+const capturedAgentName = (identity) => String(identity.name || "").trim() || `Agent ${identity.ordinal || 1}`;
+
 const agentName = (agentId, agentLabels, identities = {}) => {
   const identity = identities[agentId];
   if (identity?.workspace_name) {
-    const name = String(identity.name || "").trim() || `Agent ${identity.ordinal || 1}`;
+    const name = capturedAgentName(identity);
     return `${identity.workspace_name} · ${name}`;
   }
   if (identity?.name) return String(identity.name).trim();
+  if (identity?.ordinal) return capturedAgentName(identity);
   return agentLabels[agentId] || shortAgentLabel(agentId);
 };
 
@@ -156,21 +158,25 @@ export function actorName(actor, reading = {}) {
 const FIXED_ACTOR_NAMES = Object.freeze({ user: "You", build: "Build" });
 
 /** The wire's tagged shape, which every field but a notice's actor uses. */
-function taggedActorName(actor, { agentLabels = {}, identities = {}, projectName = "" }) {
+function taggedActorName(actor, reading) {
+  const { agentLabels = {}, identities = {}, projectName = "" } = reading;
   if (actor.kind === "project_agent") return projectAgentName(projectName);
   if (Object.hasOwn(FIXED_ACTOR_NAMES, actor.kind)) return FIXED_ACTOR_NAMES[actor.kind];
   if (actor.kind !== "agent") return String(actor.kind || "");
   const id = String(actor.agent_id || "");
-  return id.startsWith(PROJECT_AGENT_PREFIX) ? projectAgentName(projectName)
+  const known = { ...reading, identities: actorIdentities(actor, identities) };
+  return isProjectActor(actor, known) ? projectAgentName(projectName)
     : agentName(id, agentLabels, actorIdentities(actor, identities));
 }
 
 /** A bare string: an id off the structured field, or a word out of the body's
  *  prose. Both reach this, because a notice's actor arrives either way
  *  depending on whether the bridge carries the field yet. */
-function writtenActorName(said, { agentLabels = {}, identities = {}, projectName = "" }) {
+function writtenActorName(said, reading) {
+  const { agentLabels = {}, identities = {}, projectName = "" } = reading;
   if (!said) return "";
-  if (said.startsWith("project-")) return projectAgentName(projectName);
+  if (said.startsWith("project-")) return isProjectActor({ agent_id: said }, reading)
+    ? projectAgentName(projectName) : agentName(said, agentLabels, identities);
   if (said.startsWith("agent-")) return agentName(said, agentLabels, identities);
   if (said === "user" || said === "you") return "You";
   return said;

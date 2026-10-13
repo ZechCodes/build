@@ -57,11 +57,12 @@ vi.mock("../src/appState.js", async () => ({ App: (await import("../src/app.js")
 vi.mock("../src/app.js", () => ({ App }));
 
 let registeredWatchers = [];
+let projectWorkersSupported = false;
 const subscriptionHeldListeners = new Set();
 vi.mock("../src/core/changeEvents.js", () => ({
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
+  bridgeCapabilities: () => ({ agents: { projectWorkers: projectWorkersSupported }, changes: { subscriptions: true, kinds: ["state", "thread", "git", "files", "terminals", "tasks"] } }),
   // A stand-in bridge holds whatever it is asked to at once
   // (test/cacheSyncDelivery.test.js drives the real one).
   subscriptionsSettledFor: async () => {},
@@ -159,6 +160,7 @@ beforeEach(async () => {
   globalThis.IDBKeyRange = IDBKeyRange;
   delete globalThis.navigator?.locks;
   registeredWatchers = [];
+  projectWorkersSupported = false;
   subscriptionHeldListeners.clear();
   stateListeners.clear();
   contexts.clear();
@@ -1911,5 +1913,45 @@ describe("every project's tasks", () => {
     };
     await boot([]);
     expect(await tasksOf("p1")).toBeUndefined();
+  });
+});
+
+
+describe("complete project worker roster synchronization", () => {
+  const pin = { id: "project-pin", conversation_id: "pin-chat", watched: true };
+  const worker = { id: "project-worker", conversation_id: "worker-chat", watched: true, project_role: "worker" };
+  const roster = (agents) => ({ entity_id: "run-proj", pinned_agent_id: pin.id, agents });
+
+  it("syncs cached exact worker histories on boot/reconnect and refreshes state/thread invalidations", async () => {
+    projectWorkersSupported = true;
+    await cache.writeCached({ deviceId: "dev-1", entityId: "", kind: "project-agents-support" }, { projectWorkers: true });
+    script["project.list"] = () => ({ projects: [projectList] });
+    script["thread.page"] = (params) => ({ items: [{ type: "message", data: { sequence: 1, id: params.agent_id, role: "agent", body: "cached history" } }], has_more: false });
+    let agents = [worker, pin];
+    script["agent.list"] = (params) => { expect(params).toEqual({ entity_id: "run-proj", include_project_workers: true }); return roster(agents); };
+    await boot([projectRow({ agents: [pin] })], { name: "project", deviceId: "dev-1", projectId: "p1", agent: worker.id });
+    await passesSettled(sync, "dev-1");
+    expect((await read("run-proj", "project-agents")).value).toEqual(roster(agents));
+    expect(paramsOf("thread.page")).toContainEqual(expect.objectContaining({ entity_id: "run-proj", agent_id: worker.id }));
+    expect((await read("run-proj", "thread", worker.conversation_id))?.value).toBeTruthy();
+    const active = registeredWatchers.find((watcher) => watcher.id === "s-active" && !watcher.disposed);
+    agents = [pin];
+    active.onChanges([{ entity_id: "run-proj", state: projectRow({ agents: [pin] }) }]);
+    await vi.waitFor(async () => expect((await read("run-proj", "project-agents")).value.agents).toEqual([pin]));
+    agents = [{ ...worker, name: "Renamed worker" }, pin];
+    active.onChanges([{ entity_id: "run-proj", thread: [{ agent_id: worker.id, conversation_id: worker.conversation_id, last_sequence: 0 }] }]);
+    await vi.waitFor(async () => expect((await read("run-proj", "project-agents")).value.agents[0].name).toBe("Renamed worker"));
+    const count = calls("agent.list").length;
+    contexts.get("dev-1").session = { device: "dev-1", reconnect: true };
+    stateListeners.forEach((fn) => fn());
+    await vi.waitFor(() => expect(calls("agent.list").length).toBeGreaterThan(count));
+    await passesSettled(sync, "dev-1");
+  });
+
+  it("never requests complete rosters from an unsupported bridge", async () => {
+    script["project.list"] = () => ({ projects: [projectList] });
+    await boot([projectRow({ agents: [pin] })]);
+    await passesSettled(sync, "dev-1");
+    expect(calls("agent.list")).toHaveLength(0);
   });
 });

@@ -112,14 +112,14 @@ describe("adapter selection", () => {
       bodies: { pages: false, mediaRawPages: false },
       reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+      tasks: { attachments: true, watching: true, context: true, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, assignProjectAgent: false },
       conversations: { settings: true, reset: false },
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
-      agents: { createdBy: false },
+      agents: { createdBy: false, projectWorkers: false },
       projects: { updateSource: false, syncBase: false, syncBasePath: false },
       workspaces: { measureSizes: false, setLocked: false },
     });
@@ -198,14 +198,14 @@ describe("adapter selection", () => {
         bodies: { pages: false, mediaRawPages: false },
         reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-        tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+        tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, assignProjectAgent: false },
         conversations: { settings: false, reset: false },
         github: { repos: false },
         messages: { context: false },
         threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
         branches: { finishDelete: false },
         push: { registerKey: false, revokeKey: false },
-        agents: { createdBy: false },
+        agents: { createdBy: false, projectWorkers: false },
         projects: { updateSource: false, syncBase: false, syncBasePath: false },
         workspaces: { measureSizes: false, setLocked: false },
       });
@@ -274,7 +274,7 @@ describe("named capabilities", () => {
     expect(flags({
       ...namedGreeting(features),
       changes: { subscriptions: false }, requests: { priority: false },
-      errors: { codes: false }, tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+      errors: { codes: false }, tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, assignProjectAgent: false },
     })).toEqual(features);
   });
 

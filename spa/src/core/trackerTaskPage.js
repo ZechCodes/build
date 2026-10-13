@@ -35,7 +35,7 @@ import { columnsOf, labelsFromText } from "./trackerModel.js";
 import { timelineRows } from "./trackerTimeline.js";
 import { taskLinkRows } from "./trackerLinks.js";
 import { agentModelsFromFeed } from "./agentModelBadge.js";
-import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, workspaceAgents } from "./trackerAssignee.js";
+import { agentLabels, agentProviders, assigneeOptions, projectName, selectedOptionId, assignableAgents } from "./trackerAssignee.js";
 import {
   canComment,
   COMMENT_INPUT_ID,
@@ -136,7 +136,7 @@ export function mountTaskPage(host, options) {
     paint();
   }, { debounceMs: 180 });
 
-  const groups = () => workspaceAgents(state.feed(), state.projectKey);
+  const groups = () => assignableAgents(state.feed(), state.projectKey);
   const projectWorkspaces = () => (state.feed()?.workspaces || [])
     .filter((workspace) => workspace.projectKey === state.projectKey);
 
@@ -805,7 +805,7 @@ export function mountTaskPage(host, options) {
   return {
     /** The feed moved: the workspaces a link points at and the agents an
      *  assignee is named by may have. Nothing is re-read from the bridge. */
-    feedMoved() { paint(); reviewPage?.feedMoved(); },
+    feedMoved() { state.picker?.setOptions?.(assigneeOptions(groups())); paint(); reviewPage?.feedMoved(); },
     dispose() {
       state.disposed = true;
       stopHeadMeasurement();

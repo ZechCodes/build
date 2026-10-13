@@ -19,14 +19,14 @@ const NONE = {
   bodies: { pages: false, mediaRawPages: false },
   reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
-  tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+  tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, assignProjectAgent: false },
   conversations: { settings: false, reset: false },
   github: { repos: false },
   messages: { context: false },
   threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
   branches: { finishDelete: false },
   push: { registerKey: false, revokeKey: false },
-  agents: { createdBy: false },
+  agents: { createdBy: false, projectWorkers: false },
   projects: { updateSource: false, syncBase: false, syncBasePath: false },
   workspaces: { measureSizes: false, setLocked: false },
 };
@@ -56,6 +56,11 @@ afterEach(() => {
 });
 
 describe("the adapter a greeting selects", () => {
+  it("disables both project-worker features explicitly before greeting", () => {
+    expect(bridgeCapabilities().agents.projectWorkers).toBe(false);
+    expect(bridgeCapabilities().tasks.assignProjectAgent).toBe(false);
+  });
+
   it("is nothing until a bridge has been greeted", () => {
     expect(bridgeAdapter()).toBe(null);
     expect(bridgeCapabilities()).toEqual(NONE);
@@ -82,14 +87,14 @@ describe("the adapter a greeting selects", () => {
   reviews: { get: false, snapshot: false, diff: false, complete: false, act: false, comments: false,
       pullRequests: false, open: false, push: false, update: false, merge: false, close: false, reopen: false, refresh: false },
       // A greeting that names no task feature carries none of them.
-      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false },
+      tasks: { attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false, listPaged: false, bodyPrecondition: false, assignProjectAgent: false },
       conversations: { settings: false, reset: false },
       github: { repos: false },
       messages: { context: false },
       threads: { postOperations: false, attachmentChunks: false, leanActivity: false },
       branches: { finishDelete: false },
       push: { registerKey: false, revokeKey: false },
-      agents: { createdBy: false },
+      agents: { createdBy: false, projectWorkers: false },
       projects: { updateSource: false, syncBase: false, syncBasePath: false },
       workspaces: { measureSizes: false, setLocked: false },
     });

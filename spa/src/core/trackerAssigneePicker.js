@@ -23,6 +23,7 @@ import {
   wireAssigneeControl,
 } from "./trackerAssigneeControl.js";
 import { fieldTraits } from "./fieldTraits.js";
+import { randomToken } from "./idbRecords.js";
 
 const PREFIX = "task-assign";
 
@@ -87,6 +88,7 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
     error: "",
   };
   let dismissed = false;
+  let operationId = null;
   const modal = openModal({
     dialogHtml: modalDialogHtml(assigneePickerBodyHtml(state), { className: "modal-create" }),
     scrimId: "task-assign-scrim",
@@ -104,13 +106,20 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
 
   const submit = async () => {
     if (state.busy) return;
+    if (!state.options.some((option) => option.id === state.draft.optionId)) {
+      state.error = "This assignee is no longer available. Choose another assignee.";
+      paint();
+      return;
+    }
     state.busy = true;
     state.error = "";
     paint();
     try {
+      operationId ||= randomToken();
       const params = draftAssignParams(state.options, state.draft, state.catalog, {
         taskId: task.id,
         note: state.note,
+        operationId,
       });
       const answer = await callRpc("tasks.assign", params);
       if (dismissed) return;
@@ -131,12 +140,13 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
     wireAssigneeControl(body, state.draft, {
       prefix: PREFIX,
       onDraft: (draft) => {
+        operationId = null;
         state.draft = draft;
         paint();
       },
     });
     const note = body.querySelector(`#${PREFIX}-note`);
-    if (note) note.oninput = () => { state.note = note.value; };
+    if (note) note.oninput = () => { operationId = null; state.note = note.value; };
     body.querySelector("[data-assign-cancel]").onclick = () => {
       if (!state.busy) close();
     };
@@ -146,6 +156,12 @@ export function openAssigneePicker({ task, options, current = "none", catalog = 
   wire();
   return {
     close,
+    setOptions(options) {
+      if (dismissed || state.busy || JSON.stringify(state.options) === JSON.stringify(options)) return;
+      state.draft = readAssigneeDraft(body, state.draft, PREFIX);
+      state.options = options;
+      paint();
+    },
     /** The catalog arrives after the dialog does on a cold device; the panel is
      *  repainted when it lands so an agent choice is offered rather than the
      *  harness's default silently standing. What was typed is kept. */

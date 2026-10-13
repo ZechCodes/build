@@ -17,7 +17,7 @@
 // Pure: no DOM, no cache, no router.
 
 import { workspaceDisplayName } from "./workspaceModel.js";
-import { workspaceAgents } from "./trackerAssignee.js";
+import { workspaceAgents, assignableAgents } from "./trackerAssignee.js";
 import { deviceKey } from "./deviceKey.js";
 
 /** The id a project's own agent is minted under — it stands in no workspace,
@@ -77,6 +77,18 @@ function agentsOf(feed, workspaces) {
   return agents;
 }
 
+function projectAgentsOf(feed) {
+  const agents = new Map();
+  for (const project of feed?.projects || []) {
+    for (const group of assignableAgents(feed, project.projectKey).filter((group) => group.kind === "project")) {
+      for (const agent of group.agents) {
+        agents.set(JSON.stringify([project.projectKey, agent.id]), { ...placeOfKey(project.projectKey), agentId: agent.id, name: agent.label });
+      }
+    }
+  }
+  return agents;
+}
+
 /**
  * What the index is built from, laid out once for every question asked of it.
  *
@@ -85,12 +97,16 @@ function agentsOf(feed, workspaces) {
  * Built once per change to either, so a paint that renders a hundred messages
  * asks a hundred cheap questions rather than rebuilding a hundred indexes.
  */
+const projectRostersOf = (feed) => new Map((feed?.projects || []).filter((project) => project.projectRoster)
+  .map((project) => [project.projectKey, project.projectRoster]));
+
 export function referenceTables({ feed = null, tasks = {} } = {}) {
   const workspaces = (feed?.workspaces || []).filter((workspace) => workspace.projectKey).map(workspaceEntry);
   const projects = (feed?.projects || []).filter((project) => project.projectKey).map((project) => ({
     ...placeOfKey(project.projectKey), projectKey: project.projectKey, name: String(project.name || project.id || ""),
   }));
-  return { workspaces, projects, agents: agentsOf(feed, workspaces), tasks: tasks || {}, held: Boolean(feed) };
+  return { workspaces, projects, agents: agentsOf(feed, workspaces), projectAgents: projectAgentsOf(feed), projectRosters: projectRostersOf(feed),
+    tasks: tasks || {}, held: Boolean(feed) };
 }
 
 /** The one row a reader meant, out of those that answer to what they wrote:
@@ -144,6 +160,15 @@ function projectAgent(tables, id, { place, identities }) {
   return { deviceId: place.deviceId, projectId: place.projectId, agentId: id, name: project ? `${project.name} agent` : "" };
 }
 
+function projectAgentTarget(tables, id, here, identities) {
+  const worker = here && tables.projectAgents.get(JSON.stringify([here.projectKey, id]));
+  if (worker) return worker;
+  if (!String(id || "").startsWith(PROJECT_AGENT_PREFIX)) return undefined;
+  const roster = here && tables.projectRosters.get(here.projectKey);
+  if (roster && roster.pinned_agent_id !== id) return null;
+  return projectAgent(tables, id, { place: here, identities });
+}
+
 /**
  * The resolver core/markdownLinks.js asks, over the tables above, for a reader
  * standing at `place` (`{ deviceId, projectId }`, or nothing).
@@ -167,7 +192,9 @@ export function resolverFor(tables, { place = null, identities = {} } = {}) {
     workspace: (said) => heldOrUnknown(workspaceAt(tables, String(said || "").trim(), here?.projectKey)),
     project: (said) => heldOrUnknown(nearest(answering(tables.projects, String(said || "").trim(), "projectId"), here?.projectKey)),
     agent(id) {
-      if (String(id || "").startsWith(PROJECT_AGENT_PREFIX)) return heldOrUnknown(projectAgent(tables, id, { place: here, identities: known }));
+      if (known[id]?.available === false) return heldOrUnknown(null);
+      const projectTarget = projectAgentTarget(tables, id, here, known);
+      if (projectTarget !== undefined || String(id || "").startsWith(PROJECT_AGENT_PREFIX)) return heldOrUnknown(projectTarget);
       const standing = identified(tables, id, known[id]) || tables.agents.get(id);
       if (!standing) return heldOrUnknown(null);
       const { workspace, name } = standing;

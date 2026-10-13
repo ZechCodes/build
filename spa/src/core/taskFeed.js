@@ -44,7 +44,7 @@ let unwatchDevices = null;
  *  device — a status, a diff, a conversation — moves several times a second
  *  while an agent works and says nothing about the rail, so an announcement
  *  naming one of those is not a re-read. */
-const FEED_KINDS = new Set(["feed", "projects", "workspaces", "row", AGENT_LINEAGE_SUPPORT_KIND]);
+const FEED_KINDS = new Set(["project-agents", "project-agents-support", "feed", "projects", "workspaces", "row", AGENT_LINEAGE_SUPPORT_KIND]);
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
  *  pending, projects, devices}); the current snapshot (if any) is delivered

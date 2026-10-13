@@ -371,7 +371,55 @@ describe("the shape of the row", () => {
       { id: "c-3", items: [notice_({ task_notice: { actor: "project-01M2SCB", action: "commented" } })] },
       { place: { ...PLACE, projectName: "Build" } },
     );
-    expect(document.querySelector(".thread-notice").textContent.replace(/\s+/g, " ").trim())
-      .toBe("#32 comment from Build");
+    const line = document.querySelector(".thread-notice").cloneNode(true);
+    expect(line.querySelector(".thread-task-actor-mark.is-project").textContent).toBe("B");
+    line.querySelectorAll('[aria-hidden="true"]').forEach((mark) => mark.remove());
+    expect(line.textContent.replace(/\s+/g, " ").trim()).toBe("#32 comment from Build");
+  });
+});
+
+
+describe("project workers on task notices", () => {
+  const worker = { kind: "agent", agent_id: "project-worker", identity: {
+    agent_id: "project-worker", project_role: "worker", provider: "codex_app_server", name: "Astra", ordinal: 2,
+  } };
+  const stated = (actor, over = {}) => notice({ task_notice: { actor, action: "commented", ...over } });
+  const assertWorker = (line, name, selector = ".thread-task-by") => {
+    const section = line.querySelector(selector);
+    expect(section.querySelector(".thread-task-agent-name").textContent).toBe(name);
+    expect(section.querySelector('[data-harness-icon="codex_app_server"]')).toBeTruthy();
+    expect(section.querySelector(".is-project")).toBeNull();
+  };
+
+  it("shows a named inline Codex worker's own name and harness", () => {
+    assertWorker(html(stated(worker), { place: PLACE, projectName: "Build" }), "Astra");
+  });
+
+  it("keeps an unnamed removed worker's durable role and captured ordinal", () => {
+    const removed = { ...worker, identity: { ...worker.identity, name: "", ordinal: 7, deleted: true } };
+    const line = html(stated(removed), { place: PLACE, projectName: "Build" });
+    assertWorker(line, "Agent 7");
+    expect(line.querySelector(".thread-task-by a")).toBeNull();
+  });
+
+  it("uses the worker assignee identity for its own harness mark", () => {
+    const line = html(stated("user", { action: "assigned", assignee: { kind: "agent", agent_id: worker.agent_id },
+      assignee_identity: worker.identity }), { place: PLACE, projectName: "Build" });
+    assertWorker(line, "Astra", ".thread-task-to");
+  });
+
+  it("reads bare worker actors and assignees from the cached name and model roster", () => {
+    const options = { place: PLACE, projectName: "Build", agentLabels: { "project-worker": "Astra" },
+      agentModels: { "project-worker": worker.identity } };
+    assertWorker(html(stated("project-worker"), options), "Astra");
+    assertWorker(html(stated("user", { action: "assigned", assignee: "project-worker" }), options), "Astra", ".thread-task-to");
+  });
+
+  it("retains the project mark for a cached coordinator", () => {
+    const line = html(stated("project-pin"), { place: PLACE, projectName: "Build",
+      agentModels: { "project-pin": { project_role: "coordinator", provider: "codex_app_server" } } });
+    expect(line.querySelector(".thread-task-agent-name").textContent).toBe("Build");
+    expect(line.querySelector(".thread-task-actor-mark.is-project").textContent).toBe("B");
+    expect(line.querySelector("[data-harness-icon]")).toBeNull();
   });
 });

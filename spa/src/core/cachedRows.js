@@ -19,6 +19,8 @@ import { entryKeyOf, routedEntry } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
 import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 
+import { PROJECT_AGENTS_KIND, projectAgentsSupportAddress, projectRosterProjection } from "./projectAgentsCache.js";
+
 export const ROW_RECORD_KIND = "row";
 
 const listKnowledgeOf = (record) => ({
@@ -27,18 +29,19 @@ const listKnowledgeOf = (record) => ({
 });
 
 /** One device's world as a route is resolved against it. */
-export async function cachedFeedView(deviceId) {
+export async function cachedFeedView(deviceId, { projectRosters = true } = {}) {
   if (!deviceId) return { items: [], projects: [], workspaces: [],
     listKnowledge: { projects: listKnowledgeOf(), workspaces: listKnowledgeOf() } };
-  const rowAddresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND);
-  const [rows, projects, workspaces] = await Promise.all([
-    readCachedMany(rowAddresses),
-    readCached({ deviceId, entityId: "", kind: "projects" }),
-    readCached({ deviceId, entityId: "", kind: "workspaces" }),
-  ]);
+  if (!projectRosters) return cachedRouteView(deviceId);
+  const addresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND || address.kind === PROJECT_AGENTS_KIND);
+  const records = await readCachedMany([...addresses, { deviceId, entityId: "", kind: "projects" },
+    { deviceId, entityId: "", kind: "workspaces" }, projectAgentsSupportAddress(deviceId)]);
+  const [projects, workspaces, support] = records.slice(addresses.length);
+  const rows = records.slice(0, addresses.length).filter((_, index) => addresses[index].kind === ROW_RECORD_KIND);
+  const rosters = new Map(addresses.map((address, index) => [address.kind === PROJECT_AGENTS_KIND ? address.entityId : null, records[index]?.value]));
   return {
     items: rows.map((record) => withCacheFreshness(record?.value, record)).filter(Boolean),
-    projects: projects?.value || [],
+    projects: projectRosterProjection(projects?.value || [], support?.value, (entityId) => rosters.get(entityId)),
     workspaces: workspaces?.value || [],
     // An absent record has never listed anything. A present [] is a real
     // observation, independent of whether this device has a board yet.
@@ -46,10 +49,27 @@ export async function cachedFeedView(deviceId) {
   };
 }
 
+/** Route discovery does not project workers. Keep its independent owner lists
+ * out of the row transaction so the selected conversation starts reading
+ * promptly, rather than behind unrelated list requests in that transaction. */
+async function cachedRouteView(deviceId) {
+  const addresses = (await cachedAddresses({ deviceId })).filter((address) => address.kind === ROW_RECORD_KIND);
+  const [rows, projects, workspaces] = await Promise.all([
+    readCachedMany(addresses),
+    readCached({ deviceId, entityId: "", kind: "projects" }),
+    readCached({ deviceId, entityId: "", kind: "workspaces" }),
+  ]);
+  return {
+    items: rows.map((record) => withCacheFreshness(record?.value, record)).filter(Boolean),
+    projects: projects?.value || [], workspaces: workspaces?.value || [],
+    listKnowledge: { projects: listKnowledgeOf(projects), workspaces: listKnowledgeOf(workspaces) },
+  };
+}
+
 /** The row this route is standing on, on this device — or null while the cache
  *  holds none that answers to it. */
 export async function cachedRouteEntry(deviceId, route) {
-  return routedEntry(route, await cachedFeedView(deviceId));
+  return routedEntry(route, await cachedFeedView(deviceId, { projectRosters: false }));
 }
 
 /** The entity this route is standing on, on this device. */

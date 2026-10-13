@@ -713,3 +713,60 @@ test("a late browser-handoff rejection cannot open authentication UI during Sign
   assert.equal(calls.fetch.length, 0);
   assert.equal(calls.windows.length, 0);
 });
+
+test("activation and protocol delivery cannot restart sign-in during or after Sign Out", async (t) => {
+  const storage = deferred();
+  const { app, calls, signOut, callback } = await launch(t, {
+    stored: null,
+    clearStorageData: () => storage.promise,
+  });
+  const state = new URL(calls.browser[0]).searchParams.get("state");
+  const url = `getbuilding://oauth/callback?code=fixture-code&state=${state}`;
+  const deliver = () => {
+    app.emit("activate");
+    callback();
+    app.emit("second-instance", {}, ["build", url]);
+    app.emit("second-instance", {}, ["build"]);
+    app.emit("open-url", { preventDefault() {} }, "getbuilding://oauth/callback?code=bad&state=bad");
+  };
+  const cleanup = signOut().click();
+  await flush();
+  deliver();
+  await flush();
+  assert.deepEqual(calls.dialogs, []);
+  assert.equal(calls.fetch.length, 0);
+  assert.equal(calls.windows.length, 0);
+  assert.equal(calls.browser.length, 1);
+  storage.resolve();
+  await cleanup;
+  deliver();
+  t.mock.timers.tick(900_000);
+  await flush();
+  assert.deepEqual(calls.dialogs, []);
+  assert.equal(calls.fetch.length, 0);
+  assert.equal(calls.windows.length, 0);
+  assert.equal(calls.browser.length, 1);
+  assert.equal(calls.quit, 1);
+});
+
+test("Try Again from an existing authentication dialog cannot restart sign-in after Sign Out", async (t) => {
+  const report = deferred();
+  const storage = deferred();
+  const { calls, signOut } = await launch(t, {
+    stored: null,
+    openExternal: () => { throw new Error("fixture browser unavailable"); },
+    showMessageBox: () => report.promise,
+    clearStorageData: () => storage.promise,
+  });
+  assert.equal(calls.dialogs.length, 1);
+  const cleanup = signOut().click();
+  await flush();
+  report.resolve({ response: 0 });
+  await flush();
+  assert.equal(calls.browser.length, 1);
+  assert.equal(calls.dialogs.length, 1);
+  assert.equal(calls.quit, undefined);
+  storage.resolve();
+  await cleanup;
+  assert.equal(calls.quit, 1);
+});

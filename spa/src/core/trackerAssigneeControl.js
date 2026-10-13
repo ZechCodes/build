@@ -59,6 +59,8 @@ const workerFieldsHtml = (draft, prefix) => `<label class="create-label" for="${
   <input id="${esc(prefix)}-worker" type="text" ${fieldTraits("identifier")} placeholder="Name this worker" value="${esc(draft.name)}" />
   <p class="sub">Project workers share source files and checked-out branches.</p>`;
 
+const assigneeHint = (hint, option) => hint ?? option?.hint ?? "";
+
 /**
  * The control.
  *
@@ -66,12 +68,12 @@ const workerFieldsHtml = (draft, prefix) => `<label class="create-label" for="${
  * chosen so far; `catalog` is the creation device's `models.list`. An option
  * that starts nothing shows no extra fields — there is no agent to configure.
  */
-export function assigneeControlHtml(options, draft, { prefix, catalog, label = "Assignee" }) {
+export function assigneeControlHtml(options, draft, { prefix, catalog, label = "Assignee", hint }) {
   const option = optionOf(options, draft.optionId);
   return `<div class="task-assignee-control" data-assignee-control="${esc(prefix)}">
     <label class="create-label" for="${esc(prefix)}-assignee">${esc(label)}</label>
     <select id="${esc(prefix)}-assignee" data-assignee-select>${optionsHtml(options, draft.optionId)}</select>
-    <p class="sub task-assignee-hint">${esc(option?.hint || "")}</p>
+    <p class="sub task-assignee-hint">${esc(assigneeHint(hint, option))}</p>
     ${option?.form === WORKSPACE_FORM ? workspaceFieldsHtml(draft, prefix) : ""}
     ${option?.kind === "new_project_agent" ? workerFieldsHtml(draft, prefix) : ""}
     ${option?.form ? agentChoicePanelHtml(catalog, draft.choice, { prefix: `${prefix}-choice`, open: draft.choiceOpen }) : ""}

@@ -17,6 +17,7 @@ import { toolbarRouteChanged } from "./core/toolbar.js";
 import { askToOpenLinkedAgent, standShell } from "./core/shell.js";
 import { clearCacheScope } from "./core/cacheScope.js";
 import { wipeCache } from "./core/localCache.js";
+import { resetTaskWaitingOnHistory } from "./core/taskWaitingOnSupport.js";
 import { wipeUiRecords } from "./core/localUiStore.js";
 import { resetUiWriters } from "./core/localUiState.js";
 import { resetNavigationVisits } from "./core/navigationVisits.js";
@@ -75,6 +76,7 @@ export function resetApplication() {
   resetTerminalManager();
   forgetRendezvousSockets();
   resetDeviceContexts();
+  resetTaskWaitingOnHistory();
   // The terminals are on nobody now, so the next route that names a device is a
   // move however familiar the name, and home has been followed for nobody.
   terminalRouteDeviceId = null;

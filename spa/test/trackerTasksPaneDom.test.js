@@ -16,13 +16,14 @@ let watchers = [];
 // into a surface fails here rather than only in a browser.
 const RETIRED = ["intervalMs", "keepPolling", "catchUpOnVisible"];
 vi.mock("../src/core/changeEvents.js", () => ({
+  disarmChangeEvents: () => {},
   // The greeting says which kinds a bridge carries; a stand-in that
   // answers none would have the sync layer ask for none of the new ones.
-  bridgeCapabilities: () => ({
+  bridgeCapabilities: (deviceId) => ({
     changes: { subscriptions: true, kinds: carriedKinds },
     // #57: whether this bridge can carry files on a task. A case that sets
     // it false is an older bridge answering, not another machine.
-    tasks: { attachments: carriesAttachments },
+    tasks: { attachments: carriesAttachments, waitingOn: deviceId === "dev-1" && carriesWaitingOn },
   }),
   watchChanges: (registration) => {
     const named = RETIRED.filter((option) => option in registration);
@@ -39,6 +40,7 @@ const EVERY_KIND = ["state", "thread", "git", "files", "terminals", "tasks"];
 let carriedKinds = EVERY_KIND;
 /** Whether the bridge under test has `tasks.attach` (1.8). */
 let carriesAttachments = true;
+let carriesWaitingOn = true;
 
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
@@ -178,6 +180,7 @@ beforeEach(async () => {
   watchers = [];
   carriedKinds = EVERY_KIND;
   carriesAttachments = true;
+  carriesWaitingOn = true;
   away = true;
   reconnecting = true;
   movedListeners = new Set();
@@ -203,6 +206,173 @@ beforeEach(async () => {
 
 afterEach(() => {
   pane?.dispose();
+});
+
+describe("device-scoped waiting assignments from the pane", () => {
+  let context, contexts, support;
+
+  const greet = async (waitingOn, authority = contexts.greetingInFlight(context)) => {
+    carriesWaitingOn = waitingOn;
+    contexts.adoptBridgeSelection(context, { version: "3.21.0", unsupported: null },
+      { capabilities: { tasks: { waitingOn } } }, authority);
+    await support.rememberTaskWaitingOnSupport("dev-1", { tasks: { waitingOn } });
+  };
+
+  const openRealPicker = async (held, view, { holdDetail = false, holdList = false } = {}) => {
+    const { fakeSession } = await import("./deviceSessionFixture.js");
+    contexts = await import("../src/core/deviceContexts.js");
+    support = await import("../src/core/taskWaitingOnSupport.js");
+    const session = fakeSession("dev-1");
+    call = vi.fn(async (method) => {
+      if (holdDetail && method === "tasks.get") return new Promise(() => {});
+      if (holdList && method === "tasks.list") return new Promise(() => {});
+      return method === "tasks.list" ? { tasks: [held] } : {
+        task: { ...held, deferred_assignment: { id: "saved", state: "waiting", target: { kind: "new_workspace" } } },
+        dispatch: null,
+      };
+    });
+    session.call = call;
+    context = contexts.adoptDeviceSession(session);
+    await greet(true);
+    const actual = await vi.importActual("../src/core/trackerAssigneePicker.js");
+    openAssigneePicker.mockImplementationOnce(actual.openAssigneePicker);
+    await mount({ view });
+    host.querySelector("[data-task-assign]").click();
+    await flush();
+    const select = document.querySelector("[data-assignee-select]");
+    select.value = "new_workspace";
+    select.dispatchEvent(new Event("change"));
+    const note = document.querySelector("#task-assign-note");
+    note.value = "Assess the prerequisite";
+    note.dispatchEvent(new Event("input"));
+  };
+
+  afterEach(() => contexts?.resetDeviceContexts());
+
+  it.each(["list", "board"])("saves a blocked assignment from the %s on its capable device", async (view) => {
+    const held = task({ id: "task-waiting", dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } });
+    await openRealPicker(held, view);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([["tasks.assign", {
+      task_id: held.id, assignee: { kind: "new_workspace", provider: "claude_adk" }, note: "Assess the prerequisite",
+    }]]);
+    expect(openAssigneePicker.mock.lastCall[0]).toMatchObject({ deviceId: "dev-1", projectId: "proj-1" });
+    expect(document.querySelector("#task-assign-scrim")).toBeNull();
+  });
+
+  it.each(["list", "board"])("keeps the %s note and target after a cached reblock and downgraded greeting", async (view) => {
+    const held = task({ id: "task-reblocked", dependencies: { blocked: false, waiting_on: [] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });
+    await openRealPicker(held, view);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, {
+      task: { ...held, dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } }, timeline: [],
+    });
+    await greet(false);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/downgraded.*update/i);
+  });
+  it.each(["list", "board"])("keeps the %s draft after a list-first reblock while detail is pending", async (view) => {
+    const held = task({ id: "task-list-reblocked", dependencies: { blocked: false, waiting_on: [] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });
+    await openRealPicker(held, view, { holdDetail: true });
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [{ ...held,
+      updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] },
+    }] });
+    expect((await trackerCache.readTaskRecord("dev-1", "proj-1", held.id)).task.dependencies.blocked).toBe(false);
+    await greet(false);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/downgraded.*update/i);
+  });
+
+  it.each(["list", "board"])("rechecks the %s assignment after a pending greeting and retains its reblocked draft", async (view) => {
+    const held = task({ id: "task-regreeting-reblocked", dependencies: { blocked: false, waiting_on: [] } });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", held.id, { task: held, timeline: [] });
+    await openRealPicker(held, view, { holdDetail: true });
+    const authority = contexts.greetingInFlight(context);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("[data-assign-go]").disabled).toBe(true);
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", { tasks: [{ ...held,
+      updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] },
+    }] });
+    await greet(false, authority);
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/downgraded.*update/i);
+  });
+
+  it.each(["list", "board"])("keeps the %s draft when a legacy refresh omits newer opened waiting facts", async (view) => {
+    const ready = task({ id: "task-legacy-refresh", labels: ["bug"], dependencies: { blocked: false, waiting_on: [] } });
+    const params = { project_id: "proj-1", state: "open", label: "bug" };
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", params, trackerCache.tasksRecord([ready], columns()));
+    const blocked = { ...ready, updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: blocked, timeline: [] });
+    await openRealPicker(blocked, view, { holdDetail: true });
+    expect(openAssigneePicker.mock.lastCall[0].task).toMatchObject(blocked);
+    await greet(false);
+    const legacy = { ...blocked };
+    delete legacy.dependencies;
+    // The older bridge refreshes its active list and detail without graph
+    // fields, leaving the older filtered query and the picker's opened task.
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", trackerCache.tasksRecord([legacy], columns()));
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { project_id: "proj-1", state: "open" },
+      trackerCache.tasksRecord([legacy], columns()));
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: legacy, timeline: [] });
+    expect((await trackerCache.readTaskRecord("dev-1", "proj-1", blocked.id)).task).not.toHaveProperty("dependencies");
+    expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks).toEqual([ready]);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/downgraded.*update/i);
+  });
+
+  it.each(["list", "board"])("keeps the %s draft after legacy writes replace every cached reblock replica", async (view) => {
+    const ready = task({ id: "task-legacy-refresh", labels: ["bug"], dependencies: { blocked: false, waiting_on: [] } });
+    const params = { project_id: "proj-1", state: "open", label: "bug" };
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", params, trackerCache.tasksRecord([ready], columns()));
+    const blocked = { ...ready, updated_at: "2026-08-21T10:01:00Z",
+      dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite", resolved: false }] } };
+    await openRealPicker(ready, view, { holdDetail: true });
+    expect(openAssigneePicker.mock.lastCall[0].task).toMatchObject(ready);
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: blocked, timeline: [] });
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", trackerCache.tasksRecord([blocked], columns()));
+    await greet(false);
+    const legacy = { ...blocked };
+    delete legacy.dependencies;
+    // The older bridge refreshes its active list and detail without graph
+    // fields, leaving the older filtered query and the picker's opened task.
+    await trackerCache.writeTasksRecord("dev-1", "proj-1", trackerCache.tasksRecord([legacy], columns()));
+    await trackerCache.writeTasksQueryRecord("dev-1", "proj-1", { project_id: "proj-1", state: "open" },
+      trackerCache.tasksRecord([legacy], columns()));
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", blocked.id, { task: legacy, timeline: [] });
+    expect((await trackerCache.readTaskRecord("dev-1", "proj-1", blocked.id)).task).not.toHaveProperty("dependencies");
+    expect((await trackerCache.readTasksQueryRecord("dev-1", "proj-1", params)).tasks).toEqual([ready]);
+    document.querySelector("[data-assign-go]").click();
+    await flush();
+    expect(listed("tasks.assign")).toEqual([]);
+    expect(document.querySelector("#task-assign-note").value).toBe("Assess the prerequisite");
+    expect(document.querySelector("[data-assignee-select]").value).toBe("new_workspace");
+    expect(document.querySelector(".create-error").textContent).toMatch(/downgraded.*update/i);
+  });
+
+
 });
 
 describe("painting before the bridge is asked", () => {

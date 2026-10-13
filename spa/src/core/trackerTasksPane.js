@@ -570,7 +570,12 @@ export function mountTasksPane(host, options) {
       current: selectedOptionId(task.assignee),
       catalog: state.catalog(),
       callRpc: state.callRpc,
-      onAssigned: () => void refresh(),
+      onAssigned: (answer) => {
+        // Assignment responses can omit the timeline. Read it after the
+        // mutation rather than treating its new task version as a full detail.
+        details.refresh(taskId, answer?.task);
+        void refresh();
+      },
     });
     void state.refreshCatalog?.().then((catalog) => state.picker?.setCatalog(catalog));
   }

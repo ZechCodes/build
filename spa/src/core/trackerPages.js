@@ -24,7 +24,7 @@
 // held row written after the page's copy of it keeps its place, and so does a
 // row the page does not name that was written after the page was read.
 
-import { cachedSubKeys, deleteCached, mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
+import { cachedSubKeys, deleteCached, mergeCachedRecordsTogether, readCached } from "./localCache.js";
 import { lastSayIn, nextTaskRead, readsAddress, withStretch } from "./taskReadOrder.js";
 import { bridgeCapabilities } from "./changeEvents.js";
 import { sortTasks } from "./trackerFilters.js";
@@ -179,8 +179,8 @@ const coversNumbers = (stretch) => stretch.through < stretch.above;
  * other's body or cursor. */
 async function landPage(deviceId, projectId, asked, answer, read) {
   const address = tasksPageAddress(deviceId, projectId, { ...asked, read_order: read });
-  await mergeCachedAtomically(address, (held) =>
-    Number(held?.read_order) > read ? null : { ...answer, read_order: read });
+  await mergeCachedRecordsTogether([address], ([held]) =>
+    Number(held?.value?.read_order) > read ? null : [{ ...answer, read_order: read }]);
   return { sub: address.sub, page: (await readCached(address))?.value };
 }
 

@@ -28,6 +28,7 @@ export const INPUT_SOURCES = {
   "core/taskReviewLifecycle.js": "PR merge",
   "core/taskReviewMerge.js": "PR merge",
   "core/taskReviewFiles.js": "review file",
+  "core/taskWaitingOnRender.js": "task controls / Waiting on prerequisite search",
   "core/toolbar.js": "toolbar projects / toolbar workspaces",
   "core/trackerAssigneeControl.js": "task controls / assignee note",
   "core/trackerAssigneePicker.js": "assignee note",
@@ -79,7 +80,7 @@ export const INPUT_RADIO_SOURCES = {};
 
 export const INPUT_SURFACES = [
   { name: "device settings", selectSurface: "device settings", selectors: ['input[name="model"]', "#workspaceidlehours"] },
-  { name: "task controls", selectSurface: "task controls", selectors: ["#task-labels", "#assign-workspace", "#capture-branch", "#capture-answer", "#create-work-input"] },
+  { name: "task controls", selectSurface: "task controls", selectors: ["#task-labels", "[data-waiting-search]", "#assign-workspace", "#capture-branch", "#capture-answer", "#create-work-input"] },
   { name: "compose", selectSurface: "compose", selectors: ["#compose-text", "#compose-branch"] },
   { name: "workspace folder", selectSurface: "workspace settings", selectors: ["#wslabel", "#wsdirpath", "#wsdirlabel"] },
   { name: "workspace remote", selectSurface: "workspace settings", selectors: ["#wslabel", "#wsdirremote", "#wsdirlabel"] },

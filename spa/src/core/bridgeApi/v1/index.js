@@ -181,6 +181,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       commentUserNotifies: names.has("tasks.commentUserNotifies"),
       listPaged: names.has("tasks.listPaged"),
       bodyPrecondition: names.has("tasks.bodyPrecondition"),
+      waitingOn: names.has("tasks.waitingOn"),
     },
     conversations: { settings: names.has("conversations.settings"), reset: names.has("conversation.reset") },
     github: { repos: names.has("github.repos") },

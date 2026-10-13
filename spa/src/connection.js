@@ -706,6 +706,7 @@ export function greetLiveBridge(context, {
     // Session identity alone is insufficient: restoration can issue another
     // greeting on this same session before the first hello answers.
     isCurrent,
+    isHistoryCurrent: () => context.active(),
     onGreeting: (greeting) => {
       repository?.configureCapabilities(greeting);
       rememberRtcClientSupport(session.deviceId, pairedTransportKey(session.deviceId), greeting);

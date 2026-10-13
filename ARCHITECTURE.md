@@ -457,6 +457,10 @@ runtime that starts them.
   A closed prerequisite resolves with `resolved_by: "close"`; Done resolves
   with `"done"`. Closure briefs ask the recipient to assess and escalate on
   the task when unclear. The retired `tasks.link` public RPC stays retired.
+  The SPA persists whether each device has ever advertised waiting-on support.
+  A later greeting without it marks a downgraded bridge: ordinary new-workspace
+  assignment is refused until current support returns. Never-upgraded devices
+  retain legacy assignment; capable devices enforce prerequisites themselves.
 - `session.hello` is answered by `session_hello` in
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
@@ -2276,6 +2280,41 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Waiting-on capability history** (#564). `taskWaitingOnSupport.js` keeps
+  the per-device `task-waiting-on-support` cache record beside other capability
+  flags. `waitingOn` describes the latest greeting for rendering Waiting on /
+  Blocks controls; `everWaitingOn` records that this device has advertised
+  `tasks.waitingOn` at least once. Every authenticated capable greeting for the
+  original account/device sets history, even if a newer greeting has already
+  superseded its hello or overtakes its storage transaction. Incapable
+  greetings never clear it. Evidence updates in memory before persistence;
+  a refused write cannot erase it within that page's lifetime. Every
+  authenticated capable greeting retries persistence. The existing `build-cache`
+  BroadcastChannel shares monotonic evidence with open tabs that are listening,
+  so those informed tabs also retain it in memory if persistence fails. Admission
+  distinguishes a committed absent record from an unavailable/error read;
+  unknown or malformed history refuses
+  new-workspace assignment under an incapable greeting with the update message
+  and a retry/refresh hint. Account reset retires pending evidence and its
+  in-memory history. Existing cached `waitingOn: true` records count as
+  history without a schema bump. Task lists, detail and reverse pages remain
+  the sources of displayed dependency facts; assignment admission does not
+  arbitrate task replicas or maintain per-task dependency knowledge.
+  **Accepted residual risk:** history belongs to the paired device UUID.
+  Re-pairing the same machine creates a fresh UUID, so its previous capability
+  history does not follow it. Downgrading the bridge and then re-pairing it are
+  two deliberate actions on an unsupported downgrade path; the old bridge
+  cannot enforce waiting-on prerequisites whatever the client does. This
+  limitation is accepted; the client does not link identities across pairings.
+  **Accepted residual risk:** evidence that could never be written to storage
+  lasts only for that page's lifetime.
+  Open listening tabs can retain shared evidence for their own lifetimes, but
+  new or uninformed tabs cannot recover it, nor can a reload after all informed
+  page lifetimes end. The residual requires refused storage, a reload or
+  uninformed tab, and a bridge downgrade. The client cannot retain across reload
+  what the browser will not persist. Retrying on every authenticated capable
+  greeting and sharing over the existing channel mitigate this limitation;
+  there is no new channel or durable fallback.
 - **Drafts and UI state are not replicas** (#206). `spa/src/core/localUiState.js`
   keeps unsent drafts, folds, menus and the other `ui-*` records in their own
   database, `build-ui` (`spa/src/core/localUiStore.js`), versioned apart from
@@ -2732,6 +2771,38 @@ refuses when that device cannot answer.
   resumes that housekeeping when its device greets.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
+  `tasks.waitingOn` is persisted by `taskWaitingOnSupport.js` for task-page
+  Waiting on and Blocks controls, together with the highest support seen on
+  that device. `taskWaitingOnActions.js` waits for the current greeting before
+  dependency writes, reverse reads, saved-id retries and workspace assignment.
+  A capable current greeting admits assignment normally: the bridge enforces
+  prerequisites. An incapable greeting admits legacy workspace assignment only
+  if the history confirms the device has never advertised waiting-on support.
+  Failed history reads/writes and unknown records fail closed in the page that
+  observes them; shared in-memory capability evidence also refuses assignment
+  in informed open tabs. Refusals include a retry or refresh hint alongside the
+  update message. Evidence that never persisted has the page-lifetime residual
+  described under Waiting-on capability history. A previously capable
+  device is downgraded: board/list and task-page new-workspace pickers refuse
+  with an inline update message and retain note/selection without sending.
+  Even a ready task is refused on that device; legacy writes can erase graph
+  evidence, so task replicas cannot safely narrow the guard. Unassignment and
+  established non-workspace targets retain their request shapes. New dependency
+  verbs, create-time edges and saved-id retries still require current support.
+  After reading cached device history, the sender rechecks the same greeting
+  authority and validates/sends without another wait. Rendering stays entirely
+  cached. `taskWaitingOnSupport.test.js` covers monotonic history, greeting
+  races, prior cached support and reload; `taskWaitingAssignmentDowngrade.test.js`
+  retains all six round-8 legacy-erasure reproductions through the real picker.
+  Successful responses update tracker detail and list replicas through
+  `taskWaitingOnCache.js`. Edge add/remove requests another detail through the
+  task page's trailing reader. Board/list assignment also requests a detail
+  through `trackerTaskDetailsFeed.js`'s bounded trailing reader: a partial
+  response must not leave an old timeline current at a newer task version.
+  The mutation fence rejects reads begun before the response; the replacement
+  read restores timeline history and unread mentions. Same-clock cache writes
+  are distinguished by record identity. `trackerTaskChecklistDom.test.js` and
+  `trackerAssignmentDetailRefresh.test.js` cover these respective paths.
   `tasks.commentUserNotifies` becomes the per-device Needs you rule in
   `spa/src/core/needsYouRule.js`, read by the Tasks tab and the inbox's
   watched tasks; `branches.finishDelete` becomes whether Done deletes the

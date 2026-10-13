@@ -1,0 +1,80 @@
+// Greetings persist current rendering support and the highest support seen.
+// Assignment admission reads that history after the current greeting settles.
+import { announceCacheEvidence, mergeCachedAtomically, readCached, readCachedOutcome, subscribeCache } from "./localCache.js";
+
+export const taskWaitingOnSupportAddress = (deviceId) => ({ deviceId, entityId: "", kind: "task-waiting-on-support" });
+export const TASK_WAITING_ON_UPDATE = "Update this device's bridge to edit prerequisites or save assignments that wait.";
+export const TASK_WAITING_ON_DOWNGRADED = "This device's bridge was downgraded; update it to assign tasks. Retry or refresh if capability history could not be saved or read.";
+const everSupported = (value) => value?.everWaitingOn === true || value?.waitingOn === true;
+const seen = new Set();
+const uncertain = new Set();
+let accountEra = 0;
+
+// The cache already owns this same-origin channel. Receiving evidence grants
+// neither rendering support nor greeting authority, and never broadcasts back.
+subscribeCache({}, (address, evidence) => {
+  if (address.kind === "task-waiting-on-support" && address.deviceId && evidence?.waitingOnSeen === true) {
+    seen.add(address.deviceId);
+  }
+});
+
+export function resetTaskWaitingOnHistory() {
+  accountEra += 1;
+  seen.clear();
+  uncertain.clear();
+}
+
+function historyOf(value) {
+  if (value === undefined) return false;
+  if (everSupported(value)) return true;
+  if (value?.everWaitingOn === false) return false;
+  if (value?.everWaitingOn === undefined && value?.waitingOn === false) return false;
+  return null;
+}
+
+export function rememberTaskWaitingOnSupport(deviceId, capabilities, current = () => true) {
+  if (!deviceId) return Promise.resolve(false);
+  const waitingOn = capabilities?.tasks?.waitingOn === true;
+  const era = accountEra;
+  // Authenticated evidence is monotonic, regardless of session supersession
+  // or a refused put. Only the rendering flag belongs to the current hello.
+  if (waitingOn) {
+    seen.add(deviceId);
+    announceCacheEvidence(taskWaitingOnSupportAddress(deviceId), { waitingOnSeen: true });
+  }
+  uncertain.add(deviceId);
+  // Every capable greeting retries this transaction, including evidence already
+  // held in memory after a refused put. A committed equal value is a safe no-op.
+  return mergeCachedAtomically(taskWaitingOnSupportAddress(deviceId), (held) => {
+    if (era !== accountEra) return null;
+    if (everSupported(held)) seen.add(deviceId);
+    const next = { waitingOn: current() ? waitingOn : held?.waitingOn === true,
+      everWaitingOn: seen.has(deviceId) ? true : historyOf(held) };
+    return held?.waitingOn === next.waitingOn && held?.everWaitingOn === next.everWaitingOn ? null : next;
+  }, { reportCommit: true }).then((committed) => {
+    if (era === accountEra) {
+      if (committed) uncertain.delete(deviceId);
+      else uncertain.add(deviceId);
+    }
+    return committed;
+  });
+}
+
+export async function readTaskWaitingOnSupport(deviceId) {
+  if (!deviceId) return false;
+  return (await readCached(taskWaitingOnSupportAddress(deviceId)))?.value?.waitingOn === true;
+}
+
+export async function readTaskWaitingOnEverSupported(deviceId) {
+  if (!deviceId) return null;
+  if (seen.has(deviceId)) return true;
+  const era = accountEra;
+  const { committed, result } = await readCachedOutcome(taskWaitingOnSupportAddress(deviceId));
+  if (era !== accountEra) return null;
+  // Channel evidence received during the read outranks its older record.
+  if (seen.has(deviceId)) return true;
+  if (!committed) return null;
+  const history = historyOf(result?.value);
+  if (history === true) seen.add(deviceId);
+  return uncertain.has(deviceId) && history !== true ? null : history;
+}

@@ -19,8 +19,9 @@
 // record is written through by the task page itself on first open, which is
 // how every other detail surface warms its own cache.
 
-import { mergeCachedAtomically, readCached } from "./localCache.js";
+import { mergeCachedAtomically, mergeCachedRecordsTogether, readCached } from "./localCache.js";
 import { taskUnreadKey, latestTaskMark } from "./trackerUnread.js";
+import { readsAddress } from "./taskReadOrder.js";
 
 export const TRACKER_TASKS_KIND = "tracker-tasks";
 export const TRACKER_TASKS_QUERY_KIND = "tracker-tasks-query";
@@ -375,7 +376,7 @@ function preserveDetailReview(held, incoming) {
   return withDetailReviewState(state, next);
 }
 
-function preserveTaskFloors(held, incoming) {
+export function preserveTaskFloors(held, incoming) {
   return withReadThroughFloor(held, preserveDetailReview(held, incoming));
 }
 
@@ -411,18 +412,29 @@ export const readTasksQueryCached = (deviceId, projectId, params) =>
   readListCached(tasksQueryAddress(deviceId, projectId, params));
 
 export const writeTasksRecord = (deviceId, projectId, record) =>
-  mergeCachedAtomically(tasksAddress(deviceId, projectId), (held) => preserveListSummaries(held, record));
+  mergeCachedRecordsTogether([tasksAddress(deviceId, projectId)], ([held]) =>
+    [preserveListSummaries(held?.value, record)]);
+
+/** Capture the accepted action note before asking for a detail. Ordinary reads
+ * leave the note in place, so another read cannot erase a mutation fence. */
+export async function captureTaskDetailRead(deviceId, projectId, taskId) {
+  const note = await readCached(readsAddress(taskAddress(deviceId, projectId, taskId)));
+  return note?.value?.rows?.[taskId] || 0;
+}
 
 /** Pulls may carry an older server read mark than one this browser has already
  * accepted. Keep the accepted mark in the cached task while replacing its
  * other fields and timeline with the newest pull. The transaction makes two
  * tabs' writes obey the same floor. */
-export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true } = {}) =>
-  mergeCachedAtomically(taskAddress(deviceId, projectId, taskId), (held) => {
+export const writeTaskRecord = (deviceId, projectId, taskId, record, { accept = () => true, detailBasis } = {}) => {
+  const address = taskAddress(deviceId, projectId, taskId);
+  return mergeCachedRecordsTogether([address, readsAddress(address)], ([detail, note]) => {
+    const held = detail?.value;
     // A writer can be superseded while waiting for the cache transaction.
-    if (!accept(held)) return null;
-    return preserveTaskFloors(held, record);
+    if (!accept(held) || detailBasis !== undefined && detailBasis !== (note?.value?.rows?.[taskId] || 0)) return null;
+    return [preserveTaskFloors(held, record), null];
   });
+};
 
 /** Only an accepted read report may raise the cached floor. Do not touch the
  * timeline, and never accept a synthetic key as a read mark. */
@@ -437,7 +449,8 @@ export const advanceTaskReadThrough = (deviceId, projectId, taskId, mark) => {
 };
 
 export const writeTasksQueryRecord = (deviceId, projectId, params, record) =>
-  mergeCachedAtomically(tasksQueryAddress(deviceId, projectId, params), (held) => preserveListSummaries(held, record));
+  mergeCachedRecordsTogether([tasksQueryAddress(deviceId, projectId, params)], ([held]) =>
+    [preserveListSummaries(held?.value, record)]);
 
 /** When the cache last took an answer for a record, or 0 for one it has never
  *  held. A surface showing a cached copy says when that copy was read

@@ -18,6 +18,7 @@ import { disarmChangeEvents } from "./changeEvents.js";
 import { deviceAwayMark } from "./deviceAway.js";
 import { dropFeedDevice } from "./taskFeed.js";
 import { createDeviceLifecycles } from "./deviceLifecycle.js";
+import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
 const deviceLifecycles = createDeviceLifecycles();
@@ -75,14 +76,33 @@ export const announceDeviceTransport = () => announceDeviceState();
 const ownerRequests = new Set(["project.ensure_conversation", "workspace.ensure_conversation"]);
 const asking = (context, transport) => (...asked) => {
   if (ownerRequests.has(asked[0])) return askOwner(context, transport, asked);
+  if (needsTaskWaitingOn(asked[0], asked[1])) return askTaskWaitingOn(context, transport, asked);
   if (asked[0] === "tasks.update" && Object.hasOwn(asked[1] || {}, "expected_body_hash")) {
     return askTaskBodyUpdate(context, transport, asked);
   }
-  if (asked[0] === "tasks.assign" && asked[1]?.assignee?.kind === "new_project_agent") {
+  if (needsProjectWorkerAssignment(asked[0], asked[1])) {
     return askProjectWorkerAssignment(context, transport, asked);
   }
   return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
 };
+
+const needsProjectWorkerAssignment = (method, params) => method === "tasks.assign"
+  && params?.assignee?.kind === "new_project_agent";
+
+const needsTaskWaitingOn = (method, params = {}) => method.startsWith("tasks.waiting_on.")
+  || method === "tasks.create" && Object.hasOwn(params, "waiting_on")
+  || method === "tasks.assign" && Object.hasOwn(params, "retry_deferred_id");
+
+// Unlike a legacy assignment, a prerequisite or retry request can be silently
+// misread by an older decoder. Wait for its current greeting before sending.
+async function askTaskWaitingOn(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    if (context.adapter?.capabilities?.tasks?.waitingOn !== true) throw new Error(TASK_WAITING_ON_UPDATE);
+    return transport()(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
+}
 
 async function askProjectWorkerAssignment(context, transport, asked) {
   const request = await whenGreeted(context, () => {

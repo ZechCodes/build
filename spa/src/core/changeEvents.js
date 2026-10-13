@@ -73,6 +73,8 @@ import { NO_REVIEW_SUPPORT, rememberReviewSupport } from "./taskReviewSupport.js
 import { rememberConversationResetSupport } from "./conversationReset.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
+import { rememberTaskWaitingOnSupport } from "./taskWaitingOnSupport.js";
+import { invalidateTaskWaitingOnBlocks } from "./taskWaitingOnCache.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectAgentsSupport } from "./projectAgentsCache.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
@@ -101,7 +103,7 @@ const NO_CAPABILITIES = Object.freeze({
   reviews: NO_REVIEW_SUPPORT,
   tasks: Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
-    listPaged: false, bodyPrecondition: false, assignProjectAgent: false,
+    listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false,
   }),
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
@@ -762,10 +764,17 @@ function audienceFor(subscriptionId, deviceId) {
   return addressed.length ? [...addressed, ...unsubscribed] : heard;
 }
 
+function invalidateReverseTaskPages(items, deviceId) {
+  if (!deviceId) return;
+  const projects = new Set(items.filter((item) => item.tasks && item.entity_id).map((item) => item.entity_id));
+  for (const projectId of projects) void invalidateTaskWaitingOnBlocks(deviceId, projectId);
+}
+
 function dispatchItems(payload, deviceId) {
   const list = (Array.isArray(payload.items) ? payload.items.filter(Boolean) : [])
     .filter((item) => !item.project_source || bridgeCapabilities(deviceId).changes.projectSources);
   if (!list.length) return false;
+  invalidateReverseTaskPages(list, deviceId);
   const boardIsNews = boardItemIsNews(list, bridgeFor(deviceId));
   for (const watcher of audienceFor(payload.subscription_id, deviceId)) {
     const mine = itemsFor(watcher, list);
@@ -889,7 +898,8 @@ function abandonBridge(state) {
  * @param deviceId the machine this session is on; every fact the greeting
  *   settles is kept under it.
  * @param isCurrent whether the session greeted still owns this device when its
- *   greeting lands; a late one is dropped whole.
+ *   greeting lands; a late one retains only historical capability evidence.
+ * @param isHistoryCurrent whether its original account/device still exists.
  * @param onGreeting hears the greeting a current session got, as sent.
  * @param install is handed what `selectAdapter` picked — `{ create }` or
  *   `{ unsupported }` — and returns the adapter now installed, or null. The
@@ -901,12 +911,14 @@ export async function greetBridge(
   {
     deviceId = null,
     isCurrent = () => true,
+    isHistoryCurrent,
     onGreeting = () => {},
     install = (selection) => (selection.unsupported ? null : selection.create(call)),
     strict = false,
   } = {},
 ) {
   const { greeting, current } = await negotiate(call, isCurrent, strict);
+  rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent);
   if (!current || !isCurrent()) return changeEventsArmed(deviceId);
   const adapter = install(selectAdapter(greeting));
   // Installing announces device state; a listener may issue another greeting
@@ -914,6 +926,14 @@ export async function greetBridge(
   if (!isCurrent()) return changeEventsArmed(deviceId);
   rememberGreetedReviews(deviceId, adapter, isCurrent);
   return publishGreeting(call, deviceId, greeting, adapter, onGreeting);
+}
+
+function rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent) {
+  // Hello already rides the authenticated device session. Supersession revokes
+  // its dispatch authority, but does not erase its capability evidence.
+  if (isHistoryCurrent && !isHistoryCurrent()) return;
+  const waitingOn = Array.isArray(greeting?.capabilities) && greeting.capabilities.includes("tasks.waitingOn");
+  void rememberTaskWaitingOnSupport(deviceId, { tasks: { waitingOn } }, isCurrent);
 }
 
 // Storage recovery must never hold a greeting open. Refresh again after the

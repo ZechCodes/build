@@ -41,7 +41,7 @@ describe("tracker task details feed", () => {
 
     await feed.updateTasks([task("one", "2026-09-02T12:00:00Z")]);
     expect(feed.read().get("one")).toEqual(old);
-    expect(callRpc).toHaveBeenCalledWith("tasks.get", { task_id: "one" });
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("tasks.get", { task_id: "one" }));
 
     const fresh = taskRecord(task("one", "2026-09-02T12:00:00Z"), [{ id: "tc-new" }]);
     answer(fresh);
@@ -56,7 +56,7 @@ describe("tracker task details feed", () => {
     const feed = createTrackerTaskDetailsFeed({ deviceId: "dev", projectId: "project", callRpc });
 
     await feed.updateTasks(Array.from({ length: 7 }, (_, index) => task(`task-${index}`, "2026-09-01T12:00:00Z")));
-    expect(callRpc).toHaveBeenCalledTimes(4);
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(4));
     answers[0]({ task: task("task-0", "2026-09-01T12:00:00Z"), timeline: [] });
     await waitFor(() => callRpc.mock.calls.length === 5);
 
@@ -80,4 +80,29 @@ describe("tracker task details feed", () => {
     expect(callRpc).toHaveBeenCalledTimes(1);
     feed.dispose();
   });
+});
+
+it("fences a pending detail feed read against a same-stamp saved assignment mutation", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(123456);
+  const tracker = await import("../src/core/trackerCache.js");
+  const waiting = await import("../src/core/taskWaitingOnCache.js");
+  const old = taskRecord({ ...task("one", "2026-09-01T12:00:00Z"), body: "Same body" }, []);
+  await writeTaskRecord("dev", "project", "one", old);
+  let resolve;
+  const callRpc = vi.fn(() => new Promise((answer) => { resolve = answer; }));
+  const feed = createTrackerTaskDetailsFeed({ deviceId: "dev", projectId: "project", callRpc });
+  try {
+    await feed.updateTasks([task("one", "2026-09-02T12:00:00Z")]);
+    await vi.waitFor(() => expect(callRpc).toHaveBeenCalledTimes(1));
+    const next = { ...old.task, dependencies: { blocked: true, waiting_on: [{ task_id: "prerequisite" }] }, deferred_assignment: { id: "saved", state: "waiting" } };
+    await waiting.cacheTaskWaitingOnResponse("dev", "project", { task: next });
+    const admission = vi.spyOn(tracker, "writeTaskRecord");
+    resolve(old);
+    await vi.waitFor(() => expect(admission).toHaveBeenCalled());
+    await admission.mock.results[0].value;
+    expect((await readTaskRecord("dev", "project", "one")).task).toEqual(next);
+  } finally {
+    feed.dispose();
+    clock.mockRestore();
+  }
 });

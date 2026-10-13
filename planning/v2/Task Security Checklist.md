@@ -180,10 +180,30 @@ bound. W2 delivery authorization and W3 caller-facing evidence are verified belo
 | TS558-1 | Dependency create/add/remove and reverse reads stay within the caller's project; mixed valid/foreign writes fail atomically without exposing foreign titles or identities. | W1/W3: `waiting_on_same_project_dag_is_atomic`, RPC/MCP cross-project create, add, remove, read and partial-write refusal tests. |
 | TS558-2 | Deferred delivery revalidates the saved target's project and current authority before provisioning and after off-lock work; missing/retired targets never fall back to another agent. | W2 verified: `waiting_assignment_defers_every_target`, `deferred_delivery_revalidates_foreign_target_before_admission`, `deferred_delivery_removed_target_never_substitutes_another_agent`, `deferred_delivery_retired_sender_preserves_authority_failure`, `deferred_workspace_creation_retry_refuses_retired_saved_owner` and `deferred_receipt_recovery_fences_missing_retired_and_foreign_targets` cover every target, off-lock recovery, retirement and foreign bindings. `deferred_provisioning_excludes_workspace_lock_and_rename_until_settlement` proves background provisioning holds filesystem mutation exclusion through settlement, refuses reclaim while waiting on source SyncLock, and accepted edits persist afterwards. `deferred_workspace_pins_saved_git_inputs_while_source_is_held` proves current and changed-base reservations wait on the saved repository lock, pin its commit, keep the app mutex available and preserve queued worker source-location holds. W3 caller-facing scope/compatibility is verified in #562 by the scoped RPC/MCP and exact-intent retry tests below. |
 | TS558-3 | Only a committed same-project readiness change (Done, close or edge removal) with a current authorized assignment, or an explicit ready assignment, can enqueue delivery; closed edges retain resolved-by-close provenance. Caller-authored notices, pushes or forged close/unblock/generation/operation fields grant no authority. | W1 provenance evidence above is retained. W2 verified: `durable_delivery_generation_and_live_graph_fence_saved_work`, `delivery_admission_fences_graph_writes_and_failed_retry`, `delivery_admission_binds_frozen_payload_address_and_origin` and `deferred_delivery_operation_id_cannot_admit_a_forged_payload_or_foreign_owner` refuse stale graph/generation and forged operation, address, payload and origin facts. `deferred_delivery_startup_runs_without_rpc_or_connected_client` proves startup handoff without a client. `pending_provisioning_does_not_self_wake_idle_reconciliation` holds provisioning in flight, bounds empty reconciliation polls to zero immediate repolls, rejects unrelated-write wakeups and retains new-assignment wakeups. W3 RPC/MCP contract evidence is verified in #562, including forged fields and canonical typed refusals. |
-| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 task-page removal/browser evidence remains #564. |
+| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 / #564 verifies the cached armed/unassigned removal consequence in `taskWaitingOnModel.test.js`, `taskWaitingOnPage.test.js` and keyboard browser cases in `taskWaitingOnEdges.test.js`; removal sends only the edge command and does not invent an assignment or worker. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
 | TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
-| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W4 / #563 cached-grouping evidence is verified below: hostile-title escaping, cache-first/push grouping, Backlog Blocked/Ready without label or column writes, history precedence and older-capability rendering. W5 / #564 owns resolved-by-close edge presentation, current-greeting write refusal and refusal of waiting forms on older bridges. |
+| TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; a downgraded device cannot receive ordinary new-workspace assignment. | W5 / #564 round 11: `taskWaitingOnSharing.test.js` verifies shared evidence under refused/unavailable storage, no echoes, device isolation and preserved rendering support; the Chromium sharing suite verifies native-channel evidence and refusal through the other tab’s real picker. `taskWaitingOnSupport.test.js` verifies a later capable greeting retries a refused first put and persists across reload. `taskWaitingAssignmentHistory.test.js` exercises real greeting authority, device RPC and the picker for superseded capable hellos, a refused IndexedDB history put and refused reads, plus capable/confirmed-legacy and retired-account controls. `taskWaitingOnSupport.test.js` verifies monotonic evidence before persistence, failed writes, unknown/unavailable/malformed reads, committed retries/no-ops, account reset, existing cached support and reload. `taskWaitingOnActions.test.js` admits capable/never-upgraded assignment, refuses previously capable devices and unknown history with retry/refresh copy, preserves greeting authority, and gates graph verbs/parameters. `taskWaitingAssignmentDowngrade.test.js` contains the six real-picker legacy-erasure reproductions (detail/catalogue/query × absent/first-ready knowledge); `trackerTasksPaneDom.test.js` and `taskWaitingOnEdges.test.js` verify inline board/list/task-page refusal with retained drafts, including ready tasks. Per-task arbitration and dependency-knowledge records are removed. `trackerAssignmentDetailRefresh.test.js` verifies post-assignment trailing detail refresh restores concurrent unread mentions while rejecting the pre-response read. `taskWaitingOnCache.test.js`, `taskWaitingOnPush.test.js`, `taskWaitingOnPage.test.js` and `trackerTaskChecklistDom.test.js` retain cache/reverse-page fences and edge-mutation timeline refresh. Browser fixtures retain escaped titles, same-project keyboard editing, Done/close presentation, navigation, exact saved-id retries and legacy shapes at 390/1280 light/dark. W4 / #563 cache/group evidence and the combined journey remain applicable. |
+
+TS558-7 accepted residual risk: capability history is keyed by the paired device
+UUID. Re-pairing a machine mints a fresh UUID, so the previous device's history
+does not follow it and a downgraded bridge can appear never upgraded. Downgrading
+the bridge and then re-pairing it are two deliberate actions on an unsupported
+downgrade path; the old bridge cannot enforce waiting-on prerequisites whatever
+the client does. This limitation is accepted, with no identity linking across
+pairings.
+
+TS558-7 accepted residual risk: evidence that could never be written to storage
+lasts only for that page's lifetime.
+Failed writes cannot erase monotonic evidence in the observing page, and open
+tabs listening on the existing `build-cache` BroadcastChannel retain shared
+evidence for their own lifetimes. Each authenticated capable greeting retries
+persistence. New or uninformed tabs cannot recover unpersisted evidence, nor can
+a reload after all informed page lifetimes end. This residual requires refused
+storage, a reload or uninformed tab, and a bridge downgrade: the client cannot
+retain across reload what the browser will not persist. The limitation is
+accepted with these retry and open-tab mitigations, with no new channel or
+durable fallback.
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
 gate exit 0 (4,592 library tests passed, 9 ignored; integration tests include
@@ -206,8 +226,8 @@ The waiting-on capability stayed absent until #562 verified the corrected comple
 
 W3 / #562 bridge integration evidence (2026-10-12): **100/100 for the
 bridge-owned portions of TS558-1–6 (all six applicable controls verified).**
-W4/W5 UI and browser evidence, including TS558-4's removal warning and
-TS558-7, remains pending; this score does not claim those controls.
+This W3 score covers bridge controls. W5 UI evidence for TS558-4/7 is recorded
+below; W4 grouping and the combined journey belong to #563/the second landing.
 
 - TS558-1: `waiting_on_rpc_mcp_contract_refusals_are_atomic_and_scoped`,
   `waiting_on_rpc_mcp_contract_foreign_endpoints_and_cursors_are_fenced` and
@@ -286,6 +306,82 @@ compile error was stopped (exit 143), then the complete stable-source suite
 passed. Failed/setup attempts are retained with the passing evidence on #562.
 Origin/main remained b1e4643a through the final fetch, so no merge was needed.
 
+
+W5 / #564 task-page evidence (2026-10-13): **100/100 for the W5-owned
+portions of TS558-4/7 (both applicable controls verified).**
+
+- TS558-4: model and task-page tests distinguish a saved waiting/queued assignment
+  from an unassigned, cancelled or consumed one. The browser's armed/unassigned
+  final-edge confirmations send only `tasks.waiting_on.remove`; they never issue
+  an assignment, workspace creation or agent start. Assignment copy explains Done
+  or close, delayed creation, closure assessment and user-held waits; failed
+  delivery retries only its exact saved id.
+- TS558-7: browser fixtures exercise 390/1280 light/dark keyboard add/remove and
+  both navigation directions, paged reverse reads, escaped hostile titles,
+  same-project choices, distinct Done/close resolution and retained cycle/stale
+  drafts. Reads held in flight leave cached controls usable. Legacy records send
+  the exact old assignment shape; cached waiting records under an older greeting
+  retain the prerequisite explanation and refuse sends. A ready form reblocked
+  in the cache before submit also refuses the downgraded greeting without losing
+  its note or target.
+- Reverse-cache regressions remove/add edges at endpoints absent from previews,
+  invalidate an unmounted production task push, fence stale first/continuation
+  replies (including previously unseen endpoints), discard mounted stale tails
+  and restore the authoritative preview cursor. Other projects remain usable.
+
+Test-first evidence on #564: cached reblock and legacy fixture runs exited 1
+before correction, then assignment/browser coverage exited 0 (22 tests, including
+15 Chromium cases). Cache mutation and production-push/mounted-page regressions
+also exited 1 before correction, then all four focused cache/page/push/change
+suites exited 0 (53 tests). Earlier assignment copy, model, action, capability and
+cache evidence is retained in the checkpoint. No complexity exemption or ratchet
+count changed. The four inspected phone/desktop screenshots still match the
+markup; the takeover changed cache/dispatch guards and fixtures.
+
+W4 Active/Backlog grouping is #563's scope. As directed for the parallel landing,
+the second of #563/#564 to land verifies assigned wait → Done/close release →
+one delivery with closure assessment → updated Active/Backlog groups. This W5
+score does not claim that combined journey before W4 lands.
+
+
+W5 final gates, all under `nice -n 10`, with SPA/transport using Node
+22.23.3/npm 12.0.2 and judged by actual exit codes: locked transport install
+with `--ignore-scripts` **0**; locked SPA install with `--legacy-peer-deps` **0**;
+all-source lint **0**; full `npm test`, including Chromium, **0** (668 files,
+10,380 tests passed); `test:captures` **0**; build **0**; unchanged
+`complexityRatchet` **0** (2 tests); Semgrep auto/error **0** (200 rules, 30
+changed tracked targets, no findings). Gitleaks and `origin/main..HEAD`
+diff-check evidence is attached on #564 at the final published head.
+
+The first complete suite exited 1 with exactly two strict source-inventory
+assertions missing the new waiting renderer (10,378 tests passed). The select
+and input manifests now include its production search/select surfaces; the
+original assertions are unchanged. Both inventories failed first and then
+passed; their complete style suites exited 0 (13 tests, both themes), followed
+by the passing complete rerun. #614 did not fail, so no isolated flake reruns
+were needed. Gate logs, red/green evidence and four representative screenshots
+are attached on #564. Origin/main stayed e42778df through the ready fetch;
+no merge was needed. No live bridge or user browser was used.
+
+
+W5 revision 2 / #564 closes the two P2 review gaps in snapshot 1. The board/list
+picker now forwards device and project scope (`facfb5bb`). Four regressions run
+through the real picker, fake IDB and greeting authority in both board/list
+views: capable blocked assignment succeeds; cached reblock plus greeting
+downgrade refuses without losing the note or target. All four failed before the
+fix and pass afterward; the related pane suites exit 0 (94 tests).
+
+Accepted edge/assignment replies now advance an atomic task-detail mutation
+fence (`b0ca5ccc`). Both the mounted task-page reader and secondary detail feed
+capture its basis before `tasks.get` and reject stale responses during atomic
+cache admission, alongside the existing checklist guard. Production reader
+regressions failed first for graph edits and saved-assignment state, including a
+same-timestamp feed response. Fresh reads begun after the action still admit.
+Expanded DOM/churn/read-order/cache/ratchet coverage exits 0 (117 tests); source
+lint and diff checks exit 0. No complexity cap, annotation or ratchet changed.
+The W5-owned TS558-4/7 score remains 100/100 with these gaps closed; revision-2
+broad gates and security scan logs are attached to the new #564 review head.
+
 W4 / #563 cached-rendering evidence (2026-10-13): the rendering portion of
 TS558-7 is verified by `taskBlockedSections.test.js` (six Chromium tests,
 exit **0**). The 390px and 1280px fixtures mount from cached tasks while
@@ -311,3 +407,335 @@ These renderers introduce no write authority or
 connection-state branch. This evidence verifies the complete W4 cached-rendering
 scope; TS558-7's W5 write-capability and edge-control scope remains owned by
 #564 and is not claimed here.
+
+
+W5 revision 3 / #564 (2026-10-13) closes snapshot 2's list-first P2 and
+integrates W4 from origin/main `0ee0188f` (merge `54a0eb57`). The two new
+board/list regressions hold task detail ready with `tasks.get` pending, reblock
+only the newer list cache, and downgrade the current greeting. Both failed
+before the fix (exit **1**, unwanted `tasks.assign`), then passed in the
+109-test assignment/pane/unchanged-ratchet run (exit **0**). The shared guard
+reads detail and catalogue/query/page replicas together, prefers newer task
+facts and uses list read order for timestamp ties, falling back to cache write
+time for detail/legacy records and write order for remaining ties; it retains
+the captured wait and the note/target on refusal. Older blockers do not defeat newer ready
+facts, and missing legacy fields do not erase known prerequisites. No ratchet
+annotation or cap changed.
+
+The second-landing browser/style gate now exits **0** (73 tests). It includes
+all 15 task-page edge cases, all six W4 Blocked cases, input/select style suites,
+and six `taskWaitingOnJourney.test.js` Done/close journeys reached from the
+task page, list and board. A scripted fixture bridge supplies durable release
+and delivery replies to production actions, cache observers and renderers:
+assigned waits move from Active Blocked to Working; unassigned work moves
+Backlog Blocked → Ready without label/column writes or automatic user mentions;
+resolved edges retain Done/close provenance; reopening reblocks both surfaces;
+a second release does not redispatch consumed/cancelled assignments. The
+fixture records no early provisioning and exactly one delivery with retained
+closure-assessment context. Actual durable at-most-once enforcement remains
+covered by W2/W3's inherited bridge tests above, not by the scripted service.
+The combined UI portion of TS558-4/7 is now verified, preserving the W5-owned
+**100/100** score. Final merged-head gate and scan exit codes are attached on
+#564. No bridge files changed from origin/main; no live bridge or user browser
+was used.
+
+W5 revision 4 / #564 closes the delayed-page freshness gap in
+`taskAssignmentFacts.js`. Three regressions failed before the fix (exit **1**,
+commit `5bdd675d`): an older page arriving after newer catalogue/query facts
+must not clear a blocker with the same task timestamp, nor revive an older
+blocker over newer ready facts. Commit `772f6e1b` reuses `listAskedAt` so list
+`read_order` takes precedence over arrival time when task timestamps tie.
+Newer task timestamps still win; detail and legacy lists retain the cache
+write-time fallback. The assignment facts/picker/waiting/unchanged-ratchet
+gate exits **0** (116 tests). No cap or ratchet entry changed. Fresh final
+gate results and security scan evidence are recorded on #564.
+
+Revision-4 fresh gates use Node 22.23.3/npm 12.0.2 under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, scripts disabled),
+all-source lint, captures and build each exit **0**. The full Chromium-inclusive
+suite exits **1**: 670 files / 10,441 tests pass; its sole failure is known #614,
+`workspaceDirectories.test.js`'s kept-Changes-directory rebind timeout. The
+exact failing case was rerun alone three times: exits **0 / 0 / 0**, each one
+test passed and 12 skipped. The complete suite is recorded as failed, with
+that isolated flake evidence attached on #564. Semgrep exits **0** (38 changed
+tracked targets, 200 rules, no findings); Gitleaks `origin/main..HEAD` and
+diff-check exit **0**. The W5-owned TS558-4/7 score remains **100/100**.
+Fetched origin/main remains `0ee0188f`, already merged; no bridge files,
+complexity caps or ratchet entries changed.
+
+W5 revision 5 / #564 moves assignment admission to the send boundary after
+round-3's pending-greeting finding. The real board/list regressions in
+`trackerTasksPaneDom.test.js` both fail first (exit **1**, commit `95acb82a`):
+a ready form submits while re-greeting waits, only the list cache reblocks,
+then an older greeting settles. Action-level fresh-fact/captured-authority
+regressions also fail first (exit **1**, commit `ea0da86e`).
+
+Commit `2a753441` removes the picker's captured/submit-time readiness decision.
+After greeting settlement, `taskWaitingOnActions.js` rereads the freshest
+scoped `taskAssignmentFacts`, rechecks the same greeting authority after that
+asynchronous cache read, then validates capability and sends without another
+wait. The opened task is a fallback only if no cache replica supplies known
+prerequisite facts; no cached-capability downgrade invents immediate work.
+All prior assignment/cache freshness regressions, the new pending-greeting
+cases, and unchanged ratchet pass (six files / 127 tests, exit **0**); lint
+exits **0**. Final fresh broad gates and publication evidence follow on #564.
+
+Revision-5 fresh final gates, pinned Node 22.23.3/npm 12.0.2 under
+`nice -n 10`: transport ci (`--ignore-scripts`), SPA ci
+(`--legacy-peer-deps`, install scripts disabled), all-source lint, captures,
+build and full Chromium-inclusive `npm test` all exit **0**. All **671 files /
+10,446 tests passed**; #614 did not fail, so isolated reruns were unnecessary.
+Semgrep exits **0** (38 changed tracked js/mjs/css targets, 200 rules, no
+findings). Gitleaks `origin/main..HEAD` and diff-check exit **0**, with exact-head
+publication evidence attached on #564. The W5-owned TS558-4/7 score remains
+**100/100** after the send-time race is closed. No bridge files, complexity
+caps or ratchet entries changed. Source stayed fixed throughout these gates;
+the final follow-up only records this evidence.
+
+W5 revision 6 / #564 supersedes revision 3’s timestamp-tie read/write
+ranking after round-4’s unrelated-mutation reproduction. Test-first commit
+`ef9c0139` reproduces both list and board forbidden assignments through the
+real picker and production cache writers: an accepted edit of unrelated B
+raises the catalogue read order while retaining ready A, outranking blocked
+A in a filtered query at the same task timestamp. Both fail first (exit **1**).
+Unit-rule commit `97c24a2b` fails first too (exit **1**, four assertions).
+
+Fix `84540e28` removes source read/write ranking from `taskAssignmentFacts.js`.
+The task’s own timestamp selects the newest stamped facts; unstamped facts
+remain ambiguous. Among those candidates, waiting wins disagreement.
+Strictly newer ready versions still supersede older blockers. Unit coverage
+checks tied writes, delayed tied pages, unknown/invalid timestamps in both
+readiness directions, mixed stamped/unstamped sources and device/project/task
+isolation. Two former assertions of ready-wins read ordering now assert the
+requested waiting-wins tie policy. A ready task can temporarily be refused
+on an older bridge until replicas converge; ambiguous waiting evidence cannot
+authorize immediate assignment on that bridge.
+
+The send-time structure from `2a753441` is unchanged: settle the greeting,
+reread scoped facts, recheck the same greeting authority, validate capability
+and send without another wait. The earlier scope, detail/list-first reblock,
+delayed-page and pending-greeting regression coverage remains green. Focused
+validation exits **0** (seven files / **146 tests**, including the unchanged
+complexity ratchet). TS558-4’s edge-removal consequence evidence is unchanged;
+TS558-7’s cache conflict and old-bridge refusal evidence now includes the
+round-4 reproductions. Final broad-gate and publication evidence follows.
+
+Revision-6 final gates, Node 22.23.3/npm 12.0.2 under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, install
+scripts disabled), all-source lint, full Chromium-inclusive `npm test`,
+`test:captures` and build each exit **0**. All **671 files / 10,451 tests**
+pass; #614 does not fail, so isolated reruns are unnecessary. Semgrep exits
+**0** (38 tracked js/mjs/css targets, 200 rules, no findings); Gitleaks
+`origin/main..HEAD` and diff-check exit **0**. The W5-owned TS558-4/7 score
+remains **100/100** with the round-4 cache-conflict reproduction closed.
+No bridge files, complexity caps or ratchet entries change. Source is fixed
+through the gates; this final follow-up records evidence only. Push, saved
+snapshot, head/base and attached exit/log evidence are recorded on #564.
+
+W5 revision 7 / #564 closes round-5’s omitted-dependency refresh finding.
+`3244f02c` adds real list/board picker regressions using production cache
+writers: ready t1 remains in a filtered query; a blocked t2 task opens the
+picker; a downgraded legacy refresh omits its dependency summary from the
+current replicas. Both fail first (exit **1**, forbidden `tasks.assign`).
+`ceeccd38` adds unit coverage for the opened source and unknown dependency
+data, red exit **1** (three assertions).
+
+Fix `6957095f` feeds the opened task into the same scoped timestamp
+arbitration as every cached source and removes its fallback-only admission.
+Omitted/null summaries and objects with no boolean readiness flag are unknown,
+never ready. Unknown plus any known blocker keeps waiting. Known sources
+retain task-timestamp arbitration and the conservative tie/unknown-timestamp
+rule; source read/write order is never compared. The send-time greeting
+authority design from `2a753441` remains intact. Seven focused regression
+files pass (**154 tests**, exit **0**, including unchanged complexity ratchet).
+
+Explicit empty waiting lists remain authoritative: the current wire represents
+no blockers as `dependencies: { blocked: false, waiting_on: [] }`, not `{}`.
+Commit `c1273844` adds three regressions showing this newer summary wins over
+older catalogue/query/page blockers and an older opened blocker. They pass
+with the production fix unchanged (**24 unit tests**, exit **0**). Thus the
+“empty dependency data” wording referred to an object lacking readiness data,
+never to the wire’s empty prerequisite list. TS558-4’s removal-consequence
+evidence is unchanged; TS558-7 includes the opened-source, unknown-summary
+and authoritative-empty-list cases. Final broad gates and publication follow.
+
+Revision-7 final gates, pinned Node 22.23.3/npm 12.0.2 under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, install
+scripts disabled), all-source lint, full Chromium-inclusive `npm test`,
+`test:captures` and build each exit **0**. All **671 files / 10,462 tests**
+pass, including the explicit empty-list regressions; #614 does not fail, so
+isolated reruns are unnecessary. Semgrep exits **0** (38 tracked js/mjs/css
+targets / 200 rules / no findings); Gitleaks `origin/main..HEAD` and diff-check
+exit **0**. W5-owned TS558-4/7 score remains **100/100** after closing the
+opened-source and unknown-summary bypass. No bridge files, complexity caps
+or ratchet entries change. Source stays fixed at `6957095f` throughout the
+final gates; later commits add explicit empty-list tests and record evidence.
+Publication head/base, snapshot and attached exit/log evidence are on #564.
+
+
+W5 round-7 fix / #564 (2026-10-13), addressing the round-6 review:
+
+- Dependency knowledge now has its own per-task `tracker-task-dependencies`
+  cache record scoped by device/project/task. Only admitted writes carrying a
+  boolean readiness summary can update it. The summary keeps the source task's
+  timestamp. Legacy omitted/null/unknown summaries leave it untouched even if
+  their ordinary task timestamp is newer. A blocked record persists until a
+  strictly newer capable version reports ready; the current-wire
+  `{blocked:false, waiting_on:[]}` clear remains authoritative. Tied or unknown
+  timestamps retain waiting. Replica timestamps/read orders no longer decide
+  the guard once knowledge exists. The previous conservative fallback remains
+  for caches without a knowledge record, including one atomic snapshot of
+  knowledge with the fallback replicas after an initial knowledge miss.
+- The reviewer's real list/board reproduction opens ready t1, learns blocked
+  t2 in detail/catalogue, verifies the reblock was known, then overwrites every
+  blocking replica with legacy t2. Both tests failed on forbidden
+  `tasks.assign` before the fix (exit **1**), then pass while retaining note and
+  target. Twenty-five knowledge tests cover every production writer path,
+  newer legacy writes, older/newer capable empty lists, timestamp ties, rejected
+  writes, concurrent writers, reload, scoped eviction and the initial-miss race.
+  The additional initial-miss test failed first (exit **1**) and passes after
+  the knowledge/fallback snapshot change.
+- Successful add/remove requests a detail refresh through the task page's
+  existing trailing reader after the action cache write. The page/button/action
+  reproduction failed first (exit **1**, only two detail reads). It now proves
+  the push-triggered read is rejected by the unchanged detail fence, then the
+  third read restores the cached and rendered link/readiness timeline. Controls
+  retain refused drafts and removal still issues only the edge command.
+
+Focused validation exits **0**: eight files / **207 tests** for the primary
+record/cache/assignment/paging fix (including unchanged complexity ratchet);
+three files / **40 tests** for expanded writer coverage, push invalidation and
+page/action race; three files / **51 tests** for the final initial-miss change,
+including all fallback fact regressions and unchanged ratchet. Scoped lint
+exits **0**. ARCHITECTURE's Render from cache and capability sections describe
+both fixes. No bridge files, complexity caps or ratchet entries change. Final
+broad gates and publication evidence follow below and on #564.
+
+
+W5 round-8 fix / #564 (2026-10-13), addressing round-7 review finding 1:
+
+- Tests `3627dc60d` port the four attached real-picker reproductions and all
+  eight detail/catalogue/query/page × list/board variants, plus an opened-only
+  blocker. All thirteen fail first on forbidden `tasks.assign` sends (exit
+  **1**; 110 existing picker/pane tests pass). Fourteen pure union cases fail
+  against the record shortcut (exit **1**, nine failures); three partial-summary
+  persistence cases expose two unsafe clears (exit **1**). Older readiness
+  fixtures now use the explicit current-wire `{blocked:false, waiting_on:[]}`;
+  partial summaries retain separate unknown-data assertions.
+- Fix `e2c11afbe` removes both exclusive-record returns. The reader snapshots
+  record and all scoped detail/catalogue/query/page replicas together and feeds
+  them, the initially observed record and the opened task into pure
+  `selectTaskAssignmentFacts`. Highest capable task version wins; blocked wins
+  ties, and unversioned waiting remains conservative. A newer explicit ready
+  fact clears an older blocker even across legacy refreshes. Legacy/partial
+  facts never prove ready, and the absence of capable facts retains today's
+  conservative rule. Knowledge writers share the same capability predicate,
+  so partial false summaries cannot erase durable waiting.
+- Focused units exit **0**: **238 tests / 14 files**, including every earlier
+  cache, action, page, assignment, refusal and unchanged complexity-ratchet
+  regression. All-source lint exits **0**. ARCHITECTURE now describes the union
+  rather than treating the record as exclusive authority. The earlier timeline
+  refresh and greeting-authority fences remain covered. No bridge files,
+  complexity caps or ratchet entries change. Broad gate evidence follows.
+
+
+Round-8 final gates, pinned Node 22.23.3/npm 12.0.2, all under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, scripts
+disabled), lint, focused units/browser (**17 files / 265 tests**), full
+Chromium-inclusive `npm test` (**673 files / 10,528 tests**), all three
+`test:captures` checks and build each exit **0**. The reviewer's 36 writer-pair
+cases and lifecycle case also pass (**37 tests**, exit **0**). No #614 reruns
+are needed. Semgrep on all **44 changed paths**, Gitleaks
+`origin/main..HEAD`, and diff-check exit **0**, with no findings or leaks.
+W5-owned TS558-4/7 is **100/100** with the round-7 first-record bypass closed.
+The full suite validated head `48cd950fd` against merged main `01296e8e`;
+source remained fixed at `e2c11afbe`. This final commit changes evidence only.
+Final scans, pushed head and saved snapshot are recorded on #564. No bridge
+files, complexity caps or ratchet entries change; no independent Astra review
+was run in this fix round.
+
+W5 round 9 / #564 (2026-10-13) supersedes the per-task assignment arbitration
+and dependency-knowledge policies described in earlier evidence. Those policies
+could lose a pre-existing capable replica to a legacy write before observation.
+The device's persisted `everWaitingOn` flag now records its highest support seen;
+a later incapable greeting cannot clear it. Current capable bridges admit
+assignment normally. Never-upgraded devices retain legacy assignment. A device
+that advertised support before and now lacks it refuses ordinary new-workspace
+assignment from board/list and task-page pickers, including ready tasks, with
+an inline downgrade/update message and the draft intact. Display still reads
+cached task replicas; no per-task history is needed for dispatch.
+
+Test-first commit `17a6ad4ee` records all six round-8 real-picker failures
+(detail/catalogue/query × absent/first-ready knowledge), capability persistence
+and dispatch tests. Red picker exit **1**, six forbidden `tasks.assign` sends;
+capability history exit **1**, seven failures; dispatch exit **1**, three
+failures. The device-rule focused run passes all **21 tests**, exit **0**.
+Finding 2 separately fails first in the real board/list pickers (two failures,
+exit **1**): a partial assignment response fences a held mention read and
+leaves the old timeline at the new task version. Post-response detail refresh
+now uses a bounded trailing reader while retaining the mutation fence; the
+replacement read restores the unread mention and Needs you rendering even
+when cache writes share a local timestamp.
+
+Deleted arbitration-only suites: `taskAssignmentFacts.test.js`,
+`taskAssignmentFactUnion.test.js`, `taskDependencyKnowledge.test.js`; removed
+picker migration/record-ranking cases in `taskWaitingAssignment.test.js` and
+`trackerTasksPaneDom.test.js`. The six writer-loss reproductions and ordinary
+picker refusal/draft tests remain under the device rule. No complexity caps
+or ratchet entries change. Final gate and publication evidence is on #564.
+
+W5 round 10 / #564 (2026-10-13) closes the late authenticated hello and storage
+refusal gaps from round 9. The real greeting-authority/device-RPC/picker
+reproductions failed first on forbidden assignment sends (late capable hello,
+one refused history put, refused history read); the superseded-history and
+unavailable/malformed-history units failed too: **6 failures, exit 1**.
+Historical capability updates synchronously in memory, survives refused puts,
+and is merged monotonically even when hello is already superseded. Current
+rendering and dispatch remain with the newest greeting. Successful absence is
+distinct from read failure; uncertain history fails closed with the same update
+message plus retry/refresh advice. Account reset retires pending and in-memory
+history, and old-account greetings cannot introduce evidence.
+
+Node **22.23.3** / npm **12.0.2**, every gate under `nice -n 10`: transport ci
+`--ignore-scripts`, SPA ci `--legacy-peer-deps`, lint, focused units/browser
+(**19 files / 285 tests**), all three `test:captures` scripts and build exit **0**.
+Extra fixture captures reproduce both late-hello and history-put refusal at
+390/1280 light/dark, retaining the note and selection with zero assignment sends
+(**8 captures**, exit **0**). Complexity caps and ratchet entries are unchanged.
+Semgrep on **47 changed tracked files**, **200 rules / zero findings**, exits
+**0**. The full suite is intentionally deferred to the serial gate. Final
+Gitleaks, diff-check, pushed SHA and snapshot evidence are recorded on #564.
+TS558-7 includes the explicitly accepted re-pair UUID/history loss described
+above; identity linking is outside this fix. No bridge execution, pairing,
+private-directory access, install scripts or independent Astra review occurred.
+
+W5 round 11 / #564 (2026-10-13) accepts the unpersisted-evidence lifetime
+residual described beside TS558-7, with retry and existing-channel mitigations.
+The later-capable-greeting retry test already passed on round 10: that path
+always attempts the atomic merge again, and a successful retry survives module
+reload. The new independent-tab refused-put test failed first because the
+listening tab had no evidence (**1 failure, exit 1**). It now passes: capable
+observations publish transient monotonic evidence through the existing
+`build-cache` BroadcastChannel before storage, and open listening tabs retain
+it without changing rendering support or granting greeting authority. Receipt
+never echoes the message. No new channel or durable fallback is introduced.
+
+`taskWaitingOnSharing.test.js` covers refused/unavailable storage, device
+isolation, unchanged rendering support and a missing-channel local fallback.
+`browser/taskWaitingOnSharing.test.js` uses two fixture Chromium tabs sharing
+IndexedDB and the native channel, injects refused capability persistence, then
+verifies the other tab's real picker sends no assignment and retains its note.
+`taskWaitingOnSupport.test.js` proves a later capable greeting retries a refused
+first put, persists history, and refuses downgrade after module reload.
+
+Node **22.23.3** / npm **12.0.2**, all gates under `nice -n 10`: lint,
+focused units/browser (**21 files / 290 tests**) and build exit **0**. Semgrep
+on **50 changed tracked files**, **200 rules / zero findings**, exits **0**.
+The prior late-hello, storage-refusal, detail-refresh and complexity-ratchet
+checks remain in the focused run. Full suite and captures were not requested
+for this narrow round; the serial gate owns full-suite verification. TS558-7
+is verified with the two explicitly accepted residuals (re-pair UUID loss and
+unpersisted evidence after page lifetimes end). Final Gitleaks, diff-check,
+pushed SHA and snapshot evidence are recorded on #564. No new complexity
+exceptions, ratchet entries, independent Astra review or security-constraint
+exceptions.

@@ -66,17 +66,20 @@ function partsTouch(one, other) {
 // ─── Announcements ───────────────────────────────────────────────────────────
 //
 // Every writer says what it changed, and a surface that holds a record hears
-// it. The message is the address and nothing else: the record is already on
+// it. Ordinary messages carry just the address: the record is already on
 // disk, and only the reader knows which shape it wants out of it — so a
 // listener re-reads rather than being handed a body it may not want.
 //
+// Optional transient evidence travels beside an address for admission safety
+// when storage refuses a put. It is not a replica or current rendering support.
 // An address is matched part by part, so a listener names as much of the key
 // as it cares about: a device, an entity, a kind, or one sub-key. An eviction
 // names a prefix, and reaches every listener under it as well as every
 // listener it is under.
 
 /** The announcements of one database, carried between tabs on `channelName`.
- *  Answers `announce(parts)` and `subscribe(prefixAddress, listener)`. */
+ *  Answers `announce(parts, broadcast, evidence)` and
+ *  `subscribe(prefixAddress, listener)`; optional evidence is transient. */
 export function createAnnouncer(channelName) {
   const listeners = new Set(); // { parts, listener }
   let channel; // undefined until first asked for, null where there is none
@@ -90,7 +93,7 @@ export function createAnnouncer(channelName) {
     if (typeof BroadcastChannel === "undefined") return channel;
     try {
       const opened = new BroadcastChannel(channelName);
-      opened.onmessage = (event) => announce(partsOfKey(event?.data?.key), false);
+      opened.onmessage = (event) => announce(partsOfKey(event?.data?.key), false, event?.data?.evidence);
       opened.unref?.(); // node: never hold the process open for the cache
       channel = opened;
     } catch (error) {
@@ -102,16 +105,16 @@ export function createAnnouncer(channelName) {
   /** Tell every listener the change is under or over, and — for a change
    *  made here — the other tabs. A listener that throws is the caller's
    *  problem, not the writer's: the record is already stored. */
-  function announce(parts, broadcast = true) {
+  function announce(parts, broadcast = true, evidence) {
     for (const entry of [...listeners]) {
       if (!partsTouch(entry.parts, parts)) continue;
       try {
-        entry.listener(addressOfParts(parts));
+        entry.listener(addressOfParts(parts), evidence);
       } catch (error) {
         console.warn("a cache listener threw:", error);
       }
     }
-    if (broadcast) tabChannel()?.postMessage({ key: keyOfParts(parts) });
+    if (broadcast) tabChannel()?.postMessage({ key: keyOfParts(parts), ...(evidence ? { evidence } : {}) });
   }
 
   /** Hear every write and eviction at or under `prefixAddress`, from this tab

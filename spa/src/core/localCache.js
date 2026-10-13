@@ -112,10 +112,20 @@ const { announce, subscribe } = createAnnouncer("build-cache");
  *  listening. */
 export const subscribeCache = subscribe;
 
+/** Share monotonic admission evidence with open tabs even if storage refused
+ * its record. This transient metadata never replaces a cached render value. */
+export const announceCacheEvidence = (address, evidence) => announce(addressParts(address), true, evidence);
+
 /** Read one record: `{ at, value }`, or undefined when it was never written,
  *  the cache is unavailable, or anything went wrong. */
 export function readCached(address) {
   return inStore("readonly", (store) => store.get(recordKey(address)));
+}
+
+/** Admission checks must distinguish a confirmed absent record from a failed
+ * read. Keep the transaction's committed verdict alongside its result. */
+export function readCachedOutcome(address) {
+  return transact("readonly", (store) => store.get(recordKey(address)));
 }
 
 /** Read many records in one transaction — a view's first paint asks for
@@ -351,8 +361,8 @@ export function mergeCached(address, merge) {
  * serializes this tab's writers; this one also keeps a monotonic value safe
  * when another tab writes the same address at the same time. `merge` is sync
  * and returns null to leave the record alone. */
-export function mergeCachedAtomically(address, merge) {
-  return mergeRecordAtomically(address, (record) => merge(record?.value));
+export function mergeCachedAtomically(address, merge, { reportCommit = false } = {}) {
+  return mergeRecordAtomically(address, (record) => merge(record?.value), reportCommit);
 }
 
 /** Which write a record is, as `readCached` answered it: to find the record
@@ -432,7 +442,7 @@ export function writeCachedIfStill({ guard = null, puts = [], drop = null }) {
   });
 }
 
-function mergeRecordAtomically(address, merge) {
+function mergeRecordAtomically(address, merge, reportCommit = false) {
   const key = recordKey(address);
   let changed = false;
   return wroteStore((store) => {
@@ -451,7 +461,8 @@ function mergeRecordAtomically(address, merge) {
     return null;
   }).then((committed) => {
     if (committed && changed) announce(partsOfKey(key));
-    return Boolean(committed && changed);
+    // Safety history needs to distinguish a committed no-op from a refusal.
+    return Boolean(committed && (reportCommit || changed));
   });
 }
 

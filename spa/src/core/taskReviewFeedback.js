@@ -148,11 +148,13 @@ export function mountTaskReviewFeedback(host, {
 }
 
 /** Route a saved snapshot to any ordinary task assignee. */
-export function openTaskReviewer({ task, snapshot, feed, projectKey, catalog = null, callRpc, onAssigned = null }) {
+export function openTaskReviewer({ task, snapshot, feed, projectKey, deviceId, projectId, catalog = null, callRpc, onAssigned = null }) {
   const groups = assignableAgents(typeof feed === "function" ? feed() : feed, projectKey);
   const number = snapshot?.number ?? snapshot?.snapshot_number ?? snapshotIdOf(snapshot);
   return openAssigneePicker({
     task,
+    deviceId,
+    projectId,
     options: assigneeOptions(groups),
     current: selectedOptionId(task.assignee),
     catalog: typeof catalog === "function" ? catalog() : catalog,

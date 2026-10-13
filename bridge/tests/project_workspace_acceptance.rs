@@ -268,7 +268,7 @@ fn shells_and_child(bridge: &Bridge, project: &Project) -> Vec<String> {
     for (source, term) in project.sources.iter().zip(&opened) {
         assert_eq!(
             terminal_ids(&bridge.ok("term.list", source_scope(&project.id, source))),
-            [term.clone()]
+            std::slice::from_ref(term)
         );
     }
     assert_eq!(
@@ -343,43 +343,13 @@ fn shells_and_child(bridge: &Bridge, project: &Project) -> Vec<String> {
     opened
 }
 
-fn removal_and_move(
+fn remove_worker_preserves_task_and_siblings(
     bridge: &Bridge,
     project: &Project,
     assigned: &str,
     sibling: &str,
     saved: &Value,
-    shells: &[String],
-    root: &Path,
-) -> PathBuf {
-    let moved = root.join("moved-secondary");
-    git(
-        root,
-        &[
-            "clone",
-            project.secondary.to_str().unwrap(),
-            "moved-secondary",
-        ],
-    );
-    configure(&moved);
-    let change = json!({ "project_id": project.id, "source_id": "source-2", "path": moved });
-    // Isolate the worker hold first; an open source terminal also refuses
-    // movement, and its refusal takes precedence while both are live.
-    let scope = source_scope(&project.id, &project.sources[1]);
-    bridge.ok("term.close", with(&scope, json!({ "term_id": shells[1] })));
-    let refused = bridge.refused("project.update_source", change.clone(), "conflict");
-    assert!(
-        refused["error"]
-            .as_str()
-            .unwrap()
-            .contains("Acceptance worker"),
-        "{refused}"
-    );
-    bridge.refused(
-        "project.remove_source",
-        json!({ "project_id": project.id, "source_id": "source-2" }),
-        "conflict",
-    );
+) -> Value {
     let sibling_before = page(bridge, &project.owner, sibling);
     let pin_before = page(bridge, &project.owner, &project.pin);
     bridge.ok(
@@ -418,6 +388,48 @@ fn removal_and_move(
         json!({ "entity_id": project.owner, "agent_id": assigned, "body": "stale worker" }),
         "not_found",
     );
+    sibling_before
+}
+
+fn removal_and_move(
+    bridge: &Bridge,
+    project: &Project,
+    assigned: &str,
+    sibling: &str,
+    saved: &Value,
+    shells: &[String],
+    root: &Path,
+) -> PathBuf {
+    let moved = root.join("moved-secondary");
+    git(
+        root,
+        &[
+            "clone",
+            project.secondary.to_str().unwrap(),
+            "moved-secondary",
+        ],
+    );
+    configure(&moved);
+    let change = json!({ "project_id": project.id, "source_id": "source-2", "path": moved });
+    // Isolate the worker hold first; an open source terminal also refuses
+    // movement, and its refusal takes precedence while both are live.
+    let scope = source_scope(&project.id, &project.sources[1]);
+    bridge.ok("term.close", with(&scope, json!({ "term_id": shells[1] })));
+    let refused = bridge.refused("project.update_source", change.clone(), "conflict");
+    assert!(
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("Acceptance worker"),
+        "{refused}"
+    );
+    bridge.refused(
+        "project.remove_source",
+        json!({ "project_id": project.id, "source_id": "source-2" }),
+        "conflict",
+    );
+    let sibling_before =
+        remove_worker_preserves_task_and_siblings(bridge, project, assigned, sibling, saved);
     bridge.ok("conversation.reset", json!({ "project_id": project.id, "entity_id": project.owner,
         "agent_id": sibling, "conversation_id": sibling, "expected_thread_id": sibling_before["thread_id"] }));
     let shell = open_shell(bridge, &scope, &project.secondary);
@@ -704,7 +716,7 @@ fn project_workspace_combined_journey_and_source_matrix() {
     let (assigned, task) = assign_one_worker(&bridge, &project, &sibling);
     assert_eq!(
         ids(&bridge.roster(&project.owner, false)),
-        [project.pin.clone()]
+        std::slice::from_ref(&project.pin)
     );
     assert_eq!(
         purposes(&bridge.roster(&project.owner, true)),

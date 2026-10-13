@@ -153,7 +153,7 @@ async function performRefresh(generation) {
 }
 
 async function refreshTokens() {
-  if (!refreshToken || signingOut) return false;
+  if (!refreshToken) return false;
   if (refreshInFlight) return refreshInFlight;
   const generation = credentialGeneration;
   refreshInFlight = performRefresh(generation);
@@ -287,7 +287,7 @@ async function beginAuthentication() {
 }
 
 async function handleAuthorizationCallback(url) {
-  if (signingOut || !pendingAuthorization) return;
+  if (!pendingAuthorization) return;
   const authorization = pendingAuthorization;
   const generation = credentialGeneration;
   pendingAuthorization = null;
@@ -368,7 +368,6 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("second-instance", (_event, commandLine) => {
-    if (signingOut) return;
     const callback = authorizationCallbackFromArguments(commandLine);
     if (callback) {
       void handleAuthorizationCallback(callback);
@@ -389,7 +388,7 @@ if (!hasSingleInstanceLock) {
     void startAuthentication().finally(() => { starting = false; });
 
     app.on("activate", () => {
-      if (mainWindow || starting || exchangingCode || signingOut) return;
+      if (mainWindow || starting || exchangingCode) return;
       if (accessToken) mainWindow = createWindow();
       else if (!pendingAuthorization) void startAuthentication();
     });
@@ -400,6 +399,6 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("window-all-closed", () => {
-    if (process.platform !== "darwin" && !pendingAuthorization && !signingOut) app.quit();
+    if (process.platform !== "darwin" && !pendingAuthorization) app.quit();
   });
 }

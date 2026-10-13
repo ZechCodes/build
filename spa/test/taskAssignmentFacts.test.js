@@ -12,7 +12,7 @@ beforeEach(async () => {
 });
 afterEach(() => vi.restoreAllMocks());
 const row = (blocked, updated_at = "2026-10-13T01:00:00Z") => ({ id: "task", updated_at, dependencies: { blocked } });
-const read = () => readTaskAssignmentFacts("device", "project", "task");
+const read = (opened) => readTaskAssignmentFacts("device", "project", "task", opened);
 const lists = [
   ["catalogue", tasksAddress("device", "project")],
   ["query", tasksQueryAddress("device", "project", { state: "open" })],
@@ -20,6 +20,34 @@ const lists = [
 ];
 
 describe("assignment facts across cached task replicas", () => {
+  it("arbitrates the opened task with older cached facts after a legacy detail refresh", async () => {
+    const opened = row(true, "2026-10-13T01:01:00Z");
+    await writeCached(lists[1][1], { tasks: [row(false)] });
+    await writeCached(taskAddress("device", "project", "task"), { task: { ...opened, dependencies: undefined } });
+    expect((await read(opened)).dependencies.blocked).toBe(true);
+  });
+
+  it("treats omitted dependencies as unknown, preserving any known blocker", async () => {
+    await writeCached(lists[0][1], { tasks: [row(true)] });
+    await writeCached(lists[1][1], { tasks: [row(false, "2026-10-13T01:01:00Z")] });
+    await writeCached(taskAddress("device", "project", "task"), {
+      task: { id: "task", updated_at: "2026-10-13T01:02:00Z" },
+    });
+    expect((await read()).dependencies.blocked).toBe(true);
+  });
+
+  it("lets a strictly newer known ready version supersede an opened blocker", async () => {
+    await writeCached(lists[1][1], { tasks: [row(false, "2026-10-13T01:01:00Z")] });
+    expect((await read(row(true))).dependencies.blocked).toBe(false);
+  });
+
+  it.each([undefined, null, {}])("never asserts ready from unknown dependency data %j", async (dependencies) => {
+    await writeCached(taskAddress("device", "project", "task"), { task: { ...row(false), dependencies } });
+    expect(await read()).toBeNull();
+    await writeCached(lists[1][1], { tasks: [row(false, "2026-10-12T01:00:00Z")] });
+    expect((await read()).dependencies.blocked).toBe(false);
+  });
+
   it.each(lists)("uses a newer %s reblock while detail is still ready", async (_kind, address) => {
     await writeCached(taskAddress("device", "project", "task"), { task: row(false) });
     await writeCached(address, { tasks: [row(true, "2026-10-13T01:01:00Z")] });

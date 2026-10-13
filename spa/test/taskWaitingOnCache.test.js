@@ -90,3 +90,42 @@ it("new detail dependency facts retire the old reverse chain, and stale first pa
   await tracker.writeTaskRecord(device, project, "t", tracker.taskRecord({ ...task, dependencies: { blocks: [], blocks_count: 0 } }));
   expect(await edges.readTaskWaitingOnBlocks(device, project, "t")).toBeNull();
 });
+
+it("forward edge removal and addition retire the reverse endpoint even outside its preview", async () => {
+  const blocker = { ...task, id: "blocker", dependencies: { blocks: [{ task_id: "preview" }], blocks_count: 3, blocks_next_cursor: "next" } };
+  await tracker.writeTaskRecord(device, project, blocker.id, tracker.taskRecord(blocker));
+  await tracker.writeTaskRecord(device, project, task.id, tracker.taskRecord({ ...task, dependencies: { waiting_on: [{ task_id: blocker.id }] } }));
+  await edges.cacheTaskWaitingOnBlocks(device, project, blocker.id, { blocks: [{ task_id: "preview" }, { task_id: task.id }], next_cursor: "later" });
+  const beforeRemoval = await edges.captureTaskWaitingOnBlocksRead(device, project, blocker.id);
+  await edges.cacheTaskWaitingOnResponse(device, project, { task: { ...task, dependencies: { waiting_on: [] } } });
+  expect(await edges.readTaskWaitingOnBlocks(device, project, blocker.id)).toBeNull();
+  await edges.cacheTaskWaitingOnBlocks(device, project, blocker.id, { blocks: [{ task_id: task.id }] }, beforeRemoval);
+  expect(await edges.readTaskWaitingOnBlocks(device, project, blocker.id)).toBeNull();
+  const afterRemoval = await edges.captureTaskWaitingOnBlocksRead(device, project, blocker.id);
+  await edges.cacheTaskWaitingOnBlocks(device, project, blocker.id, { blocks: [{ task_id: "preview" }] }, afterRemoval);
+  const beforeAddition = await edges.captureTaskWaitingOnBlocksRead(device, project, blocker.id);
+  await edges.cacheTaskWaitingOnResponse(device, project, { task: { ...task, dependencies: { waiting_on: [{ task_id: blocker.id }] } } });
+  expect(await edges.readTaskWaitingOnBlocks(device, project, blocker.id)).toBeNull();
+  await edges.cacheTaskWaitingOnBlocks(device, project, blocker.id, { blocks: [{ task_id: "preview" }] }, beforeAddition);
+  expect(await edges.readTaskWaitingOnBlocks(device, project, blocker.id)).toBeNull();
+});
+
+it("a project push retires off-preview paging and fences unseen in-flight first pages", async () => {
+  await tracker.writeTaskRecord(device, project, "blocker", tracker.taskRecord({ ...task, id: "blocker", dependencies: {
+    blocks: [{ task_id: "preview" }], blocks_next_cursor: "next", blocks_count: 3,
+  } }));
+  await edges.cacheTaskWaitingOnBlocks(device, project, "blocker", { blocks: [{ task_id: "off-preview", title: "Old", state: "open" }] }, { cursor: "next" });
+  const oldPage = await edges.captureTaskWaitingOnBlocksRead(device, project, "blocker");
+  const unseenFirstPage = await edges.captureTaskWaitingOnBlocksRead(device, project, "unseen-blocker");
+  await edges.invalidateTaskWaitingOnBlocks(device, project);
+  expect(await edges.readTaskWaitingOnBlocks(device, project, "blocker")).toBeNull();
+  await edges.cacheTaskWaitingOnBlocks(device, project, "blocker", { blocks: [{ task_id: "off-preview", title: "Old", state: "open" }] }, oldPage);
+  await edges.cacheTaskWaitingOnBlocks(device, project, "unseen-blocker", { blocks: [{ task_id: "off-preview", title: "Old", state: "open" }] }, unseenFirstPage);
+  expect(await edges.readTaskWaitingOnBlocks(device, project, "blocker")).toBeNull();
+  expect(await edges.readTaskWaitingOnBlocks(device, project, "unseen-blocker")).toBeNull();
+  const newPage = await edges.captureTaskWaitingOnBlocksRead(device, project, "blocker");
+  await edges.cacheTaskWaitingOnBlocks(device, project, "blocker", { blocks: [{ task_id: "off-preview", title: "New", state: "closed" }] }, { ...newPage, cursor: "next" });
+  expect((await edges.readTaskWaitingOnBlocks(device, project, "blocker")).blocks).toEqual([
+    { task_id: "preview" }, { task_id: "off-preview", title: "New", state: "closed" },
+  ]);
+});

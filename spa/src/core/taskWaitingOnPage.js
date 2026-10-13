@@ -4,7 +4,7 @@ import { subscribeCache } from "./localCache.js";
 import { readTasksRecord, tasksAddress } from "./trackerCache.js";
 import { createTaskWaitingOnActions } from "./taskWaitingOnActions.js";
 import { readTaskWaitingOnSupport, taskWaitingOnSupportAddress } from "./taskWaitingOnSupport.js";
-import { readTaskWaitingOnBlocks, taskWaitingOnBlocksAddress } from "./taskWaitingOnCache.js";
+import { readTaskWaitingOnBlocks, taskWaitingOnBlocksAddress, taskWaitingOnGenerationAddress } from "./taskWaitingOnCache.js";
 import { blockerChoices, removalConsequence, waitingOnEdges, waitingOnNotice } from "./taskWaitingOnModel.js";
 import { blockerOptionsHtml, dependencyRowsHtml, waitingOnFrameHtml } from "./taskWaitingOnRender.js";
 import { messageOf } from "./text.js";
@@ -151,6 +151,7 @@ export function mountTaskWaitingOn(host, { deviceId, projectId, taskId, call }) 
     subscribeCache(taskWaitingOnSupportAddress(deviceId), readSupport),
     subscribeCache(tasksAddress(deviceId, projectId), readChoices),
     subscribeCache(taskWaitingOnBlocksAddress(deviceId, projectId, taskId), readPages),
+    subscribeCache(taskWaitingOnGenerationAddress(deviceId, projectId), readPages),
   ];
   void Promise.all([readSupport(), readChoices(), readPages()]);
   return {

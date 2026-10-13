@@ -5,7 +5,7 @@ const shared = vi.hoisted(() => ({ supported: true, tasks: [], pages: null, subs
 vi.mock("../src/core/taskWaitingOnActions.js", () => ({ createTaskWaitingOnActions: () => shared }));
 vi.mock("../src/core/taskWaitingOnSupport.js", () => ({ readTaskWaitingOnSupport: async () => shared.supported, taskWaitingOnSupportAddress: () => ({ kind: "support" }) }));
 vi.mock("../src/core/trackerCache.js", () => ({ readTasksRecord: async () => ({ tasks: shared.tasks }), tasksAddress: () => ({ kind: "tasks" }) }));
-vi.mock("../src/core/taskWaitingOnCache.js", () => ({ readTaskWaitingOnBlocks: async () => shared.pages, taskWaitingOnBlocksAddress: () => ({ kind: "blocks" }) }));
+vi.mock("../src/core/taskWaitingOnCache.js", () => ({ readTaskWaitingOnBlocks: async () => shared.pages, taskWaitingOnBlocksAddress: () => ({ kind: "blocks" }), taskWaitingOnGenerationAddress: () => ({ kind: "generation" }) }));
 vi.mock("../src/core/localCache.js", () => ({ subscribeCache: (address, handler) => { shared.subscribers.push({ address, handler }); return () => {}; } }));
 import { mountTaskWaitingOn } from "../src/core/taskWaitingOnPage.js";
 
@@ -72,6 +72,18 @@ describe("kept Waiting on editor", () => {
     view.update(fixture({ dependencies: { waiting_on: [], blocks: [], blocks_count: 0 } }));
     await flush();
     expect(find("[data-blocks-list]").querySelectorAll("a")).toHaveLength(0);
+    view.dispose();
+  });
+
+  it("drops off-preview pages on a project generation announcement while keeping the preview cursor", async () => {
+    shared.pages = { blocks: [edge("dependent"), edge("off-preview")], next_cursor: "stale-tail" };
+    await mount();
+    expect(find("[data-blocks-list]").querySelectorAll("a")).toHaveLength(2);
+    shared.pages = null;
+    await shared.subscribers.find((item) => item.address.kind === "generation").handler();
+    expect(find("[data-blocks-list]").querySelectorAll("a")).toHaveLength(1);
+    find("[data-blocks-more]").click(); await flush();
+    expect(shared.blocks).toHaveBeenCalledWith({ cursor: "next" });
     view.dispose();
   });
 

@@ -74,6 +74,7 @@ import { rememberConversationResetSupport } from "./conversationReset.js";
 import { rememberAgentLineageSupport } from "./agentLineageSupport.js";
 import { rememberTaskChecklistSupport } from "./taskChecklistSupport.js";
 import { rememberTaskWaitingOnSupport } from "./taskWaitingOnSupport.js";
+import { invalidateTaskWaitingOnBlocks } from "./taskWaitingOnCache.js";
 import { rememberSourceEditSupport } from "./sourceEditSupport.js";
 import { rememberProjectFilesSupport } from "./projectFilesSupport.js";
 import { rememberProjectTerminalSupport } from "./projectTerminalSupport.js";
@@ -762,10 +763,17 @@ function audienceFor(subscriptionId, deviceId) {
   return addressed.length ? [...addressed, ...unsubscribed] : heard;
 }
 
+function invalidateReverseTaskPages(items, deviceId) {
+  if (!deviceId) return;
+  const projects = new Set(items.filter((item) => item.tasks && item.entity_id).map((item) => item.entity_id));
+  for (const projectId of projects) void invalidateTaskWaitingOnBlocks(deviceId, projectId);
+}
+
 function dispatchItems(payload, deviceId) {
   const list = (Array.isArray(payload.items) ? payload.items.filter(Boolean) : [])
     .filter((item) => !item.project_source || bridgeCapabilities(deviceId).changes.projectSources);
   if (!list.length) return false;
+  invalidateReverseTaskPages(list, deviceId);
   const boardIsNews = boardItemIsNews(list, bridgeFor(deviceId));
   for (const watcher of audienceFor(payload.subscription_id, deviceId)) {
     const mine = itemsFor(watcher, list);

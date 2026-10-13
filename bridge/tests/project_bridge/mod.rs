@@ -111,6 +111,28 @@ impl Bridge {
         )
     }
 
+    /// A real frame in flight beside the test's next operation. The runtime
+    /// stays owned by this fixture until the caller has joined the thread.
+    pub fn call_on_thread(&self, method: &str, params: Value) -> std::thread::JoinHandle<Value> {
+        let handler = self.handler.clone();
+        let runtime = self.runtime.handle().clone();
+        let method = method.to_string();
+        std::thread::spawn(move || {
+            let _in_runtime = runtime.enter();
+            handler.call(
+                SessionSender::detached("concurrent-client"),
+                Frame {
+                    session_id: "concurrent-client".into(),
+                    message_id: "concurrent-frame".into(),
+                    frame_type: "rpc".into(),
+                    sender: "client".into(),
+                    created_at: "2026-10-13T00:00:00Z".into(),
+                    payload: json!({ "id": "concurrent-frame", "method": method, "params": params }),
+                },
+            )
+        })
+    }
+
     pub fn ok(&self, method: &str, params: Value) -> Value {
         let answer = self.call(method, params);
         assert_eq!(answer["ok"], true, "{method}: {answer}");

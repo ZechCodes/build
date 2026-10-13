@@ -39,17 +39,18 @@ This checklist covers the security boundary changed by the Task final-repair wor
 **Total: 100/100.**
 
 
-## #522 planned extension — not yet verified
+## #522 extension — verified by C10 / #538
 
-These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
-Existing scores above cover their original implemented scope only. Each owning
-child must supply passing regression/gate evidence before its new rows can
-count toward 100/100; planning does not satisfy these controls.
+These controls follow [Project workspace](Project%20Workspace%20Spec.md).
+The checked rows have combined C10 / #538 evidence at commit
+`6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. The earlier scoped checkpoints below
+record the evidence available at those checkpoints; the final C10 entry closes
+their pending combined acceptance evidence.
 
-| ID | Pending control | Required evidence |
-| --- | --- | --- |
-| TS522-1 | Existing/new project worker assignment and MCP tools are same-project scoped, idempotent and purpose-authorized; clients cannot mint or demote the pin. | C4/C5/C8: assign_project_worker_is_idempotent; cross-project, forged-purpose, removal and task-assignee tests. |
-| TS522-2 | Task links preserve exact worker identity without a fake workspace; worker removal and project deletion retire pending delivery/tracking consistently without rewriting history. | C5/C10: assignment/link/cleanup and stale-generation lifecycle tests. |
+| ID | Control | Verified | Passing evidence |
+| --- | --- | --- | --- |
+| TS522-1 | Existing/new project worker assignment and MCP tools are same-project scoped, idempotent and purpose-authorized; clients cannot mint or demote the pin. | [x] | `assign_project_worker_is_idempotent`, `assigning_refuses_a_foreign_or_removed_project_worker`, `a_worker_cannot_administer_sources_or_retire_the_pin_through_mcp`; `offers workers only in their exact project's separate group`, `keeps a creation operation ID across a failed dispatch retry and preserves the worker name`; `accepts the combined original-source / worker / console / child journey (390px)` and `accepts the combined original-source / worker / console / child journey (1280px)`. Full bridge/SPA gates exit 0 at `6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. |
+| TS522-2 | Task links preserve exact worker identity without a fake workspace; worker removal and project deletion retire pending delivery/tracking consistently without rewriting history. | [x] | `project_workspace_combined_journey_and_source_matrix`, `removing_a_worker_keeps_its_tasks_record_and_drops_its_queued_turn`, `a_stale_worker_session_cannot_assign`, `project_deletion_retires_workers_and_preserves_sources`, `deferred_delivery_project_deletion_cancels_frozen_work_and_notices`; `resolves exact workers without a workspace and rejects foreign IDs in a complete roster`, `retains an unavailable worker's durable name but removes its link`. Full bridge/SPA gates exit 0 at `6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. |
 
 C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
 
@@ -119,6 +120,26 @@ TS522-1 plus the three Chat Isolation C8 controls (25 points each) score
 **100/100 within C8's implemented scope**. The combined #522 extension and
 TS522-2's C10 lifecycle evidence remain pending; this entry does not mark them
 complete.
+
+### C10 / #538 combined verification — 2026-10-13
+
+All 2 controls above are verified at
+`6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. Full bridge `cargo test` exited 0,
+including `project_workspace_combined_journey_and_source_matrix`, coordinator,
+persisted-purpose, exact-lineage, stale-generation and lifecycle regressions.
+The run used the real uv 0.12.15 executable through `BST_UV` and `PATH`, with
+`$HOME/.cargo/bin` first. Full SPA `npm test` under Node 22.23.3 / npm 12.0.2
+and `CHROMIUM_PATH=/usr/bin/chromium` exited 0: 669 files / 10,473 tests passed,
+including all seven `browser/projectWorkspaceFlow.test.js` cases. The two full
+390/1280 journeys retain exact worker/task addresses, sibling and source drafts,
+and the canonical pin across source, console and child-workspace navigation.
+
+Semgrep `--config auto --error` on every changed file, Gitleaks with
+`--log-opts='origin/main..HEAD'`, and `git diff --check origin/main..HEAD` each
+exited 0. All gates ran under `nice -n 10` with output redirected to logs.
+The four-pair compatibility matrix uses frozen legacy requests, the production
+client adapter and isolated old/new protocol fixtures; it does not claim
+historical executable runs. #538 records the gate exits and final publication.
 
 ## #558 extension — bridge verified; browser evidence pending
 

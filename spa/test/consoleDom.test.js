@@ -253,7 +253,10 @@ describe("the sizes", () => {
     await open(); // the same control shuts it
     expect(size()).toBe("collapsed");
     expect(panes[0].disposed).toBe(true);
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
     expect(manager.closeTerminal).not.toHaveBeenCalled();
   });
 
@@ -308,7 +311,10 @@ describe("the terminals", () => {
     [...region().querySelectorAll(".console-tab-name")][1].click();
     await flush();
     expect(manager.attachTerminal.mock.calls.map((call) => call[0])).toEqual(["term-1", "term-2"]);
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
   });
 
   it("closes one from its ×, and falls back to what is left", async () => {
@@ -495,7 +501,10 @@ describe("disposal", () => {
     panel.dispose();
     expect(region().innerHTML).toBe("");
     expect(region().dataset.size).toBeUndefined();
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
     expect(manager.closeTerminal).not.toHaveBeenCalled();
     panel = null;
   });
@@ -561,6 +570,9 @@ describe("original-source project console", () => {
     expect(tabs()).toEqual(["Code · Terminal 1", "Docs · Terminal 1"]);
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "projects" }, [{ project_id: "p1", sources: [source("code", "/new"), source("docs", "/docs")] }]); await flush();
     expect(tabs()).toEqual(["Docs · Terminal 1"]);
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.find(([id]) => id === "term-1")[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
   });
 });

@@ -23,6 +23,7 @@
 // whenever a wire starts carrying, and each tab calls attachTerminal/attachAgent
 // to register its own term_id.
 
+import { assertAttachmentCurrent, withAttachmentCancellation } from "./attachmentLifetime.js";
 import { createSessionRpc } from "../core/sessionRpc.js";
 import { createSessionSwitch } from "../core/sessionSwitch.js";
 import { recordConnectionDiagnostic } from "../core/connectionDiagnostics.js";
@@ -221,10 +222,17 @@ export class TerminalSocket {
    * finished, and its retries piled up behind a socket that was not coming back
    * without one of them noticing.
    */
-  whenConnected() {
+  whenConnected(signal) {
     if (this._connected) return Promise.resolve();
     if (this._closed) return Promise.reject(new TerminalSocketLost("closed"));
-    return new Promise((resolve, reject) => this._connectWaiters.push({ resolve, reject }));
+    const waiter = {};
+    const connected = new Promise((resolve, reject) => {
+      Object.assign(waiter, { resolve, reject });
+      this._connectWaiters.push(waiter);
+    });
+    return withAttachmentCancellation(connected, signal).finally(() => {
+      this._connectWaiters = this._connectWaiters.filter((held) => held !== waiter);
+    });
   }
 
   /** End every wait on a connection that is not coming. */
@@ -271,19 +279,25 @@ export class TerminalSocket {
     const deviceId = this._userTerminalDevice();
     // Backward compatibility for the former (termId, opts) signature.
     if (opts === undefined) { opts = scope; scope = {}; }
-    await this.whenConnected();
+    opts ||= {};
+    assertAttachmentCurrent(opts);
+    await this.whenConnected(opts.signal);
+    assertAttachmentCurrent(opts);
     const attachParams = terminalScope(scope);
     this._assertUserTerminalDevice(attachParams, deviceId);
-    const entry = this._register(termId, "user", attachParams, opts || {});
-    let r;
+    const entry = this._register(termId, "user", attachParams, opts);
+    const current = () => this._ownsAttachment(entry);
     try {
-      r = await this._userCall("term.attach", { ...attachParams, term_id: termId, cols: entry.cols, rows: entry.rows }, deviceId);
-    } catch (e) {
+      opts.onRegistered?.(() => this._deregisterFailedAttach(termId, entry));
+      const request = this._userCall("term.attach", { ...attachParams, term_id: termId, cols: entry.cols, rows: entry.rows }, deviceId, current);
+      const result = await withAttachmentCancellation(request, opts.signal);
+      assertAttachmentCurrent({ isCurrent: current });
+      this._applyAttachResult(entry, result);
+      return result;
+    } catch (error) {
       this._deregisterFailedAttach(termId, entry);
-      throw e;
+      throw error;
     }
-    this._applyAttachResult(entry, r);
-    return r;
   }
 
   /**
@@ -392,6 +406,10 @@ export class TerminalSocket {
 
   /** An attach that never took must not leave its registration behind — a dead
    *  id would swallow pushes and be retried on every reconnect forever. */
+  _ownsAttachment(entry) {
+    return this._terms.get(entry.termId) === entry && !entry.signal?.aborted && entry.isCurrent();
+  }
+
   _deregisterFailedAttach(termId, entry) {
     if (this._terms.get(termId) === entry) this._forgetTerm(termId);
   }
@@ -419,7 +437,8 @@ export class TerminalSocket {
   }
 
   /** Deregister a terminal (tab unmounted) — the server PTY keeps running. */
-  detach(termId) {
+  detach(termId, signal) {
+    if (signal && this._terms.get(termId)?.signal !== signal) return;
     this._forgetTerm(termId);
   }
 
@@ -435,8 +454,10 @@ export class TerminalSocket {
   }
 
   _register(termId, kind, attachParams, opts) {
+    this._cancelPendingAck(this._terms.get(termId));
     const entry = {
       kind, attachParams, deviceId: this.deviceId,
+      signal: opts.signal, isCurrent: opts.isCurrent || (() => true),
       // The wire id this entry currently answers to — what an ack names. An
       // agent's is provisional until the bridge answers with the real one.
       termId,
@@ -546,33 +567,38 @@ export class TerminalSocket {
   async _reattachAll(isCurrent = () => true) {
     for (const [termId, entry] of [...this._terms]) {
       if (!isCurrent()) return;
-      entry.lastCursor = 0;
-      entry.attached = false;
-      entry.preAttach = [];
-      // The cursor this reset just discarded is what a pending ack would have
-      // reported — on a connection where it means nothing.
-      this._cancelPendingAck(entry);
-      try {
-        const r = entry.kind === "agent"
-          ? await this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
-          : await this._userCall("term.attach", { ...entry.attachParams, term_id: termId, cols: entry.cols, rows: entry.rows }, entry.deviceId);
-        if (!isCurrent()) return;
-        // A worktree that moved (or an agent that opened while we were away)
-        // answers with a different wire id: follow it rather than stream into
-        // an id nothing pushes to.
-        if (entry.kind === "agent") this._rekeyAgent(termId, entry, r.term_id);
-        this._applyAttachResult(entry, r);
-      } catch (e) {
-        if (!isCurrent()) return;
-        this._handleAttachFailure(e, termId, entry);
-        // Other failures leave the entry registered — the next reconnect retries.
-      }
+      await this._reattachEntry(termId, entry, isCurrent);
+    }
+  }
+
+  async _reattachEntry(termId, entry, isCurrent) {
+    if (!this._ownsAttachment(entry)) { this._deregisterFailedAttach(termId, entry); return; }
+    entry.lastCursor = 0;
+    entry.attached = false;
+    entry.preAttach = [];
+    // The cursor this reset discarded cannot be acknowledged on a new wire.
+    this._cancelPendingAck(entry);
+    try {
+      const request = entry.kind === "agent"
+        ? this._call("agent.attach", { ...entry.attachParams, cols: entry.cols, rows: entry.rows })
+        : this._userCall("term.attach", { ...entry.attachParams, term_id: termId, cols: entry.cols, rows: entry.rows }, entry.deviceId, () => this._ownsAttachment(entry));
+      const result = await withAttachmentCancellation(request, entry.signal);
+      if (!isCurrent()) return;
+      if (!this._ownsAttachment(entry)) { this._deregisterFailedAttach(termId, entry); return; }
+      // A moved worktree or an agent born while away can answer with a new id.
+      if (entry.kind === "agent") this._rekeyAgent(termId, entry, result.term_id);
+      this._applyAttachResult(entry, result);
+    } catch (error) {
+      if (!isCurrent()) return;
+      this._handleAttachFailure(error, termId, entry);
+      // Other failures leave the entry registered for the next reconnect.
     }
   }
 
   _handleAttachFailure(error, termId, entry) {
+    if (!this._ownsAttachment(entry)) { this._deregisterFailedAttach(termId, entry); return; }
     if (!/unknown (term_id|id)/.test(error.message || "")) return;
-    this._forgetTerm(termId);
+    this._deregisterFailedAttach(termId, entry);
     entry.onClosed("reaped");
   }
 
@@ -768,11 +794,13 @@ export class TerminalSocket {
     }
   }
 
-  _userCall(method, params, deviceId = this.deviceId) {
+  _userCall(method, params, deviceId = this.deviceId, isCurrent = () => true) {
+    assertAttachmentCurrent({ isCurrent });
     this._assertUserTerminalDevice(params, deviceId);
     const session = this._session;
     return this._userTerminalRpc(this.deviceId, method, params, (verb, scoped) => {
       if (this._session !== session) throw new TerminalSocketLost("disconnected");
+      assertAttachmentCurrent({ isCurrent });
       return this._call(verb, scoped);
     });
   }

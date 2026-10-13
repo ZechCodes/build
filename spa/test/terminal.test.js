@@ -1082,3 +1082,127 @@ describe("createStatusHub (per-pane connectivity fan-out)", () => {
     expect(seen).toEqual(["connecting"]);
   });
 });
+
+
+describe("user terminal attach lifetime", () => {
+  const scope = { project_id: "p", source_id: "code", source_path: "/code" };
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+  };
+  const isolated = (dispatch = (_device, verb, params, call) => call(verb, params)) => {
+    const socket = new TerminalSocket({ transport: {}, userTerminalRpc: dispatch });
+    socket._session = { deviceId: "device" };
+    socket._call = vi.fn(async () => ({ snapshot: b64("screen"), cursor: 0 }));
+    return socket;
+  };
+  it("cancels a real connection wait without retaining a waiter or attaching on reconnect", async () => {
+    const socket = isolated();
+    const abort = new AbortController();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal });
+    const outcome = request.catch((error) => error);
+    expect(socket._connectWaiters).toHaveLength(1);
+    abort.abort();
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    expect(socket._connectWaiters).toHaveLength(0);
+    expect(socket._terms.size).toBe(0);
+    socket._connected = true;
+    for (const waiter of socket._connectWaiters.splice(0)) waiter.resolve();
+    await tick();
+    expect(socket._call).not.toHaveBeenCalled();
+    expect(socket._terms.size).toBe(0);
+    socket.close();
+  });
+  it("checks pane lifetime again at dispatch after an asynchronous source/greeting guard", async () => {
+    const ready = deferred();
+    const socket = isolated(async (_device, verb, params, call) => { await ready.promise; return call(verb, params); });
+    socket._connected = true;
+    const abort = new AbortController();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal });
+    const outcome = request.catch((error) => error);
+    await tick();
+    expect(socket._terms.size).toBe(1);
+    abort.abort();
+    const replacement = socket._register("shell", "user", scope, {});
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    ready.resolve();
+    await tick();
+    expect(socket._call).not.toHaveBeenCalled();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+  it("rejects on cancellation during an attach reply and cannot paint or detach a replacement", async () => {
+    const reply = deferred();
+    const socket = isolated();
+    socket._connected = true;
+    socket._call.mockReturnValue(reply.promise);
+    const abort = new AbortController();
+    const snapshot = vi.fn();
+    const request = socket.attachTerminal("shell", scope, { signal: abort.signal, onSnapshot: snapshot });
+    const outcome = request.catch((error) => error);
+    await tick();
+    expect(socket._call).toHaveBeenCalledOnce();
+    abort.abort();
+    const replacement = socket._register("shell", "user", scope, {});
+    expect(await outcome).toMatchObject({ name: "AbortError" });
+    reply.resolve({ snapshot: b64("obsolete"), cursor: 1 });
+    await tick();
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+  it("retires a replaced registration's pending acknowledgement resource", () => {
+    const socket = isolated();
+    const previous = socket._register("shell", "user", scope, {});
+    previous.ackTimer = setTimeout(() => {}, 1000);
+    socket._register("shell", "user", scope, {});
+    try { expect(previous.ackTimer).toBeNull(); }
+    finally { clearTimeout(previous.ackTimer); socket.close(); }
+  });
+  it("gives pane disposal an identity-owned detach that cannot forget the next registration", async () => {
+    const socket = isolated();
+    socket._connected = true;
+    let detach;
+    await socket.attachTerminal("shell", scope, { onRegistered: (dispose) => { detach = dispose; } });
+    const replacement = socket._register("shell", "user", scope, {});
+    detach();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+  it("ends reconnect attachment promptly when the pane is cancelled", async () => {
+    const reply = deferred();
+    const socket = isolated();
+    const abort = new AbortController();
+    socket._register("shell", "user", scope, { signal: abort.signal });
+    socket._call.mockReturnValue(reply.promise);
+    let settled = false;
+    const restoring = socket._reattachAll().then(() => { settled = true; });
+    await tick();
+    abort.abort();
+    await tick();
+    try {
+      expect(settled).toBe(true);
+      expect(socket._terms.size).toBe(0);
+    } finally {
+      reply.resolve({ snapshot: "", cursor: 0 });
+      await restoring;
+      socket.close();
+    }
+  });
+  it("does not apply a reconnect reply or reap the replacement when registration changed", async () => {
+    const reply = deferred();
+    const socket = isolated();
+    const snapshot = vi.fn();
+    socket._register("shell", "user", scope, { onSnapshot: snapshot });
+    socket._call.mockReturnValue(reply.promise);
+    const restoring = socket._reattachAll();
+    await tick();
+    const replacement = socket._register("shell", "user", scope, {});
+    reply.resolve({ snapshot: b64("obsolete"), cursor: 1 });
+    await restoring;
+    expect(snapshot).not.toHaveBeenCalled();
+    expect(socket._terms.get("shell")).toBe(replacement);
+    socket.close();
+  });
+});

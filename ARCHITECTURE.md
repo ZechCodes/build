@@ -2072,7 +2072,11 @@ and navigation detach client screens without closing server shells.
 source membership before list/create/attach/close, including reconnect attach.
 Unsupported bridges retain cached tabs and an update notice, receiving no new
 terminal selectors. The shared terminal manager fences requests and pane input
-against device changes; late pane loads cannot attach after collapse or removal.
+against device changes. Pane cancellation crosses connection waits, source/greeting
+validation and attach replies; detach releases only the requesting registration.
+Failed or cancelled pane setup releases every acquired terminal resource. Channel
+recovery stays in the terminal lifecycle; the project console neither reads
+connection status nor changes its presentation on disconnect/reconnect.
 `cacheSync.js` reads all original-source rosters on sync/reconnect and subscribes
 to their terminal changes when `changes.projectSources` is present. Source push
 and list writes check membership/location transactionally and keep equal IDs on

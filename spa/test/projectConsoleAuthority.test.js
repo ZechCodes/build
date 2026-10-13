@@ -166,6 +166,52 @@ describe("project console pane authority", () => {
     expect(harness.subscriptions).toBe(0);
   });
 
+  it("old console disposal cannot detach a replacement same-ID registration", async () => {
+    const socket = new TerminalSocket({ transport: {}, userTerminalRpc: async () => ({ snapshot: "", cursor: 0 }) });
+    socket._session = { deviceId: "dev-1" };
+    socket._connected = true;
+    const originalAttach = manager.attachTerminal.getMockImplementation();
+    const originalDetach = manager.detach.getMockImplementation();
+    manager.attachTerminal.mockImplementation((...args) => socket.attachTerminal(...args));
+    manager.detach.mockImplementation((...args) => socket.detach(...args));
+    try {
+      panel.toggle(); await flush();
+      harness.starts[0](); await flush();
+      expect(socket._terms.size).toBe(1);
+      const replacement = socket._register("term-1", "user", { project_id: "other" }, {});
+      panel.dispose(); panel = null;
+      await flush();
+      expect(socket._terms.get("term-1")).toBe(replacement);
+    } finally {
+      socket.close();
+      manager.attachTerminal.mockImplementation(originalAttach);
+      manager.detach.mockImplementation(originalDetach);
+    }
+  });
+  it("cancels the real socket attach waiting for connection when the console collapses", async () => {
+    const dispatch = vi.fn(async () => ({ snapshot: "", cursor: 0 }));
+    const socket = new TerminalSocket({ transport: {}, userTerminalRpc: dispatch });
+    socket._session = { deviceId: "dev-1" };
+    const originalAttach = manager.attachTerminal.getMockImplementation();
+    manager.attachTerminal.mockImplementation((...args) => socket.attachTerminal(...args));
+    try {
+      panel.toggle(); await flush();
+      harness.starts[0](); await flush();
+      expect(socket._connectWaiters).toHaveLength(1);
+      panel.toggle(); await flush();
+      expect(socket._connectWaiters).toHaveLength(0);
+      expect(socket._terms.size).toBe(0);
+      socket._connected = true;
+      for (const waiter of socket._connectWaiters.splice(0)) waiter.resolve();
+      await flush();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(socket._terms.size).toBe(0);
+    } finally {
+      socket.close();
+      manager.attachTerminal.mockImplementation(originalAttach);
+    }
+  });
+
   it("settles a connected status without continuously subscribing again", async () => {
     harness.status = "connected";
     for (const listener of harness.statusListeners) listener("connected");
@@ -179,7 +225,10 @@ describe("project console pane authority", () => {
     panel.toggle(); await flush();
     expect(harness.starts).toHaveLength(1);
     panel.toggle(); await flush();
-    expect(manager.detach).toHaveBeenCalledWith("term-1");
+    const signal = manager.detach.mock.calls.at(-1)[1];
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(true);
+    expect(manager.detach).toHaveBeenCalledWith("term-1", signal);
     harness.starts[0](); await flush();
     expect(harness.registered.size).toBe(0);
   });

@@ -205,10 +205,17 @@ remain separate.
 - `consoleModel`, `consoleDom`, `cacheConsole` and `shellParts` cover device/project
   identity, captured-source cache namespaces, cached tabs on older bridges,
   source-qualified create/close and kept console standing on project task pages.
-- `projectConsoleAuthority` covers delayed pane loading after collapse/removal,
-  connected-status subscription settling, and device changes during terminal
-  requests. Shared pane input/resize callbacks require their captured device
-  and standing pane authority.
+- `projectConsoleAuthority` covers delayed pane loading and real socket connection
+  waits after collapse/removal, replacement registration ownership, pending-pane
+  identity through connection transitions, cache-driven roster retries and device
+  changes during terminal requests. Shared pane input/resize callbacks require
+  their captured device and standing pane authority.
+- `terminal` exercises cancellation during connection/source-validation/reply and
+  reconnect waits, identity-owned detach and retirement of replaced cursor timers.
+  `paneDom` and `userPaneCleanup` exercise the production pane's failed/cancelled
+  loads, partial setup, rejected attach, and failure after successful attach;
+  terminal instances, listeners, touch momentum and QA ownership are released.
+  `userTerminalAttachment` keeps channel recovery below the cached view.
 - `projectTerminalRpc`, `projectTerminalSupport`, `terminal`,
   `terminalReconnectIntegration` and `terminalFollowAuthority` cover current
   greeting capability, captured source assertions, source/device changes during
@@ -220,7 +227,9 @@ remain separate.
 - `browser/projectWorkspaceTerminal` exercises the Terminal action outside the
   face tablist, keyboard expanded state, no shell creation on page load, source
   labels and new-tab source selection, kept active pane through Files navigation,
-  cached old-bridge rendering, and phone/desktop overflow. `selectStylesLayout`
+  cached old-bridge rendering, unchanged cached DOM across disconnect/reconnect,
+  New terminal focus and Enter activation across unrelated cache writes and roster
+  moves, and phone/desktop overflow. `selectStylesLayout`
   includes the source picker under the shared select styling contract.
 
 These are fixture and isolated Chromium tests; no live bridge, paired client,

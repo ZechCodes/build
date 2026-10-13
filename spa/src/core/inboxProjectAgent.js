@@ -58,16 +58,21 @@ function conversationOf(project, rows, rosterOf) {
   if (!entityId) return { entityId: null, row: null, agents: [] };
   const mine = (row) => row.projectKey === project.projectKey && entityIdOf(row) === entityId;
   const row = rows.items.find(mine) || rows.runs.find(mine) || null;
-  const agents = rosterOf(project.projectKey, entityId)?.agents || [];
-  return { entityId, row, agents };
+  const roster = project.projectRoster;
+  const agents = roster ? uniqueConversations(roster.agents) : rosterOf(project.projectKey, entityId)?.agents || [];
+  return { entityId, row, agents, complete: !!roster };
 }
 
+const uniqueConversations = (agents = []) => [...new Map(agents.map((agent) =>
+  [agent.conversation_id || agent.id, agent])).values()];
+
 function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
-  const { entityId, row, agents } = conversationOf(project, rows, rosterOf);
-  const agentUnread = agents.length ? agentsUnreadCount(agents) : conversationSummaryUnreadCount(row);
+  const { entityId, row, agents, complete } = conversationOf(project, rows, rosterOf);
+  const hasRoster = complete || agents.length > 0;
+  const agentUnread = hasRoster ? agentsUnreadCount(agents) : conversationSummaryUnreadCount(row);
   const unreadCount = agentUnread + taskUnreadOf(project.projectKey);
-  const working = agents.length ? agents.some(agentIsRunning) : agentIsRunning(row);
-  const watchedWorking = agents.length ? watchedAgentsRunning(agents) : working;
+  const working = hasRoster ? agents.some(agentIsRunning) : agentIsRunning(row);
+  const watchedWorking = hasRoster ? watchedAgentsRunning(agents) : working;
   const name = projectNameOf(project);
   return {
     key: projectAgentEntryKey(project.projectKey),

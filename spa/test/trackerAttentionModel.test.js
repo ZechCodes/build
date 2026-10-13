@@ -243,3 +243,41 @@ describe("Needs you by the narrow rule (#144)", () => {
     expect(attentionGroups([one], { detailById: new Map([[one.id, chatter]]), askedOnly: true }).needsYou).toEqual([]);
   });
 });
+
+
+describe("project worker task holders (#536)", () => {
+  const pin = { id: "pin", working: false };
+  const worker = { id: "worker", working: true };
+  const project = { projectKey: PROJECT, entity_id: "project-owner", projectRoster: {
+    entity_id: "project-owner", pinned_agent_id: pin.id, agents: [worker, pin],
+  } };
+  const legacy = task("legacy", { assignee: { kind: "project_agent" } });
+  const assigned = task("worker-task", { assignee: { kind: "agent", agent_id: worker.id } });
+
+  it("uses the persisted pin for a legacy assignment while resolving a worker by exact id", () => {
+    const stale = { projectKey: PROJECT, entity_id: "project-owner", agents: [{ ...pin, working: true }] };
+    const groups = attentionGroups([legacy, assigned], { feed: { projects: [project], items: [stale] }, projectKey: PROJECT });
+    expect(groups.attentionById.get(legacy.id).holdingAgent).toMatchObject({ agent: { id: pin.id }, working: false });
+    expect(groups.attentionById.get(assigned.id).holdingAgent).toMatchObject({ agent: { id: worker.id }, working: true });
+  });
+
+  it("resolves a cached worker when there is no watched owner feed row", () => {
+    const groups = attentionGroups([assigned], { feed: { projects: [project], items: [] }, projectKey: PROJECT });
+    expect(groups.working).toEqual([assigned]);
+    expect(groups.attentionById.get(assigned.id).holdingAgent.row).toMatchObject({ entity_id: "project-owner" });
+  });
+
+  it("does not substitute a worker when the persisted pin is missing", () => {
+    const missingPin = { ...project, projectRoster: { ...project.projectRoster, agents: [worker] } };
+    const groups = attentionGroups([legacy], { feed: { projects: [missingPin], items: [] }, projectKey: PROJECT });
+    expect(groups.attentionById.get(legacy.id).holdingAgent).toBeNull();
+  });
+
+  it("keeps the legacy coordinator projection when worker support is absent", () => {
+    const oldProject = { projectKey: PROJECT, entity_id: "project-owner" };
+    const row = { projectKey: PROJECT, entity_id: "project-owner", agents: [pin] };
+    const groups = attentionGroups([legacy, assigned], { feed: { projects: [oldProject], items: [row] }, projectKey: PROJECT });
+    expect(groups.attentionById.get(legacy.id).holdingAgent.agent.id).toBe(pin.id);
+    expect(groups.attentionById.get(assigned.id).holdingAgent).toBeNull();
+  });
+});

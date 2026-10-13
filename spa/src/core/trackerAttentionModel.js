@@ -12,6 +12,7 @@
 // agent comment on a watched task.
 
 import { entityIdOf } from "./entityId.js";
+import { projectCoordinatorAgent, projectRosterRows } from "./projectRosterFeed.js";
 import { isFinished } from "./trackerAgentTasks.js";
 import { latestTaskMark } from "./trackerUnread.js";
 
@@ -80,7 +81,7 @@ export function hasUnreadInboxComment(task, detail, inboxRow) {
  *  tagged assignee can find its own digest, working or not. */
 export function knownAgentsOf(feed, projectKey) {
   const known = new Map();
-  for (const row of itemsOf(feed)) {
+  for (const row of projectRosterRows(feed)) {
     if (row.projectKey !== projectKey) continue;
     for (const agent of row.agents || []) {
       if (agent?.id) known.set(agent.id, { agent, row });
@@ -89,24 +90,17 @@ export function knownAgentsOf(feed, projectKey) {
   return known;
 }
 
-/** A project-agent assignment has no agent id on the task. When the feed
- *  carries the project owner's row, its owner id from project.list identifies
- *  that row without mistaking a workspace agent for the project's own. Some
- *  bridge snapshots omit the owner row; then the project agent is unknown. The
- *  row's working agent is preferred, else its first. */
+/** A legacy assignment names the coordinator. A complete worker roster's
+ *  persisted pin remains authoritative regardless of working state or order. */
 function projectAgentOf(feed, projectKey) {
-  const ownerId = projectOwnerId(feed, projectKey);
+  const project = projectsOf(feed).find((candidate) => candidate.projectKey === projectKey);
+  const ownerId = project?.entity_id || project?.run_id;
   if (!ownerId) return null;
-  const row = itemsOf(feed).find((item) => item.projectKey === projectKey && entityIdOf(item) === ownerId);
+  const row = projectRosterRows(feed).find((item) => item.projectKey === projectKey && entityIdOf(item) === ownerId);
   const agents = row?.agents || [];
-  const agent = agents.find((candidate) => candidate.working === true) || agents[0];
+  const agent = projectCoordinatorAgent(project, agents);
   return agent ? { agent, row } : null;
 }
-
-const projectOwnerId = (feed, projectKey) => {
-  const owner = projectsOf(feed).find((project) => project.projectKey === projectKey);
-  return owner?.entity_id || owner?.run_id || null;
-};
 
 const knownHolderOf = (assignee, knownAgents, projectAgent) => {
   if (assignee?.kind === "project_agent") return projectAgent;

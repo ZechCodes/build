@@ -497,3 +497,35 @@ fn assert_waiting_intent_stays_armed(store: &Store, intent: &DeliveryIntent) {
         .unwrap());
     assert!(store.delivery_intents_ready(100).unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn pending_provisioning_does_not_self_wake_idle_reconciliation() {
+    let root = tempfile::tempdir().unwrap();
+    let store = Store::new(root.path()).unwrap();
+    let (_, intent) = assignment(&store);
+    store.claim_delivery_intent(&intent.id, intent.generation).unwrap().unwrap();
+    while store.reconcile_waiting_on(100).unwrap().pending {}
+    while !store.take_waiting_on_changes(100).unwrap().is_empty() {}
+    let wakeup = &store.waiting_on_wakeup;
+    // Drain the legitimate assignment/claim wake before simulating idle polls.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(20), wakeup.notified()).await;
+    let mut immediate_polls = 0;
+    for _ in 0..8 {
+        assert!(!store.reconcile_waiting_on(100).unwrap().pending);
+        assert!(store.take_waiting_on_changes(100).unwrap().is_empty());
+        if tokio::time::timeout(std::time::Duration::from_millis(20), wakeup.notified()).await.is_err() {
+            break;
+        }
+        immediate_polls += 1;
+    }
+    assert_eq!(immediate_polls, 0, "idle polls must wait despite an in-flight provisioning job");
+    store.in_transaction(|tx| {
+        tx.execute("INSERT INTO meta(key,value) VALUES('unrelated-write','1')", [])?;
+        Ok(())
+    }).unwrap();
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), wakeup.notified()).await.is_err(),
+        "unrelated committed writes cannot advance provisioning");
+    // New assignment work still wakes immediately while the old job is held.
+    assignment(&store);
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(20), wakeup.notified()).await.is_ok());
+}

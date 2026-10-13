@@ -78,8 +78,22 @@ const asking = (context, transport) => (...asked) => {
   if (asked[0] === "tasks.update" && Object.hasOwn(asked[1] || {}, "expected_body_hash")) {
     return askTaskBodyUpdate(context, transport, asked);
   }
+  if (asked[0] === "tasks.assign" && asked[1]?.assignee?.kind === "new_project_agent") {
+    return askProjectWorkerAssignment(context, transport, asked);
+  }
   return canAnswer(context) ? transport()(...asked) : Promise.reject(new Error(deviceAwayMark(context)));
 };
+
+async function askProjectWorkerAssignment(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    if (context.adapter?.capabilities?.tasks?.assignProjectAgent !== true) {
+      throw new Error("Update this device's bridge to assign tasks to new project workers.");
+    }
+    return transport()(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
+}
 
 // A cached capability can outlive the bridge that announced it. Guard this
 // new param at dispatch too, on the current session's compatible greeting.

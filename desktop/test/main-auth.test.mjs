@@ -21,7 +21,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
   if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
-  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [] };
+  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [], quitEvents: [], errorBoxes: [], partitions: [] };
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: false,
@@ -29,7 +29,12 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     setAppUserModelId() {}, setAsDefaultProtocolClient() {},
     whenReady: async () => {},
     getPath: (name) => { assert.equal(name, "userData"); return directory; },
-    quit: () => { calls.quit = (calls.quit || 0) + 1; },
+    quit: () => {
+      const event = { prevented: false, preventDefault() { this.prevented = true; } };
+      app.emit("before-quit", event);
+      calls.quitEvents.push(event.prevented);
+      if (!event.prevented) calls.quit = (calls.quit || 0) + 1;
+    },
   });
   class BrowserWindow extends EventEmitter {
     constructor(options) {
@@ -43,6 +48,16 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     show() {} focus() {} isMinimized() { return false; }
     destroy() { this.destroyed = true; this.emit("closed"); }
   }
+  const defaultState = { cookie: "account-cookie", cache: "account-content" };
+  const tokenState = { cookie: null, cache: null };
+  const fetchInSession = async (state, url, options) => {
+    calls.fetch.push({ url, body: new URLSearchParams(options.body), options, state });
+    const result = fetch ? await fetch(calls.fetch.length, options) : response(tokens());
+    // Model a late network response even if cancellation loses the race.
+    if (result.setCookie && options.credentials !== "omit") state.cookie = result.setCookie;
+    if (result.cachedContent && options.cache !== "no-store") state.cache = result.cachedContent;
+    return result;
+  };
   const fixture = {
     app, BrowserWindow, removeSavedToken,
     safeStorage: {
@@ -52,26 +67,34 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       decryptString: (bytes) => bytes.toString().slice(10),
       ...safeStorage,
     },
-    dialog: { showMessageBox: async (options) => {
+    dialog: { showErrorBox: (title, content) => calls.errorBoxes.push({ title, content }), showMessageBox: async (options) => {
       calls.dialogs.push(options);
       return showMessageBox ? showMessageBox(options) : { response: calls.dialogResponse ?? 1 };
     } },
     Menu: { buildFromTemplate: (template) => template, setApplicationMenu: (menu) => { calls.menu = menu; } },
     net: { fetch: async (url, options) => {
-      calls.fetch.push({ url, body: new URLSearchParams(options.body) });
-      return fetch ? fetch(calls.fetch.length) : response(tokens());
+      return fetchInSession(defaultState, url, options);
     } },
-    session: { defaultSession: {
+    session: {
+      fromPartition: (partition, options) => {
+        calls.partitions.push({ partition, options });
+        assert.ok(partition && !partition.startsWith("persist:"), "token session must be in memory");
+        assert.equal(options.cache, false, "token session disables HTTP caching");
+        return { fetch: (url, options) => fetchInSession(tokenState, url, options) };
+      },
+      defaultSession: {
       clearStorageData: async (...args) => {
         calls.cleanup.push("storage");
         assert.deepEqual(args, [], "clear every default-session storage type");
         assert.ok(calls.windows.every((window) => window.destroyed), "renderer must retire first");
         if (clearStorageData) await clearStorageData();
+        defaultState.cookie = null;
       },
       clearCache: async () => {
         calls.cleanup.push("cache");
         assert.ok(calls.windows.every((window) => window.destroyed), "renderer must retire first");
         if (clearCache) await clearCache();
+        defaultState.cache = null;
       },
       setPermissionCheckHandler() {}, setPermissionRequestHandler() {},
       webRequest: { onBeforeSendHeaders: (_filter, handler) => { calls.headers = handler; } },
@@ -129,7 +152,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     const state = new URL(calls.browser.at(-1)).searchParams.get("state");
     app.emit("open-url", { preventDefault() {} }, `getbuilding://oauth/callback?code=fixture-code&state=${state}`);
   };
-  return { app, calls, path, header, signOut, callback, refreshTokens: testRefreshTokens, safeStorage: fixture.safeStorage };
+  return { app, calls, defaultState, tokenState, path, header, signOut, callback, refreshTokens: testRefreshTokens, safeStorage: fixture.safeStorage };
 }
 
 test("launch silently refreshes saved credentials and rotates before opening the app", async (t) => {
@@ -477,4 +500,162 @@ test("an existing authentication dialog cannot quit during sign-out cleanup", as
   storage.resolve();
   await signingOut;
   assert.equal(calls.quit, 1);
+});
+
+
+for (const operation of ["storage", "cache"]) {
+  test(`native Quit during ${operation} cleanup waits and final Quit is allowed`, async (t) => {
+    const pending = deferred();
+    const { app, calls, signOut } = await launch(t, {
+      clearStorageData: operation === "storage" ? () => pending.promise : undefined,
+      clearCache: operation === "cache" ? () => pending.promise : undefined,
+    });
+    const cleanup = signOut().click();
+    await flush();
+    app.quit();
+    app.quit();
+    assert.deepEqual(calls.quitEvents, [true, true]);
+    assert.equal(calls.quit, undefined);
+    pending.resolve();
+    await cleanup;
+    assert.deepEqual(calls.quitEvents, [true, true, false]);
+    assert.equal(calls.quit, 1);
+    // Cleanup first, then native Quit: no permanent lifecycle veto remains.
+    app.quit();
+    assert.equal(calls.quitEvents.at(-1), false);
+    assert.equal(calls.quit, 2);
+  });
+}
+
+test("ordinary native Quit without Sign Out is allowed", async (t) => {
+  const { app, calls } = await launch(t);
+  app.quit();
+  assert.deepEqual(calls.quitEvents, [false]);
+  assert.equal(calls.quit, 1);
+});
+
+test("native Quit waits for Sign Out failure reporting", async (t) => {
+  const report = deferred();
+  const { app, calls, signOut } = await launch(t, {
+    clearStorageData: () => { throw new Error("fixture-private-failure"); },
+    showMessageBox: () => report.promise,
+  });
+  const cleanup = signOut().click();
+  await flush();
+  assert.equal(calls.dialogs.length, 1);
+  app.quit();
+  assert.deepEqual(calls.quitEvents, [true]);
+  assert.equal(calls.quit, undefined);
+  report.resolve({ response: 0 });
+  await cleanup;
+  assert.equal(calls.quit, 1);
+});
+
+for (const operation of ["storage", "cache"]) {
+  test(`hung ${operation} cleanup is bounded, reports failure, and permits quit`, async (t) => {
+    const pending = deferred();
+    const { app, calls, signOut } = await launch(t, {
+      clearStorageData: operation === "storage" ? () => pending.promise : undefined,
+      clearCache: operation === "cache" ? () => pending.promise : undefined,
+    });
+    const cleanup = signOut().click();
+    await flush();
+    app.quit();
+    assert.equal(calls.quitEvents.at(-1), true);
+    t.mock.timers.tick(5_000);
+    await flush();
+    assert.deepEqual(calls.cleanup, ["storage", "cache"]);
+    assert.equal(calls.dialogs.length, 1);
+    assert.match(calls.dialogs[0].message, /could not clear/);
+    assert.equal(calls.quit, 1);
+    await cleanup;
+    pending.resolve();
+    await flush();
+    assert.equal(calls.quit, 1, "late completion does not quit twice");
+  });
+}
+
+for (const mode of ["pending", "rejected"]) {
+  test(`${mode} failure dialog cannot hold Sign Out forever`, async (t) => {
+    const { app, calls, signOut } = await launch(t, {
+      clearCache: () => { throw new Error("fixture-private-failure"); },
+      showMessageBox: () => mode === "pending" ? new Promise(() => {}) : Promise.reject(new Error("fixture-dialog-failure")),
+    });
+    const cleanup = signOut().click();
+    await flush();
+    if (mode === "pending") {
+      app.quit();
+      assert.equal(calls.quitEvents.at(-1), true);
+      t.mock.timers.tick(5_000);
+      await flush();
+    }
+    assert.equal(calls.errorBoxes.length, 1, "fallback surfaces cleanup failure");
+    assert.equal(JSON.stringify(calls.errorBoxes).includes("fixture-private"), false);
+    assert.equal(calls.quit, 1);
+    await cleanup;
+  });
+}
+
+for (const grant of ["refresh", "code"]) {
+  test(`Sign Out aborts ${grant} exchange and late response cannot repopulate default session`, async (t) => {
+    const late = deferred();
+    const cache = deferred();
+    const { calls, callback, signOut, path, header, defaultState, tokenState } = await launch(t, {
+      stored: grant === "code" ? null : "fixture-refresh-saved",
+      fetch: (count) => grant === "refresh" && count === 1 ? response(tokens()) : late.promise,
+      clearCache: () => cache.promise,
+    });
+    if (grant === "code") callback();
+    else t.mock.timers.tick(840_000);
+    await flush();
+    const request = calls.fetch.at(-1);
+    const cleanup = signOut().click();
+    await flush();
+    assert.equal(defaultState.cookie, null);
+    // Ignore abort deliberately: isolation must protect storage even if a response won the race.
+    late.resolve({ ...response(tokens("late")), setCookie: "late-cookie", cachedContent: "late-account-content" });
+    await flush();
+    assert.equal(defaultState.cookie, null);
+    assert.equal(request.options.signal?.aborted, true, "abort before session cleanup");
+    assert.equal(defaultState.cache, "account-content", "late response cannot rewrite existing default cache");
+    assert.equal(tokenState.cookie, null, "token fetch also omits response cookies");
+    assert.equal(tokenState.cache, null, "token fetch does not cache account content");
+    assert.equal(existsSync(path), false);
+    assert.equal(header(), undefined);
+    assert.equal(calls.dialogs.length, 0);
+    cache.resolve();
+    await cleanup;
+    assert.deepEqual(defaultState, { cookie: null, cache: null });
+  });
+}
+
+test("every token request uses an isolated nonpersistent session without cookies or caching", async (t) => {
+  const { calls, defaultState, tokenState } = await launch(t);
+  assert.equal(calls.partitions.length, 1);
+  assert.notEqual(calls.fetch[0].state, defaultState);
+  assert.equal(calls.fetch[0].state, tokenState);
+  assert.equal(calls.fetch[0].options.credentials, "omit");
+  assert.equal(calls.fetch[0].options.cache, "no-store");
+  assert.ok(calls.fetch[0].options.signal instanceof AbortSignal);
+});
+
+
+test("Sign Out aborts outstanding token requests before deleting storage", async (t) => {
+  const pending = deferred();
+  let signal;
+  const { calls, signOut } = await launch(t, {
+    fetch: (count, options) => {
+      if (count === 1) return response(tokens());
+      signal = options.signal;
+      return pending.promise;
+    },
+    clearStorageData: () => assert.equal(signal?.aborted, true),
+  });
+  t.mock.timers.tick(840_000);
+  await flush();
+  await signOut().click();
+  assert.equal(signal?.aborted, true);
+  pending.resolve(response(tokens("late")));
+  await flush();
+  assert.equal(calls.dialogs.length, 0);
 });

@@ -71,6 +71,7 @@ describe("the adapter a greeting selects", () => {
       // whether this bridge carries the one it is about to subscribe to.
       changes: { subscriptions: true, kinds: ["state", "thread", "git", "files"], projectSources: false },
       git: { projectSources: false },
+      term: { projectSources: false },
       fs: { projectSources: false, projectSourcePath: false, uploads: false, createDirectory: false, createFile: false },
       requests: { priority: true },
       rtc: { clientLanCache: false },
@@ -98,7 +99,7 @@ describe("the adapter a greeting selects", () => {
     // advertises nothing: the lowest adapter takes it with every flag off.
     await greetBridge(async () => ({ push_events: true }));
     expect(bridgeAdapter()).toMatchObject({ major: 3, version: "0.0.0" });
-    expect(bridgeCapabilities()).toEqual(NONE);
+    expect(bridgeCapabilities()).toEqual({ ...NONE, term: { projectSources: false } });
     expect(changeEventsArmed()).toBe(true);
   });
 
@@ -107,7 +108,7 @@ describe("the adapter a greeting selects", () => {
       throw new Error("unknown method: session.hello");
     });
     expect(bridgeAdapter()).toMatchObject({ major: 3, version: "0.0.0" });
-    expect(bridgeCapabilities()).toEqual(NONE);
+    expect(bridgeCapabilities()).toEqual({ ...NONE, term: { projectSources: false } });
   });
 
   it("installs nothing for a bridge above every adapter, and neither arms nor refetches", async () => {

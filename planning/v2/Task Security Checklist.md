@@ -485,3 +485,16 @@ with the production fix unchanged (**24 unit tests**, exit **0**). Thus the
 never to the wire’s empty prerequisite list. TS558-4’s removal-consequence
 evidence is unchanged; TS558-7 includes the opened-source, unknown-summary
 and authoritative-empty-list cases. Final broad gates and publication follow.
+
+Revision-7 final gates, pinned Node 22.23.3/npm 12.0.2 under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, install
+scripts disabled), all-source lint, full Chromium-inclusive `npm test`,
+`test:captures` and build each exit **0**. All **671 files / 10,462 tests**
+pass, including the explicit empty-list regressions; #614 does not fail, so
+isolated reruns are unnecessary. Semgrep exits **0** (38 tracked js/mjs/css
+targets / 200 rules / no findings); Gitleaks `origin/main..HEAD` and diff-check
+exit **0**. W5-owned TS558-4/7 score remains **100/100** after closing the
+opened-source and unknown-summary bypass. No bridge files, complexity caps
+or ratchet entries change. Source stays fixed at `6957095f` throughout the
+final gates; later commits add explicit empty-list tests and record evidence.
+Publication head/base, snapshot and attached exit/log evidence are on #564.

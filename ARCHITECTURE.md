@@ -2665,8 +2665,9 @@ refuses when that device cannot answer.
   passes the target/note without a submit-time readiness decision; its opened
   task participates in the same scoped timestamp arbitration as cached facts.
   A reblock during greeting waits cannot silently start work on an older bridge.
-  `taskAssignmentFacts.js` compares the task's own timestamps across replicas,
-  discarding strictly older stamped facts. Ties and unknown timestamps retain
+  When the sources know readiness, `taskAssignmentFacts.js` compares the task's
+  own timestamps across replicas, discarding strictly older stamped facts.
+  Ties and unknown timestamps retain
   waiting evidence: if the remaining sources disagree, waiting wins. Source
   read/write orders are never compared; an unrelated catalogue mutation cannot
   promote stale ready facts. Omitted/null dependency summaries or summaries
@@ -2679,7 +2680,8 @@ refuses when that device cannot answer.
   `taskAssignmentFacts.test.js` covers timestamp/tie/unknown conflicts, and
   `trackerTasksPaneDom.test.js` exercises unrelated-mutation refusal and kept
   drafts through both list and board pickers, including a legacy refresh that
-  omits the newer opened task's dependency facts. Final suite evidence is on #564.
+  omits the newer opened task's dependency facts. These and the authoritative
+  empty-list regressions pass in #564's 10,462-test Chromium-inclusive suite.
   Successful
   responses update tracker detail and list replicas through
   `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.

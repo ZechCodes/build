@@ -1850,7 +1850,7 @@ describe("the bubble strip", () => {
     expect(bubbles()[0].classList.contains("working")).toBe(true);
     // Working outranks the unread it left before this run (#201); the count says it.
     expect(bubbles()[0].title).toMatch(/— working$/);
-    expect(bubbles()[0].getAttribute("aria-label")).toMatch(/— working$/);
+    expect(bubbles()[0].getAttribute("aria-label")).toBe(`${bubbles()[0].title}, 3 unread`);
 
     // …and back again: the count goes, the animation stops where it was.
     payload = branchRow({ agents: [agent()] });

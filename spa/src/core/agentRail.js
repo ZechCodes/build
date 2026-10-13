@@ -537,11 +537,10 @@ const bubbleClasses = (bubble) => {
   return classes.join(" ");
 };
 
-// The project pin keeps its purpose as the tooltip. Its accessible name also
-// announces the unread badge, which an aria-label would otherwise override.
+// Keep the tooltip while announcing every unread badge in the accessible name,
+// which an aria-label would otherwise override.
 const bubbleAccessibleName = (bubble) =>
-  (bubble.project || bubble.type === "project") && bubble.unread
-    ? `${bubble.title}, ${bubble.unread} unread` : bubble.title;
+  bubble.unread ? `${bubble.title}, ${bubble.unread} unread` : bubble.title;
 
 export function bubbleHtml(bubble) {
   // The line between the project's agent and this work item's own. It says

@@ -111,6 +111,83 @@ async function selectWithKeyboard(page, selector) {
   expect(await page.locator(selector).getAttribute("aria-expanded")).toBe("true");
 }
 
+for (const { state, news } of [
+  { state: "done", news: "The agent finished — review the work" },
+  { state: "blocked", news: "Blocked — the agent needs you" },
+  { state: "working", news: "working" },
+]) {
+  it(`announces the project worker's unread badge in its accessible name (${state})`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountWorkers(page, basePath);
+      await page.evaluate(async (state) => {
+        const { cache } = window.__layoutModules;
+        window.__workerRoster.agents = window.__workerRoster.agents.map((agent) => ({ ...agent,
+          unread_count: 2, unread_reason: state === "working" ? "done" : state,
+          working: agent.id === "project-worker" && state === "working",
+        }));
+        await cache.writeCached({ deviceId: "workers-device", entityId: "project-owner", kind: "project-agents" },
+          window.__workerRoster);
+      }, state);
+      await page.locator(`${WORKER} .rail-count:not([hidden])`).waitFor();
+      expect(await page.locator(`${WORKER} .rail-count`).textContent()).toBe("2");
+      const title = `Project worker · Project worker — ${news}`;
+      expect(await page.locator(WORKER).getAttribute("title")).toBe(title);
+      expect(await page.getByRole("button", { name: `${title}, 2 unread`, exact: true }).count()).toBe(1);
+      expect(await page.getByRole("button", { name: "Project agent, 2 unread", exact: true }).count()).toBe(1);
+      expect(await page.locator(PIN).getAttribute("title")).toBe("Project agent");
+      await page.evaluate(async () => {
+        const { cache } = window.__layoutModules;
+        window.__workerRoster.agents = window.__workerRoster.agents.map((agent) => ({ ...agent, unread_count: 0 }));
+        await cache.writeCached({ deviceId: "workers-device", entityId: "project-owner", kind: "project-agents" },
+          window.__workerRoster);
+      });
+      await page.locator(`${WORKER} .rail-count`).waitFor({ state: "hidden" });
+      const readTitle = `Project worker · Project worker${state === "working" ? " — working" : ""}`;
+      expect(await page.getByRole("button", { name: readTitle, exact: true }).count()).toBe(1);
+      expect(await page.getByRole("button", { name: "Project agent", exact: true }).count()).toBe(1);
+      expect(await page.getByRole("button", { name: /unread/ }).count()).toBe(0);
+    });
+  });
+}
+
+it("omits unread from accessible names when the worker and pin have no badge", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkers(page, basePath);
+    expect(await page.getByRole("button", { name: "Project worker · Project worker", exact: true }).count()).toBe(1);
+    expect(await page.getByRole("button", { name: "Project agent", exact: true }).count()).toBe(1);
+    expect(await page.getByRole("button", { name: /unread/ }).count()).toBe(0);
+    expect(await page.locator(`${WORKER} .rail-count`).isHidden()).toBe(true);
+    expect(await page.locator(`${PIN} .rail-count`).isHidden()).toBe(true);
+  });
+});
+
+it("announces a workspace agent's unread badge through the same accessible name", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountWorkers(page, basePath);
+    await page.evaluate(async () => {
+      const { cache, contexts, rail, scope } = window.__layoutModules;
+      const address = { deviceId: "workers-device", entityId: "workspace-owner", kind: "row" };
+      const row = (await cache.readCached(address)).value;
+      await cache.writeCached(address, { ...row, agents: row.agents.map((agent) => ({ ...agent,
+        unread_count: 2, unread_reason: "blocked",
+      })) });
+      window.__workerRail.dispose();
+      window.__workerRail = rail.mountAgentRail(document.querySelector("#agent-rail"), {
+        kind: "workspace", deviceId: "workers-device", projectId: "workers-project",
+        workspaceId: "workers-workspace", entityId: "workspace-owner",
+        cacheScope: scope.scopeFor("workers-device"),
+        chatRepository: contexts.knownDeviceContext("workers-device").chatRepository,
+      });
+    });
+    const selector = '[data-bubble="agent"][data-agent="workspace-agent"]';
+    await page.locator(`${selector} .rail-count:not([hidden])`).waitFor();
+    expect(await page.locator(`${selector} .rail-count`).textContent()).toBe("2");
+    const title = "Workspace editor · Workspace editor — Blocked — the agent needs you";
+    expect(await page.locator(selector).getAttribute("title")).toBe(title);
+    expect(await page.getByRole("button", { name: `${title}, 2 unread`, exact: true }).count()).toBe(1);
+  });
+});
+
 for (const viewport of VIEWPORTS) {
   it(`paints cached workers before greeting, selects by keyboard and falls back on downgrade (${viewport.width})`, async () => {
     await session.withPage(async ({ page, basePath }) => {

@@ -269,3 +269,23 @@ W4 Active/Backlog grouping is #563's scope. As directed for the parallel landing
 the second of #563/#564 to land verifies assigned wait → Done/close release →
 one delivery with closure assessment → updated Active/Backlog groups. This W5
 score does not claim that combined journey before W4 lands.
+
+
+W5 final gates, all under `nice -n 10`, with SPA/transport using Node
+22.23.3/npm 12.0.2 and judged by actual exit codes: locked transport install
+with `--ignore-scripts` **0**; locked SPA install with `--legacy-peer-deps` **0**;
+all-source lint **0**; full `npm test`, including Chromium, **0** (668 files,
+10,380 tests passed); `test:captures` **0**; build **0**; unchanged
+`complexityRatchet` **0** (2 tests); Semgrep auto/error **0** (200 rules, 30
+changed tracked targets, no findings). Gitleaks and `origin/main..HEAD`
+diff-check evidence is attached on #564 at the final published head.
+
+The first complete suite exited 1 with exactly two strict source-inventory
+assertions missing the new waiting renderer (10,378 tests passed). The select
+and input manifests now include its production search/select surfaces; the
+original assertions are unchanged. Both inventories failed first and then
+passed; their complete style suites exited 0 (13 tests, both themes), followed
+by the passing complete rerun. #614 did not fail, so no isolated flake reruns
+were needed. Gate logs, red/green evidence and four representative screenshots
+are attached on #564. Origin/main stayed e42778df through the ready fetch;
+no merge was needed. No live bridge or user browser was used.

@@ -3237,7 +3237,7 @@ mod tests {
     /// The task tracker and review inventory shared between the two
     /// working surfaces — and for the same reason: both agents are bound to a
     /// project, and a project has one board.
-    const TASK_TOOLS: [&str; 24] = [
+    const TASK_TOOLS: [&str; 26] = [
         "list_tasks",
         "get_task",
         "read_comment",
@@ -3250,6 +3250,8 @@ mod tests {
         "link_task",
         "track_task",
         "untrack_task",
+        "unlink_task",
+        "list_task_dependents",
         "snapshot_review",
         "get_review",
         "read_review",

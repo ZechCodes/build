@@ -131,7 +131,10 @@ fn load(conn: &Connection, id: &str) -> Result<Option<DeliveryIntent>, StoreErro
         .transpose()
 }
 
-fn current(conn: &Connection, task_id: &str) -> Result<Option<DeliveryIntent>, StoreError> {
+pub(super) fn current(
+    conn: &Connection,
+    task_id: &str,
+) -> Result<Option<DeliveryIntent>, StoreError> {
     let raw: Option<(String, String)> = conn.query_row("SELECT id, record FROM tracker_delivery_intents WHERE task_id = ?1 AND state <> 'cancelled' ORDER BY generation DESC LIMIT 1", [task_id], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
     raw.map(|(id, raw)| tracker::decode(&raw, "tracker_delivery_intents", &id))
         .transpose()

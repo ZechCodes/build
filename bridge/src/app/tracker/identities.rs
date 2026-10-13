@@ -195,9 +195,11 @@ impl AppState {
         &self,
         project_id: &str,
         task: &Task,
-    ) -> serde_json::Value {
+    ) -> Result<serde_json::Value, String> {
         let task = self.task_with_read_identities(task.clone(), &[], &StoredRosters::default());
-        super::task_json(project_id, &task)
+        let mut answer = super::task_json(project_id, &task);
+        self.extend_task_waiting_summary(&task, &mut answer)?;
+        Ok(answer)
     }
 
     fn live_task_identity(&self, agent_id: &str) -> Option<TaskAgentIdentity> {

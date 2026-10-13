@@ -264,11 +264,11 @@ pub(super) enum AssigneeFilter {
 }
 
 impl AssigneeFilter {
-    pub(super) fn matches(&self, task: &Task) -> bool {
+    pub(super) fn matches(&self, task: &Task, pending_target: Option<&Value>) -> bool {
         match self {
             AssigneeFilter::Unfiltered => true,
-            AssigneeFilter::Unassigned => task.assignee.is_none(),
-            AssigneeFilter::Assigned => task.assignee.is_some(),
+            AssigneeFilter::Unassigned => task.assignee.is_none() && pending_target.is_none(),
+            AssigneeFilter::Assigned => task.assignee.is_some() || pending_target.is_some(),
             AssigneeFilter::Exactly(wanted) => task.assignee.as_ref() == Some(wanted),
         }
     }
@@ -337,7 +337,7 @@ pub(super) fn asked_links(params: &Value) -> Result<AskedLinks, String> {
             asked.push(key, value);
         }
     }
-    if asked.is_empty() {
+    if asked.is_empty() && params.get("waiting_on").is_none() {
         return Err(
             "tasks.link: name a workspace_id, branch, commit, conversation_id or parent_task_id"
                 .to_string(),

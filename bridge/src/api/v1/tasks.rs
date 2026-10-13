@@ -6,11 +6,9 @@
 //! `tasks.*` here — so no name can be registered by both, and the test at the
 //! bottom of `api/v1/mod.rs` proves it.
 //!
-//! Same shape as the workspace family: the implementations under
-//! `app/tracker/` are untouched, each handler resolves its typed params, hands
-//! them to the implementation, and names the shape that implementation answers
-//! in. Nothing here defers — a tracker verb is a SQLite write and an in-memory
-//! lookup, with no git to hand to the drain.
+//! Each handler resolves typed params, invokes the tracker service and names
+//! its answer shape. Assignment records durable delivery authority before
+//! dispatch; checkout work uses the ordinary deferred Git drain.
 //!
 //! On the nullable fields: a task writes its absences as explicit `null`s
 //! (`assignee`, `closed_at`, `links.parent_task_id`) rather than leaving the
@@ -48,6 +46,24 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
             tasks_assign,
             TasksAssignParams,
             TaskAssigned
+        ),
+        v1_method!(
+            "tasks.waiting_on.add",
+            tasks_waiting_on_add,
+            TasksWaitingOnParams,
+            TaskAnswer
+        ),
+        v1_method!(
+            "tasks.waiting_on.remove",
+            tasks_waiting_on_remove,
+            TasksWaitingOnParams,
+            TaskAnswer
+        ),
+        v1_method!(
+            "tasks.waiting_on.blocks",
+            tasks_waiting_on_blocks,
+            TasksBlocksParams,
+            TaskBlocks
         ),
         v1_method!("tasks.close", tasks_close, TasksCloseParams, TaskAnswer),
         v1_method!("tasks.reopen", tasks_reopen, TaskIdParams, TaskAnswer),
@@ -152,6 +168,8 @@ pub struct TasksCreateParams {
     pub project_id: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
     /// The column it starts in; `backlog` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -236,22 +254,92 @@ pub struct TaskAttachmentRef {
 /// unassigns. Untyped here for the reason a timeline entry is: the five arms
 /// carry different fields, and `AssignTarget::parse` is the one place that
 /// reads them, naming each refusal.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
+#[serde(try_from = "TasksAssignWire")]
 pub struct TasksAssignParams {
-    #[serde(deserialize_with = "crate::renamed_ids::current")]
     pub task_id: String,
     pub assignee: Value,
+    pub retry_deferred_id: Option<String>,
+    pub note: Option<String>,
+    pub operation_id: Option<String>,
+}
+
+/// Preserve field presence until mutually exclusive retry inputs are validated.
+#[derive(Deserialize)]
+struct TasksAssignWire {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
+    pub task_id: String,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assignee: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_deferred_id: Option<String>,
     /// Extra instruction delivered under the task. Not stored on the task:
     /// the body is the task, and a hand-off note belongs in the conversation
     /// it was said in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub note: Option<Option<String>>,
     /// The client's id for this assignment (since 3.21.0, announced as
     /// `tasks.assignProjectAgent`). The delivery is queued under it, and
     /// asking again with the same id answers the dispatch it already made
     /// instead of delivering twice.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operation_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "provided",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub operation_id: Option<Option<String>>,
+}
+
+impl TryFrom<TasksAssignWire> for TasksAssignParams {
+    type Error = &'static str;
+
+    fn try_from(wire: TasksAssignWire) -> Result<Self, Self::Error> {
+        if wire.retry_deferred_id.is_some()
+            && (wire.assignee.is_some() || wire.note.is_some() || wire.operation_id.is_some())
+        {
+            return Err(
+                "retry_deferred_id is mutually exclusive with assignee, note and operation_id",
+            );
+        }
+        if wire.retry_deferred_id.is_none() && wire.assignee.is_none() {
+            return Err("assignee is required");
+        }
+        Ok(Self {
+            task_id: wire.task_id,
+            assignee: wire.assignee.unwrap_or(Value::Null),
+            retry_deferred_id: wire.retry_deferred_id,
+            note: wire.note.flatten(),
+            operation_id: wire.operation_id.flatten(),
+        })
+    }
+}
+
+impl Serialize for TasksAssignParams {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut wire = serializer.serialize_map(None)?;
+        wire.serialize_entry("task_id", &self.task_id)?;
+        if let Some(id) = &self.retry_deferred_id {
+            wire.serialize_entry("retry_deferred_id", id)?;
+        } else {
+            wire.serialize_entry("assignee", &self.assignee)?;
+        }
+        if let Some(note) = &self.note {
+            wire.serialize_entry("note", note)?;
+        }
+        if let Some(id) = &self.operation_id {
+            wire.serialize_entry("operation_id", id)?;
+        }
+        wire.end()
+    }
 }
 
 /// How far the user has read one task.
@@ -273,6 +361,63 @@ pub struct TasksCloseParams {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksWaitingOnParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
+    pub task_id: String,
+    pub waiting_on: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TasksBlocksParams {
+    #[serde(deserialize_with = "crate::renamed_ids::current")]
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskBlocks {
+    pub blocks: Vec<crate::store::DependencyDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct TaskDependenciesView {
+    pub blocked: bool,
+    pub waiting_on: Vec<crate::store::DependencyDigest>,
+    pub blocks_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<crate::store::DependencyDigest>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks_next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeferredAssignmentView {
+    pub id: String,
+    pub target: Value,
+    pub state: DeferredAssignmentState,
+    pub error: Option<String>,
+}
+
+fn provided<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeferredAssignmentState {
+    Waiting,
+    Queued,
+    Failed,
+}
+
 // --------------------------------------------------------------- results ---
 
 /// What a task is about, in the repository and in Build.
@@ -289,6 +434,10 @@ pub struct TaskLinks {
 /// One task, as every tracker verb answers it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct TaskView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<TaskDependenciesView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferred_assignment: Option<DeferredAssignmentView>,
     pub id: String,
     pub project_id: String,
     /// Per-project and sequential, for `#12`.
@@ -509,7 +658,8 @@ pub struct TaskColumns {
 // ----------------------------------------------------------------- codes ---
 
 /// The request was legible and the task's own state said no.
-const CONFLICT: [&str; 8] = [
+const CONFLICT: [&str; 9] = [
+    "conflict: unresolved waiting-on dependencies",
     "already has the most trackers it can carry",
     // A retried assignment's id names a different assignment of the task.
     "was already spent on a different assignment",
@@ -526,7 +676,14 @@ const CONFLICT: [&str; 8] = [
 /// A word in the request is not one this bridge knows, or a value is out of
 /// shape. `unknown <thing>` otherwise reads as a missing entity, and half of
 /// these are about a word rather than a thing.
-const INVALID: [&str; 24] = [
+const INVALID: [&str; 31] = [
+    "a task cannot wait on itself",
+    "waiting_on",
+    "reverse cursor",
+    "limit must",
+    "retry_deferred_id",
+    "only the current failed",
+    "delivery intent",
     "unknown assignee kind:",
     "operation_id exceeds",
     "operation_id contains",
@@ -571,6 +728,11 @@ fn refine(error: ApiError) -> ApiError {
     if message == "conflict: operation_id already used with different assignment" {
         return ApiError::conflict(message, None);
     }
+    if message.contains("only the current failed delivery")
+        || message.contains("retry_deferred_id does not belong")
+    {
+        return ApiError::conflict(message, None);
+    }
     if message.starts_with("stale_body:") {
         return ApiError::StaleBody {
             message,
@@ -589,6 +751,142 @@ fn refine(error: ApiError) -> ApiError {
     error
 }
 
+fn tasks_waiting_on_add(
+    app: &mut AppState,
+    params: TasksWaitingOnParams,
+) -> Result<Answer<TaskAnswer>, ApiError> {
+    let wire = params.wire();
+    answer(app.tasks_waiting_on_edit(&wire, true)).map_err(|error| {
+        refine_waiting(app, error, Some(&params.task_id), None, &params.waiting_on)
+    })
+}
+fn tasks_waiting_on_remove(
+    app: &mut AppState,
+    params: TasksWaitingOnParams,
+) -> Result<Answer<TaskAnswer>, ApiError> {
+    let wire = params.wire();
+    answer(app.tasks_waiting_on_edit(&wire, false)).map_err(|error| {
+        refine_waiting(app, error, Some(&params.task_id), None, &params.waiting_on)
+    })
+}
+fn tasks_waiting_on_blocks(
+    app: &mut AppState,
+    params: TasksBlocksParams,
+) -> Result<Answer<TaskBlocks>, ApiError> {
+    answer(app.tasks_waiting_on_blocks(&params.wire())).map_err(refine)
+}
+
+/// Add facts only after the implementation fenced every dependency endpoint.
+fn refine_waiting(
+    app: &mut AppState,
+    error: ApiError,
+    task_id: Option<&str>,
+    project_id: Option<&str>,
+    proposed: &[String],
+) -> ApiError {
+    let error = refine(error);
+    let message = error.message().to_string();
+    let blocked = message.contains("conflict: unresolved waiting-on dependencies");
+    let cycle = message.contains("waiting_on would create a cycle")
+        || message.contains("a task cannot wait on itself");
+    if !blocked && !cycle {
+        return error;
+    }
+    let Some(task_id) = task_id else {
+        return refine_waiting_create(app, error, project_id, proposed);
+    };
+    let Some(task) = waiting_task_read(app, task_id) else {
+        return error;
+    };
+    let details = if blocked {
+        let waiting_on =
+            scoped_waiting_blockers(app, &task.project_id, task.dependencies.as_ref(), proposed);
+        Some(serde_json::json!({"task_id":task_id,"waiting_on":waiting_on}))
+    } else {
+        Some(serde_json::json!({"task_id":task_id,"waiting_on":proposed}))
+    };
+    if blocked {
+        ApiError::conflict(message, details)
+    } else {
+        ApiError::InvalidParams { message, details }
+    }
+}
+
+/// Rejected creation has no saved task; scope facts to its validated project.
+fn refine_waiting_create(
+    app: &mut AppState,
+    error: ApiError,
+    project_id: Option<&str>,
+    proposed: &[String],
+) -> ApiError {
+    let Some(project_id) = project_id else {
+        return error;
+    };
+    let waiting_on = scoped_waiting_blockers(app, project_id, None, proposed);
+    ApiError::conflict(
+        error.message(),
+        Some(serde_json::json!({"project_id":project_id,"waiting_on":waiting_on})),
+    )
+}
+
+/// A refused new edge is absent from storage; include its scoped proposal too.
+fn scoped_waiting_blockers(
+    app: &mut AppState,
+    project_id: &str,
+    dependencies: Option<&TaskDependenciesView>,
+    proposed: &[String],
+) -> Vec<crate::store::DependencyDigest> {
+    let mut blockers = dependencies
+        .map(|summary| {
+            summary
+                .waiting_on
+                .iter()
+                .filter(|edge| !edge.resolved)
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for id in proposed {
+        if blockers.iter().any(|blocker| blocker.task_id == *id) {
+            continue;
+        }
+        if let Some(blocker) = proposed_waiting_blocker(app, project_id, id) {
+            blockers.push(blocker)
+        }
+    }
+    blockers
+}
+
+fn waiting_task_read(app: &mut AppState, id: &str) -> Option<TaskView> {
+    let read = app.tasks_get(&serde_json::json!({"task_id":id})).ok()?;
+    serde_json::from_value::<TaskDetail>(read)
+        .ok()
+        .map(|detail| detail.task)
+}
+
+fn proposed_waiting_blocker(
+    app: &mut AppState,
+    project_id: &str,
+    id: &str,
+) -> Option<crate::store::DependencyDigest> {
+    let prerequisite = waiting_task_read(app, id)?;
+    if prerequisite.project_id != project_id
+        || prerequisite.state != "open"
+        || prerequisite.status == "done"
+    {
+        return None;
+    }
+    Some(crate::store::DependencyDigest {
+        task_id: id.to_string(),
+        number: prerequisite.number,
+        title: prerequisite.title,
+        state: crate::tracker::TaskState::Open,
+        status: prerequisite.status,
+        resolved: false,
+        resolved_by: None,
+    })
+}
+
 // -------------------------------------------------------------- handlers ---
 
 fn tasks_list(app: &mut AppState, params: TasksListParams) -> Result<Answer<TasksList>, ApiError> {
@@ -603,11 +901,16 @@ fn tasks_create(
     app: &mut AppState,
     params: TasksCreateParams,
 ) -> Result<Answer<TaskAssigned>, ApiError> {
-    answer(
-        app.tasks_create(&params.wire())
-            .map(super::deferral_placeholder),
-    )
-    .map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_create(&wire).map(super::deferral_placeholder)).map_err(|error| {
+        refine_waiting(
+            app,
+            error,
+            None,
+            Some(&params.project_id),
+            params.waiting_on.as_deref().unwrap_or_default(),
+        )
+    })
 }
 
 fn tasks_attach(
@@ -628,7 +931,9 @@ fn tasks_update(
     app: &mut AppState,
     params: TasksUpdateParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_update(&params.wire())).map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_update(&wire))
+        .map_err(|error| refine_waiting(app, error, Some(&params.task_id), None, &[]))
 }
 
 fn tasks_comment(
@@ -642,11 +947,9 @@ fn tasks_assign(
     app: &mut AppState,
     params: TasksAssignParams,
 ) -> Result<Answer<TaskAssigned>, ApiError> {
-    answer(
-        app.tasks_assign(&params.wire())
-            .map(super::deferral_placeholder),
-    )
-    .map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_assign(&wire).map(super::deferral_placeholder))
+        .map_err(|error| refine_waiting(app, error, Some(&params.task_id), None, &[]))
 }
 
 fn tasks_close(

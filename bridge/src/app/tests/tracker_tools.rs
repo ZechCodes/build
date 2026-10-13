@@ -37,7 +37,7 @@ pub(super) fn call(
 }
 
 /// The twelve the tracker adds, by name.
-const TASK_TOOLS: [&str; 12] = [
+const TASK_TOOLS: [&str; 14] = [
     "list_tasks",
     "get_task",
     "read_comment",
@@ -50,6 +50,8 @@ const TASK_TOOLS: [&str; 12] = [
     "link_task",
     "track_task",
     "untrack_task",
+    "unlink_task",
+    "list_task_dependents",
 ];
 
 /// Both working surfaces are shown the same twelve tools. The router is shown

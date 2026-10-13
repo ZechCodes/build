@@ -45,6 +45,7 @@ mod tools;
 mod tracking;
 mod views;
 mod waiting_on;
+mod waiting_on_api;
 
 #[cfg(test)]
 pub(in crate::app) use agent_files::between_check_and_copy;
@@ -164,7 +165,7 @@ impl AppState {
         )?;
         let stretch = self
             .tracker_store()?
-            .list_tracker_tasks_below(
+            .list_tracker_tasks_with_assignment_below(
                 &project_path,
                 TaskFilter {
                     state,
@@ -175,7 +176,7 @@ impl AppState {
                     take: page.rows_to_keep(),
                     scan: page.rows_to_scan(),
                 },
-                |task| assignee.matches(task) && edits::carries_label(task, label),
+                |task, target| assignee.matches(task, target) && edits::carries_label(task, label),
             )
             .stored()?;
         let mut tasks = stretch.tasks;
@@ -211,6 +212,7 @@ impl AppState {
             let task = self.task_with_read_identities(task, &timeline, &rosters);
             let mut row = views::read_task_json(project_id, &task, &timeline);
             self.extend_task_review_summary(&task.id, &mut row)?;
+            self.extend_task_waiting_summary(&task, &mut row)?;
             rows.push(row);
         }
         Ok(rows)
@@ -230,6 +232,7 @@ impl AppState {
         let task = self.task_with_read_identities(task, &timeline, &rosters);
         let mut answer = task_with_timeline_json(&project_id, &task, &timeline);
         self.extend_task_review_summary(&task.id, &mut answer["task"])?;
+        self.extend_task_waiting_summary(&task, &mut answer["task"])?;
         Ok(answer)
     }
 
@@ -304,6 +307,12 @@ impl AppState {
             None | Some(Value::Null) => None,
             Some(assignee) => Some(AssignTarget::parse(Some(assignee))?),
         };
+        if let Some(target) = &target {
+            self.validate_task_delivery_target(&project_id, target)?;
+        }
+        let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
+        let waiting_on = waiting_on_api::waiting_ids(params)?;
+        self.validate_task_waiting_ids(&project_path, &waiting_on)?;
         let created = TaskEvent::new(
             &draft.id,
             actor.clone(),
@@ -317,16 +326,15 @@ impl AppState {
         );
         let task = self
             .tracker_store()?
-            .create_tracker_task(draft, &[created])
+            .create_tracker_task_waiting_on(draft, &[created], &waiting_on)
             .stored()?;
         self.note_tasks_changed(&project_id, &task.id);
         let Some(target) = target else {
             return Ok(json!({
-                "task": task_json(&project_id, &task),
+                "task": self.task_dependency_answer(&task.id)?["task"],
                 "dispatch": Value::Null,
             }));
         };
-        let note = crate::app::optional_nonempty_string(params, "note")?.map(str::to_string);
         self.assign_task_to(
             &project_id,
             task,
@@ -491,7 +499,9 @@ impl AppState {
         write.events.extend(additional);
         self.publish_task_write(project_id, &write);
         let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());
-        Ok(json!({ "task": task_json(project_id, &task) }))
+        let mut row = task_json(project_id, &task);
+        self.extend_task_waiting_summary(&task, &mut row)?;
+        Ok(json!({ "task": row }))
     }
 
     /// Deliver side effects only after the task and its activity are durable.

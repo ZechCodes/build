@@ -67,7 +67,7 @@ C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
   `a_stale_worker_session_cannot_assign`, and
   `project_deletion_retires_workers_and_preserves_sources` (tokens revoked,
   queued turns dropped).
-## #558 planned extension — not yet verified
+## #558 extension — bridge verified; browser evidence pending
 
 These rows follow Zech's 2026-10-12 decisions in
 [Tasks](Tasks%20Spec.md#waiting-on-decisions-and-delivery-558).
@@ -120,16 +120,16 @@ transitions rather than the newest lifecycle activity.
 `waiting_on_dependent_edits_invalidate_reverse_blocks` verifies that renaming,
 moving and closing A invalidate B's reverse Blocks digest after A waits on B;
 the affected prerequisite writes share the task transaction and the 20-edge
-bound. W2/W3 delivery authorization and forged-notice evidence remain pending.
+bound. W2 delivery authorization and W3 caller-facing evidence are verified below.
 
-| ID | Pending control | Required evidence |
+| ID | Control | Evidence and pending UI scope |
 | --- | --- | --- |
 | TS558-1 | Dependency create/add/remove and reverse reads stay within the caller's project; mixed valid/foreign writes fail atomically without exposing foreign titles or identities. | W1/W3: `waiting_on_same_project_dag_is_atomic`, RPC/MCP cross-project create, add, remove, read and partial-write refusal tests. |
-| TS558-2 | Deferred delivery revalidates the saved target's project and current authority before provisioning and after off-lock work; missing/retired targets never fall back to another agent. | W2 verified: `waiting_assignment_defers_every_target`, `deferred_delivery_revalidates_foreign_target_before_admission`, `deferred_delivery_removed_target_never_substitutes_another_agent`, `deferred_delivery_retired_sender_preserves_authority_failure`, `deferred_workspace_creation_retry_refuses_retired_saved_owner` and `deferred_receipt_recovery_fences_missing_retired_and_foreign_targets` cover every target, off-lock recovery, retirement and foreign bindings. `deferred_provisioning_excludes_workspace_lock_and_rename_until_settlement` proves background provisioning holds filesystem mutation exclusion through settlement, refuses reclaim while waiting on source SyncLock, and accepted edits persist afterwards. `deferred_workspace_pins_saved_git_inputs_while_source_is_held` proves current and changed-base reservations wait on the saved repository lock, pin its commit, keep the app mutex available and preserve queued worker source-location holds. W3 caller-facing scope/compatibility evidence remains #562. |
-| TS558-3 | Only a committed same-project readiness change (Done, close or edge removal) with a current authorized assignment, or an explicit ready assignment, can enqueue delivery; closed edges retain resolved-by-close provenance. Caller-authored notices, pushes or forged close/unblock/generation/operation fields grant no authority. | W1 provenance evidence above is retained. W2 verified: `durable_delivery_generation_and_live_graph_fence_saved_work`, `delivery_admission_fences_graph_writes_and_failed_retry`, `delivery_admission_binds_frozen_payload_address_and_origin` and `deferred_delivery_operation_id_cannot_admit_a_forged_payload_or_foreign_owner` refuse stale graph/generation and forged operation, address, payload and origin facts. `deferred_delivery_startup_runs_without_rpc_or_connected_client` proves startup handoff without a client. `pending_provisioning_does_not_self_wake_idle_reconciliation` holds provisioning in flight, bounds empty reconciliation polls to zero immediate repolls, rejects unrelated-write wakeups and retains new-assignment wakeups. W3 RPC/MCP contract evidence remains #562. |
-| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter evidence remains #562; W5 task-page removal/browser evidence remains #564. |
+| TS558-2 | Deferred delivery revalidates the saved target's project and current authority before provisioning and after off-lock work; missing/retired targets never fall back to another agent. | W2 verified: `waiting_assignment_defers_every_target`, `deferred_delivery_revalidates_foreign_target_before_admission`, `deferred_delivery_removed_target_never_substitutes_another_agent`, `deferred_delivery_retired_sender_preserves_authority_failure`, `deferred_workspace_creation_retry_refuses_retired_saved_owner` and `deferred_receipt_recovery_fences_missing_retired_and_foreign_targets` cover every target, off-lock recovery, retirement and foreign bindings. `deferred_provisioning_excludes_workspace_lock_and_rename_until_settlement` proves background provisioning holds filesystem mutation exclusion through settlement, refuses reclaim while waiting on source SyncLock, and accepted edits persist afterwards. `deferred_workspace_pins_saved_git_inputs_while_source_is_held` proves current and changed-base reservations wait on the saved repository lock, pin its commit, keep the app mutex available and preserve queued worker source-location holds. W3 caller-facing scope/compatibility is verified in #562 by the scoped RPC/MCP and exact-intent retry tests below. |
+| TS558-3 | Only a committed same-project readiness change (Done, close or edge removal) with a current authorized assignment, or an explicit ready assignment, can enqueue delivery; closed edges retain resolved-by-close provenance. Caller-authored notices, pushes or forged close/unblock/generation/operation fields grant no authority. | W1 provenance evidence above is retained. W2 verified: `durable_delivery_generation_and_live_graph_fence_saved_work`, `delivery_admission_fences_graph_writes_and_failed_retry`, `delivery_admission_binds_frozen_payload_address_and_origin` and `deferred_delivery_operation_id_cannot_admit_a_forged_payload_or_foreign_owner` refuse stale graph/generation and forged operation, address, payload and origin facts. `deferred_delivery_startup_runs_without_rpc_or_connected_client` proves startup handoff without a client. `pending_provisioning_does_not_self_wake_idle_reconciliation` holds provisioning in flight, bounds empty reconciliation polls to zero immediate repolls, rejects unrelated-write wakeups and retains new-assignment wakeups. W3 RPC/MCP contract evidence is verified in #562, including forged fields and canonical typed refusals. |
+| TS558-4 | Removing the last edge can release only a still-current explicit assignment; unassigned, cancelled, superseded and consumed assignments cannot start work. UI states the consequence of removing an armed final blocker. | W2 verified: `removing_last_edge_delivers_armed_and_notifies_unassigned_without_rearming_cancelled`, `deferred_dispatch_generation_fences` and `unblock_fan_in_and_fan_out` prove armed release, cancellation, reassignment and no redispatch after a consumed assignment is reblocked/unblocked. The two `admitted_delivery_reblocked_before_settlement` cases prove one informational holder notice after Posted/reblock/restart, with and without prior tracking, through receipt settlement and another restart. W3 adapter release/no-redispatch evidence is verified in #562; W5 task-page removal/browser evidence remains #564. |
 | TS558-5 | Self-edges, cross-project edges and cycles (including resolved edges) are refused in the transaction that writes; bounds and deduplication apply to batch creation and edits. | W1/W3: concurrent opposite-edge attempts, multi-edge atomic refusal, duplicate and size-limit tests. |
-| TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence remains #562. |
+| TS558-6 | Recovery creates at most one resource set and delivery per assignment, preserving the admitted closed-without-Done list and assessment/escalation instruction; cancellation and late Complete cannot resurrect a retired generation. | W2 verified: `deferred_dispatch_restart_boundaries` covers Reserved/Materialized/Agent/Frozen/Posted/Settled with one workspace, message and receipt; frozen retry tests preserve original context after edits/restart. `closed_blockers_delivery_context` and `closed_blockers_coordinator_notice_context` verify the retained closure list and assessment/escalation instruction. `delivery_receipt_recovery_keeps_reblocked_task_column_and_timeline` proves consistent settlement. `tracker_completion_fences` covers retired owners, consumed pending preservation, reset reconstruction/captured turns and stale Complete. `completion_fence_two_queued_assignments_keep_unrelated_turn_fenced` pins competing B/C markers during an unrelated Working interval and a later freshly waiting assignment. `a_v16_database_migrates_to_v17_without_arming_existing_assignments` uses frozen schema-16 DDL, preserves task record bytes and dependencies through upgrade/reopen, checks defaults/indexes/foreign keys and empty intent/notice tables, and grants no authority from existing assignments. W3 wire/retry contract evidence is verified in #562 by exact saved-intent retries and pinned delivery/notice fixtures. |
 | TS558-7 | Dependency UI renders escaped cached facts and capability-gates writes; an older bridge never receives a waiting form as an immediate assignment. | W4/W5: hostile title rendering, cache-first/push grouping including Backlog Blocked/Ready without label or column writes, resolved-by-close presentation, current-greeting refusal and older-bridge browser fixtures. |
 
 W2 verification (#561 snapshot 2, 2026-10-12): the named regressions and full bridge test
@@ -148,4 +148,87 @@ settlement path passes both dispatch forms and the full rerun. Failed/setup atte
 remain attached alongside the passing evidence. Migration assertions were split by
 concern after Clippy caught the initial helper over the cap; no exemption was added.
 Provider handoff uses QA fixtures; no live bridge, client pairing or browser was driven.
-The waiting-on capability remains absent until #562.
+The waiting-on capability stayed absent until #562 verified the corrected complete graph/dispatch/read contract.
+
+
+W3 / #562 bridge integration evidence (2026-10-12): **100/100 for the
+bridge-owned portions of TS558-1–6 (all six applicable controls verified).**
+W4/W5 UI and browser evidence, including TS558-4's removal warning and
+TS558-7, remains pending; this score does not claim those controls.
+
+- TS558-1: `waiting_on_rpc_mcp_contract_refusals_are_atomic_and_scoped`,
+  `waiting_on_rpc_mcp_contract_foreign_endpoints_and_cursors_are_fenced` and
+  `waiting_on_rpc_mcp_contract_create_refusals_name_proposed_blockers` cover
+  create/add/remove/reverse reads, mixed-write rollback, cursor scope and
+  same-project-only refusal facts. Malformed MCP cursors refuse explicitly.
+- TS558-2: `waiting_on_rpc_mcp_contract_retry_preserves_saved_intent_and_refuses_replacement`
+  preserves the failed intent's exact target and authority; null or replacement
+  target/note fields and stale operations refuse. Public assignment parameter
+  types remain compatible, with strict presence-aware wire parsing.
+- TS558-3: the scoped refusal suite rejects caller-authored actor, readiness,
+  unblock, generation and operation facts. The canonical-refusal regression
+  covers all three new verbs' sorted unknown fields and `details.params`.
+  `unblock_preserves_user_attention` and
+  `waiting_on_invalidation_fanout_contract` verify persisted attention and
+  endpoint/dependent invalidations with bounded fan-out.
+- TS558-4: `waiting_notices_and_reminders` and its undelivered-state regression
+  exclude blocked/queued/failed work from Complete reminders and automatic
+  moves; partial resolution stays quiet, final release sends one brief,
+  unassigned releases notify the coordinator, and reblocking is informational.
+  `waiting_review_finished_unresolved_task_refuses_user_assignment` prevents
+  an unresolved finished task from manufacturing actionable user work.
+- TS558-5: `waiting_on_same_project_dag_is_atomic` and
+  `waiting_on_concurrent_opposite_edges_cannot_cycle` retain transactional
+  self/foreign/cycle refusal, resolved-edge cycle checks, deduplication and
+  bounds. The RPC/MCP mixed-edge regression verifies the adapter cannot bypass
+  those store controls or leave partial tasks/links.
+- TS558-6: the exact-intent retry regression, inherited deferred-generation and
+  completion fences, and `closed_blocker_notice_contract` retain at-most-once
+  dispatch and distinguish every retained close-without-Done prerequisite from
+  completed work. Briefs ask for assessment and explicit task escalation when
+  unclear, without manufacturing a user mention. Contract fixtures pin
+  waiting/queued/failed/delivered, resolution provenance and thread-page notices.
+
+The corrected complete library gate exited 0: 4,648 passed, 9 ignored.
+`waiting_reads_bound_reverse_preview_and_share_summaries` now compares complete
+get/list/watched dependency summaries, preserving 21 reverse dependents, a
+20-item preview and its continuation cursor. Existing list/detail parity and
+typed-handler guards pass. The new canonical-error regression first failed
+behaviorally (exit 101) and then passed; initial setup compile errors are not
+counted as behavioral evidence. Fresh Astra review and final reassessment found
+no remaining issues after the canonical fix, reachable notice-fixture correction
+and test-helper extractions. `api_contract` and
+`complexity_ratchet` remain unchanged from inherited e82c24ea.
+
+Repository release evidence is bridge 0.2.13 **Unreleased**, wire/API/fixtures
+3.21.0 and latest bridge tag bridge-v0.2.12. New verbs retain `since: 3.21.0`;
+`tasks.link` remains retired. `tasks.waitingOn` was enabled only after the
+corrected complete graph/dispatch/read library gate passed.
+
+The unchanged API contract suite also exited 0 (45 tests), including reachable
+newest-activity notice pages and typed result round trips. Clippy with warnings
+denied and formatting exited 0 after splitting two inherited test functions
+into assertion helpers; no complexity exemption or ratchet count changed.
+
+
+W3 final gates (2026-10-12), all under `nice -n 10`, judged by their actual
+exit codes: full `cargo test` **0** (4,648 library tests passed, 9 ignored;
+`api_contract` 45 passed, `complexity_ratchet` 2 passed, all remaining
+integrations and documentation tests passed); Clippy `--all-targets -- -D
+warnings` **0**; `cargo fmt --check` **0**; locked vendored-library test **0**
+(169 passed, 4 ignored); Semgrep auto/error **0** (203 rules, 29 changed tracked
+Rust/JS targets, no findings); Gitleaks `--log-opts='origin/main..HEAD'` **0**;
+`git diff --check origin/main..HEAD` **0**. Transport's locked install and SPA's
+locked install, lint, full tests and build each exited **0** using pinned Node
+22.23.3/npm 12.0.2. Full SPA: 652 files, 10,229 tests passed, including the
+shared cached unread regression and isolated Chromium tests.
+
+Rust interop used the existing uv 0.12.15 executable directly on the gate's
+PATH after the unset mise shim caused one failed attempt; no global tool
+configuration changed. Earlier broad gates exposed the stale reverse-preview
+assertion, unreachable notice fixture and two test functions over the complexity
+cap. Their corrections passed the unchanged contract and ratchet tests and the
+complete rerun. A SPA attempt that encountered the initial regression-test
+compile error was stopped (exit 143), then the complete stable-source suite
+passed. Failed/setup attempts are retained with the passing evidence on #562.
+Origin/main remained b1e4643a through the final fetch, so no merge was needed.

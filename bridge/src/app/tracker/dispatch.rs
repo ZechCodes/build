@@ -227,6 +227,22 @@ impl AppState {
     pub(crate) fn tasks_assign(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = crate::app::require_str(params, "task_id")?;
         let (project_id, task) = self.tracker_task(&task_id)?;
+        if let Some(id) = params.get("retry_deferred_id") {
+            if params.get("assignee").is_some()
+                || params.get("note").is_some()
+                || params.get("operation_id").is_some()
+            {
+                return Err(
+                    "retry_deferred_id is mutually exclusive with assignee, note and operation_id"
+                        .into(),
+                );
+            }
+            let id = id
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .ok_or("retry_deferred_id must be a nonempty string")?;
+            return self.retry_task_delivery_as(&task_id, id);
+        }
         let target = AssignTarget::parse(params.get("assignee"))?;
         let handoff = Handoff {
             note: crate::app::optional_nonempty_string(params, "note")?.map(str::to_string),
@@ -255,6 +271,15 @@ impl AppState {
     ) -> Result<Value, String> {
         if !matches!(target, AssignTarget::Nobody | AssignTarget::User) {
             return self.accept_task_delivery(project_id, task, target, handoff, actor, sender);
+        }
+        if matches!(target, AssignTarget::User) && task.is_finished() {
+            let dependencies = self
+                .tracker_store()?
+                .waiting_on_summary(&task.project_path, &task.id)
+                .map_err(|error| error.to_string())?;
+            if dependencies.waiting_on.iter().any(|edge| !edge.resolved) {
+                return Err(crate::store::StoreError::WaitingOnConflict.to_string());
+            }
         }
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(actor.clone(), task);

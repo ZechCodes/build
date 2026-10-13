@@ -66,10 +66,11 @@ pub(in crate::store) fn reconcile_task(
     if let Some(event) = transition {
         let unassigned_release =
             event.kind == TaskEventKind::Unblocked && task.assignee.is_none() && current.is_none();
+        let tracker_release = event.kind == TaskEventKind::Unblocked && !task.trackers.is_empty();
         let consumed_holder = has_admitted_holder(tx, current.as_ref())?;
         let blocked_notice =
             event.kind == TaskEventKind::Blocked && (consumed_holder || !task.trackers.is_empty());
-        if blocked_notice || unassigned_release {
+        if blocked_notice || unassigned_release || tracker_release {
             notices::enqueue(tx, &task.project_path, event)?;
         }
     }

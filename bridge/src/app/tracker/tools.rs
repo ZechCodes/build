@@ -30,6 +30,23 @@ impl AppState {
         // Resolved once, before any arm runs: an agent whose owner is bound to
         // no project has no tasks to reach, and saying so once beats each arm
         // discovering it.
+        let (action, waiting_on) = match action {
+            BridgeAction::TrackerWithWaitingOn {
+                wrapped,
+                waiting_on,
+            } => {
+                if !matches!(
+                    wrapped.as_ref(),
+                    BridgeAction::TrackerCreateTask { .. } | BridgeAction::TrackerLinkTask { .. }
+                ) {
+                    return Some(Err(
+                        "waiting_on only accompanies create_task or link_task".into()
+                    ));
+                }
+                (wrapped.as_ref(), waiting_on.as_slice())
+            }
+            action => (action, &[][..]),
+        };
         let scope = match self.task_scope(entity_id, agent_id) {
             Ok(scope) => scope,
             Err(refusal) => return is_a_task_tool(action).then_some(Err(refusal)),
@@ -74,6 +91,7 @@ impl AppState {
                 attachments,
                 notify_user,
                 mention_user,
+                waiting_on,
             ),
             BridgeAction::TrackerCommentTask {
                 task_id,
@@ -124,6 +142,46 @@ impl AppState {
                 note,
                 ..
             } => self.assign_task_as_agent(&scope, task_id, assignee, note.clone()),
+            BridgeAction::TrackerRetryTaskDelivery {
+                task_id,
+                retry_deferred_id,
+                ..
+            } => self
+                .task_of_this_agents_project(&scope, task_id)
+                .and_then(|_| self.retry_task_delivery_as(task_id, retry_deferred_id)),
+            BridgeAction::TrackerTaskDependents {
+                task_id,
+                limit,
+                cursor,
+            } => {
+                let mut params = json!({});
+                if let Some(limit) = limit {
+                    params["limit"] = json!(limit)
+                }
+                if let Some(cursor) = cursor {
+                    params["cursor"] = json!(cursor)
+                }
+                self.scoped_task_call(&scope, task_id, params, AppState::tasks_waiting_on_blocks)
+            }
+            BridgeAction::TrackerUnlinkWaitingOn {
+                task_id,
+                waiting_on,
+                ..
+            } => self
+                .task_of_this_agents_project(&scope, task_id)
+                .and_then(|task| {
+                    if waiting_on.is_empty() {
+                        return Err("waiting_on needs one to 20 ids".into());
+                    }
+                    self.check_scoped_waiting_ids(&scope, waiting_on)?;
+                    self.edit_task_waiting_on(
+                        &scope.project_id,
+                        &task,
+                        waiting_on,
+                        false,
+                        &scope.actor,
+                    )
+                }),
             BridgeAction::TrackerMoveTask {
                 task_id, status, ..
             } => self.move_task_as_agent(&scope, task_id, status),
@@ -160,6 +218,7 @@ impl AppState {
                     ("conversation_id", conversation_id),
                     ("parent_task_id", parent_task_id),
                 ]),
+                waiting_on,
             ),
             _ => return None,
         };
@@ -245,7 +304,8 @@ impl AppState {
         let task_id = match action {
             BridgeAction::TrackerCommentTask { task_id, .. }
             | BridgeAction::TrackerReviewCommentTask { task_id, .. }
-            | BridgeAction::TrackerAssignTask { task_id, .. } => task_id,
+            | BridgeAction::TrackerAssignTask { task_id, .. }
+            | BridgeAction::TrackerRetryTaskDelivery { task_id, .. } => task_id,
             _ => return Ok(None),
         };
         let task = self.task_of_this_agents_project(scope, task_id)?;
@@ -390,7 +450,9 @@ impl AppState {
         attachments: &[Value],
         notify_user: &Option<bool>,
         mention_user: &Option<bool>,
+        waiting_on: &[String],
     ) -> Result<Value, String> {
+        self.check_scoped_waiting_ids(scope, waiting_on)?;
         let project_path = self.tracker_project_path(&scope.project_id)?;
         let now = crate::store::now_rfc3339();
         let mut params = asked(&[("body", body), ("status", status), ("priority", priority)]);
@@ -427,7 +489,7 @@ impl AppState {
         );
         let task = self
             .tracker_store()?
-            .create_tracker_task(draft, std::slice::from_ref(&created))
+            .create_tracker_task_waiting_on(draft, std::slice::from_ref(&created), waiting_on)
             .stored()?;
         self.note_tasks_changed(&scope.project_id, &task.id);
         // A create does not pass through `commit_task_write` — the number is
@@ -439,7 +501,7 @@ impl AppState {
         self.push_task_news(&write);
         self.say_what_the_agent_did(&write);
         Ok(json!({
-            "task": super::task_json(&scope.project_id, &task),
+            "task": self.task_dependency_answer(&task.id)?["task"],
         }))
     }
 
@@ -559,10 +621,9 @@ impl AppState {
         }
         let labels = normalize_labels(&labels)?;
         if labels == task.labels {
-            return Ok(json!({
-                "labels": task.labels,
-                "task": super::task_json(&scope.project_id, &task),
-            }));
+            let mut answer = self.task_dependency_answer(&task.id)?;
+            answer["labels"] = json!(task.labels);
+            return Ok(answer);
         }
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(scope.actor.clone(), task);
@@ -617,14 +678,34 @@ impl AppState {
         &mut self,
         scope: &TaskScope,
         task_id: &str,
-        params: Value,
+        mut params: Value,
+        waiting_on: &[String],
     ) -> Result<Value, String> {
         let task = self.task_of_this_agents_project(scope, task_id)?;
+        self.check_scoped_waiting_ids(scope, waiting_on)?;
+        if !waiting_on.is_empty() {
+            params["waiting_on"] = json!(waiting_on)
+        }
         let asked = edits::asked_links(&params)?;
         let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(scope.actor.clone(), task);
         self.apply_links(&scope.project_id, &mut write, &asked, &scope.actor, &now)?;
-        self.commit_task_write(&scope.project_id, write, &now)
+        if waiting_on.is_empty() {
+            self.commit_task_write(&scope.project_id, write, &now)
+        } else {
+            self.commit_task_dependency_write(&scope.project_id, write, waiting_on, &now)
+        }
+    }
+
+    fn check_scoped_waiting_ids(
+        &mut self,
+        scope: &TaskScope,
+        ids: &[String],
+    ) -> Result<(), String> {
+        for id in ids {
+            self.task_of_this_agents_project(scope, id)?;
+        }
+        Ok(())
     }
 }
 
@@ -685,7 +766,10 @@ fn wants_the_user_told(action: &BridgeAction) -> bool {
             mention_user,
             ..
         } => notify_user.unwrap_or(false) || mention_user.unwrap_or(false),
-        BridgeAction::TrackerAssignTask { notify_user, .. } => notify_user.unwrap_or(false),
+        BridgeAction::TrackerAssignTask { notify_user, .. }
+        | BridgeAction::TrackerRetryTaskDelivery { notify_user, .. } => {
+            notify_user.unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -706,7 +790,9 @@ fn wants_tracking(action: &BridgeAction) -> bool {
         | BridgeAction::TrackerMoveTask { track, .. }
         | BridgeAction::TrackerLabelTask { track, .. }
         | BridgeAction::TrackerCloseTask { track, .. }
-        | BridgeAction::TrackerLinkTask { track, .. } => track.unwrap_or(false),
+        | BridgeAction::TrackerLinkTask { track, .. }
+        | BridgeAction::TrackerUnlinkWaitingOn { track, .. }
+        | BridgeAction::TrackerRetryTaskDelivery { track, .. } => track.unwrap_or(false),
         _ => false,
     }
 }
@@ -741,6 +827,9 @@ fn is_a_task_tool(action: &BridgeAction) -> bool {
             | BridgeAction::TrackerLinkTask { .. }
             | BridgeAction::TrackerTrackTask { .. }
             | BridgeAction::TrackerUntrackTask { .. }
+            | BridgeAction::TrackerRetryTaskDelivery { .. }
+            | BridgeAction::TrackerTaskDependents { .. }
+            | BridgeAction::TrackerUnlinkWaitingOn { .. }
     )
 }
 

@@ -91,13 +91,19 @@ impl AppState {
         let event: TaskEvent =
             serde_json::from_value(notice.payload.clone()).map_err(|e| e.to_string())?;
         let recipients = self.task_delivery_notice_recipients(project, task, &event)?;
-        let body = self.task_delivery_notice_body(task, &event)?;
         let mut messages = Vec::new();
         for agent in recipients {
             let Ok(entity) = self.live_task_delivery_agent(project, &agent) else {
                 continue;
             };
             let address = self.resolve_conversation_address(&entity, Some(&agent))?;
+            let body = self.task_delivery_notice_body(
+                task,
+                &event,
+                event.kind == TaskEventKind::Unblocked
+                    && self.unassigned_task_needs_coordinator(task)?
+                    && self.is_project_coordinator(&entity, &agent),
+            )?;
             messages.push(json!({
                 "params":{"entity_id":entity,"agent_id":agent,"conversation_id":address.conversation_id,
                     "thread_id":self.conversation_at(&address)?.id,"body":body,
@@ -114,10 +120,10 @@ impl AppState {
         task: &Task,
         event: &TaskEvent,
     ) -> Result<Vec<String>, String> {
-        if matches!(
-            event.kind,
-            TaskEventKind::Unblocked | TaskEventKind::DispatchFailed
-        ) {
+        if event.kind == TaskEventKind::Unblocked {
+            return self.unblocked_notice_recipients(project, task);
+        }
+        if event.kind == TaskEventKind::DispatchFailed {
             let owner = self.project_ensure_conversation(&json!({"project_id":project}))?;
             let entity = owner["run_id"].as_str().ok_or("coordinator has no owner")?;
             return Ok(vec![self.ensure_primary_agent(entity)?]);
@@ -142,6 +148,52 @@ impl AppState {
                 if !recipients.iter().any(|id| id == agent) {
                     recipients.push(agent.into());
                 }
+            }
+        }
+        Ok(recipients)
+    }
+
+    fn unassigned_task_needs_coordinator(&self, task: &Task) -> Result<bool, String> {
+        Ok(task.assignee.is_none()
+            && self
+                .tracker_store()?
+                .current_delivery_intent(&task.id)
+                .stored()?
+                .is_none())
+    }
+
+    /// The final release is informational to other trackers. The holder's
+    /// assignment brief is the work; a release never grants another turn.
+    fn unblocked_notice_recipients(
+        &mut self,
+        project: &str,
+        task: &Task,
+    ) -> Result<Vec<String>, String> {
+        let intent = self
+            .tracker_store()?
+            .current_delivery_intent(&task.id)
+            .stored()?;
+        let holder = intent
+            .as_ref()
+            .and_then(|intent| self.pending_delivery_holder(project, task, intent))
+            .or_else(|| {
+                task.assignee
+                    .as_ref()
+                    .and_then(Assignee::agent_id)
+                    .map(str::to_string)
+            });
+        let mut recipients = task
+            .trackers
+            .iter()
+            .filter(|agent| Some(agent.as_str()) != holder.as_deref())
+            .cloned()
+            .collect::<Vec<_>>();
+        if self.unassigned_task_needs_coordinator(task)? {
+            let owner = self.project_ensure_conversation(&json!({"project_id":project}))?;
+            let entity = owner["run_id"].as_str().ok_or("coordinator has no owner")?;
+            let coordinator = self.ensure_primary_agent(entity)?;
+            if !recipients.contains(&coordinator) {
+                recipients.push(coordinator);
             }
         }
         Ok(recipients)
@@ -214,9 +266,15 @@ impl AppState {
         ))
     }
 
-    fn task_delivery_notice_body(&self, task: &Task, event: &TaskEvent) -> Result<String, String> {
+    fn task_delivery_notice_body(
+        &self,
+        task: &Task,
+        event: &TaskEvent,
+        coordinator_release: bool,
+    ) -> Result<String, String> {
         let mut body = match event.kind {
-            TaskEventKind::Unblocked => format!("Task #{} — {} ({}) has no unresolved prerequisites. Decide who should take it; read the current task with get_task.", task.number, task.title, task.id),
+            TaskEventKind::Unblocked if coordinator_release => format!("Task #{} — {} ({}) has no unresolved prerequisites. Decide who should take it; read the current task with get_task.", task.number, task.title, task.id),
+            TaskEventKind::Unblocked => format!("Task #{} — {} ({}) is unblocked. This is informational; it does not assign the task or dispatch another assignment. Read the current task with get_task.", task.number, task.title, task.id),
             TaskEventKind::DispatchFailed => format!("Task #{} — {} ({}) could not be delivered: {}. Read the task with get_task and decide how to recover the saved assignment.", task.number, task.title, task.id, event.payload["error"].as_str().unwrap_or("delivery failed")),
             _ => format!("Task #{} — {} ({}) is blocked again by prerequisites {}. This is informational; it does not dispatch another assignment. Read the current task with get_task.", task.number, task.title, task.id, event.payload["unresolved_task_ids"]),
         };

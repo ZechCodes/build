@@ -446,3 +446,15 @@ validation exits **0** (seven files / **146 tests**, including the unchanged
 complexity ratchet). TS558-4’s edge-removal consequence evidence is unchanged;
 TS558-7’s cache conflict and old-bridge refusal evidence now includes the
 round-4 reproductions. Final broad-gate and publication evidence follows.
+
+Revision-6 final gates, Node 22.23.3/npm 12.0.2 under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, install
+scripts disabled), all-source lint, full Chromium-inclusive `npm test`,
+`test:captures` and build each exit **0**. All **671 files / 10,451 tests**
+pass; #614 does not fail, so isolated reruns are unnecessary. Semgrep exits
+**0** (38 tracked js/mjs/css targets, 200 rules, no findings); Gitleaks
+`origin/main..HEAD` and diff-check exit **0**. The W5-owned TS558-4/7 score
+remains **100/100** with the round-4 cache-conflict reproduction closed.
+No bridge files, complexity caps or ratchet entries change. Source is fixed
+through the gates; this final follow-up records evidence only. Push, saved
+snapshot, head/base and attached exit/log evidence are recorded on #564.

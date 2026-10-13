@@ -2670,6 +2670,10 @@ refuses when that device cannot answer.
   read/write orders are never compared; an unrelated catalogue mutation cannot
   promote stale ready facts. An older bridge may refuse a ready task until
   ambiguous caches converge, preserving the waiting-on capability guard.
+  `taskAssignmentFacts.test.js` covers timestamp/tie/unknown conflicts, and
+  `trackerTasksPaneDom.test.js` exercises unrelated-mutation refusal and kept
+  drafts through both list and board pickers. These and the earlier assignment
+  regressions pass in #564's 10,451-test Chromium-inclusive suite.
   Successful
   responses update tracker detail and list replicas through
   `taskWaitingOnCache.js`; the kept editor preserves its input on refusals.

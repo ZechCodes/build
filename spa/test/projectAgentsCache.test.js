@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { readCached, wipeCache, writeCached } from "../src/core/localCache.js";
-import { projectAgentsAddress, readProjectAgents, rememberProjectAgentsSupport, syncProjectAgents } from "../src/core/projectAgentsCache.js";
+import { projectAgentsAddress, projectRosterProjection, readProjectAgents, rememberProjectAgentsSupport, syncProjectAgents, validProjectRoster } from "../src/core/projectAgentsCache.js";
 
 globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
@@ -12,6 +12,13 @@ const capabilities = { agents: { projectWorkers: true }, tasks: { assignProjectA
 beforeEach(async () => { await wipeCache(); });
 
 describe("complete cached project agents", () => {
+  it("keeps an unprovisioned project summary when no owner or complete roster exists", () => {
+    const project = { project_id: "project", name: "Project" };
+    expect(validProjectRoster(undefined, undefined)).toBe(false);
+    expect(validProjectRoster({ pinned_agent_id: "pin", agents: [pin] }, undefined)).toBe(false);
+    expect(projectRosterProjection([project], { projectWorkers: true }, () => undefined))
+      .toEqual([{ ...project, projectRoster: null, assignProjectAgent: false }]);
+  });
   it("paints a complete roster only with cached support and never picks a pin by position", async () => {
     await writeCached(projectAgentsAddress("device", "owner"), roster);
     expect(await readProjectAgents("device", "owner")).toBeNull();

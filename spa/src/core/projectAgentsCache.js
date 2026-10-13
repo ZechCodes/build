@@ -17,7 +17,7 @@ export async function readProjectAgentsSupport(deviceId) {
   return (await readCached(projectAgentsSupportAddress(deviceId)))?.value || {};
 }
 
-export const validProjectRoster = (roster, entityId) => roster?.entity_id === entityId
+export const validProjectRoster = (roster, entityId) => typeof entityId === "string" && entityId.length > 0 && roster?.entity_id === entityId
   && typeof roster.pinned_agent_id === "string"
   && Array.isArray(roster.agents)
   && roster.agents.some((agent) => agent.id === roster.pinned_agent_id);

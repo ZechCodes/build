@@ -144,18 +144,19 @@ gates above. The existing authentication boundary and the explicit opt-in test
 and scanner scopes remain as described here.
 
 
-## #522 planned extension — not yet verified
+## #522 extension — verified by C10 / #538
 
-These rows are proposed by [Project workspace](Project%20Workspace%20Spec.md).
-Existing scores above cover their original implemented scope only. Each owning
-child must supply passing regression/gate evidence before its new rows can
-count toward 100/100; planning does not satisfy these controls.
+These controls follow [Project workspace](Project%20Workspace%20Spec.md).
+The checked rows have combined C10 / #538 evidence at commit
+`6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. The earlier scoped checkpoints below
+record the evidence available at those checkpoints; the final C10 entry closes
+their pending combined acceptance evidence.
 
-| ID | Pending control | Required evidence |
-| --- | --- | --- |
-| CI522-1 | One persisted coordinator survives migration, reset and repeated ensure; no per-agent surface may remove, transfer or replace the pin while the project exists. | C4/C8: project_roster_migrates_one_stable_coordinator; project_coordinator_cannot_be_removed_or_reassigned; rail pin tests. |
-| CI522-2 | Worker prompt/tools use persisted purpose; exact agent/conversation/session generation gates delivery and MCP, independent of prefix, roster position or forged surface flags. | C4/C5/C8: project_worker_tools_follow_persisted_purpose; stale callback/send, independent drafts and old-client roster tests. |
-| CI522-3 | Shared cwd never aliases resume/reset/remove artifacts; deleting one worker cannot affect siblings, pin, source files or another draft. | C4/C5/C8/C10: project_worker_removal_preserves_shared_cwd_siblings; provider lineage and browser draft tests. |
+| ID | Control | Verified | Passing evidence |
+| --- | --- | --- | --- |
+| CI522-1 | One persisted coordinator survives migration, reset and repeated ensure; no per-agent surface may remove, transfer or replace the pin while the project exists. | [x] | `project_roster_migrates_one_stable_coordinator`, `project_coordinator_cannot_be_removed_or_reassigned`, `old_clients_see_only_the_pinned_coordinator`; `accepts the combined original-source / worker / console / child journey (390px)` and `accepts the combined original-source / worker / console / child journey (1280px)`. Full bridge/SPA gates exit 0 at `6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. |
+| CI522-2 | Worker prompt/tools use persisted purpose; exact agent/conversation/session generation gates delivery and MCP, independent of prefix, roster position or forged surface flags. | [x] | `project_worker_tools_follow_persisted_purpose`, `a_worker_cannot_administer_sources_or_retire_the_pin_through_mcp`, `a_stale_worker_session_cannot_assign`, `stale_project_sessions_cannot_act_for_the_pin_or_a_removed_worker`; `names a worker through Add and sends only to each exact project conversation`; `paints a cold cache, reconnects without losing source or agent drafts, then safely downgrades`. Full bridge/SPA gates exit 0 at `6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. |
+| CI522-3 | Shared cwd never aliases resume/reset/remove artifacts; deleting one worker cannot affect siblings, pin, source files or another draft. | [x] | `project_worker_removal_preserves_shared_cwd_siblings`, `a_spawn_resumes_exact_lineage_and_never_guesses_from_history`, `project_workspace_combined_journey_and_source_matrix`; `accepts the combined original-source / worker / console / child journey (390px)` and `accepts the combined original-source / worker / console / child journey (1280px)` (worker removal retains sibling/pin conversations, sibling draft and source commit draft). Full bridge/SPA gates exit 0 at `6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. |
 
 C5 evidence (#533; the rows stay pending until C8/C10 add theirs):
 
@@ -224,3 +225,23 @@ final revision.
 Together with TS522-1's 25/25 recorded in the Task checklist, the four applicable
 C8 controls score **100/100 within C8's implemented scope**. This is not a
 completion claim for the combined #522/C10 extension.
+
+### C10 / #538 combined verification — 2026-10-13
+
+All 3 controls above are verified at
+`6b6a236e2b4e51ba4f6d0b8ff3c924100912a687`. Full bridge `cargo test` exited 0,
+including `project_workspace_combined_journey_and_source_matrix`, coordinator,
+persisted-purpose, exact-lineage, stale-generation and lifecycle regressions.
+The run used the real uv 0.12.15 executable through `BST_UV` and `PATH`, with
+`$HOME/.cargo/bin` first. Full SPA `npm test` under Node 22.23.3 / npm 12.0.2
+and `CHROMIUM_PATH=/usr/bin/chromium` exited 0: 669 files / 10,473 tests passed,
+including all seven `browser/projectWorkspaceFlow.test.js` cases. The two full
+390/1280 journeys retain exact worker/task addresses, sibling and source drafts,
+and the canonical pin across source, console and child-workspace navigation.
+
+Semgrep `--config auto --error` on every changed file, Gitleaks with
+`--log-opts='origin/main..HEAD'`, and `git diff --check origin/main..HEAD` each
+exited 0. All gates ran under `nice -n 10` with output redirected to logs.
+The four-pair compatibility matrix uses frozen legacy requests, the production
+client adapter and isolated old/new protocol fixtures; it does not claim
+historical executable runs. #538 records the gate exits and final publication.

@@ -413,6 +413,7 @@ async function orderedSync(deviceId, turn) {
   const pass = await workspacesToRead(context, view);
   const phases = createSyncPhases({
     context, pass, view, route: () => App.route,
+    sourceTerminalReads: lists.sourceTerminalReads,
     entityContext: (id) => whileOnBoard(context, id, fence),
     readers: workspaceReaders,
     tasks: createTaskPhases(context, { ask, readReviews: (context, projectId) => readReviews(context, projectId),
@@ -517,7 +518,7 @@ async function readLists(context, fence) {
   });
   if (lists) {
     await refreshWorkspaceSummaries(reading, lists.view, fence);
-    await syncProjectTerminals(context);
+    lists.sourceTerminalReads = await projectTerminalReads(context);
   }
   return lists;
 }
@@ -962,14 +963,26 @@ async function syncTerminals(context, entityId, row, priority) {
 }
 
 /** Original project sources are separate terminal owners, even plain folders. */
-async function syncProjectTerminals(context) {
+async function projectTerminalReads(context) {
   const capabilities = bridgeCapabilities(context.deviceId);
   const scopes = capabilities.term?.projectSources ? projectTerminalScopes(await heldValue(context, "", "projects")) : [];
-  if (!context.active()) return;
+  if (!context.active()) return [];
   reconcileProjectTerminalSubscriptions(context, capabilities.changes?.projectSources ? scopes : []);
-  if (!scopes.length) return;
-  await settledWithin(subscriptionsSettledFor(context.deviceId), GREETING_WAIT_MS);
-  for (const scope of scopes) await readProjectTerminals(context, scope);
+  // Subscriptions are prepared with the ownership lists, but roster reads
+  // belong to the planner. Their readiness must never delay its foreground.
+  let readiness;
+  return scopes.map((scope) => ({
+    entityId: directoryCacheId(scope),
+    async read() {
+      readiness ??= settledWithin(subscriptionsSettledFor(context.deviceId), GREETING_WAIT_MS);
+      await readiness;
+      await readProjectTerminals(context, scope);
+    },
+  }));
+}
+
+async function syncProjectTerminals(context) {
+  for (const read of await projectTerminalReads(context)) await read.read();
 }
 
 async function readProjectTerminals(context, scope) {

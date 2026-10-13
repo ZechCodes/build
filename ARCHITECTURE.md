@@ -2077,8 +2077,12 @@ validation and attach replies; detach releases only the requesting registration.
 Failed or cancelled pane setup releases every acquired terminal resource. Channel
 recovery stays in the terminal lifecycle; the project console neither reads
 connection status nor changes its presentation on disconnect/reconnect.
-`cacheSync.js` reads all original-source rosters on sync/reconnect and subscribes
-to their terminal changes when `changes.projectSources` is present. Source push
+`cacheSync.js` prepares original-source subscriptions with the ownership lists
+when `changes.projectSources` is present. On sync/reconnect, `syncPhases.js`
+reads all source terminal rosters after the foreground and inbox, through the
+same two background streams as checkout warming. Their exact terminal record
+identities share the planner's completion and visibility promotion, so an
+unrelated source reply never blocks a newly selected foreground. Source push
 and list writes check membership/location transactionally and keep equal IDs on
 other devices and paths separate. No project terminal polling is introduced.
 
@@ -2244,8 +2248,9 @@ In practice:
   and written independently as they land. `syncPhases.js` then reads the open
   conversation, the open checkout and project's first task page, the inbox's
   other conversations and remaining task pages/review metadata, and finally
-  background checkout records and bodies. `syncBackgroundStreams.js` drains
-  that final phase through two streams per device, retaining each checkout's
+  source terminal rosters, then background checkout records and bodies.
+  `syncBackgroundStreams.js` drains that final phase through two streams per
+  device, retaining each checkout's
   read/write order and letting a free stream advance past a slow checkout.
   Inbox and push-triggered background RPCs share those two wire slots per
   device/session/restored path. A failed first task page still waits for its

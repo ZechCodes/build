@@ -564,3 +564,19 @@ W5 round-8 fix / #564 (2026-10-13), addressing round-7 review finding 1:
   rather than treating the record as exclusive authority. The earlier timeline
   refresh and greeting-authority fences remain covered. No bridge files,
   complexity caps or ratchet entries change. Broad gate evidence follows.
+
+
+Round-8 final gates, pinned Node 22.23.3/npm 12.0.2, all under `nice -n 10`:
+transport ci (`--ignore-scripts`), SPA ci (`--legacy-peer-deps`, scripts
+disabled), lint, focused units/browser (**17 files / 265 tests**), full
+Chromium-inclusive `npm test` (**673 files / 10,528 tests**), all three
+`test:captures` checks and build each exit **0**. The reviewer's 36 writer-pair
+cases and lifecycle case also pass (**37 tests**, exit **0**). No #614 reruns
+are needed. Semgrep on all **44 changed paths**, Gitleaks
+`origin/main..HEAD`, and diff-check exit **0**, with no findings or leaks.
+W5-owned TS558-4/7 is **100/100** with the round-7 first-record bypass closed.
+The full suite validated head `48cd950fd` against merged main `01296e8e`;
+source remained fixed at `e2c11afbe`. This final commit changes evidence only.
+Final scans, pushed head and saved snapshot are recorded on #564. No bridge
+files, complexity caps or ratchet entries change; no independent Astra review
+was run in this fix round.

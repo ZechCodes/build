@@ -2698,7 +2698,10 @@ refuses when that device cannot answer.
   ties, unknown summaries/versions and conservative absence. Round-8 real picker
   and list/board tests retain pre-record detail/catalogue/query/page blockers
   after an older ready query establishes the first record; opened-only waiting
-  and the prior legacy-overwrite cases remain covered.
+  and the prior legacy-overwrite cases remain covered. Round-8 validation
+  passes 265 focused tests and the full Chromium-inclusive suite (673 files /
+  10,528 tests), plus lint, captures, build and security scans; TS558-7 records
+  the failing reproductions and final evidence.
   The real list/board picker tests in `trackerTasksPaneDom.test.js` keep drafts
   when every blocking replica is overwritten by a legacy refresh. Successful
   responses update tracker detail and list replicas through

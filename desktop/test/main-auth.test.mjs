@@ -21,7 +21,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
   if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
-  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [], quitEvents: [], errorBoxes: [], partitions: [] };
+  const calls = { browser: [], fetch: [], windows: [], dialogs: [], timers: [], cleanup: [], quitEvents: [], reportWindows: [], partitions: [] };
   const app = new EventEmitter();
   Object.assign(app, {
     isPackaged: false,
@@ -48,6 +48,10 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     show() {} focus() {} isMinimized() { return false; }
     destroy() { this.destroyed = true; this.emit("closed"); }
   }
+  class BaseWindow extends EventEmitter {
+    constructor(options) { super(); this.options = options; calls.reportWindows.push(this); }
+    destroy() { this.destroyed = true; }
+  }
   const defaultState = { cookie: "account-cookie", cache: "account-content" };
   const tokenState = { cookie: null, cache: null };
   const fetchInSession = async (state, url, options) => {
@@ -59,7 +63,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     return result;
   };
   const fixture = {
-    app, BrowserWindow, removeSavedToken,
+    app, BrowserWindow, BaseWindow, removeSavedToken,
     safeStorage: {
       isEncryptionAvailable: () => available,
       getSelectedStorageBackend: () => "gnome_libsecret",
@@ -67,7 +71,13 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       decryptString: (bytes) => bytes.toString().slice(10),
       ...safeStorage,
     },
-    dialog: { showErrorBox: (title, content) => calls.errorBoxes.push({ title, content }), showMessageBox: async (options) => {
+    dialog: { showMessageBox: async (parentOrOptions, parentOptions) => {
+      const options = parentOptions || parentOrOptions;
+      if (options.title === "Build sign-out failed") {
+        assert.ok(parentOrOptions instanceof BaseWindow, "macOS needs a parent for an asynchronous dialog");
+        assert.ok(options.signal instanceof AbortSignal, "failure dialog can be closed at its deadline");
+        calls.reportSignal = options.signal;
+      }
       calls.dialogs.push(options);
       return showMessageBox ? showMessageBox(options) : { response: calls.dialogResponse ?? 1 };
     } },
@@ -119,7 +129,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
     load(url, context, nextLoad) {
       if (url === `stub:electron-${id}`) return {
         format: "module", shortCircuit: true,
-        source: `export const { app, BrowserWindow, safeStorage, dialog, Menu, net, session, shell } = globalThis.${key};`,
+        source: `export const { app, BrowserWindow, BaseWindow, safeStorage, dialog, Menu, net, session, shell } = globalThis.${key};`,
       };
       const loaded = nextLoad(url, context);
       if (url === new URL(`../src/main.mjs?test=${id}`, import.meta.url).href) {
@@ -577,6 +587,8 @@ for (const operation of ["storage", "cache"]) {
 
 for (const mode of ["pending", "rejected"]) {
   test(`${mode} failure dialog cannot hold Sign Out forever`, async (t) => {
+    const logs = [];
+    t.mock.method(console, "error", (...args) => logs.push(args));
     const { app, calls, signOut } = await launch(t, {
       clearCache: () => { throw new Error("fixture-private-failure"); },
       showMessageBox: () => mode === "pending" ? new Promise(() => {}) : Promise.reject(new Error("fixture-dialog-failure")),
@@ -589,8 +601,11 @@ for (const mode of ["pending", "rejected"]) {
       t.mock.timers.tick(5_000);
       await flush();
     }
-    assert.equal(calls.errorBoxes.length, 1, "fallback surfaces cleanup failure");
-    assert.equal(JSON.stringify(calls.errorBoxes).includes("fixture-private"), false);
+    assert.equal(calls.reportWindows.length, 1, "native failure window has no renderer");
+    assert.match(calls.reportWindows[0].options.title, /could not clear/);
+    assert.equal(calls.reportWindows[0].destroyed, true);
+    assert.equal(calls.reportSignal.aborted, true);
+    assert.equal(JSON.stringify(logs).includes("fixture-private"), false);
     assert.equal(calls.quit, 1);
     await cleanup;
   });

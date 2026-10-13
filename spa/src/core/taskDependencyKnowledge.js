@@ -5,11 +5,15 @@ import { mergeCachedRecordsTogether, readCached } from "./localCache.js";
 export const taskDependencyKnowledgeAddress = (deviceId, projectId, taskId) => ({
   deviceId, entityId: String(projectId || ""), kind: "tracker-task-dependencies", sub: String(taskId || ""),
 });
-const capable = (task) => typeof task?.dependencies?.blocked === "boolean";
+export function hasTaskDependencyFacts(task) {
+  const summary = task?.dependencies;
+  return summary?.blocked === true || (summary?.blocked === false
+    && Array.isArray(summary.waiting_on) && summary.waiting_on.length === 0);
+}
 const instant = (record) => Date.parse(record?.updated_at);
 
 function nextKnowledge(held, task) {
-  if (!capable(task)) return null;
+  if (!hasTaskDependencyFacts(task)) return null;
   const next = { task_id: task.id, updated_at: task.updated_at, dependencies: task.dependencies };
   if (!held) return next;
   const prior = instant(held), incoming = instant(next);
@@ -29,7 +33,7 @@ export async function readTaskDependencyKnowledge(deviceId, projectId, taskId) {
 // Replica admission and dependency observation commit together. Rejected
 // writes cannot establish knowledge, and views announce only committed data.
 export function mergeTaskDependencyRecords(addresses, tasks, merge) {
-  const observations = [...new Map(tasks.filter((task) => task?.id && capable(task)).map((task) => [task.id, task])).values()];
+  const observations = [...new Map(tasks.filter((task) => task?.id && hasTaskDependencyFacts(task)).map((task) => [task.id, task])).values()];
   const { deviceId, entityId } = addresses[0];
   const knowledgeAddresses = observations.map((task) => taskDependencyKnowledgeAddress(deviceId, entityId, task.id));
   return mergeCachedRecordsTogether([...addresses, ...knowledgeAddresses], (records) => {

@@ -1,6 +1,6 @@
-// Assignment reads durable dependency knowledge. Pre-upgrade caches without
-// that record retain conservative arbitration of replicas and the opened row.
-import { readTaskDependencyKnowledge, taskDependencyKnowledgeAddress } from "./taskDependencyKnowledge.js";
+// Durable knowledge preserves facts across legacy writes. It participates in
+// assignment arbitration alongside every replica and the opened picker task.
+import { hasTaskDependencyFacts, readTaskDependencyKnowledge, taskDependencyKnowledgeAddress } from "./taskDependencyKnowledge.js";
 import { cachedAddresses, readCachedMany } from "./localCache.js";
 import { taskAddress, TRACKER_TASKS_KIND, TRACKER_TASKS_QUERY_KIND, TRACKER_TASKS_PAGE_KIND } from "./trackerCache.js";
 
@@ -12,30 +12,23 @@ const taskInstant = (task) => {
 const taskInRecord = (record, taskId) => record?.value?.task
   || record?.value?.tasks?.find((task) => task.id === taskId);
 const knowledgeFacts = (knowledge) => ({ id: knowledge.task_id, updated_at: knowledge.updated_at, dependencies: knowledge.dependencies });
-const hasDependencyFacts = (task) => typeof task.dependencies?.blocked === "boolean";
 
 export async function readTaskAssignmentFacts(deviceId, projectId, taskId, opened = null) {
   const knowledge = await readTaskDependencyKnowledge(deviceId, projectId, taskId);
-  if (knowledge) return knowledgeFacts(knowledge);
   const addresses = (await cachedAddresses({ deviceId, entityId: projectId }))
     .filter((address) => listKinds.includes(address.kind));
-  // A capable write may establish knowledge during the initial cache miss.
-  // Snapshot it with the fallback replicas before using their conservative rule.
+  // A capable write may establish or advance knowledge during discovery.
+  // Snapshot it together with all retained replicas, even when it already exists.
   const [observed, ...records] = await readCachedMany([
     taskDependencyKnowledgeAddress(deviceId, projectId, taskId), taskAddress(deviceId, projectId, taskId), ...addresses,
   ]);
-  if (observed?.value) return knowledgeFacts(observed.value);
-  const tasks = [...records.map((record) => taskInRecord(record, taskId)), opened]
+  const tasks = [...records.map((record) => taskInRecord(record, taskId)), knowledge && knowledgeFacts(knowledge)]
     .filter((task) => task?.id === taskId);
-  return selectAssignmentFacts(tasks);
+  return selectTaskAssignmentFacts({ knowledge: observed?.value, replicas: tasks, opened: opened?.id === taskId ? opened : null });
 }
 
-function selectAssignmentFacts(tasks) {
-  const known = tasks.filter(hasDependencyFacts);
-  const waiting = known.filter((task) => task.dependencies.blocked);
-  // A legacy refresh knows no readiness. While any source is unknown,
-  // no ready version can erase another source's known waiting evidence.
-  const facts = tasks.some((task) => !hasDependencyFacts(task)) && waiting.length ? waiting : known;
+export function selectTaskAssignmentFacts({ knowledge = null, replicas = [], opened = null }) {
+  const facts = [...replicas, opened, knowledge && knowledgeFacts(knowledge)].filter(hasTaskDependencyFacts);
   const latest = facts.reduce((stamp, task) => Math.max(stamp, taskInstant(task)), -Infinity);
   // Source read/write orders are incomparable. Discard only demonstrably
   // older task versions; ties and unknown stamps retain waiting evidence.

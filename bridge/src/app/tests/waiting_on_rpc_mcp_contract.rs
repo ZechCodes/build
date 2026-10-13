@@ -314,16 +314,32 @@ fn waiting_on_rpc_mcp_contract_refusals_name_scoped_blockers_and_stale_retry_con
     let tmp = tempfile::tempdir().unwrap();
     let (_home, mut app, project) = tracked(tmp.path());
     let blocker = filed(&mut app, &project, "blocker");
-    let task = rpc(&mut app, "tasks.create", json!({"project_id":project,"title":"held","waiting_on":[blocker["id"]],"assignee":{"kind":"new_project_agent","agent_name":"held worker"}}));
+    let task = rpc(
+        &mut app,
+        "tasks.create",
+        json!({"project_id":project,"title":"held","waiting_on":[blocker["id"]],"assignee":{"kind":"new_project_agent","agent_name":"held worker"}}),
+    );
     let id = &task["task"]["id"];
-    let blocked = app.handle(req("tasks.update",json!({"task_id":id,"status":"in_progress"})));
+    let blocked = app.handle(req(
+        "tasks.update",
+        json!({"task_id":id,"status":"in_progress"}),
+    ));
     assert_eq!(blocked["error_code"], "conflict", "{blocked}");
     assert_eq!(blocked["details"]["task_id"], *id, "{blocked}");
-    assert_eq!(blocked["details"]["waiting_on"][0]["task_id"],blocker["id"], "{blocked}");
-    let cycle = app.handle(req("tasks.waiting_on.add",json!({"task_id":blocker["id"],"waiting_on":[id]})));
-    assert_eq!(cycle["error_code"],"invalid_params","{cycle}");
-    assert_eq!(cycle["details"]["task_id"],blocker["id"],"{cycle}");
-    assert_eq!(cycle["details"]["waiting_on"],json!([id]),"{cycle}");
-    let stale = app.handle(req("tasks.assign",json!({"task_id":id,"retry_deferred_id":task["task"]["deferred_assignment"]["id"]})));
-    assert_eq!(stale["error_code"],"conflict","{stale}");
+    assert_eq!(
+        blocked["details"]["waiting_on"][0]["task_id"], blocker["id"],
+        "{blocked}"
+    );
+    let cycle = app.handle(req(
+        "tasks.waiting_on.add",
+        json!({"task_id":blocker["id"],"waiting_on":[id]}),
+    ));
+    assert_eq!(cycle["error_code"], "invalid_params", "{cycle}");
+    assert_eq!(cycle["details"]["task_id"], blocker["id"], "{cycle}");
+    assert_eq!(cycle["details"]["waiting_on"], json!([id]), "{cycle}");
+    let stale = app.handle(req(
+        "tasks.assign",
+        json!({"task_id":id,"retry_deferred_id":task["task"]["deferred_assignment"]["id"]}),
+    ));
+    assert_eq!(stale["error_code"], "conflict", "{stale}");
 }

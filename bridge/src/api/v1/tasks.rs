@@ -684,6 +684,11 @@ fn refine(error: ApiError) -> ApiError {
     if message == "conflict: operation_id already used with different assignment" {
         return ApiError::conflict(message, None);
     }
+    if message.contains("only the current failed delivery")
+        || message.contains("retry_deferred_id does not belong")
+    {
+        return ApiError::conflict(message, None);
+    }
     if message.starts_with("stale_body:") {
         return ApiError::StaleBody {
             message,
@@ -706,19 +711,61 @@ fn tasks_waiting_on_add(
     app: &mut AppState,
     params: TasksWaitingOnParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_waiting_on_edit(&params.wire(), true)).map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_waiting_on_edit(&wire, true))
+        .map_err(|error| refine_waiting(app, error, &wire))
 }
 fn tasks_waiting_on_remove(
     app: &mut AppState,
     params: TasksWaitingOnParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_waiting_on_edit(&params.wire(), false)).map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_waiting_on_edit(&wire, false))
+        .map_err(|error| refine_waiting(app, error, &wire))
 }
 fn tasks_waiting_on_blocks(
     app: &mut AppState,
     params: TasksBlocksParams,
 ) -> Result<Answer<TaskBlocks>, ApiError> {
     answer(app.tasks_waiting_on_blocks(&params.wire())).map_err(refine)
+}
+
+/// Add facts only after the implementation fenced every dependency endpoint.
+fn refine_waiting(app: &mut AppState, error: ApiError, params: &Value) -> ApiError {
+    let error = refine(error);
+    let message = error.message().to_string();
+    let blocked = message.contains("conflict: unresolved waiting-on dependencies");
+    let cycle = message.contains("waiting_on would create a cycle")
+        || message.contains("a task cannot wait on itself");
+    if !blocked && !cycle {
+        return error;
+    }
+    let Some(task_id) = params["task_id"].as_str() else {
+        return error;
+    };
+    let Ok(read) = app.tasks_get(&serde_json::json!({"task_id":task_id})) else {
+        return error;
+    };
+    let waiting_on = if blocked {
+        read["task"]["dependencies"]["waiting_on"]
+            .as_array()
+            .map(|edges| {
+                edges
+                    .iter()
+                    .filter(|edge| edge["resolved"] == false)
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    } else {
+        params["waiting_on"].as_array().cloned().unwrap_or_default()
+    };
+    let details = Some(serde_json::json!({"task_id":task_id,"waiting_on":waiting_on}));
+    if blocked {
+        ApiError::conflict(message, details)
+    } else {
+        ApiError::InvalidParams { message, details }
+    }
 }
 
 // -------------------------------------------------------------- handlers ---
@@ -760,7 +807,8 @@ fn tasks_update(
     app: &mut AppState,
     params: TasksUpdateParams,
 ) -> Result<Answer<TaskAnswer>, ApiError> {
-    answer(app.tasks_update(&params.wire())).map_err(refine)
+    let wire = params.wire();
+    answer(app.tasks_update(&wire)).map_err(|error| refine_waiting(app, error, &wire))
 }
 
 fn tasks_comment(

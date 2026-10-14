@@ -102,6 +102,39 @@ fn a_refused_compaction_is_reported_and_leaves_the_session_waiting() {
 }
 
 #[test]
+fn round4_621_compaction_refusal_keeps_the_human_reason_and_discards_the_dump() {
+    for suffix in [
+        r#" {"input":"confidential-request"}"#,
+        r#" ["confidential-request"]"#,
+        " <input>confidential-request</input>",
+        " input=confidential-request",
+        " input: confidential-request",
+    ] {
+        let refused = apply(
+            compacting(),
+            correlated(
+                compact_thread(),
+                Err(RpcError {
+                    code: -32600,
+                    message: format!("thread is busy{suffix}"),
+                    data: None,
+                }),
+            ),
+        );
+        assert_eq!(refused.state.live_status(), Some(AgentStatus::Waiting));
+        let [SessionEffect::Report(report)] = refused.effects.as_slice() else {
+            panic!("expected one compaction refusal report");
+        };
+        let AgentActivity::TaskUpdate { summary } = &report.activity else {
+            panic!("expected compaction refusal update");
+        };
+        assert!(summary.contains("thread is busy"), "{summary}");
+        assert!(!summary.contains("confidential-request"), "{summary}");
+        assert!(summary.len() <= 1024, "{summary}");
+    }
+}
+
+#[test]
 fn a_compact_prompt_is_never_steered_into_a_running_turn() {
     let working = apply(
         working_state(),

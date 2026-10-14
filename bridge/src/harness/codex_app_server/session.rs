@@ -1209,6 +1209,10 @@ impl SessionCore {
                 json!(error.as_ref().and_then(NotificationError::safe_code)),
             ),
             (
+                "codex_error_info",
+                json!(error.as_ref().and_then(NotificationError::safe_code)),
+            ),
+            (
                 "http_status",
                 json!(error.as_ref().and_then(NotificationError::safe_http_status)),
             ),
@@ -1628,6 +1632,7 @@ fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: We
 
 #[cfg(test)]
 mod tests {
+    mod error_telemetry;
     mod recovery_eof;
     use std::path::Path;
     use std::time::Duration;
@@ -2177,9 +2182,10 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 record["error_message"],
-                "quota exhausted Authorization: Bearer [REDACTED]"
+                "quota exhausted Authorization [REDACTED]"
             );
             assert_eq!(record["error_code"], "usageLimitExceeded");
+            assert_eq!(record["codex_error_info"], "usageLimitExceeded");
         }
         let serialized = serde_json::to_string(&records).unwrap();
         assert!(!serialized.contains("fixture-secret"));
@@ -2188,7 +2194,7 @@ mod tests {
             .any(|record| record["event"] == "terminal_settled"
                 && record["epitaph"]
                     .as_str()
-                    .is_some_and(|text| text.contains("unexpected"))));
+                    .is_some_and(|text| text == "harness session error [REDACTED]")));
     }
 
     fn scripted_session_with_gated_grace(

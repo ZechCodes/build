@@ -1374,11 +1374,13 @@ comments require current assignment and conversation authority; ordinary
 completion reports retain their existing semantics. Failure notices use the
 ordinary 30-second notice settle window and wake without a client connected.
 The failed holder is not woken to read its own failure. Lifecycle telemetry
-includes sanitized error message,
-code, HTTP status and epitaph rather than raw provider payloads or credentials.
-Labelled structured payloads and explicit request-body or payload content are
-discarded from the value onward, and credential values
-including `x-api-key` headers are redacted before the 1 KiB text bound is applied.
+records the allowlisted error code and `codexErrorInfo` variant name, numeric
+HTTP status, and a bounded human message or epitaph. Only the text before the
+first `{`, `[`, `<`, `=`, or `:` is retained; this also excludes unlabelled
+bodies and plain key/value dumps. Credential-shaped values in that prefix are
+redacted, the discarded suffix receives a fixed redaction marker, and the
+result is bounded to 1 KiB on a UTF-8 boundary. The raw error still drives
+classification; discarded text never enters telemetry or failure notices.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.
 

@@ -852,7 +852,10 @@ impl CodexSessionState {
         error: RpcError,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let reason = format!("Codex could not compact the thread: {}", error.message);
+        let reason = format!(
+            "Codex could not compact the thread because {}",
+            error.message
+        );
         self.reported_error = Some(reason.clone());
         self.phase = Phase::Waiting;
         let mut effects = vec![operational_report(reason)];

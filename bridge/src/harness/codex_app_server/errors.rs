@@ -240,11 +240,12 @@ fn explicit_transient_hint(text: &str) -> bool {
     .any(|hint| lower.contains(hint))
 }
 
-/// Remove secret values before truncation, so bounding never exposes a token
-/// prefix. This also serves protocol-violation and lifecycle diagnostics.
+/// Persist only the human prefix before a structure or key/value delimiter,
+/// redacting credentials before bounding. Provider payload text never follows
+/// the fixed marker, including when this sanitizer is called again.
 pub(super) fn sanitize_error(text: &str) -> String {
-    let without_payload = strip_labelled_payload(text);
-    let normalized: String = without_payload
+    let prefix = human_message_prefix(text);
+    let normalized: String = prefix
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
@@ -262,47 +263,19 @@ pub(super) fn sanitize_error(text: &str) -> String {
         }
     }
     let sanitized = replace_secrets(&normalized, secrets);
-    bounded_text(&sanitized)
+    bounded_text(&human_message_prefix(&sanitized))
 }
 
-/// Explicit bodies/payloads may be malformed or plain text. Any other labelled
-/// structure may also carry request data, regardless of its label's spelling.
-/// Discard the entire suffix without parsing that untrusted representation.
-fn strip_labelled_payload(text: &str) -> String {
-    let mut previous = String::new();
-    for fragment in fragments(text) {
-        let label: String = text[fragment.clone()]
-            .chars()
-            .filter(char::is_ascii_alphanumeric)
-            .map(|c| c.to_ascii_lowercase())
-            .collect();
-        let start = label_value_start(text, fragment.end);
-        let labelled_payload = assigned_label(text, fragment.end)
-            && (matches!(label.as_str(), "body" | "payload") || structured_payload(text, start));
-        if request_payload_label(&label, &previous) || labelled_payload {
-            return format!("{}{REDACTED}", &text[..start]);
-        }
-        previous = label;
+fn human_message_prefix(text: &str) -> String {
+    let Some(end) = text.find(['{', '[', '<', '=', ':']) else {
+        return text.to_string();
+    };
+    let prefix = text[..end].trim_end();
+    if prefix.is_empty() {
+        REDACTED.to_string()
+    } else {
+        format!("{prefix} {REDACTED}")
     }
-    text.to_string()
-}
-
-fn request_payload_label(label: &str, previous: &str) -> bool {
-    matches!(
-        label,
-        "requestbody" | "requestpayload" | "requestdata" | "requestjson"
-    ) || (previous == "request" && matches!(label, "body" | "payload" | "data" | "json"))
-}
-
-fn structured_payload(text: &str, start: usize) -> bool {
-    text[start..]
-        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`'))
-        .starts_with(['{', '['])
-}
-
-fn assigned_label(text: &str, after: usize) -> bool {
-    let after = after + usize::from(text[after..].starts_with(['\'', '"']));
-    text[after..].trim_start().starts_with([':', '='])
 }
 
 fn label_value_start(text: &str, after: usize) -> usize {
@@ -444,7 +417,7 @@ fn bounded_text(text: &str) -> String {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    text[..end].to_string()
+    text[..end].trim_end().to_string()
 }
 
 #[cfg(test)]
@@ -783,6 +756,20 @@ mod tests {
     }
 
     #[test]
+    fn review621_flat_request_body_is_not_logged() {
+        let error: NotificationError = serde_json::from_value(json!({
+            "message": "HTTP 500; {\"model\":\"gpt-6\",\"input\":\"confidential-request\"}",
+            "codexErrorInfo": "internalServerError"
+        }))
+        .unwrap();
+        assert!(
+            !error.safe_message().contains("confidential-request"),
+            "flat request body retained: {}",
+            error.safe_message()
+        );
+    }
+
+    #[test]
     fn revision_621_labelled_structured_payloads_are_removed() {
         for message in [
             r#"HTTP 500; payload: {"input":"confidential-request","customer":"private-customer"}"#,
@@ -835,16 +822,107 @@ mod tests {
                 "é".repeat(2048)
             );
             let safe = sanitize_error(&message);
-            assert_eq!(safe, format!("HTTP 500; {label}: [REDACTED]"));
+            assert_eq!(safe, format!("HTTP 500; {label} [REDACTED]"));
             assert!(safe.len() <= 1024);
         }
     }
 
     #[test]
-    fn revision_621_scalar_error_diagnostics_remain_visible() {
+    fn revision_621_key_value_diagnostics_stop_at_the_human_prefix() {
         let diagnostic =
             "HTTP 503; status: 503; retryable=true; request timed out; context: upstream refused";
-        assert_eq!(sanitize_error(diagnostic), diagnostic);
+        assert_eq!(sanitize_error(diagnostic), "HTTP 503; status [REDACTED]");
+        let human_message = "HTTP 503 upstream timeout after 30 seconds";
+        assert_eq!(sanitize_error(human_message), human_message);
+    }
+
+    #[test]
+    fn round4_621_only_human_prefix_preceding_dump_delimiters_is_logged() {
+        for delimiter in ['{', '[', '<', '=', ':'] {
+            for prefix in [
+                "HTTP 500 timed out",
+                "HTTP 500 timed out\r\n",
+                "échec HTTP 500",
+            ] {
+                let message = format!(
+                    "{prefix}{delimiter}\"confidential-request\" customer private-customer"
+                );
+                let safe = sanitize_error(&message);
+                assert_eq!(safe, format!("{} [REDACTED]", prefix.trim_end()));
+                assert_eq!(sanitize_error(&safe), safe);
+            }
+        }
+        for message in [
+            r#"{"model":"gpt-6","input":"confidential-request"}"#,
+            r#"["confidential-request"]"#,
+            "<input>confidential-request</input>",
+            "=confidential-request",
+            ":confidential-request",
+        ] {
+            assert_eq!(sanitize_error(message), "[REDACTED]");
+        }
+    }
+
+    #[test]
+    fn round4_621_plain_colon_and_equals_dumps_never_pass() {
+        for message in [
+            "HTTP 500; body: confidential-request customer private-customer",
+            "HTTP 500; request values=confidential-request customer private-customer",
+            "HTTP 500; unknown: confidential-request",
+            "HTTP 500; UNFAMILIAR_LABEL=confidential-request",
+            "HTTP 500; request data:\nmodel gpt-6 input confidential-request",
+        ] {
+            let safe = sanitize_error(message);
+            assert!(safe.starts_with("HTTP 500;"), "{safe}");
+            assert!(
+                !safe.contains("confidential-request") && !safe.contains("private-customer"),
+                "{safe}"
+            );
+            assert!(!safe.contains([':', '=']), "{safe}");
+        }
+    }
+
+    #[test]
+    fn round4_621_allowlisted_prefix_is_bounded_and_utf8_safe() {
+        for length in [0, 500, 509, 512, 600] {
+            for delimiter in ['{', '[', '<', '=', ':'] {
+                let message = format!(
+                    "{}{delimiter}confidential-request{}private-customer",
+                    "é".repeat(length),
+                    "x".repeat(2048)
+                );
+                let safe = sanitize_error(&message);
+                assert!(safe.len() <= 1024, "{}", safe.len());
+                assert!(
+                    !safe.contains("confidential-request") && !safe.contains("private-customer"),
+                    "{safe}"
+                );
+                assert_eq!(sanitize_error(&safe), safe);
+            }
+        }
+        let long_human_message = format!("{}a {}", "é".repeat(511), "safe".repeat(300));
+        let safe = sanitize_error(&long_human_message);
+        assert!(safe.len() <= 1024);
+        assert_eq!(sanitize_error(&safe), safe);
+    }
+
+    #[test]
+    fn round4_621_fixed_redaction_markers_are_idempotent_and_hide_the_tail() {
+        for message in [
+            "HTTP 500 [REDACTED] confidential-request",
+            "[REDACTED] confidential-request",
+            "HTTP 500 Bearer fixture-secret confidential-request",
+            "HTTP 500 password 'fixture-secret' confidential-request",
+            "HTTP 500 Authorization Bearer fixture-secret confidential-request",
+        ] {
+            let safe = sanitize_error(message);
+            assert!(safe.contains("[REDACTED]"), "{safe}");
+            assert!(
+                !safe.contains("fixture-secret") && !safe.contains("confidential-request"),
+                "{safe}"
+            );
+            assert_eq!(sanitize_error(&safe), safe);
+        }
     }
 
     #[test]

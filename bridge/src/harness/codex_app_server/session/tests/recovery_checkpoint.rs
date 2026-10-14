@@ -127,7 +127,7 @@ fn revision_622_ended_waits_for_terminal_checkpoint_and_failure_delivery() {
         .unwrap();
     gate.reached.recv_timeout(Duration::from_secs(5)).unwrap();
     let direct_status = session.status();
-    let watched_status = status.borrow().status.clone();
+    let watched_status = status.borrow().status;
     let pending = episodes(root.path(), &scope).unwrap();
     gate.release.send(()).unwrap();
     wait_until("ended", || {

@@ -1366,7 +1366,12 @@ dispatcher notice retains its recipient generation and message identity, so
 boot can requeue its wake while the notice remains unread without posting it again.
 An unrecovered turn failure or an unexpected protocol transition that ends the
 session publishes one
-`TurnFailed` activity. The app records a failed outcome, delivers a failure
+`TurnFailed` activity. Terminal status becomes observable only after its failure
+checkpoint and activity reports are ready. If the checkpoint write fails, the
+activity uses the direct dispatcher failure-notice path; structured diagnostics
+retain the internal I/O reason without provider-text sanitization. The final
+status watch precedes activity-stream closure, and direct status reads wait for
+that closure. The app records a failed outcome, delivers a failure
 message to the dispatch requester (falling back to the project's coordinator),
 and comments once on the dispatched task. The activity carries the failed
 operation so a newer consumed turn keeps its task and execution clock. Task

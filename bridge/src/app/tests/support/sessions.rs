@@ -50,6 +50,7 @@ pub(in crate::app::tests) struct DictatedSession {
     native_choices: Vec<ModelChoice>,
     interruptible: bool,
     start_refused: Option<String>,
+    recovery_episode: Option<String>,
 }
 
 impl DictatedSession {
@@ -67,6 +68,7 @@ impl DictatedSession {
             native_choices: Vec::new(),
             interruptible: false,
             start_refused: None,
+            recovery_episode: None,
         }
     }
 
@@ -142,6 +144,11 @@ impl DictatedSession {
         self.start_refused = Some(reason.to_string());
         self
     }
+
+    pub(in crate::app::tests) fn owning_recovery(mut self, episode: &str) -> Self {
+        self.recovery_episode = Some(episode.into());
+        self
+    }
 }
 
 impl AgentSession for DictatedSession {
@@ -168,6 +175,9 @@ impl AgentSession for DictatedSession {
         self.watched_status
             .as_ref()
             .map_or(self.status, |status| status.borrow().status)
+    }
+    fn provider_recovery_episode(&self) -> Option<String> {
+        self.recovery_episode.clone()
     }
     fn can_interrupt(&self) -> bool {
         self.interruptible && matches!(self.status(), AgentStatus::Working)

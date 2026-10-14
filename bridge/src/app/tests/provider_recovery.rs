@@ -114,6 +114,18 @@ impl RecoveryFixture {
         .unwrap()
     }
 
+    fn install_session(&mut self, episode: &str, status: AgentStatus) {
+        let scope = self.episode.scope.clone();
+        let root = self.root.path().to_path_buf();
+        insert_agent_tab(
+            self.state(),
+            &root,
+            &scope.entity_id,
+            &scope.agent_id,
+            DictatedSession::reporting(status).owning_recovery(episode),
+        );
+    }
+
     fn assert_single_reports(&mut self) {
         let scope = self.episode.scope.clone();
         let reports = items(self.state(), &scope.entity_id, &scope.agent_id);
@@ -154,6 +166,94 @@ impl RecoveryFixture {
             "{notices:?}"
         );
     }
+}
+
+#[test]
+fn round3_delayed_replay_preserves_the_exact_live_recovery_episode() {
+    for stage in [RecoveryStage::Pending, RecoveryStage::InFlight] {
+        let mut fixture = RecoveryFixture::new();
+        fixture.episode.stage = stage;
+        crate::provider_recovery::save_episode(fixture.root.path(), &fixture.episode).unwrap();
+        let episode = fixture.episode.id.clone();
+        fixture.install_session(&episode, AgentStatus::Working);
+
+        fixture.state().replay_provider_recovery_episodes().unwrap();
+
+        assert_eq!(fixture.persisted_episode(), fixture.episode);
+        let scope = fixture.episode.scope.clone();
+        assert!(!items(fixture.state(), &scope.entity_id, &scope.agent_id)
+            .iter()
+            .any(|row| row["data"]["outcome"] == "failed"));
+        let task = fixture.task.clone();
+        let read = fixture
+            .state()
+            .handle(req("tasks.get", json!({"task_id":task})));
+        assert!(!read["result"]["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["type"] == "comment"));
+        assert!(fixture.state().delivery_queue.queued_is_empty());
+    }
+}
+
+#[test]
+fn round3_live_session_does_not_hide_an_interrupted_other_episode() {
+    let mut fixture = RecoveryFixture::new();
+    fixture.install_session("another-episode", AgentStatus::Working);
+
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+
+    fixture.assert_single_reports();
+    assert_eq!(fixture.persisted_episode().stage, RecoveryStage::Terminal);
+}
+
+#[test]
+fn round3_retained_ended_session_does_not_own_a_pending_retry() {
+    let mut fixture = RecoveryFixture::new();
+    let episode = fixture.episode.id.clone();
+    fixture.install_session(&episode, AgentStatus::Ended { code: Some(0) });
+
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+
+    fixture.assert_single_reports();
+    assert_eq!(fixture.persisted_episode().stage, RecoveryStage::Terminal);
+}
+
+#[test]
+fn round3_live_session_cannot_suppress_a_terminal_outbox() {
+    let mut fixture = RecoveryFixture::new();
+    crate::provider_recovery::abandon(&mut fixture.episode);
+    crate::provider_recovery::save_episode(fixture.root.path(), &fixture.episode).unwrap();
+    let episode = fixture.episode.id.clone();
+    fixture.install_session(&episode, AgentStatus::Working);
+
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+
+    fixture.assert_single_reports();
+    assert_eq!(fixture.persisted_episode().stage, RecoveryStage::Terminal);
+}
+
+#[test]
+fn round3_replay_ownership_requires_the_matching_conversation() {
+    let mut fixture = RecoveryFixture::new();
+    let episode = fixture.episode.id.clone();
+    fixture.install_session(&episode, AgentStatus::Working);
+    let key = TabKey::agent(fixture.root.path(), &fixture.episode.scope.agent_id);
+    fixture
+        .state()
+        .session_registry
+        .test_tab_mut(&key)
+        .unwrap()
+        .session_instance
+        .as_mut()
+        .unwrap()
+        .conversation_id = "other-conversation".into();
+
+    fixture.state().replay_provider_recovery_episodes().unwrap();
+
+    fixture.assert_single_reports();
+    assert_eq!(fixture.persisted_episode().stage, RecoveryStage::Terminal);
 }
 
 #[test]

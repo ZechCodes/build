@@ -4,6 +4,7 @@ use crate::provider_recovery::{
     RecoveryScope, RecoveryStage,
 };
 use crate::resume::disk::testing::RecordingDisk;
+use sha2::Digest;
 
 fn scope() -> RecoveryScope {
     RecoveryScope {
@@ -569,4 +570,349 @@ fn revision_621_fresh_session_reports_inherited_failure_once_without_a_boot() {
     assert_eq!(inherited.stage, RecoveryStage::Terminal);
     assert!(inherited.active && inherited.needs_notice);
     session.end();
+}
+
+#[test]
+fn review621_successful_retry_with_queued_work_resolves_without_notice() {
+    let root = tempfile::tempdir().unwrap();
+    let mut checkpoint = journal(root.path());
+    let failed = failure(working_operation(), TURN_ID, 0);
+    persist(&mut checkpoint, &failed, 0);
+    let queued = failed
+        .state
+        .transition(
+            SessionEvent::SendChosenTurn(Turn::new("next").with_operation_id("new-operation")),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &queued, 1);
+    let retry = queued
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &retry, 60);
+    let [SessionEffect::Request(operation)] = retry.effects.as_slice() else {
+        panic!("expected retry")
+    };
+    let retry = retry
+        .state
+        .transition(
+            correlated(operation.clone(), Ok(json!({"turn":{"id":"retry-turn"}}))),
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &retry, 60);
+    let succeeded = retry
+        .state
+        .transition(
+            turn_completed("retry-turn", None),
+            Duration::from_secs(61),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(succeeded.effects.iter().any(|effect| matches!(
+        effect,
+        SessionEffect::Request(PendingOperation::StartTurn { .. })
+    )));
+    persist(&mut checkpoint, &succeeded, 61);
+    let record = episode(root.path());
+    assert!(
+        !record.needs_notice,
+        "successful recovery became a failure outbox: {record:?}"
+    );
+    assert_eq!(record.stage, RecoveryStage::Resolved);
+    assert!(journal(root.path()).take_restored_notices().is_empty());
+}
+
+#[test]
+fn review621_abandoned_live_episode_cannot_send_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let mut checkpoint = journal(root.path());
+    let failed = failure(working_operation(), TURN_ID, 0);
+    persist(&mut checkpoint, &failed, 0);
+    let saved = episode(root.path());
+    // The delayed boot replayer uses this same durable transition.
+    crate::provider_recovery::update_episode(
+        root.path(),
+        &saved.scope.agent_id,
+        &saved.id,
+        abandon,
+    )
+    .unwrap();
+    let retry = failed
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    let persisted = super::super::session::recovery::persist_transition(
+        &mut checkpoint,
+        &retry,
+        Duration::from_secs(60),
+        "session-incarnation",
+    );
+    assert!(
+        persisted.is_err(),
+        "abandoned episode still permits its outgoing retry: {:?}",
+        retry.effects
+    );
+}
+
+#[test]
+fn round3_621_interrupted_retry_with_queued_work_preserves_a_terminal_outbox() {
+    let root = tempfile::tempdir().unwrap();
+    let mut checkpoint = journal(root.path());
+    let failed = failure(working_operation(), TURN_ID, 0);
+    persist(&mut checkpoint, &failed, 0);
+    let queued = failed
+        .state
+        .transition(
+            SessionEvent::SendChosenTurn(Turn::new("next").with_operation_id("new-operation")),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &queued, 1);
+    let retry = queued
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &retry, 60);
+    let [SessionEffect::Request(operation)] = retry.effects.as_slice() else {
+        panic!("expected continuation")
+    };
+    let retry = retry
+        .state
+        .transition(
+            correlated(operation.clone(), Ok(json!({"turn":{"id":"retry-turn"}}))),
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &retry, 60);
+    let interrupted = retry
+        .state
+        .transition(
+            SessionEvent::ObservedCompletion(TurnCompletion::observed(
+                "retry-turn".into(),
+                "interrupted".into(),
+                None,
+            )),
+            Duration::from_secs(61),
+            limits().state(),
+        )
+        .unwrap();
+    assert_eq!(
+        interrupted
+            .effects
+            .iter()
+            .filter(|effect| matches!(effect, SessionEffect::Report(report)
+        if matches!(report.activity, AgentActivity::TurnFailed { .. })))
+            .count(),
+        1
+    );
+    persist(&mut checkpoint, &interrupted, 61);
+    let record = episode(root.path());
+    assert_eq!(record.stage, RecoveryStage::Terminal);
+    assert!(record.needs_notice && !record.active);
+    assert_eq!(record.operation_id.as_deref(), Some("failed-operation"));
+}
+
+#[test]
+fn round3_621_inactive_resolved_or_missing_checkpoint_cannot_authorize_a_retry() {
+    for state in ["inactive", "resolved", "missing"] {
+        let root = tempfile::tempdir().unwrap();
+        let mut checkpoint = journal(root.path());
+        let failed = failure(working_operation(), TURN_ID, 0);
+        persist(&mut checkpoint, &failed, 0);
+        let record = episode(root.path());
+        if state == "missing" {
+            let path = root
+                .path()
+                .join("provider-recovery")
+                .join(format!("{:x}", sha2::Sha256::digest(b"agent")))
+                .join(format!("{}.json", record.id));
+            crate::resume::disk::remove(&crate::resume::disk::RealDisk, &path).unwrap();
+        } else {
+            crate::provider_recovery::update_episode(
+                root.path(),
+                &record.scope.agent_id,
+                &record.id,
+                |record| {
+                    record.active = false;
+                    if state == "resolved" {
+                        record.stage = RecoveryStage::Resolved;
+                    }
+                },
+            )
+            .unwrap();
+        }
+        let retry = failed
+            .state
+            .transition(
+                SessionEvent::CheckTimeouts,
+                Duration::from_secs(60),
+                limits().state(),
+            )
+            .unwrap();
+        assert!(
+            super::super::session::recovery::persist_transition(
+                &mut checkpoint,
+                &retry,
+                Duration::from_secs(60),
+                "session"
+            )
+            .is_err(),
+            "{state} checkpoint permitted retry"
+        );
+    }
+}
+
+#[test]
+fn round3_621_checkpoint_metadata_cannot_reaffirm_an_abandoned_episode() {
+    let root = tempfile::tempdir().unwrap();
+    let mut checkpoint = journal(root.path());
+    let failed = failure(working_operation(), TURN_ID, 0);
+    persist(&mut checkpoint, &failed, 0);
+    let record = episode(root.path());
+    crate::provider_recovery::update_episode(
+        root.path(),
+        &record.scope.agent_id,
+        &record.id,
+        abandon,
+    )
+    .unwrap();
+    let before = episode(root.path());
+    let queued = failed
+        .state
+        .transition(
+            SessionEvent::SendChosenTurn(Turn::new("next")),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(super::super::session::recovery::persist_transition(
+        &mut checkpoint,
+        &queued,
+        Duration::from_secs(1),
+        "session"
+    )
+    .is_err());
+    assert_eq!(episode(root.path()), before);
+}
+
+fn successful_retry(checkpoint: &mut RecoveryJournal) -> CodexSessionState {
+    let retry = starting_retry(checkpoint);
+    let [SessionEffect::Request(operation)] = retry.effects.as_slice() else {
+        panic!("expected continuation")
+    };
+    let retry = retry
+        .state
+        .transition(
+            correlated(operation.clone(), Ok(json!({"turn":{"id":"retry-turn"}}))),
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    persist(checkpoint, &retry, 60);
+    let completed = retry
+        .state
+        .transition(
+            turn_completed("retry-turn", None),
+            Duration::from_secs(61),
+            limits().state(),
+        )
+        .unwrap();
+    persist(checkpoint, &completed, 61);
+    completed.state
+}
+
+#[test]
+fn round3_621_successful_retry_releases_budget_before_a_provider_owned_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let mut checkpoint = journal(root.path());
+    let completed = successful_retry(&mut checkpoint);
+    let next = completed
+        .transition(
+            SessionEvent::TurnStarted("next-owned".into()),
+            Duration::from_secs(62),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &next, 62);
+    let failed = failure(next.state, "next-owned", 63);
+    persist(&mut checkpoint, &failed, 63);
+    assert!(
+        !failed
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, SessionEffect::Report(report)
+        if matches!(report.activity, AgentActivity::TurnFailed { .. }))),
+        "new provider turn inherited the spent retry allowance"
+    );
+    let retry = failed
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(123),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(matches!(
+        retry.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::StartTurn { .. })]
+    ));
+    persist(&mut checkpoint, &retry, 123);
+    let records = episodes(root.path(), &scope()).unwrap();
+    assert_eq!(records.iter().filter(|record| record.active).count(), 1);
+    assert!(records.iter().all(|record| !record.needs_notice));
+}
+
+#[test]
+fn round3_621_successful_retry_does_not_turn_a_later_owned_interruption_into_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let mut checkpoint = journal(root.path());
+    let completed = successful_retry(&mut checkpoint);
+    let next = completed
+        .transition(
+            SessionEvent::TurnStarted("next-owned".into()),
+            Duration::from_secs(62),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &next, 62);
+    let interrupted = next
+        .state
+        .transition(
+            SessionEvent::ObservedCompletion(TurnCompletion::observed(
+                "next-owned".into(),
+                "interrupted".into(),
+                None,
+            )),
+            Duration::from_secs(63),
+            limits().state(),
+        )
+        .unwrap();
+    persist(&mut checkpoint, &interrupted, 63);
+    assert!(
+        !interrupted
+            .effects
+            .iter()
+            .any(|effect| matches!(effect, SessionEffect::Report(report)
+        if matches!(report.activity, AgentActivity::TurnFailed { .. }))),
+        "ordinary interruption inherited the prior recovery failure"
+    );
+    assert!(journal(root.path()).take_restored_notices().is_empty());
 }

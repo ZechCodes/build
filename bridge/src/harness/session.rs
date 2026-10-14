@@ -312,6 +312,12 @@ pub trait AgentSession: Send + Sync {
     /// What the agent is doing right now.
     fn status(&self) -> AgentStatus;
 
+    /// The durable failure episode this live session still owns. Startup
+    /// recovery must not abandon its pending or in-flight continuation.
+    fn provider_recovery_episode(&self) -> Option<String> {
+        None
+    }
+
     /// Exact turn-boundary updates for protocols that expose them.
     fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
         None

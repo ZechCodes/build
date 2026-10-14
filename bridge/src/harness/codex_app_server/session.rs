@@ -1279,6 +1279,15 @@ impl AgentSession for CodexAppServerSession {
         Some(self.core.status.subscribe())
     }
 
+    fn provider_recovery_episode(&self) -> Option<String> {
+        self.core
+            .recovery
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(RecoveryJournal::active_episode_id)
+    }
+
     fn turn_receipt_support(&self) -> TurnReceiptSupport {
         TurnReceiptSupport::Seen
     }

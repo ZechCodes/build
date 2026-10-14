@@ -1353,14 +1353,17 @@ stream wrapper; the unclassified `other` variant never opts into text fallback.
 The session remains working during the backoff. `provider_recovery.rs` records
 the failure episode, failed operation, absolute deadline and recovery stage in
 a synchronous sidecar before the backoff and before sending its one
-continuation. A bridge
-restart abandons a checkpointed recovery and reports its failed dispatch,
-rather than starting an ordinary resume turn with a fresh retry allowance.
+continuation. A bridge restart abandons a checkpointed recovery and reports its
+failed dispatch, rather than starting an ordinary resume turn with a fresh retry
+allowance.
 The failure remains pending until its notices are saved; repeated boots reuse
-the same episode identity. Queued input does not clear the checkpoint; a new
-turn can start a fresh episode afterwards. A saved dispatcher notice retains
-its recipient generation and message identity, so boot can requeue its wake
-while the notice remains unread without posting it again.
+the same episode identity. Delayed startup replay leaves an episode owned by
+a live session alone; the continuation barrier rejects an episode already
+abandoned or settled. Queued input does not clear the checkpoint. A successful
+retry resolves it before starting queued work, while an exhausted retry keeps
+its failure outbox. A new turn can start a fresh episode afterwards. A saved
+dispatcher notice retains its recipient generation and message identity, so
+boot can requeue its wake while the notice remains unread without posting it again.
 An unrecovered turn failure or an unexpected protocol transition that ends the
 session publishes one
 `TurnFailed` activity. The app records a failed outcome, delivers a failure
@@ -1373,7 +1376,8 @@ ordinary 30-second notice settle window and wake without a client connected.
 The failed holder is not woken to read its own failure. Lifecycle telemetry
 includes sanitized error message,
 code, HTTP status and epitaph rather than raw provider payloads or credentials.
-Request-body content is discarded from its label onward, and credential values
+Labelled structured payloads and explicit request-body or payload content are
+discarded from the value onward, and credential values
 including `x-api-key` headers are redacted before the 1 KiB text bound is applied.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.

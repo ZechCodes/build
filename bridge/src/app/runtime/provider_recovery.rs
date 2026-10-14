@@ -71,6 +71,9 @@ impl AppState {
     }
 
     fn replay_provider_episode(&mut self, episode: RecoveryEpisode) -> Result<(), String> {
+        if self.provider_episode_is_live(&episode) {
+            return Ok(());
+        }
         if !self.recovery_scope_stands(&episode.scope) {
             provider_recovery::update_episode(
                 &self.state_root,
@@ -95,6 +98,31 @@ impl AppState {
         } else {
             self.queue_recovery_recipient(episode.recipient.as_ref())
         }
+    }
+
+    fn provider_episode_is_live(&self, episode: &RecoveryEpisode) -> bool {
+        if !episode.active
+            || !matches!(
+                episode.stage,
+                RecoveryStage::Pending | RecoveryStage::InFlight
+            )
+            || !self.recovery_scope_stands(&episode.scope)
+        {
+            return false;
+        }
+        self.session_registry
+            .live_agent_snapshots()
+            .iter()
+            .any(|tab| {
+                tab.instance.as_ref().is_some_and(|instance| {
+                    instance.entity_id == episode.scope.entity_id
+                        && instance.agent_id == episode.scope.agent_id
+                        && instance.conversation_id == episode.scope.conversation_id
+                }) && !matches!(
+                    tab.session.status(),
+                    crate::harness::AgentStatus::Ended { .. }
+                ) && tab.session.provider_recovery_episode().as_deref() == Some(episode.id.as_str())
+            })
     }
 
     fn persist_provider_failure_notice(

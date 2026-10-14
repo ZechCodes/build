@@ -1294,12 +1294,23 @@ impl CodexSessionState {
         completion: TurnCompletion,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        let interrupted_retry = self.retry_taken
+            && completion.status == "interrupted"
+            && self.pending_failure.is_none();
+        if completion_succeeded(&completion) {
+            self.retry_taken = false;
+        }
         self.remember_completion(completion.clone());
         if completion.error.is_some() {
             self.reported_error = completion.error;
         }
         self.phase = Phase::Waiting;
         let mut effects = self.finish_provider_failure();
+        if interrupted_retry {
+            let summary = "The automatic provider retry was interrupted".to_string();
+            self.reported_error = Some(summary.clone());
+            effects.push(failed_report(summary, self.active_operation_id.clone()));
+        }
         if self.recovery.is_none() {
             effects.extend(self.start_next_queued(limits));
         }
@@ -1517,6 +1528,18 @@ impl CodexSessionState {
         })
     }
 
+    pub(super) fn closed_turn_succeeded(&self, turn_id: &str) -> bool {
+        let held = match &self.phase {
+            Phase::StartingTurn { completion, .. } => completion.as_ref(),
+            Phase::Working(working) => working.completion.as_ref(),
+            _ => None,
+        };
+        held.or(self.last_completion.as_ref())
+            .is_some_and(|completion| {
+                completion.turn_id == turn_id && completion_succeeded(completion)
+            })
+    }
+
     pub fn diagnostic_phase(&self) -> &'static str {
         match self.phase {
             Phase::Starting => "starting",
@@ -1729,6 +1752,10 @@ fn failed_report(summary: String, operation_id: Option<String>) -> SessionEffect
             episode_id: None,
         },
     ))
+}
+
+fn completion_succeeded(completion: &TurnCompletion) -> bool {
+    completion.status == "completed" && completion.error.is_none() && completion.details.is_none()
 }
 
 fn leading_user_agent_version(user_agent: &str) -> Option<Version> {

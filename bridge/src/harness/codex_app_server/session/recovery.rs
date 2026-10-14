@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::super::protocol::PendingOperation;
 use super::super::state::{SessionEffect, StateTransition};
-use crate::harness::{AgentActivity, AgentStatus};
+use crate::harness::AgentActivity;
 use crate::provider_recovery::RecoveryJournal;
 
 /// The checkpoint is a barrier before an outgoing continuation or failure report.
@@ -52,14 +52,20 @@ pub(in crate::harness::codex_app_server) fn persist_transition(
             )
         )
     });
+    let succeeded = transition.effects.iter().any(|effect| {
+        matches!(effect,
+            SessionEffect::CloseTurn(turn_id) if state.closed_turn_succeeded(turn_id)
+        )
+    });
+    if !failed && succeeded {
+        journal.resolve()?;
+    }
     if starts_turn {
         if state.automatic_retry_in_flight() {
             journal.retry_in_flight()?;
         } else {
             journal.deactivate()?;
         }
-    } else if !failed && state.live_status() == Some(AgentStatus::Waiting) {
-        journal.resolve()?;
     }
     Ok(())
 }

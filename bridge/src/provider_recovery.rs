@@ -112,9 +112,13 @@ impl RecoveryJournal {
         summary: String,
         retry_due_ms: u64,
     ) -> Result<(), String> {
-        let id = self
-            .current_record()?
-            .filter(|record| record.active && record.stage == RecoveryStage::InFlight)
+        let current = self
+            .current
+            .as_ref()
+            .map(|_| self.require_active_record())
+            .transpose()?;
+        let id = current
+            .filter(|record| record.stage == RecoveryStage::InFlight)
             .map(|record| record.id)
             .unwrap_or_else(|| {
                 format!(
@@ -125,11 +129,10 @@ impl RecoveryJournal {
         if let Some(mut record) =
             read_episode(&self.context.root, &self.context.scope.agent_id, &id)?
         {
-            if matches!(
-                record.stage,
-                RecoveryStage::Pending | RecoveryStage::InFlight
-            ) && (record.operation_id != operation_id || record.summary != summary)
-            {
+            if !self.record_is_active(&record) || record.id != id {
+                return Err("provider recovery episode is no longer active".into());
+            }
+            if record.operation_id != operation_id || record.summary != summary {
                 record.operation_id = operation_id;
                 record.summary = summary;
                 self.write(&record)?;
@@ -155,14 +158,12 @@ impl RecoveryJournal {
 
     pub(crate) fn retry_in_flight(&mut self) -> Result<(), String> {
         let _writes = episode_writes();
-        let Some(mut record) = self.current_record()? else {
-            return Ok(());
-        };
-        if record.stage == RecoveryStage::Pending {
-            record.stage = RecoveryStage::InFlight;
-            self.write(&record)?;
+        let mut record = self.require_active_record()?;
+        if record.stage != RecoveryStage::Pending {
+            return Err("provider recovery retry allowance was already spent".into());
         }
-        Ok(())
+        record.stage = RecoveryStage::InFlight;
+        self.write(&record)
     }
 
     pub(crate) fn finish(
@@ -218,13 +219,17 @@ impl RecoveryJournal {
     }
 
     pub(crate) fn has_unsettled_retry(&self) -> Result<bool, String> {
-        Ok(self.current_record()?.is_some_and(|record| {
-            record.active
-                && matches!(
-                    record.stage,
-                    RecoveryStage::Pending | RecoveryStage::InFlight
-                )
-        }))
+        Ok(self
+            .current_record()?
+            .is_some_and(|record| self.record_is_active(&record)))
+    }
+
+    pub(crate) fn active_episode_id(&self) -> Option<String> {
+        self.current_record()
+            .ok()
+            .flatten()
+            .filter(|record| self.record_is_active(record))
+            .map(|record| record.id)
     }
 
     pub(crate) fn take_restored_notices(&mut self) -> Vec<RecoveryEpisode> {
@@ -237,6 +242,23 @@ impl RecoveryJournal {
             .map(|id| read_episode(&self.context.root, &self.context.scope.agent_id, id))
             .transpose()
             .map(Option::flatten)
+    }
+
+    fn record_is_active(&self, record: &RecoveryEpisode) -> bool {
+        record.scope == self.context.scope
+            && record.active
+            && matches!(
+                record.stage,
+                RecoveryStage::Pending | RecoveryStage::InFlight
+            )
+    }
+
+    fn require_active_record(&self) -> Result<RecoveryEpisode, String> {
+        self.current_record()?
+            .filter(|record| {
+                self.record_is_active(record) && self.current.as_deref() == Some(record.id.as_str())
+            })
+            .ok_or_else(|| "provider recovery episode is missing or no longer active".into())
     }
 
     fn write(&self, record: &RecoveryEpisode) -> Result<(), String> {

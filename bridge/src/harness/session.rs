@@ -532,6 +532,8 @@ pub enum AgentActivity {
     TurnFailed {
         summary: String,
         operation_id: Option<String>,
+        /// The fsynced provider-recovery outbox this activity settles.
+        episode_id: Option<String>,
     },
 }
 

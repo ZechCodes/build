@@ -33,6 +33,8 @@ use crate::harness::{
 use crate::models::{AgentProvider, ModelChoice};
 use crate::pty::HarnessSpec;
 
+mod provider_recovery_tests;
+
 fn limits() -> AppServerLimits {
     AppServerLimits {
         inbound_frame_bytes: 256,

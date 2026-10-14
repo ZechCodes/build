@@ -1346,10 +1346,23 @@ continuation after `PROVIDER_RETRY_BACKOFF` (60 seconds). The continuation names
 the sanitized error and asks the agent to continue from its preserved context;
 it keeps the failed turn's model and effort. Codex's own `willRetry: true`
 notifications consume no Build retry. Auth, quota/429, invalid requests,
-context-window, sandbox and unknown failures never retry automatically.
+context-window, sandbox and unknown failures never retry automatically. Permanent
+failure hints in either the message or additional details veto a transient
+stream wrapper; the unclassified `other` variant never opts into text fallback.
 
-The session remains working during the backoff. An unrecovered turn failure,
-or an unexpected protocol transition that ends the session, publishes one
+The session remains working during the backoff. `provider_recovery.rs` records
+the failure episode, failed operation, absolute deadline and recovery stage in
+a synchronous sidecar before the backoff and before sending its one
+continuation. A bridge
+restart abandons a checkpointed recovery and reports its failed dispatch,
+rather than starting an ordinary resume turn with a fresh retry allowance.
+The failure remains pending until its notices are saved; repeated boots reuse
+the same episode identity. Queued input does not clear the checkpoint; a new
+turn can start a fresh episode afterwards. A saved dispatcher notice retains
+its recipient generation and message identity, so boot can requeue its wake
+while the notice remains unread without posting it again.
+An unrecovered turn failure or an unexpected protocol transition that ends the
+session publishes one
 `TurnFailed` activity. The app records a failed outcome, delivers a failure
 message to the dispatch requester (falling back to the project's coordinator),
 and comments once on the dispatched task. The activity carries the failed
@@ -1360,6 +1373,8 @@ ordinary 30-second notice settle window and wake without a client connected.
 The failed holder is not woken to read its own failure. Lifecycle telemetry
 includes sanitized error message,
 code, HTTP status and epitaph rather than raw provider payloads or credentials.
+Request-body content is discarded from its label onward, and credential values
+including `x-api-key` headers are redacted before the 1 KiB text bound is applied.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.
 

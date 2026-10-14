@@ -440,6 +440,7 @@ pub(in crate::app) fn agent_open_request(
             activity_locator: locator.map(|locator| (locator, known)),
         },
         resume_session_id,
+        recovery_context: None,
     }
 }
 
@@ -472,6 +473,19 @@ pub(in crate::app) fn open_agent_session(
         return Ok(None);
     }
     let choice = plan.model_choice.clone();
+    let context = match &role {
+        TabRole::Agent {
+            owner, agent_id, ..
+        } => {
+            let app = timer.lock(state);
+            agent_recovery_context(&app, owner, agent_id).map(Some)
+        }
+        TabRole::Shell => Ok(None),
+    };
+    let recovery_context = match context {
+        Ok(context) => context,
+        Err(error) => return Err(holding.abandon(state, StartFailure::Failed(error), timer)),
+    };
     let cwd = plan.cwd.clone();
     let stands_in = cwd.clone();
     let opened = plan.probe_and_scaffold().and_then(|ready| {
@@ -488,23 +502,20 @@ pub(in crate::app) fn open_agent_session(
         else {
             unreachable!("an agent reservation always names an agent")
         };
-        Tab::spawn_agent_keyed(
-            owner,
-            agent_id,
-            key.root.clone(),
-            agent_open_request(
-                PreparedAgentLaunch {
-                    spec,
-                    pty_size: size,
-                },
-                cwd,
-                &choice,
-                resume_session_id,
-                locator,
-            ),
-        )
-        .map(|(tab, output)| (tab, output, recorded_name_is_gone))
-        .map_err(StartFailure::Failed)
+        let mut request = agent_open_request(
+            PreparedAgentLaunch {
+                spec,
+                pty_size: size,
+            },
+            cwd,
+            &choice,
+            resume_session_id,
+            locator,
+        );
+        request.recovery_context = recovery_context;
+        Tab::spawn_agent_keyed(owner, agent_id, key.root.clone(), request)
+            .map(|(tab, output)| (tab, output, recorded_name_is_gone))
+            .map_err(StartFailure::Failed)
     });
     match opened {
         Ok((mut tab, output, recorded_name_is_gone)) => {
@@ -521,6 +532,24 @@ pub(in crate::app) fn open_agent_session(
         }
         Err(error) => Err(holding.abandon(state, error, timer)),
     }
+}
+
+fn agent_recovery_context(
+    app: &AppState,
+    owner: &str,
+    agent_id: &str,
+) -> Result<crate::provider_recovery::RecoveryContext, String> {
+    let address = app.resolve_conversation_address(owner, Some(agent_id))?;
+    let thread = app.conversation_at(&address)?;
+    Ok(crate::provider_recovery::RecoveryContext {
+        root: app.state_root.clone(),
+        scope: crate::provider_recovery::RecoveryScope {
+            entity_id: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: address.conversation_id.clone(),
+            thread_id: thread.id.clone(),
+        },
+    })
 }
 
 /// Put the opened tab in the registry and start its pumps.

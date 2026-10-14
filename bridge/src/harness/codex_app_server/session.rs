@@ -32,9 +32,11 @@ use crate::harness::{
     TurnReceiptSupport,
 };
 use crate::models::ModelChoice;
+use crate::provider_recovery::{RecoveryContext, RecoveryJournal};
 use crate::pty::HarnessSpec;
 
 mod observations;
+pub(super) mod recovery;
 #[cfg(test)]
 use observations::next_goal_retry;
 use observations::observed_at;
@@ -270,9 +272,12 @@ struct SessionCore {
     last_protocol_event: Mutex<&'static str>,
     provider_error: Mutex<Option<NotificationError>>,
     failure_reported: AtomicBool,
+    recovery: Mutex<Option<RecoveryJournal>>,
+    recovery_source: String,
 }
 
 impl CodexAppServerSession {
+    #[cfg(test)]
     pub fn spawn(
         spec: &HarnessSpec,
         root: PathBuf,
@@ -283,6 +288,7 @@ impl CodexAppServerSession {
         Self::spawn_with_grace_wait(spec, root, choice, resume_id, limits, std::thread::sleep)
     }
 
+    #[cfg(test)]
     fn spawn_with_grace_wait(
         spec: &HarnessSpec,
         root: PathBuf,
@@ -291,6 +297,41 @@ impl CodexAppServerSession {
         limits: AppServerLimits,
         wait_for_grace: impl FnOnce(Duration) + Send + 'static,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        Self::spawn_configured(spec, root, choice, resume_id, limits, wait_for_grace, None)
+    }
+
+    pub(super) fn spawn_with_recovery(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        choice: ModelChoice,
+        resume_id: Option<String>,
+        limits: AppServerLimits,
+        recovery: Option<RecoveryContext>,
+    ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        Self::spawn_configured(
+            spec,
+            root,
+            choice,
+            resume_id,
+            limits,
+            std::thread::sleep,
+            recovery,
+        )
+    }
+
+    fn spawn_configured(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        choice: ModelChoice,
+        resume_id: Option<String>,
+        limits: AppServerLimits,
+        wait_for_grace: impl FnOnce(Duration) + Send + 'static,
+        recovery: Option<RecoveryContext>,
+    ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        let recovery = recovery
+            .map(RecoveryJournal::new)
+            .transpose()
+            .map_err(HarnessError::Setup)?;
         let binary = crate::pty::resolve_binary(spec)?;
         let (terminal_sender, terminal_events) = mpsc::channel();
         let events: TerminalEventSink = Arc::new(move |event| {
@@ -345,8 +386,11 @@ impl CodexAppServerSession {
             last_protocol_event: Mutex::new("session_created"),
             provider_error: Mutex::new(None),
             failure_reported: AtomicBool::new(false),
+            recovery: Mutex::new(recovery),
+            recovery_source: uuid::Uuid::new_v4().to_string(),
         });
         core.log("session_created", []);
+        core.publish_restored_failures();
         core.reconciliation_timer.start(Arc::downgrade(&core));
         start_terminal_pump(Arc::downgrade(&core), terminal_events);
         start_reader(Arc::downgrade(&core), pipes.stdout, events);
@@ -356,6 +400,25 @@ impl CodexAppServerSession {
 }
 
 impl SessionCore {
+    fn publish_restored_failures(&self) {
+        let episodes = self
+            .recovery
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(RecoveryJournal::take_restored_notices)
+            .unwrap_or_default();
+        for episode in episodes {
+            self.report(ActivityReport::own_work(
+                crate::harness::AgentActivity::TurnFailed {
+                    summary: episode.summary,
+                    operation_id: episode.operation_id,
+                    episode_id: Some(episode.id),
+                },
+            ));
+        }
+    }
+
     fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }
@@ -404,6 +467,25 @@ impl SessionCore {
             };
             let mut require_version = false;
             let mut should_close = false;
+            let persisted = self
+                .recovery
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|journal| {
+                    recovery::persist_transition(
+                        journal,
+                        &transition,
+                        self.elapsed(),
+                        &self.recovery_source,
+                    )
+                })
+                .transpose();
+            if let Err(error) = persisted {
+                drop(state);
+                self.fail(error.clone());
+                return Err(HarnessError::Session(error));
+            }
             for effect in &transition.effects {
                 if matches!(effect, SessionEffect::Close) {
                     should_close = true;
@@ -513,13 +595,24 @@ impl SessionCore {
                 self.report_all(reports);
             }
             SessionEffect::Report(report) => {
+                let mut report = report.clone();
+                if let crate::harness::AgentActivity::TurnFailed { episode_id, .. } =
+                    &mut report.activity
+                {
+                    *episode_id = self
+                        .recovery
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .and_then(RecoveryJournal::last_notice_id);
+                }
                 if matches!(
                     report.activity,
                     crate::harness::AgentActivity::TurnFailed { .. }
                 ) {
                     self.failure_reported.store(true, Ordering::Release);
                 }
-                self.report(report.clone());
+                self.report(report);
             }
             SessionEffect::RequireVersionEvidence => return Ok(true),
             SessionEffect::Close => unreachable!("close effects are applied after releasing state"),
@@ -919,6 +1012,7 @@ impl SessionCore {
         drop(published);
         let last = *self.last_protocol_event.lock().unwrap();
         let origin = *self.shutdown_origin.lock().unwrap();
+        let failure_report = self.prepare_terminal_failure(&outcome, origin);
         let mut fields = self.error_fields(outcome.epitaph.as_deref());
         fields.extend([
             ("exit_code", json!(outcome.exit_code)),
@@ -944,21 +1038,8 @@ impl SessionCore {
             self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
-        if (outcome.epitaph.is_some() || outcome.exit_code != Some(0))
-            && !matches!(origin, Some("explicit_end" | "session_drop"))
-            && !self.failure_reported.swap(true, Ordering::AcqRel)
-        {
-            self.report(ActivityReport::own_work(
-                crate::harness::AgentActivity::TurnFailed {
-                    operation_id: self.state.lock().unwrap().failure_operation_id(),
-                    summary: outcome.epitaph.clone().unwrap_or_else(|| {
-                        format!(
-                            "Codex app-server exited unexpectedly (code {:?})",
-                            outcome.exit_code
-                        )
-                    }),
-                },
-            ));
+        if let Some(report) = failure_report {
+            self.report(report);
         }
         let uncertain = self.pending_receipts.lock().unwrap().take_operation_ids();
         if !uncertain.is_empty() {
@@ -971,6 +1052,59 @@ impl SessionCore {
             });
         }
         self.close_activity();
+    }
+
+    fn prepare_terminal_failure(
+        &self,
+        outcome: &TerminalOutcome,
+        origin: Option<&str>,
+    ) -> Option<ActivityReport> {
+        let recovery_pending = self
+            .recovery
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|journal| journal.has_unsettled_retry().unwrap_or(true));
+        if (outcome.epitaph.is_none() && outcome.exit_code == Some(0) && !recovery_pending)
+            || matches!(origin, Some("explicit_end" | "session_drop"))
+            || self.failure_reported.swap(true, Ordering::AcqRel)
+        {
+            return None;
+        }
+        let summary = outcome.epitaph.clone().unwrap_or_else(|| {
+            format!(
+                "Codex app-server exited unexpectedly (code {:?})",
+                outcome.exit_code
+            )
+        });
+        let operation_id = self.state.lock().unwrap().failure_operation_id();
+        let episode_id = self.terminal_failure_checkpoint(operation_id.clone(), summary.clone());
+        Some(ActivityReport::own_work(
+            crate::harness::AgentActivity::TurnFailed {
+                operation_id,
+                summary,
+                episode_id,
+            },
+        ))
+    }
+
+    fn terminal_failure_checkpoint(
+        &self,
+        operation_id: Option<String>,
+        summary: String,
+    ) -> Option<String> {
+        let mut recovery = self.recovery.lock().unwrap();
+        let journal = recovery.as_mut()?;
+        match journal.finish(&self.recovery_source, operation_id, summary) {
+            Ok(()) => journal.last_notice_id(),
+            Err(error) => {
+                self.log(
+                    "recovery_checkpoint_failed",
+                    [("reason", json!(sanitize_error(&error)))],
+                );
+                None
+            }
+        }
     }
 
     fn record_terminal_error(&self, reason: String) {
@@ -1485,6 +1619,7 @@ fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: We
 
 #[cfg(test)]
 mod tests {
+    mod recovery_eof;
     use std::path::Path;
     use std::time::Duration;
 

@@ -149,6 +149,13 @@ struct ProviderFailure {
     operation_id: Option<String>,
 }
 
+pub(super) struct RecoveryCheckpoint {
+    pub source: String,
+    pub operation_id: Option<String>,
+    pub summary: String,
+    pub retry_at: Duration,
+}
+
 impl AcceptedTurn {
     fn is_compaction(&self) -> bool {
         super::CodexAppServerHarness.starts_compaction(&self.turn.text)
@@ -1480,6 +1487,36 @@ impl CodexSessionState {
         self.active_operation_id.clone()
     }
 
+    pub(super) fn recovery_checkpoint(&self) -> Option<RecoveryCheckpoint> {
+        self.pending_failure
+            .as_ref()
+            .or(self.recovery.as_ref())
+            .map(|failure| RecoveryCheckpoint {
+                source: format!(
+                    "{}:{}",
+                    self.thread_id.as_deref().unwrap_or("unopened"),
+                    failure.turn_id
+                ),
+                operation_id: failure.operation_id.clone(),
+                summary: failure.error.safe_message(),
+                retry_at: failure.retry_at,
+            })
+    }
+
+    pub(super) fn automatic_retry_in_flight(&self) -> bool {
+        self.retry_taken && matches!(self.phase, Phase::StartingTurn { .. } | Phase::Working(_))
+    }
+
+    pub(super) fn failure_source(&self) -> Option<String> {
+        self.last_completion.as_ref().map(|completion| {
+            format!(
+                "{}:{}",
+                self.thread_id.as_deref().unwrap_or("unopened"),
+                completion.turn_id
+            )
+        })
+    }
+
     pub fn diagnostic_phase(&self) -> &'static str {
         match self.phase {
             Phase::Starting => "starting",
@@ -1689,6 +1726,7 @@ fn failed_report(summary: String, operation_id: Option<String>) -> SessionEffect
         crate::harness::AgentActivity::TurnFailed {
             summary,
             operation_id,
+            episode_id: None,
         },
     ))
 }

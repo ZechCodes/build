@@ -133,7 +133,7 @@ impl AppState {
         self.notify_agent_failure(owner, agent_id, operation.as_ref(), task.as_ref(), &body);
     }
 
-    fn failure_operation(
+    pub(in crate::app) fn failure_operation(
         &self,
         owner: &str,
         agent_id: &str,
@@ -211,7 +211,7 @@ impl AppState {
         }
     }
 
-    fn failure_notice_target(
+    pub(in crate::app) fn failure_notice_target(
         &mut self,
         owner: &str,
         failed_agent: &str,

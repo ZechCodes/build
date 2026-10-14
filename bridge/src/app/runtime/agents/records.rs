@@ -64,8 +64,17 @@ pub(in crate::app) fn record_activity(
         AgentActivity::TurnFailed {
             summary,
             operation_id,
+            episode_id,
         } if report.parent_call_id.is_none() => {
-            state.record_agent_turn_failure(owner, agent_id, operation_id.as_deref(), summary);
+            if let Some(episode_id) = episode_id {
+                if let Err(error) =
+                    state.record_provider_recovery_failure(owner, agent_id, episode_id)
+                {
+                    eprintln!("persist provider failure {episode_id}: {error}");
+                }
+            } else {
+                state.record_agent_turn_failure(owner, agent_id, operation_id.as_deref(), summary);
+            }
         }
         AgentActivity::TurnFailed { summary, .. } => {
             state.record_activity_row(

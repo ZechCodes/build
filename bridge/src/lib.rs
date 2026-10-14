@@ -81,6 +81,7 @@ pub mod plan;
 pub mod presence;
 pub mod priority;
 pub mod project_roster;
+pub(crate) mod provider_recovery;
 pub mod pty;
 pub mod reachability;
 pub mod reaper;

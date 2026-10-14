@@ -297,7 +297,7 @@ impl AppState {
         task
     }
 
-    fn task_for_failed_operation(
+    pub(in crate::app) fn task_for_failed_operation(
         &self,
         entity_id: &str,
         agent_id: &str,

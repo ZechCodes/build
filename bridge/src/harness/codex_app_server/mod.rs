@@ -185,12 +185,13 @@ impl Harness for CodexAppServerHarness {
     }
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
-        let (session, activity) = session::CodexAppServerSession::spawn(
+        let (session, activity) = session::CodexAppServerSession::spawn_with_recovery(
             &request.spec,
             request.root,
             request.choice,
             request.resume_session_id,
             limits::AppServerLimits::default(),
+            request.recovery_context,
         )?;
         let surfaces = session.surfaces_changed();
         Ok(OpenedSession {

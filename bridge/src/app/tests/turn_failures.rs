@@ -22,6 +22,7 @@ fn failed_operation(
         &crate::harness::ActivityReport::own_work(crate::harness::AgentActivity::TurnFailed {
             summary: summary.into(),
             operation_id: operation_id.map(str::to_string),
+            episode_id: None,
         }),
     );
 }
@@ -431,6 +432,7 @@ async fn the_failure_pump_consumes_its_receipt_and_delivers_without_a_client() {
             crate::harness::AgentActivity::TurnFailed {
                 summary: "offline provider failure".into(),
                 operation_id: Some(operation),
+                episode_id: None,
             },
         ))
         .unwrap();

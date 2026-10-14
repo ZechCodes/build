@@ -432,6 +432,7 @@ pub struct SessionOpenRequest {
     pub choice: ModelChoice,
     pub terminal: TerminalOpenOptions,
     pub resume_session_id: Option<String>,
+    pub(crate) recovery_context: Option<crate::provider_recovery::RecoveryContext>,
 }
 
 /// A live session and the output subscribed during its construction.
@@ -910,6 +911,7 @@ mod tests {
                 activity_locator: None,
             },
             resume_session_id: None,
+            recovery_context: None,
         }
     }
 

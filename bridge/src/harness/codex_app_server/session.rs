@@ -1067,15 +1067,6 @@ impl SessionCore {
                 hook();
             }
         }
-        let mut published = self.published.lock().unwrap();
-        if published.is_some() {
-            return;
-        }
-        let ended = AgentStatus::Ended {
-            code: outcome.exit_code,
-        };
-        *published = Some(outcome.clone());
-        drop(published);
         let last = *self.last_protocol_event.lock().unwrap();
         let origin = *self.shutdown_origin.lock().unwrap();
         let failure_report = self.prepare_terminal_failure(&outcome, origin);
@@ -1087,11 +1078,6 @@ impl SessionCore {
             ("shutdown_origin", json!(origin)),
             ("last_protocol_event", json!(last)),
         ]);
-        self.log("terminal_settled", fields);
-        let previous = self.status.borrow().clone();
-        if let Some(next) = previous.transition(ended) {
-            self.status.send_replace(next);
-        }
         if self.surfaces.lock().unwrap().subagents.settle_running() {
             self.surfaces_revision.bump();
         }
@@ -1117,6 +1103,20 @@ impl SessionCore {
                     }
                 }
             });
+        }
+        // claim_outcome owns publication. Expose Ended only after the durable
+        // checkpoint (or direct failure fallback), reports and receipts. Keep
+        // status() behind this lock until activity closes, but publish the final
+        // watch snapshot first so the EOF pump consumes it.
+        let mut published = self.published.lock().unwrap();
+        let ended = AgentStatus::Ended {
+            code: outcome.exit_code,
+        };
+        *published = Some(outcome);
+        self.log("terminal_settled", fields);
+        let previous = self.status.borrow().clone();
+        if let Some(next) = previous.transition(ended) {
+            self.status.send_replace(next);
         }
         self.close_activity();
     }
@@ -1167,7 +1167,8 @@ impl SessionCore {
             Err(error) => {
                 self.log(
                     "recovery_checkpoint_failed",
-                    [("reason", json!(sanitize_error(&error)))],
+                    // This is a Build I/O error, not provider-authored text.
+                    [("reason", json!(error))],
                 );
                 None
             }
@@ -1705,6 +1706,7 @@ fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: We
 #[cfg(test)]
 mod tests {
     mod error_telemetry;
+    mod recovery_checkpoint;
     mod recovery_eof;
     use std::path::Path;
     use std::time::Duration;

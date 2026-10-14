@@ -9,6 +9,41 @@ use super::*;
 use crate::agent::AgentLifecycle;
 use crate::resume::{LiveRoster, ResumeRoster, LIVE_ROSTER_FILE, OPT_OUT_FILE};
 
+fn revision_621_restart_abandons_recovery(stage: &str) {
+    let mut fixture = standing();
+    let (state, root, owner, agent) = fixture.parts();
+    state.record_agent_working_since(&owner, &agent, Some(now_rfc3339()));
+    let thread_id = state
+        .agent_conversation(&owner, Some(&agent))
+        .unwrap()
+        .id
+        .clone();
+    let directory = root
+        .join("provider-recovery")
+        .join(sha256_hex(agent.as_bytes()));
+    std::fs::create_dir_all(&directory).unwrap();
+    crate::resume::disk::replace(&crate::resume::disk::RealDisk, &directory.join("episode-restart.json"),
+        &serde_json::to_string(&json!({
+            "scope":{"entity_id":owner,"agent_id":agent,"conversation_id":agent,"thread_id":thread_id},
+            "id":"episode-restart","operation_id":"failed-dispatch-before-restart",
+            "summary":"provider stream disconnected","retry_due_ms":4_000_000_000_000_u64,
+            "stage":stage,"active":true,"needs_notice":false,
+        })).unwrap()).unwrap();
+    let roster = state.resume_roster("before-restart");
+    let resumed = state.resume_recorded_agents(&roster, "after-restart");
+    assert!(resumed.is_empty(), "restart must abandon the failed recovery episode rather than send immediate operation-less input: {resumed:?}");
+}
+
+#[test]
+fn revision_621_pending_backoff_cannot_restart_as_an_immediate_fresh_turn() {
+    revision_621_restart_abandons_recovery("pending");
+}
+
+#[test]
+fn revision_621_retry_in_flight_cannot_receive_a_fresh_restart_retry_budget() {
+    revision_621_restart_abandons_recovery("in_flight");
+}
+
 /// A project with one workspace, a conversation on it, and one agent standing
 /// in it. The shape every roll actually finds.
 pub(super) struct Standing {

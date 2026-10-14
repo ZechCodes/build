@@ -74,6 +74,7 @@ impl AppState {
         agent_id: &str,
         operation_id: &str,
     ) {
+        self.record_consumed_failure_operation(entity_id, agent_id, operation_id);
         if self
             .spent_task_completion_operations
             .get(agent_id)
@@ -218,7 +219,7 @@ impl AppState {
 
     /// Taking the active marker consumes only this turn's authority; a queued
     /// replacement survives an old Complete and may start the next turn.
-    pub(super) fn take_task_completion_authority(
+    pub(in crate::app) fn take_task_completion_authority(
         &mut self,
         entity_id: &str,
         agent_id: &str,
@@ -252,6 +253,67 @@ impl AppState {
             return None;
         }
         let task = store.load_tracker_task(&authority.task_id).ok()??;
+        self.task_is_held_by(&task, entity_id, agent_id)
+            .then_some(task)
+    }
+
+    pub(in crate::app) fn task_failure_operation(&self, agent_id: &str) -> Option<&str> {
+        self.task_completion_authority
+            .get(agent_id)
+            .map(|authority| authority.operation_id.as_str())
+    }
+
+    /// A delayed failure names its own consumed operation. Newer turns may
+    /// already have promoted their authority, and must survive this handoff.
+    pub(in crate::app) fn take_task_failure_authority(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        operation_id: &str,
+    ) -> Option<Task> {
+        if self
+            .spent_task_completion_operations
+            .get(agent_id)
+            .is_some_and(|spent| spent.contains(operation_id))
+        {
+            return None;
+        }
+        let task = self.task_for_failed_operation(entity_id, agent_id, operation_id);
+        self.spent_task_completion_operations
+            .entry(agent_id.into())
+            .or_default()
+            .insert(operation_id.into());
+        if self.task_failure_operation(agent_id) == Some(operation_id) {
+            self.task_completion_authority.remove(agent_id);
+            self.dispatched_task.remove(agent_id);
+        }
+        if self
+            .pending_task_completion_authority
+            .get(agent_id)
+            .is_some_and(|pending| pending.authority.operation_id == operation_id)
+        {
+            self.pending_task_completion_authority.remove(agent_id);
+        }
+        task
+    }
+
+    pub(in crate::app) fn task_for_failed_operation(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+        operation_id: &str,
+    ) -> Option<Task> {
+        let intent = self
+            .store
+            .as_ref()?
+            .delivery_intent_for_operation(operation_id)
+            .ok()??;
+        let authority = self.task_completion_for_intent(entity_id, agent_id, &intent.id)?;
+        let task = self
+            .store
+            .as_ref()?
+            .load_tracker_task(&authority.task_id)
+            .ok()??;
         self.task_is_held_by(&task, entity_id, agent_id)
             .then_some(task)
     }

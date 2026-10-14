@@ -1,6 +1,64 @@
 use super::support::*;
 use super::*;
 
+#[test]
+fn recovery_message_lookups_decode_only_the_matching_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = run_record("run-recovery", None, NOW);
+    let agent_id = record.agents[0].id.clone();
+    let thread = &mut record.agents[0].thread;
+    let mut messages = Vec::new();
+    for (operation, seen) in [("failed", true), ("queued", false), ("newer", true)] {
+        thread.post_user(operation, None, NOW);
+        let Some(ThreadItem::Message(message)) = thread.items.last_mut() else {
+            panic!("a posted user message exists")
+        };
+        message.operation_id = Some(operation.into());
+        message.seen_at = seen.then(|| NOW.into());
+        messages.push(message.clone());
+    }
+    for _ in 0..=RESIDENT_CONVERSATION_TAIL {
+        thread.push_event(
+            crate::thread::ThreadEventKind::ToolUse,
+            None,
+            None,
+            None,
+            NOW,
+        );
+    }
+    store.save_run(&record).unwrap();
+    let before = items_decoded();
+    assert_eq!(
+        store
+            .thread_message_by_id(&agent_id, &messages[0].id)
+            .unwrap(),
+        Some(messages[0].clone())
+    );
+    assert!(store
+        .thread_message_by_id(&agent_id, "missing-message")
+        .unwrap()
+        .is_none());
+    assert!(store
+        .thread_message_by_id("another-agent", &messages[0].id)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .has_seen_operation_after(&agent_id, messages[0].sequence, "failed")
+        .unwrap());
+    assert!(!store
+        .has_seen_operation_after(&agent_id, messages[0].sequence, "newer")
+        .unwrap());
+    assert!(!store
+        .has_seen_operation_after(&agent_id, messages[2].sequence, "failed")
+        .unwrap());
+    assert_eq!(
+        items_decoded() - before,
+        1,
+        "recovery cannot decode unrelated conversation history"
+    );
+}
+
 /// The conversation is the one thing that cannot be re-derived, and saving
 /// splits it off the record into its own rows. It has to come back — from a
 /// store opened again from scratch, not from the process that wrote it.

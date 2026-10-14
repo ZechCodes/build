@@ -494,6 +494,7 @@ pub struct TurnCompletion {
     pub turn_id: String,
     pub status: String,
     pub error: Option<String>,
+    pub details: Option<NotificationError>,
 }
 
 impl TurnCompletion {
@@ -514,17 +515,25 @@ impl TurnCompletion {
             error: error
                 .map(|message| normalize_text(&message))
                 .filter(|message| !message.is_empty()),
+            details: None,
         }
     }
 
     fn from_params(params: &Value) -> Result<TurnCompletion, String> {
         let turn_id = required_string(params, "/turn/id", "turn/completed turn id")?;
         let status = required_string(params, "/turn/status", "turn/completed status")?;
-        let error = params
-            .pointer("/turn/error/message")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        Ok(TurnCompletion::observed(turn_id, status, error))
+        let mut details = params
+            .pointer("/turn/error")
+            .filter(|value| !value.is_null())
+            .map(decode::<NotificationError>)
+            .transpose()?;
+        if let Some(details) = &mut details {
+            details.message = normalize_text(&details.message);
+        }
+        let error = details.as_ref().map(|error| error.message.clone());
+        let mut completion = TurnCompletion::observed(turn_id, status, error);
+        completion.details = details;
+        Ok(completion)
     }
 }
 
@@ -552,8 +561,11 @@ pub struct ErrorNotification {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NotificationError {
     pub message: String,
+    pub codex_error_info: Option<Value>,
+    pub additional_details: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

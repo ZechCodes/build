@@ -81,7 +81,13 @@ impl AppState {
         };
         let wanted = resume_is_wanted(dir, |key| std::env::var(key).ok());
         clear_opt_out_file(dir);
+        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+        let timer = clock.frame(RESUME_METHOD);
+        if let Err(error) = timer.lock(state).replay_provider_recovery_episodes() {
+            eprintln!("resume: provider failure notices remain pending: {error}");
+        }
         let Some(mut roster) = ResumeRoster::take(dir) else {
+            DeliveryRunner::drain(state, &timer);
             return Vec::new();
         };
         if !wanted {
@@ -89,11 +95,10 @@ impl AppState {
                 "resume: opted out of this roll; {} agent(s) left as they are",
                 roster.agents.len()
             );
+            DeliveryRunner::drain(state, &timer);
             return Vec::new();
         }
         Self::drop_agents_whose_workspace_is_gone(state, &mut roster);
-        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
-        let timer = clock.frame(RESUME_METHOD);
         let resumed = timer.lock(state).resume_recorded_agents(&roster, version);
         DeliveryRunner::drain(state, &timer);
         if !resumed.is_empty() {
@@ -196,6 +201,9 @@ impl AppState {
         roster: &ResumeRoster,
         version: &str,
     ) -> Vec<String> {
+        if let Err(error) = self.replay_provider_recovery_episodes() {
+            eprintln!("resume: provider failure notices remain pending: {error}");
+        }
         let mut resumed = Vec::new();
         for entry in &roster.agents {
             match self.resume_one_agent(entry, &roster.recorded_at, version) {
@@ -226,6 +234,11 @@ impl AppState {
         // The roster was observed before an unlocked filesystem check. Its
         // generation is retained, never replaced with the one now at this id.
         let addressed = self.addressed_agent(&params)?;
+        if self.provider_recovery_blocks_resume(&entry.entity_id, &entry.agent_id)? {
+            return Err(
+                "checkpointed provider recovery was abandoned; new input is required".into(),
+            );
+        }
         let tasks_renamed = self
             .store
             .as_ref()

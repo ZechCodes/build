@@ -4,9 +4,11 @@ use std::time::Duration;
 
 use super::limits::StateLimits;
 use super::protocol::{
-    ConnectionEvent, ErrorNotification, InitializeResult, OperationResult, PendingOperation,
-    RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult, CLIENT_NAME,
+    ConnectionEvent, ErrorNotification, InitializeResult, NotificationError, OperationResult,
+    PendingOperation, RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult,
+    CLIENT_NAME,
 };
+use super::protocol_failure::DiagnosticPhase;
 use crate::harness::{ActivityReport, AgentStatus, Harness, Turn, TurnChoiceSupport};
 use crate::models::{AgentProvider, ModelChoice};
 use semver::Version;
@@ -16,6 +18,9 @@ const MINIMUM_VERSION: &str = "0.153.0";
 /// How many completed turns a session remembers, so a late notification for
 /// one of them is recognised as late rather than as a turn of its own.
 const REMEMBERED_TURNS: usize = 32;
+
+/// Codex has already exhausted its own quick retries before Build steps in.
+pub(super) const PROVIDER_RETRY_BACKOFF: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SessionEffect {
@@ -79,6 +84,11 @@ pub struct CodexSessionState {
     last_completion: Option<TurnCompletion>,
     completed_turns: VecDeque<String>,
     reported_error: Option<String>,
+    pending_failure: Option<ProviderFailure>,
+    recovery: Option<ProviderFailure>,
+    retry_taken: bool,
+    failed_notification_turns: VecDeque<String>,
+    active_operation_id: Option<String>,
     /// The CLI version this session said it runs, held for the harness
     /// inventory until the session ends. Shared by every copy of the state.
     running_version: Option<crate::harness::inventory::ReportedVersion>,
@@ -131,6 +141,22 @@ struct AcceptedTurn {
     applied_choice: ModelChoice,
 }
 
+#[derive(Debug, Clone)]
+struct ProviderFailure {
+    turn_id: String,
+    error: NotificationError,
+    retry_at: Duration,
+    choice: ModelChoice,
+    operation_id: Option<String>,
+}
+
+pub(super) struct RecoveryCheckpoint {
+    pub source: String,
+    pub operation_id: Option<String>,
+    pub summary: String,
+    pub retry_at: Duration,
+}
+
 impl AcceptedTurn {
     fn is_compaction(&self) -> bool {
         super::CodexAppServerHarness.starts_compaction(&self.turn.text)
@@ -178,6 +204,11 @@ impl CodexSessionState {
             last_completion: None,
             completed_turns: VecDeque::new(),
             reported_error: None,
+            pending_failure: None,
+            recovery: None,
+            retry_taken: false,
+            failed_notification_turns: VecDeque::new(),
+            active_operation_id: None,
             running_version: None,
         }
     }
@@ -247,7 +278,9 @@ impl CodexSessionState {
             SessionEvent::ObservedCompletion(completion) => {
                 self.complete_turn(completion, now, limits)
             }
-            SessionEvent::ObservedError(notification) => self.observe_error(notification),
+            SessionEvent::ObservedError(notification) => {
+                self.observe_error(notification, now, limits)
+            }
             SessionEvent::Eof => {
                 self.phase = Phase::Ended;
                 self.running_version = None;
@@ -297,12 +330,35 @@ impl CodexSessionState {
     fn observe_error(
         &mut self,
         notification: ErrorNotification,
+        now: Duration,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let message = notification.error.message;
+        if self.completed_turn(&notification.turn_id)
+            || self
+                .failed_notification_turns
+                .contains(&notification.turn_id)
+        {
+            return Ok(Vec::new());
+        }
+        ensure_optional_id(&self.thread_id, &notification.thread_id, "error thread")?;
+        let message = notification.error.safe_message();
         if notification.will_retry {
             Ok(vec![operational_report(message)])
         } else {
-            self.fail_session(message)
+            let mut completion = TurnCompletion::observed(
+                notification.turn_id.clone(),
+                "failed".into(),
+                Some(message.clone()),
+            );
+            completion.details = Some(notification.error);
+            let mut effects = vec![operational_report(message)];
+            effects.extend(self.complete_turn(completion, now, limits)?);
+            if self.failed_notification_turns.len() == REMEMBERED_TURNS {
+                self.failed_notification_turns.pop_front();
+            }
+            self.failed_notification_turns
+                .push_back(notification.turn_id);
+            Ok(effects)
         }
     }
 
@@ -328,6 +384,10 @@ impl CodexSessionState {
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let turn = self.accept_turn(turn)?;
+        if self.recovery.is_some() {
+            self.queue(turn, limits)?;
+            return Ok(Vec::new());
+        }
         let thread_id = self.thread_id.clone();
         match &mut self.phase {
             Phase::Waiting => Ok(vec![self.begin_start_turn(turn)]),
@@ -398,6 +458,20 @@ impl CodexSessionState {
     }
 
     fn interrupt(&mut self) -> Result<Vec<SessionEffect>, StateError> {
+        if let Some(failure) = self.recovery.take() {
+            let mut effects = vec![failed_report(
+                format!(
+                    "{} (automatic retry cancelled)",
+                    failure.error.safe_message()
+                ),
+                failure.operation_id,
+            )];
+            self.retry_taken = false;
+            if let Some(turn) = self.pop_queue() {
+                effects.push(self.begin_start_turn(turn));
+            }
+            return Ok(effects);
+        }
         let thread_id = self.thread_id.clone();
         let Phase::Working(working) = &mut self.phase else {
             return Ok(Vec::new());
@@ -628,6 +702,9 @@ impl CodexSessionState {
     }
 
     fn begin_start_turn(&mut self, turn: AcceptedTurn) -> SessionEffect {
+        self.retry_taken = false;
+        self.reported_error = None;
+        self.active_operation_id = turn.turn.operation_id.clone();
         let thread_id = self
             .thread_id
             .clone()
@@ -776,7 +853,10 @@ impl CodexSessionState {
         error: RpcError,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let reason = format!("Codex could not compact the thread: {}", error.message);
+        let reason = format!(
+            "Codex could not compact the thread because {}",
+            error.message
+        );
         self.reported_error = Some(reason.clone());
         self.phase = Phase::Waiting;
         let mut effects = vec![operational_report(reason)];
@@ -823,6 +903,7 @@ impl CodexSessionState {
     /// what Codex last applied, not on what was last requested: a
     /// compaction's frozen choice never reaches Codex.
     fn adopt_codex_turn(&mut self, id: String) -> Vec<SessionEffect> {
+        self.recovery = None;
         let turn = AcceptedTurn {
             turn: Turn::new(String::new()),
             applied_choice: self.applied_choice.clone(),
@@ -854,6 +935,10 @@ impl CodexSessionState {
         now: Duration,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        if self.failed_notification_turns.contains(&completion.turn_id) {
+            return Ok(Vec::new());
+        }
+        self.retain_provider_failure(&completion, now);
         if matches!(self.phase, Phase::StartingTurn { .. }) {
             return self.complete_starting_turn(completion, now, limits);
         }
@@ -864,6 +949,40 @@ impl CodexSessionState {
             return self.check_waiting_duplicate(completion);
         }
         Err(unexpected_completion(&completion))
+    }
+
+    fn retain_provider_failure(&mut self, completion: &TurnCompletion, now: Duration) {
+        let choice = match &self.phase {
+            Phase::StartingTurn { turn, .. } => turn.applied_choice.clone(),
+            Phase::Working(working) => working.choice.clone(),
+            _ => return,
+        };
+        if completion.status != "failed"
+            || self
+                .pending_failure
+                .as_ref()
+                .is_some_and(|failure| failure.turn_id == completion.turn_id)
+        {
+            return;
+        }
+        let error = completion
+            .details
+            .clone()
+            .unwrap_or_else(|| NotificationError {
+                message: completion
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "Codex turn failed without error details".into()),
+                codex_error_info: None,
+                additional_details: None,
+            });
+        self.pending_failure = Some(ProviderFailure {
+            turn_id: completion.turn_id.clone(),
+            error,
+            retry_at: now + PROVIDER_RETRY_BACKOFF,
+            choice,
+            operation_id: self.active_operation_id.clone(),
+        });
     }
 
     fn complete_starting_turn(
@@ -917,9 +1036,8 @@ impl CodexSessionState {
         }
         if let Some(steer) = working.steer.take() {
             let turn = retained_steer_turn(steer);
-            self.remember_completion(completion);
-            effects.push(self.begin_start_turn(turn));
-            return Ok(effects);
+            self.queued_bytes += turn.turn.text.len();
+            self.queued_turns.push_front(turn);
         }
         effects.extend(self.finish_turn(completion, limits)?);
         Ok(effects)
@@ -949,13 +1067,14 @@ impl CodexSessionState {
         let (turn, completion) = self.take_pending_steer(&operation_turn_id, &operation_input)?;
         match result {
             Ok(OperationResult::TurnSteered(TurnSteerResult { turn_id })) => {
+                self.accept_operation(&turn);
                 self.accept_steer(turn_id, completion, limits)
             }
             Err(error) if error.is_no_active_turn() => {
-                self.reconcile_no_active_turn(turn, completion, now)
+                self.reconcile_no_active_turn(turn, completion, now, limits)
             }
             Err(error) if error.is_active_turn_not_steerable() => {
-                self.reconcile_non_steerable(turn, completion)
+                self.reconcile_non_steerable(turn, completion, limits)
             }
             Ok(_) => Err(StateError(
                 "turn/steer response body was mistyped".to_string(),
@@ -991,6 +1110,15 @@ impl CodexSessionState {
         Ok((turn, working.completion.clone()))
     }
 
+    fn accept_operation(&mut self, turn: &AcceptedTurn) {
+        if let Some(operation_id) = &turn.turn.operation_id {
+            self.active_operation_id = Some(operation_id.clone());
+            if let Some(failure) = &mut self.pending_failure {
+                failure.operation_id = Some(operation_id.clone());
+            }
+        }
+    }
+
     fn accept_steer(
         &mut self,
         returned_turn_id: String,
@@ -1015,6 +1143,7 @@ impl CodexSessionState {
         turn: AcceptedTurn,
         completion: Option<TurnCompletion>,
         now: Duration,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             unreachable!()
@@ -1027,14 +1156,14 @@ impl CodexSessionState {
             working.steer = Some(PendingSteer::ReplayAfterInterrupt { turn });
             return Ok(Vec::new());
         }
-        self.remember_completion(completion);
-        Ok(vec![self.begin_start_turn(turn)])
+        self.finish_with_replay(completion, turn, limits)
     }
 
     fn reconcile_non_steerable(
         &mut self,
         turn: AcceptedTurn,
         completion: Option<TurnCompletion>,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             unreachable!()
@@ -1047,8 +1176,7 @@ impl CodexSessionState {
             working.steer = Some(PendingSteer::ReplayAfterInterrupt { turn });
             return Ok(Vec::new());
         }
-        self.remember_completion(completion);
-        Ok(vec![self.begin_start_turn(turn)])
+        self.finish_with_replay(completion, turn, limits)
     }
 
     fn release_next_steer(
@@ -1138,8 +1266,7 @@ impl CodexSessionState {
         }
         if let Some(steer) = working.steer.take() {
             let turn = retained_steer_turn(steer);
-            self.remember_completion(completion);
-            return Ok(vec![self.begin_start_turn(turn)]);
+            return self.finish_with_replay(completion, turn, limits);
         }
         let report = match result {
             Err(error) if !error.is_no_active_turn() => {
@@ -1171,12 +1298,53 @@ impl CodexSessionState {
         completion: TurnCompletion,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        let interrupted_retry = self.retry_taken
+            && completion.status == "interrupted"
+            && self.pending_failure.is_none();
+        if completion_succeeded(&completion) {
+            self.retry_taken = false;
+        }
         self.remember_completion(completion.clone());
         if completion.error.is_some() {
             self.reported_error = completion.error;
         }
         self.phase = Phase::Waiting;
-        Ok(self.start_next_queued(limits))
+        let mut effects = self.finish_provider_failure();
+        if interrupted_retry {
+            let summary = "The automatic provider retry was interrupted".to_string();
+            self.reported_error = Some(summary.clone());
+            effects.push(failed_report(summary, self.active_operation_id.clone()));
+        }
+        if self.recovery.is_none() {
+            effects.extend(self.start_next_queued(limits));
+        }
+        Ok(effects)
+    }
+
+    fn finish_with_replay(
+        &mut self,
+        completion: TurnCompletion,
+        turn: AcceptedTurn,
+        limits: StateLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        self.queued_bytes += turn.turn.text.len();
+        self.queued_turns.push_front(turn);
+        self.finish_turn(completion, limits)
+    }
+
+    fn finish_provider_failure(&mut self) -> Vec<SessionEffect> {
+        let Some(failure) = self.pending_failure.take() else {
+            return Vec::new();
+        };
+        let message = failure.error.safe_message();
+        self.reported_error = Some(message.clone());
+        if !self.retry_taken && failure.error.is_transient() {
+            self.retry_taken = true;
+            self.recovery = Some(failure);
+            Vec::new()
+        } else {
+            vec![failed_report(message, failure.operation_id)]
+        }
     }
 
     fn remember_completion(&mut self, completion: TurnCompletion) {
@@ -1206,6 +1374,23 @@ impl CodexSessionState {
         now: Duration,
         limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        if self
+            .recovery
+            .as_ref()
+            .is_some_and(|failure| now >= failure.retry_at)
+            && matches!(self.phase, Phase::Waiting)
+        {
+            let failure = self.recovery.take().expect("the retry is due");
+            let input = format!("Your last turn failed with this provider error: {:?}. Please continue your assigned work from the preserved context. This is Build's single automatic retry.", failure.error.safe_message());
+            let mut turn = Turn::new(input);
+            turn.operation_id = failure.operation_id;
+            let effect = self.begin_start_turn(AcceptedTurn {
+                turn,
+                applied_choice: failure.choice,
+            });
+            self.retry_taken = true;
+            return Ok(vec![effect]);
+        }
         let since = match &self.phase {
             Phase::OpeningThread {
                 reconcile_since, ..
@@ -1261,6 +1446,16 @@ impl CodexSessionState {
         )
     }
 
+    pub fn timeout_delay(&self, now: Duration, limits: StateLimits) -> Option<Duration> {
+        if self.reconciliation_pending() {
+            Some(limits.reconciliation)
+        } else {
+            self.recovery
+                .as_ref()
+                .map(|failure| failure.retry_at.saturating_sub(now))
+        }
+    }
+
     /// The status of a session that has not reached its terminal phase, and
     /// `None` once it has. A terminal phase never reports
     /// [`AgentStatus::Ended`]: only the coordinator's published terminal
@@ -1272,6 +1467,7 @@ impl CodexSessionState {
             | Phase::Initializing
             | Phase::AwaitingVersion
             | Phase::OpeningThread { .. } => Some(AgentStatus::Starting),
+            Phase::Waiting if self.recovery.is_some() => Some(AgentStatus::Working),
             Phase::Waiting => Some(AgentStatus::Waiting),
             Phase::StartingTurn { .. } | Phase::Working(_) => Some(AgentStatus::Working),
             Phase::Ending | Phase::Ended => None,
@@ -1279,11 +1475,12 @@ impl CodexSessionState {
     }
 
     pub fn can_interrupt(&self) -> bool {
-        matches!(
-            &self.phase,
-            Phase::Working(working)
-                if working.completion.is_none() && working.interrupt.is_none()
-        )
+        self.recovery.is_some()
+            || matches!(
+                &self.phase,
+                Phase::Working(working)
+                    if working.completion.is_none() && working.interrupt.is_none()
+            )
     }
 
     pub fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
@@ -1301,17 +1498,67 @@ impl CodexSessionState {
         self.thread_id.clone()
     }
 
+    pub fn failure_operation_id(&self) -> Option<String> {
+        self.active_operation_id.clone()
+    }
+
+    pub(super) fn recovery_checkpoint(&self) -> Option<RecoveryCheckpoint> {
+        self.pending_failure
+            .as_ref()
+            .or(self.recovery.as_ref())
+            .map(|failure| RecoveryCheckpoint {
+                source: format!(
+                    "{}:{}",
+                    self.thread_id.as_deref().unwrap_or("unopened"),
+                    failure.turn_id
+                ),
+                operation_id: failure.operation_id.clone(),
+                summary: failure.error.safe_message(),
+                retry_at: failure.retry_at,
+            })
+    }
+
+    pub(super) fn automatic_retry_in_flight(&self) -> bool {
+        self.retry_taken && matches!(self.phase, Phase::StartingTurn { .. } | Phase::Working(_))
+    }
+
+    pub(super) fn failure_source(&self) -> Option<String> {
+        self.last_completion.as_ref().map(|completion| {
+            format!(
+                "{}:{}",
+                self.thread_id.as_deref().unwrap_or("unopened"),
+                completion.turn_id
+            )
+        })
+    }
+
+    pub(super) fn closed_turn_succeeded(&self, turn_id: &str) -> bool {
+        let held = match &self.phase {
+            Phase::StartingTurn { completion, .. } => completion.as_ref(),
+            Phase::Working(working) => working.completion.as_ref(),
+            _ => None,
+        };
+        held.or(self.last_completion.as_ref())
+            .is_some_and(|completion| {
+                completion.turn_id == turn_id && completion_succeeded(completion)
+            })
+    }
+
     pub fn diagnostic_phase(&self) -> &'static str {
+        self.diagnostic_phase_kind().as_str()
+    }
+
+    pub(super) fn diagnostic_phase_kind(&self) -> DiagnosticPhase {
         match self.phase {
-            Phase::Starting => "starting",
-            Phase::Initializing => "initializing",
-            Phase::AwaitingVersion => "awaiting_version",
-            Phase::OpeningThread { .. } => "opening_thread",
-            Phase::Waiting => "waiting",
-            Phase::StartingTurn { .. } => "starting_turn",
-            Phase::Working(_) => "working",
-            Phase::Ending => "ending",
-            Phase::Ended => "ended",
+            Phase::Starting => DiagnosticPhase::Starting,
+            Phase::Initializing => DiagnosticPhase::Initializing,
+            Phase::AwaitingVersion => DiagnosticPhase::AwaitingVersion,
+            Phase::OpeningThread { .. } => DiagnosticPhase::OpeningThread,
+            Phase::Waiting => DiagnosticPhase::Waiting,
+            Phase::StartingTurn { .. } => DiagnosticPhase::StartingTurn,
+            Phase::Working(_) => DiagnosticPhase::Working,
+            Phase::Ending => DiagnosticPhase::Ending,
+            Phase::Ended => DiagnosticPhase::Ended,
         }
     }
 
@@ -1500,7 +1747,23 @@ fn retained_steer_turn(steer: PendingSteer) -> AcceptedTurn {
 }
 
 fn operational_report(summary: String) -> SessionEffect {
-    SessionEffect::Report(ActivityReport::bounded_task_update(&summary))
+    SessionEffect::Report(ActivityReport::bounded_task_update(
+        &super::errors::sanitize_error(&summary),
+    ))
+}
+
+fn failed_report(summary: String, operation_id: Option<String>) -> SessionEffect {
+    SessionEffect::Report(ActivityReport::own_work(
+        crate::harness::AgentActivity::TurnFailed {
+            summary,
+            operation_id,
+            episode_id: None,
+        },
+    ))
+}
+
+fn completion_succeeded(completion: &TurnCompletion) -> bool {
+    completion.status == "completed" && completion.error.is_none() && completion.details.is_none()
 }
 
 fn leading_user_agent_version(user_agent: &str) -> Option<Version> {

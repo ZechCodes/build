@@ -10,6 +10,7 @@ use tokio::sync::{broadcast, watch};
 
 use super::connection::{AppServerConnection, SharedConnection};
 use super::diagnostics::SessionDiagnostics;
+use super::errors::sanitize_error;
 use super::limits::{AppServerLimits, StateLimits};
 use super::observation::{CodexSurfaces, GoalReadFence};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
@@ -19,9 +20,10 @@ use super::process::{
 };
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
-    OperationResult, ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
-    ServerNotification, ThreadMetadataNotification,
+    NotificationError, OperationResult, ParentThreadFilter, ParentThreadRoute, PendingOperation,
+    RoutedServerRequest, ServerNotification, ThreadMetadataNotification,
 };
+use super::protocol_failure::{ConnectionFailureKind, ProtocolFailure, SessionEventKind};
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
@@ -31,9 +33,11 @@ use crate::harness::{
     TurnReceiptSupport,
 };
 use crate::models::ModelChoice;
+use crate::provider_recovery::{RecoveryContext, RecoveryJournal};
 use crate::pty::HarnessSpec;
 
 mod observations;
+pub(super) mod recovery;
 #[cfg(test)]
 use observations::next_goal_retry;
 use observations::observed_at;
@@ -120,7 +124,33 @@ fn user_message_text(item: &Value) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoordinatorTerminalEvent {
     SourceSettled(TerminalSourceEvent),
-    TerminalError(String),
+    TerminalError(TerminalCause),
+}
+
+/// The summary and its trust provenance are claimed together, never latched
+/// independently. Only enum-derived protocol text bypasses provider redaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalCause {
+    summary: String,
+    protocol_failure: Option<ProtocolFailure>,
+}
+
+impl TerminalCause {
+    fn protocol(failure: ProtocolFailure) -> Self {
+        Self {
+            summary: failure.summary(),
+            protocol_failure: Some(failure),
+        }
+    }
+}
+
+impl From<String> for TerminalCause {
+    fn from(text: String) -> Self {
+        Self {
+            summary: sanitize_error(&text),
+            protocol_failure: None,
+        }
+    }
 }
 
 impl CoordinatorTerminalEvent {
@@ -145,6 +175,7 @@ impl CoordinatorTerminalEvent {
 pub struct TerminalOutcome {
     pub exit_code: Option<i32>,
     pub epitaph: Option<String>,
+    cause: Option<TerminalCause>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -152,8 +183,9 @@ pub struct TerminalSnapshot {
     stdout_settled: bool,
     process: Option<ProcessOutcome>,
     stderr: Option<StderrOutcome>,
-    terminal_error: Option<String>,
+    terminal_error: Option<TerminalCause>,
     expiry: Option<String>,
+    publication_claimed: bool,
 }
 
 impl TerminalSnapshot {
@@ -201,7 +233,7 @@ impl TerminalSnapshot {
         }
         self.stdout_settled = true;
         if let Some(reason) = reader_error {
-            self.retain_terminal_error(reason);
+            self.retain_terminal_error(reason.into());
         }
         true
     }
@@ -218,20 +250,36 @@ impl TerminalSnapshot {
         if !self.stdout_settled {
             return None;
         }
-        Some(TerminalOutcome {
-            exit_code: process.exit_code,
-            epitaph: self
-                .terminal_error
+        let cause = self.terminal_error.clone().or_else(|| {
+            process
+                .monitor_error
                 .clone()
-                .or_else(|| process.monitor_error.clone())
                 .or_else(|| stderr.drainer_error.clone())
                 .or_else(|| stderr.retained_tail.clone())
-                .or_else(|| self.expiry.clone()),
+                .or_else(|| self.expiry.clone())
+                .map(TerminalCause::from)
+        });
+        Some(TerminalOutcome {
+            exit_code: process.exit_code,
+            epitaph: cause.as_ref().map(|cause| cause.summary.clone()),
+            cause,
         })
     }
 
-    fn retain_terminal_error(&mut self, reason: String) {
-        self.terminal_error.get_or_insert(reason);
+    fn retain_terminal_error(&mut self, cause: TerminalCause) {
+        if !self.publication_claimed {
+            self.terminal_error.get_or_insert(cause);
+        }
+    }
+
+    fn claim_outcome(&mut self) -> Option<TerminalOutcome> {
+        if self.publication_claimed {
+            return None;
+        }
+        let outcome = self.outcome()?;
+        self.terminal_error = outcome.cause.clone();
+        self.publication_claimed = true;
+        Some(outcome)
     }
 }
 
@@ -267,9 +315,18 @@ struct SessionCore {
     diagnostics: SessionDiagnostics,
     shutdown_origin: Mutex<Option<&'static str>>,
     last_protocol_event: Mutex<&'static str>,
+    provider_error: Mutex<Option<NotificationError>>,
+    #[cfg(test)]
+    review621_before_protocol_latch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    review621_before_terminal_publish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    failure_reported: AtomicBool,
+    recovery: Mutex<Option<RecoveryJournal>>,
+    recovery_source: String,
 }
 
 impl CodexAppServerSession {
+    #[cfg(test)]
     pub fn spawn(
         spec: &HarnessSpec,
         root: PathBuf,
@@ -280,6 +337,7 @@ impl CodexAppServerSession {
         Self::spawn_with_grace_wait(spec, root, choice, resume_id, limits, std::thread::sleep)
     }
 
+    #[cfg(test)]
     fn spawn_with_grace_wait(
         spec: &HarnessSpec,
         root: PathBuf,
@@ -288,6 +346,41 @@ impl CodexAppServerSession {
         limits: AppServerLimits,
         wait_for_grace: impl FnOnce(Duration) + Send + 'static,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        Self::spawn_configured(spec, root, choice, resume_id, limits, wait_for_grace, None)
+    }
+
+    pub(super) fn spawn_with_recovery(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        choice: ModelChoice,
+        resume_id: Option<String>,
+        limits: AppServerLimits,
+        recovery: Option<RecoveryContext>,
+    ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        Self::spawn_configured(
+            spec,
+            root,
+            choice,
+            resume_id,
+            limits,
+            std::thread::sleep,
+            recovery,
+        )
+    }
+
+    fn spawn_configured(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        choice: ModelChoice,
+        resume_id: Option<String>,
+        limits: AppServerLimits,
+        wait_for_grace: impl FnOnce(Duration) + Send + 'static,
+        recovery: Option<RecoveryContext>,
+    ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        let recovery = recovery
+            .map(RecoveryJournal::new)
+            .transpose()
+            .map_err(HarnessError::Setup)?;
         let binary = crate::pty::resolve_binary(spec)?;
         let (terminal_sender, terminal_events) = mpsc::channel();
         let events: TerminalEventSink = Arc::new(move |event| {
@@ -340,8 +433,17 @@ impl CodexAppServerSession {
             diagnostics: SessionDiagnostics::new(),
             shutdown_origin: Mutex::new(None),
             last_protocol_event: Mutex::new("session_created"),
+            provider_error: Mutex::new(None),
+            #[cfg(test)]
+            review621_before_protocol_latch: Mutex::new(None),
+            #[cfg(test)]
+            review621_before_terminal_publish: Mutex::new(None),
+            failure_reported: AtomicBool::new(false),
+            recovery: Mutex::new(recovery),
+            recovery_source: uuid::Uuid::new_v4().to_string(),
         });
         core.log("session_created", []);
+        core.publish_restored_failures();
         core.reconciliation_timer.start(Arc::downgrade(&core));
         start_terminal_pump(Arc::downgrade(&core), terminal_events);
         start_reader(Arc::downgrade(&core), pipes.stdout, events);
@@ -351,6 +453,25 @@ impl CodexAppServerSession {
 }
 
 impl SessionCore {
+    fn publish_restored_failures(&self) {
+        let episodes = self
+            .recovery
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(RecoveryJournal::take_restored_notices)
+            .unwrap_or_default();
+        for episode in episodes {
+            self.report(ActivityReport::own_work(
+                crate::harness::AgentActivity::TurnFailed {
+                    summary: episode.summary,
+                    operation_id: episode.operation_id,
+                    episode_id: Some(episode.id),
+                },
+            ));
+        }
+    }
+
     fn elapsed(&self) -> Duration {
         self.started.elapsed()
     }
@@ -377,9 +498,11 @@ impl SessionCore {
                 ],
             );
         }
-        let (require_version, should_close, reconciliation_pending) = {
+        let (require_version, should_close, timeout_delay) = {
             let mut state = self.state.lock().unwrap();
             let phase = state.diagnostic_phase();
+            let protocol_failure =
+                ProtocolFailure::state_transition(&event, state.diagnostic_phase_kind());
             let transition = match state.transition(event, self.elapsed(), self.state_limits) {
                 Ok(transition) => transition,
                 Err(error) => {
@@ -393,12 +516,31 @@ impl SessionCore {
                     );
                     let error = HarnessError::Session(error.to_string());
                     drop(state);
-                    self.fail(error.to_string());
+                    self.fail_protocol(protocol_failure);
                     return Err(error);
                 }
             };
             let mut require_version = false;
             let mut should_close = false;
+            let persisted = self
+                .recovery
+                .lock()
+                .unwrap()
+                .as_mut()
+                .map(|journal| {
+                    recovery::persist_transition(
+                        journal,
+                        &transition,
+                        self.elapsed(),
+                        &self.recovery_source,
+                    )
+                })
+                .transpose();
+            if let Err(error) = persisted {
+                drop(state);
+                self.fail(error.clone());
+                return Err(HarnessError::Session(error));
+            }
             for effect in &transition.effects {
                 if matches!(effect, SessionEffect::Close) {
                     should_close = true;
@@ -425,7 +567,7 @@ impl SessionCore {
             (
                 require_version,
                 should_close.then(|| state.epitaph()),
-                state.reconciliation_pending(),
+                state.timeout_delay(self.elapsed(), self.state_limits),
             )
         };
         if let Some(reason) = should_close {
@@ -444,13 +586,20 @@ impl SessionCore {
             ))?;
         }
         self.reconciliation_timer
-            .set(reconciliation_pending, self.state_limits.reconciliation);
+            .set(timeout_delay.is_some(), timeout_delay.unwrap_or_default());
         Ok(())
     }
 
     fn apply_effect(self: &Arc<Self>, effect: &SessionEffect) -> Result<bool, HarnessError> {
         match effect {
             SessionEffect::Request(operation) => {
+                if matches!(
+                    operation,
+                    PendingOperation::StartTurn { .. } | PendingOperation::CompactThread { .. }
+                ) {
+                    self.failure_reported.store(false, Ordering::Release);
+                    self.provider_error.lock().unwrap().take();
+                }
                 let (thread_id, turn_id) = operation_ids(operation);
                 self.log(
                     if operation.method() == "turn/interrupt" {
@@ -500,7 +649,26 @@ impl SessionCore {
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
                 self.report_all(reports);
             }
-            SessionEffect::Report(report) => self.report(report.clone()),
+            SessionEffect::Report(report) => {
+                let mut report = report.clone();
+                if let crate::harness::AgentActivity::TurnFailed { episode_id, .. } =
+                    &mut report.activity
+                {
+                    *episode_id = self
+                        .recovery
+                        .lock()
+                        .unwrap()
+                        .as_ref()
+                        .and_then(RecoveryJournal::last_notice_id);
+                }
+                if matches!(
+                    report.activity,
+                    crate::harness::AgentActivity::TurnFailed { .. }
+                ) {
+                    self.failure_reported.store(true, Ordering::Release);
+                }
+                self.report(report);
+            }
             SessionEffect::RequireVersionEvidence => return Ok(true),
             SessionEffect::Close => unreachable!("close effects are applied after releasing state"),
         }
@@ -681,6 +849,9 @@ impl SessionCore {
                 thread_id,
                 completion,
             } => {
+                if let Some(error) = &completion.details {
+                    *self.provider_error.lock().unwrap() = Some(error.clone());
+                }
                 self.log(
                     "turn_completed",
                     [
@@ -709,15 +880,20 @@ impl SessionCore {
                 self.translate(&notification)
             }
             ServerNotification::Error(error) => {
-                self.log(
-                    "error_notification",
-                    [
-                        ("provider_thread_id", json!(error.thread_id)),
-                        ("turn_id", json!(error.turn_id)),
-                        ("will_retry", json!(error.will_retry)),
-                        ("error_present", json!(!error.error.message.is_empty())),
-                    ],
-                );
+                *self.provider_error.lock().unwrap() = Some(error.error.clone());
+                let mut fields = self.error_fields(None);
+                fields.extend([
+                    ("provider_thread_id", json!(error.thread_id)),
+                    ("turn_id", json!(error.turn_id)),
+                    ("will_retry", json!(error.will_retry)),
+                    ("error_present", json!(!error.error.message.is_empty())),
+                ]);
+                self.log("error_notification", fields);
+                if !error.will_retry {
+                    let mut fields = self.error_fields(Some(&error.error.safe_message()));
+                    fields.push(("scope", json!("turn")));
+                    self.log("terminal_error", fields);
+                }
                 self.remember_protocol("error_notification");
                 self.apply_state(SessionEvent::ObservedError(error.clone()))
             }
@@ -859,15 +1035,16 @@ impl SessionCore {
 
     fn apply_terminal(&self, event: CoordinatorTerminalEvent) {
         let demands_shutdown = event.demands_shutdown();
-        self.log_terminal_event(&event);
-        {
+        let (outcome, cause) = {
             let mut snapshot = self.terminal.lock().unwrap();
             *snapshot = snapshot.with_terminal_event(event.clone());
-        }
+            let outcome = snapshot.claim_outcome();
+            (outcome, snapshot.terminal_error.clone())
+        };
+        self.log_terminal_event(&event, cause.as_ref());
         if demands_shutdown {
             self.begin_shutdown(terminal_shutdown_origin(&event));
         }
-        let outcome = self.terminal.lock().unwrap().outcome();
         if let Some(outcome) = outcome {
             self.publish_terminal(outcome);
         }
@@ -879,6 +1056,17 @@ impl SessionCore {
     }
 
     fn publish_terminal(&self, outcome: TerminalOutcome) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .review621_before_terminal_publish
+                .lock()
+                .unwrap()
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         let mut published = self.published.lock().unwrap();
         if published.is_some() {
             return;
@@ -890,15 +1078,16 @@ impl SessionCore {
         drop(published);
         let last = *self.last_protocol_event.lock().unwrap();
         let origin = *self.shutdown_origin.lock().unwrap();
-        self.log(
-            "terminal_settled",
-            [
-                ("exit_code", json!(outcome.exit_code)),
-                ("epitaph_present", json!(outcome.epitaph.is_some())),
-                ("shutdown_origin", json!(origin)),
-                ("last_protocol_event", json!(last)),
-            ],
-        );
+        let failure_report = self.prepare_terminal_failure(&outcome, origin);
+        let mut fields =
+            self.error_fields_with_cause(outcome.epitaph.as_deref(), outcome.cause.as_ref());
+        fields.extend([
+            ("exit_code", json!(outcome.exit_code)),
+            ("epitaph_present", json!(outcome.epitaph.is_some())),
+            ("shutdown_origin", json!(origin)),
+            ("last_protocol_event", json!(last)),
+        ]);
+        self.log("terminal_settled", fields);
         let previous = self.status.borrow().clone();
         if let Some(next) = previous.transition(ended) {
             self.status.send_replace(next);
@@ -916,6 +1105,9 @@ impl SessionCore {
             self.surfaces_revision.bump();
         }
         self.report_all(self.translator.lock().unwrap().close_all());
+        if let Some(report) = failure_report {
+            self.report(report);
+        }
         let uncertain = self.pending_receipts.lock().unwrap().take_operation_ids();
         if !uncertain.is_empty() {
             self.receipts.send_modify(|snapshot| {
@@ -929,12 +1121,78 @@ impl SessionCore {
         self.close_activity();
     }
 
+    fn prepare_terminal_failure(
+        &self,
+        outcome: &TerminalOutcome,
+        origin: Option<&str>,
+    ) -> Option<ActivityReport> {
+        let recovery_pending = self
+            .recovery
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|journal| journal.has_unsettled_retry().unwrap_or(true));
+        if (outcome.epitaph.is_none() && outcome.exit_code == Some(0) && !recovery_pending)
+            || matches!(origin, Some("explicit_end" | "session_drop"))
+            || self.failure_reported.swap(true, Ordering::AcqRel)
+        {
+            return None;
+        }
+        let summary = outcome.epitaph.clone().unwrap_or_else(|| {
+            format!(
+                "Codex app-server exited unexpectedly (code {:?})",
+                outcome.exit_code
+            )
+        });
+        let operation_id = self.state.lock().unwrap().failure_operation_id();
+        let episode_id = self.terminal_failure_checkpoint(operation_id.clone(), summary.clone());
+        Some(ActivityReport::own_work(
+            crate::harness::AgentActivity::TurnFailed {
+                operation_id,
+                summary,
+                episode_id,
+            },
+        ))
+    }
+
+    fn terminal_failure_checkpoint(
+        &self,
+        operation_id: Option<String>,
+        summary: String,
+    ) -> Option<String> {
+        let mut recovery = self.recovery.lock().unwrap();
+        let journal = recovery.as_mut()?;
+        match journal.finish(&self.recovery_source, operation_id, summary) {
+            Ok(()) => journal.last_notice_id(),
+            Err(error) => {
+                self.log(
+                    "recovery_checkpoint_failed",
+                    [("reason", json!(sanitize_error(&error)))],
+                );
+                None
+            }
+        }
+    }
+
     fn record_terminal_error(&self, reason: String) {
-        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(reason));
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(reason.into()));
     }
 
     fn fail(&self, reason: String) {
         self.record_terminal_error(reason);
+    }
+
+    fn fail_protocol(&self, failure: ProtocolFailure) {
+        #[cfg(test)]
+        {
+            let hook = self.review621_before_protocol_latch.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(
+            TerminalCause::protocol(failure),
+        ));
     }
 
     fn begin_shutdown(&self, origin: &'static str) {
@@ -966,7 +1224,7 @@ impl SessionCore {
         }
     }
 
-    fn log_terminal_event(&self, event: &CoordinatorTerminalEvent) {
+    fn log_terminal_event(&self, event: &CoordinatorTerminalEvent, cause: Option<&TerminalCause>) {
         let (source, error_present, exit_code) = match event {
             CoordinatorTerminalEvent::TerminalError(_) => ("terminal_error", true, None),
             CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
@@ -1002,13 +1260,61 @@ impl SessionCore {
                 None,
             ),
         };
-        self.log(
-            source,
-            [
-                ("error_present", json!(error_present)),
-                ("exit_code", json!(exit_code)),
-            ],
-        );
+        let reason = match event {
+            CoordinatorTerminalEvent::TerminalError(_) => cause.map(|cause| cause.summary.as_str()),
+            _ => None,
+        };
+        let mut fields = self.error_fields_with_cause(reason, cause);
+        fields.extend([
+            ("error_present", json!(error_present)),
+            ("exit_code", json!(exit_code)),
+        ]);
+        self.log(source, fields);
+    }
+
+    fn error_fields(&self, epitaph: Option<&str>) -> Vec<(&'static str, Value)> {
+        self.error_fields_with_cause(epitaph, None)
+    }
+
+    fn error_fields_with_cause(
+        &self,
+        epitaph: Option<&str>,
+        cause: Option<&TerminalCause>,
+    ) -> Vec<(&'static str, Value)> {
+        let error = self.provider_error.lock().unwrap();
+        let cause_summary = cause.map(|cause| cause.summary.clone());
+        vec![
+            (
+                "error_message",
+                json!(error
+                    .as_ref()
+                    .map(NotificationError::safe_message)
+                    .or_else(|| cause_summary.clone())
+                    .or_else(|| epitaph.map(sanitize_error))),
+            ),
+            (
+                "error_code",
+                json!(error.as_ref().and_then(NotificationError::safe_code)),
+            ),
+            (
+                "codex_error_info",
+                json!(error.as_ref().and_then(NotificationError::safe_code)),
+            ),
+            (
+                "http_status",
+                json!(error.as_ref().and_then(NotificationError::safe_http_status)),
+            ),
+            (
+                "protocol_failure",
+                json!(cause
+                    .and_then(|cause| cause.protocol_failure.as_ref())
+                    .map(ProtocolFailure::lifecycle_value)),
+            ),
+            (
+                "epitaph",
+                json!(epitaph.map(|text| cause_summary.unwrap_or_else(|| sanitize_error(text)))),
+            ),
+        ]
     }
 }
 
@@ -1032,7 +1338,7 @@ impl AgentSession for CodexAppServerSession {
             }
         }
         let receipt_token = self.core.pending_receipts.lock().unwrap().register(turn);
-        let event = if turn.choice.is_some() {
+        let event = if turn.choice.is_some() || turn.operation_id.is_some() {
             SessionEvent::SendChosenTurn(turn.clone())
         } else {
             SessionEvent::SendTurn(turn.text.clone())
@@ -1072,6 +1378,15 @@ impl AgentSession for CodexAppServerSession {
 
     fn status_changed(&self) -> Option<watch::Receiver<SessionStatusSnapshot>> {
         Some(self.core.status.subscribe())
+    }
+
+    fn provider_recovery_episode(&self) -> Option<String> {
+        self.core
+            .recovery
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(RecoveryJournal::active_episode_id)
     }
 
     fn turn_receipt_support(&self) -> TurnReceiptSupport {
@@ -1207,15 +1522,16 @@ fn read_until_settled(
                     fields.push(("observed_at_least_bytes", json!(observed_at_least)));
                 }
                 core.log("protocol_failure", fields);
-                return Some(error.to_string());
+                core.fail_protocol(ProtocolFailure::connection(&error));
+                return None;
             }
         };
-        if let Err(error) = core.handle_connection(event) {
+        if core.handle_connection(event).is_err() {
             core.log(
                 "protocol_failure",
                 [("error_kind", json!("event_handling"))],
             );
-            core.fail(error.to_string());
+            core.fail_protocol(ProtocolFailure::EventHandling);
             return None;
         }
     }
@@ -1246,22 +1562,7 @@ fn operation_ids(operation: &PendingOperation) -> (Option<&str>, Option<&str>) {
 }
 
 fn session_event_kind(event: &SessionEvent) -> &'static str {
-    match event {
-        SessionEvent::Start => "start",
-        SessionEvent::SendTurn(_) | SessionEvent::SendChosenTurn(_) => "send_turn",
-        SessionEvent::Interrupt => "interrupt",
-        SessionEvent::Connection(_) => "connection",
-        SessionEvent::ThreadStarted(_) => "thread_started",
-        SessionEvent::TurnStarted(_) => "turn_started",
-        SessionEvent::ItemObserved(_) => "item_observed",
-        SessionEvent::ObservedCompletion(_) => "turn_completed",
-        SessionEvent::ObservedError(_) => "error_notification",
-        SessionEvent::VersionEvidence(_) => "version_evidence",
-        SessionEvent::CheckTimeouts => "check_timeouts",
-        SessionEvent::FailTurn(_) => "fail_turn",
-        SessionEvent::FailSession(_) => "fail_session",
-        SessionEvent::Eof => "eof",
-    }
+    SessionEventKind::from_event(event).lifecycle_name()
 }
 
 fn operation_event(operation: &PendingOperation) -> &'static str {
@@ -1300,18 +1601,7 @@ fn terminal_shutdown_origin(event: &CoordinatorTerminalEvent) -> &'static str {
 }
 
 fn connection_error_kind(error: &super::connection::ConnectionError) -> &'static str {
-    use super::connection::ConnectionError;
-    match error {
-        ConnectionError::Closed => "closed",
-        ConnectionError::RequestIdExhausted => "request_id_exhausted",
-        ConnectionError::PendingLimit(_) => "pending_limit",
-        ConnectionError::FrameTooLarge { .. } => "frame_too_large",
-        ConnectionError::UnterminatedFrame => "unterminated_frame",
-        ConnectionError::InvalidUtf8(_) => "invalid_utf8",
-        ConnectionError::InvalidJson(_) => "invalid_json",
-        ConnectionError::Protocol(_) => "protocol",
-        ConnectionError::Io(_) => "io",
-    }
+    ConnectionFailureKind::from_error(error).as_str()
 }
 
 fn write_server_response(
@@ -1414,6 +1704,8 @@ fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: We
 
 #[cfg(test)]
 mod tests {
+    mod error_telemetry;
+    mod recovery_eof;
     use std::path::Path;
     use std::time::Duration;
 
@@ -1920,6 +2212,74 @@ mod tests {
             .unwrap()
     }
 
+    #[test]
+    fn provider_failure_telemetry_retains_sanitized_cause_and_code() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read hold");
+        let (session, _) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        session
+            .core
+            .dispatch_notification(ServerNotification::TurnStarted {
+                thread_id: THREAD_ID.to_string(),
+                turn_id: TURN_ID.to_string(),
+            })
+            .unwrap();
+        let error = ServerNotification::decode(
+            "error",
+            json!({
+                "threadId": THREAD_ID, "turnId": TURN_ID, "willRetry": false,
+                "error": {"message": "quota exhausted Authorization: Bearer fixture-secret",
+                    "codexErrorInfo": "usageLimitExceeded"}
+            }),
+        )
+        .unwrap();
+        session.core.dispatch_notification(error).unwrap();
+        assert_eq!(session.status(), AgentStatus::Waiting);
+        // A later protocol failure also retains the provider cause through shutdown.
+        let _ = session
+            .core
+            .apply_state(SessionEvent::TurnStarted("unexpected-a".into()));
+        let _ = session
+            .core
+            .apply_state(SessionEvent::TurnStarted("unexpected-b".into()));
+        wait_until("settled its terminal", || {
+            session.core.published.lock().unwrap().is_some()
+        });
+        let records = session.core.diagnostics.captured();
+        for event in ["error_notification", "terminal_error", "terminal_settled"] {
+            let record = records
+                .iter()
+                .find(|record| record["event"] == event)
+                .unwrap();
+            assert_eq!(
+                record["error_message"],
+                "quota exhausted Authorization [REDACTED]"
+            );
+            assert_eq!(record["error_code"], "usageLimitExceeded");
+            assert_eq!(record["codex_error_info"], "usageLimitExceeded");
+        }
+        let serialized = serde_json::to_string(&records).unwrap();
+        assert!(!serialized.contains("fixture-secret"));
+        assert!(records
+            .iter()
+            .any(|record| record["event"] == "terminal_settled"
+                && record["epitaph"]
+                    .as_str()
+                    .is_some_and(|text| text
+                        == "protocol_violation: unexpected turn/started in phase working")));
+        let settled = records
+            .iter()
+            .find(|record| record["event"] == "terminal_settled")
+            .unwrap();
+        assert_eq!(
+            settled["protocol_failure"],
+            json!({
+                "kind":"state_transition", "event":"turn/started", "phase":"working"
+            })
+        );
+    }
+
     fn scripted_session_with_gated_grace(
         root: &Path,
         script: &str,
@@ -1999,8 +2359,18 @@ mod tests {
     }
 
     fn wait_for_activity_closed(activity: &mut broadcast::Receiver<ActivityReport>) {
+        let mut failures = 0;
         wait_until("closed its activity channel", || {
             match activity.try_recv() {
+                Ok(ActivityReport {
+                    activity: crate::harness::AgentActivity::TurnFailed { summary, .. },
+                    ..
+                }) => {
+                    failures += 1;
+                    assert_eq!(failures, 1, "a session failure reports once");
+                    assert!(!summary.is_empty());
+                    false
+                }
                 Err(broadcast::error::TryRecvError::Empty) => false,
                 Err(broadcast::error::TryRecvError::Closed) => true,
                 other => panic!("unexpected activity before channel closed: {other:?}"),
@@ -2161,6 +2531,7 @@ mod tests {
             Some(TerminalOutcome {
                 exit_code: Some(3),
                 epitaph: Some("stdout expired".to_string()),
+                cause: Some("stdout expired".to_string().into()),
             })
         );
 
@@ -2231,8 +2602,9 @@ mod tests {
             TerminalSourceEvent::StdoutSettled { reader_error: None },
         );
         for reason in ["first protocol error", "second protocol error"] {
-            snapshot = snapshot
-                .with_terminal_event(CoordinatorTerminalEvent::TerminalError(reason.to_string()));
+            snapshot = snapshot.with_terminal_event(CoordinatorTerminalEvent::TerminalError(
+                reason.to_string().into(),
+            ));
         }
         snapshot = settled(
             &snapshot,

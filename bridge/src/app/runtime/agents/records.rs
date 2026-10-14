@@ -61,6 +61,30 @@ pub(in crate::app) fn record_activity(
     use crate::harness::AgentActivity;
     let parent_sequence = parent_row_sequence(state, key, report.parent_call_id.as_deref());
     match &report.activity {
+        AgentActivity::TurnFailed {
+            summary,
+            operation_id,
+            episode_id,
+        } if report.parent_call_id.is_none() => {
+            if let Some(episode_id) = episode_id {
+                if let Err(error) =
+                    state.record_provider_recovery_failure(owner, agent_id, episode_id)
+                {
+                    eprintln!("persist provider failure {episode_id}: {error}");
+                }
+            } else {
+                state.record_agent_turn_failure(owner, agent_id, operation_id.as_deref(), summary);
+            }
+        }
+        AgentActivity::TurnFailed { summary, .. } => {
+            state.record_activity_row(
+                owner,
+                agent_id,
+                crate::thread::ThreadEventKind::TaskUpdate,
+                summary.clone(),
+                parent_sequence,
+            );
+        }
         AgentActivity::Compaction { completed: true } => {
             let landed = state
                 .edit_agent_conversation(owner, agent_id, |thread, _artifact| {

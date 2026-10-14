@@ -235,6 +235,7 @@ pub(in crate::app::tests) fn test_agent_session_request(
             activity_locator: None,
         },
         resume_session_id: None,
+        recovery_context: None,
     }
 }
 

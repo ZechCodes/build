@@ -1337,6 +1337,62 @@ remain viewed across snapshots.
 | `CodexAppServer` | `bridge/src/harness/codex_app_server/` | Codex's app-server JSON protocol |
 | `Pi` | `bridge/src/harness/pi.rs` | Pi, with the `build-tools.ts` extension |
 
+Codex app-server provider errors are turn failures, so an exhausted
+`error` notification (`willRetry: false`) keeps the process and provider thread
+available for the next message. Build classifies `codexErrorInfo`, its upstream
+HTTP status, and explicit timeout/overload text (`codex_app_server/errors.rs`).
+Stream disconnections, HTTP 408/5xx and internal-server failures receive one
+continuation after `PROVIDER_RETRY_BACKOFF` (60 seconds). The continuation names
+the sanitized error and asks the agent to continue from its preserved context;
+it keeps the failed turn's model and effort. Codex's own `willRetry: true`
+notifications consume no Build retry. Auth, quota/429, invalid requests,
+context-window, sandbox and unknown failures never retry automatically. Permanent
+failure hints in either the message or additional details veto a transient
+stream wrapper; the unclassified `other` variant never opts into text fallback.
+
+The session remains working during the backoff. `provider_recovery.rs` records
+the failure episode, failed operation, absolute deadline and recovery stage in
+a synchronous sidecar before the backoff and before sending its one
+continuation. A bridge restart abandons a checkpointed recovery and reports its
+failed dispatch, rather than starting an ordinary resume turn with a fresh retry
+allowance.
+The failure remains pending until its notices are saved; repeated boots reuse
+the same episode identity. Delayed startup replay leaves an episode owned by
+a live session alone; the continuation barrier rejects an episode already
+abandoned or settled. Queued input does not clear the checkpoint. A successful
+retry resolves it before starting queued work, while an exhausted retry keeps
+its failure outbox. A new turn can start a fresh episode afterwards. A saved
+dispatcher notice retains its recipient generation and message identity, so
+boot can requeue its wake while the notice remains unread without posting it again.
+An unrecovered turn failure or an unexpected protocol transition that ends the
+session publishes one
+`TurnFailed` activity. The app records a failed outcome, delivers a failure
+message to the dispatch requester (falling back to the project's coordinator),
+and comments once on the dispatched task. The activity carries the failed
+operation so a newer consumed turn keeps its task and execution clock. Task
+comments require current assignment and conversation authority; ordinary
+completion reports retain their existing semantics. Failure notices use the
+ordinary 30-second notice settle window and wake without a client connected.
+The failed holder is not woken to read its own failure. Lifecycle telemetry
+records the allowlisted error code and `codexErrorInfo` variant name, numeric
+HTTP status, and a bounded human message or epitaph. Only the text before the
+first `{`, `[`, `<`, `=`, or `:` is retained; this also excludes unlabelled
+bodies and plain key/value dumps. Credential-shaped values in that prefix are
+redacted, the discarded suffix receives a fixed redaction marker, and the
+result is bounded to 1 KiB on a UTF-8 boundary. The raw error still drives
+classification; discarded text never enters telemetry or failure notices.
+Build-generated protocol failures use a separate enum-based diagnostic path:
+`protocol_failure` retains only fixed event, phase and connection-error labels.
+The resulting summary preserves the protocol cause in terminal telemetry,
+`TurnFailed` and its durable notice, without copying provider IDs or free-form
+error details. These trusted summaries do not pass through the provider-text
+delimiter sanitizer.
+The terminal snapshot claims the summary and its typed provenance together
+under one lock, then freezes that cause before publication. Telemetry and the
+durable notice use the captured cause; a later failure cannot relabel it.
+An exhausted provider notification logs `terminal_error` with `scope: turn`;
+it does not request process shutdown.
+
 ADK reports `Working` while a parent turn is open or its background-task roster
 is nonempty. A delivered turn opens when its final newline is written. The
 child can also start a turn itself: top-level assistant text, thinking or tool

@@ -29,6 +29,7 @@ mod dispatch;
 #[cfg(test)]
 pub(in crate::app) use deferred_delivery::DeferredDeliveryBoundary;
 mod edits;
+mod failures;
 mod handoff;
 mod identities;
 mod inbox;

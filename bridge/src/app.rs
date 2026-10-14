@@ -468,6 +468,7 @@ pub struct AppState {
     /// generation and conversation fences live in task_completion_authority;
     /// a checked native receipt can recover them from the Store after restart.
     dispatched_task: HashMap<String, String>,
+    agent_failures: self::runtime::turn_failures::FailureNoticeLedger,
     task_completion_authority: HashMap<String, self::tracker::TaskCompletionAuthority>,
     spent_task_completion_operations: HashMap<String, std::collections::HashSet<String>>,
     pending_task_completion_authority:
@@ -715,6 +716,7 @@ impl AppState {
             compactions: Default::default(),
             resetting_conversations: Default::default(),
             dispatched_task: HashMap::new(),
+            agent_failures: Default::default(),
             task_completion_authority: HashMap::new(),
             spent_task_completion_operations: HashMap::new(),
             pending_task_completion_authority: HashMap::new(),

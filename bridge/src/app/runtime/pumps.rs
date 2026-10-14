@@ -519,6 +519,13 @@ impl ActivityPump {
         if !still_pumping_instance(&s, &self.key, &session, instance) {
             return false;
         }
+        for operation in failure_receipt_operations(&session, report) {
+            if let Err(error) =
+                s.record_native_operation_seen(&instance.entity_id, &instance.agent_id, &operation)
+            {
+                eprintln!("provider failure receipt {operation}: {error}");
+            }
+        }
         s.note_self_report(&instance.entity_id, &instance.agent_id, instance, said);
         record_activity(
             &mut s,
@@ -527,6 +534,16 @@ impl ActivityPump {
             &instance.agent_id,
             report,
         );
+        let timer = Arc::clone(&s.frame_clock).frame(AGENT_DELIVERY_METHOD);
+        drop(s);
+        if matches!(
+            report.activity,
+            crate::harness::AgentActivity::TurnFailed { .. }
+        ) {
+            // A provider failure is background work. Its coordinator must hear
+            // it even when no client frame will drain the notice queue.
+            DeliveryRunner::drain(&state, &timer);
+        }
         true
     }
 
@@ -590,6 +607,36 @@ impl ActivityPump {
         // closed, so the row stops reading as working.
         s.record_agent_session_end(&instance.entity_id, &instance.agent_id, instance);
     }
+}
+
+fn failure_receipt_operations(
+    session: &Arc<dyn AgentSession>,
+    report: &crate::harness::ActivityReport,
+) -> Vec<String> {
+    let crate::harness::AgentActivity::TurnFailed { operation_id, .. } = &report.activity else {
+        return Vec::new();
+    };
+    let Some(receipts) = session.turn_receipts() else {
+        return Vec::new();
+    };
+    // The independent receipt pump may not have acquired the app lock yet.
+    // Read only this failure and the newest receipt, which reveals a next turn
+    // that already started. Older cumulative receipts need no replay here.
+    let snapshot = receipts.borrow();
+    let mut operations = operation_id
+        .as_ref()
+        .filter(|id| snapshot.seen_operation_ids.contains(id))
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if let Some(latest) = snapshot
+        .seen_operation_ids
+        .last()
+        .filter(|id| !operations.contains(id))
+    {
+        operations.push(latest.clone());
+    }
+    operations
 }
 
 async fn next_pump_wake(

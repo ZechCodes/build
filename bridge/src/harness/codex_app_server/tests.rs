@@ -33,6 +33,8 @@ use crate::harness::{
 use crate::models::{AgentProvider, ModelChoice};
 use crate::pty::HarnessSpec;
 
+mod provider_recovery_tests;
+
 fn limits() -> AppServerLimits {
     AppServerLimits {
         inbound_frame_bytes: 256,
@@ -1488,6 +1490,475 @@ fn working_state() -> CodexSessionState {
         )
         .unwrap()
         .state
+}
+
+fn provider_failure(turn_id: &str, code: Value, message: &str) -> SessionEvent {
+    let ServerNotification::Error(error) = ServerNotification::decode(
+        "error",
+        json!({"threadId": THREAD_ID, "turnId": turn_id, "willRetry": false,
+            "error": {"message": message, "codexErrorInfo": code}}),
+    )
+    .unwrap() else {
+        panic!("expected provider error")
+    };
+    SessionEvent::ObservedError(error)
+}
+
+#[test]
+fn transient_provider_failure_continues_once_after_sixty_seconds() {
+    let failed = working_state()
+        .transition(
+            provider_failure(
+                TURN_ID,
+                json!({"responseStreamDisconnected": {"httpStatusCode": null}}),
+                "stream disconnected",
+            ),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        !failed.effects.contains(&SessionEffect::Close),
+        "{:?}",
+        failed.effects
+    );
+    assert_eq!(failed.state.session_id().as_deref(), Some(THREAD_ID));
+    assert_eq!(failed.state.live_status(), Some(AgentStatus::Working));
+    let early = failed
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(59),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(early.effects.is_empty());
+    let retry = early
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    let [SessionEffect::Request(
+        operation @ PendingOperation::StartTurn {
+            input, thread_id, ..
+        },
+    )] = retry.effects.as_slice()
+    else {
+        panic!("expected one continuation: {:?}", retry.effects)
+    };
+    assert_eq!(thread_id, THREAD_ID);
+    assert!(input.contains("stream disconnected") && input.contains("continue"));
+    let working = retry
+        .state
+        .transition(
+            correlated(operation.clone(), Ok(json!({"turn":{"id":"retry-turn"}}))),
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    let second = working
+        .state
+        .transition(
+            provider_failure(
+                "retry-turn",
+                json!("internalServerError"),
+                "provider unavailable",
+            ),
+            Duration::from_secs(61),
+            limits().state(),
+        )
+        .unwrap();
+    assert_eq!(second.state.live_status(), Some(AgentStatus::Waiting));
+    assert!(!second.effects.contains(&SessionEffect::Close));
+    assert_eq!(second.effects.iter().filter(|effect| matches!(effect,
+        SessionEffect::Report(report) if matches!(report.activity, AgentActivity::TurnFailed { .. })
+    )).count(), 1);
+    let later = second
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(121),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        later.effects.is_empty(),
+        "must never loop: {:?}",
+        later.effects
+    );
+    let duplicate = later
+        .state
+        .transition(
+            provider_failure(
+                "retry-turn",
+                json!("internalServerError"),
+                "provider unavailable",
+            ),
+            Duration::from_secs(122),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        duplicate.effects.is_empty(),
+        "duplicate error must not report twice"
+    );
+}
+
+#[test]
+fn quota_failure_keeps_the_thread_for_a_manual_next_message() {
+    let failed = working_state()
+        .transition(
+            provider_failure(TURN_ID, json!("usageLimitExceeded"), "quota exhausted"),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert_eq!(failed.state.live_status(), Some(AgentStatus::Waiting));
+    assert!(!failed.effects.contains(&SessionEffect::Close));
+    assert_eq!(failed.effects.iter().filter(|effect| matches!(effect,
+        SessionEffect::Report(report) if matches!(report.activity, AgentActivity::TurnFailed { .. })
+    )).count(), 1);
+    let checked = failed
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(120),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(checked.effects.is_empty());
+    let next = checked
+        .state
+        .transition(
+            SessionEvent::SendTurn("resume".to_string()),
+            Duration::from_secs(121),
+            limits().state(),
+        )
+        .unwrap();
+    assert_eq!(
+        next.effects,
+        vec![SessionEffect::Request(start_turn("resume"))]
+    );
+}
+
+#[test]
+fn provider_failure_reports_the_failed_operation_before_starting_queued_work() {
+    let starting = advance_to_waiting()
+        .transition(
+            SessionEvent::SendChosenTurn(Turn::new("go").with_operation_id("failed-operation")),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let working = starting
+        .state
+        .transition(
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let mut queued = chosen_turn("next", Some(SELECTED_MODEL), Some("low"), 2);
+    queued.operation_id = Some("next-operation".into());
+    let queued = working
+        .state
+        .transition(
+            SessionEvent::SendChosenTurn(queued),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let failed = queued
+        .state
+        .transition(
+            provider_failure(TURN_ID, json!("usageLimitExceeded"), "quota exhausted"),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(failed.effects.iter().any(|effect| matches!(effect,
+        SessionEffect::Report(report) if matches!(&report.activity, AgentActivity::TurnFailed { operation_id: Some(id), .. } if id == "failed-operation")
+    )));
+    assert_eq!(
+        failed.state.failure_operation_id().as_deref(),
+        Some("next-operation")
+    );
+}
+
+#[test]
+fn successful_recovery_releases_work_queued_during_the_backoff() {
+    let failed = working_state()
+        .transition(
+            provider_failure(TURN_ID, json!("internalServerError"), "server unavailable"),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let queued = failed
+        .state
+        .transition(
+            SessionEvent::SendTurn("next".into()),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(queued.effects.is_empty());
+    let duplicate = queued
+        .state
+        .transition(
+            turn_completed(TURN_ID, Some("server unavailable")),
+            Duration::from_secs(2),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(duplicate.effects.is_empty());
+    let retry = duplicate
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    let [SessionEffect::Request(operation)] = retry.effects.as_slice() else {
+        panic!("no recovery request")
+    };
+    let retry = retry
+        .state
+        .transition(
+            correlated(operation.clone(), Ok(json!({"turn":{"id":"retry-turn"}}))),
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    let completed = retry
+        .state
+        .transition(
+            turn_completed("retry-turn", None),
+            Duration::from_secs(61),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(completed
+        .effects
+        .contains(&SessionEffect::Request(start_turn("next"))));
+}
+
+#[test]
+fn interrupting_the_backoff_cancels_automatic_recovery() {
+    let failed = working_state()
+        .transition(
+            provider_failure(TURN_ID, json!("internalServerError"), "server unavailable"),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(failed.state.can_interrupt());
+    let cancelled = failed
+        .state
+        .transition(
+            SessionEvent::Interrupt,
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    assert_eq!(cancelled.state.live_status(), Some(AgentStatus::Waiting));
+    assert!(cancelled.effects.iter().any(|effect| matches!(effect,
+        SessionEffect::Report(report) if matches!(report.activity, AgentActivity::TurnFailed { .. })
+    )));
+    let later = cancelled
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(120),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(later.effects.is_empty());
+}
+
+#[test]
+fn failure_before_the_start_response_retries_the_failed_turns_choice() {
+    let starting = advance_to_waiting()
+        .transition(
+            SessionEvent::SendChosenTurn(chosen_turn("go", Some(SELECTED_MODEL), Some("low"), 2)),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let failed = starting
+        .state
+        .transition(
+            provider_failure(TURN_ID, json!("internalServerError"), "server unavailable"),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let answered = failed
+        .state
+        .transition(
+            correlated(
+                start_turn_with("go", Some(SELECTED_MODEL), Some("low")),
+                Ok(json!({"turn":{"id":TURN_ID}})),
+            ),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    let retry = answered
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(60),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        matches!(retry.effects.as_slice(), [SessionEffect::Request(PendingOperation::StartTurn { effort: Some(effort), .. })] if effort == "low")
+    );
+}
+
+#[test]
+fn failed_turn_recovery_survives_a_late_no_active_turn_steer_response() {
+    let steering = working_state()
+        .transition(
+            SessionEvent::SendTurn("next".into()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    let failed = steering
+        .state
+        .transition(
+            provider_failure(TURN_ID, json!("internalServerError"), "server unavailable"),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    let answered = failed
+        .state
+        .transition(
+            correlated(
+                PendingOperation::SteerTurn {
+                    thread_id: THREAD_ID.into(),
+                    turn_id: TURN_ID.into(),
+                    input: "next".into(),
+                },
+                Err(RpcError::new(-32600, "no active turn")),
+            ),
+            Duration::from_secs(2),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        answered.effects.is_empty(),
+        "must back off before replay: {:?}",
+        answered.effects
+    );
+    assert_eq!(answered.state.live_status(), Some(AgentStatus::Working));
+    let retry = answered
+        .state
+        .transition(
+            SessionEvent::CheckTimeouts,
+            Duration::from_secs(61),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(
+        matches!(retry.effects.as_slice(), [SessionEffect::Request(PendingOperation::StartTurn { input, .. })] if input.contains("continue"))
+    );
+}
+
+#[test]
+fn a_failed_turn_reports_the_latest_accepted_steering_operation() {
+    for error_before_response in [false, true] {
+        let starting = advance_to_waiting()
+            .transition(
+                SessionEvent::SendChosenTurn(Turn::new("go").with_operation_id("first-op")),
+                Duration::ZERO,
+                limits().state(),
+            )
+            .unwrap();
+        let working = starting
+            .state
+            .transition(
+                correlated(start_turn("go"), Ok(json!({"turn":{"id":TURN_ID}}))),
+                Duration::ZERO,
+                limits().state(),
+            )
+            .unwrap();
+        let steering = working
+            .state
+            .transition(
+                SessionEvent::SendChosenTurn(Turn::new("steer").with_operation_id("steer-op")),
+                Duration::ZERO,
+                limits().state(),
+            )
+            .unwrap();
+        let failure = || provider_failure(TURN_ID, json!("usageLimitExceeded"), "quota exhausted");
+        let before = if error_before_response {
+            steering
+                .state
+                .transition(failure(), Duration::from_secs(1), limits().state())
+                .unwrap()
+                .state
+        } else {
+            steering.state
+        };
+        let accepted = before
+            .transition(
+                correlated(
+                    PendingOperation::SteerTurn {
+                        thread_id: THREAD_ID.into(),
+                        turn_id: TURN_ID.into(),
+                        input: "steer".into(),
+                    },
+                    Ok(json!({"turnId":TURN_ID})),
+                ),
+                Duration::from_secs(2),
+                limits().state(),
+            )
+            .unwrap();
+        let effects = if error_before_response {
+            accepted.effects
+        } else {
+            accepted
+                .state
+                .transition(failure(), Duration::from_secs(3), limits().state())
+                .unwrap()
+                .effects
+        };
+        assert!(effects.iter().any(|effect| matches!(effect,
+            SessionEffect::Report(report) if matches!(&report.activity, AgentActivity::TurnFailed {operation_id:Some(id),..} if id == "steer-op")
+        )), "{effects:?}");
+    }
+}
+
+#[test]
+fn operational_rpc_errors_are_redacted_before_becoming_activity() {
+    let interrupted = working_state()
+        .transition(SessionEvent::Interrupt, Duration::ZERO, limits().state())
+        .unwrap();
+    let failed = interrupted
+        .state
+        .transition(
+            correlated(
+                PendingOperation::InterruptTurn {
+                    thread_id: THREAD_ID.into(),
+                    turn_id: TURN_ID.into(),
+                },
+                Err(RpcError::new(-32600, "Unauthorized Bearer fixture-secret")),
+            ),
+            Duration::from_secs(1),
+            limits().state(),
+        )
+        .unwrap();
+    assert!(failed.effects.iter().any(|effect| matches!(effect,
+        SessionEffect::Report(report) if report.activity.summary().contains("[REDACTED]") && !report.activity.summary().contains("fixture-secret")
+    )));
 }
 
 #[test]
@@ -3348,7 +3819,7 @@ fn replay_observed_fixture(fixture: &str) -> FixtureReplay {
             AgentActivity::ToolResult {
                 call_id, outcome, ..
             } => Some(FixtureActivity::ToolResult(call_id.clone(), *outcome)),
-            AgentActivity::TaskUpdate { .. } => None,
+            AgentActivity::TaskUpdate { .. } | AgentActivity::TurnFailed { .. } => None,
         })
         .collect();
     FixtureReplay {
@@ -3472,13 +3943,17 @@ fn observed_mcp_fixture_suppresses_build_and_pairs_non_build_activity() {
 }
 
 #[test]
-fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
+fn synthetic_codex_retry_and_exhaustion_keep_the_session_live() {
     let fixture = checked_in_fixture("0.153.0/synthetic-model-events.jsonl");
     let mut errors = fixture.lines().filter_map(|line| {
         let envelope: Value = serde_json::from_str(line).unwrap();
         (envelope["method"] == "error").then(|| {
             match ServerNotification::decode("error", envelope["params"].clone()).unwrap() {
-                ServerNotification::Error(error) => error,
+                ServerNotification::Error(mut error) => {
+                    error.thread_id = THREAD_ID.into();
+                    error.turn_id = TURN_ID.into();
+                    error
+                }
                 other => panic!("expected an error notification, got {other:?}"),
             }
         })
@@ -3514,13 +3989,13 @@ fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
     assert!(
         matches!(
             terminal.effects.as_slice(),
-            [SessionEffect::Report(report), SessionEffect::Close]
+            [SessionEffect::Report(report), SessionEffect::CloseTurn(_)]
                 if matches!(&report.activity, AgentActivity::TaskUpdate { summary } if summary.contains("Terminal"))
         ),
         "{:?}",
         terminal.effects
     );
-    assert_eq!(terminal.state.live_status(), None);
+    assert_eq!(terminal.state.live_status(), Some(AgentStatus::Working));
     assert_eq!(
         terminal.state.epitaph().as_deref(),
         Some("Terminal synthetic fixture failure.")
@@ -3681,13 +4156,9 @@ fn a_hostile_error_message_reports_within_the_activity_bound() {
             Some(SessionEffect::Report(report)) => report.activity.summary().to_string(),
             other => panic!("expected a report first, got {other:?}"),
         };
-        assert_eq!(
-            summary.chars().count(),
-            crate::harness::adk::ACTIVITY_TEXT_LIMIT + 1,
-            "{summary}"
-        );
-        assert!(summary.ends_with('…'), "{summary}");
-        assert!(summary.contains('\n'), "{summary}");
+        assert!(summary.len() <= 1024, "{summary}");
+        assert!(summary.contains("[REDACTED]"), "{summary}");
+        assert!(!summary.contains('\n'), "{summary}");
     }
 }
 

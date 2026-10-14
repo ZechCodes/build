@@ -314,6 +314,7 @@ pub(in crate::app) fn activity_event_kind(
         AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
         AgentActivity::Narration { .. } => ThreadEventKind::Narration,
         AgentActivity::TaskUpdate { .. } => ThreadEventKind::TaskUpdate,
+        AgentActivity::TurnFailed { .. } => ThreadEventKind::RunFailed,
     }
 }
 

@@ -229,6 +229,51 @@ impl Store {
             .query_row(THREAD_ITEM_COUNT_SQL, [agent_id], |row| row.get(0))?;
         Ok(count as u64)
     }
+
+    /// Find one durable notice even when it has left the resident tail. SQL
+    /// filters the message rows; unrelated history is never deserialized.
+    pub(crate) fn thread_message_by_id(
+        &self,
+        agent_id: &str,
+        message_id: &str,
+    ) -> Result<Option<ThreadMessage>, StoreError> {
+        let raw: Option<String> = self
+            .connection()
+            .query_row(
+                "SELECT item FROM thread_items WHERE agent_id = ?1 AND message = 1 \
+             AND json_extract(item, '$.data.id') = ?2 LIMIT 1",
+                rusqlite::params![agent_id, message_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(
+            decode_thread_item_text(agent_id, raw.into_iter().collect())?
+                .into_iter()
+                .find_map(|item| match item {
+                    ThreadItem::Message(message) => Some(message),
+                    _ => None,
+                }),
+        )
+    }
+
+    /// A delayed failure must preserve a newer consumed operation. This seeks
+    /// only later messages and answers without decoding their content.
+    pub(crate) fn has_seen_operation_after(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+        excluding_operation_id: &str,
+    ) -> Result<bool, StoreError> {
+        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
+        Ok(self.connection().query_row(
+            "SELECT EXISTS(SELECT 1 FROM thread_items \
+             WHERE agent_id = ?1 AND message = 1 AND sequence > ?2 \
+             AND json_extract(item, '$.data.operation_id') != ?3 \
+             AND json_extract(item, '$.data.seen_at') IS NOT NULL)",
+            rusqlite::params![agent_id, after, excluding_operation_id],
+            |row| row.get(0),
+        )?)
+    }
     /// The forward cursor: everything that has happened on a conversation
     /// since `after_sequence`, oldest-first.
     ///

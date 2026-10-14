@@ -405,6 +405,10 @@ fn record_sent_operation_delivery(
     turn: &PendingAgentTurn,
     support: TurnReceiptSupport,
 ) {
+    if turn.operation_id.is_none() {
+        app.agent_failures.forget_consumed(&turn.agent_id);
+        return;
+    }
     if support != TurnReceiptSupport::Sent {
         return;
     }

@@ -243,8 +243,8 @@ fn explicit_transient_hint(text: &str) -> bool {
 /// Remove secret values before truncation, so bounding never exposes a token
 /// prefix. This also serves protocol-violation and lifecycle diagnostics.
 pub(super) fn sanitize_error(text: &str) -> String {
-    let without_body = strip_request_body(text);
-    let normalized: String = without_body
+    let without_payload = strip_labelled_payload(text);
+    let normalized: String = without_payload
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
@@ -265,9 +265,10 @@ pub(super) fn sanitize_error(text: &str) -> String {
     bounded_text(&sanitized)
 }
 
-/// A body can be structured, quoted, malformed or plain text. Discarding its
-/// entire suffix avoids depending on that untrusted representation's syntax.
-fn strip_request_body(text: &str) -> String {
+/// Explicit bodies/payloads may be malformed or plain text. Any other labelled
+/// structure may also carry request data, regardless of its label's spelling.
+/// Discard the entire suffix without parsing that untrusted representation.
+fn strip_labelled_payload(text: &str) -> String {
     let mut previous = String::new();
     for fragment in fragments(text) {
         let label: String = text[fragment.clone()]
@@ -275,15 +276,28 @@ fn strip_request_body(text: &str) -> String {
             .filter(char::is_ascii_alphanumeric)
             .map(|c| c.to_ascii_lowercase())
             .collect();
-        let request_body = label == "requestbody"
-            || (label == "body" && (previous == "request" || assigned_label(text, fragment.end)));
-        if request_body {
-            let start = label_value_start(text, fragment.end);
+        let start = label_value_start(text, fragment.end);
+        let labelled_payload = assigned_label(text, fragment.end)
+            && (matches!(label.as_str(), "body" | "payload") || structured_payload(text, start));
+        if request_payload_label(&label, &previous) || labelled_payload {
             return format!("{}{REDACTED}", &text[..start]);
         }
         previous = label;
     }
     text.to_string()
+}
+
+fn request_payload_label(label: &str, previous: &str) -> bool {
+    matches!(
+        label,
+        "requestbody" | "requestpayload" | "requestdata" | "requestjson"
+    ) || (previous == "request" && matches!(label, "body" | "payload" | "data" | "json"))
+}
+
+fn structured_payload(text: &str, start: usize) -> bool {
+    text[start..]
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`'))
+        .starts_with(['{', '['])
 }
 
 fn assigned_label(text: &str, after: usize) -> bool {
@@ -753,6 +767,84 @@ mod tests {
             assert!(!safe.contains("\"input\"") && !safe.contains("\"metadata\""), "{safe}");
             assert!(safe.len() <= 1024 && !safe.chars().any(char::is_control), "{safe}");
         }
+    }
+
+    #[test]
+    fn review621_request_payload_is_not_logged() {
+        let error: NotificationError = serde_json::from_value(json!({
+            "message": "HTTP 500; request payload: {\"input\":\"confidential-request\",\"metadata\":{\"customer\":\"private-customer\"}}",
+            "codexErrorInfo": "internalServerError"
+        })).unwrap();
+        assert!(
+            !error.safe_message().contains("confidential-request"),
+            "request payload retained: {}",
+            error.safe_message()
+        );
+    }
+
+    #[test]
+    fn revision_621_labelled_structured_payloads_are_removed() {
+        for message in [
+            r#"HTTP 500; payload: {"input":"confidential-request","customer":"private-customer"}"#,
+            r#"HTTP 500; PAYLOAD = ["confidential-request", "private-customer"]"#,
+            r#"HTTP 500; request_payload={"input":"confidential-request"}"#,
+            r#"HTTP 500; request-payload: {"input":"confidential-request"}"#,
+            r#"HTTP 500; requestPayload: 'confidential-request'"#,
+            "HTTP 500; Request\r\n Payload:\n{\"input\":\"confidential-request\"}",
+            r#"HTTP 500; request payload {"input":"confidential-request"}"#,
+            r#"HTTP 500; request data: {"input":"confidential-request"}"#,
+            r#"HTTP 500; requestJSON="{\"input\":\"confidential-request\"}""#,
+            r#"HTTP 500; data={"input":"confidential-request"}"#,
+            r#"HTTP 500; input: ["confidential-request"]"#,
+            r#"HTTP 500; messages: [{"content":"confidential-request"}]"#,
+            r#"HTTP 500; parameters: {"customer":"private-customer"}"#,
+            r#"HTTP 500; arguments={'input':'confidential-request'}"#,
+            r#"HTTP 500; diagnostic: {"request":{"input":"confidential-request"}}"#,
+            r#"HTTP 500; {"envelope":{"input":"confidential-request"}}"#,
+            "HTTP 500; envelope: '\n [\"confidential-request\"]'",
+            r#"HTTP 500; opaqueDetails=`{"input":"confidential-request"}`"#,
+        ] {
+            let safe = sanitize_error(message);
+            assert!(safe.starts_with("HTTP 500"), "{safe}");
+            assert!(safe.contains("[REDACTED]"), "{safe}");
+            assert!(
+                !safe.contains("confidential-request") && !safe.contains("private-customer"),
+                "{safe}"
+            );
+            assert!(
+                !safe.contains("\"input\"") && !safe.contains("\"content\""),
+                "{safe}"
+            );
+            assert!(
+                safe.len() <= 1024 && !safe.chars().any(char::is_control),
+                "{safe}"
+            );
+        }
+    }
+
+    #[test]
+    fn revision_621_labelled_payload_redaction_precedes_bounding() {
+        for label in [
+            "request payload",
+            "serialized request",
+            "arguments",
+            "event data",
+        ] {
+            let message = format!(
+                "HTTP 500; {label}: {{\"input\":\"confidential-request\",\"padding\":\"{}\",\"customer\":\"private-customer\"}} trailing confidential-request",
+                "é".repeat(2048)
+            );
+            let safe = sanitize_error(&message);
+            assert_eq!(safe, format!("HTTP 500; {label}: [REDACTED]"));
+            assert!(safe.len() <= 1024);
+        }
+    }
+
+    #[test]
+    fn revision_621_scalar_error_diagnostics_remain_visible() {
+        let diagnostic =
+            "HTTP 503; status: 503; retryable=true; request timed out; context: upstream refused";
+        assert_eq!(sanitize_error(diagnostic), diagnostic);
     }
 
     #[test]

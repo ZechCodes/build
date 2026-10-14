@@ -1705,6 +1705,7 @@ fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: We
 #[cfg(test)]
 mod tests {
     mod error_telemetry;
+    mod recovery_checkpoint;
     mod recovery_eof;
     use std::path::Path;
     use std::time::Duration;

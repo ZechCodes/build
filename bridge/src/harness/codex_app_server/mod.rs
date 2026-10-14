@@ -21,6 +21,7 @@ mod observation;
 mod policy;
 mod process;
 mod protocol;
+mod protocol_failure;
 mod session;
 mod state;
 mod subagents;

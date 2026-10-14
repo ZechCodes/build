@@ -1381,6 +1381,12 @@ bodies and plain key/value dumps. Credential-shaped values in that prefix are
 redacted, the discarded suffix receives a fixed redaction marker, and the
 result is bounded to 1 KiB on a UTF-8 boundary. The raw error still drives
 classification; discarded text never enters telemetry or failure notices.
+Build-generated protocol failures use a separate enum-based diagnostic path:
+`protocol_failure` retains only fixed event, phase and connection-error labels.
+The resulting summary preserves the protocol cause in terminal telemetry,
+`TurnFailed` and its durable notice, without copying provider IDs or free-form
+error details. These trusted summaries do not pass through the provider-text
+delimiter sanitizer.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.
 

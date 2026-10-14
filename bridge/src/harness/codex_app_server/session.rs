@@ -23,6 +23,7 @@ use super::protocol::{
     NotificationError, OperationResult, ParentThreadFilter, ParentThreadRoute, PendingOperation,
     RoutedServerRequest, ServerNotification, ThreadMetadataNotification,
 };
+use super::protocol_failure::{ConnectionFailureKind, ProtocolFailure, SessionEventKind};
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
@@ -271,6 +272,7 @@ struct SessionCore {
     shutdown_origin: Mutex<Option<&'static str>>,
     last_protocol_event: Mutex<&'static str>,
     provider_error: Mutex<Option<NotificationError>>,
+    protocol_failure: Mutex<Option<ProtocolFailure>>,
     failure_reported: AtomicBool,
     recovery: Mutex<Option<RecoveryJournal>>,
     recovery_source: String,
@@ -385,6 +387,7 @@ impl CodexAppServerSession {
             shutdown_origin: Mutex::new(None),
             last_protocol_event: Mutex::new("session_created"),
             provider_error: Mutex::new(None),
+            protocol_failure: Mutex::new(None),
             failure_reported: AtomicBool::new(false),
             recovery: Mutex::new(recovery),
             recovery_source: uuid::Uuid::new_v4().to_string(),
@@ -448,6 +451,8 @@ impl SessionCore {
         let (require_version, should_close, timeout_delay) = {
             let mut state = self.state.lock().unwrap();
             let phase = state.diagnostic_phase();
+            let protocol_failure =
+                ProtocolFailure::state_transition(&event, state.diagnostic_phase_kind());
             let transition = match state.transition(event, self.elapsed(), self.state_limits) {
                 Ok(transition) => transition,
                 Err(error) => {
@@ -461,7 +466,7 @@ impl SessionCore {
                     );
                     let error = HarnessError::Session(error.to_string());
                     drop(state);
-                    self.fail(error.to_string());
+                    self.fail_protocol(protocol_failure);
                     return Err(error);
                 }
             };
@@ -1000,7 +1005,7 @@ impl SessionCore {
     }
 
     fn publish_terminal(&self, mut outcome: TerminalOutcome) {
-        outcome.epitaph = outcome.epitaph.as_deref().map(sanitize_error);
+        outcome.epitaph = self.terminal_summary(outcome.epitaph.as_deref());
         let mut published = self.published.lock().unwrap();
         if published.is_some() {
             return;
@@ -1117,6 +1122,32 @@ impl SessionCore {
         self.record_terminal_error(reason);
     }
 
+    fn fail_protocol(&self, failure: ProtocolFailure) {
+        // An event-handling wrapper can follow a failure already recorded by
+        // apply_state. Preserve that first cause and its diagnostic provenance.
+        if self.terminal.lock().unwrap().terminal_error.is_some() {
+            return;
+        }
+        // Only enum-selected labels reach this path. Never promote a free-form
+        // provider error or a formatted StateError into trusted diagnostics.
+        let summary = self
+            .protocol_failure
+            .lock()
+            .unwrap()
+            .get_or_insert(failure)
+            .summary();
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(summary));
+    }
+
+    fn terminal_summary(&self, epitaph: Option<&str>) -> Option<String> {
+        self.protocol_failure
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(ProtocolFailure::summary)
+            .or_else(|| epitaph.map(sanitize_error))
+    }
+
     fn begin_shutdown(&self, origin: &'static str) {
         let mut retained_origin = self.shutdown_origin.lock().unwrap();
         let first = !self.shutting_down.swap(true, Ordering::AcqRel);
@@ -1196,12 +1227,15 @@ impl SessionCore {
 
     fn error_fields(&self, epitaph: Option<&str>) -> Vec<(&'static str, Value)> {
         let error = self.provider_error.lock().unwrap();
+        let protocol_failure = self.protocol_failure.lock().unwrap();
+        let protocol_summary = protocol_failure.as_ref().map(ProtocolFailure::summary);
         vec![
             (
                 "error_message",
                 json!(error
                     .as_ref()
                     .map(NotificationError::safe_message)
+                    .or_else(|| protocol_summary.clone())
                     .or_else(|| epitaph.map(sanitize_error))),
             ),
             (
@@ -1216,7 +1250,16 @@ impl SessionCore {
                 "http_status",
                 json!(error.as_ref().and_then(NotificationError::safe_http_status)),
             ),
-            ("epitaph", json!(epitaph.map(sanitize_error))),
+            (
+                "protocol_failure",
+                json!(protocol_failure
+                    .as_ref()
+                    .map(ProtocolFailure::lifecycle_value)),
+            ),
+            (
+                "epitaph",
+                json!(epitaph.map(|text| protocol_summary.unwrap_or_else(|| sanitize_error(text)))),
+            ),
         ]
     }
 }
@@ -1425,15 +1468,16 @@ fn read_until_settled(
                     fields.push(("observed_at_least_bytes", json!(observed_at_least)));
                 }
                 core.log("protocol_failure", fields);
-                return Some(error.to_string());
+                core.fail_protocol(ProtocolFailure::connection(&error));
+                return None;
             }
         };
-        if let Err(error) = core.handle_connection(event) {
+        if core.handle_connection(event).is_err() {
             core.log(
                 "protocol_failure",
                 [("error_kind", json!("event_handling"))],
             );
-            core.fail(error.to_string());
+            core.fail_protocol(ProtocolFailure::EventHandling);
             return None;
         }
     }
@@ -1464,22 +1508,7 @@ fn operation_ids(operation: &PendingOperation) -> (Option<&str>, Option<&str>) {
 }
 
 fn session_event_kind(event: &SessionEvent) -> &'static str {
-    match event {
-        SessionEvent::Start => "start",
-        SessionEvent::SendTurn(_) | SessionEvent::SendChosenTurn(_) => "send_turn",
-        SessionEvent::Interrupt => "interrupt",
-        SessionEvent::Connection(_) => "connection",
-        SessionEvent::ThreadStarted(_) => "thread_started",
-        SessionEvent::TurnStarted(_) => "turn_started",
-        SessionEvent::ItemObserved(_) => "item_observed",
-        SessionEvent::ObservedCompletion(_) => "turn_completed",
-        SessionEvent::ObservedError(_) => "error_notification",
-        SessionEvent::VersionEvidence(_) => "version_evidence",
-        SessionEvent::CheckTimeouts => "check_timeouts",
-        SessionEvent::FailTurn(_) => "fail_turn",
-        SessionEvent::FailSession(_) => "fail_session",
-        SessionEvent::Eof => "eof",
-    }
+    SessionEventKind::from_event(event).lifecycle_name()
 }
 
 fn operation_event(operation: &PendingOperation) -> &'static str {
@@ -1518,18 +1547,7 @@ fn terminal_shutdown_origin(event: &CoordinatorTerminalEvent) -> &'static str {
 }
 
 fn connection_error_kind(error: &super::connection::ConnectionError) -> &'static str {
-    use super::connection::ConnectionError;
-    match error {
-        ConnectionError::Closed => "closed",
-        ConnectionError::RequestIdExhausted => "request_id_exhausted",
-        ConnectionError::PendingLimit(_) => "pending_limit",
-        ConnectionError::FrameTooLarge { .. } => "frame_too_large",
-        ConnectionError::UnterminatedFrame => "unterminated_frame",
-        ConnectionError::InvalidUtf8(_) => "invalid_utf8",
-        ConnectionError::InvalidJson(_) => "invalid_json",
-        ConnectionError::Protocol(_) => "protocol",
-        ConnectionError::Io(_) => "io",
-    }
+    ConnectionFailureKind::from_error(error).as_str()
 }
 
 fn write_server_response(
@@ -2194,7 +2212,18 @@ mod tests {
             .any(|record| record["event"] == "terminal_settled"
                 && record["epitaph"]
                     .as_str()
-                    .is_some_and(|text| text == "harness session error [REDACTED]")));
+                    .is_some_and(|text| text
+                        == "protocol_violation: unexpected turn/started in phase working")));
+        let settled = records
+            .iter()
+            .find(|record| record["event"] == "terminal_settled")
+            .unwrap();
+        assert_eq!(
+            settled["protocol_failure"],
+            json!({
+                "kind":"state_transition", "event":"turn/started", "phase":"working"
+            })
+        );
     }
 
     fn scripted_session_with_gated_grace(

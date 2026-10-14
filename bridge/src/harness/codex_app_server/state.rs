@@ -8,6 +8,7 @@ use super::protocol::{
     PendingOperation, RpcError, ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult,
     CLIENT_NAME,
 };
+use super::protocol_failure::DiagnosticPhase;
 use crate::harness::{ActivityReport, AgentStatus, Harness, Turn, TurnChoiceSupport};
 use crate::models::{AgentProvider, ModelChoice};
 use semver::Version;
@@ -1544,16 +1545,20 @@ impl CodexSessionState {
     }
 
     pub fn diagnostic_phase(&self) -> &'static str {
+        self.diagnostic_phase_kind().as_str()
+    }
+
+    pub(super) fn diagnostic_phase_kind(&self) -> DiagnosticPhase {
         match self.phase {
-            Phase::Starting => "starting",
-            Phase::Initializing => "initializing",
-            Phase::AwaitingVersion => "awaiting_version",
-            Phase::OpeningThread { .. } => "opening_thread",
-            Phase::Waiting => "waiting",
-            Phase::StartingTurn { .. } => "starting_turn",
-            Phase::Working(_) => "working",
-            Phase::Ending => "ending",
-            Phase::Ended => "ended",
+            Phase::Starting => DiagnosticPhase::Starting,
+            Phase::Initializing => DiagnosticPhase::Initializing,
+            Phase::AwaitingVersion => DiagnosticPhase::AwaitingVersion,
+            Phase::OpeningThread { .. } => DiagnosticPhase::OpeningThread,
+            Phase::Waiting => DiagnosticPhase::Waiting,
+            Phase::StartingTurn { .. } => DiagnosticPhase::StartingTurn,
+            Phase::Working(_) => DiagnosticPhase::Working,
+            Phase::Ending => DiagnosticPhase::Ending,
+            Phase::Ended => DiagnosticPhase::Ended,
         }
     }
 

@@ -124,7 +124,33 @@ fn user_message_text(item: &Value) -> Option<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoordinatorTerminalEvent {
     SourceSettled(TerminalSourceEvent),
-    TerminalError(String),
+    TerminalError(TerminalCause),
+}
+
+/// The summary and its trust provenance are claimed together, never latched
+/// independently. Only enum-derived protocol text bypasses provider redaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalCause {
+    summary: String,
+    protocol_failure: Option<ProtocolFailure>,
+}
+
+impl TerminalCause {
+    fn protocol(failure: ProtocolFailure) -> Self {
+        Self {
+            summary: failure.summary(),
+            protocol_failure: Some(failure),
+        }
+    }
+}
+
+impl From<String> for TerminalCause {
+    fn from(text: String) -> Self {
+        Self {
+            summary: sanitize_error(&text),
+            protocol_failure: None,
+        }
+    }
 }
 
 impl CoordinatorTerminalEvent {
@@ -149,6 +175,7 @@ impl CoordinatorTerminalEvent {
 pub struct TerminalOutcome {
     pub exit_code: Option<i32>,
     pub epitaph: Option<String>,
+    cause: Option<TerminalCause>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -156,8 +183,9 @@ pub struct TerminalSnapshot {
     stdout_settled: bool,
     process: Option<ProcessOutcome>,
     stderr: Option<StderrOutcome>,
-    terminal_error: Option<String>,
+    terminal_error: Option<TerminalCause>,
     expiry: Option<String>,
+    publication_claimed: bool,
 }
 
 impl TerminalSnapshot {
@@ -205,7 +233,7 @@ impl TerminalSnapshot {
         }
         self.stdout_settled = true;
         if let Some(reason) = reader_error {
-            self.retain_terminal_error(reason);
+            self.retain_terminal_error(reason.into());
         }
         true
     }
@@ -222,20 +250,36 @@ impl TerminalSnapshot {
         if !self.stdout_settled {
             return None;
         }
-        Some(TerminalOutcome {
-            exit_code: process.exit_code,
-            epitaph: self
-                .terminal_error
+        let cause = self.terminal_error.clone().or_else(|| {
+            process
+                .monitor_error
                 .clone()
-                .or_else(|| process.monitor_error.clone())
                 .or_else(|| stderr.drainer_error.clone())
                 .or_else(|| stderr.retained_tail.clone())
-                .or_else(|| self.expiry.clone()),
+                .or_else(|| self.expiry.clone())
+                .map(TerminalCause::from)
+        });
+        Some(TerminalOutcome {
+            exit_code: process.exit_code,
+            epitaph: cause.as_ref().map(|cause| cause.summary.clone()),
+            cause,
         })
     }
 
-    fn retain_terminal_error(&mut self, reason: String) {
-        self.terminal_error.get_or_insert(reason);
+    fn retain_terminal_error(&mut self, cause: TerminalCause) {
+        if !self.publication_claimed {
+            self.terminal_error.get_or_insert(cause);
+        }
+    }
+
+    fn claim_outcome(&mut self) -> Option<TerminalOutcome> {
+        if self.publication_claimed {
+            return None;
+        }
+        let outcome = self.outcome()?;
+        self.terminal_error = outcome.cause.clone();
+        self.publication_claimed = true;
+        Some(outcome)
     }
 }
 
@@ -272,7 +316,10 @@ struct SessionCore {
     shutdown_origin: Mutex<Option<&'static str>>,
     last_protocol_event: Mutex<&'static str>,
     provider_error: Mutex<Option<NotificationError>>,
-    protocol_failure: Mutex<Option<ProtocolFailure>>,
+    #[cfg(test)]
+    review621_before_protocol_latch: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    review621_before_terminal_publish: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     failure_reported: AtomicBool,
     recovery: Mutex<Option<RecoveryJournal>>,
     recovery_source: String,
@@ -387,7 +434,10 @@ impl CodexAppServerSession {
             shutdown_origin: Mutex::new(None),
             last_protocol_event: Mutex::new("session_created"),
             provider_error: Mutex::new(None),
-            protocol_failure: Mutex::new(None),
+            #[cfg(test)]
+            review621_before_protocol_latch: Mutex::new(None),
+            #[cfg(test)]
+            review621_before_terminal_publish: Mutex::new(None),
             failure_reported: AtomicBool::new(false),
             recovery: Mutex::new(recovery),
             recovery_source: uuid::Uuid::new_v4().to_string(),
@@ -985,15 +1035,16 @@ impl SessionCore {
 
     fn apply_terminal(&self, event: CoordinatorTerminalEvent) {
         let demands_shutdown = event.demands_shutdown();
-        self.log_terminal_event(&event);
-        {
+        let (outcome, cause) = {
             let mut snapshot = self.terminal.lock().unwrap();
             *snapshot = snapshot.with_terminal_event(event.clone());
-        }
+            let outcome = snapshot.claim_outcome();
+            (outcome, snapshot.terminal_error.clone())
+        };
+        self.log_terminal_event(&event, cause.as_ref());
         if demands_shutdown {
             self.begin_shutdown(terminal_shutdown_origin(&event));
         }
-        let outcome = self.terminal.lock().unwrap().outcome();
         if let Some(outcome) = outcome {
             self.publish_terminal(outcome);
         }
@@ -1004,8 +1055,18 @@ impl SessionCore {
         }
     }
 
-    fn publish_terminal(&self, mut outcome: TerminalOutcome) {
-        outcome.epitaph = self.terminal_summary(outcome.epitaph.as_deref());
+    fn publish_terminal(&self, outcome: TerminalOutcome) {
+        #[cfg(test)]
+        {
+            let hook = self
+                .review621_before_terminal_publish
+                .lock()
+                .unwrap()
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         let mut published = self.published.lock().unwrap();
         if published.is_some() {
             return;
@@ -1018,7 +1079,8 @@ impl SessionCore {
         let last = *self.last_protocol_event.lock().unwrap();
         let origin = *self.shutdown_origin.lock().unwrap();
         let failure_report = self.prepare_terminal_failure(&outcome, origin);
-        let mut fields = self.error_fields(outcome.epitaph.as_deref());
+        let mut fields =
+            self.error_fields_with_cause(outcome.epitaph.as_deref(), outcome.cause.as_ref());
         fields.extend([
             ("exit_code", json!(outcome.exit_code)),
             ("epitaph_present", json!(outcome.epitaph.is_some())),
@@ -1113,9 +1175,7 @@ impl SessionCore {
     }
 
     fn record_terminal_error(&self, reason: String) {
-        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(sanitize_error(
-            &reason,
-        )));
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(reason.into()));
     }
 
     fn fail(&self, reason: String) {
@@ -1123,29 +1183,16 @@ impl SessionCore {
     }
 
     fn fail_protocol(&self, failure: ProtocolFailure) {
-        // An event-handling wrapper can follow a failure already recorded by
-        // apply_state. Preserve that first cause and its diagnostic provenance.
-        if self.terminal.lock().unwrap().terminal_error.is_some() {
-            return;
+        #[cfg(test)]
+        {
+            let hook = self.review621_before_protocol_latch.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
         }
-        // Only enum-selected labels reach this path. Never promote a free-form
-        // provider error or a formatted StateError into trusted diagnostics.
-        let summary = self
-            .protocol_failure
-            .lock()
-            .unwrap()
-            .get_or_insert(failure)
-            .summary();
-        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(summary));
-    }
-
-    fn terminal_summary(&self, epitaph: Option<&str>) -> Option<String> {
-        self.protocol_failure
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(ProtocolFailure::summary)
-            .or_else(|| epitaph.map(sanitize_error))
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(
+            TerminalCause::protocol(failure),
+        ));
     }
 
     fn begin_shutdown(&self, origin: &'static str) {
@@ -1177,7 +1224,7 @@ impl SessionCore {
         }
     }
 
-    fn log_terminal_event(&self, event: &CoordinatorTerminalEvent) {
+    fn log_terminal_event(&self, event: &CoordinatorTerminalEvent, cause: Option<&TerminalCause>) {
         let (source, error_present, exit_code) = match event {
             CoordinatorTerminalEvent::TerminalError(_) => ("terminal_error", true, None),
             CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
@@ -1214,10 +1261,10 @@ impl SessionCore {
             ),
         };
         let reason = match event {
-            CoordinatorTerminalEvent::TerminalError(reason) => Some(reason.as_str()),
+            CoordinatorTerminalEvent::TerminalError(_) => cause.map(|cause| cause.summary.as_str()),
             _ => None,
         };
-        let mut fields = self.error_fields(reason);
+        let mut fields = self.error_fields_with_cause(reason, cause);
         fields.extend([
             ("error_present", json!(error_present)),
             ("exit_code", json!(exit_code)),
@@ -1226,16 +1273,23 @@ impl SessionCore {
     }
 
     fn error_fields(&self, epitaph: Option<&str>) -> Vec<(&'static str, Value)> {
+        self.error_fields_with_cause(epitaph, None)
+    }
+
+    fn error_fields_with_cause(
+        &self,
+        epitaph: Option<&str>,
+        cause: Option<&TerminalCause>,
+    ) -> Vec<(&'static str, Value)> {
         let error = self.provider_error.lock().unwrap();
-        let protocol_failure = self.protocol_failure.lock().unwrap();
-        let protocol_summary = protocol_failure.as_ref().map(ProtocolFailure::summary);
+        let cause_summary = cause.map(|cause| cause.summary.clone());
         vec![
             (
                 "error_message",
                 json!(error
                     .as_ref()
                     .map(NotificationError::safe_message)
-                    .or_else(|| protocol_summary.clone())
+                    .or_else(|| cause_summary.clone())
                     .or_else(|| epitaph.map(sanitize_error))),
             ),
             (
@@ -1252,13 +1306,13 @@ impl SessionCore {
             ),
             (
                 "protocol_failure",
-                json!(protocol_failure
-                    .as_ref()
+                json!(cause
+                    .and_then(|cause| cause.protocol_failure.as_ref())
                     .map(ProtocolFailure::lifecycle_value)),
             ),
             (
                 "epitaph",
-                json!(epitaph.map(|text| protocol_summary.unwrap_or_else(|| sanitize_error(text)))),
+                json!(epitaph.map(|text| cause_summary.unwrap_or_else(|| sanitize_error(text)))),
             ),
         ]
     }
@@ -2477,6 +2531,7 @@ mod tests {
             Some(TerminalOutcome {
                 exit_code: Some(3),
                 epitaph: Some("stdout expired".to_string()),
+                cause: Some("stdout expired".to_string().into()),
             })
         );
 
@@ -2547,8 +2602,9 @@ mod tests {
             TerminalSourceEvent::StdoutSettled { reader_error: None },
         );
         for reason in ["first protocol error", "second protocol error"] {
-            snapshot = snapshot
-                .with_terminal_event(CoordinatorTerminalEvent::TerminalError(reason.to_string()));
+            snapshot = snapshot.with_terminal_event(CoordinatorTerminalEvent::TerminalError(
+                reason.to_string().into(),
+            ));
         }
         snapshot = settled(
             &snapshot,

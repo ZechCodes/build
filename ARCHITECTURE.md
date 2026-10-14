@@ -1387,6 +1387,9 @@ The resulting summary preserves the protocol cause in terminal telemetry,
 `TurnFailed` and its durable notice, without copying provider IDs or free-form
 error details. These trusted summaries do not pass through the provider-text
 delimiter sanitizer.
+The terminal snapshot claims the summary and its typed provenance together
+under one lock, then freezes that cause before publication. Telemetry and the
+durable notice use the captured cause; a later failure cannot relabel it.
 An exhausted provider notification logs `terminal_error` with `scope: turn`;
 it does not request process shutdown.
 

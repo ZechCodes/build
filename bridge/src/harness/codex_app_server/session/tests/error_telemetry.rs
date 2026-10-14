@@ -331,3 +331,164 @@ fn round5_621_event_handling_fallback_preserves_an_already_recorded_failure() {
         Some("could not checkpoint recovery")
     );
 }
+
+#[test]
+fn review621_round5_concurrent_fallback_cannot_replace_the_retained_first_cause() {
+    use crate::provider_recovery::{episodes, RecoveryScope};
+    let root = tempfile::tempdir().unwrap();
+    let scope = RecoveryScope {
+        entity_id: "owner".into(),
+        agent_id: "agent".into(),
+        conversation_id: "agent".into(),
+        thread_id: "generation".into(),
+    };
+    let script = opened_thread_script(root.path(), "read hold");
+    let (session, mut activity) = CodexAppServerSession::spawn_with_recovery(
+        &HarnessSpec::new("sh").arg("-c").arg(script),
+        root.path().into(),
+        selected_choice(),
+        None,
+        AppServerLimits::default(),
+        Some(RecoveryContext {
+            root: root.path().into(),
+            scope: scope.clone(),
+        }),
+    )
+    .unwrap();
+    wait_until("opened its thread", || {
+        session.status() == AgentStatus::Waiting
+    });
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    *session.core.review621_before_protocol_latch.lock().unwrap() = Some(Box::new(move || {
+        paused_tx.send(()).unwrap();
+        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    let core = session.core.clone();
+    let reader = std::thread::spawn(move || {
+        core.fail_protocol(ProtocolFailure::Connection(
+            ConnectionFailureKind::InvalidJson,
+        ))
+    });
+    paused_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let (publishing_tx, publishing_rx) = mpsc::channel();
+    let (publish_resume_tx, publish_resume_rx) = mpsc::channel();
+    *session
+        .core
+        .review621_before_terminal_publish
+        .lock()
+        .unwrap() = Some(Box::new(move || {
+        publishing_tx.send(()).unwrap();
+        publish_resume_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+    }));
+    let core = session.core.clone();
+    let first = std::thread::spawn(move || core.fail("could not checkpoint recovery".into()));
+    publishing_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        session
+            .core
+            .terminal
+            .lock()
+            .unwrap()
+            .terminal_error
+            .as_ref()
+            .map(|cause| cause.summary.as_str()),
+        Some("could not checkpoint recovery")
+    );
+    resume_tx.send(()).unwrap();
+    reader.join().unwrap();
+    publish_resume_tx.send(()).unwrap();
+    first.join().unwrap();
+    wait_until("ended", || {
+        matches!(session.status(), AgentStatus::Ended { .. })
+    });
+    let reports = drain_reports(&mut activity, |_| false);
+    let summaries: Vec<_> = reports
+        .iter()
+        .filter_map(|report| match &report.activity {
+            crate::harness::AgentActivity::TurnFailed { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
+        .collect();
+    let persisted = episodes(root.path(), &scope).unwrap();
+    let actual = (
+        session
+            .core
+            .terminal
+            .lock()
+            .unwrap()
+            .terminal_error
+            .as_ref()
+            .map(|cause| cause.summary.clone()),
+        session.epitaph(),
+        summaries,
+        persisted
+            .iter()
+            .map(|episode| episode.summary.clone())
+            .collect::<Vec<_>>(),
+    );
+    let expected = "could not checkpoint recovery".to_string();
+    assert_eq!(
+        actual,
+        (
+            Some(expected.clone()),
+            Some(expected.clone()),
+            vec![expected.clone()],
+            vec![expected]
+        )
+    );
+}
+
+#[test]
+fn round6_621_late_protocol_claim_cannot_relabel_a_captured_fallback() {
+    let root = tempfile::tempdir().unwrap();
+    let script = opened_thread_script(root.path(), "read hold; echo 'original stderr tail' >&2");
+    let (session, mut activity) = scripted_session(root.path(), &script);
+    wait_until("opened its thread", || {
+        session.status() == AgentStatus::Waiting
+    });
+    let (publishing_tx, publishing_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    *session
+        .core
+        .review621_before_terminal_publish
+        .lock()
+        .unwrap() = Some(Box::new(move || {
+        publishing_tx.send(()).unwrap();
+        resume_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    }));
+    session.core.connection.close().unwrap();
+    publishing_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    session.core.fail_protocol(ProtocolFailure::Connection(
+        ConnectionFailureKind::InvalidJson,
+    ));
+    resume_tx.send(()).unwrap();
+    wait_until("ended", || {
+        matches!(session.status(), AgentStatus::Ended { .. })
+    });
+    let reports = drain_reports(&mut activity, |_| false);
+    let summaries: Vec<_> = reports
+        .iter()
+        .filter_map(|report| match &report.activity {
+            crate::harness::AgentActivity::TurnFailed { summary, .. } => Some(summary.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(session.epitaph().as_deref(), Some("original stderr tail"));
+    assert_eq!(summaries, ["original stderr tail"]);
+    let records = session.core.diagnostics.captured();
+    for record in records.iter().filter(|record| {
+        matches!(
+            record["event"].as_str(),
+            Some("terminal_error" | "terminal_settled")
+        )
+    }) {
+        assert_eq!(record["epitaph"], "original stderr tail");
+        assert!(
+            record["protocol_failure"].is_null(),
+            "late provenance leaked: {record}"
+        );
+    }
+}

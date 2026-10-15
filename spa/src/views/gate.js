@@ -484,6 +484,7 @@ async function renderOnboarding() {
   setGate(true);
   $("#root").innerHTML = onboardingStepsHtml();
   bindPairing();
+  $("#ocode").focus({ preventScroll: true });
   await mountDownloads($("#root"), {
     fetchDownloads,
     mintInstallCommand,

@@ -361,6 +361,17 @@ describe("the first-run screen", () => {
     expect(document.querySelector("#root [autofocus]")).toBeNull();
   });
 
+  it("focuses the pairing field without scrolling away from Sign out", async () => {
+    const focus = vi.spyOn(HTMLInputElement.prototype, "focus");
+    try {
+      await boot();
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(document.activeElement).toBe(document.getElementById("ocode"));
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
   it("offers the download and the pairing code on the one screen", async () => {
     await boot();
     await flush();

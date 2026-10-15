@@ -44,6 +44,10 @@ for (const width of [390, 1280]) {
         expect(bounds.x).toBeGreaterThanOrEqual(0);
         expect(bounds.x + bounds.width).toBeLessThanOrEqual(width);
         expect(await signOut.getAttribute("class")).not.toContain("primary");
+        if (surface === "welcome") {
+          expect(await page.locator("#ocode").evaluate((input) => document.activeElement === input)).toBe(true);
+          expect(await page.locator("#root").evaluate((root) => root.scrollTop)).toBe(0);
+        }
         await captureLayout(page, `${surface}-sign-out-${width}-${theme}.png`);
 
         // Follow the real link without contacting an auth server or pairing a device.

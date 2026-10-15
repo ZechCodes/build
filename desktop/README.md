@@ -32,7 +32,8 @@ sign-in. A network/server failure retains the token and offers a refresh retry;
 it does not start browser sign-in. A failed response after server rotation can
 still require sign-in on retry because the previous token is already invalid.
 
-**Account → Sign Out** clears the saved token, credentials and refresh timer,
+**Account → Sign Out**, or **Sign out** on the welcome screen or in Settings,
+clears the saved token, credentials and refresh timer,
 retires the app window, then awaits clearing the default session’s cookies,
 localStorage, IndexedDB and HTTP cache before quitting. Native Quit (including
 Cmd-Q or the dock) waits for this cleanup and any failure report. Each storage,
@@ -48,6 +49,11 @@ rewrite that session. This signs out this desktop installation; it does not
 sign out the system browser or revoke other sessions. If saved credentials,
 session storage or the HTTP cache cannot be cleared, the app reports that
 sign-out failed before quitting.
+
+The hosted controls target `/auth/logout`. Electron intercepts that exact
+same-origin path and runs the same native cleanup as the Account menu, rather
+than handing the link to the system browser. In the web app, it opens the
+server's logout confirmation as usual.
 
 Authentication regression tests stub Electron, encryption, token HTTP responses,
 browser handoff and timers. They never start Electron or perform a real sign-in.

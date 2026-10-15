@@ -31,6 +31,7 @@ import { buildVersionLineHtml, mountBuildVersionLine } from "../core/buildVersio
 import { cacheHealthLineHtml, mountCacheHealthLine } from "../core/cacheHealthLine.js";
 import { uiAddress, watchUiState } from "../core/localUiState.js";
 import { isPairingConnecting, onPairingChanged } from "../core/pendingPairing.js";
+import { signOutHtml } from "../core/signOut.js";
 
 /** The sha this bundle was built at, as core/version.js and core/changeEvents.js
  *  read it. `dev` for a bundle CI never stamped, which is what a dev server
@@ -133,7 +134,7 @@ export async function renderSettings({ root = $("#root"), registerDispose = (dis
   let catalogDeviceId;
   registerDispose(() => { disposeCreation?.(); disposePairing?.(); disposeDiagnostics?.(); disposeCacheHealth?.(); disposeDevices?.(); disposeCatalog?.(); disposeCatalogState?.(); disposePush?.(); });
   root.innerHTML = `
-    <div class="board-head"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div></div>
+    <div class="board-head" style="justify-content:space-between;gap:12px"><div><h1>Local settings</h1><p>Preferences saved in this browser.</p></div>${signOutHtml()}</div>
     <p class="settings-intro" style="margin-top:18px">Build's servers move ciphertext. Every device holds its own key, and only paired devices can read your tasks, plans, and diffs.</p>
     <div class="panel">
       <h3>🔒 What our servers see</h3>

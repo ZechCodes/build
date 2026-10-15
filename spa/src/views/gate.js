@@ -39,6 +39,7 @@ import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 import { DEVICES_ADDRESS, readCached } from "../core/localCache.js";
 import { fieldTraits } from "../core/fieldTraits.js";
+import { signOutHtml } from "../core/signOut.js";
 import { pendingDeviceHtml } from "../core/deviceFingerprint.js";
 import { accountReadCadence, isPairingConnecting, notePairingApproved, onPairingChanged } from "../core/pendingPairing.js";
 
@@ -407,6 +408,9 @@ const stepHtml = (number, body) =>
 function onboardingStepsHtml() {
   return `
     <div style="max-width:680px;margin:44px auto 0;padding:0 16px">
+      <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+        ${signOutHtml()}
+      </div>
       <h1 style="margin:0 0 6px">Welcome to Build</h1>
       <p class="settings-intro" style="margin:0 0 10px">Your coding agents run on your own devices, end-to-end encrypted. Add a device to begin — only paired devices can read your tasks, plans, and diffs.</p>
       <p class="dim" style="font-size:12.5px;margin:0 0 22px">Agents run on your machine in YOLO mode; Build makes what they did visible, it does not sandbox them.</p>
@@ -419,7 +423,7 @@ function onboardingStepsHtml() {
         ${stepHtml(
           2,
           `<b>Enter its pairing code</b> — the bridge prints it when it starts, and again while it waits for you.
-          <div class="addproj" style="margin-top:6px"><input id="ocode" ${fieldTraits("code")} placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" autofocus />
+          <div class="addproj" style="margin-top:6px"><input id="ocode" ${fieldTraits("code")} placeholder="e.g. G6ZP-KD2U" style="text-transform:uppercase" />
             <button class="btn primary" id="olookup">Add device</button></div>`,
         )}
         ${stepHtml(3, "<b>Compare the fingerprint</b> with what the bridge printed, then approve.")}

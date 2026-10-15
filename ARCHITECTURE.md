@@ -2934,6 +2934,12 @@ open as a modal (`spa/src/views/settingsModal.js`).
 | Terminal | `spa/src/core/console.js`, `spa/src/terminal/` |
 | Settings | `spa/src/views/settingsModal.js`, `settings.js`, `deviceSettings.js`, `devicePanels.js` in `spa/src/views/`; `spa/src/sheets/` |
 
+The welcome screen and local Settings share the quiet Sign out link from
+`spa/src/core/signOut.js`. In a browser it leaves the document for the server's
+`/auth/logout` confirmation; Electron intercepts that exact same-origin path
+in `desktop/src/security-policy.mjs` and invokes the Account menu's existing
+credential and storage cleanup in `desktop/src/main.mjs`.
+
 Add project (`spa/src/sheets/newRepo.js`) replaces its form with the quiet
 source list in `newRepoProgress.js` while `project.create` runs. Creation's
 internal pending row is not published and the bridge has no per-source

@@ -351,6 +351,27 @@ describe("the device connection gate", () => {
 });
 
 describe("the first-run screen", () => {
+  it("offers Sign out through the existing server logout flow", async () => {
+    await boot();
+    const signOut = document.querySelector('#root a[href="/auth/logout"]');
+    expect(signOut).not.toBeNull();
+    expect(signOut.textContent).toBe("Sign out");
+    expect(signOut.classList.contains("primary")).toBe(false);
+    expect(signOut.hasAttribute("target")).toBe(false);
+    expect(document.querySelector("#root [autofocus]")).toBeNull();
+  });
+
+  it("focuses the pairing field without scrolling away from Sign out", async () => {
+    const focus = vi.spyOn(HTMLInputElement.prototype, "focus");
+    try {
+      await boot();
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+      expect(document.activeElement).toBe(document.getElementById("ocode"));
+    } finally {
+      focus.mockRestore();
+    }
+  });
+
   it("offers the download and the pairing code on the one screen", async () => {
     await boot();
     await flush();

@@ -15,16 +15,18 @@ export function classifyNavigation(value) {
   const url = parseUrl(value);
   if (!url) return "deny";
   if (url.origin === APP_ORIGIN && url.pathname === APP_PATH) return "internal";
+  if (url.origin === APP_ORIGIN && url.pathname === "/auth/logout") return "sign-out";
   if (EXTERNAL_PROTOCOLS.has(url.protocol)) return "external";
   return "deny";
 }
 
-export function installNavigationPolicy(webContents, { openExternal, loadInternal }) {
+export function installNavigationPolicy(webContents, { openExternal, loadInternal, signOut }) {
   const handleNavigation = (event, url) => {
     const destination = classifyNavigation(url);
     if (destination === "internal") return;
 
     event.preventDefault();
+    if (destination === "sign-out") void signOut();
     if (destination === "external") openExternal(url);
   };
 
@@ -34,6 +36,7 @@ export function installNavigationPolicy(webContents, { openExternal, loadInterna
   webContents.setWindowOpenHandler(({ url }) => {
     const destination = classifyNavigation(url);
     if (destination === "internal") loadInternal(url);
+    if (destination === "sign-out") void signOut();
     if (destination === "external") openExternal(url);
     return { action: "deny" };
   });

@@ -388,6 +388,17 @@ describe("Settings → what the account keeps", () => {
 // to run `buildConnectionDiagnostics()` in a console before reloading a tab
 // that lost its connection — which is no use on the phone where the reconnects
 // happen. Settings reads the same history through the module.
+describe("Settings → Account", () => {
+  it("offers Sign out through the existing server logout flow", async () => {
+    await renderSettings();
+    const signOut = document.querySelector('#root a[href="/auth/logout"]');
+    expect(signOut).not.toBeNull();
+    expect(signOut.textContent).toBe("Sign out");
+    expect(signOut.classList.contains("primary")).toBe(false);
+    expect(signOut.hasAttribute("target")).toBe(false);
+  });
+});
+
 describe("Settings → Diagnostics", () => {
   it("lists the recorded events, newest first, naming the machine", async () => {
     const { recordConnectionDiagnostic, clearConnectionDiagnosticHistory } =

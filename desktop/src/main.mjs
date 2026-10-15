@@ -346,6 +346,7 @@ function createWindow() {
   installNavigationPolicy(window.webContents, {
     openExternal: openOutsideElectron,
     loadInternal: (url) => loadInsideElectron(window, url),
+    signOut,
   });
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {

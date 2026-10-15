@@ -42,7 +42,7 @@ async function launch(t, { stored = "fixture-refresh-saved", available = true, f
       this.options = options;
       this.actions = [];
       this.webContents = new EventEmitter();
-      this.webContents.setWindowOpenHandler = () => {};
+      this.webContents.setWindowOpenHandler = (handler) => { this.webContents.openWindow = handler; };
       calls.windows.push(this);
     }
     loadURL(url) { this.actions.push("load"); this.url = url; return Promise.resolve(); }
@@ -269,6 +269,44 @@ test("sign-out clears disk, headers and window, and cancels scheduled refresh", 
   await flush();
   assert.equal(calls.fetch.length, 1);
 });
+
+for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
+  test(`${eventName} to logout uses native sign-out and awaits session cleanup`, async (t) => {
+    const storage = deferred();
+    const { app, calls, path, header, defaultState } = await launch(t, {
+      clearStorageData: () => storage.promise,
+    });
+    const window = calls.windows[0];
+    const url = "https://getbuild.ing/auth/logout";
+    if (eventName === "window-open") {
+      assert.deepEqual(window.webContents.openWindow({ url }), { action: "deny" });
+    } else {
+      let prevented = false;
+      window.webContents.emit(eventName, { preventDefault: () => { prevented = true; } }, url);
+      assert.equal(prevented, true);
+    }
+    await flush();
+    assert.deepEqual(calls.browser, []);
+    assert.equal(window.url, "https://getbuild.ing/app/desktop");
+    assert.equal(window.destroyed, true);
+    assert.equal(existsSync(path), false);
+    assert.equal(header(), undefined);
+    assert.deepEqual(calls.cleanup, ["storage"]);
+    assert.equal(calls.quit, undefined);
+    app.emit("window-all-closed");
+    app.emit("activate");
+    assert.equal(calls.quit, undefined);
+    storage.resolve();
+    await flush();
+    assert.deepEqual(calls.cleanup, ["storage", "cache"]);
+    assert.deepEqual(defaultState, { cookie: null, cache: null });
+    assert.equal(calls.quit, 1);
+    t.mock.timers.tick(900_000);
+    await flush();
+    assert.equal(calls.fetch.length, 1);
+    assert.equal(calls.windows.length, 1);
+  });
+}
 
 test("activation during startup refresh cannot open a browser or duplicate refresh", async (t) => {
   let resolveRefresh;

@@ -18,9 +18,11 @@ import { refreshFeed } from "./taskFeed.js";
 import { verbCall } from "./inboxDevices.js";
 import { messageOf } from "./text.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
+import { createInboxCaptureDrafts } from "./inboxCaptureDrafts.js";
 
 let repaint = () => {};
 let entryFor = () => null;
+let branchDrafts = null;
 
 /** What the rail lends this module: the repaint that shows what a press did,
  *  and the entry behind a row key — a row is never found by a selector built
@@ -29,6 +31,8 @@ export function initCaptureRows({ onChange, entryOf }) {
   pickerRecord?.dispose({ flushPending: false });
   repaint = onChange;
   entryFor = entryOf;
+  branchDrafts?.dispose();
+  branchDrafts = createInboxCaptureDrafts({ entryOf, onChange });
   pickerRecord = watchUiState(uiAddress({ view: "inbox-captures", kind: "menu" }), (saved) => {
     rerouteKey = saved?.key || null;
     rerouteBranchProject = saved?.branchProject || null;
@@ -37,6 +41,9 @@ export function initCaptureRows({ onChange, entryOf }) {
 }
 
 export function disposeCaptureRows() {
+  branchDrafts?.remember($("#inbox-list"));
+  branchDrafts?.dispose();
+  branchDrafts = null;
   pickerRecord?.dispose({ flushPending: false });
   pickerRecord = null;
   repaint = () => {};
@@ -51,6 +58,10 @@ const errors = new Map(); // capture id → the message its row is showing
 
 /** The destination picker as the row painter needs it. */
 export const reroutePicker = () => ({ rerouteKey, rerouteBranchProject });
+
+export const rememberCaptureDrafts = (list) => branchDrafts?.remember(list);
+export const restoreCaptureDrafts = (list) => branchDrafts?.restore(list);
+export const onCaptureInput = (event) => branchDrafts?.input(event);
 
 /** What a refused reroute left on this row, if anything. */
 export const captureError = (captureId) => errors.get(captureId);
@@ -81,6 +92,7 @@ function openRerouteBranch(projectId) {
 }
 
 function dispatchReroute(control) {
+  rememberCaptureDrafts($("#inbox-list"));
   const row = control.closest(".capture-entry");
   const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
   void pickerRecord?.write({ key: null, branchProject: null });
@@ -113,14 +125,17 @@ async function rerouteCapture(captureId, destination) {
   if (capturesBeingRerouted.has(captureId)) return;
   capturesBeingRerouted.add(captureId);
   errors.delete(captureId);
+  const drafts = branchDrafts;
   try {
     const entry = entryFor(`capture:${captureId}`);
     const call = verbCall(entry);
+    const submission = drafts?.submission(entry, destination).catch(() => null);
     const rerouted = await call("capture.reroute", rerouteParams(captureId, destination));
     // The answer carries the new routing, and for a capture that has already
     // settled it is the only thing that will: the feed stopped carrying it, so
     // nothing else would ever correct the row's "→ project as task".
     await adoptCaptureRecord(rerouted, entry?.deviceId);
+    await drafts?.clear(await submission);
     await refreshFeed();
   } catch (error) {
     errors.set(captureId, messageOf(error));

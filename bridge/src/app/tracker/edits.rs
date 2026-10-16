@@ -148,8 +148,8 @@ pub(super) fn drafted_task(
 /// Apply the fields an update names, writing one event per change that the
 /// timeline has to carry.
 ///
-/// A title, a body and a priority write none: `updated_at` is the whole history
-/// those need, and an event per keystroke would bury the ones that matter.
+/// A title, a body and a priority update an activity checkpoint instead of
+/// visible events: an event per keystroke would bury the ones that matter.
 pub(super) fn apply_update(
     write: &mut TaskWrite,
     params: &Value,
@@ -157,12 +157,15 @@ pub(super) fn apply_update(
     now: &str,
 ) -> Result<(), String> {
     if let Some(title) = optional_text(params, "title", MAX_TITLE_BYTES)? {
+        write.content_changed |= write.task.title != title;
         write.task.title = title;
     }
     if let Some(body) = optional_body(params)? {
+        write.content_changed |= write.task.body != body;
         write.task.body = body;
     }
     if let Some(priority) = optional_priority(params)? {
+        write.content_changed |= write.task.priority != priority;
         write.task.priority = priority;
     }
     if let Some(labels) = optional_labels(params)? {

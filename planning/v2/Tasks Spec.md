@@ -1153,6 +1153,27 @@ becomes Needs you when actionable again through the existing assignment rule,
 not because the unblock event asks a question. Neither waiting nor a failed
 automatic delivery silently adds a user watch.
 
+### Inbox activity ordering — #628
+
+Every watched open task outside Done participates in the same inbox order as
+watched workspace and project conversations, even after its attention is read.
+An activity streak begins after the latest gap of eight hours or longer;
+the earliest current streak start sorts first. The bridge supplies
+`session_started_ms` and `last_activity_ms` on task records from meaningful
+timeline entries and saved content-edit checkpoints, excluding dependency and
+dispatch bookkeeping. Title, body and priority edits renew activity without
+adding timeline news; their streak survives a restart. Reading and
+unread counts do not move the streak. Legacy task records retain their existing
+anchor/creation fallback.
+
+Rows with no activity for 24 hours and no running agent enter Recent; explicit
+clearing retains its manual Recent override. Each project block has its own
+Recent. Blocks sort by their longest-running active watched entry, including
+the project conversation, with alphabetical ties and quiet projects after active
+ones. Cache changes and the local 24-hour cutoff repaint immediately, including
+while typing in an inbox field. Ordering requires no reload or wire read during
+rendering.
+
 ### The verbs
 
 | Verb | Params | Result |

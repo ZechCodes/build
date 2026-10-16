@@ -3,7 +3,7 @@ import { SESSION_GAP_MS, sessionTimes } from "../src/core/sessionSpans.js";
 
 describe("bridge session summaries", () => {
   it("reads the bridge's exact anchor and last activity", () => {
-    expect(SESSION_GAP_MS).toBe(12 * 60 * 60 * 1000);
+    expect(SESSION_GAP_MS).toBe(8 * 60 * 60 * 1000);
     expect(sessionTimes({ session_started_ms: 100, last_activity_ms: 200 })).toEqual({
       anchorMs: 100, lastActivityMs: 200,
     });

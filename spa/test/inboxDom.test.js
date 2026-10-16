@@ -449,7 +449,7 @@ describe("the projects face", () => {
     expect(blocks()[1].querySelectorAll(".inbox-entry")).toHaveLength(0);
   });
 
-  it("lists aged projects alphabetically without a top-level Recent while preserving workspace Recent", async () => {
+  it("orders project blocks by active streaks while preserving their own Recent", async () => {
     const { writeUiRecord, readUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");
     const recentAddress = uiAddress({ view: "inbox", kind: "fold", sub: "recent" });
@@ -469,10 +469,10 @@ describe("the projects face", () => {
     feed(work, projects);
     expect(document.querySelector("#inbox-list > .inbox-recent")).not.toBeNull();
     setInboxView("projects");
-    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-2", "dev-1/project-1"]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
     expect(document.querySelector("#inbox-list > .inbox-recent")).toBeNull();
     expect(document.querySelector('[data-recent-toggle="projects"]')).toBeNull();
-    const alpha = blocks()[0];
+    const alpha = blocks()[1];
     const live = alpha.querySelector('[data-key="workspace:dev-1/live"]');
     expect(alpha.querySelector(":scope > .inbox-recent")).not.toBeNull();
     alpha.querySelector('[data-recent-toggle="dev-1/project-2"]').click();
@@ -481,6 +481,10 @@ describe("the projects face", () => {
     feed(work, [projects[0], { ...projects[1], name: "Zzz" }]);
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
     expect(blocks()[1]).toBe(alpha);
+    expect(alpha.querySelector('[data-key="workspace:dev-1/live"]')).toBe(live);
+    feed(work.map((row) => row.id === "live" ? { ...row, session_started_ms: now - 3 * hour } : row), projects);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-2", "dev-1/project-1"]);
+    expect(blocks()[0]).toBe(alpha);
     expect(alpha.querySelector('[data-key="workspace:dev-1/live"]')).toBe(live);
     setInboxView("inbox");
     expect(document.querySelector('[data-recent-toggle="inbox"]')).not.toBeNull();
@@ -996,9 +1000,37 @@ describe("captures on the rail", () => {
     });
   });
 
-  // The list is rewritten whole on every feed tick, and naming a branch is
-  // typing into a box that lives in it.
-  it("holds the feed off the branch box while it is being typed into", async () => {
+  it.each([false, true])("clears a submitted branch after unmount while preserving newer drafts (%s)", async (newer) => {
+    let finish;
+    const accepted = new Promise((resolve) => { finish = resolve; });
+    workshopCall.mockImplementation((method) => method === "capture.reroute" ? accepted : Promise.resolve({}));
+    feed([], undefined, [routedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await waitForRerouteMenu();
+    captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
+    field.value = "build/sent-draft";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    captureRowFor("cap-1").querySelector('[data-reroute-project="project-1"][data-reroute-kind="branch"]').click();
+    await vi.waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", {
+      capture_id: "cap-1", project_id: "project-1", kind: "branch", branch: "build/sent-draft",
+    }));
+    const { readUiRecord, writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const draftAddress = uiAddress({ deviceId: "dev-1", entityId: "cap-1", view: "inbox-capture-branch",
+      kind: "draft", sub: "project-1" });
+    await vi.waitFor(async () => expect((await readUiRecord(draftAddress))?.value.branch).toBe("build/sent-draft"));
+    unmountInboxList();
+    if (newer) await writeUiRecord(draftAddress, { branch: "build/newer-draft" });
+    finish({ id: "cap-1", text: "captured work", state: "routed", routing: {
+      project_id: "project-1", kind: "branch", target_id: "build/sent-draft",
+    } });
+    await vi.waitFor(async () => expect((await readUiRecord(draftAddress))?.value.branch)
+      .toBe(newer ? "build/newer-draft" : ""));
+  });
+
+  it("reorders live while preserving the focused branch box and selection", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
     await waitForRerouteMenu();
@@ -1008,14 +1040,47 @@ describe("captures on the rail", () => {
     const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
     field.focus();
     field.value = "build/csv";
+    field.setSelectionRange(6, 9, "backward");
 
     feed([workspace()], undefined, [routedCapture()]); // a tick with something new to say
     expect(captureRowFor("cap-1").querySelector("[data-reroute-branch]")).toBe(field);
-    expect(rows().map((row) => row.dataset.key)).toEqual(["capture:cap-1"]); // held back while typing
-
-    field.blur();
-    feed([workspace()], undefined, [routedCapture()]);
     expect(rows().map((row) => row.dataset.key)).toEqual(["capture:cap-1", "workspace:dev-1/workspace-1"]);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("build/csv");
+    expect([field.selectionStart, field.selectionEnd, field.selectionDirection]).toEqual([6, 9, "backward"]);
+
+    // The capture itself now has to move across the existing workspace.
+    const older = Date.now() - 2 * 60 * 60 * 1000;
+    feed([workspace({ session_started_ms: older, last_activity_ms: Date.now() })], undefined, [routedCapture()]);
+    expect(rows().map((row) => row.dataset.key)).toEqual(["workspace:dev-1/workspace-1", "capture:cap-1"]);
+    expect(captureRowFor("cap-1").querySelector("[data-reroute-branch]")).toBe(field);
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("build/csv");
+    expect([field.selectionStart, field.selectionEnd, field.selectionDirection]).toEqual([6, 9, "backward"]);
+  });
+
+  it("moves project blocks live while a capture branch field has focus", async () => {
+    const now = Date.now();
+    const first = workspace({ session_started_ms: now - 4 * 3600_000, last_activity_ms: now });
+    const second = workspace({ id: "workspace-2", project_id: "project-2",
+      session_started_ms: now - 2 * 3600_000, last_activity_ms: now });
+    feed([first, second], undefined, [routedCapture()]);
+    setInboxView("projects");
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await waitForRerouteMenu();
+    captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
+    field.focus();
+    field.value = "build/csv";
+    field.setSelectionRange(6, 9);
+    const kept = blocks();
+
+    feed([{ ...first, session_started_ms: now }, second], undefined, [routedCapture()]);
+    expect(blocks()).toEqual([...kept].reverse());
+    expect(document.activeElement).toBe(field);
+    expect(field.value).toBe("build/csv");
+    expect([field.selectionStart, field.selectionEnd]).toEqual([6, 9]);
   });
 });
 

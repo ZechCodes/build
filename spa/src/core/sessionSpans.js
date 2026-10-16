@@ -1,14 +1,14 @@
 // The bridge owns session boundaries. Legacy bridges have no summary, so
 // their rows enter today's inbox until a bridge with summaries answers.
 
-export const SESSION_GAP_MS = 12 * 60 * 60 * 1000;
+export const SESSION_GAP_MS = 8 * 60 * 60 * 1000;
 
 const emptySummary = (record) => !!record && record.session_started_ms === null
   && record?.last_activity_ms === null
   && Object.hasOwn(record, "session_started_ms")
   && Object.hasOwn(record, "last_activity_ms");
 
-const validSummary = (record) => Number.isSafeInteger(record?.session_started_ms)
+export const hasSessionSummary = (record) => Number.isSafeInteger(record?.session_started_ms)
   && Number.isSafeInteger(record?.last_activity_ms)
   && record.session_started_ms <= record.last_activity_ms;
 
@@ -19,6 +19,6 @@ export function sessionTimes(record, todayMs = Date.now()) {
     const emptyMs = Number.isFinite(created) ? created : todayMs;
     return { anchorMs: emptyMs, lastActivityMs: emptyMs };
   }
-  if (!validSummary(record)) return { anchorMs: todayMs, lastActivityMs: todayMs };
+  if (!hasSessionSummary(record)) return { anchorMs: todayMs, lastActivityMs: todayMs };
   return { anchorMs: record.session_started_ms, lastActivityMs: record.last_activity_ms };
 }

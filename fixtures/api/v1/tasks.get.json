@@ -57,7 +57,11 @@
       },
       "created_at": "2026-09-19T09:00:00Z",
       "updated_at": "2026-09-19T10:12:00Z",
-      "closed_at": null
+      "closed_at": null,
+      "watched": true,
+      "unread_count": 1,
+      "session_started_ms": 1789808400000,
+      "last_activity_ms": 1789812720000
     },
     "timeline": [
       {
@@ -774,5 +778,14 @@
       "identities.*.project_role"
     ],
     "note": "Optional coordinator or worker purpose is captured independently of name before a project agent leaves its roster. Older records may omit it; clients must not infer coordinator from a project-prefixed id alone."
+  },
+  "activity_sessions": {
+    "since": "3.21.0",
+    "capability": "tasks.activitySessions",
+    "note": "Watched tasks carry the current activity streak from meaningful timeline entries and a durable checkpoint for silent content edits, split at a gap of 8h or more; read marks and attention bookkeeping do not extend it. tasks.list, tasks.get and board.list use the same summary.",
+    "fields": [
+      "session_started_ms",
+      "last_activity_ms"
+    ]
   }
 }

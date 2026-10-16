@@ -137,7 +137,9 @@
         "last_activity": "2026-09-19T10:12:00Z",
         "unread": 3,
         "muted": false,
-        "done_until_next": false
+        "done_until_next": false,
+        "session_started_ms": 1789808400000,
+        "last_activity_ms": 1789812720000
       }
     ],
     "projects": [
@@ -327,7 +329,9 @@
               "version": 3,
               "status": "open",
               "latest_published_snapshot_id": "snapshot-1"
-            }
+            },
+            "session_started_ms": 1789808400000,
+            "last_activity_ms": 1789812720000
           }
         ],
         "projects": [
@@ -517,7 +521,9 @@
               },
               "state": "waiting",
               "error": null
-            }
+            },
+            "session_started_ms": 1789808400000,
+            "last_activity_ms": 1789812720000
           }
         ],
         "projects": [
@@ -676,5 +682,14 @@
     "since": "3.21.0",
     "capability": "tasks.waitingOn",
     "note": "Watched rows carry graph-owned forward summaries and reverse count; blocked user assignments suppress only assignment-only attention."
+  },
+  "activity_sessions": {
+    "since": "3.21.0",
+    "capability": "tasks.activitySessions",
+    "note": "Watched tasks carry the current activity streak from meaningful timeline entries and a durable checkpoint for silent content edits, split at a gap of 8h or more; read marks and attention bookkeeping do not extend it. tasks.list, tasks.get and board.list use the same summary.",
+    "fields": [
+      "session_started_ms",
+      "last_activity_ms"
+    ]
   }
 }

@@ -12,8 +12,8 @@
 // that; this list just stops hiding it). Nothing that is over is ever a row.
 //
 // Workspaces use the bridge's first message after their latest silence of at
-// least 12 hours as the anchor. Other row kinds retain their bridge anchor;
-// watched tasks without one use their creation time. All rows sort by anchor,
+// least 8 hours as the anchor. Watched tasks use their timeline's session;
+// legacy rows without one retain their bridge anchor. All rows sort by anchor,
 // oldest first, with no priority for a kind, assignment, or attention reason.
 //
 // A row is two lines: what it is and what it weighs — files touched,
@@ -45,12 +45,13 @@ import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { agentIsRunning } from "./agentRunning.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
 import { standsOnProjectCheckout, workspaceDisplayName, workspaceRun, workspaceStatusText } from "./workspaceModel.js";
-import { sessionTimes } from "./sessionSpans.js";
+import { hasSessionSummary, sessionTimes } from "./sessionSpans.js";
 import { fieldTraits } from "./fieldTraits.js";
 import { statusDotHtml } from "./inboxStatusDot.js";
 import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
+import { byAnchor, workspaceIsRecent } from "./inboxOrdering.js";
 
-const DAY_MS = 24 * 3600 * 1000;
+export { byAnchor, workspaceIsRecent, RECENT_AFTER_MS } from "./inboxOrdering.js";
 
 /** Work still local to every Git directory in a durable workspace. The bridge
  * omits the summary when even one repository cannot be read, so absence must
@@ -201,18 +202,8 @@ function withRosterTallies(entry, agents, taskUnread) {
   };
 }
 
-/** How long a row can say nothing before it belongs to Recent rather than to
- *  the list proper. */
-export const RECENT_AFTER_MS = DAY_MS;
-
 /** The project agent's row (#103): one per project, named by the project. */
 export const PROJECT_AGENT = "project_agent";
-
-/** The shared Recent rule for every row kind: dismissed, or inactive for a
- *  day with no agent working. Unknown activity is not evidence of age. */
-export const workspaceIsRecent = (entry, nowMs = Date.now()) =>
-  !!entry.dismissed || (!entry.working && Number.isFinite(entry.lastActivityMs)
-    && nowMs - entry.lastActivityMs >= RECENT_AFTER_MS);
 
 /** Line two, for a row that has not done anything measurable yet. */
 export const GETTING_STARTED = "Getting started";
@@ -587,6 +578,7 @@ const NOT_A_CHECKOUT = Object.freeze({
  * independently of the anchor.
  */
 function taskTimesOf(item) {
+  if (hasSessionSummary(item)) return sessionTimes(item);
   const anchorMs = ms(item.anchor) ?? ms(item.created_at) ?? ms(item.last_event?.at) ?? ms(item.updated_at);
   return { anchorMs, lastActivityMs: ms(item.last_activity) ?? ms(item.last_event?.at) ?? ms(item.updated_at) ?? anchorMs };
 }
@@ -715,15 +707,6 @@ export function captureEntries(items = []) {
     .filter((item) => item.kind === "capture" && isListed(item))
     .map(toCaptureEntry)
     .sort(byAnchor);
-}
-
-/** Oldest anchor first. A row nobody can date sorts under the ones somebody
- *  can — unknown age is not evidence of being old. */
-export function byAnchor(left, right) {
-  if ((left.anchorMs ?? null) === (right.anchorMs ?? null)) return 0;
-  if (left.anchorMs == null) return 1;
-  if (right.anchorMs == null) return -1;
-  return left.anchorMs - right.anchorMs;
 }
 
 /**

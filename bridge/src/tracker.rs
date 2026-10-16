@@ -357,6 +357,11 @@ pub struct Task {
     /// flag somebody has to remember to unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dismissed_through: Option<String>,
+    /// Activity checkpoint for silent title/body/priority edits. Read marks
+    /// never update it. A read folds later meaningful timeline entries over
+    /// this saved interval, preserving edit-sustained streaks after restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_session: Option<crate::session_summary::SessionSummary>,
     pub created_by: Actor,
     pub created_at: String,
     pub updated_at: String,
@@ -502,6 +507,7 @@ impl Task {
             watch_started_after: None,
             read_through: None,
             dismissed_through: None,
+            activity_session: None,
             created_by,
             created_at: now.to_string(),
             updated_at: now.to_string(),

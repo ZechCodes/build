@@ -70,6 +70,247 @@ fn row_for(state: &mut AppState, task_id: &str) -> Value {
         .unwrap_or_else(|| panic!("{task_id} has an inbox row"))
 }
 
+fn assert_activity_session(
+    state: &mut AppState,
+    project_id: &str,
+    task_id: &str,
+    start: &str,
+    last: &str,
+) {
+    let listed = state.handle(req("tasks.list", json!({ "project_id": project_id })));
+    let listed_task = listed["result"]["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == task_id)
+        .unwrap();
+    let millis = crate::session_summary::message_millis;
+    for value in [
+        listed_task.clone(),
+        task(state, task_id),
+        row_for(state, task_id),
+    ] {
+        assert_eq!(
+            value["session_started_ms"],
+            millis(start).unwrap(),
+            "{value:?}"
+        );
+        assert_eq!(
+            value["last_activity_ms"],
+            millis(last).unwrap(),
+            "{value:?}"
+        );
+    }
+}
+
+#[test]
+fn watched_task_sessions_share_eight_hour_boundaries_across_reads_and_restart() {
+    use crate::tracker::{Actor, TaskComment, TaskEvent, TaskEventKind};
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project_id) = tracked(tmp.path());
+    let id = task_id(&filed(&mut state, &project_id, "activity streak"));
+    let store = state.tracker_store().unwrap();
+    let saved = store.load_tracker_task(&id).unwrap().unwrap();
+    let comment: TaskComment = serde_json::from_value(json!({
+        "id": crate::tracker::new_comment_id(), "task_id": id,
+        "author": { "kind": "user" }, "body": "first words",
+        "created_at": "2090-01-01T00:00:00Z",
+    }))
+    .unwrap();
+    let continued = TaskEvent::new(
+        &id,
+        Actor::User,
+        TaskEventKind::Moved,
+        json!({"from": "backlog", "to": "in_progress"}),
+        "2090-01-01T07:59:59.999Z",
+    );
+    store
+        .save_tracker_task_activity(&saved, &[comment], &[continued])
+        .unwrap();
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2090-01-01T00:00:00Z",
+        "2090-01-01T07:59:59.999Z",
+    );
+
+    let ignored = TaskEvent::new(
+        &id,
+        Actor::Build,
+        TaskEventKind::Dispatched,
+        json!({}),
+        "2090-01-01T12:00:00Z",
+    );
+    let restarted = TaskEvent::new(
+        &id,
+        Actor::User,
+        TaskEventKind::Moved,
+        json!({"from": "in_progress", "to": "in_review"}),
+        "2090-01-01T15:59:59.999Z",
+    );
+    let store = state.tracker_store().unwrap();
+    store
+        .save_tracker_task_activity(&saved, &[], &[restarted, ignored])
+        .unwrap();
+    let quiet = [
+        TaskEventKind::WorkspaceIdle,
+        TaskEventKind::WorkspacePruned,
+        TaskEventKind::WorkspaceReclaimed,
+        TaskEventKind::BranchDeleted,
+        TaskEventKind::BranchKept,
+    ]
+    .into_iter()
+    .map(|kind| TaskEvent::new(&id, Actor::Build, kind, json!({}), "2090-01-01T21:00:00Z"))
+    .collect::<Vec<_>>();
+    store
+        .save_tracker_task_activity(&saved, &[], &quiet)
+        .unwrap();
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2090-01-01T15:59:59.999Z",
+        "2090-01-01T15:59:59.999Z",
+    );
+
+    let project_path = saved.project_path;
+    drop(state);
+    let mut state = super::project_agent::rooted(tmp.path())
+        .with_task_store(tmp.path().join("store"))
+        .unwrap();
+    let project_id = super::project_agent::added_project(&mut state, Path::new(&project_path));
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2090-01-01T15:59:59.999Z",
+        "2090-01-01T15:59:59.999Z",
+    );
+}
+
+#[test]
+fn silent_task_edits_extend_activity_but_read_marks_do_not() {
+    use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind};
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project_id) = tracked(tmp.path());
+    let filed_id = task_id(&filed(&mut state, &project_id, "project path"));
+    let store = state.tracker_store().unwrap();
+    let project_path = store
+        .load_tracker_task(&filed_id)
+        .unwrap()
+        .unwrap()
+        .project_path;
+    let mut draft = Task::drafted(
+        &project_path,
+        "old task",
+        Actor::User,
+        "2020-01-01T00:00:00Z",
+    );
+    draft.watched = true;
+    let created = TaskEvent::new(
+        &draft.id,
+        Actor::User,
+        TaskEventKind::Created,
+        json!({}),
+        &draft.created_at,
+    );
+    let id = store
+        .create_tracker_task(draft, std::slice::from_ref(&created))
+        .unwrap()
+        .id;
+
+    state.handle(req(
+        "tasks.read_through",
+        json!({"task_id": id, "event_id": created.id}),
+    ));
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2020-01-01T00:00:00Z",
+        "2020-01-01T00:00:00Z",
+    );
+    for (field, value, at) in [
+        ("title", "new title", "2020-01-02T00:00:00Z"),
+        ("body", "new body", "2020-01-02T07:00:00Z"),
+        ("priority", "high", "2020-01-02T14:00:00Z"),
+    ] {
+        let mut params = json!({"task_id": id});
+        params[field] = json!(value);
+        let changed = state.update_task_at(&params, at).unwrap();
+        assert_eq!(
+            changed["task"]["last_activity_ms"],
+            crate::session_summary::message_millis(at).unwrap()
+        );
+    }
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2020-01-02T00:00:00Z",
+        "2020-01-02T14:00:00Z",
+    );
+    assert_eq!(
+        timeline(&mut state, &id).len(),
+        1,
+        "silent edits add no visible news"
+    );
+    let moved = TaskEvent::new(
+        &id,
+        Actor::User,
+        TaskEventKind::Moved,
+        json!({"from": "backlog", "to": "in_progress"}),
+        "2020-01-02T21:00:00Z",
+    );
+    let store = state.tracker_store().unwrap();
+    let saved = store.load_tracker_task(&id).unwrap().unwrap();
+    store
+        .save_tracker_task_activity(&saved, &[], std::slice::from_ref(&moved))
+        .unwrap();
+    state.handle(req(
+        "tasks.read_through",
+        json!({"task_id": id, "event_id": moved.id}),
+    ));
+
+    drop(state);
+    let mut state = super::project_agent::rooted(tmp.path())
+        .with_task_store(tmp.path().join("store"))
+        .unwrap();
+    let project_id = super::project_agent::added_project(&mut state, Path::new(&project_path));
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2020-01-02T00:00:00Z",
+        "2020-01-02T21:00:00Z",
+    );
+    state
+        .update_task_at(
+            &json!({"task_id": id, "title": "after eight hours"}),
+            "2020-01-03T05:00:00Z",
+        )
+        .unwrap();
+    assert_activity_session(
+        &mut state,
+        &project_id,
+        &id,
+        "2020-01-03T05:00:00Z",
+        "2020-01-03T05:00:00Z",
+    );
+    let no_op = state.handle(req("tasks.watch", json!({"task_id": id})));
+    assert_eq!(
+        no_op["result"]["task"]["session_started_ms"],
+        crate::session_summary::message_millis("2020-01-03T05:00:00Z").unwrap()
+    );
+    assert_eq!(
+        timeline(&mut state, &id).len(),
+        2,
+        "silent edits add no visible news"
+    );
+    assert_eq!(task(&mut state, &id)["unread_count"], 0);
+}
+
 /// An agent files a task, with whatever it asked for.
 fn agent_files(
     state: &mut AppState,

@@ -203,8 +203,13 @@ impl AppState {
         project_id: &str,
         task: &Task,
     ) -> Result<serde_json::Value, String> {
-        let task = self.task_with_read_identities(task.clone(), &[], &StoredRosters::default());
-        let mut answer = super::task_json(project_id, &task);
+        let timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&task.id)
+            .stored()?;
+        let task =
+            self.task_with_read_identities(task.clone(), &timeline, &StoredRosters::default());
+        let mut answer = super::views::read_task_json(project_id, &task, &timeline);
         self.extend_task_waiting_summary(&task, &mut answer)?;
         Ok(answer)
     }

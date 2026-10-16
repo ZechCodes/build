@@ -57,7 +57,7 @@ pub(in crate::app) use dispatch::AssignTarget;
 use identities::StoredRosters;
 #[cfg(test)]
 pub(in crate::app) use inbox::unread_since_mark;
-pub(in crate::app) use views::{columns_json, task_json, task_with_timeline_json};
+pub(in crate::app) use views::{columns_json, task_with_timeline_json};
 
 use crate::app::{require_str, AppState};
 use crate::store::{Store, TaskFilter, TaskSeek};
@@ -84,6 +84,7 @@ pub(in crate::app) struct TaskWrite {
     /// keep in step would be one a caller could get wrong.
     pub(in crate::app) actor: Actor,
     expected_review_version: Option<u64>,
+    content_changed: bool,
 }
 
 impl TaskWrite {
@@ -95,6 +96,7 @@ impl TaskWrite {
             events: Vec::new(),
             actor,
             expected_review_version: None,
+            content_changed: false,
         }
     }
 
@@ -350,15 +352,22 @@ impl AppState {
     ///
     /// Only the fields present are applied, and each one that actually changes
     /// something writes its own event. A title, a body or a priority writes
-    /// none: `updated_at` is the whole history those need.
+    /// no visible event: their activity checkpoint retains the inbox streak.
     pub(crate) fn tasks_update(&mut self, params: &Value) -> Result<Value, String> {
+        self.update_task_at(params, &crate::store::now_rfc3339())
+    }
+
+    pub(in crate::app) fn update_task_at(
+        &mut self,
+        params: &Value,
+        now: &str,
+    ) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
         let (project_id, task) = self.tracker_task(&task_id)?;
         edits::check_body_precondition(&task.body, params)?;
-        let now = crate::store::now_rfc3339();
         let mut write = TaskWrite::by(Actor::User, task);
-        edits::apply_update(&mut write, params, &Actor::User, &now)?;
-        self.commit_task_write(&project_id, write, &now)
+        edits::apply_update(&mut write, params, &Actor::User, now)?;
+        self.commit_task_write(&project_id, write, now)
     }
 
     /// `tasks.comment` — say something, with typed references fenced twice.
@@ -478,6 +487,11 @@ impl AppState {
                 )
                 .collect::<Vec<_>>(),
         );
+        if write.content_changed {
+            let session = inbox::task_activity_session(&write.task, &timeline);
+            write.task.activity_session =
+                crate::session_summary::message_millis(now).map(|ts| session.updated(ts));
+        }
         self.capture_task_identities(&mut write.task, &timeline);
         let (task, additional) = self
             .tracker_store()?
@@ -500,7 +514,7 @@ impl AppState {
         write.events.extend(additional);
         self.publish_task_write(project_id, &write);
         let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());
-        let mut row = task_json(project_id, &task);
+        let mut row = views::read_task_json(project_id, &task, &timeline);
         self.extend_task_waiting_summary(&task, &mut row)?;
         Ok(json!({ "task": row }))
     }

@@ -153,7 +153,7 @@ export const assigneeHtml = (assignee, reading) => {
   const label = assignee ? actorName(assignee, reading) : "Unassigned";
   const icon = isProjectAssignee(assignee) || assigneeProvider(assignee, reading)
     ? taskAvatarHtml(assignee, reading) : "";
-  return `<span class="task-assignee${assignee ? "" : " task-unassigned"}">${icon}<span class="task-assignee-name">${esc(label)}</span></span>`;
+  return `<span class="task-assignee${assignee ? "" : " task-unassigned"}">${icon}<span class="task-assignee-name" title="${esc(label)}">${esc(label)}</span></span>`;
 };
 
 /**

@@ -677,6 +677,10 @@
   .task-assign { font-size:11px; padding:1px 2px; }
   .task-assign-cue { opacity:1; }
   .task-assignee, .task-unassigned { white-space:normal; }
+  /* A phone has no hover tooltip: keep the full name readable in the card. */
+  .task-card .task-assignee-name, .task-row-facts .task-assignee-name {
+    overflow:visible; text-overflow:clip; white-space:normal; overflow-wrap:anywhere;
+  }
 }
 
 /* ---- the tasks entry in a conversation's activity area -------------------

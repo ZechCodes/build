@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { captureLayout, loadBrowserModules, mountLayout, withLayoutPage } from "./layoutHarness.mjs";
 
-const workspace = 'Board cards with a very long workspace name "overflow" and no room left';
+const workspace = 'Board cards with a very long workspace name "overflow" and no room left ' + "workspace".repeat(8);
 const agent = "An extraordinarily long agent name that must stay inside its card";
 const fullName = `${workspace} · ${agent}`;
 
@@ -57,15 +57,30 @@ async function assignmentMeasurements(page) {
       title: link?.title, link: box(link), icon: box(card.querySelector(".task-avatar")),
       change: box(card.querySelector(".task-assignee-entry .task-assign")), entry: box(entry),
       previous: box(entry?.previousElementSibling), status: box(card.querySelector(".task-status")),
-      name: name && { ...box(name), clipped: name.scrollWidth > name.clientWidth,
+      name: name && { ...box(name), text: name.textContent, clipped: name.scrollWidth > name.clientWidth,
+        verticallyClipped: name.scrollHeight > name.clientHeight,
         overflow: getComputedStyle(name).textOverflow, whitespace: getComputedStyle(name).whiteSpace },
     };
   }));
 }
 
+function assertNameLayout(card, phone) {
+  expect(card.name.text).toBe(fullName);
+  expect(card.name.clipped, card.id).toBe(!phone);
+  expect(card.name.verticallyClipped, card.id).toBe(false);
+  expect(card.name.overflow).toBe(phone ? "clip" : "ellipsis");
+  expect(card.name.whitespace).toBe(phone ? "normal" : "nowrap");
+  if (phone) expect(card.name.height).toBeGreaterThan(20);
+  else expect(card.name.height).toBeLessThan(20);
+  expect(card.icon.width).toBe(16);
+  expect(card.icon.right).toBeLessThanOrEqual(card.name.left);
+}
+
 for (const { width, columnWidth } of [
   { width: 1280, columnWidth: 180 }, { width: 1280, columnWidth: 260 },
   { width: 1280, columnWidth: 360 }, { width: 390, columnWidth: 260 },
+  { width: 320, columnWidth: 260 }, { width: 760, columnWidth: 260 },
+  { width: 761, columnWidth: 260 },
 ]) {
   it(`contains long assignees in ${columnWidth}px board columns and list rows at ${width}px (#632)`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
@@ -75,12 +90,7 @@ for (const { width, columnWidth } of [
       for (const card of measurements) {
         expect(card.outside, card.id).toEqual([]);
         if (card.link || card.id.endsWith(":task-unavailable")) {
-          expect(card.name.clipped, card.id).toBe(true);
-          expect(card.name.overflow).toBe("ellipsis");
-          expect(card.name.whitespace).toBe("nowrap");
-          expect(card.name.height).toBeLessThan(20);
-          expect(card.icon.width).toBe(16);
-          expect(card.icon.right).toBeLessThanOrEqual(card.name.left);
+          assertNameLayout(card, width <= 760);
         }
         if (card.link) {
           expect(card.title).toBe(fullName);
@@ -91,6 +101,19 @@ for (const { width, columnWidth } of [
           expect(card.previous.bottom, card.id).toBeLessThanOrEqual(card.entry.top);
         }
       }
-    }, { width, height: 1100 });
+    }, { width, height: width > 760 ? 1100 : 1800 });
   });
 }
+
+it("shows an unavailable agent's full name on hover while preserving the assignment action (#632)", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await mountAssignments(page, basePath, 260);
+    for (const container of [".task-card", ".task-row"]) {
+      const button = page.locator(`${container}[data-task="task-unavailable"] .task-assign`);
+      expect(await button.locator(".task-assignee-name").getAttribute("title")).toBe(fullName);
+      expect(await button.getAttribute("title")).toBe("Assign this task");
+      expect(await button.getAttribute("aria-label")).toBe(container === ".task-card"
+        ? "Assign #630" : `#630 is assigned to ${fullName}. Assign it to somebody else`);
+    }
+  });
+});

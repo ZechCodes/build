@@ -95,7 +95,8 @@ test("macOS retains native traffic lights inline with the 44px app header", () =
 
   assert.equal(options.titleBarStyle, "hidden");
   assert.deepEqual(options.titleBarOverlay, { height: 44 });
-  assert.deepEqual(options.trafficLightPosition, { x: 12, y: 16 });
+  assert.equal("trafficLightPosition" in options, false,
+    "Electron centers using the actual native button height and keeps the OS horizontal inset");
   assert.equal("frame" in options, false, "keep the native window and controls");
 });
 

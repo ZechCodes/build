@@ -94,7 +94,6 @@ export function createWindowOptions({ development, platform = process.platform }
     ...(platform === "darwin" ? {
       titleBarStyle: "hidden",
       titleBarOverlay: { height: 44 },
-      trafficLightPosition: { x: 12, y: 16 },
     } : {}),
     webPreferences: {
       allowRunningInsecureContent: false,

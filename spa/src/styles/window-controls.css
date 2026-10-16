@@ -14,6 +14,11 @@
   padding-left:calc(var(--toolbar-gutter) + var(--window-controls-inset));
 }
 :root[data-window-controls-overlay][data-window-controls-updating] .toolbar { transition:none; }
+@media (prefers-reduced-motion: reduce) {
+  /* The global .01ms duration still starts real padding/gap transitions.
+     Switch these overlay presentations directly, including the first frame. */
+  :root[data-window-controls-overlay] :is(.inbox-head, .inbox-new-project) { transition:none; }
+}
 :root[data-window-controls-overlay] body.inbox-collapsed .toolbar {
   padding-left:calc(var(--inbox-open-clear) + var(--window-controls-inset));
 }

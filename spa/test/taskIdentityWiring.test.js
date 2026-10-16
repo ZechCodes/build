@@ -37,6 +37,22 @@ beforeEach(() => {
 });
 
 describe("bridge identity through the task cache", () => {
+  it.each([
+    ["unassigned", null, false],
+    ["user", { kind: "user" }, false],
+    ["unavailable agent", { kind: "agent", agent_id: AGENT }, false],
+    ["available agent", { kind: "agent", agent_id: AGENT }, true],
+  ])("keeps the task page's %s Assignee button free of a name tooltip (#632)", async (_label, assignee, available) => {
+    const task = structuredClone(answer.result.task);
+    task.assignee = assignee;
+    task.identities[AGENT].available = available;
+    await writeTaskRecord(DEVICE, PROJECT, answer.params.task_id, taskRecord(task, []));
+    const host = await renderCached();
+    const button = host.querySelector(".task-assign-open");
+    expect(button.hasAttribute("title")).toBe(false);
+    expect(button.querySelector(".task-assignee-name[title]")).toBeNull();
+  });
+
   it("keeps an unnamed removed project worker distinct from the surviving coordinator", async () => {
     const task = structuredClone(answer.result.task);
     const worker = { kind: "agent", agent_id: "project-unnamed-worker" };

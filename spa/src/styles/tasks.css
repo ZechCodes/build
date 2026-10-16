@@ -520,7 +520,9 @@
 /* Shrink only the name: the harness and Change control remain readable, even
    when an unavailable agent leaves the whole assignee inside the button. */
 .task-card > .task-assign, .task-row-facts > .task-assign { min-width:0; max-width:100%; }
-.task-card .task-assignee, .task-row-facts .task-assignee { display:flex; align-items:center; min-width:0; }
+@media (width > 760px) {
+  .task-card .task-assignee, .task-row-facts .task-assignee { display:flex; align-items:center; min-width:0; }
+}
 .task-card .task-assignee-name, .task-row-facts .task-assignee-name {
   min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }

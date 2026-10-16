@@ -47,8 +47,11 @@ async function assignmentMeasurements(page) {
     const entry = card.querySelector(".task-assignee-entry") || card.querySelector(".task-assign");
     const name = card.querySelector(".task-assignee-name");
     const link = card.querySelector(".task-assignee-link");
+    const range = document.createRange();
+    if (name) range.selectNodeContents(name);
+    const lines = [...range.getClientRects()].map((line) => line.toJSON());
     return {
-      id: `${card.className}:${card.dataset.task}`,
+      id: `${card.className}:${card.dataset.task}`, bounds: bounds.toJSON(),
       outside: [...card.querySelectorAll("*")].filter((child) => {
         const rect = child.getBoundingClientRect();
         return rect.width && rect.height && (rect.left < bounds.left - 0.5 || rect.right > bounds.right + 0.5 ||
@@ -59,6 +62,7 @@ async function assignmentMeasurements(page) {
       previous: box(entry?.previousElementSibling), status: box(card.querySelector(".task-status")),
       name: name && { ...box(name), text: name.textContent, clipped: name.scrollWidth > name.clientWidth,
         verticallyClipped: name.scrollHeight > name.clientHeight,
+        lines,
         overflow: getComputedStyle(name).textOverflow, whitespace: getComputedStyle(name).whiteSpace },
     };
   }));
@@ -66,14 +70,25 @@ async function assignmentMeasurements(page) {
 
 function assertNameLayout(card, phone) {
   expect(card.name.text).toBe(fullName);
-  expect(card.name.clipped, card.id).toBe(!phone);
-  expect(card.name.verticallyClipped, card.id).toBe(false);
   expect(card.name.overflow).toBe(phone ? "clip" : "ellipsis");
   expect(card.name.whitespace).toBe(phone ? "normal" : "nowrap");
-  if (phone) expect(card.name.height).toBeGreaterThan(20);
-  else expect(card.name.height).toBeLessThan(20);
+  if (phone) {
+    expect(card.name.lines.length).toBeGreaterThan(1);
+    expect(Math.abs(card.icon.top - card.name.lines[0].top), card.id).toBeLessThanOrEqual(4);
+    expect(Math.min(...card.name.lines.slice(1).map((line) => line.left)), card.id)
+      .toBeLessThanOrEqual(card.icon.left + 0.5);
+    for (const line of card.name.lines) {
+      expect(line.left, card.id).toBeGreaterThanOrEqual(card.bounds.left);
+      expect(line.right, card.id).toBeLessThanOrEqual(card.bounds.right);
+      expect(line.bottom, card.id).toBeLessThanOrEqual(card.bounds.bottom);
+    }
+  } else {
+    expect(card.name.clipped, card.id).toBe(true);
+    expect(card.name.verticallyClipped, card.id).toBe(false);
+    expect(card.name.height).toBeLessThan(20);
+  }
   expect(card.icon.width).toBe(16);
-  expect(card.icon.right).toBeLessThanOrEqual(card.name.left);
+  expect(card.icon.right).toBeLessThanOrEqual(card.name.lines[0].left);
 }
 
 for (const { width, columnWidth } of [
@@ -117,3 +132,20 @@ it("shows an unavailable agent's full name on hover while preserving the assignm
     }
   });
 });
+
+for (const task of ["task-user", "task-unassigned"]) {
+  it(`preserves the assignment action tooltip for ${task} on Board and List (#632)`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await mountAssignments(page, basePath, 260);
+      for (const container of [".task-card", ".task-row"]) {
+        const button = page.locator(`${container}[data-task="${task}"] .task-assign`);
+        expect(await button.getAttribute("title")).toBe("Assign this task");
+        expect(await button.locator("[title]").count()).toBe(0);
+        const hoveredTitles = await button.evaluate((button) =>
+          [...button.querySelectorAll(".task-assignee-name, .task-assign-cue")]
+            .map((name) => name.closest("[title]")?.title));
+        expect(hoveredTitles).toEqual(["Assign this task"]);
+      }
+    });
+  });
+}

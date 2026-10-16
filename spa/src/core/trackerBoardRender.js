@@ -50,7 +50,7 @@ const cardStatusHtml = (task, columns, reading) => {
 export const taskCardHtml = (task, { columns, href, unreadOf, ...context }) => {
   const reading = { ...context, identities: task.identities || {} };
   const assigneeHref = task.assignee && actorHref(task.assignee, reading);
-  const assignButton = `<button class="task-assign" type="button" data-task-assign="${esc(task.id)}" aria-label="Assign #${esc(String(task.number ?? ""))}" title="Assign this task">${assigneeHref ? "Change" : assigneeHtml(task.assignee, reading)}</button>`;
+  const assignButton = `<button class="task-assign" type="button" data-task-assign="${esc(task.id)}" aria-label="Assign #${esc(String(task.number ?? ""))}" title="Assign this task">${assigneeHref ? "Change" : assigneeHtml(task.assignee, reading, { nameTitle: true })}</button>`;
   return (
   `<li class="task-card" draggable="true" tabindex="0"
       data-task="${esc(task.id)}" data-status="${esc(task.status)}"
@@ -61,7 +61,7 @@ export const taskCardHtml = (task, { columns, href, unreadOf, ...context }) => {
     ${taskWaitingHtml(task, context)}
     ${task.labels?.length ? `<div class="task-card-labels">${labelsHtml(task.labels)}</div>` : ""}
     ${assigneeHref
-      ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}" title="${esc(actorName(task.assignee, reading))}">${assigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`
+      ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}" title="${esc(actorName(task.assignee, reading))}">${assigneeHtml(task.assignee, reading, { nameTitle: true })}</a>${assignButton}</span>`
       : assignButton}
   </li>`);
 };

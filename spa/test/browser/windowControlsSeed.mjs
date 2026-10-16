@@ -3,7 +3,8 @@ import { mountNavigationBreadcrumbs } from "./navigationBreadcrumbSeed.mjs";
 
 // A standard WCO geometry signal, never an Electron preload or real account.
 // Native traffic lights cannot be painted by headless Chromium: this optional
-// review probe shows their expected bounds over the production shell.
+// review probe shows an illustrative footprint over the production shell.
+// The 84px reservation and 12px circles are synthetic, not measured AppKit sizes.
 export async function mountWindowControls(page, basePath, { install = true, pinned = true, lights = false, theme = "dark", visible = true } = {}) {
   await page.evaluate(() => { window.__stopWindowControls?.(); });
   await page.evaluate(({ visible }) => {

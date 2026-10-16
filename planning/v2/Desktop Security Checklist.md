@@ -28,7 +28,10 @@ Window chrome evidence is simulated: Chromium paints production SPA headers
 against a stubbed `navigator.windowControlsOverlay` and optional colored-circle
 probes, not native traffic lights. Electron's pinned [macOS implementation](https://github.com/electron/electron/blob/v44.1.1/shell/browser/native_window_mac.mm#L1735)
 returns the content rectangle to the right of the native button container and
-an empty rectangle in native fullscreen. CSS prefers `env(titlebar-area-x)`;
+an empty rectangle in native fullscreen. No fixed button position is supplied:
+Electron [centers the native button frame using its actual height](https://github.com/electron/electron/blob/v44.1.1/shell/browser/ui/cocoa/window_buttons_proxy.mm#L181)
+within the 44px overlay. The probe circles and test rectangle's x=84 are synthetic,
+not measured AppKit geometry. CSS prefers `env(titlebar-area-x)`;
 the same API's x coordinate supplies a fallback. Only Zech's signed macOS app
 can confirm native positioning, close/minimize/fullscreen and restore, dragging
 and double-click behavior, and alignment while resizing or changing display scale.

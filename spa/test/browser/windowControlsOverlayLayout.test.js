@@ -175,3 +175,38 @@ it("keeps header controls clear of native buttons throughout pin and unpin anima
     expect(overlaps).toEqual([]);
   }, { width: 1280, height: 800 });
 }, 30_000);
+
+it("clears native controls at fractional desktop widths", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    // iframe zoom exposes a fractional layout viewport to media queries even
+    // though innerWidth rounds it to 901. Both old integer queries miss it.
+    await page.evaluate(() => {
+      const frame = document.createElement("iframe");
+      frame.id = "fractional-overlay-frame";
+      frame.style.cssText = "width:900.5px;height:800px;border:0;display:block;zoom:1.1";
+      frame.src = location.href;
+      document.body.append(frame);
+    });
+    const element = await page.locator("#fractional-overlay-frame").elementHandle();
+    const frame = await element.contentFrame();
+    await frame.waitForURL(page.url());
+    await frame.waitForLoadState("domcontentloaded");
+    await mountWindowControls(frame, basePath, { pinned: true });
+    const viewport = await frame.evaluate(() => ({
+      width: document.documentElement.getBoundingClientRect().width,
+      innerWidth,
+      oldDesktop: matchMedia("(min-width:901px)").matches,
+      narrow: matchMedia("(max-width:900px)").matches,
+      desktop: matchMedia("(width > 900px)").matches,
+    }));
+    expect(viewport.width).toBeCloseTo(900.909, 3);
+    expect(viewport.innerWidth).toBe(901);
+    expect(viewport.oldDesktop).toBe(false);
+    expect(viewport.narrow).toBe(false);
+    expect(viewport.desktop).toBe(true);
+    const geometry = await windowControlsGeometry(frame);
+    expect(geometry.head.y).toBe(0);
+    expect(geometry.firstInbox.x).toBeCloseTo(84, 1);
+  }, { width: 1280, height: 850 });
+}, 30_000);

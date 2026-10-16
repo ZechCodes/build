@@ -719,6 +719,12 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   transition:padding-left 240ms cubic-bezier(.2,.8,.2,1); }
 body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   --tb-project-cap:min(96px, calc((100cqw - var(--inbox-open-clear) - 10px) / 4)); }
+/* Docked, the inbox opener is absent: let the same switcher and ancestry move
+   into its leading slot. Narrow screens still need their overlay opener. */
+@media (min-width: 901px) {
+  body:not(.inbox-collapsed) .toolbar { padding-left:0;
+    --tb-project-cap:min(96px, calc((100cqw - 10px) / 4)); }
+}
 @media (prefers-reduced-motion: reduce) { .toolbar { transition:none; } }
 .tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
   width:44px; height:44px; padding:0; border:0; border-radius:6px;

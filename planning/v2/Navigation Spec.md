@@ -11,6 +11,12 @@ Every navigation-bar action hovers with `--accent` ink and no background or
 inset tint; keyboard focus keeps its accent outline. This supersedes the
 up-arrow glyph below without changing its switcher behavior.
 
+**#631 pinned inbox amendment (2026-10-16):** Above 900px, docking the inbox
+removes the toolbar's leading inbox clearance. The existing switcher and
+breadcrumbs slide left together without replacing or hiding their nodes;
+unpinning restores the inbox opener and its clearance. At 900px and below the
+pin is unavailable and the inbox opens as an overlay with its trigger retained.
+
 Zech's #523 comment `tc-01M4R8GB4Y9GGVK6MDD7KKYW4H` settles three controls:
 
 - Replace the labeled Switch button with an **up-arrow action immediately left

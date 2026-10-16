@@ -1487,12 +1487,12 @@ describe("the inbox row's actions", () => {
     expect(declaration(actions.body, "padding-left")).toBe("var(--inbox-actions-fade)");
     expect(declaration(baseRule(".inbox-workspace-done").body, "min-width")).toBe("var(--inbox-done-width)");
 
-    // The project line and name keep clear of the same controls after the
-    // Inbox gained a dedicated project line (#629).
+    // The project line and every title (including captures) keep clear of
+    // the same controls after Inbox gained a dedicated project line (#629).
     const line = cssRules().find(
       (rule) => rule.selector.split(", ").includes(".inbox-entry > .inbox-body > .inbox-line:first-child"),
     );
-    expect(line.selector.split(", ")).toContain(".inbox-entry > .inbox-body > .inbox-name");
+    expect(line.selector.split(", ")).toContain(".inbox-entry > .inbox-body > .inbox-line:has(> .stitle)");
     expect(declaration(line.body, "padding-right")).toBe("var(--inbox-actions-room)");
   });
 

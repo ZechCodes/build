@@ -103,7 +103,7 @@ for (const { label, width, height, hasTouch } of [
   { label: "desktop", width: 1280, height: 800, hasTouch: false },
   { label: "phone", width: 390, height: 844, hasTouch: true },
 ]) {
-  it(`lists quiet projects alphabetically with only the active block filled on ${label}`, async () => {
+  it(`orders active project streaks ahead of quiet projects with only the selected block filled on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       await mountProjectsFace(page, basePath);
       for (const theme of ["light", "dark"]) {
@@ -115,7 +115,7 @@ for (const { label, width, height, hasTouch } of [
           expect(block.border).toBe("0px");
           expect(block.shadow).toBe("none");
         }
-        expect(blocks.map((block) => block.name)).toEqual(["Alpha", "Bravo", "Build", "Zulu"]);
+        expect(blocks.map((block) => block.name)).toEqual(["Zulu", "Build", "Alpha", "Bravo"]);
         expect(await page.locator("#inbox-list > .inbox-recent").count()).toBe(0);
         expect(await page.locator('[data-recent-toggle="projects-review/build"]').count()).toBe(1);
         expect(await page.locator('[data-project-fold][aria-expanded="true"]').count()).toBe(4);

@@ -77,12 +77,12 @@ const entryIsWatchedRunning = (entry) => entry?.watchedWorking ?? entryIsRunning
  *  and the project's own page as the block's destination. Every project has one
  *  — the page is about the project, not about anything inside it — so a block is
  *  always routable, however empty it is. */
-function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
+function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys, heldActiveKey) {
   // The project agent's entry is the block's head, not one of its rows (#103).
   const agentEntry = rows.find((entry) => entry.kind === PROJECT_AGENT) || null;
   const grouped = rows.filter((entry) => entry.kind !== PROJECT_AGENT).sort(byAnchor);
-  const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs));
-  const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs));
+  const entries = grouped.filter((entry) => !workspaceIsRecent(entry, nowMs, heldActiveKey));
+  const recent = grouped.filter((entry) => workspaceIsRecent(entry, nowMs, heldActiveKey));
   return {
     key: `project:${project.projectKey}`,
     id: project.id,
@@ -90,7 +90,7 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
     deviceId: project.deviceId,
     ...tag,
     name: projectNameOf(project),
-    anchorMs: longestActiveAnchor(rows, nowMs),
+    anchorMs: longestActiveAnchor(rows, nowMs, heldActiveKey),
     isGit: project.is_git !== false,
     entries,
     recent,
@@ -116,7 +116,7 @@ export function projectsUnreadCount(entries = [], projects = []) {
  *  project key and never by a name or a bare id: two machines each mint a
  *  `proj-1`, and two projects may share a name — which is what the device tag
  *  on the head is for. */
-export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now(), runningTaskProjectKeys = new Set()) {
+export function workspaceProjectBlocks(entries = [], projects = [], devices = [], offlineDeviceIds = null, nowMs = Date.now(), runningTaskProjectKeys = new Set(), heldActiveKey = null) {
   const named = projectsNamed(projects, entries);
   const tags = deviceTags([...named.values()], devices, offlineDeviceIds);
   const blocks = [...named.values()].map((project) =>
@@ -126,6 +126,7 @@ export function workspaceProjectBlocks(entries = [], projects = [], devices = []
       tags.get(project.projectKey),
       nowMs,
       runningTaskProjectKeys,
+      heldActiveKey,
     ),
   ).sort((left, right) => byAnchor(left, right) || byProjectName(left, right));
   return {

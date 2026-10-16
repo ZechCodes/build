@@ -51,13 +51,110 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function boot(view, rows) {
+async function boot(view, rows, captures = []) {
   await modules.cache.writeCached(address("workspaces"), rows);
+  await modules.cache.writeCached(address("feed"), { items: captures, runs: [] });
   modules.inboxView.setInboxView(view);
   modules.inboxView.mountInboxList();
   await modules.taskFeed.startFeed();
-  await vi.waitFor(() => expect(activeRows()).toHaveLength(rows.length), WAIT);
+  await vi.waitFor(() => expect(activeRows()).toHaveLength(rows.length + captures.length), WAIT);
 }
+
+const capture = (over = {}) => ({ kind: "capture", capture_id: "draft-capture", title: "Keep my draft",
+  deviceId: DEVICE, project_id: "zulu", projectKey: `${DEVICE}/zulu`, state: "routed",
+  routing: { project_id: "zulu", kind: "branch", target_id: "build/captured" },
+  created_at: new Date(NOW).toISOString(), ...over });
+const captureRow = () => document.querySelector('[data-key="capture:draft-capture"]');
+const branchField = () => captureRow()?.querySelector("[data-reroute-branch]");
+async function openBranch(projectId = "zulu") {
+  if (!captureRow()?.querySelector(".reroute-menu")) captureRow().querySelector("[data-capture-reroute]").click();
+  await vi.waitFor(() => expect(captureRow()?.querySelector(`[data-reroute-branch-open="${projectId}"]`)).not.toBeNull(), WAIT);
+  captureRow().querySelector(`[data-reroute-branch-open="${projectId}"]`).click();
+  await vi.waitFor(() => expect(branchField()?.dataset.rerouteBranch).toBe(projectId), WAIT);
+  return branchField();
+}
+
+it.each([ ["inbox", true], ["inbox", false], ["projects", true], ["projects", false] ])(
+  "keeps a capture branch draft when the cutoff remounts it in %s (focused: %s)", async (view, focused) => {
+    const deadline = NOW + 10_000;
+    await boot(view, [], [capture({ last_activity: new Date(deadline - DAY).toISOString() })]);
+    const field = await openBranch();
+    field.focus();
+    field.value = "build/typed-draft";
+    field.setSelectionRange(6, 11);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    if (!focused) field.blur();
+    expect(document.activeElement === field).toBe(focused);
+    await vi.advanceTimersByTimeAsync(deadline - Date.now());
+    if (focused) {
+      expect(field.isConnected).toBe(true);
+      expect(document.activeElement).toBe(field);
+      expect(field.value).toBe("build/typed-draft");
+      expect([field.selectionStart, field.selectionEnd]).toEqual([6, 11]);
+      field.blur();
+      await vi.waitFor(() => expect(field.isConnected).toBe(false), WAIT);
+    }
+    expect(field.isConnected).toBe(false);
+    const scope = view === "inbox" ? "inbox" : `${DEVICE}/zulu`;
+    document.querySelector(`[data-recent-toggle="${scope}"]`).click();
+    await vi.waitFor(() => expect(branchField()?.value).toBe("build/typed-draft"), WAIT);
+    expect(branchField()).not.toBe(field);
+    expect(document.activeElement).not.toBe(branchField());
+    // Editing a row already in Recent keeps it there on subsequent redraws.
+    const quiet = branchField();
+    quiet.focus();
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(branchField()).toBe(quiet);
+    expect(quiet.closest(".inbox-recent")).not.toBeNull();
+  },
+);
+
+it("keeps destination drafts separate across face and rail remounts", async () => {
+  await boot("inbox", [], [capture()]);
+  const zulu = await openBranch();
+  zulu.value = "build/zulu-draft";
+  zulu.dispatchEvent(new Event("input", { bubbles: true }));
+  const alpha = await openBranch("alpha");
+  expect(alpha.value).toBe("");
+  alpha.value = "build/alpha-draft";
+  alpha.dispatchEvent(new Event("input", { bubbles: true }));
+  await openBranch("zulu");
+  await vi.waitFor(() => expect(branchField()?.value).toBe("build/zulu-draft"), WAIT);
+  modules.inboxView.setInboxView("projects");
+  expect(branchField().value).toBe("build/zulu-draft");
+
+  // Teardown flushes the last edits into build-ui. A fresh controller restores
+  // the saved draft even though the field and all draft observers were removed.
+  modules.inboxView.unmountInboxList();
+  modules.inboxView.mountInboxList();
+  await vi.waitFor(() => expect(branchField()?.value).toBe("build/zulu-draft"), WAIT);
+  await openBranch("alpha");
+  await vi.waitFor(() => expect(branchField()?.value).toBe("build/alpha-draft"), WAIT);
+});
+
+it("keeps a capture's branch draft on its original device", async () => {
+  await boot("inbox", [], [capture()]);
+  const original = await openBranch();
+  original.value = "build/original-device";
+  original.dispatchEvent(new Event("input", { bubbles: true }));
+  const otherDevice = "other-inbox-device";
+  const { App } = await import("../src/app.js");
+  App.devices.push({ id: otherDevice, name: "Other", status: "online" });
+  await modules.cache.writeCached({ ...address("projects"), deviceId: otherDevice },
+    projects.map((row) => ({ ...row, deviceId: otherDevice, projectKey: `${otherDevice}/${row.id}` })));
+  await modules.cache.writeCached({ ...address("feed"), deviceId: otherDevice }, { items: [capture({
+    deviceId: otherDevice, projectKey: `${otherDevice}/zulu`, title: "Other device capture",
+  })], runs: [] });
+  App.deviceFilter = otherDevice;
+  await modules.taskFeed.startFeed();
+  await vi.waitFor(() => expect(captureRow()?.textContent).toContain("Other device capture"), WAIT);
+  await vi.waitFor(() => expect(branchField()?.value).toBe(""), WAIT);
+  branchField().value = "build/other-device";
+  branchField().dispatchEvent(new Event("input", { bubbles: true }));
+  App.deviceFilter = DEVICE;
+  modules.taskFeed.deliverFeed();
+  await vi.waitFor(() => expect(branchField()?.value).toBe("build/original-device"), WAIT);
+});
 
 it.each(["inbox", "projects"])("moves rows and blocks after a cached activity push in %s", async (view) => {
   const longer = workspace("longer", "zulu", NOW - 6 * HOUR, NOW - HOUR);

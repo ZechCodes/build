@@ -3031,7 +3031,13 @@ to Recent after a day without activity while no agent works; dismissed rows go
 there too. Inside a project block, the same row order and Recent rule apply.
 `inboxOrdering.js` holds that policy separately from row markup. Cache writes
 reconcile both faces immediately, including while an inbox input is focused;
-the keyed rows preserve the input and selection. A local cutoff clock repaints
+the keyed rows preserve the input and selection. An active capture with a
+focused branch editor keeps its active partition past the cutoff until focus
+leaves that editor, including its Dispatch button;
+ordering still updates, and a focused editor already in Recent stays there.
+Branch drafts are device/capture/destination-project scoped `build-ui` records,
+flushed on teardown and restored when the row or field remounts, including
+after moving into Recent. A local cutoff clock repaints
 when the next cached row reaches 24 hours and on page return, without polling
 the bridge, and is disposed with the inbox.
 Quiet tasks keep their title and reason on separate lines. Every task row has an

@@ -1000,6 +1000,36 @@ describe("captures on the rail", () => {
     });
   });
 
+  it.each([false, true])("clears a submitted branch after unmount while preserving newer drafts (%s)", async (newer) => {
+    let finish;
+    const accepted = new Promise((resolve) => { finish = resolve; });
+    workshopCall.mockImplementation((method) => method === "capture.reroute" ? accepted : Promise.resolve({}));
+    feed([], undefined, [routedCapture()]);
+    captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();
+    await waitForRerouteMenu();
+    captureRowFor("cap-1").querySelector('[data-reroute-branch-open="project-1"]').click();
+    await vi.waitFor(() => expect(captureRowFor("cap-1")?.querySelector("[data-reroute-branch]")).not.toBeNull());
+    const field = captureRowFor("cap-1").querySelector("[data-reroute-branch]");
+    field.value = "build/sent-draft";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    captureRowFor("cap-1").querySelector('[data-reroute-project="project-1"][data-reroute-kind="branch"]').click();
+    await vi.waitFor(() => expect(workshopCall).toHaveBeenCalledWith("capture.reroute", {
+      capture_id: "cap-1", project_id: "project-1", kind: "branch", branch: "build/sent-draft",
+    }));
+    const { readUiRecord, writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const draftAddress = uiAddress({ deviceId: "dev-1", entityId: "cap-1", view: "inbox-capture-branch",
+      kind: "draft", sub: "project-1" });
+    await vi.waitFor(async () => expect((await readUiRecord(draftAddress))?.value.branch).toBe("build/sent-draft"));
+    unmountInboxList();
+    if (newer) await writeUiRecord(draftAddress, { branch: "build/newer-draft" });
+    finish({ id: "cap-1", text: "captured work", state: "routed", routing: {
+      project_id: "project-1", kind: "branch", target_id: "build/sent-draft",
+    } });
+    await vi.waitFor(async () => expect((await readUiRecord(draftAddress))?.value.branch)
+      .toBe(newer ? "build/newer-draft" : ""));
+  });
+
   it("reorders live while preserving the focused branch box and selection", async () => {
     feed([], undefined, [routedCapture()]);
     captureRowFor("cap-1").querySelector("[data-capture-reroute]").click();

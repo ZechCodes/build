@@ -12,10 +12,14 @@ inset tint; keyboard focus keeps its accent outline. This supersedes the
 up-arrow glyph below without changing its switcher behavior.
 
 **#631 pinned inbox amendment (2026-10-16):** Above 900px, docking the inbox
-removes the toolbar's leading inbox clearance. The existing switcher and
-breadcrumbs slide left together without replacing or hiding their nodes;
-unpinning restores the inbox opener and its clearance. At 900px and below the
-pin is unavailable and the inbox opens as an overlay with its trigger retained.
+aligns the switcher glyph's left edge with the unpinned inbox glyph's offset
+above the directory column. The existing switcher and breadcrumbs slide left
+together without replacing or hiding their nodes. The pinned target is 29.5px
+wide and 44px tall with the default 40px directory column, retaining the 4px
+gap before the project crumb. It stays inside the top bar, outside the inbox
+pane, with no breadcrumb overlap. Unpinned keeps its 44×44px target and inbox
+clearance. At 900px and below the pin is unavailable and the inbox opens as an
+overlay with its trigger retained.
 
 Zech's #523 comment `tc-01M4R8GB4Y9GGVK6MDD7KKYW4H` settles three controls:
 

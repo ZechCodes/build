@@ -2994,8 +2994,11 @@ summarizes watched activity, including tasks without a Needs you reason; an
 expanded head uses only its project conversation's own unread and activity.
 The head offers Hide and New workspace directly.
 
-The Projects face lists every project in one flat alphabetical list, using
-case-insensitive locale collation with device-tag and project-key tie breakers.
+The Projects face lists every project in one list ordered by the oldest
+current streak start among its active watched entries, including the project's
+own conversation. Projects with only Recent rows or no dated activity follow
+active projects; case-insensitive name, device-tag and project-key collation
+breaks ties. The toolbar's project picker retains alphabetical order.
 Project blocks have transparent backgrounds; only the active head has an accent
 tint. Every block starts open unless the user saved a fold, with its live rows
 in anchor order followed by one project-keyed Recent disclosure. Recent starts
@@ -3012,11 +3015,19 @@ that agent's conversation, falling back to the project task page when no cached
 live workspace is known.
 Every watched open task outside Done stays visible, even after its attention is read. Rows
 interleave with captures, workspaces and project-agent rows in one list ordered
-by oldest anchor (#481). A task without a bridge anchor uses its creation time;
-its latest cached update, comment or event supplies activity for Recent. Assignment,
-attention reasons and unread counts never change position. Every row kind moves
+by oldest current activity-streak start (#628). A gap of eight hours or longer
+ends a streak. Conversation summaries come from the bridge's message index;
+task summaries come from its meaningful timeline entries and are cached on
+`tasks.list` / `tasks.get`, so sorting needs no history fetch. Older task records
+fall back to their anchor or creation time and latest cached activity. Attention
+reasons and unread counts never change position. Every row kind moves
 to Recent after a day without activity while no agent works; dismissed rows go
 there too. Inside a project block, the same row order and Recent rule apply.
+`inboxOrdering.js` holds that policy separately from row markup. Cache writes
+reconcile both faces immediately, including while an inbox input is focused;
+the keyed rows preserve the input and selection. A local cutoff clock repaints
+when the next cached row reaches 24 hours and on page return, without polling
+the bridge, and is disposed with the inbox.
 Quiet tasks keep their title and reason on separate lines. Every task row has an
 eye that uses the existing optimistic `tasks.unwatch` path, removing the row
 immediately and restoring its watch if the write fails. The eye stays visible

@@ -31,7 +31,7 @@ const entry = (id, projectId, project, unreadCount = 0, over = {}) => ({
 });
 
 describe("workspace project blocks", () => {
-  it("orders blocks alphabetically while rows keep their session order", () => {
+  it("orders blocks by their longest-running active entry while rows keep their session order", () => {
     const hour = 60 * 60 * 1000;
     const session = (start, last = start) => ({ session_started_ms: start * hour, last_activity_ms: last * hour });
     const projects = [
@@ -44,8 +44,36 @@ describe("workspace project blocks", () => {
       entry("other", "p2", "Alpha", 0, { anchorMs: 25 * hour, lastActivityMs: 25 * hour }),
     ];
     const { blocks } = workspaceProjectBlocks(rows, projects, [], null, 30 * hour);
-    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p2", "dev-1/p1"]);
-    expect(blocks[1].entries.map((row) => row.workspaceId)).toEqual(["early", "late"]);
+    expect(blocks.map((block) => block.projectKey)).toEqual(["dev-1/p1", "dev-1/p2"]);
+    expect(blocks[0].entries.map((row) => row.workspaceId)).toEqual(["early", "late"]);
+  });
+
+  it("uses watched tasks and the project conversation, excluding Recent, to rank blocks", () => {
+    const hour = 3600_000;
+    const now = 100 * hour;
+    const projects = [on("dev-1", { id: "p1", name: "Alpha" }), on("dev-1", { id: "p2", name: "Zulu" })];
+    const rows = [
+      entry("old", "p1", "Alpha", 0, { anchorMs: hour, lastActivityMs: now - 25 * hour }),
+      entry("task", "p1", "Alpha", 0, { kind: "tracker_task", anchorMs: 80 * hour, lastActivityMs: now }),
+      entry("conversation", "p2", "Zulu", 0, { kind: "project_agent", anchorMs: 70 * hour, lastActivityMs: now }),
+    ];
+    const ranked = () => workspaceProjectBlocks(rows, projects, [], null, now).blocks;
+    expect(ranked().map((block) => block.id)).toEqual(["p2", "p1"]);
+    expect(ranked().find((block) => block.id === "p1").recent.map((row) => row.workspaceId)).toEqual(["old"]);
+    rows[2].anchorMs = 90 * hour;
+    expect(ranked().map((block) => block.id)).toEqual(["p1", "p2"]);
+    rows[1].lastActivityMs = now - 24 * hour;
+    expect(ranked().map((block) => block.id)).toEqual(["p2", "p1"]);
+  });
+
+  it("places projects with dated active rows ahead of quiet or empty projects", () => {
+    const projects = [on("dev-1", { id: "quiet", name: "Alpha" }), on("dev-1", { id: "live", name: "Zulu" })];
+    const now = 100 * 3600_000;
+    const rows = [
+      entry("quiet", "quiet", "Alpha", 0, { anchorMs: 1, lastActivityMs: 1 }),
+      entry("live", "live", "Zulu", 0, { anchorMs: now - 100, lastActivityMs: now }),
+    ];
+    expect(workspaceProjectBlocks(rows, projects, [], null, now).blocks.map((block) => block.id)).toEqual(["live", "quiet"]);
   });
 
   it("keeps a month-old project in its alphabetical place without a project Recent partition", () => {

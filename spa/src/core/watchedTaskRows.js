@@ -15,6 +15,7 @@ import { taskUnreadCount } from "./taskUnread.js";
 import { ATTENTION_REASONS, watchedTaskReasons } from "./trackerAttentionModel.js";
 import { taskActivityGroup, taskHasReadiness, taskIsHeld, taskWaitingText, unresolvedTaskBlockers } from "./trackerTaskReadiness.js";
 import { changedSince } from "./trackerModel.js";
+import { hasSessionSummary, sessionTimes } from "./sessionSpans.js";
 
 /** Why the row is there, in the inbox's words. */
 const REASON_WORDS = Object.freeze({
@@ -32,9 +33,11 @@ const ms = (iso) => {
 
 const titleOf = (task) => task.title || "(untitled)";
 
-/** Creation anchors a task without a bridge anchor. Cached comments and
- *  events can renew its activity without moving that anchor. */
+/** Current bridges summarize the complete timeline, so no history read is
+ * needed to sort a task. Older cached records retain their legacy fallback. */
 function taskTimes(task, detail) {
+  if (hasSessionSummary(task)) return sessionTimes(task);
+  if (!changedSince(task, detail) && hasSessionSummary(detail?.task)) return sessionTimes(detail.task);
   const activity = [task.created_at, task.updated_at, task.last_activity,
     ...(detail?.timeline || []).map((item) => item.created_at || item.at)]
     .map(ms).filter(Number.isFinite);

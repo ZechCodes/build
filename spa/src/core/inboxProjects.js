@@ -13,9 +13,9 @@
 // Blocks start open; each block's Recent starts closed, including when all its
 // rows are quiet. The chevron folds the whole block and remembers that choice.
 // A block with no rows has nothing to fold, so its chevron is disabled.
-// Every project stays in one alphabetical list, however long it has been
-// quiet. Names use case-insensitive locale order, then the device tag and
-// project key break ties. Rows inside keep their anchor order and per-block
+// Blocks sort by their longest-running active entry, including the project
+// conversation. Names, device tags and project keys break ties; quiet and
+// empty projects follow active ones. Rows inside keep their anchor order and per-block
 // Recent partition, the same as the ungrouped inbox.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
@@ -31,6 +31,7 @@ import {
   workspaceIsRecent,
 } from "./inbox.js";
 import { statusDotHtml } from "./inboxStatusDot.js";
+import { longestActiveAnchor } from "./inboxOrdering.js";
 
 /** What a block says instead of its machine's name when that machine cannot be
  *  asked anything: the reader's question about such a block is never "which
@@ -89,6 +90,7 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys) {
     deviceId: project.deviceId,
     ...tag,
     name: projectNameOf(project),
+    anchorMs: longestActiveAnchor(rows, nowMs),
     isGit: project.is_git !== false,
     entries,
     recent,
@@ -125,7 +127,7 @@ export function workspaceProjectBlocks(entries = [], projects = [], devices = []
       nowMs,
       runningTaskProjectKeys,
     ),
-  ).sort(byProjectName);
+  ).sort((left, right) => byAnchor(left, right) || byProjectName(left, right));
   return {
     unsorted: entries.filter((entry) => !entry.projectKey),
     blocks,
@@ -184,8 +186,8 @@ export function deviceTagHtml(project) {
   return dimDeviceHtml(deviceTagOf(project));
 }
 
-/** The rail and toolbar list projects in the same order: names and cached
- *  device names use locale collation; account-wide keys settle remaining ties.
+/** The toolbar's order and the rail's tie breaker: names and cached device
+ * names use locale collation; account-wide keys settle remaining ties.
  *  Connection status changes the displayed tag, never the sort order. */
 export function byProjectName(left, right) {
   return left.name.localeCompare(right.name, undefined, { sensitivity: "base" })

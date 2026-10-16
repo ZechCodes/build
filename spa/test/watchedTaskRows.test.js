@@ -167,6 +167,26 @@ describe("task anchors and Recent", () => {
   const now = Date.parse("2026-09-24T12:00:00Z");
   const old = watched({ id: "old", created_at: "2026-09-22T10:00:00Z", updated_at: "2026-09-23T10:00:00Z" });
 
+  it("orders by the cached current streak instead of creation or the old board anchor", () => {
+    const earlier = { ...old, id: "earlier", session_started_ms: now - 6 * 3600_000, last_activity_ms: now };
+    const resumed = { ...old, id: "resumed", anchor: old.created_at,
+      session_started_ms: now - 3600_000, last_activity_ms: now };
+    const listed = rows([resumed, earlier]);
+    expect(listed.map((row) => row.taskId)).toEqual(["earlier", "resumed"]);
+    expect(listed[1]).toMatchObject({ anchorMs: resumed.session_started_ms, lastActivityMs: now });
+  });
+
+  it("takes session fields from a current detail but never from a stale detail", () => {
+    const detailed = { ...old, session_started_ms: now - 3600_000, last_activity_ms: now };
+    const detail = new Map([[old.id, taskDetail(detailed, [])]]);
+    expect(rows([old], detail)[0].anchorMs).toBe(detailed.session_started_ms);
+    const newer = { ...old, updated_at: new Date(now + 1).toISOString(),
+      session_started_ms: now + 1, last_activity_ms: now + 1 };
+    expect(rows([newer], detail)[0]).toMatchObject({ anchorMs: now + 1, lastActivityMs: now + 1 });
+    const legacyNewer = { ...old, updated_at: new Date(now + 1).toISOString() };
+    expect(rows([legacyNewer], detail)[0].anchorMs).toBe(Date.parse(old.created_at));
+  });
+
   it("uses the latest cached comment or event for activity without moving the creation anchor", () => {
     const timeline = [comment({ created_at: "2026-09-24T11:00:00Z" }), event({ at: "2026-09-24T10:00:00Z" })];
     const [row] = rows([old], new Map([[old.id, taskDetail(old, timeline)]]));

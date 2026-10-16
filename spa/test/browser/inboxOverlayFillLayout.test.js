@@ -144,7 +144,10 @@ for (const theme of ["light", "dark"]) {
               expect(fill.active, label).toBe(Boolean(state.active));
               expect(fill.hovered, label).toBe(Boolean(state.hover));
               expect(fill.focused, label).toBe(Boolean(state.focus));
-              expect(fill.overlays.length, label).toBe(key === "branch:quiet" ? 2 : 1);
+              // Grouped quiet rows keep floating facts beside their names;
+              // Inbox quiet rows put activity below the name instead.
+              const floatingFacts = key === "branch:quiet" && context.grouped;
+              expect(fill.overlays.length, label).toBe(floatingFacts ? 2 : 1);
               for (const overlay of fill.overlays) {
                 expect(overlay.background, `${label}: ${overlay.className}`).toBe(fill.expected);
                 expect(overlay.shadow, `${label}: ${overlay.className} fade`)

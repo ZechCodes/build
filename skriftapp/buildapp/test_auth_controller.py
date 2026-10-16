@@ -1,5 +1,5 @@
-"""``BuildAuthController`` is Skrift's ``AuthController`` with four handlers replaced by
-name (#314). Skrift is a pinned alpha: these tests pin the route inventory and the
+"""``BuildAuthController`` is Skrift's ``AuthController`` with five handlers replaced by
+name (#314, #626). Skrift is a pinned alpha: these tests pin the route inventory and the
 config that loads the controller, so a Skrift upgrade that renames a handler (leaving
 Skrift's unguarded one in place) or adds a route, which could create accounts, fails
 here before it ships."""
@@ -48,6 +48,7 @@ AUTH_ROUTES = {
 REPLACED = {
     ("GET", "/auth/login"),
     ("GET", "/auth/{provider:str}/login"),
+    ("POST", "/auth/logout"),
     ("POST", "/auth/{provider:str}/register/complete"),
     ("POST", "/auth/{provider:str}/register/options"),
 }

@@ -1,6 +1,6 @@
 """Skrift's auth controller with account creation behind an invite (#314).
 
-Build does not fork Skrift's sign-in: this subclass keeps every route and replaces four
+Build does not fork Skrift's sign-in: this subclass keeps every route and replaces five
 handlers by name, each doing Build's part and then calling Skrift's own handler.
 
 - ``/auth/login`` and ``/auth/{provider}/login`` show one view (#315): account creation
@@ -14,6 +14,8 @@ handlers by name, each doing Build's part and then calling Skrift's own handler.
   revoked or expired), so nothing passes on the strength of an earlier check.
 - A completed registration redeems the invite in the same request and sends the new
   member to /app/.
+- A completed logout returns to /app/ and its sign-in flow. Skrift still checks CSRF,
+  runs its logout hooks and clears the session; a refused logout keeps its destination.
 
 Skrift's own checks come first: Build's applies only to a request Skrift would act on
 (a configured passkey method and a valid CSRF token). Anything else goes straight to
@@ -112,6 +114,13 @@ async def with_page_view(
 
 
 class BuildAuthController(AuthController):
+    @post("/logout")
+    async def logout(self, request: Request) -> Redirect | TemplateResponse:
+        response = await AuthController.logout.fn(self, request)
+        if isinstance(response, Redirect) and response.url == "/":
+            return Redirect(path=APP_PATH)
+        return response
+
     @get("/login")
     async def login_page(
         self,

@@ -99,7 +99,7 @@ def test_logout_keeps_skrifts_form():
     assert 'method="post"' in form and 'action="/auth/logout"' in form
     assert CSRF_INPUT in form
     assert re.search(r'<button[^>]*type="submit"[^>]*>Log out</button>', form)
-    assert re.search(r'<a[^>]*href="/"[^>]*>Cancel</a>', html)
+    assert re.search(r'<a[^>]*href="/app/"[^>]*>Cancel</a>', html)
 
 
 def test_logout_shows_flash_messages_escaped():
@@ -110,23 +110,46 @@ def test_logout_shows_flash_messages_escaped():
     assert "&lt;b&gt;Invalid request.&lt;/b&gt;" in html
 
 
-def test_through_the_real_app_logout_is_ours_and_its_form_signs_out(skrift_app):
-    with TestClient(skrift_app, base_url=SECURE_ORIGIN) as client:
+@pytest.mark.parametrize("signed_in", [False, True])
+def test_through_the_real_app_logout_returns_to_app_signin(second_factor_app, signed_in):
+    with TestClient(second_factor_app, base_url=SECURE_ORIGIN) as client:
+        if signed_in:
+            sign_in_with_the_dummy(client)
+            assert client.get("/auth/passkeys").status_code == 200
         page = client.get("/auth/logout")
-        token = re.search(r'name="_csrf" value="([^"]+)"', page.text).group(1)
-        done = client.post("/auth/logout", data={"_csrf": token}, follow_redirects=False)
+        done = client.post("/auth/logout", data={"_csrf": csrf_token(page.text)}, follow_redirects=False)
+        assert done.status_code in (302, 303) and done.headers["location"] == "/app/", done.text
+        destination = client.get(done.headers["location"])
+        protected = client.get("/auth/passkeys", follow_redirects=False)
     assert page.status_code == 200
     assert_in_builds_frame(page.text)
-    # Skrift sends a refused token back to the confirm page; the page's own goes home.
-    assert done.status_code in (302, 303) and done.headers["location"] == "/", done.text
+    assert destination.status_code == 200
+    assert destination.url.path == "/auth/login"
+    assert destination.url.params["next"] == "/app/"
+    assert "<title>Sign in — Build</title>" in destination.text
+    assert [response.url.path for response in destination.history] == ["/app/"]
+    assert protected.status_code in (302, 303) and protected.headers["location"].startswith("/auth/login")
 
 
-def test_through_the_real_app_a_refused_logout_comes_back_with_its_message(skrift_app):
-    with TestClient(skrift_app, base_url=SECURE_ORIGIN) as client:
+@pytest.mark.parametrize("token", ["wrong", ""])
+def test_through_the_real_app_a_refused_logout_keeps_the_session(second_factor_app, token):
+    with TestClient(second_factor_app, base_url=SECURE_ORIGIN) as client:
+        sign_in_with_the_dummy(client)
         client.get("/auth/logout")
-        response = client.post("/auth/logout", data={"_csrf": "wrong"})
+        response = client.post("/auth/logout", data={"_csrf": token})
+        protected = client.get("/auth/passkeys")
     assert response.url.path == "/auth/logout"
     assert_in_builds_frame(response.text)
+    assert protected.status_code == 200
+
+
+def test_through_the_real_app_logout_confirmation_keeps_the_session_and_cancel_returns_to_app(second_factor_app):
+    with TestClient(second_factor_app, base_url=SECURE_ORIGIN) as client:
+        sign_in_with_the_dummy(client)
+        page = client.get("/auth/logout")
+        protected = client.get("/auth/passkeys")
+    assert re.search(r'<a[^>]*href="/app/"[^>]*>Cancel</a>', page.text)
+    assert protected.status_code == 200
 
 
 # --- error pages -------------------------------------------------------------------

@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, comment, event, task } from "./trackerWireFixture.js";
+import { painted } from "./waits.js";
 import tasksGetFixture from "../../fixtures/api/v1/tasks.get.json";
 
 let watchers = [];
@@ -195,16 +196,27 @@ describe("comment header reply", () => {
     const { rememberReviewSupport } = await import("../src/core/taskReviewSupport.js");
     const { writeReviewRecord } = await import("../src/core/taskReviewCache.js");
     await rememberReviewSupport("dev-1", { reviews: { get: true, comments: true } });
-    await writeReviewRecord(scope, { version: 1, state: "open", snapshots: [
+    const review = { version: 1, state: "open", snapshots: [
       { id: "snap-1", number: 1, directories: [] },
-    ] }, 1);
-    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answerFor({}, [
+    ] };
+    const answer = answerFor({}, [
       comment({ id: "tc-icon", opinion: { snapshot_id: "snap-1", verdict: "approve" } }),
-    ]));
+    ]);
+    const taskRead = Promise.withResolvers();
+    await writeReviewRecord(scope, review, 1);
+    call = vi.fn(async (method) => {
+      if (method === "tasks.review.get") return { review };
+      return method === "tasks.get" ? taskRead.promise : {};
+    });
+    await trackerCache.writeTaskRecord("dev-1", "proj-1", "task-1", answer);
     await mount({}, { waitForPaint: false });
-    await vi.waitFor(() => expect(host.querySelector("[data-review-feedback] textarea")).not.toBeNull());
-    const button = host.querySelector(".task-entry-head [data-review-reply]");
-    expect(button).not.toBeNull();
+    const replyButton = () => host.querySelector('.task-entry-head [data-review-reply="tc-icon"]');
+    await painted(() => replyButton() && host.querySelector("[data-review-feedback] textarea"), host);
+    // The live read must preserve the seeded comment and review. Previously
+    // the default RPC fixture removed them before slower runners could click.
+    taskRead.resolve({ ...answer, task: { ...answer.task, title: "Refreshed task" } });
+    await painted(() => host.querySelector(".task-page-title")?.textContent === "Refreshed task", host);
+    const button = await painted(replyButton, host);
     button.querySelector("svg").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     const field = host.querySelector("[data-review-feedback] textarea");
     await vi.waitFor(() => expect(document.activeElement).toBe(field));

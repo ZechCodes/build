@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { workspaceKey } from "../src/core/deviceKey.js";
 import { liveFeedSnapshot } from "../src/core/feedMerge.js";
 import { activeEntryKey, inboxRowHtml, routedEntityId, workspaceEntries, workspaceIsRecent } from "../src/core/inbox.js";
@@ -60,6 +60,36 @@ describe("workspace inbox rows", () => {
     }]);
     expect(entry.anchorMs).toBeGreaterThanOrEqual(now);
     expect(entry.lastActivityMs).toBe(entry.anchorMs);
+  });
+
+  it("uses one current time for legacy workspaces in the same snapshot", () => {
+    const now = Date.parse("2026-10-16T12:00:00Z");
+    let tick = now;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => tick++);
+    try {
+      const workspaces = [
+        { id: "first-legacy", project_id: "project-1" },
+        { id: "later-dated", project_id: "project-1", session_started_ms: now - 100, last_activity_ms: now - 50 },
+        { id: "second-legacy", project_id: "project-1" },
+        { id: "earlier-dated", project_id: "project-1", session_started_ms: now - 200, last_activity_ms: now - 150 },
+        { id: "empty", project_id: "project-1", session_started_ms: null, last_activity_ms: null },
+      ];
+      const entries = entriesOf(workspaces);
+      const expectedOrder = ["earlier-dated", "later-dated", "first-legacy", "second-legacy", "empty"];
+      expect(entries.map((entry) => entry.workspaceId)).toEqual(expectedOrder);
+      expect(entries.map((entry) => [entry.anchorMs, entry.lastActivityMs])).toEqual([
+        [now - 200, now - 150], [now - 100, now - 50], [now, now], [now, now], [now, now],
+      ]);
+      const laterSnapshot = entriesOf(workspaces);
+      const laterNow = laterSnapshot[2].anchorMs;
+      expect(laterNow).toBeGreaterThan(now);
+      expect(laterSnapshot.map((entry) => entry.workspaceId)).toEqual(expectedOrder);
+      expect(laterSnapshot.map((entry) => [entry.anchorMs, entry.lastActivityMs])).toEqual([
+        [now - 200, now - 150], [now - 100, now - 50], [laterNow, laterNow], [laterNow, laterNow], [laterNow, laterNow],
+      ]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it("anchors a new bridge's empty workspace at creation", () => {

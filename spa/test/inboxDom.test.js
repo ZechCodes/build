@@ -716,17 +716,23 @@ describe("an account with more than one device", () => {
   // Which controls a block has is what the cache holds: Hide is in every
   // block's head, whether its machine is answering, connecting or gone.
   it("offers Hide directly in every block's head, whatever its machine is doing", () => {
-    twoDevices();
-    setInboxView("projects");
-    const hides = () => [...document.querySelectorAll(".inbox-project-head .inbox-project-hide")];
-    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
+    let tick = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => tick++);
+    try {
+      twoDevices();
+      setInboxView("projects");
+      const hides = () => [...document.querySelectorAll(".inbox-project-head .inbox-project-hide")];
+      expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
 
-    setContextOffline("dev-2", { offline: true });
-    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
-    expect(hides().every((item) => !item.disabled)).toBe(true);
+      setContextOffline("dev-2", { offline: true });
+      expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
+      expect(hides().every((item) => !item.disabled)).toBe(true);
 
-    setContextOffline("dev-2", { offline: false });
-    expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
+      setContextOffline("dev-2", { offline: false });
+      expect(hides().map((item) => item.dataset.projectHide)).toEqual(["dev-2/project-1", "dev-1/project-1"]);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   // Hide drops the project from the cache — which, on a machine that has gone,

@@ -39,6 +39,7 @@ it.each(["inbox", "projects"])("keeps project navigation focused across a live r
     await mountInboxLayout(page, basePath);
     await showInboxLayoutFace(page, face);
     const row = page.locator(`[data-key="project-agent:${LAYOUT_DEVICE}/live-project"]`);
+    const routeBefore = await page.evaluate(() => window.__layoutModules.app.App.route);
     await row.focus();
     await page.evaluate(async (deviceId) => {
       window.__focusedProjectRow = document.activeElement;
@@ -54,6 +55,7 @@ it.each(["inbox", "projects"])("keeps project navigation focused across a live r
     { face, deviceId: LAYOUT_DEVICE });
     expect(await row.evaluate((element) => element === window.__focusedProjectRow)).toBe(true);
     expect(await row.evaluate((element) => document.activeElement === element)).toBe(true);
+    expect(await page.evaluate(() => window.__layoutModules.app.App.route)).toEqual(routeBefore);
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => window.__layoutModules.app.App.route.name === "project");
     expect(await page.evaluate(() => window.__layoutModules.app.App.route))

@@ -715,6 +715,11 @@ describe("an account with more than one device", () => {
       ]);
       const actions = recentRows.map((row) => row.querySelector(".inbox-actions").innerHTML);
       const total = document.querySelector("#inbox-open .inbox-open-count").textContent;
+      const expectSameRows = () => {
+        const current = [...document.querySelectorAll(".inbox-recent .inbox-entry")];
+        expect(current).toHaveLength(recentRows.length);
+        current.forEach((row, index) => expect(row).toBe(recentRows[index]));
+      };
 
       if (word === "offline") setContextOffline("dev-2", { offline: true });
       else adoptBridgeSelection(contextFor("dev-2"), { version: "0.9.0", unsupported: "bridge" }, null);
@@ -736,6 +741,34 @@ describe("an account with more than one device", () => {
         expect(document.querySelector('[data-project="dev-1/project-1"] .inbox-project-device').textContent.trim()).toBe("workshop");
       } else {
         for (const row of recentRows) expect(row.querySelector(".inbox-device").textContent).toBe("laptop");
+      }
+
+      const replacement = word === "offline" ? "update" : "offline";
+      if (replacement === "update") {
+        adoptBridgeSelection(contextFor("dev-2"), { version: "0.9.0", unsupported: "bridge" }, null);
+      } else {
+        adoptBridgeSelection(contextFor("dev-2"), { version: "2.0.0", unsupported: null }, {});
+        setContextOffline("dev-2", { offline: true });
+      }
+      feed([work], projects, [conversation]);
+      expectSameRows();
+      for (const row of recentRows) {
+        expect(row.querySelectorAll(".inbox-away")).toHaveLength(1);
+        expect(row.querySelector(".inbox-away").textContent).toBe(replacement);
+      }
+
+      adoptBridgeSelection(contextFor("dev-2"), { version: "2.0.0", unsupported: null }, {});
+      setContextOffline("dev-2", { offline: false });
+      feed([work], projects, [conversation]);
+      expectSameRows();
+      for (const row of recentRows) {
+        expect(row.querySelectorAll(".inbox-away")).toHaveLength(0);
+        expect(row.classList.contains("inbox-offline")).toBe(false);
+      }
+      expect(recentRows.map((row) => row.querySelector(".inbox-actions").innerHTML)).toEqual(actions);
+      expect(document.querySelector("#inbox-open .inbox-open-count").textContent).toBe(total);
+      if (face === "projects") {
+        expect(document.querySelector('[data-project="dev-2/project-1"] .inbox-project-device').textContent.trim()).toBe("laptop");
       }
     },
   );

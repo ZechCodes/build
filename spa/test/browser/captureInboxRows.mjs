@@ -106,9 +106,10 @@ await withLayoutPage(async ({ page, basePath }) => {
   await head.waitFor();
   await page.waitForFunction((key) => {
     const head = document.querySelector(`#inbox-list .inbox-project[data-project="${key}"] .inbox-project-head`);
-    const dot = head?.querySelector(".inbox-status-dot");
+    const agent = document.querySelector(`#inbox-list .inbox-entry[data-key="project-agent:${key}"]`);
+    const dot = agent?.querySelector(".inbox-status-dot");
     return dot?.classList.contains("inbox-status-unread") && !dot.classList.contains("inbox-status-running")
-      && !head.querySelector(".inbox-unread, .sdot")
+      && head && !head.querySelector(".inbox-status-dot, .inbox-unread, .sdot")
       && document.querySelector("#inbox-open .inbox-open-count")?.textContent.trim() === "5";
   }, PROJECT_KEY);
   await page.locator("#inbox-rail").screenshot({ path: `${directory}projects-face-expanded.png` });

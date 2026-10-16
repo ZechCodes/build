@@ -14,13 +14,14 @@ async function measureRow(row) {
   return row.evaluate((element) => {
     const box = (node) => {
       if (!node) return null;
-      const { left, right, top, bottom, width } = node.getBoundingClientRect();
-      return { left, right, top, bottom, width };
+      const { left, right, top, bottom, width, height } = node.getBoundingClientRect();
+      return { left, right, top, bottom, width, height, centerY: top + height / 2 };
     };
     const project = element.querySelector(".inbox-project-line");
     const name = element.querySelector(".inbox-name");
     const facts = element.querySelector(".inbox-facts");
-    return { project: box(project), name: box(name), facts: box(facts), row: box(element),
+    return { project: box(project), name: box(name), facts: box(facts), titleBox: box(element.querySelector(".stitle")),
+      dot: box(element.querySelector(".inbox-status-dot")), floatingFacts: facts?.classList.contains("inbox-facts-float"), row: box(element),
       title: element.querySelector(".stitle")?.textContent, projectText: project?.textContent.trim(),
       factsText: facts?.textContent.trim(), projectInName: Boolean(name?.querySelector(".inbox-tag")),
       recent: Boolean(element.closest(".inbox-recent")) };
@@ -28,10 +29,11 @@ async function measureRow(row) {
 }
 
 for (const width of [1280, 390]) {
-  it(`puts project, name and activity on separate lines for every inbox kind, including Recent, at ${width}px`, async () => {
+  it(`puts the project above live rows and compact Recent names and facts at ${width}px`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       await mountInboxLayout(page, basePath);
       await showInboxLayoutFace(page, "inbox");
+      const live = await measureRow(rowFor(page, LAYOUT_ROWS[0].key));
       for (const entry of LAYOUT_ROWS) {
         const row = rowFor(page, entry.key);
         const measured = await measureRow(row);
@@ -43,7 +45,15 @@ for (const width of [1280, 390]) {
         expect(measured.name.width, entry.key).toBeGreaterThan(0);
         expect(measured.facts.width, entry.key).toBeGreaterThan(0);
         expect(measured.name.top, entry.key).toBeGreaterThanOrEqual(measured.project.bottom);
-        expect(measured.facts.top, entry.key).toBeGreaterThanOrEqual(measured.name.bottom);
+        const compact = entry.recent && !entry.key.startsWith("tracker_task:");
+        expect(measured.floatingFacts, entry.key).toBe(compact);
+        if (compact) {
+          expect(Math.abs(measured.facts.centerY - measured.name.centerY), entry.key).toBeLessThanOrEqual(1);
+          expect(measured.facts.left, entry.key).toBeGreaterThanOrEqual(measured.titleBox.right);
+          expect(measured.name.left - live.name.left, entry.key).toBe(13);
+          expect(measured.project.left, entry.key).toBe(measured.name.left);
+          expect(Math.abs(measured.dot.centerY - measured.name.centerY), entry.key).toBeLessThanOrEqual(1);
+        } else expect(measured.facts.top, entry.key).toBeGreaterThanOrEqual(measured.name.bottom);
         expect(measured.project.left, entry.key).toBeGreaterThanOrEqual(measured.row.left);
         expect(measured.project.right, entry.key).toBeLessThanOrEqual(measured.row.right);
         expect(measured.factsText, entry.key).not.toBe("");
@@ -65,10 +75,16 @@ for (const width of [1280, 390]) {
         expect(await row.locator(".inbox-project-line, .inbox-tag").count(), entry.key).toBe(0);
         expect(await row.locator(".stitle").textContent(), entry.key).toBe(entry.name);
         expect(await row.evaluate((element) => Boolean(element.closest(".inbox-recent"))), entry.key).toBe(entry.recent);
+        if (entry.recent && !entry.key.startsWith("tracker_task:")) {
+          const compact = await measureRow(row);
+          expect(compact.floatingFacts, entry.key).toBe(true);
+          expect(Math.abs(compact.facts.centerY - compact.name.centerY), entry.key).toBeLessThanOrEqual(1);
+          expect(compact.facts.left, entry.key).toBeGreaterThanOrEqual(compact.titleBox.right);
+        }
       }
       const own = rowFor(page, `project-agent:${LAYOUT_DEVICE}/live-project`);
       const measured = await measureRow(own);
-      expect(measured.factsText).toBe("Getting started");
+      expect(measured.factsText).toMatch(/0 running$/);
       expect(measured.facts.top).toBeGreaterThanOrEqual(measured.name.bottom);
       expect(await own.locator("button").count()).toBe(0);
 
@@ -94,6 +110,29 @@ for (const width of [1280, 390]) {
       expect(await page.evaluate(() => window.__inboxLayoutCalls.filter((call) => call.method === "entity.seen").length))
         .toBe(await page.evaluate(() => window.__inboxLayoutSeen));
       expect(await page.evaluate(() => document.activeElement?.classList.contains("inbox-project-name"))).toBe(true);
+      await disposeInboxLayout(page);
+    }, { width, height: 960, hasTouch: width === 390 });
+  }, 30_000);
+
+  it(`labels known-project captures above their existing rows without inventing unknown projects at ${width}px`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountInboxLayout(page, basePath, { captures: true });
+      for (const face of ["inbox", "projects"]) {
+        await showInboxLayoutFace(page, face);
+        for (const known of [false, true]) for (const quiet of [false, true]) {
+          const row = rowFor(page, `capture:layout-${known ? "known" : "unknown"}-${quiet ? "quiet" : "live"}`);
+          const project = row.locator(".inbox-project-line");
+          expect(await project.count()).toBe(known && face === "inbox" ? 1 : 0);
+          expect(await row.locator("[data-capture-reroute]").count()).toBe(1);
+          if (known && face === "inbox") {
+            const placement = await row.evaluate((element) => ({
+              project: element.querySelector(".inbox-project-line").getBoundingClientRect().bottom,
+              name: element.querySelector(".stitle").getBoundingClientRect().top,
+            }));
+            expect(placement.name).toBeGreaterThanOrEqual(placement.project);
+          }
+        }
+      }
       await disposeInboxLayout(page);
     }, { width, height: 960, hasTouch: width === 390 });
   }, 30_000);

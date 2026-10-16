@@ -1000,7 +1000,7 @@ const rowStatusDotHtml = (entry) => statusDotHtml({
 const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReviewSummaryHtml(entry.reviewSummary) : "";
 
 /** Name and activity, with a project line above them on the Inbox face.
- * Grouped Recent keeps its compact workspace rows. The status dot follows
+ * Recent keeps its compact workspace and project rows. The status dot follows
  * the existing actions at the right edge. */
 export function inboxRowHtml(entry, ui = {}) {
   const ownPainter = ROW_PAINTERS[entry.kind];
@@ -1038,14 +1038,16 @@ function rowOpenHtml(entry, ui, extra = []) {
   ]
     .filter(Boolean)
     .join(" ");
-  return `<div class="${classes}" data-key="${esc(entry.key)}"${
+  const navigation = entry.kind === PROJECT_AGENT && entry.route ? ' role="link" tabindex="0"' : "";
+  return `<div class="${classes}"${navigation} data-key="${esc(entry.key)}"${
     entry.entityId ? ` data-entity="${esc(entry.entityId)}"` : ""
   } title="${esc(rowTooltip(entry))}">`;
 }
 
 /** Project agents use the workspace shape, retaining their existing actions. */
 function projectAgentRowHtml(entry, ui) {
-  return twoLineRowHtml(entry, ui, ["inbox-project-agent", ...(ui.quiet ? ["inbox-quiet", "inbox-quiet-full"] : [])]);
+  if (ui.quiet || entry.quiet) return quietRowHtml(entry, ui, ["inbox-project-agent"], entry.facts || GETTING_STARTED);
+  return twoLineRowHtml(entry, ui, ["inbox-project-agent"]);
 }
 
 /** The kinds of row that paint in a shape of their own. */
@@ -1054,21 +1056,22 @@ const ROW_PAINTERS = {
   [PROJECT_AGENT]: projectAgentRowHtml,
 };
 
-/** Inbox Recent uses the live shape with its own project line. Grouped
- * quiet tasks keep title and reason lines; quiet workspaces keep one line, with
- *  what it weighs floating over the line's right edge. Its status dot follows
+/** Recent workspaces and project agents keep their name and floating activity
+ * on one compact line, with the project above it on the Inbox face. Quiet
+ * tasks keep their existing title/reason shape. Its status dot follows
  *  the same rules as a live row. Same key, same verbs, same
  *  element shape, so a row going quiet keeps its element. */
-function quietRowHtml(entry, ui) {
-  if (ui.showProject !== false) return twoLineRowHtml(entry, ui,
-    ["inbox-quiet", "inbox-quiet-full", entry.kind === TRACKER_TASK ? "inbox-quiet-task" : ""], entry.facts || "");
+function quietRowHtml(entry, ui, extra = [], facts = entry.facts || "") {
   if (entry.kind === TRACKER_TASK) return twoLineRowHtml(entry, ui, ["inbox-quiet", "inbox-quiet-task"], entry.facts || "");
-  return `${rowOpenHtml(entry, ui, ["inbox-quiet"])}
+  return `${rowOpenHtml(entry, ui, ["inbox-quiet", ...extra])}
     <div class="inbox-body">
-      <div class="inbox-line inbox-name"><span class="stitle">${esc(entry.name)}</span></div>
+      ${projectTagHtml(entry, ui)}
+      <div class="inbox-quiet-line">
+        <div class="inbox-line inbox-name"><span class="stitle">${esc(entry.name)}</span></div>
+        ${facts ? `<span class="inbox-facts inbox-facts-float">${rowReviewSummaryHtml(entry)}${esc(facts)}</span>` : ""}
+      </div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    ${entry.facts ? `<span class="inbox-facts inbox-facts-float">${rowReviewSummaryHtml(entry)}${esc(entry.facts)}</span>` : ""}
     <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
   </div>`;
 }
@@ -1146,6 +1149,12 @@ const captureActivity = (entry) => ({
   unread: entry.unreadCount > 0 || entry.state === "unread",
 });
 
+/** Captures without a known project keep their existing unlabelled shape. */
+function captureProjectHtml(entry, ui) {
+  if (!entry.project && !entry.projectId) return "";
+  return projectTagHtml({ ...entry, project: entry.project || entry.projectId }, ui);
+}
+
 /** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
  *  rerouteBranches }. */
 export function captureRowHtml(entry, ui = {}) {
@@ -1165,6 +1174,7 @@ export function captureRowHtml(entry, ui = {}) {
     .join(" ");
   return `<div class="${classes}" data-key="${esc(entry.key)}" data-capture="${esc(entry.captureId)}" title="${esc(entry.text || entry.name)}">
     <div class="inbox-body">
+      ${captureProjectHtml(entry, ui)}
       <div class="inbox-line"><span class="stitle">${esc(entry.name)}</span></div>
       <div class="inbox-line capture-status${activity.running ? " dim" : ""}"><span>${esc(status)}</span></div>
       ${entry.question ? `<div class="inbox-reason">${esc(entry.question)}</div>` : ""}

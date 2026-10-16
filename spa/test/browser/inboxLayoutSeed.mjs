@@ -17,7 +17,7 @@ const body = readFileSync(fileURLToPath(new URL("../../index.html", import.meta.
 
 /** A mounted production rail fed entirely by local records. Its fake device
  * session answers no transport, account or bridge and records only row opens. */
-export async function mountInboxLayout(page, basePath) {
+export async function mountInboxLayout(page, basePath, { captures = false } = {}) {
   await page.clock.setFixedTime(LAYOUT_NOW);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await mountLayout(page, body, { basePath });
@@ -26,7 +26,7 @@ export async function mountInboxLayout(page, basePath) {
     feed: "src/core/taskFeed.js", rail: "src/core/inboxShell.js", inbox: "src/core/inboxView.js",
     contexts: "src/core/deviceContexts.js",
   }, basePath);
-  await page.evaluate(async (deviceId) => {
+  await page.evaluate(async ({ deviceId, captures }) => {
     const { app, cache, tracker, feed, rail, inbox, contexts } = window.__layoutModules;
     Object.assign(app.App, { route: { name: "inbox" }, devices: [{ id: deviceId, name: "This computer" }],
       selectedDeviceId: deviceId, deviceFilter: null });
@@ -51,6 +51,15 @@ export async function mountInboxLayout(page, basePath) {
     const items = [conversation(projects[0], projects[0].entity_id, 2, 2),
       conversation(projects[1], projects[1].entity_id, 2000, 1),
       ...workspaces.map((row, index) => conversation(projects[index], row.entity_id, index ? 2000 : 3, 1))];
+    if (captures) {
+      for (const known of [false, true]) for (const quiet of [false, true]) {
+        items.push({ kind: "capture", capture_id: `layout-${known ? "known" : "unknown"}-${quiet ? "quiet" : "live"}`,
+          title: "Keep capture routing", state: "routed", deviceId,
+          created_at: new Date(minutesAgo(quiet ? 2000 : 1)).toISOString(),
+          ...(known ? { project_id: projects[0].id, projectKey: projects[0].projectKey,
+            routing: { project_id: projects[0].id, kind: "branch", target_id: "build/inbox-layout" } } : {}) });
+      }
+    }
     const task = (id, number, title, project, age) => ({ id, number, title, project_id: project.id,
       state: "open", status: "in_progress", watched: true, assignee: { kind: "user" },
       unread_count: 0, created_at: new Date(minutesAgo(age + 10)).toISOString(),
@@ -76,7 +85,7 @@ export async function mountInboxLayout(page, basePath) {
     inbox.setInboxView("inbox");
     await feed.startFeed();
     if (innerWidth <= 900) await rail.setInboxCollapsed(true, { animate: false, persist: false, reveal: true });
-  }, LAYOUT_DEVICE);
+  }, { deviceId: LAYOUT_DEVICE, captures });
   await page.locator('[data-key="tracker_task:live-layout-task"]').waitFor({ state: "visible" });
 }
 
@@ -84,8 +93,10 @@ export async function mountInboxLayout(page, basePath) {
  * that intentionally changed when project agents moved into their blocks. */
 export async function showInboxLayoutFace(page, face) {
   await page.evaluate((face) => window.__layoutModules.inbox.setInboxView(face), face);
-  for (const toggle of await page.locator('#inbox-list [data-recent-toggle][aria-expanded="false"]').all()) {
-    const scope = await toggle.getAttribute("data-recent-toggle");
+  const scopes = await page.locator('#inbox-list [data-recent-toggle][aria-expanded="false"]')
+    .evaluateAll((toggles) => toggles.map((toggle) => toggle.dataset.recentToggle));
+  for (const scope of scopes) {
+    const toggle = page.locator(`#inbox-list [data-recent-toggle="${scope}"]`);
     await toggle.click();
     await page.waitForFunction((scope) => [...document.querySelectorAll("[data-recent-toggle]")]
       .some((node) => node.dataset.recentToggle === scope && node.getAttribute("aria-expanded") === "true"), scope);

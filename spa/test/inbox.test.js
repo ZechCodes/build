@@ -753,13 +753,12 @@ describe("what a row says", () => {
     expect(html).toContain('data-dismiss="run-1"');
   });
 
-  it("keeps a quiet Inbox row's project, name and activity in the same shape", () => {
+  it("puts a quiet Inbox row's project above its compact name and floating activity", () => {
     const [entry] = listed([branch({ stat: { uncommitted: { files_changed: 3, insertions: 4, deletions: 1 }, ahead: 2 } })]);
     const html = inboxRowHtml(entry, { quiet: true });
-    expect(html).toContain("inbox-quiet-full");
+    expect(html).not.toContain("inbox-quiet-full");
     expect(html.match(/class="inbox-line/g)).toHaveLength(2);
-    expect(html).toContain('class="inbox-facts">3 files · ↑2 · +4 −1<');
-    expect(html).not.toContain("inbox-facts-float");
+    expect(html).toContain('class="inbox-facts inbox-facts-float">3 files · ↑2 · +4 −1<');
     expect(html).not.toContain("sdot");
     expect(html).toContain('data-key="run-1"');
     expect(html).toContain('data-menu="run-1"');

@@ -257,6 +257,9 @@ for (const { label, width, height, hasTouch } of [
           await mountProjectsFace(page, basePath, { standing: true, emptyLive });
           await useProductionStyles(page);
           await openRecent(page, "projects-review/build");
+          // Own project rows make the blocks above this one taller. Bring
+          // the entire measured block inside the rail's scrolling viewport.
+          await page.locator(".inbox-project.active").scrollIntoViewIfNeeded();
           await settleTheme(page, theme);
           await hoverRecentRow(page);
           expect(await page.locator(".inbox-project.active .inbox-recent .inbox-entry.active").count()).toBe(1);

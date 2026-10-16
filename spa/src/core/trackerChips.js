@@ -149,11 +149,17 @@ const assigneeProvider = (assignee, reading) => {
 const isProjectAssignee = (assignee) =>
   assignee?.kind === "project_agent" || Boolean(assignee?.agent_id?.startsWith("project-"));
 
-export const assigneeHtml = (assignee, reading) => {
+// Only Board/List opt in: their agent names can be truncated, unlike the task page.
+const assigneeNameTitle = (assignee, label, enabled) =>
+  enabled && (assignee?.kind === "agent" || assignee?.kind === "project_agent")
+    ? ` title="${esc(label)}"` : "";
+
+export const assigneeHtml = (assignee, reading, { nameTitle = false } = {}) => {
   const label = assignee ? actorName(assignee, reading) : "Unassigned";
   const icon = isProjectAssignee(assignee) || assigneeProvider(assignee, reading)
     ? taskAvatarHtml(assignee, reading) : "";
-  return `<span class="task-assignee${assignee ? "" : " task-unassigned"}">${icon}${esc(label)}</span>`;
+  const title = assigneeNameTitle(assignee, label, nameTitle);
+  return `<span class="task-assignee${assignee ? "" : " task-unassigned"}">${icon}<span class="task-assignee-name"${title}>${esc(label)}</span></span>`;
 };
 
 /**
@@ -166,7 +172,7 @@ export const assigneeHtml = (assignee, reading) => {
  * a screen reader cannot find either.
  */
 export const rowAssigneeHtml = (assignee, reading) =>
-  assignee ? assigneeHtml(assignee, reading) : `<span class="task-assign-cue">Assign</span>`;
+  assignee ? assigneeHtml(assignee, reading, { nameTitle: true }) : `<span class="task-assign-cue">Assign</span>`;
 
 /** What the press is called where it cannot be seen. It names the holder when
  *  there is one, because a control whose visible words are missing from its

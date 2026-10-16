@@ -22,6 +22,11 @@ for (const width of [1280, 901, 900, 600]) for (const pinned of [true, false]) {
         expect(geometry.head.height).toBe(44);
         expect(geometry.firstInbox.x).toBe(84);
         expect(geometry.firstToolbar.x).toBeLessThan(geometry.toolbar.x + 84);
+        expect(await page.locator("#inbox-new-project span").evaluate((element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          return range.getClientRects().length;
+        })).toBe(1);
       } else {
         expect(geometry.toggle.x).toBeGreaterThanOrEqual(84);
         expect(geometry.firstToolbar.x).toBeGreaterThanOrEqual(geometry.toggle.right);

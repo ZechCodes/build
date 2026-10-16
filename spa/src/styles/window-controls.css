@@ -20,6 +20,10 @@
   height:44px; min-height:44px;
   padding-top:0; padding-bottom:0;
 }
+:root[data-window-controls-overlay] .inbox-new-project { gap:2px; padding-inline:4px; }
+:root[data-window-controls-overlay] .inbox-new-project span {
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
 @media (min-width:901px) {
   :root[data-window-controls-overlay] body:not(.inbox-collapsed) .toolbar { padding-left:0; }
   :root[data-window-controls-overlay] body:not(.inbox-collapsed) .inbox-head {

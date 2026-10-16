@@ -307,8 +307,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .capture-decide-error[hidden] { display:none; }
 
 /* ---- inbox entries ----
-   One list across every project, and every row is two lines: what this is, with
-   the status dot at the right edge, and what it weighs. The row shell (.srow,
+   One list across every project: project, name and activity in Inbox, name
+   and activity in Projects, with the status dot at the right edge. The row shell (.srow,
    .stitle, .badge, .warn) is the shared vocabulary in styles.css; only what the
    inbox adds lives here. */
 /* No divider between rows: room, a hover fill, and on the standing row a fill
@@ -344,7 +344,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-name .stitle { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .inbox-entry[data-key^="workspace:"] .stitle { white-space:pre; }
 .inbox-where { gap:8px; font-size:11.5px; color:var(--dim); }
-.inbox-tag { flex:none; max-width:52%; overflow:hidden; text-overflow:ellipsis;
+.inbox-project-line { font-size:11.5px; }
+.inbox-tag { flex:none; max-width:100%; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; color:var(--ink2); font-weight:550; }
 .inbox-mark { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; }
@@ -353,17 +354,17 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
    +/−, and that is the half that says how big this has got. */
 .inbox-facts { font-size:11.5px; color:var(--dim); font-family:var(--mono);
   overflow-wrap:anywhere; }
-/* A quiet row (Recent), except tasks: one line — the name, then what it
+/* A grouped quiet workspace (Recent): one line — the name, then what it
    weighs at the line's right edge, ending where its controls begin (on the
    controls' column when it has none; the dot's slot stays reserved after it). The name wins the line: it never shrinks
    while the facts have width to give, and the facts give it as an ellipsis,
    down to nothing, before the name loses a letter (#516). The facts' gap is
    a pseudo-element inside their own box, so at nothing it is nothing too. */
-.inbox-quiet:not(.inbox-quiet-task) { gap:0; align-items:center;
+.inbox-quiet:not(.inbox-quiet-task):not(.inbox-quiet-full) { gap:0; align-items:center;
   padding:8px calc(var(--inbox-actions-room) - var(--inbox-actions-fade) + var(--inbox-row-inset-right)) 8px calc(26px + var(--inbox-row-inset-left)); }
-.inbox-quiet:not(.inbox-quiet-task) > .inbox-body { flex:none; max-width:100%; }
-.inbox-quiet:not(.inbox-quiet-task) > .inbox-body > .inbox-line:first-child { padding-right:0; }
-.inbox-quiet:not(.inbox-quiet-task) .inbox-line .stitle { font-size:12.5px; }
+.inbox-quiet:not(.inbox-quiet-task):not(.inbox-quiet-full) > .inbox-body { flex:none; max-width:100%; }
+.inbox-quiet:not(.inbox-quiet-task):not(.inbox-quiet-full) > .inbox-body > .inbox-line:first-child { padding-right:0; }
+.inbox-quiet:not(.inbox-quiet-task):not(.inbox-quiet-full) .inbox-line .stitle { font-size:12.5px; }
 .inbox-facts-float { flex:0 1 auto; min-width:0; margin-left:auto; overflow:hidden; text-overflow:ellipsis;
   background:var(--inbox-row-fill); pointer-events:none; white-space:nowrap; overflow-wrap:normal; }
 .inbox-facts-float::before { content:""; display:inline-block; width:10px; }
@@ -428,7 +429,8 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry:has([data-capture-retry]) { --inbox-control-width:56px; }
 .inbox-entry:has([data-capture-reroute]) { --inbox-control-width:72px; }
 .inbox-entry:has([data-workspace-reclaim]) { --inbox-control-width:100px; }
-.inbox-entry > .inbox-body > .inbox-line:first-child { padding-right:var(--inbox-actions-room); }
+.inbox-entry > .inbox-body > .inbox-line:first-child,
+.inbox-entry > .inbox-body > .inbox-name { padding-right:var(--inbox-actions-room); }
 .inbox-actions { position:absolute; top:var(--inbox-actions-inset); right:var(--inbox-actions-inset); display:flex;
   align-items:center; gap:4px; min-height:30px; opacity:0; pointer-events:none;
   background:var(--inbox-row-fill); border-radius:6px; padding-left:var(--inbox-actions-fade);
@@ -453,7 +455,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 /* Without a dot its slot stays empty, so the last control — Done, the eye —
    ends on the same column whether or not the row has news (#516). */
 .inbox-actions:not(:has(> .inbox-status-dot)) { padding-right:var(--inbox-status-room); }
-.inbox-project-agent .inbox-actions, .inbox-quiet:not(.inbox-quiet-task) .inbox-actions { top:50%; transform:translateY(-50%); }
+.inbox-quiet:not(.inbox-quiet-task):not(.inbox-quiet-full) .inbox-actions { top:50%; transform:translateY(-50%); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
 .inbox-workspace-done { min-width:var(--inbox-done-width); }
 /* No hover on touch: the selected row shows its actions, one tap behind. */

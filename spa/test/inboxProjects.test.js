@@ -144,9 +144,7 @@ describe("workspace project blocks", () => {
     expect(projectHeadHtml(blocks[1], {})).toContain("New workspace in Same");
   });
 
-  // The head is the project, so it opens the project's own page — whatever is
-  // inside the block, and whether or not anything is. Every block is routable.
-  it("opens its project's own page from the head, however empty the block", () => {
+  it("makes the heading a fold control while retaining the project row's destination", () => {
     const projects = [
       { id: "p1", projectKey: "dev-1/p1", deviceId: "dev-1", name: "Project" },
       { id: "p2", projectKey: "dev-1/p2", deviceId: "dev-1", name: "Empty" },
@@ -158,7 +156,10 @@ describe("workspace project blocks", () => {
     ]);
     const head = projectHeadHtml(blocks[0], {});
     expect(head).not.toContain("inbox-unroutable");
-    expect(head).toContain("Open Empty");
+    expect(head).not.toContain("data-project-open");
+    expect(head).toContain('class="inbox-project-name" type="button" data-project-fold="dev-1/p2"');
+    expect(head.match(/data-project-fold=/g)).toHaveLength(2);
+    expect(head).not.toContain("Open Empty");
   });
 });
 

@@ -57,7 +57,7 @@ async function boot(view, rows, captures = []) {
   modules.inboxView.setInboxView(view);
   modules.inboxView.mountInboxList();
   await modules.taskFeed.startFeed();
-  await vi.waitFor(() => expect(activeRows()).toHaveLength(rows.length + captures.length), WAIT);
+  await vi.waitFor(() => expect(activeRows()).toHaveLength(rows.length + captures.filter((row) => row.kind === "capture").length), WAIT);
 }
 
 const capture = (over = {}) => ({ kind: "capture", capture_id: "draft-capture", title: "Keep my draft",
@@ -171,6 +171,34 @@ it.each(["inbox", "projects"])("moves rows and blocks after a cached activity pu
   await vi.waitFor(() => expect(activeKeys()).toEqual([rowKey("shorter"), rowKey("longer")]), WAIT);
   expect(activeRows().find((row) => row.dataset.key === rowKey("longer"))).toBe(kept);
   if (view === "projects") expect(blockKeys()).toEqual([`${DEVICE}/alpha`, `${DEVICE}/zulu`]);
+});
+
+it.each(["inbox", "projects"])("keeps every node when a project agent reorders among workspace rows in %s", async (view) => {
+  const ownedProject = { ...projects[1], entity_id: "project-run" };
+  const early = workspace("early", "zulu", NOW - 6 * HOUR, NOW - HOUR);
+  const late = workspace("late", "zulu", NOW - 2 * HOUR, NOW - HOUR);
+  const other = workspace("other", "alpha", NOW - 5 * HOUR, NOW - HOUR);
+  const conversation = { kind: "branch", run_id: "project-run", project_id: "zulu", deviceId: DEVICE,
+    projectKey: ownedProject.projectKey, session_started_ms: NOW - 7 * HOUR, last_activity_ms: NOW,
+    agents: [{ id: "pin", topic: "Project conversation", watched: true, unread_count: 2 }] };
+  await modules.cache.writeCached(address("projects"), [projects[0], ownedProject]);
+  await boot(view, [early, late, other], [conversation]);
+  const agentKey = `project-agent:${ownedProject.projectKey}`;
+  const allRows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
+  const keys = () => allRows().map((row) => row.dataset.key);
+  const firstKeys = view === "inbox"
+    ? [agentKey, rowKey("early"), rowKey("other"), rowKey("late"), `project-agent:${projects[0].projectKey}`]
+    : [agentKey, rowKey("early"), rowKey("late"), rowKey("other"), `project-agent:${projects[0].projectKey}`];
+  await vi.waitFor(() => expect(keys()).toEqual(firstKeys), WAIT);
+  const kept = new Map(allRows().map((row) => [row.dataset.key, row]));
+  const keptBlocks = new Map([...document.querySelectorAll(".inbox-project")].map((block) => [block.dataset.project, block]));
+  await modules.cache.writeCached(address("workspaces"), [{ ...early, session_started_ms: NOW, last_activity_ms: NOW }, late, other]);
+  await modules.cache.writeCached(address("feed"), { items: [{ ...conversation, session_started_ms: NOW - HOUR }], runs: [] });
+  const expected = [rowKey("other"), `project-agent:${projects[0].projectKey}`, rowKey("late"), agentKey, rowKey("early")];
+  await vi.waitFor(() => expect(keys()).toEqual(view === "projects" ? expected : [rowKey("other"), rowKey("late"), agentKey, rowKey("early"), `project-agent:${projects[0].projectKey}`]), WAIT);
+  for (const row of allRows()) expect(row).toBe(kept.get(row.dataset.key));
+  for (const block of document.querySelectorAll(".inbox-project")) expect(block).toBe(keptBlocks.get(block.dataset.project));
+  expect(kept.get(agentKey).querySelector(".inbox-status-unread")).not.toBeNull();
 });
 
 it.each(["inbox", "projects"])("folds at the exact 24h cutoff without another push in %s", async (view) => {

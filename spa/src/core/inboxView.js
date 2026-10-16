@@ -117,8 +117,8 @@ const foldAddress = uiAddress({ view: "inbox", kind: "fold", sub: "projects" });
 const recentAddress = uiAddress({ view: "inbox", kind: "fold", sub: "recent" });
 const menuAddress = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
 const writeFolds = () => foldRecord?.write({ entries: [...folds] });
-// Each block as last painted, by project key: where its head opens, what it is
-// called — which is what the create it offers is titled with — and the bare
+// Each block as last painted, by project key: what it is called, which is
+// what the create it offers is titled with, and the bare
 // project id every RPC still wants.
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
@@ -184,8 +184,7 @@ function publishAttentionCount(rows = railRows()) {
 }
 
 /** The workspace rows and each project's own agent row (#103), together in
- *  the inbox's anchor order. On the projects face the project agent's row is
- *  its block's head rather than a row (core/inboxProjects.js). */
+ * the inbox's anchor order on both faces. */
 function workRows(rows) {
   const taskUnread = watchedTasks?.taskUnread() || NO_TASK_UNREAD;
   return navigationUnreadEntries({ projects, workspaces, items: rows, runs, taskUnread }).sort(byAnchor);
@@ -412,7 +411,8 @@ function paintRecent(host, recent, ui, scope) {
   if (host.lastElementChild !== section) host.appendChild(section);
   const open = recentIsOpen(recentOpen.get(scope));
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
-  // Quiet workspaces use one line; watched tasks keep title and reason lines.
+  // Inbox Recent keeps the project/name/activity shape. Grouped Recent keeps
+  // compact workspaces and separate title/reason lines for watched tasks.
   patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
 }
 
@@ -488,7 +488,6 @@ function pressed(controls, target) {
  *  name they sit beside. Each is handed the element that was pressed. */
 const BLOCK_CONTROLS = [
   ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
-  ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
   ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
   ["data-project-hide", (control) => hideBlock(control.dataset.projectHide)],
   ["data-new-project", () => openNewProject()],
@@ -593,18 +592,10 @@ function onListKeydown(event) {
 
 // ---- project blocks -----------------------------------------------------------
 //
-// What a block's head can do: fold, open the project's own page, create a
+// What a block's head can do: fold, create a
 // workspace on the create surface scoped to its project, and hide it directly.
 // The control above every block creates a new project. Which press is which
 // is the table BLOCK_CONTROLS, up with the other control tables.
-
-/** The block's name opens the project's own page — its workspaces, and the
- *  agent you talk to about the project. Every project has one, so every head
- *  opens. */
-function openBlockHead(projectKey) {
-  const block = blockOf(projectKey);
-  if (block) goFromInbox(block.route);
-}
 
 /** The + opens the create surface on this block's project, with the block
  *  unfolded so the new row has somewhere visible to land. The create surface

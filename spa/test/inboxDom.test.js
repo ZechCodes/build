@@ -377,10 +377,10 @@ describe("the projects face", () => {
     await vi.waitFor(() => expect(toggle()?.querySelector(".inbox-recent-count").textContent).toBe("2"));
     expect(block.querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("true");
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
-    expect(block.querySelectorAll(".inbox-entry")).toHaveLength(0);
+    expect(block.querySelectorAll(".inbox-entry:not(.inbox-project-agent)")).toHaveLength(0);
     expect(document.querySelector('[data-recent-toggle="projects"]')).toBeNull();
     toggle().click();
-    await vi.waitFor(() => expect(block.querySelectorAll(".inbox-recent .inbox-entry")).toHaveLength(2));
+    await vi.waitFor(() => expect(block.querySelectorAll(".inbox-recent .inbox-entry:not(.inbox-project-agent)")).toHaveLength(2));
     const quietWorkspace = block.querySelector('[data-key="workspace:dev-1/workspace-1"]');
     expect(quietWorkspace.classList.contains("inbox-quiet")).toBe(true);
     expect(quietWorkspace.querySelectorAll(".inbox-line")).toHaveLength(1);
@@ -390,7 +390,7 @@ describe("the projects face", () => {
     expect(quietTask.classList.contains("inbox-quiet-task")).toBe(true);
     expect(quietTask.querySelector(".stitle").textContent).toBe("#510 Fold quiet project rows");
     expect(quietTask.querySelector(".inbox-facts").textContent).toBe("Assigned to you");
-    expect(block.querySelector(".inbox-project-rows").children).toHaveLength(0);
+    expect(block.querySelectorAll(".inbox-project-rows > .inbox-entry:not(.inbox-project-agent)")).toHaveLength(0);
   });
 
   it("paints live rows before a closed project Recent and keeps it when the last live row goes quiet", async () => {
@@ -409,17 +409,17 @@ describe("the projects face", () => {
     expect(block.querySelector(".inbox-project-rows .inbox-entry").dataset.key).toBe("workspace:dev-1/live");
     expect(toggle().querySelector(".inbox-recent-count").textContent).toBe("1");
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
-    expect(section.querySelectorAll(".inbox-entry")).toHaveLength(0);
+    expect(section.querySelectorAll(".inbox-entry:not(.inbox-project-agent)")).toHaveLength(0);
     feed([quiet, { ...live, session_started_ms: old, last_activity_ms: old }]);
     expect(block.querySelector(":scope > .inbox-recent")).toBe(section);
     expect(toggle().querySelector(".inbox-recent-count").textContent).toBe("2");
-    expect(block.querySelectorAll(".inbox-entry")).toHaveLength(0);
+    expect(block.querySelectorAll(".inbox-entry:not(.inbox-project-agent)")).toHaveLength(0);
     toggle().click();
-    await vi.waitFor(() => expect(section.querySelectorAll(".inbox-entry")).toHaveLength(2));
+    await vi.waitFor(() => expect(section.querySelectorAll(".inbox-entry:not(.inbox-project-agent)")).toHaveLength(2));
     feed([quiet, live]);
     expect(toggle().querySelector(".inbox-recent-count").textContent).toBe("1");
     expect(toggle().getAttribute("aria-expanded")).toBe("true");
-    expect(section.querySelectorAll(".inbox-entry")).toHaveLength(1);
+    expect(section.querySelectorAll(".inbox-entry:not(.inbox-project-agent)")).toHaveLength(1);
     expect(block.querySelector(".inbox-project-rows .inbox-entry").dataset.key).toBe("workspace:dev-1/live");
   });
 
@@ -445,8 +445,8 @@ describe("the projects face", () => {
     blocks()[0].querySelector("[data-project-fold]").click();
     await vi.waitFor(() => expect(blocks()[0].classList.contains("inbox-folded")).toBe(false));
     expect(toggle("project-1").getAttribute("aria-expanded")).toBe("true");
-    expect(blocks()[0].querySelectorAll(".inbox-recent .inbox-entry")).toHaveLength(1);
-    expect(blocks()[1].querySelectorAll(".inbox-entry")).toHaveLength(0);
+    expect(blocks()[0].querySelectorAll(".inbox-recent .inbox-entry:not(.inbox-project-agent)")).toHaveLength(1);
+    expect(blocks()[1].querySelectorAll(".inbox-entry:not(.inbox-project-agent)")).toHaveLength(0);
   });
 
   it("orders project blocks by active streaks while preserving their own Recent", async () => {
@@ -524,7 +524,7 @@ describe("the projects face", () => {
     ]);
     setInboxView("projects");
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
-    expect(blocks().map((block) => [...block.querySelectorAll(".inbox-entry")].map((row) => row.dataset.key))).toEqual([
+    expect(blocks().map((block) => [...block.querySelectorAll(".inbox-entry:not(.inbox-project-agent)")].map((row) => row.dataset.key))).toEqual([
       ["workspace:dev-1/workspace-1", "workspace:dev-1/workspace-2"],
       ["workspace:dev-1/workspace-3"],
     ]);
@@ -546,35 +546,43 @@ describe("the projects face", () => {
     expect(document.querySelector('[data-project="dev-1/project-1"]').classList.contains("inbox-folded")).toBe(true);
   });
 
-  it("keeps the active workspace marked in its project and opens the project from its head", () => {
+  it("keeps the active workspace marked and folds from the project heading", async () => {
     feed([workspace(), workspace({ id: "workspace-2", project_id: "project-2", name: "Marketing", directories: [] })]);
     setInboxView("projects");
     App.route = { name: "workspace", deviceId: "dev-1", projectId: "project-2", workspaceId: "workspace-2", tab: "changes" };
     inboxListRouteChanged();
 
     expect(rows().map((row) => row.classList.contains("active"))).toEqual([false, true]);
-    expect(document.querySelector('[data-project="dev-1/project-2"]').classList.contains("active")).toBe(true);
-
-    // The head is the project, not a workspace inside it: it opens the
-    // project's own page, which is where the block's workspaces are listed.
-    document.querySelector('[data-project-open="dev-1/project-2"]').click();
+    const block = document.querySelector('[data-project="dev-1/project-2"]');
+    expect(block.classList.contains("active")).toBe(true);
+    expect(block.querySelector("[data-project-open]")).toBeNull();
+    const heading = block.querySelector(".inbox-project-name");
+    expect(heading.dataset.projectFold).toBe("dev-1/project-2");
+    heading.click();
+    await vi.waitFor(() => expect(block.classList.contains("inbox-folded")).toBe(true));
+    expect(navigate).not.toHaveBeenCalled();
+    heading.click();
+    await vi.waitFor(() => expect(block.classList.contains("inbox-folded")).toBe(false));
+    block.querySelector('.inbox-project-agent').click();
     expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-2" });
   });
 
-  // A project with no workspaces is still one of the account's projects, so it
-  // keeps its block — with nothing to fold, and the chevron shut rather than
-  // missing, so the heads stay in line.
-  it("blocks a project that has no workspaces, with nothing to fold", () => {
+  it("keeps a project with no workspaces foldable around its own agent row", async () => {
     feed([workspace()]);
     setInboxView("projects");
 
     expect(blocks().map((block) => block.dataset.project)).toEqual(["dev-1/project-1", "dev-1/project-2"]);
-    expect(blocks()[1].querySelectorAll(".inbox-entry")).toHaveLength(0);
-    expect(blocks()[1].querySelector("[data-project-fold]").disabled).toBe(true);
-    expect(blocks()[0].querySelector("[data-project-fold]").disabled).toBe(false);
-    // Empty or not, its head opens the project: there is a page for it.
-    blocks()[1].querySelector("[data-project-open]").click();
-    expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-2" });
+    const empty = blocks()[1];
+    expect(empty.querySelectorAll(".inbox-entry")).toHaveLength(1);
+    const agent = empty.querySelector(".inbox-project-agent");
+    expect(agent.querySelector(".stitle").textContent).toBe("Website");
+    expect(agent.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(agent.querySelector(".inbox-project-line")).toBeNull();
+    expect(empty.querySelector(".inbox-fold").disabled).toBe(false);
+    empty.querySelector(".inbox-project-name").click();
+    await vi.waitFor(() => expect(empty.classList.contains("inbox-folded")).toBe(true));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(empty.querySelector(".inbox-project-agent")).toBe(agent);
   });
 
   it("creates a workspace in the project named by its group, on that project's machine", () => {

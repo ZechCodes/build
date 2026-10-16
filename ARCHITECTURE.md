@@ -3010,9 +3010,18 @@ tint. Every block starts open unless the user saved a fold, with its live rows
 in anchor order followed by one project-keyed Recent disclosure. Recent starts
 closed with a quiet-row count, even when the block has only quiet rows; opening
 it paints quiet workspaces on one line and watched tasks with title and reason
-lines. The block chevron folds the whole block independently of its saved
-Recent state. Projects never enter a top-level Recent. The ungrouped Inbox
-face keeps its own Recent disclosure.
+lines; project-agent rows retain their name and activity lines. The project
+agent is an ordinary entry inside its block, using the same order and Recent
+cutoff as its workspace siblings. The block name and chevron only fold the
+whole block independently of its saved Recent state. Projects never enter a
+top-level Recent. The ungrouped Inbox face keeps its own Recent disclosure.
+Every Inbox workspace, project-agent
+and task entry, including Recent, has a separate project line above its name
+and activity. Projects omits that line because the block names the project.
+Project-agent names use their cached topic when present, otherwise the existing
+project label; an empty project-agent activity line uses the workspace's
+Getting started fallback. Quiet tasks still omit the activity line when it has
+no text. Existing row actions remain unchanged.
 
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
 `spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`.

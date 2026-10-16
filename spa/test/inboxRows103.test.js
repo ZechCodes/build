@@ -113,7 +113,7 @@ describe("the project agent's row", () => {
   const conversation = (over = {}) => ({ kind: "branch", project_id: "project-1", run_id: "run-p",
     agents: [agent("project-agent")], ...over });
 
-  it("is one row per project, named by the project alone and opening its page", () => {
+  it("is one row per project with the existing label and ordinary name and activity lines", () => {
     const [entry] = agentRowsOf(snapshot({ projects: [project()], items: [conversation()] }));
     expect(entry).toMatchObject({
       kind: PROJECT_AGENT,
@@ -124,9 +124,26 @@ describe("the project agent's row", () => {
     });
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry), "text/html");
     expect(doc.querySelector(".stitle").textContent).toBe("Payments");
-    expect(doc.querySelector(".inbox-facts")).toBeNull();
-    expect(doc.querySelector(".inbox-tag")).toBeNull();
+    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(doc.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
+    expect(doc.querySelector(".inbox-name .inbox-tag")).toBeNull();
+    const grouped = new DOMParser().parseFromString(inboxRowHtml(entry, { showProject: false }), "text/html");
+    expect(grouped.querySelector(".inbox-project-line")).toBeNull();
+    expect(grouped.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
+    expect(grouped.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(grouped.querySelector(".inbox-project-agent")).not.toBeNull();
     expect(doc.querySelector("[data-workspace-done], [data-done], [data-menu]")).toBeNull();
+  });
+
+  it("uses the existing project agent's topic when its roster names one", () => {
+    const [entry] = agentRowsOf(snapshot({ projects: [project()], items: [conversation({
+      agents: [agent("project-agent", { topic: "Review the checkout flow" })],
+    })] }));
+    expect(entry.name).toBe("Review the checkout flow");
+    const doc = new DOMParser().parseFromString(inboxRowHtml(entry), "text/html");
+    expect(doc.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
+    expect(doc.querySelector(".inbox-name .stitle").textContent).toBe("Review the checkout flow");
+    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started");
   });
 
   it("carries the project agent's unread and running state", () => {
@@ -190,12 +207,18 @@ describe("the project agent's row", () => {
     expect(activeEntryKey({ name: "project", deviceId: "dev-2", projectId: "project-1" }, [entry])).toBeNull();
   });
 
-  it("paints as one quiet line in Recent, with its unread status dot", () => {
+  it("keeps project, name and activity lines in Inbox Recent, with its unread status dot", () => {
     const [entry] = agentRowsOf(snapshot({ projects: [project()], items: [conversation({
       agents: [agent("project-agent", { unread_count: 1 })],
     })] }));
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry, { quiet: true }), "text/html");
-    expect(doc.querySelector(".inbox-entry").classList.contains("inbox-quiet")).toBe(true);
+    expect(doc.querySelector(".inbox-entry").classList.contains("inbox-quiet-full")).toBe(true);
+    expect(doc.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
+    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    const grouped = new DOMParser().parseFromString(inboxRowHtml(entry, { quiet: true, showProject: false }), "text/html");
+    expect(grouped.querySelector(".inbox-project-line")).toBeNull();
+    expect(grouped.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
+    expect(grouped.querySelector(".inbox-facts").textContent).toBe("Getting started");
     expect(doc.querySelector(".sdot")).toBeNull();
     expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
   });
@@ -223,10 +246,10 @@ describe("the projects face's head dot", () => {
     return Boolean(doc.querySelector(".inbox-status-unread"));
   };
 
-  it("does not list the project agent as a row: the head is its entry", () => {
+  it("lists the project agent as an ordinary row inside its project block", () => {
     const block = blockOf(view());
-    expect(block.entries.map((row) => row.kind)).toEqual(["workspace"]);
-    expect(block.agentEntry.kind).toBe(PROJECT_AGENT);
+    expect(block.entries.map((row) => row.kind)).toEqual(["workspace", PROJECT_AGENT]);
+    expect(block.agentEntry).toBe(block.entries[1]);
   });
 
   it("keeps aggregate accounting while showing only the project agent when expanded", () => {

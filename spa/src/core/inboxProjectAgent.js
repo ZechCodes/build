@@ -1,12 +1,11 @@
 // The project agent's entry in the inbox (#103), as a pure model.
 //
-// One row per project, for the agent you talk to about the project: just the
-// project's name — no second line, no Done. It sits among the workspace rows,
-// ordered by the #98 rule over the project agent's own conversation (the
+// One row per project, for the agent you talk to about the project: its topic
+// or existing project label, then activity, with no Done or menu. It sits among
+// the workspace rows on both faces, ordered by its own conversation (the
 // bridge's session summary on that conversation's feed row, since wire 1.28.0),
 // and after a day without activity it moves to Recent the way a workspace row
-// does. On the projects face it is not a row at all: it is the head of its
-// project's block (core/inboxProjects.js). The inbox tally carries the project's
+// does. The inbox tally carries the project's
 // watched tasks too, the ones no workspace row wears (#104); the expanded
 // project head reads the conversation's own unread separately (#380).
 //
@@ -74,6 +73,9 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const working = hasRoster ? agents.some(agentIsRunning) : agentIsRunning(row);
   const watchedWorking = hasRoster ? watchedAgentsRunning(agents) : working;
   const name = projectNameOf(project);
+  const pin = project.projectRoster
+    ? agents.find((agent) => agent.id === project.projectRoster.pinned_agent_id)
+    : agents[0];
   return {
     key: projectAgentEntryKey(project.projectKey),
     kind: PROJECT_AGENT,
@@ -81,7 +83,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     projectId: project.id,
     projectKey: project.projectKey,
     project: name,
-    name,
+    name: pin?.topic?.trim() || name,
     title: "Project agent",
     entityId,
     state: agentState(unreadCount, working),

@@ -130,6 +130,7 @@ describe("what a row says", () => {
     const [row] = rows([watched({ id: "i-quiet", number: 10 })]);
     const html = inboxRowHtml(row);
     expect(html).toContain("inbox-quiet");
+    expect(html).toContain("inbox-project-line");
     expect(html).not.toContain("Getting started");
     expect(html).not.toContain('class="inbox-facts"');
     expect(html).toContain('class="iconbtn inbox-watch watching"');

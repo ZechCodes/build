@@ -39,7 +39,8 @@ for (const { label, width, height } of [
         await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
         const block = page.locator(".inbox-project");
         const head = block.locator(".inbox-project-head");
-        const dot = head.locator(":scope > .inbox-status-dot");
+        expect(await head.locator(":scope > .inbox-status-dot").count()).toBe(0);
+        const dot = block.locator('.inbox-project-agent .inbox-status-dot');
         const rows = block.locator(".inbox-entry:visible").filter({ has: page.locator(".inbox-status-dot") });
         expect(await block.locator('[data-key^="workspace:"] .inbox-status-dot').count()).toBeGreaterThan(0);
         expect(await block.locator('[data-key^="task:"] .inbox-status-dot').count()).toBe(1);
@@ -55,6 +56,7 @@ for (const { label, width, height } of [
             } else await page.mouse.move(width - 1, height - 1);
             const state = `${active ? "active" : "inactive"}, ${hovered ? "head hovered" : "resting"}`;
             await captureLayout(page, `inbox-status-dot-alignment-${label}-${theme}-${active ? "active" : "inactive"}-${hovered ? "hovered" : "resting"}.png`);
+            expect(await head.locator(":scope > .inbox-status-dot").count(), state).toBe(0);
             expect(await dot.boundingBox(), state).toEqual(before);
             expect(await head.locator(".inbox-project-name").boundingBox(), state).toEqual(nameBefore);
             const right = await dot.evaluate((element) => element.getBoundingClientRect().right);
@@ -88,8 +90,9 @@ for (const { label, width, height } of [
         for (const { grouped, folded } of [{ grouped: false, folded: false },
           { grouped: true, folded: false }, { grouped: true, folded: true }]) {
           await mountWaitingStatusDotInbox(page, basePath, { grouped, folded, ownWaiting, workspaceWatched, unreadCount });
-          const projectDot = page.locator(grouped ? ".inbox-project-head > .inbox-status-dot"
+          const projectDot = page.locator(grouped && folded ? ".inbox-project-head > .inbox-status-dot"
             : '[data-key="project-agent:layout-device/layout-project"] .inbox-status-dot');
+          if (grouped && !folded) expect(await page.locator(".inbox-project-head > .inbox-status-dot").count()).toBe(0);
           const projectRuns = ownWaiting || (folded && workspaceWatched);
           expect(await projectDot.count()).toBe(projectRuns || unreadCount > 0 ? 1 : 0);
           if (projectRuns || unreadCount > 0) {
@@ -143,20 +146,22 @@ for (const { label, width, height } of [
     }, { width, height });
   }, 60_000);
 
-  it(`shows project own status expanded and aggregate status folded on ${label}`, async () => {
+  it(`shows project own status on its row expanded and aggregate status on its heading folded on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       for (const folded of [false, true]) {
         await mountStatusDotInbox(page, basePath, { grouped: true, folded });
         const head = page.locator(".inbox-project-head");
         expect(await head.locator(".inbox-unread, .inbox-more, .inbox-project-settings, .inbox-menu").count()).toBe(0);
         const dot = head.locator(":scope > .inbox-status-dot");
-        expect(await dot.count()).toBe(1);
-        expect(await dot.evaluate((element) => element === element.parentElement.lastElementChild)).toBe(true);
-        expect(await dot.evaluate((element) => element.classList.contains("inbox-status-running"))).toBe(folded);
-        const before = await dot.boundingBox();
+        expect(await dot.count()).toBe(folded ? 1 : 0);
+        if (folded) expect(await dot.evaluate((element) => element === element.parentElement.lastElementChild)).toBe(true);
+        const status = folded ? dot : page.locator('.inbox-project-agent .inbox-status-dot');
+        expect(await status.evaluate((element) => element.classList.contains("inbox-status-running"))).toBe(folded);
+        expect(await status.evaluate((element) => element.classList.contains("inbox-status-unread"))).toBe(true);
+        const before = await status.boundingBox();
         await head.hover();
         await page.waitForFunction(() => getComputedStyle(document.querySelector(".inbox-project-actions")).opacity === "1");
-        const after = await dot.boundingBox();
+        const after = await status.boundingBox();
         expect(after).toEqual(before);
         const name = await head.locator(".inbox-project-name").boundingBox();
         expect(name.x + name.width).toBeLessThanOrEqual(after.x);
@@ -171,6 +176,7 @@ for (const { label, width, height } of [
       }
       await mountStatusDotInbox(page, basePath, { grouped: true, ownUnread: 0 });
       expect(await page.locator(".inbox-project-head > .inbox-status-dot").count()).toBe(0);
+      expect(await page.locator(".inbox-project-agent .inbox-status-dot").count()).toBe(0);
       await mountStatusDotInbox(page, basePath, { grouped: true, folded: true, ownUnread: 0 });
       expect(await page.locator(".inbox-project-head > .inbox-status-dot.inbox-status-unread.inbox-status-running").count()).toBe(1);
     }, { width, height });
@@ -199,6 +205,7 @@ for (const { label, width, height } of [
         { ownUnread: 2, ownWorking: false }, { ownUnread: 2, ownWorking: true },
       ]) {
         await mountStatusDotInbox(page, basePath, { grouped: true, ownUnread, ownWorking });
+        expect(await page.locator(".inbox-project-head > .inbox-status-dot").count()).toBe(0);
         heads.push(await page.locator(".inbox-project-name").boundingBox());
       }
       for (const box of heads) expect.soft(box).toEqual(heads[0]);

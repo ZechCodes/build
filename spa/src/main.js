@@ -20,6 +20,9 @@ import { boot, openPairingLink } from "./views/gate.js";
 import { watchPairLinks } from "./core/pairLink.js";
 import { mountConnectionStatus } from "./connectionStatus.js";
 import { startUserPresence } from "./core/userPresence.js";
+import { installWindowControlsOverlay } from "./core/windowControlsOverlay.js";
+
+installWindowControlsOverlay();
 
 // Before anything renders: index.html's inline stamp beat the first paint, this
 // takes ownership of the same attribute and keeps following the OS while the

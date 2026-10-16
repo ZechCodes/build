@@ -3054,6 +3054,17 @@ from the freshest cached rosters, per device and project, using the cached
 `agents.createdBy` capability for Build descendants. The agent's own
 `working` flag stays separate for interruption controls.
 
+### Window chrome
+
+The desktop shell's macOS title bar overlays the app's first 44px row.
+`core/windowControlsOverlay.js`, installed before boot, reflects the standard
+`navigator.windowControlsOverlay` geometry into layout only; it exposes no
+Electron bridge. `styles/window-controls.css` clears the native traffic lights
+in the pinned inbox header or the main toolbar, follows the responsive overlay
+breakpoint, and marks empty headers draggable while excluding interactive
+targets and menus. An absent/inactive overlay (browser, standalone PWA or native
+fullscreen) keeps the ordinary shell layout. Linux/Windows retain native chrome.
+
 ### Theming
 
 Tokens are CSS custom properties in `spa/src/styles.css`: `:root` holds the light

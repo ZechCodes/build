@@ -1,0 +1,83 @@
+/* Electron's native macOS buttons occupy the left of the standard WCO rect.
+   The rect is in viewport coordinates; shell contents start one gutter in.
+   Only its current top-left surface pays the clearance. */
+:root[data-window-controls-overlay] #shell {
+  --window-controls-inset:max(0px, calc(env(titlebar-area-x, var(--window-controls-x)) - var(--region-gap)));
+  padding-top:0;
+}
+:root[data-window-controls-overlay] #status-edge { display:none; }
+:root[data-window-controls-overlay] #global-controls {
+  top:0;
+  left:calc(var(--global-controls-left) + var(--window-controls-inset));
+}
+:root[data-window-controls-overlay] .toolbar {
+  padding-left:calc(var(--toolbar-gutter) + var(--window-controls-inset));
+}
+:root[data-window-controls-overlay] body.inbox-collapsed .toolbar {
+  padding-left:calc(var(--inbox-open-clear) + var(--window-controls-inset));
+}
+:root[data-window-controls-overlay] .inbox-head {
+  height:44px; min-height:44px;
+  padding-top:0; padding-bottom:0;
+}
+@media (min-width:901px) {
+  :root[data-window-controls-overlay] body:not(.inbox-collapsed) .toolbar { padding-left:0; }
+  :root[data-window-controls-overlay] body:not(.inbox-collapsed) .inbox-head {
+    padding-left:max(10px, var(--window-controls-inset));
+  }
+  /* During the rail's existing FLIP animation it can still cross the native
+     controls at y=0 even after the collapsed class has switched. */
+  :root[data-window-controls-overlay] body.inbox-transitioning .inbox-head {
+    padding-left:max(10px, var(--window-controls-inset));
+  }
+}
+:root[data-window-controls-overlay] #verbar {
+  min-height:44px; padding-left:env(titlebar-area-x, var(--window-controls-x));
+  -webkit-app-region:drag;
+}
+/* The update offer is occasionally the first row. It takes the clearance;
+   the shell beneath it returns to its ordinary horizontal/top gutters. */
+:root[data-window-controls-overlay] body:has(> #verbar:not([hidden])) #shell {
+  padding-top:var(--region-gap);
+}
+:root[data-window-controls-overlay] body:has(> #verbar:not([hidden])) #global-controls {
+  top:var(--region-gap); left:var(--global-controls-left);
+}
+:root[data-window-controls-overlay] body:has(> #verbar:not([hidden])) .inbox-head { padding-left:10px; }
+:root[data-window-controls-overlay] body.inbox-collapsed:has(> #verbar:not([hidden])) .toolbar {
+  padding-left:var(--inbox-open-clear);
+}
+:root[data-window-controls-overlay] body.inbox-collapsed #inbox-rail::before {
+  left:calc(var(--global-controls-left) + var(--window-controls-inset) + var(--dir-rail) / 2 - var(--region-gap) - var(--inbox-popover-left) - 1px);
+}
+:root[data-window-controls-overlay] body.inbox-collapsed:has(> #verbar:not([hidden])) #inbox-rail::before {
+  left:calc(var(--global-controls-left) + var(--dir-rail) / 2 - var(--region-gap) - var(--inbox-popover-left) - 1px);
+}
+/* Welcome, pairing and version gates hide the normal headers. Keep the top
+   edge draggable without inserting a new visible title bar or covering clicks. */
+:root[data-window-controls-overlay] body.gated #shell::before {
+  content:""; position:fixed; top:0; left:0; right:0; height:44px;
+  pointer-events:none; -webkit-app-region:drag;
+}
+@media (max-width:900px) {
+  /* A remembered pin overlays the view at this width. The toolbar is still
+     top-left, and its inbox toggle remains reachable above that overlay. */
+  :root[data-window-controls-overlay] body:not(.inbox-collapsed) .toolbar {
+    padding-left:calc(var(--inbox-open-clear) + var(--window-controls-inset));
+  }
+  :root[data-window-controls-overlay] body:not(.inbox-collapsed):has(> #verbar:not([hidden])) .toolbar {
+    padding-left:var(--inbox-open-clear);
+  }
+}
+:root[data-window-controls-overlay] :is(.toolbar, .inbox-head, .rail-head) {
+  -webkit-app-region:drag;
+}
+/* Portalled menus live outside the bar. Mark the full popup and every child,
+   plus every interactive target and descendant, so an SVG/text hit stays a
+   click. This rule only applies while native window chrome overlays the SPA. */
+:root[data-window-controls-overlay] :is(button, a[href], input, select, textarea, summary,
+    [role="button"], [role="menu"], [role="menuitem"], [tabindex], [contenteditable="true"], .tbmenu, .splitmenu),
+:root[data-window-controls-overlay] :is(button, a[href], summary, [role="button"], [role="menu"],
+    [role="menuitem"], [tabindex], [contenteditable="true"], .tbmenu, .splitmenu) * {
+  -webkit-app-region:no-drag;
+}

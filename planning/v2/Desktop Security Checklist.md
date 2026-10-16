@@ -1,11 +1,12 @@
 # Desktop security checklist
 
 **Status:** 100/100 (10/10 scoped controls verified)
-**Verified:** 2026-10-13, #615, including the snapshot-1 through snapshot-4 Astra review fixes.
+**Verified:** 2026-10-16, #635 window chrome, retaining #615's snapshot-1 through snapshot-4 authentication review fixes.
 
 Scope: the desktop shell's authentication, session persistence, renderer and
-navigation boundaries. Evidence uses Node tests with stubbed Electron, OS
-storage and HTTP. This is not evidence of a live Keychain/DPAPI/keyring sign-in,
+navigation boundaries and native window-control geometry. Evidence uses Node
+tests with stubbed Electron, OS storage and HTTP, plus Chromium tests of the
+standard Window Controls Overlay signal. This is not evidence of a live Keychain/DPAPI/keyring sign-in,
 installer signing, or notarization. No installed app or real sign-in was run.
 
 | # | Control | Score | Evidence |
@@ -17,11 +18,20 @@ installer signing, or notarization. No installed app or real sign-in was run.
 | 5 | Startup and scheduled refresh persist each rotation before using it; only one refresh request can run at once. | 10/10 | `main-auth.test.mjs`: silent launch, second launch uses last rotated token, scheduled refresh sends latest token; direct overlapping calls to the actual private refresh function share one pending exchange, and the next request uses its replacement. Negative control: a transient loader removing only the refreshInFlight guard makes this regression exit 1 (three requests instead of two); normal code passes. Activation while startup is pending also sends no browser handoff. `main.mjs`: `refreshInFlight`, synchronous save before access-token assignment and timer. |
 | 6 | Refused refresh (`invalid_grant`) clears disk/in-memory credentials and old account window before browser reauthentication; transient failures retain the token. | 10/10 | `main-auth.test.mjs`: startup/scheduled invalid_grant, transport/server/incomplete-response failures, Try Again retries refresh without browser. Main reports storage deletion failures instead of claiming success. |
 | 7 | Native Sign Out removes saved credentials, clears headers/timer, aborts token traffic and retires the renderer before bounded default-session storage/cache cleanup. Native Quit waits for cleanup and failure reporting. Authentication UI, credential restoration and window/browser helpers reject work during Sign Out. Token traffic cannot mutate the persistent window session. | 10/10 | `main-auth.test.mjs`: deferred storage/cache cleanup; native Quit veto during either wait and failure reporting, final and ordinary quit allowed; errors/timeouts attempt both operations and report failure. Dialog has a renderer-free native parent and AbortSignal; pending/rejected dialogs and parent dismissal release quit safely. Late refresh/code cookies and cache cannot change the default session, and requests are aborted through JSON consumption. Direct private-helper probes independently exercise the post-dialog retry callback, window reopening, startup credential loading after deletion failure, and browser handoff. Along with the deferred browser-rejection test for the pre-dialog check, removing each of these five guards separately via a transient loader causes exactly its expected test to fail (49 pass/1 fail, exit 1); normal authentication suite: 50 pass, exit 0. Earlier activation/protocol/old-dialog behavior tests alone did **not** distinguish those guards because other checks masked removal. Redundant signingOut checks were removed from callback delivery (pending authorization cleared), second-instance window actions (main window destroyed/null), activation (credentials cleared and startup helper guarded), refresh entry (refresh token cleared), and window-all-closed (central before-quit veto). A separate test observes restore/show/focus before Sign Out and no window actions afterwards. Timer cancellation remains resource cleanup; ticking timers proves no extra token requests, not independent sensitivity to removing clearTimeout. Prior generation, isolation, native-quit and cleanup regressions remain green. Each async cleanup/report wait has a five-second deadline (at most 15 seconds); timeouts report failure and may leave data behind. Sign-out is local, not global revocation. |
-| 8 | Hosted renderer remains sandboxed, isolated, without Node, webviews or production devtools; sensitive packaged Electron fuses remain disabled. | 10/10 | `desktop/test/security-policy.test.mjs`: window preferences, webview rejection, packaged fuse configuration. |
+| 8 | Hosted renderer remains sandboxed, isolated, without Node, webviews or production devtools; sensitive packaged Electron fuses remain disabled. Window chrome exposes only standard read-only WCO geometry. | 10/10 | `desktop/test/security-policy.test.mjs`: window preferences, webview rejection, packaged fuse configuration, macOS hidden title bar/44px overlay/native controls and identical renderer security options. `spa/test/windowControlsOverlay.test.js` and `spa/test/browser/windowControlsOverlayLayout.test.js`: inactive browser/PWA signal leaves geometry and drag behavior unchanged; native geometry reserves only the top-left header, follows pin/resize/fullscreen, and excludes interactive targets and menus from drag. No preload, IPC, custom desktop identity marker or privileged renderer API was added. |
 | 9 | Only exact desktop app navigation remains inside Electron; external HTTP/HTTPS/mailto links reach the browser without credentials and unsafe schemes are denied. | 10/10 | `security-policy.test.mjs`: exact paths/prefix lookalikes, will-navigate/will-redirect/window-open handoff, denied schemes. |
 | 10 | Authorization is stripped on every request and added only to desktop main-frame and same-origin API XHR; permissions remain restricted to same-origin notifications. | 10/10 | `security-policy.test.mjs`: all-URL hook, header casing/redirect stripping, API versus document/resource allowlist, notification-only permission policy. |
 
 **Total: 100/100.**
+
+Window chrome evidence is simulated: Chromium paints production SPA headers
+against a stubbed `navigator.windowControlsOverlay` and optional colored-circle
+probes, not native traffic lights. Electron's pinned [macOS implementation](https://github.com/electron/electron/blob/v44.1.1/shell/browser/native_window_mac.mm#L1735)
+returns the content rectangle to the right of the native button container and
+an empty rectangle in native fullscreen. CSS prefers `env(titlebar-area-x)`;
+the same API's x coordinate supplies a fallback. Only Zech's signed macOS app
+can confirm native positioning, close/minimize/fullscreen and restore, dragging
+and double-click behavior, and alignment while resizing or changing display scale.
 
 Server behavior was checked in the pinned vendored wheel
 `skriftapp/vendor/skrift-0.2.0a10-py3-none-any.whl`:

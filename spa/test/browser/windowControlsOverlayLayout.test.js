@@ -151,8 +151,9 @@ it("keeps a drag surface on gated screens without overlapping their content", as
 it("keeps header controls clear of native buttons throughout pin and unpin animations", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountWindowControls(page, basePath);
-    const overlaps = await page.evaluate(async () => {
+    const animation = await page.evaluate(async () => {
       const hits = [];
+      const paddingValues = [];
       for (const { collapsed, reverseAfter } of [{ collapsed: true }, { collapsed: false }, { collapsed: true, reverseAfter: 60 }]) {
         await window.__layoutModules.inbox.setInboxCollapsed(collapsed, { persist: false, reveal: false });
         if (reverseAfter) setTimeout(() => {
@@ -161,6 +162,7 @@ it("keeps header controls clear of native buttons throughout pin and unpin anima
         const until = performance.now() + 500;
         do {
           await new Promise(requestAnimationFrame);
+          paddingValues.push(parseFloat(getComputedStyle(document.querySelector(".toolbar")).paddingLeft));
           for (const element of document.querySelectorAll('.inbox-head button, .toolbar button, .toolbar a, #inbox-open')) {
             const rect = element.getBoundingClientRect();
             const style = getComputedStyle(element);
@@ -170,9 +172,10 @@ it("keeps header controls clear of native buttons throughout pin and unpin anima
           }
         } while (performance.now() < until);
       }
-      return [...new Set(hits)];
+      return { overlaps: [...new Set(hits)], paddingValues };
     });
-    expect(overlaps).toEqual([]);
+    expect(animation.overlaps).toEqual([]);
+    expect(animation.paddingValues.some((padding) => padding > 1 && padding < 121)).toBe(true);
   }, { width: 1280, height: 800 });
 }, 30_000);
 
@@ -209,4 +212,41 @@ it("clears native controls at fractional desktop widths", async () => {
     expect(geometry.head.y).toBe(0);
     expect(geometry.firstInbox.x).toBeCloseTo(84, 1);
   }, { width: 1280, height: 850 });
+}, 30_000);
+
+it("applies host geometry changes atomically while the inbox is unpinned", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await mountWindowControls(page, basePath, { pinned: false, visible: false });
+    await page.waitForTimeout(300);
+    const failures = await page.evaluate(async () => {
+      const failures = [];
+      const switcher = document.querySelector(".tb-switch");
+      for (const x of [84, 104]) {
+        const started = performance.now();
+        const sample = () => {
+          const target = switcher.getBoundingClientRect();
+          const toggle = document.querySelector("#inbox-open").getBoundingClientRect();
+          const y = target.top + target.height / 2;
+          const points = [target.left + 1, target.left + target.width / 2, target.right - 1];
+          const hit = points.every((left) => switcher.contains(document.elementFromPoint(left, y)));
+          if (target.left < x || target.left < toggle.right || !hit) {
+            failures.push({ x, elapsed: performance.now() - started,
+              targetLeft: target.left, toggleRight: toggle.right, hit });
+          }
+        };
+        const overlay = navigator.windowControlsOverlay;
+        overlay.visible = true;
+        overlay.getTitlebarAreaRect = () => new DOMRect(x, 0, innerWidth - x, 44);
+        overlay.dispatchEvent(new Event("geometrychange"));
+        sample();
+        do {
+          await new Promise(requestAnimationFrame);
+          sample();
+        } while (performance.now() - started < 300);
+      }
+      return failures;
+    });
+    expect(failures).toEqual([]);
+  }, { width: 1280, height: 800 });
 }, 30_000);

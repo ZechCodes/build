@@ -719,7 +719,22 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   transition:padding-left 240ms cubic-bezier(.2,.8,.2,1); }
 body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   --tb-project-cap:min(96px, calc((100cqw - var(--inbox-open-clear) - 10px) / 4)); }
-@media (prefers-reduced-motion: reduce) { .toolbar { transition:none; } }
+/* The pinned glyph takes the inbox glyph's offset above the directory column.
+   Its target fills the room before the project, keeping the existing 4px gap.
+   Left padding and width move together so the glyph and crumbs never jump. */
+@media (min-width: 901px) {
+  .toolbar { --tb-inbox-glyph-left:calc((var(--dir-rail) - 17px) / 2);
+    --tb-pinned-target:calc(var(--tb-inbox-glyph-left) + 18px); }
+  body:not(.inbox-collapsed) .toolbar { padding-left:0;
+    --tb-project-cap:min(96px, calc((100cqw + 44px - var(--tb-pinned-target) - 10px) / 4)); }
+  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(44px - 18px);
+    transition:width 240ms cubic-bezier(.2,.8,.2,1), padding-left 240ms cubic-bezier(.2,.8,.2,1); }
+  body:not(.inbox-collapsed) .tb-switch { width:var(--tb-pinned-target);
+    padding-left:var(--tb-inbox-glyph-left); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toolbar, .toolbar .tb-switch { transition:none; }
+}
 .tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
   width:44px; height:44px; padding:0; border:0; border-radius:6px;
   background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }

@@ -155,7 +155,7 @@ function markAway(element, away) {
     shown?.remove();
     return;
   }
-  const line = element.querySelector(".inbox-body > .inbox-line");
+  const line = element.querySelector(".inbox-body .inbox-line");
   if (!line) return;
   const word = shown || line.insertBefore(document.createElement("span"), line.querySelector(".badge"));
   word.className = "dim inbox-away";

@@ -695,6 +695,51 @@ describe("an account with more than one device", () => {
     expect(rows()[0].querySelector(".inbox-away")).toBeNull();
   });
 
+  it.each([["inbox", "offline"], ["inbox", "update"], ["projects", "offline"], ["projects", "update"]])(
+    "keeps Recent workspace and project-agent labels in %s when the device needs %s", async (face, word) => {
+      const old = Date.now() - 25 * 3600_000;
+      const work = workspace({ deviceId: "dev-2", session_started_ms: old, last_activity_ms: old });
+      const projects = [project("project-1", "Payments"), project("project-1", "Payments", "dev-2", { entity_id: "away-run" })];
+      const conversation = { kind: "branch", run_id: "away-run", project_id: "project-1", projectKey: "dev-2/project-1",
+        deviceId: "dev-2", session_started_ms: old, last_activity_ms: old,
+        agents: [{ id: "pin", watched: true, working: false, unread_count: 2 }] };
+      feed([work], projects, [conversation]);
+      setInboxView(face);
+      const scope = face === "inbox" ? "inbox" : "dev-2/project-1";
+      const toggle = document.querySelector(`[data-recent-toggle="${scope}"]`);
+      toggle.click();
+      await vi.waitFor(() => expect(toggle.getAttribute("aria-expanded")).toBe("true"));
+      const recentRows = [...document.querySelectorAll(".inbox-recent .inbox-entry")];
+      expect(recentRows.map((row) => row.dataset.key)).toEqual([
+        "workspace:dev-2/workspace-1", "project-agent:dev-2/project-1",
+      ]);
+      const actions = recentRows.map((row) => row.querySelector(".inbox-actions").innerHTML);
+      const total = document.querySelector("#inbox-open .inbox-open-count").textContent;
+
+      if (word === "offline") setContextOffline("dev-2", { offline: true });
+      else adoptBridgeSelection(contextFor("dev-2"), { version: "0.9.0", unsupported: "bridge" }, null);
+
+      for (const row of recentRows) {
+        expect(row.classList.contains("inbox-offline")).toBe(true);
+        expect(row.querySelectorAll(".inbox-away")).toHaveLength(1);
+        const label = row.querySelector(".inbox-away");
+        expect(label.textContent).toBe(word);
+        expect(label.parentElement.classList.contains(face === "inbox" ? "inbox-project-line" : "inbox-name")).toBe(true);
+      }
+      expect(recentRows.map((row) => row.querySelector(".inbox-actions").innerHTML)).toEqual(actions);
+      expect(document.querySelector("#inbox-open .inbox-open-count").textContent).toBe(total);
+      expect(document.querySelector('[data-key="project-agent:dev-1/project-1"] .inbox-away')).toBeNull();
+      if (face === "projects") {
+        const away = document.querySelector('[data-project="dev-2/project-1"]');
+        expect(away.classList.contains("active")).toBe(false);
+        expect(away.querySelector(".inbox-project-device").textContent.trim()).toBe("Offline");
+        expect(document.querySelector('[data-project="dev-1/project-1"] .inbox-project-device').textContent.trim()).toBe("workshop");
+      } else {
+        for (const row of recentRows) expect(row.querySelector(".inbox-device").textContent).toBe("laptop");
+      }
+    },
+  );
+
   it("greys a block whose machine is away and leaves its + and Hide live", () => {
     twoDevices();
     setInboxView("projects");

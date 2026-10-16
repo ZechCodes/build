@@ -289,7 +289,9 @@ No extra channel, harness PTY reuse or new terminal engine.
   directory. Remember choice per project/device; Files selection may seed it
   initially but never moves an existing shell. Label tabs by source plus tab name.
 - Hide the source picker for exactly one cached source, reserving its layout
-  space so source-count changes do not shift console controls (#630).
+  space so source-count changes do not shift console controls (#630). Reuse the
+  Files rail's folder glyph inside the control before the source name, sized
+  and aligned with its text; hide it with the picker.
 - UI/list key: `(device, project, source, captured_location)`; shell identity is
   its unique terminal ID with immutable owning scope and canonical cwd. Preserve
   canonical-path legacy aliases without permitting a supplied foreign source to

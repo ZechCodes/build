@@ -15,8 +15,11 @@ for (const width of [390, 1280]) {
     await session.withPage(async ({ page, basePath }) => {
       await mountProjectTerminal(page, basePath, { sourceCount: 1 });
       const picker = page.locator(".console-source");
+      const icon = page.locator(".console-source-icon svg");
       const add = page.getByRole("button", { name: "New terminal", exact: true });
+      expect(await icon.count()).toBe(1);
       expect(await picker.isVisible()).toBe(false);
+      expect(await icon.isVisible()).toBe(false);
       expect(await picker.inputValue()).toBe("code");
       await add.focus();
       await picker.evaluate((select) => select.focus());
@@ -45,6 +48,7 @@ for (const width of [390, 1280]) {
         }, sourceCount);
         await page.waitForFunction((count) => document.querySelector(".console-source")?.options.length === count, sourceCount);
         expect(await picker.isVisible()).toBe(sourceCount > 1);
+        expect(await icon.isVisible()).toBe(sourceCount > 1);
         expect(await geometry()).toEqual(before);
         expect(await page.evaluate(() => window.__keptTerminal === document.querySelector(".console-pane"))).toBe(true);
         expect(await page.evaluate(() => window.__keptPicker === document.querySelector(".console-source"))).toBe(true);
@@ -132,6 +136,31 @@ for (const width of [390, 1280]) {
         expect(await toggle.getAttribute("aria-expanded")).toBe("false");
         expect(await toggle.evaluate((button) => button.closest('[role="tablist"]'))).toBeNull();
         expect(await page.locator('[data-rail-terminal]').count()).toBe(0);
+        const folder = await page.evaluate(() => {
+          const icon = document.querySelector(".console-source-icon svg");
+          if (!icon) return null;
+          const picker = document.querySelector(".console-source");
+          const glyph = icon.getBoundingClientRect();
+          const field = picker.getBoundingClientRect();
+          const style = getComputedStyle(picker);
+          return { glyph: icon.innerHTML, filesGlyph: document.querySelector('[data-tab="files"] svg').innerHTML,
+            width: glyph.width, height: glyph.height, fontSize: parseFloat(style.fontSize),
+            center: glyph.y + glyph.height / 2, fieldCenter: field.y + field.height / 2,
+            left: glyph.x, fieldLeft: field.x, right: glyph.right, textLeft: field.x + parseFloat(style.paddingLeft),
+            decorative: icon.closest('[aria-hidden="true"]') !== null };
+        });
+        expect(folder).not.toBeNull();
+        expect(folder.glyph).toBe(folder.filesGlyph);
+        expect(folder.width).toBe(folder.fontSize);
+        expect(folder.height).toBe(folder.fontSize);
+        expect(folder.center).toBeCloseTo(folder.fieldCenter, 0);
+        expect(folder.left).toBeGreaterThan(folder.fieldLeft);
+        expect(folder.right).toBeLessThan(folder.textLeft);
+        expect(folder.decorative).toBe(true);
+        // A click on the decorative glyph still reaches the native select.
+        await page.mouse.click(folder.left + folder.width / 2, folder.center);
+        await page.waitForFunction(() => document.querySelector(".console-source:open"));
+        await page.keyboard.press("Escape");
         expect(await page.locator('[role="tab"][data-tab="terminal"]').count()).toBe(0);
         expect(await callsTo(page, "term.create")).toEqual([]);
         expect(await callsTo(page, "term.attach")).toEqual([]);

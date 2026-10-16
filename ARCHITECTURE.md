@@ -2172,8 +2172,9 @@ creates a shell; the project rail has no separate Terminal entry.
 `projectConsole.js` paints source-labelled tabs from each
 source's `terminals` cache record at device/project/source/captured-path addresses.
 A remembered source picker chooses only the next new shell. With exactly one
-cached source it is invisible, retaining its fixed space to avoid layout shifts
-as sources change; with multiple sources it remains available. Changing it or
+cached source it and its Files folder glyph are invisible, retaining their fixed
+space to avoid layout shifts as sources change; with multiple sources it remains
+available. Changing it or
 changing faces leaves the selected shell and pane standing. Explicit tab close
 uses the tab's captured source assertion and updates only that roster. Collapse
 and navigation detach client screens without closing server shells.

@@ -13,6 +13,7 @@ import { readProjectTerminalSupport } from "./projectTerminalSupport.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { notifyError } from "./notify.js";
+import { ICON_FOLDER } from "./icons.js";
 
 const scopeOf = (projectId, source) => ({ project_id: projectId, source_id: source.id, source_path: source.path });
 const tabKey = (scope, termId) => JSON.stringify([directoryCacheId(scope), termId]);
@@ -92,7 +93,7 @@ export function mountProjectConsole(host, context) {
     picker.value = state.sourceId || "";
     picker.disabled = !state.supported || !state.sources.length;
     // Keep the fixed picker space so cached source changes never shift tabs.
-    picker.style.visibility = state.sources.length === 1 ? "hidden" : "";
+    picker.parentElement.style.visibility = state.sources.length === 1 ? "hidden" : "";
     if (focused) picker.focus();
   }
 
@@ -119,7 +120,7 @@ export function mountProjectConsole(host, context) {
       host.innerHTML = `<div class="console"><div class="console-head">${consoleHeadHtml(state.size)}</div><div class="console-body" hidden></div></div>`;
       host.querySelector("#console-toggle").onclick = toggle;
       const controls = host.querySelector(".console-controls");
-      controls.innerHTML = '<select class="console-source mini" aria-label="Terminal source"></select>' + consoleGrowHtml(state.size);
+      controls.innerHTML = `<span class="console-source-control"><select class="console-source mini" aria-label="Terminal source"></select><span class="console-source-icon" aria-hidden="true">${ICON_FOLDER}</span></span>` + consoleGrowHtml(state.size);
       controls.querySelector("select").onchange = (event) => { state.sourceId = event.target.value; void remember(); };
       controls.querySelector(".console-grow").onclick = () => void setSize(grownConsoleSize(state.size));
     }

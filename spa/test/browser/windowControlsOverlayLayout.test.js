@@ -7,6 +7,32 @@ let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [navigationAppShim] }); }, 30_000);
 afterAll(async () => { await session?.close(); });
 
+it.each([
+  [900, true, false], [900, false, false], [760, true, false], [760, false, false],
+  [600, true, false], [600, false, false], [1280, false, false], [1280, true, true],
+])("preserves ordinary inbox card styling under the overlay (%spx, pinned=%s, banner=%s)", async (width, pinned, banner) => {
+  await session.withPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mountWindowControls(page, basePath, { install: false, pinned });
+    if (!pinned) await page.locator("#inbox-open").click();
+    if (banner) await page.locator("#verbar").evaluate((element) => { element.hidden = false; });
+    const presentation = () => page.evaluate(() => {
+      const styles = (selector, properties) => {
+        const style = getComputedStyle(document.querySelector(selector));
+        return Object.fromEntries(properties.map((property) => [property, style.getPropertyValue(property)]));
+      };
+      return {
+        head: styles(".inbox-head", ["height", "min-height", "padding-top", "padding-bottom"]),
+        button: styles(".inbox-new-project", ["height", "width", "padding-left", "padding-right", "gap"]),
+        label: styles(".inbox-new-project span", ["min-width", "overflow", "text-overflow", "white-space"]),
+      };
+    });
+    const ordinary = await presentation();
+    await installWindowControls(page, basePath);
+    expect(await presentation()).toEqual(ordinary);
+  }, { width, height: 800 });
+}, 30_000);
+
 for (const width of [1280, 901, 900, 600]) for (const pinned of [true, false]) {
   it(`reserves native controls in the top-left header (${width}px, pinned=${pinned})`, async () => {
     await session.withPage(async ({ page, basePath }) => {

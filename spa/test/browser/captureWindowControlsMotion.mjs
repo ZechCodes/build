@@ -1,5 +1,6 @@
 // Review evidence only; circles and the 84px reservation are synthetic.
-// Run: node test/browser/captureWindowControlsMotion.mjs /tmp/635-motion-before before
+// Run with the project's pinned Node, from spa/:
+// node test/browser/captureWindowControlsMotion.mjs /tmp/635-motion-before before
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -10,7 +11,8 @@ import { mountWindowControls } from "./windowControlsSeed.mjs";
 const output = resolve(process.argv[2] || "/tmp/635-motion");
 const label = process.argv[3] || "motion";
 const evidence = {
-  label, capturedAt: new Date().toISOString(), viewport: { width: 1280, height: 800 },
+  label, capturedAt: new Date().toISOString(), nodeVersion: process.version, nodePath: process.execPath,
+  viewport: { width: 1280, height: 800 },
   motion: "no-preference", activation: "mounted #inbox-collapse HTMLElement.click() handler",
   simulation: { reservation: 84, lightLeft: 12, lightTop: 16, lightSize: 12, lightGap: 8 },
   cssSha256: createHash("sha256").update(await readFile(new URL("../../src/styles/window-controls.css", import.meta.url))).digest("hex"),
@@ -100,6 +102,7 @@ try {
     `${name}: ${before.elapsed.toFixed(1)}–${after.elapsed.toFixed(1)}ms, head=${before.head.height}px, top=${before.head.y.toFixed(1)}px, padding=${before.headerPadding.join(" ")}, action gap=${before.newProjectGap}, label lines=${before.labelLines}, transitioning=${before.transitioning}`);
   await writeFile(join(output, `${label}-measurements.txt`), [
     `Synthetic native controls; production shell and mounted pin handler; ${evidence.motion} motion.`,
+    `Node: ${evidence.nodeVersion} (${evidence.nodePath})`,
     `CSS SHA-256: ${evidence.cssSha256}`, ...rows, "",
   ].join("\n"));
 }

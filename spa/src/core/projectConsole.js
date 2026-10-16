@@ -91,6 +91,8 @@ export function mountProjectConsole(host, context) {
     if (picker.innerHTML !== options) picker.innerHTML = options;
     picker.value = state.sourceId || "";
     picker.disabled = !state.supported || !state.sources.length;
+    // Keep the fixed picker space so cached source changes never shift tabs.
+    picker.style.visibility = state.sources.length === 1 ? "hidden" : "";
     if (focused) picker.focus();
   }
 

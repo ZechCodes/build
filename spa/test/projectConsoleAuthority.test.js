@@ -62,6 +62,31 @@ beforeEach(async () => {
   await flush();
 });
 
+describe("project console source picker", () => {
+  const picker = () => document.querySelector("[aria-label='Terminal source']");
+
+  it("hides a sole cached source while keeping it selected for new shells", async () => {
+    expect(getComputedStyle(picker()).visibility).toBe("hidden");
+    expect(picker().value).toBe("code");
+    document.querySelector(".console-new").click(); await flush();
+    expect(manager.createTerminal).toHaveBeenCalledWith({ project_id: "p1", source_id: "code", source_path: "/code" }, 80, 24);
+  });
+
+  it("also hides the picker for a legacy project's single path", async () => {
+    await writeCached(projectsAddress, [{ project_id: "p1", name: "Code", path: "/code" }]);
+    await flush();
+    expect(getComputedStyle(picker()).visibility).toBe("hidden");
+    expect(picker().value).toBe("primary");
+  });
+
+  it("keeps an empty source picker disabled", async () => {
+    await writeCached(projectsAddress, [{ project_id: "p1", sources: [] }]);
+    await flush();
+    expect(picker().disabled).toBe(true);
+    expect(document.querySelector(".console-new").disabled).toBe(true);
+  });
+});
+
 describe("late project console roster responses", () => {
   it("retries a failed missing roster on a later cache update", async () => {
     manager.listTerminals.mockRejectedValueOnce(new Error("socket lost"))

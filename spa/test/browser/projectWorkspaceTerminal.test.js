@@ -7,13 +7,63 @@ let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [deviceShim, terminalShim] }); });
 afterAll(async () => { await session?.close(); });
 
-const railToggle = (page) => page.getByRole("button", { name: "Terminal", exact: true });
+const consoleToggle = (page) => page.locator("#console-toggle");
 const callsTo = (page, method) => page.evaluate((method) => window.__terminalCalls.filter((call) => call.method === method), method);
+
+for (const width of [390, 1280]) {
+  it(`hides a sole source without shifting the console when cached sources change at ${width}px`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountProjectTerminal(page, basePath, { sourceCount: 1 });
+      const picker = page.locator(".console-source");
+      const add = page.getByRole("button", { name: "New terminal", exact: true });
+      expect(await picker.isVisible()).toBe(false);
+      expect(await picker.inputValue()).toBe("code");
+      await add.focus();
+      await picker.evaluate((select) => select.focus());
+      expect(await add.evaluate((button) => button === document.activeElement)).toBe(true);
+      await consoleToggle(page).click();
+      await page.locator(".project-terminal-screen").waitFor();
+      await page.waitForFunction(() => document.querySelector("#console-region").getAnimations().length === 0);
+      await page.evaluate(() => {
+        window.__keptTerminal = document.querySelector(".console-pane");
+        window.__keptPicker = document.querySelector(".console-source");
+      });
+      const geometry = () => page.evaluate(() => [".console-tabs", ".console-new", ".console-controls", ".console-grow", "#console-region"].map((selector) => {
+        const { x, y, width, height } = document.querySelector(selector).getBoundingClientRect();
+        return { x, y, width, height };
+      }));
+      const before = await geometry();
+      for (const sourceCount of [2, 1]) {
+        await page.evaluate(async (sourceCount) => {
+          const { cache, directory } = window.__layoutModules;
+          const address = { deviceId: "console-device", entityId: "", kind: "projects" };
+          const project = (await cache.readCached(address)).value[0];
+          const notes = { id: "notes", name: "Notes", path: "/project/notes", is_git: false };
+          const scope = { project_id: "p", source_id: notes.id, source_path: notes.path };
+          await cache.writeCached({ ...address, entityId: directory.directoryCacheId(scope), kind: "terminals" }, { tabs: [] });
+          await cache.writeCached(address, [{ ...project, sources: [project.sources[0], notes].slice(0, sourceCount) }]);
+        }, sourceCount);
+        await page.waitForFunction((count) => document.querySelector(".console-source")?.options.length === count, sourceCount);
+        expect(await picker.isVisible()).toBe(sourceCount > 1);
+        expect(await geometry()).toEqual(before);
+        expect(await page.evaluate(() => window.__keptTerminal === document.querySelector(".console-pane"))).toBe(true);
+        expect(await page.evaluate(() => window.__keptPicker === document.querySelector(".console-source"))).toBe(true);
+        if (sourceCount === 2) {
+          await picker.selectOption("notes");
+          expect(await page.locator(".console-tab.active .console-tab-name").textContent()).toBe("Code · Terminal 1");
+        }
+      }
+      expect(await picker.inputValue()).toBe("code");
+      expect(await callsTo(page, "term.attach")).toHaveLength(1);
+      await captureLayout(page, `project-terminal-single-source-${width}.png`);
+    }, { width, height: 840 });
+  }, 60_000);
+}
 
 it("keeps the cached console unchanged across terminal connection transitions", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountProjectTerminal(page, basePath);
-    await railToggle(page).click();
+    await consoleToggle(page).click();
     await page.locator(".project-terminal-screen").waitFor();
     const before = await page.locator("#console-region").innerHTML();
     await page.evaluate(() => { window.__keptTerminal = document.querySelector(".console-pane"); });
@@ -77,10 +127,11 @@ for (const width of [390, 1280]) {
     it(`keeps source shells in the existing console at ${width}px in ${theme}`, async () => {
       await session.withPage(async ({ page, basePath }) => {
         await mountProjectTerminal(page, basePath, { theme });
-        const toggle = railToggle(page);
+        const toggle = consoleToggle(page);
         await toggle.waitFor({ timeout: 3000 });
         expect(await toggle.getAttribute("aria-expanded")).toBe("false");
         expect(await toggle.evaluate((button) => button.closest('[role="tablist"]'))).toBeNull();
+        expect(await page.locator('[data-rail-terminal]').count()).toBe(0);
         expect(await page.locator('[role="tab"][data-tab="terminal"]').count()).toBe(0);
         expect(await callsTo(page, "term.create")).toEqual([]);
         expect(await callsTo(page, "term.attach")).toEqual([]);
@@ -104,7 +155,7 @@ for (const width of [390, 1280]) {
         expect(await page.evaluate(() => window.__layoutModules.app.App.route.name)).toBe("project");
         expect(await page.evaluate(() => window.__keptTerminal === document.querySelector(".console-pane"))).toBe(true);
         const layout = await page.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth,
-          rail: document.querySelector('[data-rail-terminal]').getBoundingClientRect().width,
+          rail: document.querySelector('#dir-rail').getBoundingClientRect().width,
           console: document.querySelector("#console-region").getBoundingClientRect().width }));
         expect(layout.scroll).toBeLessThanOrEqual(layout.width + 1);
         expect(layout.rail).toBeGreaterThan(24);
@@ -115,16 +166,16 @@ for (const width of [390, 1280]) {
   }
 }
 
-it("toggles Terminal by keyboard with an accessible state and keeps its face route", async () => {
+it("toggles the Console tray by keyboard with an accessible state and keeps its face route", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountProjectTerminal(page, basePath);
-    const toggle = railToggle(page);
+    const toggle = consoleToggle(page);
     await toggle.waitFor({ timeout: 3000 });
     await toggle.focus();
     await page.keyboard.press("Enter");
-    await page.waitForFunction(() => document.querySelector('[data-rail-terminal]')?.getAttribute("aria-expanded") === "true");
+    await page.waitForFunction(() => document.querySelector('#console-toggle')?.getAttribute("aria-expanded") === "true");
     await page.keyboard.press("Space");
-    await page.waitForFunction(() => document.querySelector('[data-rail-terminal]')?.getAttribute("aria-expanded") === "false");
+    await page.waitForFunction(() => document.querySelector('#console-toggle')?.getAttribute("aria-expanded") === "false");
     expect(await toggle.evaluate((button) => button === document.activeElement)).toBe(true);
     expect(await page.evaluate(() => window.__layoutModules.app.App.route.tab)).toBe("workspaces");
     expect(await callsTo(page, "term.create")).toEqual([]);
@@ -134,7 +185,7 @@ it("toggles Terminal by keyboard with an accessible state and keeps its face rou
 it("paints cached source shells on an older bridge without dispatching new terminal selectors", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountProjectTerminal(page, basePath, { supported: false });
-    const toggle = railToggle(page);
+    const toggle = consoleToggle(page);
     await toggle.waitFor({ timeout: 3000 });
     expect(await page.locator(".console-tab-name").allTextContents()).toEqual(["Code · Terminal 1", "Notes · Terminal 1"]);
     await toggle.click();

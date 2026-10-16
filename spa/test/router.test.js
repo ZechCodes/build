@@ -60,6 +60,13 @@ const workRoute = (hash) => {
 };
 
 describe("routeFromHash", () => {
+  it.each(["terminal", "term-2"])("lands retired project %s deep links on Tasks", (tab) => {
+    const hash = `#/device/d/project/p/${tab}`;
+    expect(routeFromHash(hash)).toEqual({ name: "project", deviceId: "d", projectId: "p", tab: "tasks" });
+    expect(hashFromRoute(routeFromHash(hash))).toBe("#/device/d/project/p");
+    expect(workRoute(`#/project/p/${tab}`)).toEqual({ name: "project", projectId: "p", tab: "tasks" });
+  });
+
   it("round-trips project Changes source, commit and conversation on the exact device", () => {
     const route = { name: "project", deviceId: "d 1", projectId: "p", tab: "changes", sourceId: "source / 🦊", commit: "deadbeef", agent: "a1" };
     expect(hashFromRoute(route)).toBe("#/device/d%201/project/p/changes?agent=a1&source=source+%2F+%F0%9F%A6%8A&commit=deadbeef");
@@ -375,7 +382,7 @@ describe("legacy routes canonicalize to the nearest new route", () => {
       name: "resolve", kind: "worktree", projectId: "p", id: "w", tab: "changes", term: "term-12",
     });
     // Retired base-project terminal aliases keep their Tasks landing and do
-    // not select a source shell; the project's Terminal action opens the console.
+    // not select a source shell; the project's Console tray opens the console.
     expect(workRoute("#/project/p/term-2")).toEqual({ name: "project", projectId: "p", tab: "tasks" });
     // Every other tab names no terminal.
     expect(routeFromHash("#/project/p/branch/main/diff").term).toBeUndefined();

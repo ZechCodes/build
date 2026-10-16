@@ -396,13 +396,20 @@ describe("the project's two tabs", () => {
 describe("the project's rail", () => {
   const faces = () => [...rail().querySelectorAll("[data-tab]")].map((cell) => [cell.dataset.tab, cell.getAttribute("aria-selected")]);
 
-  it("stands Tasks, Changes, Files, Workspaces, Terminal and Settings on the shell's rail", async () => {
+  it.each(["terminal", "term-2"])("renders Tasks for a retired %s route object", async (tab) => {
+    App.route = { name: "project", deviceId: "dev-1", projectId: "proj-1", tab };
+    await openProject();
+    await flush();
+    expect(mountTasksPane).toHaveBeenCalledOnce();
+    expect(rail().querySelector('[data-tab="tasks"]').getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("stands Tasks, Changes, Files, Workspaces and Settings on the shell's rail", async () => {
     await openProject();
     await flush();
     expect(faces()).toEqual([["tasks", "true"], ["changes", "false"], ["files", "false"], ["workspaces", "false"]]);
-    expect(rail().querySelectorAll("button")).toHaveLength(6);
-    expect(rail().querySelector("[data-rail-terminal]").getAttribute("aria-label")).toBe("Terminal");
-    expect(rail().querySelector("[role=tablist] [data-rail-terminal]")).toBeNull();
+    expect(rail().querySelectorAll("button")).toHaveLength(5);
+    expect(rail().querySelector("[data-rail-terminal]")).toBeNull();
     expect(rail().querySelector("[data-rail-settings]").getAttribute("aria-label")).toBe("Project settings");
     expect(rail().querySelector("[data-sidebar-toggle]")).toBeNull();
   });

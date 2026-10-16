@@ -32,8 +32,8 @@ Zech approved all five recommendations on #522; each recommendation below is ado
    on its bar/inbox head. Named checkout rows and bars use their given names;
    creation says **New workspace**, collection says **Workspaces**. “Isolated
    workspace” is a spec distinction, not a mandatory prefix in every label.
-4. **Terminal placement:** use the existing console with a **Terminal**
-   rail action (a toggle outside the face tablist), not a new full-page face.
+4. **Terminal placement:** use the existing bottom **Console** tray, with no
+   separate Terminal rail action on the project (#630) or full-page face.
    It is available on every project face and project-hosted task, never opens
    or starts a process by default. Source choice applies to new tabs only.
 5. **Source movement with live processes:** refuse source move/remove
@@ -92,7 +92,7 @@ A **task** is a detail page within its host's Tasks face.
 | Navigation original-source destination (#523) | “Project workspace” | Not a child workspace or duplicated self row |
 | Named workspace bar and inbox/list row | User's workspace name | “Workspace” fallback; no “isolated” prefix |
 | Creation sheet/action | “New workspace”; help may explain “Creates a separate checkout of the project sources” | Existing creation/isolation controls and IDs |
-| Rail labels/tooltips/accessible names | Add “Changes” and “Terminal” on project workspace | “Tasks”, “Files”, “Workspaces”, “Project settings”, “Workspace settings” |
+| Rail labels/tooltips/accessible names | Add “Changes” on project workspace; no Terminal entry (#630) | “Tasks”, “Files”, “Workspaces”, “Project settings”, “Workspace settings” |
 | Project agent rail | “Project agent” for pin; given worker names; “Add agent”; empty owned list explains source work | Pin remains reachable elsewhere; Projects inbox face remains “Projects” |
 | Source Git actions | “Commit”, “Fetch”, “Pull”, “Push”, “Stash”, “Apply stash”, branch selector; “Sync base” explicitly names configured base | Do not relabel Pull as Sync base |
 | Source context | “Original sources · shared checkout”; current branch and configured base when different | No isolation claim |
@@ -288,6 +288,8 @@ No extra channel, harness PTY reuse or new terminal engine.
 - New tab starts the user's shell in the selected source's canonical original
   directory. Remember choice per project/device; Files selection may seed it
   initially but never moves an existing shell. Label tabs by source plus tab name.
+- Hide the source picker for exactly one cached source, reserving its layout
+  space so source-count changes do not shift console controls (#630).
 - UI/list key: `(device, project, source, captured_location)`; shell identity is
   its unique terminal ID with immutable owning scope and canonical cwd. Preserve
   canonical-path legacy aliases without permitting a supplied foreign source to
@@ -516,7 +518,7 @@ coordinate shared helpers and serialize merges touching router/toolbar/brief.
 
 ### C7 acceptance and tests
 
-- Terminal action opens existing console; no process starts on page load.
+- Bottom Console tray opens existing console; no process starts on page load.
   New tabs honor explicit source; face/task navigation keeps current shell.
 - Cold cached page, reconnect, source switch and same IDs on two devices cannot
   route input or roster events into another source. Close updates cache/UI.

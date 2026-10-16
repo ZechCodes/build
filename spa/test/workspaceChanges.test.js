@@ -13,7 +13,11 @@ const SHA = vi.hoisted(() => ({ repo: "a1".repeat(20), site: "b2".repeat(20), la
 vi.mock("../src/core/gitPane.js", () => ({
   mountGitPane: vi.fn((host, { scope, viewingContext }) => {
     host.innerHTML = `<aside class="crail-host">${scope.source_id}</aside>`;
-    const pane = { say: (sha) => viewingContext.set({ kind: "commit", sha }), dispose: vi.fn(), setVisible: vi.fn() };
+    const pane = {
+      say: (sha) => viewingContext.set({ kind: "commit", sha }),
+      snapshot: () => viewingContext.snapshot(),
+      dispose: vi.fn(), setVisible: vi.fn(),
+    };
     panes.set(scope.source_id, pane);
     pane.say(SHA[scope.source_id]);
     return pane;
@@ -79,6 +83,82 @@ describe("selecting a directory", () => {
   const surface = (sourceId) => document.querySelector(`[data-surface="${sourceId}"]`);
   const tab = (sourceId) => document.querySelector(`.workspace-dirtab[data-directory="${sourceId}"]`);
   const saying = (viewingContext) => viewingContext.snapshot()?.items.map((item) => item.sha);
+
+  it("keeps the shown commit context quiet when visibility is repeated", () => {
+    const { changes, viewingContext } = mount();
+    const before = viewingContext.snapshot();
+    const changed = vi.fn();
+    viewingContext.subscribe(changed);
+
+    changes.setVisible(true);
+    changes.setVisible(true);
+
+    expect(changed).not.toHaveBeenCalled();
+    expect(viewingContext.snapshot()).toEqual(before);
+    changes.dispose();
+  });
+
+  it("retains a dismissed commit and selected text during repeated shows", () => {
+    const { changes, viewingContext } = mount();
+    const selection = { kind: "selection", path: "a.js", text: "keep this passage", line_start: 7, line_end: 7 };
+    viewingContext.setSelection([selection]);
+    viewingContext.remove(0);
+    const before = { version: 1, items: [selection] };
+    expect(viewingContext.snapshot()).toEqual(before);
+
+    changes.setVisible(true);
+    changes.setVisible(true);
+
+    expect(viewingContext.snapshot()).toEqual(before);
+    changes.dispose();
+  });
+
+  it("retains a hidden pane's captured context when hiding is repeated", () => {
+    const { changes, viewingContext } = mount();
+    const selection = { kind: "selection", path: "a.js", text: "hidden pane's passage" };
+    viewingContext.setSelection([selection]);
+    const before = viewingContext.snapshot();
+    changes.setVisible(false);
+    viewingContext.set({ kind: "file", path: "another-face.js" });
+    expect(panes.get("repo").snapshot()).toEqual(before);
+
+    changes.setVisible(false);
+
+    expect(panes.get("repo").snapshot()).toEqual(before);
+    expect(viewingContext.snapshot()).toEqual({ version: 1, items: [{ kind: "file", path: "another-face.js" }] });
+    changes.dispose();
+  });
+
+  it("keeps a newly selected source hidden when directories change behind another face", () => {
+    const { changes, viewingContext } = mount();
+    const repository = panes.get("repo");
+    const repositoryContext = repository.snapshot();
+    changes.setVisible(false);
+    const fileContext = { version: 1, items: [{ kind: "file", path: "another-face.js" }] };
+    viewingContext.set(fileContext);
+    const changed = vi.fn();
+    viewingContext.subscribe(changed);
+
+    changes.workspaceMoved([{ sourceId: "later", label: "New repository", is_git: true }]);
+    changes.setVisible(false);
+
+    expect(changed).not.toHaveBeenCalled();
+    expect(viewingContext.snapshot()).toEqual(fileContext);
+    expect(repository.snapshot()).toEqual(repositoryContext);
+    const later = panes.get("later");
+    expect(later.setVisible).toHaveBeenLastCalledWith(false);
+    const hiddenContext = later.snapshot();
+    const nextFileContext = { version: 1, items: [{ kind: "file", path: "next-file.js" }] };
+    viewingContext.set(nextFileContext);
+    changes.setVisible(false);
+    later.say(SHA.site);
+
+    expect(later.snapshot()).toEqual(hiddenContext);
+    expect(viewingContext.snapshot()).toEqual(nextFileContext);
+    changes.setVisible(true);
+    expect(saying(viewingContext)).toEqual([SHA.site]);
+    changes.dispose();
+  });
 
   it("suspends the kept source panes when the whole Changes face is hidden", () => {
     const { changes, viewingContext } = mount();

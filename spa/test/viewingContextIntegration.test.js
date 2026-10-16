@@ -225,6 +225,22 @@ describe("viewing context across SPA surfaces and outgoing messages", () => {
 
 
 describe("composer context groups", () => {
+  it("keeps an unchanged commit chip when its rail stamp republishes the same context", () => {
+    const context = createViewingContext();
+    context.set({ kind: "commit", sha: "a".repeat(40) });
+    let repaint;
+    const viewingContext = { ...context, subscribe: (listener) => { repaint = listener; return () => {}; } };
+    document.body.innerHTML = composerHtml({ inputId: "ci", sendId: "cs", hintId: "ch", placeholder: "Message" });
+    const control = wireThreadComposer(document.body, {
+      ids: { input: "ci", send: "cs", hint: "ch" }, viewingContext,
+      readDraft: () => "", writeDraft: () => {}, onSubmit: async () => {},
+    });
+    const chip = document.querySelector('[data-context-kind="commit"]');
+    repaint(context.snapshot());
+    expect(document.querySelector('[data-context-kind="commit"]')).toBe(chip);
+    control.dispose();
+  });
+
   it("retains expansion during updates and dismisses every file with one click", () => {
     const viewingContext = createViewingContext();
     viewingContext.set({ version: 1, items: [

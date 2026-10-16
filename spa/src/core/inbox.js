@@ -90,7 +90,7 @@ export const workspaceEntryKey = (workspace) => `workspace:${workspace.workspace
 
 const workspaceEntityId = (workspace) => workspace.entity_id || workspace.run_id || null;
 
-function toWorkspaceEntry(workspace, projectNames, conversation) {
+function toWorkspaceEntry(workspace, projectNames, conversation, nowMs) {
   const activity = conversation || { working: workspace.status === "active" };
   // The workspace list carries the conversation owner independently of the
   // board row. On a cold replay it can therefore lead the row that carries the
@@ -138,7 +138,7 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
     adopted,
     facts: adopted ? adoptedCheckoutFacts(workspace) : workspaceFacts(workspace),
     route: workspaceRoute(workspace),
-    ...sessionTimes(workspace),
+    ...sessionTimes(workspace, nowMs),
   };
 }
 
@@ -148,6 +148,8 @@ function toWorkspaceEntry(workspace, projectNames, conversation) {
  *  account-wide names the feed stamped (core/deviceKey.js): two machines each
  *  hold a `proj-1`, and a run id on one says nothing about the other. */
 export function workspaceEntries(workspaces = [], projects = [], items = []) {
+  // One fallback time keeps undated rows tied throughout this snapshot.
+  const nowMs = Date.now();
   const projectsByKey = new Map(projects.map((project) => [project.projectKey, project]));
   const projectNames = new Map(projects.map((project) => [project.projectKey, project.name]));
   const conversations = new Map(items.filter((item) => item.kind === "branch" && entityIdOf(item))
@@ -159,7 +161,7 @@ export function workspaceEntries(workspaces = [], projects = [], items = []) {
   return workspaces.filter(listed).map((workspace) => {
     const owner = workspaceEntityId(workspace) || workspace.id;
     const conversation = conversations.get(JSON.stringify([workspace.projectKey, owner])) || workspaceRun(workspace, items);
-    return toWorkspaceEntry(workspace, projectNames, conversation);
+    return toWorkspaceEntry(workspace, projectNames, conversation, nowMs);
   }).sort(byAnchor);
 }
 

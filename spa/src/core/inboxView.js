@@ -168,7 +168,9 @@ function focusedActiveCapture(list) {
 
 function onCaptureBlur(event) {
   const editor = event.target.closest(".reroute-branch");
-  if (!editor) return;
+  // Native focusout checkpoints can run before the receiving button becomes
+  // active. Keep an input-to-Dispatch transfer inside this editor intact.
+  if (!editor || editor.contains(event.relatedTarget)) return;
   // Keyed moves may briefly blur before preserveInputFocus restores the field.
   queueMicrotask(() => {
     if (mounted && !editor.contains(document.activeElement)) draw();

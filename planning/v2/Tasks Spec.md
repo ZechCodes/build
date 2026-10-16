@@ -1159,8 +1159,10 @@ Every watched open task outside Done participates in the same inbox order as
 watched workspace and project conversations, even after its attention is read.
 An activity streak begins after the latest gap of eight hours or longer;
 the earliest current streak start sorts first. The bridge supplies
-`session_started_ms` and `last_activity_ms` on task records from the meaningful
-timeline entries, excluding dependency and dispatch bookkeeping. Reading and
+`session_started_ms` and `last_activity_ms` on task records from meaningful
+timeline entries and saved content-edit checkpoints, excluding dependency and
+dispatch bookkeeping. Title, body and priority edits renew activity without
+adding timeline news; their streak survives a restart. Reading and
 unread counts do not move the streak. Legacy task records retain their existing
 anchor/creation fallback.
 

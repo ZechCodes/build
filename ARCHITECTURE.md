@@ -3017,8 +3017,10 @@ Every watched open task outside Done stays visible, even after its attention is 
 interleave with captures, workspaces and project-agent rows in one list ordered
 by oldest current activity-streak start (#628). A gap of eight hours or longer
 ends a streak. Conversation summaries come from the bridge's message index;
-task summaries come from its meaningful timeline entries and are cached on
-`tasks.list` / `tasks.get`, so sorting needs no history fetch. Older task records
+task summaries combine meaningful timeline entries with durable content-edit
+checkpoints and are cached on `tasks.list` / `tasks.get`, so sorting needs no
+history fetch. The newer cached task copy supplies activity when detail and
+list arrive independently; the list settles equal update stamps. Older task records
 fall back to their anchor or creation time and latest cached activity. Attention
 reasons and unread counts never change position. Every row kind moves
 to Recent after a day without activity while no agent works; dismissed rows go

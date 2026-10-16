@@ -33,11 +33,20 @@ const ms = (iso) => {
 
 const titleOf = (task) => task.title || "(untitled)";
 
+/** Detail reads and list pushes arrive independently. The newer task owns
+ * activity; the list settles equal update stamps, as it does assignment. */
+function taskSessionRecord(task, detail) {
+  const detailed = detail?.task;
+  if (hasSessionSummary(detailed) && changedSince(detailed, { task })) return detailed;
+  if (hasSessionSummary(task)) return task;
+  return !changedSince(task, detail) && hasSessionSummary(detailed) ? detailed : null;
+}
+
 /** Current bridges summarize the complete timeline, so no history read is
  * needed to sort a task. Older cached records retain their legacy fallback. */
 function taskTimes(task, detail) {
-  if (hasSessionSummary(task)) return sessionTimes(task);
-  if (!changedSince(task, detail) && hasSessionSummary(detail?.task)) return sessionTimes(detail.task);
+  const session = taskSessionRecord(task, detail);
+  if (session) return sessionTimes(session);
   const activity = [task.created_at, task.updated_at, task.last_activity,
     ...(detail?.timeline || []).map((item) => item.created_at || item.at)]
     .map(ms).filter(Number.isFinite);

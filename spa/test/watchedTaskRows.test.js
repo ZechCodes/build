@@ -187,6 +187,19 @@ describe("task anchors and Recent", () => {
     expect(rows([legacyNewer], detail)[0].anchorMs).toBe(Date.parse(old.created_at));
   });
 
+  it("renews a row immediately when a newer cached detail leads a valid older list", () => {
+    const listed = { ...old, session_started_ms: now - 50 * 3600_000, last_activity_ms: now - 48 * 3600_000 };
+    const renewed = { ...listed, updated_at: new Date(now).toISOString(),
+      session_started_ms: now - 3600_000, last_activity_ms: now };
+    const details = new Map([[old.id, taskDetail(renewed, [])]]);
+    expect(workspaceIsRecent(rows([listed])[0], now)).toBe(true);
+    const [row] = rows([listed], details);
+    expect(row).toMatchObject({ anchorMs: renewed.session_started_ms, lastActivityMs: now });
+    expect(workspaceIsRecent(row, now)).toBe(false);
+    const sameClockList = { ...listed, updated_at: renewed.updated_at };
+    expect(rows([sameClockList], details)[0].anchorMs).toBe(listed.session_started_ms);
+  });
+
   it("uses the latest cached comment or event for activity without moving the creation anchor", () => {
     const timeline = [comment({ created_at: "2026-09-24T11:00:00Z" }), event({ at: "2026-09-24T10:00:00Z" })];
     const [row] = rows([old], new Map([[old.id, taskDetail(old, timeline)]]));

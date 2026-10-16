@@ -176,6 +176,27 @@ describe("one inbox row order (#481)", () => {
     await vi.waitFor(() => expect(activeKeys()[0]).toBe("tracker_task:task-old"), WAIT);
     expect(call).not.toHaveBeenCalled();
   });
+
+  it.each(["inbox", "projects"])("moves a watched task from newer cached details before its list refreshes in %s", async (view) => {
+    const old = task({ id: "task-renewed", watched: true, created_at: date(72), updated_at: date(48),
+      session_started_ms: now - 72 * 3600_000, last_activity_ms: now - 48 * 3600_000 });
+    await boot({ greet: false, tasks: [old], workspaces: [workspace("current", 1)] });
+    modules.inboxView.setInboxView(view);
+    await vi.waitFor(() => expect(document.querySelector("[data-recent-toggle] .inbox-recent-count")?.textContent).toBe("1"), WAIT);
+    const visible = () => [...document.querySelectorAll("#inbox-list .inbox-entry")]
+      .filter((row) => !row.closest(".inbox-recent") && !row.classList.contains("inbox-project-agent"))
+      .map((row) => row.dataset.key);
+    expect(visible()).toEqual([`workspace:${DEVICE}|current`]);
+    const renewed = { ...old, updated_at: date(0), session_started_ms: now - 2 * 3600_000, last_activity_ms: now };
+    await modules.tracker.writeTaskRecord(DEVICE, PROJECT, old.id, taskDetail(renewed, []));
+    await vi.waitFor(() => expect(visible()).toEqual(["tracker_task:task-renewed", `workspace:${DEVICE}|current`]), WAIT);
+    const kept = rowFor(old.id);
+    await modules.tracker.writeTaskRecord(DEVICE, PROJECT, old.id, taskDetail({ ...renewed,
+      updated_at: new Date(now + 1).toISOString(), session_started_ms: now, last_activity_ms: now }, []));
+    await vi.waitFor(() => expect(visible()).toEqual([`workspace:${DEVICE}|current`, "tracker_task:task-renewed"]), WAIT);
+    expect(rowFor(old.id)).toBe(kept);
+    expect(call).not.toHaveBeenCalled();
+  });
 });
 
 describe("watched task dots from cached agents", () => {

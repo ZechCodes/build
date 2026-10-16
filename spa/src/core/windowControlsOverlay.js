@@ -11,10 +11,18 @@ export function installWindowControlsOverlay() {
   const sync = () => {
     const rect = overlay.getTitlebarAreaRect();
     if (!overlay.visible || rect.width <= 0 || rect.height <= 0) return clear();
-    root.setAttribute("data-window-controls-overlay", "");
-    // CSS env() is authoritative in Electron. The API value is also useful to
-    // hosts exposing geometry before the environment variable is available.
-    root.style.setProperty("--window-controls-x", `${rect.x}px`);
+    root.setAttribute("data-window-controls-updating", "");
+    try {
+      root.setAttribute("data-window-controls-overlay", "");
+      // CSS env() is authoritative in Electron. The API value also covers
+      // hosts exposing geometry before the environment variable is available.
+      root.style.setProperty("--window-controls-x", `${rect.x}px`);
+      // Native controls move immediately. Commit their clearance before
+      // restoring pin/unpin transitions, which must not cross click targets.
+      void root.offsetWidth;
+    } finally {
+      root.removeAttribute("data-window-controls-updating");
+    }
   };
   sync();
   overlay.addEventListener("geometrychange", sync);

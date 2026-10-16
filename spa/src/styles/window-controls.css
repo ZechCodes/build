@@ -13,6 +13,7 @@
 :root[data-window-controls-overlay] .toolbar {
   padding-left:calc(var(--toolbar-gutter) + var(--window-controls-inset));
 }
+:root[data-window-controls-overlay][data-window-controls-updating] .toolbar { transition:none; }
 :root[data-window-controls-overlay] body.inbox-collapsed .toolbar {
   padding-left:calc(var(--inbox-open-clear) + var(--window-controls-inset));
 }

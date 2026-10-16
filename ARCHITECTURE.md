@@ -436,6 +436,10 @@ runtime that starts them.
   and `operation_id` on `tasks.assign`, which a retry answers with the
   dispatch already made. A reused id asked of a different assignment is
   `conflict`.
+  3.21.0 also adds `tasks.activitySessions` (#628): watched task records and
+  board rows carry `session_started_ms` and `last_activity_ms` for the current
+  eight-hour-gap activity streak, including silent content edits. Conversation
+  sessions use that same gap; the user's device-wide session retains six hours.
   3.19.0 adds `unread.watchScoped` (#474): conversation and task unread
   counts exclude unwatched conversations and news from before the current
   watch began. Watch baselines persist separately from read cursors.

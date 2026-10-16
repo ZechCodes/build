@@ -205,6 +205,64 @@ it("keeps header controls clear of native buttons throughout pin and unpin anima
   }, { width: 1280, height: 800 });
 }, 30_000);
 
+it.each([
+  ["unpin", true, 1], ["rapid pin/unpin/pin reversal", false, 3],
+])("preserves the outgoing header presentation during %s", async (_name, pinned, clicks) => {
+  await session.withPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await mountWindowControls(page, basePath, { pinned });
+    if (!pinned) {
+      await page.locator("#inbox-open").click();
+      await page.locator("#inbox-rail").evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((animation) => animation.finished.catch(() => {})));
+      });
+    }
+    const result = await page.evaluate(async (clicks) => {
+      const samples = [];
+      const collapsedStates = [];
+      const pin = document.querySelector("#inbox-collapse");
+      const head = document.querySelector(".inbox-head");
+      const label = document.querySelector(".inbox-new-project span");
+      const started = performance.now();
+      let clicked = 0;
+      do {
+        if (clicked < clicks && performance.now() - started >= clicked * 80) {
+          pin.click();
+          await window.__layoutModules.inbox.whenInboxCollapsedPainted();
+          collapsedStates.push(document.body.classList.contains("inbox-collapsed"));
+          clicked += 1;
+        }
+        if (document.body.classList.contains("inbox-transitioning")) {
+          const range = document.createRange();
+          range.selectNodeContents(label);
+          samples.push({ height: head.getBoundingClientRect().height, lines: range.getClientRects().length });
+        } else if (clicked === clicks) break;
+        await new Promise(requestAnimationFrame);
+      } while (performance.now() - started < 1500);
+      return { samples, collapsedStates, transitioning: document.body.classList.contains("inbox-transitioning"),
+        height: head.getBoundingClientRect().height, whiteSpace: getComputedStyle(label).whiteSpace };
+    }, clicks);
+    expect(result.collapsedStates).toEqual(pinned ? [true] : [false, true, false]);
+    expect(result.samples.length).toBeGreaterThan(3);
+    expect(result.samples.filter(({ height, lines }) => Math.abs(height - 44) > 0.05 || lines !== 1)).toEqual([]);
+    expect(result.transitioning).toBe(false);
+    expect(result.height).toBe(pinned ? 38 : 44);
+    expect(result.whiteSpace).toBe(pinned ? "normal" : "nowrap");
+  }, { width: 1280, height: 800 });
+}, 30_000);
+
+it("switches directly to ordinary popover styling with reduced motion", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mountWindowControls(page, basePath);
+    await page.locator("#inbox-collapse").click();
+    await page.evaluate(() => window.__layoutModules.inbox.whenInboxCollapsedPainted());
+    expect(await page.locator("body").evaluate((element) => element.classList.contains("inbox-transitioning"))).toBe(false);
+    expect((await windowControlsGeometry(page)).head.height).toBe(38);
+    expect(await page.locator(".inbox-new-project span").evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("normal");
+  }, { width: 1280, height: 800 });
+}, 30_000);
+
 it("clears native controls at fractional desktop widths", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });

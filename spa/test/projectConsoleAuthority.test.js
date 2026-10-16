@@ -65,17 +65,23 @@ beforeEach(async () => {
 describe("project console source picker", () => {
   const picker = () => document.querySelector("[aria-label='Terminal source']");
 
-  it("hides a sole cached source while keeping it selected for new shells", async () => {
-    expect(getComputedStyle(picker()).visibility).toBe("hidden");
+  it("shows a sole cached source and its folder icon while keeping it selected for new shells", async () => {
+    expect(getComputedStyle(picker()).visibility).toBe("visible");
+    expect(getComputedStyle(document.querySelector(".console-source-icon")).visibility).toBe("visible");
+    picker().focus();
+    expect(document.activeElement).toBe(picker());
     expect(picker().value).toBe("code");
     document.querySelector(".console-new").click(); await flush();
     expect(manager.createTerminal).toHaveBeenCalledWith({ project_id: "p1", source_id: "code", source_path: "/code" }, 80, 24);
   });
 
-  it("also hides the picker for a legacy project's single path", async () => {
+  it("also shows the picker for a legacy project's single path", async () => {
     await writeCached(projectsAddress, [{ project_id: "p1", name: "Code", path: "/code" }]);
     await flush();
-    expect(getComputedStyle(picker()).visibility).toBe("hidden");
+    expect(getComputedStyle(picker()).visibility).toBe("visible");
+    expect(getComputedStyle(document.querySelector(".console-source-icon")).visibility).toBe("visible");
+    picker().focus();
+    expect(document.activeElement).toBe(picker());
     expect(picker().value).toBe("primary");
   });
 

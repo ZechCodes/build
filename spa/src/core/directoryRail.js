@@ -41,7 +41,6 @@ import {
   ICON_PANEL_LEFT_OPEN,
   ICON_SETTINGS,
   ICON_SQUARE_CHECK,
-  ICON_TERMINAL,
 } from "./icons.js";
 import {
   changesTabLabel,
@@ -122,14 +121,6 @@ const settingsHtml = (settings) => {
   return `<button class="dirtab dirsettings" type="button" data-rail-settings="1" title="${esc(label)}" aria-label="${esc(label)}">${ICON_SETTINGS}</button>`;
 };
 
-const terminalHtml = (terminal) => terminal
-  ? `<button class="dirtab" type="button" data-rail-terminal aria-label="Terminal" title="Terminal" aria-expanded="${terminal.expanded === true}">${ICON_TERMINAL}</button>` : "";
-
-function wireTerminal(host, terminal) {
-  const button = host.querySelector("[data-rail-terminal]");
-  if (button) button.onclick = terminal.onToggle;
-}
-
 const TOGGLE_HTML = `<button class="dirtab dirtoggle" type="button" data-sidebar-toggle="1"></button>`;
 
 /** The toggle's parts for a state: its words and its glyph, which show what a
@@ -151,7 +142,7 @@ function paintSidebarState(host, toggle, collapsed) {
 }
 
 /** The controls outside the tablist, which a paint rewrites like the faces. */
-const FOOT_CELLS = ["[data-sidebar-toggle]", "[data-rail-settings]", "[data-rail-terminal]"];
+const FOOT_CELLS = ["[data-sidebar-toggle]", "[data-rail-settings]"];
 
 /** Where the keyboard stood before a paint rewrote the rail, as the cell to
  *  hand it back to afterwards: a control at the foot, the open face, or
@@ -173,7 +164,7 @@ function keyboardCellIn(host) {
  * Automatic activation, the way a tablist of two behaves: an arrow both moves
  * the focus and opens what it lands on.
  */
-export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, settings = null, sidebar = true, storage, terminal = null }) {
+export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSelect, settings = null, sidebar = true, storage }) {
   // A paint answering a press rewrites the cell the keyboard stands on; the
   // keyboard is handed the cell that replaces it, or it lands on nothing.
   const keyboardCell = keyboardCellIn(host);
@@ -183,14 +174,12 @@ export function paintDirectoryRail(host, { tabs = DIRECTORY_TABS, active, onSele
   delete host.dataset.sidebar;
   host.innerHTML =
     `<div class="dirtabs" role="tablist" aria-orientation="vertical">${directoryRailHtml(tabs, active)}</div>` +
-    terminalHtml(terminal) +
     settingsHtml(settings) +
     (sidebar ? TOGGLE_HTML : "");
   if (sidebar) wireSidebarToggle(host, storage);
   if (keyboardCell) host.querySelector(keyboardCell)?.focus();
   const cog = host.querySelector("[data-rail-settings]");
   if (cog) cog.onclick = () => settings.onOpen();
-  wireTerminal(host, terminal);
   wireFaces(host, onSelect);
 }
 

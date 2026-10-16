@@ -67,5 +67,3 @@ export { default as ICON_FILE_VIDEO } from "lucide-static/icons/file-video.svg?r
 export { default as ICON_FILE_SPREADSHEET } from "lucide-static/icons/file-spreadsheet.svg?raw";
 export { default as ICON_PANEL_LEFT_CLOSE } from "lucide-static/icons/panel-left-close.svg?raw";
 export { default as ICON_PANEL_LEFT_OPEN } from "lucide-static/icons/panel-left-open.svg?raw";
-
-export { default as ICON_TERMINAL } from "lucide-static/icons/terminal.svg?raw";

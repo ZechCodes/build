@@ -11,19 +11,19 @@ const consoleToggle = (page) => page.locator("#console-toggle");
 const callsTo = (page, method) => page.evaluate((method) => window.__terminalCalls.filter((call) => call.method === method), method);
 
 for (const width of [390, 1280]) {
-  it(`hides a sole source without shifting the console when cached sources change at ${width}px`, async () => {
+  it(`shows a sole source without shifting the console when cached sources change at ${width}px`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       await mountProjectTerminal(page, basePath, { sourceCount: 1 });
       const picker = page.locator(".console-source");
       const icon = page.locator(".console-source-icon svg");
       const add = page.getByRole("button", { name: "New terminal", exact: true });
       expect(await icon.count()).toBe(1);
-      expect(await picker.isVisible()).toBe(false);
-      expect(await icon.isVisible()).toBe(false);
+      expect(await picker.isVisible()).toBe(true);
+      expect(await icon.isVisible()).toBe(true);
       expect(await picker.inputValue()).toBe("code");
       await add.focus();
-      await picker.evaluate((select) => select.focus());
-      expect(await add.evaluate((button) => button === document.activeElement)).toBe(true);
+      await page.keyboard.press("Tab");
+      expect(await picker.evaluate((select) => select === document.activeElement)).toBe(true);
       await consoleToggle(page).click();
       await page.locator(".project-terminal-screen").waitFor();
       await page.waitForFunction(() => document.querySelector("#console-region").getAnimations().length === 0);
@@ -47,8 +47,10 @@ for (const width of [390, 1280]) {
           await cache.writeCached(address, [{ ...project, sources: [project.sources[0], notes].slice(0, sourceCount) }]);
         }, sourceCount);
         await page.waitForFunction((count) => document.querySelector(".console-source")?.options.length === count, sourceCount);
-        expect(await picker.isVisible()).toBe(sourceCount > 1);
-        expect(await icon.isVisible()).toBe(sourceCount > 1);
+        expect(await picker.isVisible()).toBe(true);
+        expect(await icon.isVisible()).toBe(true);
+        await picker.focus();
+        expect(await picker.evaluate((select) => select === document.activeElement)).toBe(true);
         expect(await geometry()).toEqual(before);
         expect(await page.evaluate(() => window.__keptTerminal === document.querySelector(".console-pane"))).toBe(true);
         expect(await page.evaluate(() => window.__keptPicker === document.querySelector(".console-source"))).toBe(true);

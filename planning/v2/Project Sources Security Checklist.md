@@ -226,8 +226,9 @@ remain separate.
   bridges. Source caches survive ordinary sync eviction.
 - `browser/projectWorkspaceTerminal` exercises the bottom Console tray and
   absence of a project Terminal rail action (#630), keyboard expanded state,
-  sole-source picker hiding without layout shifts, no shell creation on page load, source
-  labels and new-tab source selection, kept active pane through Files navigation,
+  visible and focusable sole-source picking without layout shifts, no shell
+  creation on page load, source labels and new-tab source selection, kept active
+  pane through Files navigation,
   cached old-bridge rendering, unchanged cached DOM across disconnect/reconnect,
   New terminal focus and Enter activation across unrelated cache writes and roster
   moves, and phone/desktop overflow. `selectStylesLayout`

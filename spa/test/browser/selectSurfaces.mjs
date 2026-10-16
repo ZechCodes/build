@@ -201,9 +201,7 @@ async function mountProjectTerminalSelect(page, basePath, theme, preserveDocumen
       kind: "project", deviceId: device.id, projectId: project.id, cacheScope: m.scope.scopeFor(device.id),
     });
     window.__selectDispose = () => mounted.dispose();
-  }, { theme, device, project: { ...project, sources: [...project.sources,
-    { id: "source-code", name: "Code", path: "/code/Build", is_git: true },
-  ] } });
+  }, { theme, device, project });
   await page.waitForSelector('[aria-label="Terminal source"]');
   await settled(page);
 }

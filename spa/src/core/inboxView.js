@@ -144,17 +144,17 @@ function heldAway(entry) {
 }
 
 
-/** Browsers without moveBefore blur a focused field when its keyed row moves.
- * Keep that field's focus and selection while every activity update paints. */
-function preserveInputFocus(list) {
-  const field = document.activeElement;
-  const editorButton = field?.matches(".reroute-branch [data-reroute-kind='branch']");
-  if (!list.contains(field) || (field?.tagName !== "INPUT" && !editorButton)) return () => {};
-  const { selectionStart, selectionEnd, selectionDirection } = field;
+/** DOM moves can blur an editor or project link. Keep keyboard focus and
+ * input selection while cached activity reorders rows and whole blocks. */
+function preserveRowFocus(list) {
+  const focused = document.activeElement;
+  const retained = focused?.matches("input, .reroute-branch [data-reroute-kind='branch'], .inbox-project-agent[role='link']");
+  if (!list.contains(focused) || !retained) return () => {};
+  const { selectionStart, selectionEnd, selectionDirection } = focused;
   return () => {
-    if (!field.isConnected) return;
-    if (document.activeElement !== field) field.focus({ preventScroll: true });
-    if (typeof selectionStart === "number") field.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+    if (!focused.isConnected) return;
+    if (document.activeElement !== focused) focused.focus({ preventScroll: true });
+    if (typeof selectionStart === "number") focused.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
   };
 }
 
@@ -171,7 +171,7 @@ function onCaptureBlur(event) {
   // Native focusout checkpoints can run before the receiving button becomes
   // active. Keep an input-to-Dispatch transfer inside this editor intact.
   if (!editor || editor.contains(event.relatedTarget)) return;
-  // Keyed moves may briefly blur before preserveInputFocus restores the field.
+  // Keyed moves may briefly blur before preserveRowFocus restores the field.
   queueMicrotask(() => {
     if (mounted && !editor.contains(document.activeElement)) draw();
   });
@@ -231,7 +231,7 @@ function draw() {
   const list = $("#inbox-list");
   if (!list) return;
   rememberCaptureDrafts(list);
-  const restoreFocus = preserveInputFocus(list);
+  const restoreFocus = preserveRowFocus(list);
   const shown = withDeviceNames(painted);
   list.onclick = onListClick;
   list.oninput = onCaptureInput;

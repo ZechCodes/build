@@ -18,6 +18,7 @@
 import { taskWaitingHtml } from "./trackerTaskReadinessRender.js";
 import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
+import { actorName } from "./trackerLineWords.js";
 import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import {
   assigneeHtml, labelsHtml, numberHtml, priorityChipHtml, reviewerWords, stateMarkHtml, statusChipHtml,
@@ -60,7 +61,7 @@ export const taskCardHtml = (task, { columns, href, unreadOf, ...context }) => {
     ${taskWaitingHtml(task, context)}
     ${task.labels?.length ? `<div class="task-card-labels">${labelsHtml(task.labels)}</div>` : ""}
     ${assigneeHref
-      ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}">${assigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`
+      ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}" title="${esc(actorName(task.assignee, reading))}">${assigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`
       : assignButton}
   </li>`);
 };

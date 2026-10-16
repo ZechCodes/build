@@ -23,6 +23,7 @@
 
 import { esc } from "./text.js";
 import { actorHref } from "./trackerIdentity.js";
+import { actorName } from "./trackerLineWords.js";
 import { filtersAreSet } from "./trackerFilters.js";
 import { taskBubbleHtml } from "./taskUnread.js";
 import { taskReviewSummaryHtml } from "./taskReviewSummaryRender.js";
@@ -89,7 +90,7 @@ export const taskRowHtml = (task, { columns, href, nowMs = Date.now(), unreadOf,
   const assigneeHref = task.assignee && actorHref(task.assignee, reading);
   const assignButton = `<button class="task-assign" type="button" data-task-assign="${esc(task.id)}" aria-label="${esc(assignPressLabel(task, reading))}" title="Assign this task">${assigneeHref ? "Change" : rowAssigneeHtml(task.assignee, reading)}</button>`;
   const assignee = assigneeHref
-    ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}">${rowAssigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`
+    ? `<span class="task-assignee-entry"><a class="task-assignee-link" href="${esc(assigneeHref)}" title="${esc(actorName(task.assignee, reading))}">${rowAssigneeHtml(task.assignee, reading)}</a>${assignButton}</span>`
     : assignButton;
   return (
   `<li class="task-row" data-task="${esc(task.id)}">

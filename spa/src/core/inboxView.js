@@ -5,7 +5,7 @@
 // The rail has two faces. The inbox is the one list across every project; the
 // projects face is that same list grouped by project, with a Recent fold per
 // block, including blocks holding only quiet rows. Project heads stay in
-// alphabetical order and open the project's own page, with Hide and New
+// activity order and open the project's own page, with Hide and New
 // workspace controls. The rows are the same rows either way, and so is
 // everything a row can do.
 //
@@ -72,6 +72,7 @@ import { followWatchedTasks } from "./watchedTaskFollower.js";
 import { tasksAddress } from "./trackerCache.js";
 import { noteWritten } from "./taskReadOrder.js";
 import { mergeCachedAtomically } from "./localCache.js";
+import { createInboxClock } from "./inboxClock.js";
 
 let items = [];
 let runs = [];
@@ -124,6 +125,7 @@ const workspacesBeingFinished = new Set();
 // The watched unfinished tasks, followed through the cache
 // while the rail is mounted.
 let watchedTasks = null;
+let clock = null;
 // Tasks the user stopped watching from their row, by row key: null while the
 // unwatch is in flight, then the time the bridge stamped it. A list the sync
 // layer asked for before the unwatch landed still says watched and writes
@@ -141,23 +143,17 @@ function heldAway(entry) {
 }
 
 
-/** A box in the list has the caret. The reconciler keeps a row that is still
- *  there, and the box in it with the words and the caret — so a repaint no
- *  longer takes what is being typed. This is the outer guard on top of that: a
- *  tick nobody asked for leaves a half-named destination alone, whatever else
- *  the paint would have decided. The user's own actions still repaint. */
-function typingInList() {
-  const active = document.activeElement;
-  return Boolean(active && active.tagName === "INPUT" && active.closest("#inbox-list"));
-}
-
-/** The repaint the feed asks for, which is the one that must wait. */
-function drawFromFeed() {
-  if (typingInList()) {
-    publishAttentionCount();
-    return;
-  }
-  draw();
+/** Browsers without moveBefore blur a focused field when its keyed row moves.
+ * Keep that field's focus and selection while every activity update paints. */
+function preserveInputFocus(list) {
+  const field = document.activeElement;
+  if (field?.tagName !== "INPUT" || !list.contains(field)) return () => {};
+  const { selectionStart, selectionEnd, selectionDirection } = field;
+  return () => {
+    if (!field.isConnected) return;
+    if (document.activeElement !== field) field.focus({ preventScroll: true });
+    if (selectionStart !== null) field.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+  };
 }
 
 /** The top badge (#183): every project's numeric unread total, over the rows
@@ -210,9 +206,11 @@ function railRows() {
 function draw() {
   watchedTasks?.follow(projects);
   const painted = railRows();
+  clock?.update(painted);
   publishAttentionCount(painted);
   const list = $("#inbox-list");
   if (!list) return;
+  const restoreFocus = preserveInputFocus(list);
   const shown = withDeviceNames(painted);
   list.onclick = onListClick;
   list.onkeydown = onListKeydown;
@@ -228,6 +226,7 @@ function draw() {
   list.scrollTop = scroll;
   paintErrors(list);
   paintDeviceState(list, { entryFor: entryOf, blockFor: blockOf });
+  restoreFocus();
   placeMenuFocus(list);
 }
 
@@ -313,7 +312,7 @@ function drawProjects(list, shown) {
 }
 
 /** The projects face's frame, built once: the loose rows' container and the
- *  alphabetical blocks'. Projects have no top-level Recent. */
+ *  project blocks'. Projects have no top-level Recent. */
 function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
@@ -884,6 +883,8 @@ export function unmountInboxList() {
   menuRecord?.dispose();
   watchedTasks?.dispose();
   watchedTasks = null;
+  clock?.dispose();
+  clock = null;
   document.removeEventListener("pointerdown", onOutsideMenu);
   foldRecord = null;
   recentRecord = null;
@@ -898,6 +899,7 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
+  clock = createInboxClock(draw);
   folds = new Map();
   recentOpen.clear();
   openMenuKey = null;
@@ -919,13 +921,13 @@ export function mountInboxList() {
     draw();
   });
   initCaptureRows({ onChange: draw, entryOf });
-  watchedTasks = followWatchedTasks({ onChange: drawFromFeed });
+  watchedTasks = followWatchedTasks({ onChange: draw });
   // A machine going or coming back changes no row, so the feed never says it:
   // the rail hears it from the registry and repaints, greying what the lost
   // device holds. Its verbs stay as they were; each refuses at the press.
   stopSubscriptions = [
     onDeviceStateChanged(draw),
-    subscribePendingCaptures(drawFromFeed),
+    subscribePendingCaptures(draw),
     subscribeOptimistic(INBOX_SCOPE, draw),
     subscribeFeed((next) => {
       // Which machines the rail lists is the picker's, and it is answered once,
@@ -947,7 +949,7 @@ export function mountInboxList() {
       // finds its row, and so its device, through this.
       indexRowsByEntity(merged);
       reconcileOptimistic(INBOX_SCOPE, merged, { keyOf: entryKeyOf });
-      drawFromFeed();
+      draw();
     }),
   ];
 }

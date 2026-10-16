@@ -582,6 +582,7 @@ mod tests {
     fn write_by(actor: Actor) -> TaskWrite {
         TaskWrite {
             expected_review_version: None,
+            content_changed: false,
             task: task(),
             comments: Vec::new(),
             events: Vec::new(),

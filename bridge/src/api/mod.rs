@@ -108,6 +108,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "git.projectSources", // Since 3.21.0: project_id + source_id + source_path on the git.* verbs (#529).
     "term.projectSources", // Since 3.21.0: exact source selectors on term.create/list/attach/close (#531).
     "tasks.agentIdentities",
+    "tasks.activitySessions", // Since 3.21.0: watched task activity streaks on task reads and board rows (#628).
     "tasks.assignProjectAgent", // Since 3.21.0: new_project_agent assignee, operation_id on tasks.assign (#533).
     "tasks.attachmentChunks",
     "tasks.attachments",

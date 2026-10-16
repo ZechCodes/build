@@ -13,6 +13,7 @@
 
 use super::notices::{notice_line, NoticeVoice};
 use crate::app::AppState;
+use crate::session_summary::{message_millis, SessionSummary};
 use crate::store::TaskFilter;
 use crate::tracker::{Assignee, Task, TimelineEntry};
 use serde_json::{json, Value};
@@ -63,6 +64,7 @@ impl AppState {
             .rev()
             .find(|entry| !attention_bookkeeping(entry))?;
         let at = entry_at(last).to_string();
+        let session = task_activity_session(task, &timeline);
         let blocked = self
             .tracker_store()
             .ok()?
@@ -88,6 +90,8 @@ impl AppState {
             // anchor IS when it last moved, and the existing rows send both.
             "anchor": at,
             "last_activity": at,
+            "session_started_ms": session.session_started_ms,
+            "last_activity_ms": session.last_activity_ms,
             "unread": unread_since_mark(task, &timeline),
             // Mute is unwatch here, so a row that exists is not muted — the
             // absence of the row is the whole of the answer.
@@ -130,6 +134,33 @@ impl AppState {
             .filter(|entry| !attention_bookkeeping(entry))
             .any(|entry| after(Some(cleared), entry_id(entry)))
     }
+}
+
+/// The task's visible activity streak, shared by task reads and inbox rows.
+/// Silent edits retain their whole activity interval in the task record;
+/// later timeline entries extend it. A task predating that checkpoint
+/// replays its meaningful timeline, so reads and restarted bridges agree.
+pub(super) fn task_activity_session(task: &Task, timeline: &[TimelineEntry]) -> SessionSummary {
+    let saved = task.activity_session.unwrap_or_default();
+    let replay_after = saved.last_activity_ms.unwrap_or(i64::MIN);
+    let mut times: Vec<i64> = timeline
+        .iter()
+        .filter(|entry| !attention_bookkeeping(entry))
+        .filter(|entry| !workspace_bookkeeping(entry))
+        .filter_map(|entry| message_millis(entry_at(entry)))
+        .filter(|ts| *ts > replay_after)
+        .collect();
+    times.sort_unstable();
+    times.into_iter().fold(saved, SessionSummary::updated)
+}
+
+/// Reclaim facts describe a linked workspace, not activity on the task.
+/// `record_quiet_event` preserves the task record for the same reason.
+fn workspace_bookkeeping(entry: &TimelineEntry) -> bool {
+    use crate::tracker::TaskEventKind as Kind;
+    matches!(entry, TimelineEntry::Event(event) if matches!(event.kind,
+        Kind::WorkspaceIdle | Kind::WorkspacePruned | Kind::WorkspaceReclaimed
+        | Kind::BranchDeleted | Kind::BranchKept))
 }
 
 /// Whether an entry is Build ending tracking because the task finished

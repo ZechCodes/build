@@ -742,6 +742,11 @@ pub struct TrackerTaskRow {
     /// send them, so the interleave needs no special case.
     pub anchor: String,
     pub last_activity: String,
+    /// The same 8h activity streak `tasks.list` and `tasks.get` carry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
     /// How many events are past the user's read mark, their own left out. A
     /// COUNT here, where a work row sends a flag: a task's badge is how much
     /// has happened, and the client shows the number it is given.

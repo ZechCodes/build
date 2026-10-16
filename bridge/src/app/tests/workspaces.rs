@@ -708,7 +708,7 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
     let store = tmp.path().join("store");
     let context =
         || HarnessContext::resolved(tmp.path().join("mcp.sock"), tmp.path().to_path_buf()).unwrap();
-    let (project_id, workspace_id, start, last) = {
+    let (project_id, workspace_id, last) = {
         let mut state = AppState::new_unrooted_configured(&worktrees, "main", true, context())
             .with_config(&config)
             .unwrap()
@@ -743,17 +743,21 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
             "2026-09-01T08:00:00Z",
         );
         state.finish_run_mutation(run_id.clone(), active).unwrap();
+        let last = crate::session_summary::message_millis("2026-09-01T08:00:00Z").unwrap();
+        assert_eq!(
+            state.session_summary(&run_id).session_started_ms,
+            Some(last)
+        );
+        assert_eq!(
+            state.project_list()["projects"][0]["session_started_ms"],
+            last
+        );
         let removed = state.handle(req(
             "agent.remove",
             json!({"entity_id": run_id, "agent_id": a_id}),
         ));
         assert_eq!(removed["ok"], true, "{removed:?}");
-        (
-            project_id,
-            workspace_id,
-            crate::session_summary::message_millis("2026-09-01T00:00:00Z").unwrap(),
-            crate::session_summary::message_millis("2026-09-01T08:00:00Z").unwrap(),
-        )
+        (project_id, workspace_id, last)
     };
 
     let mut restarted = AppState::new_unrooted_configured(&worktrees, "main", true, context())
@@ -763,7 +767,7 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
         .unwrap();
     let project = &restarted.project_list()["projects"][0];
     assert_eq!(project["project_id"], project_id);
-    assert_eq!(project["session_started_ms"], start);
+    assert_eq!(project["session_started_ms"], last);
     assert_eq!(project["last_activity_ms"], last);
     let listed = restarted.handle(req("workspace.list", json!({"project_id": project_id})));
     let workspace = listed["result"]["workspaces"]
@@ -772,7 +776,7 @@ fn removed_agent_keeps_workspace_and_project_session_anchor_after_restart() {
         .iter()
         .find(|row| row["workspace_id"] == workspace_id)
         .unwrap();
-    assert_eq!(workspace["session_started_ms"], start);
+    assert_eq!(workspace["session_started_ms"], last);
     assert_eq!(workspace["last_activity_ms"], last);
 }
 

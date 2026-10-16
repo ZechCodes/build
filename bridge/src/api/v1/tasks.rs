@@ -491,6 +491,12 @@ pub struct TaskView {
     /// a task nobody watches never shows a count, so it carries none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unread_count: Option<u64>,
+    /// A watched task's activity streak, split by a silence of 8h or more
+    /// (3.21.0, `tasks.activitySessions`). Bookkeeping does not extend it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_started_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_ms: Option<i64>,
     /// `{"kind":"user"}` or `{"kind":"agent","agent_id":…}`.
     pub created_by: Value,
     pub created_at: String,

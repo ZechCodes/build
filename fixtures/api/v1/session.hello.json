@@ -130,6 +130,7 @@
       "task.stage_diff",
       "task.stage_doc",
       "task.stages",
+      "tasks.activitySessions",
       "tasks.agentIdentities",
       "tasks.assign",
       "tasks.assignProjectAgent",

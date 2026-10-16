@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const SESSION_GAP_MS: i64 = 12 * 60 * 60 * 1000;
+pub const SESSION_GAP_MS: i64 = 8 * 60 * 60 * 1000;
 
 /// The silence that ends the user's session: six hours without the user
 /// doing anything. Shorter than the inbox gap on purpose, so an evening away
@@ -99,14 +99,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn inbox_streak_ends_at_exactly_eight_hours() {
+        let hour = 60 * 60 * 1000;
+        let continued = SessionSummary::default().updated(0).updated(8 * hour - 1);
+        assert_eq!(continued.session_started_ms, Some(0));
+        let restarted = continued.updated(16 * hour - 1);
+        assert_eq!(restarted.session_started_ms, Some(16 * hour - 1));
+    }
+
+    #[test]
     fn alternating_conversations_keep_one_pooled_session_past_nine_spans() {
         let hour = 60 * 60 * 1000;
         let mut summary = SessionSummary::default();
         for n in 0..=25 {
-            summary = summary.updated(n * 8 * hour);
+            summary = summary.updated(n * 7 * hour);
         }
         assert_eq!(summary.session_started_ms, Some(0));
-        assert_eq!(summary.last_activity_ms, Some(200 * hour));
+        assert_eq!(summary.last_activity_ms, Some(175 * hour));
     }
 
     #[test]
@@ -135,12 +144,12 @@ mod tests {
     #[test]
     fn timestamp_order_rebuild_matches_chronological_live_updates() {
         let hour = 60 * 60 * 1000;
-        let chronological = [0, 8 * hour, 16 * hour, 40 * hour, 48 * hour];
+        let chronological = [0, 7 * hour, 14 * hour, 40 * hour, 47 * hour];
         let mut live = SessionSummary::default();
         for ts in chronological {
             live = live.updated(ts);
         }
-        let mut stored = [40 * hour, 8 * hour, 48 * hour, 0, 16 * hour];
+        let mut stored = [40 * hour, 7 * hour, 47 * hour, 0, 14 * hour];
         stored.sort();
         let rebuilt = stored
             .into_iter()

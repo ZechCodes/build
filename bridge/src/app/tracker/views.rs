@@ -14,6 +14,7 @@ pub(in crate::app) fn task_json(project_id: &str, task: &Task) -> Value {
     let mut value = serde_json::to_value(task).expect("a task always serializes");
     let object = value.as_object_mut().expect("a task serializes as object");
     object.remove("project_path");
+    object.remove("activity_session");
     object.insert("project_id".to_string(), json!(project_id));
     value
 }
@@ -31,6 +32,9 @@ pub(in crate::app) fn read_task_json(
     let mut value = task_json(project_id, task);
     if task.watched {
         value["unread_count"] = Value::from(super::inbox::unread_since_mark(task, timeline));
+        let session = super::inbox::task_activity_session(task, timeline);
+        value["session_started_ms"] = json!(session.session_started_ms);
+        value["last_activity_ms"] = json!(session.last_activity_ms);
     }
     value
 }

@@ -160,6 +160,7 @@ mod tests {
         task.number = 13;
         let mut write = TaskWrite {
             expected_review_version: None,
+            content_changed: false,
             comments: Vec::new(),
             events: Vec::new(),
             actor: Actor::Agent {

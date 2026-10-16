@@ -2579,11 +2579,18 @@ export function wireThreadLinks(root, openLink) {
 /// somebody is typing in.
 function mountViewingContext(root, inputId, viewingContext) {
   const tray = root.querySelector(`#${composerPartIds(inputId).context}`);
+  // Rail stamp refreshes can announce unchanged context. Keep its nodes and
+  // any legitimate transition already in flight; the live DOM may include
+  // expanded disclosures or a motion snapshot, so compare the render input.
+  let paintedHtml = null;
   const paint = (context = viewingContext?.snapshot?.()) => {
     if (!tray) return;
+    const html = viewingContextChipsHtml(context, { removable: true });
+    if (html === paintedHtml) return;
+    paintedHtml = html;
     const expanded = new Set([...tray.querySelectorAll("details[data-context-group][open]")].map((detail) => detail.dataset.contextGroup));
     const holder = document.createElement("div");
-    holder.innerHTML = viewingContextChipsHtml(context, { removable: true });
+    holder.innerHTML = html;
     holder.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });
     setMotionRowHtml(tray, holder.innerHTML);
     tray.querySelectorAll("details[data-context-group]").forEach((detail) => { detail.open = expanded.has(detail.dataset.contextGroup); });

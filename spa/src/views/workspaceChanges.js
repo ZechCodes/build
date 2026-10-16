@@ -128,6 +128,7 @@ function gatedViewingContext(viewingContext) {
       last?.();
     },
     hide() {
+      if (!shown) return;
       snapshot = viewingContext.snapshot?.() || null;
       shown = false;
     },
@@ -180,6 +181,7 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
     host.appendChild(element);
     const surface = { element, pane: null, gate: gatedViewingContext(viewingContext) };
     surfaces.set(sourceId, surface);
+    if (!visible) surface.gate.hide();
     paintSurface(surface, sourceId);
     return surface;
   };
@@ -241,6 +243,9 @@ export function mountWorkspaceChanges(body, { directories, current, git, review 
   return {
     selectDirectory: select,
     setVisible(shown) {
+      // Cache repaints repeat visibility; only a real transition may clear and
+      // restore the directory's context through its gate.
+      if (visible === shown) return;
       visible = shown;
       for (const [sourceId, surface] of surfaces) {
         const active = shown && sourceId === standing;

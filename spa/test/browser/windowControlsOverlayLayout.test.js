@@ -255,11 +255,37 @@ it("switches directly to ordinary popover styling with reduced motion", async ()
   await session.withPage(async ({ page, basePath }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await mountWindowControls(page, basePath);
-    await page.locator("#inbox-collapse").click();
-    await page.evaluate(() => window.__layoutModules.inbox.whenInboxCollapsedPainted());
-    expect(await page.locator("body").evaluate((element) => element.classList.contains("inbox-transitioning"))).toBe(false);
-    expect((await windowControlsGeometry(page)).head.height).toBe(38);
-    expect(await page.locator(".inbox-new-project span").evaluate((element) => getComputedStyle(element).whiteSpace)).toBe("normal");
+    const firstFrame = await page.evaluate(async () => {
+      const head = document.querySelector(".inbox-head");
+      const button = document.querySelector(".inbox-new-project");
+      const changed = new Promise((resolve) => {
+        const observer = new MutationObserver(() => {
+          if (!document.body.classList.contains("inbox-collapsed")) return;
+          observer.disconnect();
+          // Flush the new styles before a frame can finish even a .01ms transition.
+          const transitions = [...head.getAnimations(), ...button.getAnimations()]
+            .filter((animation) => animation instanceof CSSTransition);
+          for (const transition of transitions) {
+            transition.pause();
+            transition.currentTime = 0;
+          }
+          resolve({ height: head.getBoundingClientRect().height,
+            paddingTop: getComputedStyle(head).paddingTop,
+            buttonPadding: getComputedStyle(button).paddingLeft,
+            gap: getComputedStyle(button).gap,
+            whiteSpace: getComputedStyle(button.querySelector("span")).whiteSpace,
+            transitioning: document.body.classList.contains("inbox-transitioning"),
+            transitions: transitions.map((transition) => transition.transitionProperty) });
+        });
+        observer.observe(document.body, { attributes: true, attributeFilter: ["class"] });
+      });
+      document.querySelector("#inbox-collapse").click();
+      const frame = await changed;
+      await window.__layoutModules.inbox.whenInboxCollapsedPainted();
+      return frame;
+    });
+    expect(firstFrame).toEqual({ height: 38, paddingTop: "10px", buttonPadding: "7px", gap: "4px",
+      whiteSpace: "normal", transitioning: false, transitions: [] });
   }, { width: 1280, height: 800 });
 }, 30_000);
 

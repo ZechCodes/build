@@ -1699,11 +1699,6 @@ body.gated #inbox-rail { display:none; }
   font-size:11px; line-height:1.4; color:var(--dim);
 }
 
-.console-source-control { position:relative; display:inline-flex; flex:none; width:9rem; font-size:12px; }
-select.console-source { width:100%; max-width:100%; font-size:inherit; padding-left:calc(10px + 1em + 4px); }
-.console-source-icon { position:absolute; inset-block:0; left:10px; display:flex; align-items:center;
-  color:var(--ink); pointer-events:none; }
-.console-source-icon svg { display:block; width:1em; height:1em; }
-.console-source-control:has(select:disabled) .console-source-icon { color:var(--dim); opacity:.7; }
-@media (max-width:720px) { .console-source-control { font-size:16px; } }
+.console-source-control { width:9rem; }
+select.console-source { width:100%; max-width:100%; }
 @media (max-width:600px) { .console-source-control { width:108px; } }

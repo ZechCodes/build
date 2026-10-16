@@ -83,7 +83,7 @@ export function installAuthorizationHeader(webRequest, getAccessToken) {
   );
 }
 
-export function createWindowOptions({ development }) {
+export function createWindowOptions({ development, platform = process.platform }) {
   return {
     width: 1280,
     height: 800,
@@ -91,6 +91,10 @@ export function createWindowOptions({ development }) {
     minHeight: 500,
     backgroundColor: "#07151b",
     show: false,
+    ...(platform === "darwin" ? {
+      titleBarStyle: "hidden",
+      titleBarOverlay: { height: 44 },
+    } : {}),
     webPreferences: {
       allowRunningInsecureContent: false,
       backgroundThrottling: false,

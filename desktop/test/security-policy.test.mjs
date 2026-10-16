@@ -90,6 +90,33 @@ test("development builds may expose Chromium developer tools", () => {
   assert.equal(options.webPreferences.devTools, true);
 });
 
+test("macOS retains native traffic lights inline with the 44px app header", () => {
+  const options = createWindowOptions({ development: false, platform: "darwin" });
+
+  assert.equal(options.titleBarStyle, "hidden");
+  assert.deepEqual(options.titleBarOverlay, { height: 44 });
+  assert.equal("trafficLightPosition" in options, false,
+    "Electron centers using the actual native button height and keeps the OS horizontal inset");
+  assert.equal("frame" in options, false, "keep the native window and controls");
+});
+
+test("other platforms retain their native title bar and controls", () => {
+  for (const platform of ["linux", "win32"]) {
+    const options = createWindowOptions({ development: false, platform });
+
+    for (const name of ["titleBarStyle", "titleBarOverlay", "trafficLightPosition", "frame"]) {
+      assert.equal(name in options, false, `${platform}: ${name}`);
+    }
+  }
+});
+
+test("macOS window chrome retains the same renderer security options", () => {
+  const macOS = createWindowOptions({ development: false, platform: "darwin" });
+  const native = createWindowOptions({ development: false, platform: "linux" });
+
+  assert.deepEqual(macOS.webPreferences, native.webPreferences);
+});
+
 test("only notifications from the application origin receive permission", () => {
   const permissionAllowed = createPermissionPolicy();
 

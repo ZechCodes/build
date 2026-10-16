@@ -58,6 +58,14 @@ server's logout confirmation as usual.
 Authentication regression tests stub Electron, encryption, token HTTP responses,
 browser handoff and timers. They never start Electron or perform a real sign-in.
 
+On macOS, the native title bar is hidden and the native traffic lights sit
+inline with the app's 44px top bars. Electron centers them using the actual
+native button height and retains the OS horizontal inset. Its Window Controls
+Overlay API reports their reserved space to the web client, without a preload or IPC
+bridge. macOS native fullscreen temporarily disables the overlay, so the app
+removes that reserved space until the window leaves fullscreen. Linux and
+Windows retain their native title bar and window controls.
+
 ## Develop
 
 ```bash

@@ -6,6 +6,7 @@
 @import "./styles/surfaces.css";
 @import "./styles/markdownTasks.css";
 @import "./styles/interactions.css";
+@import "./styles/window-controls.css";
 
 /* ---- the connection icon ----------------------------------------------------
    How many machines are connected, and what is being done about one that is

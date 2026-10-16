@@ -174,8 +174,8 @@ describe("finished tasks", () => {
 describe("the top badge", () => {
   it("is the sum of every project head, including aged projects", () => {
     const rows = railRows([needsYou, unheld, done, held]);
-    const heads = [...blocksOf(rows).values()].map((block) => block.unreadCount);
-    expect(heads).toEqual([8, 2]);
+    const heads = Object.fromEntries([...blocksOf(rows).values()].map((block) => [block.name, block.unreadCount]));
+    expect(heads).toEqual({ Build: 8, "smarter-dev": 2 });
     expect(projectsUnreadCount(rows, feed.projects)).toBe(10);
 
     const aged = feed.projects.map((project) => ({ ...project, session_started_ms: 0, last_activity_ms: 0 }));

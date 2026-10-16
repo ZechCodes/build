@@ -87,7 +87,7 @@ describe("#103 inbox rows, from the cache", () => {
     const agentRow = rowByKey(`project-agent:${projectKey}`);
     expect(agentRow.querySelector(".stitle").textContent).toBe("Payments");
     expect(agentRow.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
-    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
     expect(agentRow.querySelector("[data-workspace-done], [data-menu], [data-done]")).toBeNull();
     expect(dotIn(agentRow)?.classList.contains("inbox-status-unread")).toBe(true);
   });
@@ -115,12 +115,13 @@ describe("#103 inbox rows, from the cache", () => {
     expect(document.querySelector("#inbox-list > .inbox-recent")).toBeNull();
   });
 
-  it("lists the project agent inside the block and preserves the head unread accounting", async () => {
+  it("lists the project agent inside the block and keeps unread on the row until folded", async () => {
     await seed();
     mountInboxList();
     await startFeed();
     setInboxView("projects");
-    await vi.waitFor(() => expect(head()?.querySelector(".inbox-status-unread")).not.toBeNull());
+    await vi.waitFor(() => expect(dotIn(rowByKey(`project-agent:${projectKey}`))).not.toBeNull());
+    expect(head().querySelector(".inbox-status-dot")).toBeNull();
     expect(head().querySelector(".inbox-unread")).toBeNull();
     expect(rows().map((row) => row.dataset.key)).toEqual([
       `workspace:${deviceId}/workspace-1`, `project-agent:${projectKey}`,
@@ -128,7 +129,7 @@ describe("#103 inbox rows, from the cache", () => {
     const agentRow = rowByKey(`project-agent:${projectKey}`);
     expect(agentRow.querySelector(".inbox-project-line")).toBeNull();
     expect(agentRow.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
-    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
     expect(head().querySelector("[data-project-open]")).toBeNull();
 
     head().querySelector("[data-project-fold]").click();

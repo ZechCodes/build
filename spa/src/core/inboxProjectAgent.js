@@ -6,8 +6,8 @@
 // bridge's session summary on that conversation's feed row, since wire 1.28.0),
 // and after a day without activity it moves to Recent the way a workspace row
 // does. The inbox tally carries the project's
-// watched tasks too, the ones no workspace row wears (#104); the expanded
-// project head reads the conversation's own unread separately (#380).
+// watched tasks too, the ones no workspace row wears (#104). A folded project
+// head summarizes its hidden rows; expanded heads leave status on each row.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these, and
 // the row itself is painted by core/inbox.js with the rest.

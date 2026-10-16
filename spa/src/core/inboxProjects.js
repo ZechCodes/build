@@ -4,9 +4,9 @@
 // where two machines use that name.
 //
 // The block's name and chevron fold its rows. The project agent has an
-// ordinary row among its workspaces. The head's dot still describes that
-// agent when open and everything the block holds when
-// folded, Recent included. Numeric unread totals retain every project's
+// ordinary row among its workspaces. The head's dot summarizes everything
+// the block holds only while folded, Recent included. Numeric unread totals
+// retain every project's
 // watched task and workspace count (#183); a Needs-you task row adds no
 // duplicate count. The head offers the create surface behind a + and a direct
 // Hide control that puts the block away.
@@ -242,16 +242,12 @@ const blockHideHtml = (block) =>
   `<button class="iconbtn inbox-project-hide" type="button" data-project-hide="${esc(block.projectKey)}" aria-label="Hide project ${esc(block.name)}" title="Hide project ${esc(block.name)}">${ICON_EYE_OFF}</button>`;
 
 /** The block's head: the chevron and name that fold its rows,
- *  Hide, the + that starts another workspace, and one status dot. An expanded
- *  head describes the project agent's own conversation; a folded one also
- *  carries its hidden children. `ui.folded` is the set of folded project keys. */
+ *  Hide, the + that starts another workspace, and a folded status dot.
+ *  Expanded blocks leave status on their rows; folded blocks summarize
+ *  their hidden entries. `ui.folded` is the set of folded project keys. */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.projectKey));
-  const agent = block.agentEntry;
-  const dot = statusDotHtml({
-    running: folded ? block.running : entryIsRunning(agent),
-    unread: folded ? block.unread : (agent?.ownUnreadCount ?? agent?.unreadCount ?? 0) > 0,
-  });
+  const dot = folded ? statusDotHtml({ running: block.running, unread: block.unread }) : "";
   const create = `<button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.projectKey)}" aria-label="New workspace in ${esc(block.name)}" title="New workspace in ${esc(block.name)}">${ICON_PLUS}</button>`;
   const device = deviceTagHtml(block);
   return `<div class="inbox-project-head">

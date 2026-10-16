@@ -567,6 +567,22 @@ describe("the projects face", () => {
     expect(navigate).toHaveBeenCalledWith({ name: "project", deviceId: "dev-1", projectId: "project-2" });
   });
 
+  it.each(["inbox", "projects"])("opens a focused project-agent row with Enter in %s, matching click", (face) => {
+    feed([workspace()]);
+    setInboxView(face);
+    const agent = document.querySelector('.inbox-project-agent[data-key="project-agent:dev-1/project-2"]');
+    expect(agent.getAttribute("role")).toBe("link");
+    expect(agent.tabIndex).toBe(0);
+    agent.focus();
+    expect(document.activeElement).toBe(agent);
+    agent.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    const destination = { name: "project", deviceId: "dev-1", projectId: "project-2" };
+    expect(navigate).toHaveBeenCalledExactlyOnceWith(destination);
+    navigate.mockClear();
+    agent.click();
+    expect(navigate).toHaveBeenCalledExactlyOnceWith(destination);
+  });
+
   it("keeps a project with no workspaces foldable around its own agent row", async () => {
     feed([workspace()]);
     setInboxView("projects");

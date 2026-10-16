@@ -124,13 +124,13 @@ describe("the project agent's row", () => {
     });
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry), "text/html");
     expect(doc.querySelector(".stitle").textContent).toBe("Payments");
-    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
     expect(doc.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
     expect(doc.querySelector(".inbox-name .inbox-tag")).toBeNull();
     const grouped = new DOMParser().parseFromString(inboxRowHtml(entry, { showProject: false }), "text/html");
     expect(grouped.querySelector(".inbox-project-line")).toBeNull();
     expect(grouped.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
-    expect(grouped.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(grouped.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
     expect(grouped.querySelector(".inbox-project-agent")).not.toBeNull();
     expect(doc.querySelector("[data-workspace-done], [data-done], [data-menu]")).toBeNull();
   });
@@ -143,7 +143,7 @@ describe("the project agent's row", () => {
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry), "text/html");
     expect(doc.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
     expect(doc.querySelector(".inbox-name .stitle").textContent).toBe("Review the checkout flow");
-    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
   });
 
   it("carries the project agent's unread and running state", () => {
@@ -207,18 +207,19 @@ describe("the project agent's row", () => {
     expect(activeEntryKey({ name: "project", deviceId: "dev-2", projectId: "project-1" }, [entry])).toBeNull();
   });
 
-  it("keeps project, name and activity lines in Inbox Recent, with its unread status dot", () => {
+  it("keeps project above a compact name and floating activity in Inbox Recent", () => {
     const [entry] = agentRowsOf(snapshot({ projects: [project()], items: [conversation({
       agents: [agent("project-agent", { unread_count: 1 })],
     })] }));
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry, { quiet: true }), "text/html");
-    expect(doc.querySelector(".inbox-entry").classList.contains("inbox-quiet-full")).toBe(true);
+    expect(doc.querySelector(".inbox-entry").classList.contains("inbox-quiet-full")).toBe(false);
+    expect(doc.querySelector(".inbox-quiet-line .inbox-facts-float")).not.toBeNull();
     expect(doc.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
-    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(doc.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
     const grouped = new DOMParser().parseFromString(inboxRowHtml(entry, { quiet: true, showProject: false }), "text/html");
     expect(grouped.querySelector(".inbox-project-line")).toBeNull();
     expect(grouped.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
-    expect(grouped.querySelector(".inbox-facts").textContent).toBe("Getting started");
+    expect(grouped.querySelector(".inbox-facts-float").textContent).toBe("Getting started · 0 running");
     expect(doc.querySelector(".sdot")).toBeNull();
     expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
   });
@@ -252,10 +253,10 @@ describe("the projects face's head dot", () => {
     expect(block.agentEntry).toBe(block.entries[1]);
   });
 
-  it("keeps aggregate accounting while showing only the project agent when expanded", () => {
+  it("keeps aggregate accounting while leaving the expanded heading without a duplicate dot", () => {
     const block = blockOf(view());
     expect(block.unreadCount).toBe(5);
-    expect(headUnread(block, false)).toBe(true);
+    expect(headUnread(block, false)).toBe(false);
     expect(headUnread(block, true)).toBe(true);
     block.agentEntry = { ...block.agentEntry, ownUnreadCount: 0, unreadCount: 0 };
     expect(headUnread(block, false)).toBe(false);

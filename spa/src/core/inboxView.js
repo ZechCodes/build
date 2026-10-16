@@ -584,8 +584,16 @@ function menuKey(event) {
   return Boolean(act);
 }
 
+/** Project navigation remains reachable after the heading became a disclosure.
+ * Only the focused row answers Enter; keys on nested controls stay their own. */
+function projectRowKey(event) {
+  if (event.key !== "Enter" || !event.target.matches('.inbox-project-agent[role="link"]')) return false;
+  openEntry(entryOf(event.target.dataset.key));
+  return true;
+}
+
 function onListKeydown(event) {
-  if (!menuKey(event)) return onCaptureKeydown(event);
+  if (!menuKey(event) && !projectRowKey(event)) return onCaptureKeydown(event);
   event.preventDefault();
   event.stopPropagation();
 }

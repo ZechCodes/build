@@ -196,7 +196,7 @@ describe("the machine said after a project name", () => {
 });
 
 describe("the project header actions", () => {
-  it("keeps the device and direct hover actions together, with one dot at the far edge", () => {
+  it("keeps the device and direct hover actions together, with a folded dot at the far edge", () => {
     const block = {
       projectKey: "dev-1/p1",
       name: "relaydb",
@@ -204,11 +204,12 @@ describe("the project header actions", () => {
       entries: [],
       recent: [],
       unreadCount: 4,
+      unread: true,
       agentEntry: { ownUnreadCount: 4, unreadCount: 4, state: "unread" },
       clash: true,
       deviceName: "workshop",
     };
-    const html = projectHeadHtml(block);
+    const html = projectHeadHtml(block, { folded: new Set([block.projectKey]) });
     expect(html).toContain('class="inbox-project-tools"');
     expect(html).toContain('class="inbox-project-device"');
     expect(html).toContain("workshop");
@@ -305,14 +306,14 @@ describe("the project head's status dot", () => {
     kind: "project_agent", ownUnreadCount: 0, state: "inactive", ...over,
   });
 
-  it("limits an expanded head to the project agent's own unread and running state", () => {
-    const rows = [agent({ unreadCount: 2 }), entry("child", "p1", "Build", 4, { state: "working" })];
-    expect(headOf(rows)).not.toContain("inbox-status-dot");
-    expect(headOf([agent({ ownUnreadCount: 1, unreadCount: 3, state: "unread" }), rows[1]])).toContain("inbox-status-unread");
-    const workingAgent = headOf([agent({ state: "unread", working: true, ownUnreadCount: 1, unreadCount: 1 }), rows[1]]);
-    expect(workingAgent).toContain("inbox-status-running");
-    expect(workingAgent).toContain("inbox-status-unread");
-    expect(projectsUnreadCount(rows, [project])).toBe(6);
+  it("leaves expanded headings without a duplicate agent dot while retaining unread totals", () => {
+    const child = entry("child", "p1", "Build", 4, { state: "working" });
+    for (const own of [agent({ ownUnreadCount: 1, unreadCount: 3, state: "unread" }),
+      agent({ state: "working", working: true }),
+      agent({ state: "unread", working: true, ownUnreadCount: 1, unreadCount: 1 })]) {
+      expect(headOf([own, child])).not.toContain("inbox-status-dot");
+    }
+    expect(projectsUnreadCount([agent({ unreadCount: 2 }), child], [project])).toBe(6);
   });
 
   it("aggregates hidden children's unread and running into one folded dot, including Recent", () => {
@@ -336,14 +337,14 @@ describe("the project head's status dot", () => {
     expect(headOf([agent()], folded)).not.toContain("inbox-status-dot");
   });
 
-  it("folds only watched agent work while retaining unread and the expanded agent's own state", () => {
+  it("folds only watched agent work while keeping the expanded head clear", () => {
     const rows = [
       agent({ state: "unread", working: true, watchedWorking: false, ownUnreadCount: 1, unreadCount: 1 }),
       entry("mixed", "p1", "Build", 0, { state: "working", working: true, watchedWorking: false }),
     ];
     expect(headOf(rows, folded)).not.toContain("inbox-status-running");
     expect(headOf(rows, folded)).toContain("inbox-status-unread");
-    expect(headOf(rows)).toContain("inbox-status-running");
+    expect(headOf(rows)).not.toContain("inbox-status-dot");
     expect(headOf([rows[0], { ...rows[1], watchedWorking: true }], folded)).toContain("inbox-status-running");
   });
 });

@@ -2997,7 +2997,7 @@ is green; running activity without unread is grey. Only running agents pulse,
 and reduced-motion preferences disable the animation. Watched tasks read their
 assigned agent's running state from cached rosters. A folded project head
 summarizes watched activity, including tasks without a Needs you reason; an
-expanded head uses only its project conversation's own unread and activity.
+expanded head leaves status on the project agent’s own row.
 The head offers Hide and New workspace directly.
 
 The Projects face lists every project in one list ordered by the oldest
@@ -3009,19 +3009,24 @@ Project blocks have transparent backgrounds; only the active head has an accent
 tint. Every block starts open unless the user saved a fold, with its live rows
 in anchor order followed by one project-keyed Recent disclosure. Recent starts
 closed with a quiet-row count, even when the block has only quiet rows; opening
-it paints quiet workspaces on one line and watched tasks with title and reason
-lines; project-agent rows retain their name and activity lines. The project
-agent is an ordinary entry inside its block, using the same order and Recent
-cutoff as its workspace siblings. The block name and chevron only fold the
+it paints quiet workspaces and project agents on one compact line, with facts
+floating to the right of the name; watched tasks retain title and reason
+lines. The project agent is an ordinary entry inside its block, using the same
+order and Recent cutoff as its workspace siblings. The block name and chevron only fold the
 whole block independently of its saved Recent state. Projects never enter a
 top-level Recent. The ungrouped Inbox face keeps its own Recent disclosure.
-Every Inbox workspace, project-agent
-and task entry, including Recent, has a separate project line above its name
-and activity. Projects omits that line because the block names the project.
+Every Inbox workspace, project-agent and task entry, including Recent, has a
+separate project line above its existing content. Captures with a known project
+also gain that line. Inbox Recent keeps its 13px indent and compact workspace
+and project-agent line. Projects omits the project line because the block
+names the project.
 Project-agent names use their cached topic when present, otherwise the existing
-project label; an empty project-agent activity line uses the workspace's
-Getting started fallback. Quiet tasks still omit the activity line when it has
-no text. Existing row actions remain unchanged.
+project label. Project-agent activity uses its own cached conversation’s
+`entryFactsText` pending/stat facts, with Getting started when empty, then the
+workspace running-count treatment when a roster is known. Quiet tasks still
+omit the activity line when it has no text. Existing row actions remain
+unchanged. The project-agent row is a focusable link; Enter opens the same project destination as a click while the
+heading only folds.
 
 Inbox task rows come from cached `tasks.list` / `tasks.get` records through
 `spa/src/core/watchedTaskFollower.js` and `watchedTaskRows.js`.

@@ -36,7 +36,7 @@ export const terminalShim = {
   },
 };
 
-export async function mountProjectTerminal(page, basePath, { theme = "dark", supported = true } = {}) {
+export async function mountProjectTerminal(page, basePath, { theme = "dark", supported = true, sourceCount = 2 } = {}) {
   page.setDefaultTimeout(5000);
   await mountLayout(page, SHELL, { basePath,
     styles: "#shell{--inbox-space:0px;height:100vh} #toolbar{padding:12px 20px} .project-terminal-screen{padding:16px;white-space:pre-wrap;color:#c8d8dc;font-size:13px}",
@@ -46,11 +46,11 @@ export async function mountProjectTerminal(page, basePath, { theme = "dark", sup
     cache: "src/core/localCache.js", feed: "src/core/taskFeed.js", contexts: "src/core/deviceContexts.js",
     changes: "src/core/changeEvents.js", adapter: "src/core/bridgeApi/v1/index.js", directory: "src/core/directoryScope.js",
   }, basePath);
-  await page.evaluate(async ({ theme, supported }) => {
+  await page.evaluate(async ({ theme, supported, sourceCount }) => {
     document.documentElement.dataset.theme = theme;
     const { app, project, shell, cache, feed, contexts, changes, adapter, directory } = window.__layoutModules;
     const deviceId = "console-device";
-    const sources = [{ id: "code", name: "Code", path: "/project/code", is_git: true }, { id: "notes", name: "Notes", path: "/project/notes", is_git: false }];
+    const sources = [{ id: "code", name: "Code", path: "/project/code", is_git: true }, { id: "notes", name: "Notes", path: "/project/notes", is_git: false }].slice(0, sourceCount);
     const record = { id: "p", project_id: "p", deviceId, projectKey: `${deviceId}/p`, name: "Build", path: "/project/code", entity_id: "project-owner", sources };
     const scopeOf = (source) => ({ project_id: "p", source_id: source.id, source_path: source.path });
     window.__terminalCalls = [];
@@ -90,7 +90,7 @@ export async function mountProjectTerminal(page, basePath, { theme = "dark", sup
     await feed.startFeed();
     shell.standShell(app.App.route);
     await project.renderProject();
-  }, { theme, supported });
+  }, { theme, supported, sourceCount });
   // The rail mounts before the console's asynchronous cache reads paint tabs.
   await page.locator(".console-tab-name").first().waitFor();
 }

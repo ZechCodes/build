@@ -224,9 +224,11 @@ remain separate.
 - `cacheSyncChanges` covers source roster pull/push membership, late moved-source
   responses, equal terminal IDs on different devices, plain folders and older
   bridges. Source caches survive ordinary sync eviction.
-- `browser/projectWorkspaceTerminal` exercises the Terminal action outside the
-  face tablist, keyboard expanded state, no shell creation on page load, source
-  labels and new-tab source selection, kept active pane through Files navigation,
+- `browser/projectWorkspaceTerminal` exercises the bottom Console tray and
+  absence of a project Terminal rail action (#630), keyboard expanded state,
+  visible and focusable sole-source picking without layout shifts, no shell
+  creation on page load, source labels and new-tab source selection, kept active
+  pane through Files navigation,
   cached old-bridge rendering, unchanged cached DOM across disconnect/reconnect,
   New terminal focus and Enter activation across unrelated cache writes and roster
   moves, and phone/desktop overflow. `selectStylesLayout`

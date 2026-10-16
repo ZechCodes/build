@@ -2167,13 +2167,15 @@ a source gives it a new location namespace. Face changes retain the shell's
 conversation and console. The project-worker rail is described below.
 
 The project and its project-hosted task pages share `console: {kind: "project"}`
-in `shell.js`. The Terminal rail button sits outside the face tablist and
-reports the console's expanded state. It opens the existing console and never
-creates a shell. `projectConsole.js` paints source-labelled tabs from each
+in `shell.js`. The bottom Console tray opens the existing console and never
+creates a shell; the project rail has no separate Terminal entry.
+`projectConsole.js` paints source-labelled tabs from each
 source's `terminals` cache record at device/project/source/captured-path addresses.
-A remembered source picker chooses only the next new shell; changing it or
-changing faces leaves the selected shell and pane standing. Explicit tab close
-uses the tab's captured source assertion and updates only that roster. Collapse
+A remembered source picker chooses only the next new shell. It stays visible
+even with one cached source, with the Files folder glyph inside the control
+before its name. Its fixed width avoids layout shifts as sources change.
+Changing it or changing faces leaves the selected shell and pane standing.
+Explicit tab close uses the tab's captured source assertion and updates only that roster. Collapse
 and navigation detach client screens without closing server shells.
 
 `projectTerminalSupport.js` remembers `term.projectSources` for cold rendering.

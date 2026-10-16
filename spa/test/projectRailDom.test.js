@@ -36,16 +36,13 @@ beforeEach(async () => {
 afterEach(() => rail.dispose());
 
 describe("the project rail, wired", () => {
-  it("names project workspace actions and keeps Terminal outside the face tablist", () => {
+  it("names project workspace actions without a redundant Terminal entry", () => {
     rail.dispose();
     rail = mountProjectRail(host(), { route, context, onSelect: vi.fn(), navigate: vi.fn() });
     rail.paint("tasks");
     const tabs = [...host().querySelectorAll('[role="tab"]')];
     expect(tabs.map((tab) => tab.getAttribute("aria-label"))).toEqual(["Tasks", "Changes", "Files", "Workspaces"]);
-    const terminal = host().querySelector("[data-rail-terminal]");
-    expect(terminal.getAttribute("aria-label")).toBe("Terminal");
-    expect(terminal.title).toBe("Terminal");
-    expect(terminal.closest('[role="tablist"]')).toBeNull();
+    expect(host().querySelector("[data-rail-terminal]")).toBeNull();
     const settings = host().querySelector("[data-rail-settings]");
     expect(settings.getAttribute("aria-label")).toBe("Project settings");
     expect(settings.title).toBe("Project settings");

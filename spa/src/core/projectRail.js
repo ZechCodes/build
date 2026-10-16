@@ -40,14 +40,6 @@ export function openRouteProjectSettings(route, context, { navigate }) {
 export function mountProjectRail(host, { route, context, onSelect, navigate }) {
   const settings = { onOpen: () => openRouteProjectSettings(route, context, { navigate }), label: projectSettingsLabel };
   const tasks = followProjectTasksUnread(() => sayCount());
-  const region = document.querySelector("#console-region");
-  const terminal = { onToggle: () => region?.querySelector("#console-toggle")?.click(), expanded: false };
-  const sayTerminal = () => {
-    terminal.expanded = !!region?.dataset.size && region.dataset.size !== "collapsed";
-    host.querySelector("[data-rail-terminal]")?.setAttribute("aria-expanded", String(terminal.expanded));
-  };
-  const consoleObserver = new MutationObserver(sayTerminal);
-  if (region) consoleObserver.observe(region, { attributes: true, attributeFilter: ["data-size"] });
 
   function sayCount() {
     const badge = host.querySelector("[data-tab=tasks] .dirtab-count");
@@ -59,15 +51,13 @@ export function mountProjectRail(host, { route, context, onSelect, navigate }) {
 
   return {
     paint(active) {
-      paintDirectoryRail(host, { tabs: PROJECT_TABS, active, onSelect, settings, terminal, sidebar: active === "files" || active === "changes" });
+      paintDirectoryRail(host, { tabs: PROJECT_TABS, active, onSelect, settings, sidebar: active === "files" || active === "changes" });
       sayCount();
-      sayTerminal();
     },
     // The rail is the shell's column, lent to whichever surface is standing on
     // it: leaving hands it back empty, or to the next surface where the keyboard
     // is on it.
     dispose() {
-      consoleObserver.disconnect();
       tasks.dispose();
       releaseDirectoryRail(host);
     },

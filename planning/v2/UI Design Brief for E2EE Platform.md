@@ -12,8 +12,9 @@ pages within their route's Tasks face. Exactly one pinned project coordinator
 is available throughout the project; source-writing workers appear only in
 the project workspace (including its task pages).
 
-The terminal is a console opened by a rail action, never the default face or
-an automatically started process. It belongs to an explicit source, not to
+The terminal is opened by the bottom Console tray on project pages (#630),
+never the default face or an automatically started process. The project rail
+has no separate Terminal entry. It belongs to an explicit source, not to
 whichever agent happens to be selected. The original source trees are shared;
 Changes makes the work visible, without promising worker isolation.
 

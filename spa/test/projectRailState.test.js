@@ -8,11 +8,21 @@ globalThis.IDBKeyRange = IDBKeyRange;
 const { rememberProjectRailRoute, projectReturnRoute } = await import("../src/core/projectRailState.js");
 const { projectRoute } = await import("../src/core/projectModel.js");
 const { wipeUiRecords } = await import("../src/core/localUiStore.js");
+const { uiAddress, watchUiState } = await import("../src/core/localUiState.js");
+const { projectLayoutCacheId } = await import("../src/core/directoryScope.js");
 const { projectReturnTarget, navigationSelectionTarget } = await import("../src/core/navigationRoutes.js");
 
 beforeEach(async () => { await wipeUiRecords(); });
 
 describe("returning to a project's rail", () => {
+  it("falls back to the default project view for a retired saved Terminal face", async () => {
+    const saved = watchUiState(uiAddress({ deviceId: "d", entityId: projectLayoutCacheId("p"), view: "project", kind: "rail", sub: "return" }), () => {});
+    try {
+      await saved.write({ tab: "terminal", sourceId: "code" });
+      expect(await projectReturnRoute({ id: "p", deviceId: "d" })).toEqual(projectRoute({ id: "p", deviceId: "d" }));
+    } finally { saved.dispose(); }
+  });
+
   it("uses the saved return for ancestors and local rows, while global selection opens Tasks", async () => {
     const project = { id: "p", deviceId: "d" };
     const saved = { name: "project", deviceId: "d", projectId: "p", tab: "files", sourceId: "docs", file: "a.md", line: 5 };

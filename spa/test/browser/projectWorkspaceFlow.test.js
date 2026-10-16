@@ -125,7 +125,7 @@ for (const width of [390, 1280]) {
         params: { task_id: "task-acceptance", assignee: { kind: "agent", agent_id: "project-created" } } }]);
       expect(await page.evaluate(() => window.__flowAssignmentAnswer.task.links.workspace_ids)).toEqual([]);
 
-      await page.getByRole("button", { name: "Terminal", exact: true }).click();
+      await page.locator("#console-toggle").click();
       await openSourceShell(page, "code");
       await openSourceShell(page, "assets");
       expect(await page.locator(".console-tab-name").allTextContents()).toEqual(["Code · Source shell", "Assets · Source shell"]);
@@ -246,7 +246,7 @@ it("paints a cold cache, reconnects without losing source or agent drafts, then 
     expect(await page.locator('[data-bubble="add"]').count()).toBe(0);
     await page.locator('[data-directory="docs"]').click();
     expect(await page.locator('[data-surface="docs"]').textContent()).toContain("Update this device");
-    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await page.locator("#console-toggle").click();
     expect(await page.locator('.console-empty').textContent()).toContain("Update this device");
     const calls = await page.evaluate(() => window.__flowCalls);
     expect(calls.filter((call) => call.params.source_id || call.params.source_path || call.params.include_project_workers || call.params.project_role)).toEqual([]);
@@ -265,14 +265,14 @@ it("keeps colliding device/source/agent/terminal IDs distinct and refuses a move
     await page.locator('[data-surface="code"] .csinput').fill("First device commit draft");
     await selectAgent(page, SIBLING);
     await page.locator(INPUT).fill("First device worker draft");
-    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await page.locator("#console-toggle").click();
     await openSourceShell(page, "code");
     await page.evaluate(() => window.__flowNavigate({ name: "project", deviceId: "other-device", projectId: "p", tab: "changes", sourceId: "code", agent: "project-sibling" }));
     await page.locator(INPUT).waitFor();
     expect(await page.locator(INPUT).inputValue()).toBe("");
     expect(await page.locator('[data-surface="code"] .csinput').inputValue()).toBe("");
     await page.locator(INPUT).fill("Other device worker draft");
-    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await page.locator("#console-toggle").click();
     await openSourceShell(page, "code");
     expect(await page.locator('.project-terminal-screen').textContent()).toContain("other-device");
     await page.evaluate(() => window.__flowNavigate({ name: "project", deviceId: "flow-device", projectId: "p", tab: "changes", sourceId: "code", agent: "project-sibling" }));

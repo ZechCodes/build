@@ -287,6 +287,13 @@ select {
 select.mini {
   height:var(--select-compact-height); font-size:12px; max-width:min(180px, 100%);
 }
+/* The project source glyph sits inside the field and follows its text size. */
+.console-source-control { position:relative; display:inline-flex; flex:none; font-size:12px; }
+select.console-source { font-size:inherit; padding-left:calc(10px + 1em + 4px); }
+.console-source-icon { position:absolute; inset-block:0; left:10px; display:flex; align-items:center;
+  color:var(--ink); pointer-events:none; }
+.console-source-icon svg { display:block; width:1em; height:1em; }
+.console-source-control:has(select:disabled) .console-source-icon { color:var(--dim); opacity:.7; }
 select:hover:not(:disabled) { border-color:var(--line3); }
 select:focus-visible {
   outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--focus-ring);
@@ -356,6 +363,7 @@ select:disabled { --select-chevron-color:var(--dim); color:var(--dim); opacity:.
 }
 @media (max-width:720px) {
   select, select.mini { font-size:16px; }
+  .console-source-control { font-size:16px; }
   select::picker(select) { font-size:16px; }
   select.mini { max-width:min(180px, 100%); }
 }

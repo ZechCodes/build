@@ -13,8 +13,8 @@
 // the row itself is painted by core/inbox.js with the rest.
 
 import { entityIdOf } from "./entityId.js";
-import { PROJECT_AGENT } from "./inbox.js";
-import { agentsUnreadCount, freshestRosters, watchedAgentsRunning } from "./inboxRoster.js";
+import { entryFactsText, GETTING_STARTED, PROJECT_AGENT } from "./inbox.js";
+import { agentsUnreadCount, freshestRosters, runningAgentCount, watchedAgentsRunning } from "./inboxRoster.js";
 import { agentIsRunning } from "./agentRunning.js";
 import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { projectNameOf } from "./inboxProjects.js";
@@ -65,6 +65,12 @@ function conversationOf(project, rows, rosterOf) {
 const uniqueConversations = (agents = []) => [...new Map(agents.map((agent) =>
   [agent.conversation_id || agent.id, agent])).values()];
 
+/** The conversation's own work, with the same running count as a workspace. */
+function conversationFacts(row, agents, hasRoster) {
+  const facts = entryFactsText(row) || GETTING_STARTED;
+  return hasRoster ? `${facts} · ${runningAgentCount(agents)} running` : facts;
+}
+
 function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const { entityId, row, agents, complete } = conversationOf(project, rows, rosterOf);
   const hasRoster = complete || agents.length > 0;
@@ -93,7 +99,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     watchedWorking,
     muted: false,
     dismissed: false,
-    facts: "",
+    facts: conversationFacts(row, agents, hasRoster),
     route: projectRoute(project),
     ...conversationTimes(row),
   };

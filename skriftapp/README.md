@@ -199,7 +199,7 @@ validator. The sign-in view remains at `/auth/login?view=signin`, with a link ba
 to account creation while the invite is usable. `view` is allow-listed; without
 an invite it cannot reveal account creation.
 
-`BuildAuthController` wraps Skrift's four existing handlers. Both registration
+`BuildAuthController` wraps five of Skrift's existing handlers. Both registration
 steps recheck the carried invite. The options step records the invite ID,
 canonical account email, and explicit consent choice in the encrypted session;
 completion refuses a different invite or email, or an expired/revoked/spent
@@ -216,6 +216,11 @@ signing in from a link return to it to redeem.
 If signup requires a second factor, redemption likewise happens at the link
 after that factor succeeds. This path records no product-email consent, even
 if the signup checkbox was checked.
+
+Browser and PWA sign-out keeps Skrift's CSRF check, logout hooks and session cleanup,
+then redirects to `/app/` and its sign-in page with `/app/` as the return destination.
+Cancel on the logout confirmation also returns to `/app/`. Desktop intercepts
+`/auth/logout` for its native credential and storage cleanup, then quits.
 
 The account creation form has an **unchecked** optional product-email checkbox
 for both kinds. The choice comes only from the successful, CSRF-checked options

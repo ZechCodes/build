@@ -38,6 +38,14 @@ export async function mountProjectsFace(page, basePath, { standing = false, empt
       project_id: workspace.project_id, deviceId, projectKey: workspace.projectKey,
       agents: [{ id: `${workspace.id}-agent`, watched: true, working: workspace.id === "zulu-live",
         unread_count: workspace.id === "build-live" && !emptyLive ? 2 : 0 }] }));
+    if (emptyLive) {
+      // The project agent is now an ordinary row too. Age its conversation
+      // alongside its workspaces to keep this an actually empty live section.
+      projects.find((project) => project.id === "build").entity_id = "build-project-run";
+      items.push({ kind: "branch", run_id: "build-project-run", project_id: "build", deviceId,
+        projectKey: `${deviceId}/build`, session_started_ms: now - hour * 48,
+        last_activity_ms: now - hour * 48, agents: [] });
+    }
     await cache.writeCached({ deviceId, entityId: "", kind: "projects" }, projects);
     await cache.writeCached({ deviceId, entityId: "", kind: "workspaces" }, workspaces);
     await cache.writeCached({ deviceId, entityId: "", kind: "feed" }, { projects, workspaces, items, runs: items });
@@ -115,7 +123,7 @@ export async function inspectActiveBlock(page) {
         const facts = box(row.querySelector(".inbox-facts-float"));
         const middle = titleBox && document.elementFromPoint(titleBox.x + 2,
           title.getBoundingClientRect().top + title.getBoundingClientRect().height / 2);
-        return { key: row.dataset.key, row: box(row), fill: fill(row),
+        return { key: row.dataset.key, active: row.classList.contains("active"), row: box(row), fill: fill(row),
           inheritedFill: resolved(getComputedStyle(row).getPropertyValue("--inbox-row-fill")),
           actionsFill: fill(row.querySelector(".inbox-actions")), title: titleBox, facts,
           text: title.textContent, clipped: title.scrollWidth > title.clientWidth,

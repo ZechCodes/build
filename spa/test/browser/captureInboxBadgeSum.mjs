@@ -164,7 +164,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await page.screenshot({ path: `${output}/inbox-popover.png`, animations: "disabled" });
   console.log(said);
   for (const project of ["build", "smarter"]) {
-    const fold = page.locator(`[data-project-fold="${DEVICE}/${project}"]`);
+    const fold = page.locator(`.inbox-fold[data-project-fold="${DEVICE}/${project}"]`);
     await fold.click();
     await page.waitForFunction((key) =>
       document.querySelector(`[data-project-fold="${key}"]`)?.getAttribute("aria-expanded") === "false",

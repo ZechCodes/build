@@ -114,7 +114,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await page.locator("#inbox-rail").screenshot({ path: `${directory}projects-face-expanded.png` });
   await head.screenshot({ path: `${directory}projects-head-expanded.png` });
 
-  await head.locator("[data-project-fold]").click();
+  await head.locator(".inbox-fold").click();
   await page.waitForFunction((key) => {
     const dot = document.querySelector(`#inbox-list .inbox-project[data-project="${key}"] .inbox-project-head .inbox-status-dot`);
     return dot?.classList.contains("inbox-status-unread") && dot.classList.contains("inbox-status-running")

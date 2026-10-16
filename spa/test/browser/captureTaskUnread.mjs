@@ -187,7 +187,7 @@ await withLayoutPage(async ({ page, basePath }) => {
   await expectStatus(head, { unread: true });
   await expectText(page.locator("#inbox-open .inbox-open-count"), "10", "expanded inbox count");
   await page.locator("#inbox-rail").screenshot({ path: `${output}/projects-face-expanded.png` });
-  await head.locator("[data-project-fold]").click();
+  await head.locator(".inbox-fold").click();
   await page.waitForFunction(() =>
     document.querySelector("[data-project-fold]")?.getAttribute("aria-expanded") === "false");
   await expectStatus(head, { unread: true, running: true });

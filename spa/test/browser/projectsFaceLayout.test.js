@@ -118,9 +118,11 @@ for (const { label, width, height, hasTouch } of [
         expect(blocks.map((block) => block.name)).toEqual(["Zulu", "Build", "Alpha", "Bravo"]);
         expect(await page.locator("#inbox-list > .inbox-recent").count()).toBe(0);
         expect(await page.locator('[data-recent-toggle="projects-review/build"]').count()).toBe(1);
-        expect(await page.locator('[data-project-fold][aria-expanded="true"]').count()).toBe(4);
+        expect(await page.locator('.inbox-fold[aria-expanded="true"]').count()).toBe(4);
         expect(await page.locator('.inbox-project .inbox-recent-toggle[aria-expanded="false"]').count()).toBe(2);
-        expect(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count()).toBe(0);
+        expect(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count()).toBe(1);
+        expect(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').getAttribute("data-key"))
+          .toBe("project-agent:projects-review/alpha");
         expect(await page.locator('[data-recent-toggle="projects-review/alpha"] .inbox-recent-count').textContent()).toBe("1");
       }
       await page.locator('[data-recent-toggle="projects-review/alpha"]').click();
@@ -174,7 +176,7 @@ for (const { label, width, height, hasTouch } of [
       expect(block.name.x).toBe(CONTENT_X[label]);
       expect(block.caret.x).toBe(CONTENT_X[label]);
       expect(block.rows.map((row) => row.key)).toEqual(["workspace:projects-review/build-live",
-        "tracker_task:land-tracker", "tracker_task:release-check", "workspace:projects-review/build-quiet"]);
+        "project-agent:projects-review/build", "tracker_task:land-tracker", "tracker_task:release-check", "workspace:projects-review/build-quiet"]);
       for (const row of block.rows) expect(row.title.x, row.key).toBe(CONTENT_X[label]);
     }, { width, height, hasTouch });
   }, 60_000);
@@ -227,11 +229,18 @@ for (const { label, width, height, hasTouch } of [
         expect(block.toggleFill, theme).toBe("rgba(0, 0, 0, 0)");
         expect(block.toggle.x, theme).toBe(block.head.x);
         expect(block.toggle.right, theme).toBe(block.head.right);
-        // Resting rows inherit the block fill for their masks and paint no fill themselves.
+        // Resting rows inherit the block fill; the selected project agent
+        // keeps the same standing fill as any other selected row.
         for (const row of block.rows) {
-          expect(row.inheritedFill, `${theme} ${row.key}`).toBe(block.accentSoft);
-          expect(row.actionsFill, `${theme} ${row.key}`).toBe(block.accentSoft);
-          expect(row.fill, `${theme} ${row.key}`).toBe("rgba(0, 0, 0, 0)");
+          if (row.active) {
+            expect(row.fill, `${theme} ${row.key}`).not.toBe(block.accentSoft);
+            expect(row.actionsFill, `${theme} ${row.key}`).toBe(row.fill);
+            expect(row.inheritedFill, `${theme} ${row.key}`).toBe(row.fill);
+          } else {
+            expect(row.inheritedFill, `${theme} ${row.key}`).toBe(block.accentSoft);
+            expect(row.actionsFill, `${theme} ${row.key}`).toBe(block.accentSoft);
+            expect(row.fill, `${theme} ${row.key}`).toBe("rgba(0, 0, 0, 0)");
+          }
         }
         const inactive = await page.locator('[data-recent-toggle="projects-review/alpha"]')
           .evaluate((toggle) => getComputedStyle(toggle).backgroundColor);
@@ -267,7 +276,7 @@ for (const { label, width, height, hasTouch } of [
             expect(rows.height).toBe(0);
           }
           const expanded = await page.locator(".inbox-project.active").boundingBox();
-          await page.locator('[data-project-fold="projects-review/build"]').click();
+          await page.locator('.inbox-fold[data-project-fold="projects-review/build"]').click();
           await page.locator(".inbox-project.active.inbox-folded").waitFor();
           await page.mouse.move(0, 0);
           await page.evaluate(() => document.activeElement?.blur());
@@ -335,7 +344,7 @@ for (const { label, width, height, hasTouch } of [
             return [style.marginLeft, style.marginRight, style.marginTop, style.marginBottom];
           }));
       for (const margin of margins) expect(margin).toEqual(["0px", "0px", "0px", "0px"]);
-      await page.locator('[data-project-fold="projects-review/build"]').click();
+      await page.locator('.inbox-fold[data-project-fold="projects-review/build"]').click();
       await page.locator(".inbox-project.active.inbox-folded").waitFor();
       expect(await page.locator(".inbox-project.active .inbox-recent").isVisible()).toBe(false);
       const folded = await inspectActiveBlock(page);

@@ -19,11 +19,16 @@ for (const { label, width, height, hasTouch } of [
           rows.map((row) => row.dataset.key)), `${view}: byAnchor order regardless of task attention`).toEqual([
           `tracker_task:${QUIET_TASK}`, `tracker_task:${ASK_TASK}`, "tracker_task:review-watched-task",
         ]);
+        const quiet = rowFor(page, QUIET_TASK);
+        expect(await quiet.locator(".inbox-project-line").count()).toBe(view === "inbox" ? 1 : 0);
+        expect(await quiet.locator(".inbox-facts, .inbox-reason").count()).toBe(0);
+        const quietBox = await quiet.boundingBox();
+        const askedBox = await rowFor(page, ASK_TASK).boundingBox();
+        expect(quietBox.height).toBeLessThan(askedBox.height);
       }
       expect(await page.evaluate(() => window.__layoutModules.contexts.liveContexts().length)).toBe(0);
       const quiet = rowFor(page, QUIET_TASK);
       expect(await quiet.getAttribute("class")).toContain("inbox-quiet");
-      expect(await quiet.locator(".inbox-facts, .inbox-reason").count()).toBe(0);
       expect(await rowFor(page, ASK_TASK).textContent()).toContain("Assigned to you");
       const title = await quiet.locator(".stitle").boundingBox();
       for (const row of await page.locator('#inbox-list [data-key^="tracker_task:"]').all()) {
@@ -50,9 +55,6 @@ for (const { label, width, height, hasTouch } of [
       }
       const quietEye = await quiet.locator("[data-unwatch]").boundingBox();
       expect(title.x + title.width).toBeLessThanOrEqual(quietEye.x);
-      const quietBox = await quiet.boundingBox();
-      const askedBox = await rowFor(page, ASK_TASK).boundingBox();
-      expect(quietBox.height).toBeLessThan(askedBox.height);
       await captureLayout(page, `watched-task-inbox-${label}.png`);
       await disposeWatchedTaskInbox(page);
     }, { width, height, hasTouch });

@@ -1020,7 +1020,7 @@ function twoLineRowHtml(entry, ui, extra = [], facts = entry.facts || GETTING_ST
       ${facts ? `<div class="inbox-facts">${rowReviewSummaryHtml(entry)}${taskInboxFactsHtml(entry, facts)}</div>` : ""}
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
+    <div class="inbox-actions">${ui.quiet || entry.quiet ? "" : workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
   </div>`;
 }
 

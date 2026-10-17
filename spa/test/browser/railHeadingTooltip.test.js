@@ -6,14 +6,14 @@ let session;
 beforeAll(async () => { session = await openLayoutSession(); }, 30_000);
 afterAll(async () => { await session?.close(); });
 
-const markup = `<div id="shell"><aside id="inbox-rail"></aside><div id="view">
+const markup = (desktop) => `<div id="shell">${desktop ? '<aside id="inbox-rail"></aside>' : ""}<div id="view">
   <header id="toolbar">Build / Workspace</header><div id="view-body">
     <main id="root">Workspace</main><aside id="agent-rail" aria-label="Agents"></aside>
   </div><div id="console-region"></div>
 </div></div>`;
 
 async function mountRail(page, basePath) {
-  await mountLayout(page, markup, { basePath });
+  await mountLayout(page, markup(page.viewportSize().width > 600), { basePath });
   await loadBrowserModules(page, { rail: "src/core/agentRail.js", cache: "src/core/localCache.js" }, basePath);
   await page.evaluate(async () => {
     const { mountAgentRail } = window.__layoutModules.rail;
@@ -48,10 +48,15 @@ for (const width of [1180, 390]) it(`keeps the ${width}px header and controls st
         const box = node.getBoundingClientRect();
         return { x: box.x, y: box.y, width: box.width, height: box.height };
       };
+      const unobscured = (node) => {
+        const box = node.getBoundingClientRect();
+        return head.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+      };
       const sample = () => ({ text: work.textContent, nameText: head.querySelector(".rail-who-name").textContent,
         name: rect(head.querySelector(".rail-who-name")), harness: rect(head.querySelector(".rail-harness-icon")),
         model: rect(head.querySelector(".agent-model-badge")), watch: rect(head.querySelector(".rail-watch")),
-        head: rect(head), work: rect(work) });
+        head: rect(head), work: rect(work),
+        nameUnobscured: unobscured(head.querySelector(".rail-who-name")), workUnobscured: unobscured(work) });
       const seen = [sample()];
       const observer = new MutationObserver(() => seen.push(sample()));
       observer.observe(work, { childList: true, characterData: true, subtree: true });
@@ -71,6 +76,8 @@ for (const width of [1180, 390]) it(`keeps the ${width}px header and controls st
     assert.ok(samples.some((frame) => frame.text === ""), "the erased frame was measured");
     for (const frame of samples) {
       assert.equal(frame.nameText, "Rail helper", "the agent name never animates");
+      assert.equal(frame.nameUnobscured, true, "the name must be visible above the page");
+      assert.equal(frame.workUnobscured, true, "the work must be visible above the page");
       for (const key of ["name", "harness", "model", "watch", "head"]) {
         for (const dimension of ["x", "y", "width", "height"]) {
           assert.ok(Math.abs(frame[key][dimension] - samples[0][key][dimension]) <= 1, `${key}.${dimension} shifted`);

@@ -297,6 +297,47 @@ it("pulses only running dots and respects reduced motion", async () => {
   });
 });
 
+it.each([
+  { label: "desktop", width: 1280, hasTouch: false },
+  { label: "touch mobile", width: 390, hasTouch: true },
+])("keeps a restored capture picker visible without row interaction on $label", async ({ width, hasTouch }) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mountStatusDotInbox(page, basePath);
+    await page.evaluate(() => {
+      const entry = { ...window.__statusDotEntries.find((entry) => entry.key === "capture:failed"), captureState: "routed" };
+      document.querySelector("#inbox-list").innerHTML = window.__layoutModules.rows.inboxRowHtml(entry, {
+        rerouteKey: entry.key, projects: [{ id: "layout-project", name: "Build" }],
+      });
+    });
+    const row = page.locator('[data-key="capture:failed"]');
+    const picker = row.locator(".reroute-menu");
+    const paint = () => picker.evaluate((menu) => {
+      let opacity = 1;
+      for (let node = menu; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+      return { opacity, pointerEvents: getComputedStyle(menu).pointerEvents,
+        active: menu.closest(".inbox-entry").matches(".active, :hover, :focus-within") };
+    });
+    await page.mouse.move(width - 1, 700);
+    expect(await page.evaluate(() => matchMedia("(hover:none)").matches)).toBe(hasTouch);
+    expect(await paint()).toEqual({ opacity: 1, pointerEvents: "auto", active: false });
+    await row.hover();
+    await page.mouse.move(width - 1, 700);
+    expect(await paint()).toEqual({ opacity: 1, pointerEvents: "auto", active: false });
+    const destination = picker.locator("[data-reroute-branch-open]");
+    expect(await destination.evaluate((button) => {
+      const box = button.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === button;
+    })).toBe(true);
+    await destination.click();
+    await page.evaluate(() => document.activeElement.blur());
+    await page.mouse.move(width - 1, 700);
+    await picker.evaluate((menu) => { menu.hidden = true; });
+    expect(await row.locator(".inbox-actions").evaluate((actions) => getComputedStyle(actions).opacity)).toBe("0");
+    expect(await row.locator(".inbox-status-dot").evaluate((dot) => getComputedStyle(dot).opacity)).toBe("1");
+  }, { width, height: 760, hasTouch });
+}, 60_000);
+
 it("keeps live dots at full strength when muted and offline text is dimmed", async () => {
   await withLayoutPage(async ({ page, basePath }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });

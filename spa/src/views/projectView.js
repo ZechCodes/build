@@ -85,12 +85,12 @@ const sizeHtml = (row) =>
  *  two views of the same list, so they read as the same list. */
 const rowHtml = (row, ui) => `<div class="srow inbox-entry project-row${row.muted ? " inbox-muted" : ""}" data-workspace="${esc(row.workspaceKey)}">
     <div class="inbox-body">
-      <div class="inbox-line inbox-name"><span class="stitle">${esc(row.name)}</span></div>
+      <div class="inbox-line inbox-name">${statusDotHtml({ running: row.working || row.state === "working", unread: row.unreadCount > 0 })}<span class="stitle">${esc(row.name)}</span></div>
       <div class="inbox-facts">${esc(factsLine(row))}</div>
       ${lifecycleHtml(row, ui)}
     </div>
     ${sizeHtml(row)}
-    <div class="inbox-actions">${reclaimHtml(row, ui)}${statusDotHtml({ running: row.working || row.state === "working", unread: row.unreadCount > 0 })}</div>
+    <div class="inbox-actions">${reclaimHtml(row, ui)}</div>
   </div>`;
 
 /** A project nobody has cut a workspace in yet. That is the first state of

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// #380: every row has one right-edge status dot, derived from its cached
+// #380: every row has one left-gutter status dot, derived from its cached
 // running state and unread activity, instead of a left icon and a count.
 import { describe, expect, it } from "vitest";
 import { inboxEntries, inboxRowHtml, watchedWorkspaceEntries, workspaceEntries } from "../src/core/inbox.js";
@@ -13,7 +13,7 @@ const entry = (over = {}) => ({
   ...over,
 });
 const rowOf = (row, ui) => new DOMParser().parseFromString(inboxRowHtml(row, ui), "text/html").querySelector(".inbox-entry");
-const statusOf = (row) => row.querySelector(".inbox-actions > .inbox-status-dot");
+const statusOf = (row) => row.querySelector(".inbox-name > .inbox-status-dot");
 
 describe("inbox running activity while an agent waits on another agent (#386)", () => {
   const project = { id: "proj-386", projectKey: "dev/proj-386", deviceId: "dev", name: "Build", entity_id: "project-run" };
@@ -82,14 +82,15 @@ describe("inbox running activity while an agent waits on another agent (#386)", 
 });
 
 describe("the inbox's shared status dot", () => {
-  it.each(["workspace", "branch", "task", "tracker_task", "project_agent"])("puts %s unread activity after the actions with no left icon or counter", (kind) => {
+  it.each(["workspace", "branch", "task", "tracker_task", "project_agent"])("puts %s unread activity beside the name with no extra icon or counter", (kind) => {
     const row = rowOf(entry({ kind, state: "unread", unreadCount: 12 }));
     const dot = statusOf(row);
     expect(dot).not.toBeNull();
     expect(dot.classList.contains("inbox-status-unread")).toBe(true);
     expect(dot.classList.contains("inbox-status-running")).toBe(false);
     expect(dot.getAttribute("aria-label")).toMatch(/unread/i);
-    expect(row.querySelector(".inbox-actions").lastElementChild).toBe(dot);
+    expect(dot.nextElementSibling).toBe(row.querySelector(".stitle"));
+    expect(row.querySelector(".inbox-actions .inbox-status-dot")).toBeNull();
     expect(row.querySelectorAll(".inbox-status-dot")).toHaveLength(1);
     expect(row.querySelector(".sdot, .inbox-unread")).toBeNull();
   });
@@ -120,20 +121,20 @@ describe("the inbox's shared status dot", () => {
     expect(dot?.classList.contains("inbox-status-unread")).toBe(true);
   });
 
-  it("keeps the workspace's Done before the final dot", () => {
+  it("keeps the workspace's Done separate from its name dot", () => {
     const row = rowOf(entry({ ready: true, canFinish: true, state: "working" }));
     expect(row.querySelector("[data-workspace-done]").textContent).toBe("Done");
-    expect(row.querySelector(".inbox-actions").lastElementChild).toBe(statusOf(row));
+    expect(statusOf(row).nextElementSibling).toBe(row.querySelector(".stitle"));
   });
 
-  it("keeps a branch's open menu before the final dot", () => {
+  it("keeps a branch's open menu separate from its name dot", () => {
     const row = rowOf(entry({ kind: "branch", canFinish: true, state: "working" }), { openMenuKey: "workspace:dev/ws" });
     expect(row.querySelector("[data-menu]")).not.toBeNull();
     expect(row.querySelector('[role="menu"]')).not.toBeNull();
-    expect(row.querySelector(".inbox-actions").lastElementChild).toBe(statusOf(row));
+    expect(statusOf(row).nextElementSibling).toBe(row.querySelector(".stitle"));
   });
 
-  it.each(["workspace", "project_agent"])("keeps the %s Recent shape and puts its unread dot on the right", (kind) => {
+  it.each(["workspace", "project_agent"])("keeps the %s Recent shape and puts its unread dot beside the name", (kind) => {
     const row = rowOf(entry({ kind, state: "unread", unreadCount: 3 }), { quiet: true });
     expect(row.classList.contains("inbox-quiet")).toBe(true);
     expect(statusOf(row)?.classList.contains("inbox-status-unread")).toBe(true);
@@ -170,11 +171,11 @@ describe("a capture's status dot", () => {
     expect(statusOf(row)?.classList.contains("inbox-status-unread")).toBe(true);
   });
 
-  it("keeps Retry before a failed capture's unread dot", () => {
+  it("keeps Retry separate from a failed capture's name dot", () => {
     const row = rowOf(capture({ captureState: "failed", state: "unread", unreadCount: 1 }));
     expect(row.querySelector("[data-capture-retry]").textContent).toBe("Retry");
     expect(statusOf(row)?.classList.contains("inbox-status-unread")).toBe(true);
-    expect(row.querySelector(".inbox-actions").lastElementChild).toBe(statusOf(row));
+    expect(statusOf(row).nextElementSibling).toBe(row.querySelector(".stitle"));
   });
 
   it("leaves a read router question without a dot", () => {

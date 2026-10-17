@@ -147,7 +147,7 @@ const rail = () => document.querySelector("#dir-rail");
 const pressProjectTab = (tab) => rail().querySelector(`[data-tab="${tab}"]`).click();
 
 describe("the project surface", () => {
-  it("uses one final status dot for workspace unread and running activity", async () => {
+  it("uses one name-line status dot for workspace unread and running activity", async () => {
     snapshot = {
       ...snapshot,
       workspaces: [workspace("running", { entity_id: "run-1" }), workspace("unread", { entity_id: "run-2" }), workspace("idle")],
@@ -160,11 +160,12 @@ describe("the project surface", () => {
     await flush();
 
     const [running, unread, idle] = rows();
-    const runningDot = running.querySelector(".inbox-actions > .inbox-status-dot");
-    const unreadDot = unread.querySelector(".inbox-actions > .inbox-status-dot");
+    const runningDot = running.querySelector(".inbox-name > .inbox-status-dot");
+    const unreadDot = unread.querySelector(".inbox-name > .inbox-status-dot");
     expect(runningDot?.classList.contains("inbox-status-running")).toBe(true);
     expect(unreadDot?.classList.contains("inbox-status-unread")).toBe(true);
-    expect(unread.querySelector(".inbox-actions").lastElementChild).toBe(unreadDot);
+    expect(unreadDot.nextElementSibling).toBe(unread.querySelector(".stitle"));
+    expect(unread.querySelector(".inbox-actions .inbox-status-dot")).toBeNull();
     expect(idle.querySelector(".inbox-actions")).not.toBeNull();
     expect(idle.querySelector(".inbox-status-dot")).toBeNull();
     expect(document.querySelector(".project-row .sdot, .project-row .inbox-unread")).toBeNull();

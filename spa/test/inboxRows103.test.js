@@ -86,15 +86,14 @@ describe("a workspace row's agents", () => {
     expect(entry.facts).toBe("↑1 ↓0 +12 −3");
   });
 
-  it("puts one unread status dot after Done", () => {
+  it("puts one unread status dot beside the name and keeps Done separate", () => {
     const html = inboxRowHtml(workspaceWith([agent("a", { unread_count: 4 })]));
     const doc = new DOMParser().parseFromString(html, "text/html");
     const actions = doc.querySelector(".inbox-actions");
     expect([...actions.children].map((node) => node.className)).toEqual([
       "btn mini inbox-workspace-done",
-      "inbox-status-dot inbox-status-unread",
     ]);
-    expect(actions.querySelector(".inbox-status-dot").getAttribute("aria-label")).toContain("Unread");
+    expect(doc.querySelector(".inbox-name > .inbox-status-dot").getAttribute("aria-label")).toContain("Unread");
     expect(doc.querySelector(".inbox-unread, .sdot")).toBeNull();
   });
 
@@ -104,7 +103,7 @@ describe("a workspace row's agents", () => {
       items: [{ kind: "branch", project_id: "project-1", run_id: "run-1", agents: [agent("a", { unread_count: 1 })] }],
     }))[0]);
     const doc = new DOMParser().parseFromString(html, "text/html");
-    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
+    expect(doc.querySelector(".inbox-name > .inbox-status-unread")).not.toBeNull();
   });
 });
 
@@ -152,7 +151,7 @@ describe("the project agent's row", () => {
     })] }));
     expect(entry).toMatchObject({ unreadCount: 3, state: "unread", working: true });
     const doc = new DOMParser().parseFromString(inboxRowHtml(entry), "text/html");
-    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
+    expect(doc.querySelector(".inbox-name > .inbox-status-unread")).not.toBeNull();
     expect(doc.querySelector(".inbox-status-running")).not.toBeNull();
   });
 
@@ -221,7 +220,7 @@ describe("the project agent's row", () => {
     expect(grouped.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
     expect(grouped.querySelector(".inbox-facts-float").textContent).toBe("Getting started · 0 running");
     expect(doc.querySelector(".sdot")).toBeNull();
-    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
+    expect(doc.querySelector(".inbox-name > .inbox-status-unread")).not.toBeNull();
   });
 });
 

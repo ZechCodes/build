@@ -16,7 +16,7 @@ const projectKey = `${deviceId}/project-1`;
 const address = (kind, entityId = "") => ({ deviceId, entityId, kind });
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
 const rowByKey = (key) => rows().find((row) => row.dataset.key === key) || null;
-const dotIn = (element) => element?.querySelector(".inbox-actions > .inbox-status-dot") || null;
+const dotIn = (element) => element?.querySelector(".inbox-name > .inbox-status-dot") || null;
 const head = () => document.querySelector(`#inbox-list .inbox-project[data-project="${projectKey}"] .inbox-project-head`);
 
 const agent = (id, over = {}) => ({ id, watched: true, working: false, unread_count: 0, ...over });
@@ -81,7 +81,7 @@ describe("#103 inbox rows, from the cache", () => {
     const workspaceRow = rowByKey(`workspace:${deviceId}/workspace-1`);
     expect(workspaceRow.querySelector(".inbox-facts").textContent).toBe("↑1 ↓0 +12 −3 · 2 running");
     expect(dotIn(workspaceRow)?.classList.contains("inbox-status-unread")).toBe(true);
-    expect(workspaceRow.querySelector(".inbox-actions > .inbox-workspace-done + .inbox-status-dot")).not.toBeNull();
+    expect(workspaceRow.querySelector(".inbox-name > .inbox-status-dot + .stitle")).not.toBeNull();
     expect(workspaceRow.querySelector(".inbox-unread, .sdot")).toBeNull();
 
     const agentRow = rowByKey(`project-agent:${projectKey}`);

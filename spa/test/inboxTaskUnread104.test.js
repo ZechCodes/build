@@ -52,7 +52,7 @@ describe("a task held by a workspace's agent", () => {
     expect(workspaceRow.unreadCount).toBe(2 + 3 + 4);
     expect(agentRow.unreadCount).toBe(1);
     const doc = new DOMParser().parseFromString(inboxRowHtml(workspaceRow), "text/html");
-    expect(doc.querySelector(".inbox-actions > .inbox-status-unread")).not.toBeNull();
+    expect(doc.querySelector(".inbox-name > .inbox-status-unread")).not.toBeNull();
     expect(doc.querySelector(".inbox-unread")).toBeNull();
   });
 

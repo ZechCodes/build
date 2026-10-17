@@ -1000,8 +1000,8 @@ const rowStatusDotHtml = (entry) => statusDotHtml({
 const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReviewSummaryHtml(entry.reviewSummary) : "";
 
 /** Name and activity, with a project line above them on the Inbox face.
- * Recent keeps its compact workspace and project rows. The status dot follows
- * the existing actions at the right edge. */
+ * Recent keeps its compact workspace and project rows. The status dot overlays
+ * the name line's existing left gutter. */
 export function inboxRowHtml(entry, ui = {}) {
   const ownPainter = ROW_PAINTERS[entry.kind];
   if (ownPainter) return ownPainter(entry, ui);
@@ -1016,11 +1016,11 @@ function twoLineRowHtml(entry, ui, extra = [], facts = entry.facts || GETTING_ST
   return `${rowOpenHtml(entry, ui, extra)}
     <div class="inbox-body">
       ${projectTag}
-      <div class="inbox-line inbox-name"><span class="stitle">${esc(entry.name)}</span></div>
+      <div class="inbox-line inbox-name">${rowStatusDotHtml(entry)}<span class="stitle">${esc(entry.name)}</span></div>
       ${facts ? `<div class="inbox-facts">${rowReviewSummaryHtml(entry)}${taskInboxFactsHtml(entry, facts)}</div>` : ""}
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${ui.quiet || entry.quiet ? "" : workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
+    <div class="inbox-actions">${ui.quiet || entry.quiet ? "" : workspaceDoneHtml(entry, ui)}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 
@@ -1067,12 +1067,12 @@ function quietRowHtml(entry, ui, extra = [], facts = entry.facts || "") {
     <div class="inbox-body">
       ${projectTagHtml(entry, ui)}
       <div class="inbox-quiet-line">
-        <div class="inbox-line inbox-name"><span class="stitle">${esc(entry.name)}</span></div>
+        <div class="inbox-line inbox-name">${rowStatusDotHtml(entry)}<span class="stitle">${esc(entry.name)}</span></div>
         ${facts ? `<span class="inbox-facts inbox-facts-float">${rowReviewSummaryHtml(entry)}${esc(facts)}</span>` : ""}
       </div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}${rowStatusDotHtml(entry)}</div>
+    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 
@@ -1175,14 +1175,14 @@ export function captureRowHtml(entry, ui = {}) {
   return `<div class="${classes}" data-key="${esc(entry.key)}" data-capture="${esc(entry.captureId)}" title="${esc(entry.text || entry.name)}">
     <div class="inbox-body">
       ${captureProjectHtml(entry, ui)}
-      <div class="inbox-line"><span class="stitle">${esc(entry.name)}</span></div>
+      <div class="inbox-line inbox-name">${statusDotHtml(activity)}<span class="stitle">${esc(entry.name)}</span></div>
       <div class="inbox-line capture-status${activity.running ? " dim" : ""}"><span>${esc(status)}</span></div>
       ${entry.question ? `<div class="inbox-reason">${esc(entry.question)}</div>` : ""}
       <span class="warn" data-capture-error hidden></span>
     </div>
     <div class="inbox-actions">${actions.join("")}${
       ui.rerouteKey === entry.key ? rerouteMenuHtml(entry, ui) : ""
-    }${statusDotHtml(activity)}</div>
+    }</div>
   </div>`;
 }
 

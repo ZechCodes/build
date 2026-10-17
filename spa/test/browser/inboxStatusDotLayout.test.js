@@ -32,7 +32,7 @@ for (const { label, width, height } of [
   { label: "mobile", width: 390, height: 760 },
 ]) {
   for (const theme of ["light", "dark"]) {
-    it(`aligns project and row status dot right edges on ${label} in ${theme}`, async () => {
+    it(`aligns row status dots in the left gutter on ${label} in ${theme}`, async () => {
       await withLayoutPage(async ({ page, basePath }) => {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await mountStatusDotInbox(page, basePath, { grouped: true });
@@ -59,19 +59,20 @@ for (const { label, width, height } of [
             expect(await head.locator(":scope > .inbox-status-dot").count(), state).toBe(0);
             expect(await dot.boundingBox(), state).toEqual(before);
             expect(await head.locator(".inbox-project-name").boundingBox(), state).toEqual(nameBefore);
-            const right = await dot.evaluate((element) => element.getBoundingClientRect().right);
+            const left = await dot.evaluate((element) => element.getBoundingClientRect().left);
             for (const row of await rows.all()) {
               const layout = await rowLayout(row);
-              expect.soft(layout.dot.right, `${state}: ${layout.key}`).toBe(right);
+              expect.soft(layout.dot.left, `${state}: ${layout.key}`).toBe(left);
+              expect.soft(layout.dot.right, `${state}: ${layout.key}`).toBeLessThan(layout.name.left);
+              expect.soft(layout.dot.top + 4, `${state}: ${layout.key}`).toBeCloseTo(layout.name.top + layout.name.height / 2, 1);
               if (!hovered) {
                 await row.hover();
-                expect.soft((await rowLayout(row)).dot.right, `${state}: ${layout.key} hovered`).toBe(right);
+                expect.soft((await rowLayout(row)).dot.left, `${state}: ${layout.key} hovered`).toBe(left);
                 await page.mouse.move(width - 1, height - 1);
               }
             }
             for (const button of await head.locator(".inbox-project-create, .inbox-project-hide").all()) {
               const box = await button.boundingBox();
-              expect(box.x + box.width, state).toBeLessThanOrEqual(before.x - 2);
               expect(box.x, state).toBeGreaterThanOrEqual(nameBefore.x + nameBefore.width);
             }
           }
@@ -110,7 +111,7 @@ for (const { label, width, height } of [
     }, { width, height });
   }, 60_000);
 
-  it(`keeps one right status dot clear of names and hover controls on ${label}`, async () => {
+  it(`keeps one left status dot clear of names and hover controls on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       for (const grouped of [false, true]) {
         await mountStatusDotInbox(page, basePath, { grouped });
@@ -123,11 +124,11 @@ for (const { label, width, height } of [
           expect(before.counters, key).toBe(0);
           expect(await row.locator(".inbox-status-dot").count(), key).toBe(idle ? 0 : 1);
           if (idle) continue;
-          expect(before.actionsOpacity, key).toBe("1");
           expect(before.dot.width, key).toBe(8);
           expect(before.dot.height, key).toBe(8);
-          expect(before.dot.left, key).toBeGreaterThanOrEqual(before.name.right);
-          expect(before.dot.right, key).toBeLessThan(before.row.right);
+          expect(before.dot.left, key).toBeGreaterThanOrEqual(before.row.left + 6);
+          expect(before.dot.right, key).toBeLessThan(before.name.left);
+          expect(before.dot.top + 4, key).toBeCloseTo(before.name.top + before.name.height / 2, 1);
           expect(before.dot.animation === "none", key).toBe(!before.dot.running);
           await row.hover();
           await page.waitForFunction((key) => [...document.querySelector(`[data-key="${key}"] .inbox-actions`).children]
@@ -137,7 +138,6 @@ for (const { label, width, height } of [
           for (const control of hovered.controls) {
             expect(control.opacity, key).toBe("1");
             expect(control.visibility, key).toBe("visible");
-            expect(control.right, key).toBeLessThanOrEqual(hovered.dot.left - 2);
             expect(control.left, key).toBeGreaterThanOrEqual(hovered.name.right);
           }
         }
@@ -164,12 +164,14 @@ for (const { label, width, height } of [
         const after = await status.boundingBox();
         expect(after).toEqual(before);
         const name = await head.locator(".inbox-project-name").boundingBox();
-        expect(name.x + name.width).toBeLessThanOrEqual(after.x);
+        expect(after.x + after.width).toBeLessThan(name.x);
+        if (folded) expect(after.y + after.height / 2).toBeCloseTo(name.y + name.height / 2, 1);
+        const fold = await head.locator(".inbox-fold").boundingBox();
+        if (folded) expect(after.x + after.width).toBeLessThanOrEqual(fold.x - 2);
         const actions = head.locator(".inbox-project-actions");
         expect(await actions.evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
         for (const button of await head.locator(".inbox-project-create, .inbox-project-hide").all()) {
           const box = await button.boundingBox();
-          expect(box.x + box.width).toBeLessThanOrEqual(after.x - 2);
           expect(box.x).toBeGreaterThanOrEqual(name.x + name.width);
         }
         expect(await head.locator(".inbox-project-hide").count()).toBe(1);
@@ -222,17 +224,56 @@ for (const { label, width, height } of [
       const reclaim = row.locator("[data-workspace-reclaim]");
       const control = before.controls[0];
       expect(control.left).toBeGreaterThanOrEqual(before.name.right);
-      expect(control.right).toBeLessThanOrEqual(before.dot.left - 2);
+      expect(before.dot.right).toBeLessThan(before.name.left);
+      expect(before.dot.top + 4).toBeCloseTo(before.name.top + before.name.height / 2, 1);
       await reclaim.click();
       await page.waitForFunction(() => document.querySelector("[data-workspace-reclaim]").textContent === "Reclaiming…");
       const pending = await rowLayout(row);
       expect(pending.name).toEqual(before.name);
       expect(pending.dot.left).toBe(before.dot.left);
       expect(pending.controls[0].left).toBeGreaterThanOrEqual(pending.name.right);
-      expect(pending.controls[0].right).toBeLessThanOrEqual(pending.dot.left - 2);
+      expect(pending.dot.right).toBeLessThan(pending.name.left);
       await captureLayout(page, `inbox-status-dot-${label}-reclaiming.png`);
       await page.evaluate(() => { window.__layoutModules.app.App.viewDispose(); window.__layoutModules.feed.stopFeed(); });
     }, { width, height });
+  }, 60_000);
+}
+
+for (const { label, width, floating, nameX, groupedNameX } of [
+  { label: "pinned desktop", width: 1280, floating: false, nameX: 33, groupedNameX: 51 },
+  { label: "floating desktop", width: 1280, floating: true, nameX: 46, groupedNameX: 64 },
+  { label: "touch mobile", width: 390, floating: true, nameX: 46, groupedNameX: 64 },
+]) {
+  it(`preserves main's dotted and dotless name columns on ${label}`, async () => {
+    await withLayoutPage(async ({ page, basePath }) => {
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      for (const grouped of [false, true]) {
+        await mountStatusDotInbox(page, basePath, { grouped });
+        if (floating) await page.evaluate(() => document.body.classList.add("inbox-collapsed", "inbox-popover-open"));
+        const dotted = page.locator('[data-key="workspace:layout-device/attention"]');
+        const dotless = await rowLayout(page.locator('[data-key="workspace:layout-device/read"]'));
+        expect(dotless.dot).toBeNull();
+        // Measured in Chromium on main 403fadaba, with the same production fixture.
+        expect(dotless.name.left).toBe(grouped ? groupedNameX : nameX);
+        for (const active of [false, true]) {
+          await dotted.evaluate((row, active) => row.classList.toggle("active", active), active);
+          const layout = await rowLayout(dotted);
+          expect(layout.name.left).toBe(dotless.name.left);
+          expect(layout.dot.right).toBeLessThan(layout.name.left);
+          expect(layout.dot.left).toBeGreaterThanOrEqual(layout.row.left + 6);
+          expect(layout.dot.top + layout.dot.height / 2).toBeCloseTo(layout.name.top + layout.name.height / 2, 1);
+        }
+        await mountStatusDotInbox(page, basePath, { grouped: true, folded: true });
+        if (floating) await page.evaluate(() => document.body.classList.add("inbox-collapsed", "inbox-popover-open"));
+        const head = page.locator(".inbox-project-head");
+        const name = await head.locator(".inbox-project-name").boundingBox();
+        expect(name.x).toBe(groupedNameX);
+        const fold = await head.locator(".inbox-fold").boundingBox();
+        const dot = await head.locator(".inbox-status-dot").boundingBox();
+        expect(dot.x + dot.width).toBeLessThan(fold.x);
+        expect(dot.y + dot.height / 2).toBeCloseTo(name.y + name.height / 2, 1);
+      }
+    }, { width, height: 800, hasTouch: width === 390 });
   }, 60_000);
 }
 
@@ -253,5 +294,77 @@ it("pulses only running dots and respects reduced motion", async () => {
     expect(green[0].color).not.toBe(grey[0].color);
     await page.emulateMedia({ reducedMotion: "reduce" });
     for (const dot of await animations()) expect(dot.animation).toBe("none");
+  });
+});
+
+it.each([
+  { label: "desktop", width: 1280, hasTouch: false },
+  { label: "touch mobile", width: 390, hasTouch: true },
+])("keeps a restored capture picker visible without row interaction on $label", async ({ width, hasTouch }) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mountStatusDotInbox(page, basePath);
+    await page.evaluate(() => {
+      const entry = { ...window.__statusDotEntries.find((entry) => entry.key === "capture:failed"), captureState: "routed" };
+      const { inboxRowHtml } = window.__layoutModules.rows;
+      document.querySelector("#inbox-list").innerHTML = inboxRowHtml(entry, {
+        rerouteKey: entry.key, projects: [{ id: "layout-project", name: "Build" }],
+      }) + window.__statusDotEntries.filter((other) => other.key !== entry.key).map((other) => inboxRowHtml(other)).join("");
+    });
+    const row = page.locator('[data-key="capture:failed"]');
+    const picker = row.locator(".reroute-menu");
+    const paint = () => picker.evaluate((menu) => {
+      let opacity = 1;
+      for (let node = menu; node; node = node.parentElement) opacity *= Number(getComputedStyle(node).opacity);
+      return { opacity, pointerEvents: getComputedStyle(menu).pointerEvents,
+        active: menu.closest(".inbox-entry").matches(".active, :hover, :focus-within") };
+    });
+    await page.mouse.move(width - 1, 700);
+    expect(await page.evaluate(() => matchMedia("(hover:none)").matches)).toBe(hasTouch);
+    expect(await paint()).toEqual({ opacity: 1, pointerEvents: "auto", active: false });
+    await row.hover();
+    await page.mouse.move(width - 1, 700);
+    expect(await paint()).toEqual({ opacity: 1, pointerEvents: "auto", active: false });
+    const destination = picker.locator("[data-reroute-branch-open]");
+    expect(await destination.evaluate((button) => {
+      const box = button.getBoundingClientRect();
+      return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === button;
+    })).toBe(true);
+    await destination.click();
+    await page.evaluate(() => document.activeElement.blur());
+    await page.mouse.move(width - 1, 700);
+    await picker.evaluate((menu) => menu.remove());
+    await expect.poll(() => row.locator(".inbox-actions").evaluate((actions) => getComputedStyle(actions).opacity)).toBe("0");
+    expect(await row.locator(".inbox-status-dot").evaluate((dot) => getComputedStyle(dot).opacity)).toBe("1");
+  }, { width, height: 760, hasTouch });
+}, 60_000);
+
+it("keeps live dots at full strength when muted and offline text is dimmed", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mountStatusDotInbox(page, basePath);
+    for (const className of ["inbox-muted", "inbox-offline"]) {
+      const rows = page.locator(".inbox-entry");
+      const paint = await rows.evaluateAll((rows, className) => rows.map((row) => {
+        row.classList.remove("inbox-muted", "inbox-offline");
+        row.classList.add(className);
+        for (const animation of row.getAnimations({ subtree: true })) {
+          if (animation instanceof CSSTransition) animation.finish();
+        }
+        const opacity = (node) => {
+          let result = 1;
+          for (let current = node; current && current !== row; current = current.parentElement) {
+            result *= Number(getComputedStyle(current).opacity);
+          }
+          return result;
+        };
+        const dot = row.querySelector(".inbox-status-dot");
+        return { key: row.dataset.key, name: opacity(row.querySelector(".stitle")), dot: dot && opacity(dot) };
+      }), className);
+      for (const row of paint) {
+        expect(row.name, `${className}: ${row.key}`).toBeCloseTo(.62);
+        if (row.dot !== null) expect(row.dot, `${className}: ${row.key}`).toBe(1);
+      }
+    }
   });
 });

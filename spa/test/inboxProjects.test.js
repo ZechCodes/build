@@ -196,7 +196,7 @@ describe("the machine said after a project name", () => {
 });
 
 describe("the project header actions", () => {
-  it("keeps the device and direct hover actions together, with a folded dot at the far edge", () => {
+  it("keeps the device and direct hover actions together, with a folded summary dot", () => {
     const block = {
       projectKey: "dev-1/p1",
       name: "relaydb",

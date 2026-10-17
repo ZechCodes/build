@@ -642,15 +642,15 @@ describe("the active entry", () => {
 // ---- the project, name and activity lines ---------------------------------------
 
 describe("what a row says", () => {
-  it("names the branch below the project, with the unread dot in the actions", () => {
+  it("names the branch below the project, with the unread dot beside the name", () => {
     const [entry] = listed([branch({ unread: true, unread_count: 3, unread_reason: "done" })]);
     expect(entry.name).toBe("build/login");
     const html = inboxRowHtml(entry, {});
     const line = html.match(/<div class="inbox-line inbox-name">.*?<\/div>/s)[0];
     expect(line).toContain("build/login");
-    expect(line).not.toContain("inbox-status-dot");
+    expect(line).toContain("inbox-status-dot inbox-status-unread");
     expect(line).not.toContain(">3<");
-    expect(html).toMatch(/<div class="inbox-actions">[\s\S]*inbox-status-dot inbox-status-unread/);
+    expect(html.match(/<div class="inbox-actions">[\s\S]*?<\/div>/)[0]).not.toContain("inbox-status-dot");
     expect(html).not.toContain("sdot");
     expect(html).toContain('data-entity="run-1"');
   });

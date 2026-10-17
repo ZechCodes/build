@@ -732,6 +732,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 @media (min-width: 901px) {
   .toolbar { --tb-inbox-glyph-left:calc((var(--dir-rail) - 17px) / 2);
     --tb-pinned-target:calc(var(--tb-inbox-glyph-left) + 18px); }
+  /* The floating target starts at the inbox button's right edge. */
+  body.inbox-collapsed .toolbar:has(> .tb-switch) {
+    --inbox-open-clear:calc((var(--dir-rail) + var(--inbox-toggle)) / 2 + env(safe-area-inset-left, 0px)); }
   body:not(.inbox-collapsed) .toolbar { padding-left:0;
     --tb-project-cap:min(96px, calc((100cqw + 44px - var(--tb-pinned-target) - 10px) / 4)); }
   .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(44px - 18px);

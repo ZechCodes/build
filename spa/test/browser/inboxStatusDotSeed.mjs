@@ -62,8 +62,7 @@ export async function mountStatusDotInbox(page, basePath, {
       const { blocks } = projects.workspaceProjectBlocks(entries, [project]);
       const fold = { folded: new Set(folded ? [projectKey] : []) };
       host.innerHTML = `<div class="inbox-projects">${projects.projectBlockHtml(blocks[0], fold)}</div>`;
-      host.querySelector(".inbox-project-rows").innerHTML = entries
-        .filter((row) => row.kind !== rows.PROJECT_AGENT).map(paint).join("");
+      host.querySelector(".inbox-project-rows").innerHTML = entries.map(paint).join("");
     }
     if (innerWidth <= 900) document.body.classList.add("inbox-collapsed", "inbox-popover-open");
     window.__statusDotEntries = entries;
@@ -110,7 +109,7 @@ export async function mountWaitingStatusDotInbox(page, basePath, {
       host.innerHTML = `<div class="inbox-projects">${projects.projectBlockHtml(blocks[0], {
         folded: new Set(folded ? [projectKey] : []),
       })}</div>`;
-      host.querySelector(".inbox-project-rows").innerHTML = entries.filter((entry) => entry.kind !== rows.PROJECT_AGENT).map(paint).join("");
+      host.querySelector(".inbox-project-rows").innerHTML = entries.map(paint).join("");
     }
   }, { grouped, folded, ownWaiting, workspaceWatched, unreadCount, projectKey: PROJECT_KEY });
 }

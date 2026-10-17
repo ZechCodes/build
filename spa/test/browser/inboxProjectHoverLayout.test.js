@@ -5,6 +5,7 @@ import { mountStatusDotInbox } from "./inboxStatusDotSeed.mjs";
 async function headLayout(head) {
   return head.evaluate((element) => {
     const box = (node) => {
+      if (!node) return null;
       const { x, y, width, height } = node.getBoundingClientRect();
       return { x, y, width, height };
     };
@@ -42,6 +43,7 @@ for (const { label, width, height } of [
           await page.waitForFunction(() => getComputedStyle(document.querySelector(".inbox-project-actions")).opacity === "0");
           const before = await headLayout(head);
           expect(before.deviceOpacity).toBe("0.72");
+          expect(before.dot).toBeNull();
           await row.hover();
           await row.evaluate((element) => {
             for (const animation of element.getAnimations({ subtree: true })) if (animation instanceof CSSTransition) animation.finish();

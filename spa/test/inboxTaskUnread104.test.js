@@ -106,8 +106,8 @@ describe("the projects face's head", () => {
     task({ id: "i-2", watched: true, unread_count: 10 }),
   ];
 
-  it("shows unread without a counter while preserving task tally accounting", () => {
-    expect(headUnread(tasks, false)).toBe(true);
+  it("leaves unread on rows when open and summarizes it when folded without changing task tallies", () => {
+    expect(headUnread(tasks, false)).toBe(false);
     expect(headUnread(tasks, true)).toBe(true);
   });
 

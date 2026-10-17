@@ -1,21 +1,20 @@
 // The project agent's entry in the inbox (#103), as a pure model.
 //
-// One row per project, for the agent you talk to about the project: just the
-// project's name — no second line, no Done. It sits among the workspace rows,
-// ordered by the #98 rule over the project agent's own conversation (the
+// One row per project, for the agent you talk to about the project: its topic
+// or existing project label, then activity, with no Done or menu. It sits among
+// the workspace rows on both faces, ordered by its own conversation (the
 // bridge's session summary on that conversation's feed row, since wire 1.28.0),
 // and after a day without activity it moves to Recent the way a workspace row
-// does. On the projects face it is not a row at all: it is the head of its
-// project's block (core/inboxProjects.js). The inbox tally carries the project's
-// watched tasks too, the ones no workspace row wears (#104); the expanded
-// project head reads the conversation's own unread separately (#380).
+// does. The inbox tally carries the project's
+// watched tasks too, the ones no workspace row wears (#104). A folded project
+// head summarizes its hidden rows; expanded heads leave status on each row.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these, and
 // the row itself is painted by core/inbox.js with the rest.
 
 import { entityIdOf } from "./entityId.js";
-import { PROJECT_AGENT } from "./inbox.js";
-import { agentsUnreadCount, freshestRosters, watchedAgentsRunning } from "./inboxRoster.js";
+import { entryFactsText, GETTING_STARTED, PROJECT_AGENT } from "./inbox.js";
+import { agentsUnreadCount, freshestRosters, runningAgentCount, watchedAgentsRunning } from "./inboxRoster.js";
 import { agentIsRunning } from "./agentRunning.js";
 import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { projectNameOf } from "./inboxProjects.js";
@@ -66,6 +65,12 @@ function conversationOf(project, rows, rosterOf) {
 const uniqueConversations = (agents = []) => [...new Map(agents.map((agent) =>
   [agent.conversation_id || agent.id, agent])).values()];
 
+/** The conversation's own work, with the same running count as a workspace. */
+function conversationFacts(row, agents, hasRoster) {
+  const facts = entryFactsText(row) || GETTING_STARTED;
+  return hasRoster ? `${facts} · ${runningAgentCount(agents)} running` : facts;
+}
+
 function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const { entityId, row, agents, complete } = conversationOf(project, rows, rosterOf);
   const hasRoster = complete || agents.length > 0;
@@ -74,6 +79,9 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const working = hasRoster ? agents.some(agentIsRunning) : agentIsRunning(row);
   const watchedWorking = hasRoster ? watchedAgentsRunning(agents) : working;
   const name = projectNameOf(project);
+  const pin = project.projectRoster
+    ? agents.find((agent) => agent.id === project.projectRoster.pinned_agent_id)
+    : agents[0];
   return {
     key: projectAgentEntryKey(project.projectKey),
     kind: PROJECT_AGENT,
@@ -81,7 +89,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     projectId: project.id,
     projectKey: project.projectKey,
     project: name,
-    name,
+    name: pin?.topic?.trim() || name,
     title: "Project agent",
     entityId,
     state: agentState(unreadCount, working),
@@ -91,7 +99,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     watchedWorking,
     muted: false,
     dismissed: false,
-    facts: "",
+    facts: conversationFacts(row, agents, hasRoster),
     route: projectRoute(project),
     ...conversationTimes(row),
   };

@@ -4,7 +4,7 @@
 // assigned to the user, plus an unassigned watched task with unread moves
 // but no Needs-you reason. Both watched tasks appear in the inbox (#475).
 // The top badge stays 3 (Build 2 + smarter-dev 1)
-// while head dots show own news expanded and aggregate news folded (#380).
+// while project rows show news expanded and head dots aggregate it folded.
 // Run from spa/: node test/browser/captureInboxBadgeSum.mjs [output directory]
 import { mkdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -115,16 +115,17 @@ async function mountApp(page, basePath) {
   await page.evaluate(() => document.fonts.ready);
 }
 
-/** Check the numeric total independently of the two head dots. */
+/** Check the fixed total, expanded row status and folded aggregate status. */
 async function expectBadges(page, folded = false) {
   await page.waitForFunction((folded) => {
     const count = (selector) => document.querySelector(selector)?.textContent.trim();
     const statusMatches = (id) => {
       const head = document.querySelector(`[data-project="dev-1/${id}"] > .inbox-project-head`);
       const dot = head?.querySelector(".inbox-status-dot");
+      const agentDot = document.querySelector(`[data-key="project-agent:dev-1/${id}"] .inbox-status-dot`);
       const matches = folded
         ? dot?.classList.contains("inbox-status-unread") && !dot.classList.contains("inbox-status-running")
-        : !dot;
+        : !dot && agentDot?.classList.contains("inbox-status-unread") && !agentDot.classList.contains("inbox-status-running");
       return head && matches && !head.querySelector(".inbox-unread, .sdot");
     };
     return count("#inbox-open .inbox-open-count") === "3" && statusMatches("build") && statusMatches("smarter");
@@ -156,15 +157,15 @@ await withLayoutPage(async ({ page, basePath }) => {
     }
   }
   const said = await page.evaluate(() => {
-    const heads = [...document.querySelectorAll("#inbox-list .inbox-project-head")]
-      .map((head) => `${head.querySelector(".inbox-project-name").textContent} ${head.querySelector(".inbox-status-unread") ? "unread" : "read"}`);
-    return `top ${document.querySelector("#inbox-open .inbox-open-count").textContent || 0} · ${heads.join(" · ")}`;
+    const rows = [...document.querySelectorAll("#inbox-list .inbox-project-agent")]
+      .map((row) => `${row.querySelector(".stitle").textContent} row ${row.querySelector(".inbox-status-unread") ? "unread" : "read"}`);
+    return `top ${document.querySelector("#inbox-open .inbox-open-count").textContent || 0} · ${rows.join(" · ")}`;
   });
   await page.mouse.move(0, 0);
   await page.screenshot({ path: `${output}/inbox-popover.png`, animations: "disabled" });
   console.log(said);
   for (const project of ["build", "smarter"]) {
-    const fold = page.locator(`[data-project-fold="${DEVICE}/${project}"]`);
+    const fold = page.locator(`.inbox-fold[data-project-fold="${DEVICE}/${project}"]`);
     await fold.click();
     await page.waitForFunction((key) =>
       document.querySelector(`[data-project-fold="${key}"]`)?.getAttribute("aria-expanded") === "false",

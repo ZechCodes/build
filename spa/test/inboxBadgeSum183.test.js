@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // #183/#380: the top badge counts every project's unread independently of its
-// visible head dot. Expanded heads reflect their project agents; folded heads
+// visible head dot. Expanded blocks leave status on rows; folded heads
 // reflect everything watched inside. A fully read Needs-you row contributes zero.
 // A Done or closed task never counts, whatever the bridge sends.
 import { describe, expect, it } from "vitest";
@@ -148,7 +148,7 @@ describe("a project's head", () => {
     // agent 1 + #113 2 + Recent workspace (agent 2 + #60 3).
     expect(build.unreadCount).toBe(1 + 2 + 2 + 3);
     expect(build.agentEntry.ownUnreadCount).toBe(1);
-    expect(headUnread(build, false)).toBe(true);
+    expect(headUnread(build, false)).toBe(false);
     expect(headUnread(build, true)).toBe(true);
   });
 

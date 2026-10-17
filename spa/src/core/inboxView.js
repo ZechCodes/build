@@ -117,8 +117,8 @@ const foldAddress = uiAddress({ view: "inbox", kind: "fold", sub: "projects" });
 const recentAddress = uiAddress({ view: "inbox", kind: "fold", sub: "recent" });
 const menuAddress = uiAddress({ view: "inbox", kind: "menu", sub: "entry" });
 const writeFolds = () => foldRecord?.write({ entries: [...folds] });
-// Each block as last painted, by project key: where its head opens, what it is
-// called — which is what the create it offers is titled with — and the bare
+// Each block as last painted, by project key: what it is called, which is
+// what the create it offers is titled with, and the bare
 // project id every RPC still wants.
 let blocksPainted = new Map();
 const errors = new Map(); // row key → the message its row is showing
@@ -144,17 +144,17 @@ function heldAway(entry) {
 }
 
 
-/** Browsers without moveBefore blur a focused field when its keyed row moves.
- * Keep that field's focus and selection while every activity update paints. */
-function preserveInputFocus(list) {
-  const field = document.activeElement;
-  const editorButton = field?.matches(".reroute-branch [data-reroute-kind='branch']");
-  if (!list.contains(field) || (field?.tagName !== "INPUT" && !editorButton)) return () => {};
-  const { selectionStart, selectionEnd, selectionDirection } = field;
+/** DOM moves can blur an editor or project link. Keep keyboard focus and
+ * input selection while cached activity reorders rows and whole blocks. */
+function preserveRowFocus(list) {
+  const focused = document.activeElement;
+  const retained = focused?.matches("input, .reroute-branch [data-reroute-kind='branch'], .inbox-project-agent[role='link']");
+  if (!list.contains(focused) || !retained) return () => {};
+  const { selectionStart, selectionEnd, selectionDirection } = focused;
   return () => {
-    if (!field.isConnected) return;
-    if (document.activeElement !== field) field.focus({ preventScroll: true });
-    if (typeof selectionStart === "number") field.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+    if (!focused.isConnected) return;
+    if (document.activeElement !== focused) focused.focus({ preventScroll: true });
+    if (typeof selectionStart === "number") focused.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
   };
 }
 
@@ -171,7 +171,7 @@ function onCaptureBlur(event) {
   // Native focusout checkpoints can run before the receiving button becomes
   // active. Keep an input-to-Dispatch transfer inside this editor intact.
   if (!editor || editor.contains(event.relatedTarget)) return;
-  // Keyed moves may briefly blur before preserveInputFocus restores the field.
+  // Keyed moves may briefly blur before preserveRowFocus restores the field.
   queueMicrotask(() => {
     if (mounted && !editor.contains(document.activeElement)) draw();
   });
@@ -184,8 +184,7 @@ function publishAttentionCount(rows = railRows()) {
 }
 
 /** The workspace rows and each project's own agent row (#103), together in
- *  the inbox's anchor order. On the projects face the project agent's row is
- *  its block's head rather than a row (core/inboxProjects.js). */
+ * the inbox's anchor order on both faces. */
 function workRows(rows) {
   const taskUnread = watchedTasks?.taskUnread() || NO_TASK_UNREAD;
   return navigationUnreadEntries({ projects, workspaces, items: rows, runs, taskUnread }).sort(byAnchor);
@@ -232,7 +231,7 @@ function draw() {
   const list = $("#inbox-list");
   if (!list) return;
   rememberCaptureDrafts(list);
-  const restoreFocus = preserveInputFocus(list);
+  const restoreFocus = preserveRowFocus(list);
   const shown = withDeviceNames(painted);
   list.onclick = onListClick;
   list.oninput = onCaptureInput;
@@ -412,7 +411,8 @@ function paintRecent(host, recent, ui, scope) {
   if (host.lastElementChild !== section) host.appendChild(section);
   const open = recentIsOpen(recentOpen.get(scope));
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(recent, open, scope)));
-  // Quiet workspaces use one line; watched tasks keep title and reason lines.
+  // Inbox Recent keeps the project/name/activity shape. Grouped Recent keeps
+  // compact workspaces and separate title/reason lines for watched tasks.
   patchList(section, open ? recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
 }
 
@@ -488,7 +488,6 @@ function pressed(controls, target) {
  *  name they sit beside. Each is handed the element that was pressed. */
 const BLOCK_CONTROLS = [
   ["data-project-fold", (control) => toggleFold(control.dataset.projectFold)],
-  ["data-project-open", (control) => openBlockHead(control.dataset.projectOpen)],
   ["data-project-create", (control) => createInBlock(control.dataset.projectCreate)],
   ["data-project-hide", (control) => hideBlock(control.dataset.projectHide)],
   ["data-new-project", () => openNewProject()],
@@ -585,26 +584,26 @@ function menuKey(event) {
   return Boolean(act);
 }
 
+/** Project navigation remains reachable after the heading became a disclosure.
+ * Only the focused row answers Enter; keys on nested controls stay their own. */
+function projectRowKey(event) {
+  if (event.key !== "Enter" || !event.target.matches('.inbox-project-agent[role="link"]')) return false;
+  openEntry(entryOf(event.target.dataset.key));
+  return true;
+}
+
 function onListKeydown(event) {
-  if (!menuKey(event)) return onCaptureKeydown(event);
+  if (!menuKey(event) && !projectRowKey(event)) return onCaptureKeydown(event);
   event.preventDefault();
   event.stopPropagation();
 }
 
 // ---- project blocks -----------------------------------------------------------
 //
-// What a block's head can do: fold, open the project's own page, create a
+// What a block's head can do: fold, create a
 // workspace on the create surface scoped to its project, and hide it directly.
 // The control above every block creates a new project. Which press is which
 // is the table BLOCK_CONTROLS, up with the other control tables.
-
-/** The block's name opens the project's own page — its workspaces, and the
- *  agent you talk to about the project. Every project has one, so every head
- *  opens. */
-function openBlockHead(projectKey) {
-  const block = blockOf(projectKey);
-  if (block) goFromInbox(block.route);
-}
 
 /** The + opens the create surface on this block's project, with the block
  *  unfolded so the new row has somewhere visible to land. The create surface

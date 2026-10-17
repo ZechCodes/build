@@ -1,5 +1,5 @@
 // The inbox's pure model: one list across every project, in the anchor's order,
-// two lines per row, the Recent partition at the end, and what Done promises
+// a project line above name and activity, the Recent partition, and what Done promises
 // before it destroys anything.
 
 import { describe, it, expect } from "vitest";
@@ -639,10 +639,10 @@ describe("the active entry", () => {
   });
 });
 
-// ---- the two lines --------------------------------------------------------------
+// ---- the project, name and activity lines ---------------------------------------
 
 describe("what a row says", () => {
-  it("names the branch on line one, with the unread dot in the actions", () => {
+  it("names the branch below the project, with the unread dot in the actions", () => {
     const [entry] = listed([branch({ unread: true, unread_count: 3, unread_reason: "done" })]);
     expect(entry.name).toBe("build/login");
     const html = inboxRowHtml(entry, {});
@@ -655,13 +655,13 @@ describe("what a row says", () => {
     expect(html).toContain('data-entity="run-1"');
   });
 
-  it("names the task on line one, and says nothing about an unread count it has none of", () => {
+  it("names the task below the project, and says nothing about an unread count it has none of", () => {
     const [entry] = listed([task()]);
     expect(entry.name).toBe("Rework the prompt cache");
     expect(inboxRowHtml(entry, {})).not.toContain("inbox-unread");
   });
 
-  it("weighs the uncommitted tree on line two, not the branch's whole history", () => {
+  it("weighs the uncommitted tree on the activity line, not the branch's whole history", () => {
     const [entry] = listed([
       branch({
         stat: { ...branch().stat, ahead: 2, behind: 1, uncommitted: { files_changed: 3, insertions: 42, deletions: 7 } },
@@ -687,7 +687,7 @@ describe("what a row says", () => {
   });
 
   // A task has no checkout and no commits: there is nothing to weigh yet.
-  it("says Getting started when there is nothing for line two", () => {
+  it("says Getting started when there is no activity", () => {
     const [entry] = listed([task()]);
     expect(entry.facts).toBe("");
     expect(inboxRowHtml(entry, {})).toContain("Getting started");
@@ -695,13 +695,14 @@ describe("what a row says", () => {
     expect(inboxRowHtml(fresh, {})).toContain("Getting started");
   });
 
-  it("keeps the row to two lines — what it is, and what it weighs", () => {
+  it("puts the project above the existing name and activity lines", () => {
     const [entry] = listed([branch({ unread: true, unread_count: 1, unread_reason: "blocked" })]);
     const html = inboxRowHtml(entry, {});
-    expect(html.match(/class="inbox-line/g).length).toBe(1);
+    expect(html.match(/class="inbox-line/g).length).toBe(2);
     expect(html).toContain("inbox-facts");
-    // The project and why it needs you are still said — on the row's own title,
-    // where a second look finds them and a first glance is not spent on them.
+    const projectLine = html.indexOf('inbox-project-line');
+    expect(projectLine).toBeGreaterThan(-1);
+    expect(projectLine).toBeLessThan(html.indexOf('inbox-name'));
     expect(html).toContain("relaydb");
     expect(html).toContain("Blocked — the agent needs you");
   });
@@ -752,22 +753,32 @@ describe("what a row says", () => {
     expect(html).toContain('data-dismiss="run-1"');
   });
 
-  // Recent's rows are quiet: nothing about them needs a glance, so the state
-  // dot goes and the row is one line, with what it weighs at the right edge.
-  it("paints a quiet row as one line with no state dot and its weight floating at the right", () => {
+  it("puts a quiet Inbox row's project above its compact name and floating activity", () => {
     const [entry] = listed([branch({ stat: { uncommitted: { files_changed: 3, insertions: 4, deletions: 1 }, ahead: 2 } })]);
     const html = inboxRowHtml(entry, { quiet: true });
-    expect(html).toContain("inbox-quiet");
+    expect(html).not.toContain("inbox-quiet-full");
+    expect(html.match(/class="inbox-line/g)).toHaveLength(2);
+    expect(html).toContain('class="inbox-facts inbox-facts-float">3 files · ↑2 · +4 −1<');
     expect(html).not.toContain("sdot");
-    expect(html).not.toContain('class="inbox-facts"');
-    expect(html).toMatch(/inbox-facts-float">3 files · ↑2 · \+4 −1</);
     expect(html).toContain('data-key="run-1"');
     expect(html).toContain('data-menu="run-1"');
+    expect(html).toContain('inbox-project-line');
     expect(html).toContain('class="inbox-tag">relaydb');
-    expect(inboxRowHtml(entry, { quiet: true, showProject: false })).not.toContain("inbox-tag");
-    // A quiet row with nothing to weigh floats nothing.
     const [bare] = listed([branch({ stat: null })]);
-    expect(inboxRowHtml(bare, { quiet: true })).not.toContain("inbox-facts-float");
+    expect(inboxRowHtml(bare, { quiet: true })).not.toContain("Getting started");
+  });
+
+  it("keeps grouped quiet workspace rows compact without repeating their project", () => {
+    const [entry] = listed([branch({ stat: { uncommitted: { files_changed: 3, insertions: 4, deletions: 1 }, ahead: 2 } })]);
+    const html = inboxRowHtml(entry, { quiet: true, showProject: false });
+    expect(html).toContain("inbox-quiet");
+    expect(html).not.toContain("inbox-quiet-full");
+    expect(html).not.toContain("inbox-project-line");
+    expect(html).not.toContain("inbox-tag");
+    expect(html).not.toContain('class="inbox-facts"');
+    expect(html).toContain('inbox-facts-float">3 files · ↑2 · +4 −1<');
+    const [bare] = listed([branch({ stat: null })]);
+    expect(inboxRowHtml(bare, { quiet: true, showProject: false })).not.toContain("inbox-facts-float");
   });
 
   it("escapes everything the repo named", () => {
@@ -1098,7 +1109,7 @@ describe("what names a row", () => {
 
 describe("the project on every row", () => {
   // Two rows both named "main" from different projects must never read as the
-  // same thing: the project leads line one, whatever else the row carries.
+  // same thing: each row names its project on a line above the entry name.
   it("falls back to the project id when the bridge sends no name", () => {
     const { entries: [entry] } = inboxEntries({ items: [branch({ project: "" })], nowMs: NOW });
     expect(entry.project).toBe("p1");
@@ -1109,13 +1120,14 @@ describe("the project on every row", () => {
     expect(inboxRowHtml(entry, {})).toContain("unknown project");
   });
 
-  it("leads line one with the project, before the name", () => {
+  it("names the project on its own line and leaves only the entry name below", () => {
     const { entries: [entry] } = inboxEntries({ items: [branch()], nowMs: NOW });
     const html = inboxRowHtml(entry, {});
-    const line = html.slice(html.indexOf('class="inbox-line inbox-name"'));
-    expect(line.indexOf('inbox-tag')).toBeGreaterThan(-1);
-    expect(line.indexOf('inbox-tag')).toBeLessThan(line.indexOf('stitle'));
-    expect(html).toContain("relaydb");
+    const nameLine = html.match(/<div class="inbox-line inbox-name">.*?<\/div>/s)[0];
+    expect(html.indexOf('inbox-project-line')).toBeLessThan(html.indexOf('inbox-name'));
+    expect(nameLine).not.toContain('inbox-tag');
+    expect(nameLine).not.toContain('relaydb');
+    expect(nameLine).toContain('build/login');
   });
 });
 

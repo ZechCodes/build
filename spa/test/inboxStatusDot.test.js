@@ -28,12 +28,13 @@ describe("inbox running activity while an agent waits on another agent (#386)", 
     return new DOMParser().parseFromString(html, "text/html").querySelector(".inbox-status-dot");
   };
 
-  it.each([0, 2])("pulses the project conversation and expanded/folded heads with %i unread", (unread_count) => {
+  it.each([0, 2])("pulses the project row and folded head with %i unread, leaving the open head clear", (unread_count) => {
     const [entry] = projectAgentEntries([project], [conversation(project.entity_id, {
       agents: [waiting("project-agent", { unread_count })],
     })]);
     expect(entry).toMatchObject({ working: true, watchedWorking: true, ownUnreadCount: unread_count });
-    for (const dot of [statusOf(rowOf(entry)), headDot(entry, false), headDot(entry, true)]) {
+    expect(headDot(entry, false)).toBeNull();
+    for (const dot of [statusOf(rowOf(entry)), headDot(entry, true)]) {
       expect(dot?.classList.contains("inbox-status-running")).toBe(true);
       expect(dot?.classList.contains("inbox-status-unread")).toBe(unread_count > 0);
     }
@@ -44,7 +45,8 @@ describe("inbox running activity while an agent waits on another agent (#386)", 
       agents: [waiting("watched", { agents_running: 0 }), waiting("unwatched", { watched: false })],
     })]);
     expect(entry).toMatchObject({ working: true, watchedWorking: false });
-    expect(headDot(entry, false)?.classList.contains("inbox-status-running")).toBe(true);
+    expect(headDot(entry, false)).toBeNull();
+    expect(statusOf(rowOf(entry))?.classList.contains("inbox-status-running")).toBe(true);
     expect(headDot(entry, true)).toBeNull();
   });
 
@@ -74,7 +76,8 @@ describe("inbox running activity while an agent waits on another agent (#386)", 
   it("uses the feed summary while the project roster has not landed", () => {
     const [entry] = projectAgentEntries([project], [conversation(project.entity_id, { agents_running: 1 })]);
     expect(entry).toMatchObject({ working: true, watchedWorking: true, state: "working" });
-    expect(headDot(entry, false)?.classList.contains("inbox-status-running")).toBe(true);
+    expect(headDot(entry, false)).toBeNull();
+    expect(statusOf(rowOf(entry))?.classList.contains("inbox-status-running")).toBe(true);
   });
 });
 

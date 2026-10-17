@@ -121,13 +121,16 @@ const expectHeadStatus = (projectId, { unread, running = false }) => {
 };
 
 describe("the inbox's top badge", () => {
-  it("counts all watched news while open heads show their own agent's dot", async () => {
+  it("counts all watched news while open heads leave status on the agent rows", async () => {
     await vi.waitFor(() => expect(row("tracker_task:i-159")).not.toBe(null), WAIT);
     await fold("build", false);
     await fold("smarter", false);
     await vi.waitFor(() => expect(published).toBe(BUILD + SMARTER), WAIT);
-    expectHeadStatus("build", { unread: true });
-    expectHeadStatus("smarter", { unread: true });
+    expectHeadStatus("build", { unread: false });
+    expectHeadStatus("smarter", { unread: false });
+    for (const id of ["build", "smarter"]) {
+      expect(row(`project-agent:${keyOf(id)}`).querySelector(".inbox-status-unread")).not.toBeNull();
+    }
     // An old watched task counts even while its row is behind Recent (#481).
     expect(row("tracker_task:i-113")).toBe(null);
     block("build").querySelector("[data-recent-toggle]").click();
@@ -147,7 +150,7 @@ describe("the inbox's top badge", () => {
     expect(published).toBe(BUILD + SMARTER);
   });
 
-  it("separates an expanded head's own unread from watched news and Recent activity", async () => {
+  it("keeps open heads clear while folded heads aggregate watched news and Recent activity", async () => {
     await vi.waitFor(() => expect(published).toBe(BUILD + SMARTER), WAIT);
     await seed({ buildUnread: 0, oldWorking: true });
     await fold("build", false);

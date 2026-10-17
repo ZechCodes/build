@@ -21,17 +21,17 @@ for (const { label, width, height, hasTouch } of [
       const blocks = await inspectProjectsFace(page);
       evidence[`${label}-${theme}`] = blocks;
       if (phase === "after") {
-        assert.deepEqual(blocks.map((block) => block.name), ["Alpha", "Bravo", "Build", "Zulu"]);
+        assert.deepEqual(blocks.map((block) => block.name), ["Zulu", "Build", "Alpha", "Bravo"]);
         for (const block of blocks) {
           assert.equal(block.background, block.active ? block.accentSoft : "rgba(0, 0, 0, 0)");
           assert.equal(block.border, "0px");
           assert.equal(block.shadow, "none");
         }
         assert.equal(await page.locator("#inbox-list > .inbox-recent").count(), 0);
-        assert.equal(await page.locator('[data-project-fold][aria-expanded="true"]').count(), 4);
+        assert.equal(await page.locator('.inbox-fold[aria-expanded="true"]').count(), 4);
         assert.equal(await page.locator('.inbox-project .inbox-recent-toggle[aria-expanded="false"]').count(), 2);
         assert.equal(await page.locator('[data-recent-toggle="projects-review/alpha"] .inbox-recent-count').textContent(), "1");
-        assert.equal(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count(), 0);
+        assert.equal(await page.locator('.inbox-project[data-project="projects-review/alpha"] .inbox-entry').count(), 1);
       }
       await page.locator("#inbox-rail").screenshot({ path: join(directory, `${phase}-${label}-${theme}.png`) });
     }

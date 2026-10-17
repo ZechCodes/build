@@ -182,12 +182,17 @@ await withLayoutPage(async ({ page, basePath }) => {
 
   await page.evaluate(() => window.__layoutModules.inboxView.setInboxView("projects"));
   const head = page.locator(`#inbox-list .inbox-project[data-project="${PROJECT_KEY}"] > .inbox-project-head`);
-  // An expanded head shows its project agent; the folded head also carries
-  // the workspace's running state. Neither fold changes the numeric total.
-  await expectStatus(head, { unread: true });
+  // Expanded blocks keep status on their rows; the folded head carries the
+  // aggregate, including the workspace's running state. The total stays fixed.
+  await head.waitFor();
+  if (await head.locator(".inbox-status-dot, .inbox-unread, .sdot").count()) {
+    throw new Error("An expanded project head must leave status on its rows");
+  }
+  await expectStatus(agentRow, { unread: true });
+  await expectStatus(workspaceRow, { unread: true, running: true });
   await expectText(page.locator("#inbox-open .inbox-open-count"), "10", "expanded inbox count");
   await page.locator("#inbox-rail").screenshot({ path: `${output}/projects-face-expanded.png` });
-  await head.locator("[data-project-fold]").click();
+  await head.locator(".inbox-fold").click();
   await page.waitForFunction(() =>
     document.querySelector("[data-project-fold]")?.getAttribute("aria-expanded") === "false");
   await expectStatus(head, { unread: true, running: true });

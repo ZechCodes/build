@@ -59,7 +59,7 @@ for (const width of [1280, 901, 900, 761, 760, 390]) {
       await mountCollapsedShell(page, basePath);
       const beforeBadge = await geometry(page);
       await captureLayout(page, `inbox-toggle-collapsed-${width}.png`);
-      expectAligned(beforeBadge);
+      expectAligned(beforeBadge, width > 900 ? 34 : 48);
 
       await page.evaluate(() => {
         document.querySelector("#inbox-open").classList.add("has-attention");
@@ -67,7 +67,7 @@ for (const width of [1280, 901, 900, 761, 760, 390]) {
       });
       await settleLayout(page);
       const afterBadge = await geometry(page);
-      expectAligned(afterBadge);
+      expectAligned(afterBadge, width > 900 ? 34 : 48);
       expect(afterBadge.project).toEqual(beforeBadge.project);
       expect(afterBadge.badge.right).toBeLessThanOrEqual(afterBadge.project.x);
       expect(await page.locator(".inbox-open-count").isVisible()).toBe(true);
@@ -83,7 +83,7 @@ it("keeps the toggle centered when the shared rail and toggle sizes change", asy
       document.documentElement.style.setProperty("--inbox-toggle", "32px");
     });
     await settleLayout(page);
-    expectAligned(await geometry(page));
+    expectAligned(await geometry(page), 40);
   });
 });
 

@@ -132,6 +132,22 @@ for (const width of [901, 1280]) for (const theme of ["light", "dark"]) {
       await settle(page);
       const unpinned = await toolbarGeometry(page);
       await captureLayout(page, `pinned-inbox-${width}-${theme}-unpinned.png`);
+      const floating = await page.evaluate(() => {
+        const view = document.querySelector("#view").getBoundingClientRect();
+        const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const target = box(".tb-switch");
+        const glyph = box(".tb-switch svg");
+        return { glyphX: glyph.left - view.left, directoryGap: glyph.left - box("#dir-rail").right,
+          targetWidth: target.width, targetHeight: target.height, toggleGap: target.left - box("#inbox-open").right,
+          crumbGap: box(".tb-project").left - glyph.right };
+      });
+      console.log(`Floating inbox chevron ${width}px ${theme}: ${JSON.stringify(floating)}`);
+      expect(floating.glyphX).toBe(60);
+      expect(floating.directoryGap).toBe(20);
+      expect(floating.targetWidth).toBe(44);
+      expect(floating.targetHeight).toBe(44);
+      expect(floating.toggleGap).toBeGreaterThanOrEqual(0);
+      expect(floating.crumbGap).toBe(4);
       await page.locator(".tb-switch").focus();
       const pin = await samplePinTransition(page, false);
       const pinned = await toolbarGeometry(page);

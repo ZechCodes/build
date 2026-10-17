@@ -221,7 +221,9 @@ test("first sign-in persists credentials and follows the existing PKCE callback 
 
 for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
   test(`${eventName} from the 401 CTA starts PKCE and returns to the desktop window`, async (t) => {
-    const { calls, callback, header, path } = await launch(t);
+    const { calls, callback, header, path } = await launch(t, {
+      fetch: (count) => response(tokens(count === 1 ? "initial" : "signed-in")),
+    });
     const window = calls.windows[0];
     requestSignIn(window, eventName);
     requestSignIn(window, eventName);
@@ -243,8 +245,8 @@ for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
     assert.equal(calls.windows.length, 1);
     assert.equal(window.url, "https://getbuild.ing/app/desktop");
     assert.equal(window.actions.filter((action) => action === "load").length, 2);
-    assert.equal(header(), "Bearer fixture-access-rotated");
-    assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-rotated");
+    assert.equal(header(), "Bearer fixture-access-signed-in");
+    assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-signed-in");
   });
 }
 
@@ -287,6 +289,37 @@ for (const lateResponse of [response(tokens("late")), response({ error: "invalid
     assert.deepEqual(calls.dialogs, []);
   });
 }
+
+test("401 recovery refreshes new credentials while a retired refresh is still pending", async (t) => {
+  const oldRefresh = deferred();
+  const newRefresh = deferred();
+  const { calls, callback, header, path, refreshTokens } = await launch(t, {
+    fetch: (count) => {
+      if (count === 2) return oldRefresh.promise;
+      if (count === 4) return newRefresh.promise;
+      return response(tokens(count === 1 ? "initial" : "signed-in"));
+    },
+  });
+  t.mock.timers.tick(840_000);
+  await flush();
+  requestSignIn(calls.windows[0]);
+  callback();
+  await flush();
+  t.mock.timers.tick(840_000);
+  await flush();
+  assert.equal(calls.fetch.length, 4, "the new account must not wait for the old refresh");
+  assert.equal(calls.fetch[3].body.get("refresh_token"), "fixture-refresh-signed-in");
+  oldRefresh.resolve(response(tokens("retired")));
+  await flush();
+  const concurrent = refreshTokens();
+  await flush();
+  assert.equal(calls.fetch.length, 4, "retired completion must not clear the current refresh");
+  newRefresh.resolve(response(tokens("refreshed")));
+  await concurrent;
+  await flush();
+  assert.equal(header(), "Bearer fixture-access-refreshed");
+  assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-refreshed");
+});
 
 test("without encryption sign-in stays in memory and never writes plaintext", async (t) => {
   const { calls, path, callback, header } = await launch(t, { stored: null, available: false });

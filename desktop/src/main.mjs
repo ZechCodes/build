@@ -131,6 +131,7 @@ function clearCredentials() {
   accessToken = null;
   refreshToken = null;
   pendingAuthorization = null;
+  refreshInFlight = null;
   if (refreshTimer) clearTimeout(refreshTimer);
   refreshTimer = null;
 }
@@ -156,14 +157,15 @@ async function refreshTokens() {
   if (!refreshToken) return false;
   if (refreshInFlight) return refreshInFlight;
   const generation = credentialGeneration;
-  refreshInFlight = performRefresh(generation);
+  const request = performRefresh(generation);
+  refreshInFlight = request;
   let error;
   try {
-    return await refreshInFlight;
+    return await request;
   } catch (failure) {
     error = failure;
   } finally {
-    refreshInFlight = null;
+    if (refreshInFlight === request) refreshInFlight = null;
   }
   if (generation !== credentialGeneration) return false;
   if (error.code === "invalid_grant") {

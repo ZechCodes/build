@@ -6,6 +6,10 @@ let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [navigationAppShim] }); }, 30_000);
 afterAll(async () => { await session?.close(); });
 
+const settle = (page) => page.evaluate(() => new Promise((resolve) => {
+  requestAnimationFrame(() => requestAnimationFrame(resolve));
+}));
+
 const switcherHits = (page) => page.evaluate(() => {
   const switcher = document.querySelector(".tb-switch");
   const target = switcher.getBoundingClientRect();
@@ -31,6 +35,7 @@ for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directo
         await window.__layoutModules.inbox.setInboxCollapsed(true, { animate: false, persist: false, reveal: false });
         document.querySelector("#inbox-open").classList.remove("has-attention");
       }, directory);
+      await settle(page);
       const before = await switcherHits(page);
       expect(before.width).toBe(44);
       expect(before.height).toBe(44);
@@ -42,6 +47,7 @@ for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directo
         document.querySelector("#inbox-open").classList.add("has-attention");
         document.querySelector(".inbox-open-count").textContent = "99+";
       });
+      await settle(page);
       const after = await switcherHits(page);
       expect(after.width).toBe(44);
       expect(after.height).toBe(44);

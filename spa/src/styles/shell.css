@@ -24,8 +24,9 @@
      styles.css and styles/surfaces.css both read it. */
   --surface-head:46px;
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
-  /* Keep the collapsed toolbar's content at its existing inset, clear of the
-     floating toggle and its badge. The toggle aligns to --dir-rail below. */
+  /* Default collapsed toolbar inset, including the safe area. Desktop chevrons
+     use the rail-aligned toggle's edge instead; its badge may cover empty
+     target padding visually, while pointer events pass through. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
   --inbox-rest-fill:var(--panel); --inbox-row-fill:var(--panel);
   --inbox-row-inset-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-inset-right:10px;
@@ -203,7 +204,7 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   transition:color 180ms ease; }
 .inbox-open-icon, .inbox-open-count { grid-area:1 / 1; transition:opacity 180ms ease, transform 220ms ease; }
 .inbox-open-icon { display:grid; place-items:center; }
-.inbox-open-count { display:flex; align-items:center; justify-content:center;
+.inbox-open-count { display:flex; align-items:center; justify-content:center; pointer-events:none;
   align-self:stretch; justify-self:stretch; border-radius:50%; opacity:0; transform:scale(.55);
   color:var(--accent-ink); font-size:10px; font-weight:750; letter-spacing:-.03em; }
 #inbox-open.has-attention .inbox-open-count { position:absolute; top:-6px; right:-7px;

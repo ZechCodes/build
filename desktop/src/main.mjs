@@ -276,7 +276,9 @@ async function showAuthenticationError(error, retry = beginAuthentication) {
 }
 
 async function beginAuthentication() {
-  if (signingOut || pendingAuthorization) return;
+  if (signingOut || pendingAuthorization || exchangingCode) return;
+  // A 401 recovery retires the rejected credentials and any late refresh result.
+  clearCredentials();
   pendingAuthorization = createAuthorizationRequest();
   try {
     await shell.openExternal(pendingAuthorization.url);
@@ -347,6 +349,7 @@ function createWindow() {
     openExternal: openOutsideElectron,
     loadInternal: (url) => loadInsideElectron(window, url),
     signOut,
+    signIn: beginAuthentication,
   });
   window.once("ready-to-show", () => window.show());
   window.on("closed", () => {

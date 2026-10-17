@@ -491,6 +491,145 @@ fn a_notice_opens_repeats_after_a_quiet_period_and_starts_over_on_activity() {
     assert_eq!(record.notice_due(90 * HOUR_MS, &policy), NoticeDue::No);
 }
 
+#[test]
+fn locked_notices_repeat_weekly_whatever_the_idle_threshold() {
+    let noticed = 30 * HOUR_MS;
+    let week = 7 * 24 * HOUR_MS;
+    let mut record = LifecycleRecord {
+        idle: true,
+        last_activity_ms: Some(0),
+        holds: vec![HOLD_LOCKED.into()],
+        ..LifecycleRecord::default()
+    };
+    assert_eq!(
+        record.notice_due(noticed, &ReclaimPolicy::default()),
+        NoticeDue::First
+    );
+    record.noticed_at_ms = Some(noticed);
+    for idle_after in [
+        Duration::ZERO,
+        DEFAULT_IDLE_AFTER,
+        Duration::from_secs(30 * 24 * 3600),
+    ] {
+        let policy = ReclaimPolicy {
+            idle_after,
+            ..ReclaimPolicy::default()
+        };
+        for at in [
+            noticed - 1,
+            noticed,
+            noticed + 24 * HOUR_MS,
+            noticed + week - 1,
+        ] {
+            assert_eq!(
+                record.notice_due(at, &policy),
+                NoticeDue::No,
+                "{at}, {idle_after:?}"
+            );
+        }
+        assert_eq!(record.notice_due(noticed + week, &policy), NoticeDue::Again);
+    }
+}
+
+#[test]
+fn activity_cannot_bypass_the_locked_weekly_minimum_but_unlocking_restores_reset() {
+    let policy = ReclaimPolicy::default();
+    let noticed = 30 * HOUR_MS;
+    let mut record = LifecycleRecord {
+        idle: true,
+        noticed_at_ms: Some(noticed),
+        last_activity_ms: Some(noticed + HOUR_MS),
+        holds: vec![HOLD_LOCKED.into()],
+        ..LifecycleRecord::default()
+    };
+    assert_eq!(
+        record.notice_due(noticed + 25 * HOUR_MS, &policy),
+        NoticeDue::No
+    );
+    assert_eq!(
+        record.notice_due(noticed + 7 * 24 * HOUR_MS, &policy),
+        NoticeDue::Again
+    );
+    record.last_activity_ms = None;
+    assert_eq!(
+        record.notice_due(noticed + 25 * HOUR_MS, &policy),
+        NoticeDue::No
+    );
+    record.idle = false;
+    assert_eq!(
+        record.notice_due(noticed + 7 * 24 * HOUR_MS, &policy),
+        NoticeDue::No
+    );
+    record.idle = true;
+    record.last_activity_ms = Some(noticed + HOUR_MS);
+    record.holds.clear();
+    assert_eq!(
+        record.notice_due(noticed + 25 * HOUR_MS, &policy),
+        NoticeDue::First
+    );
+}
+
+#[test]
+fn an_existing_lifecycle_record_keeps_its_locked_notice_clock() {
+    let record: LifecycleRecord = serde_json::from_value(serde_json::json!({
+        "measured_at_ms": 1, "last_activity_ms": 0, "idle": true, "reclaimable": false,
+        "holds": ["locked"], "tasks": [], "dirty_files": 0, "unpushed_commits": 0,
+        "behind_commits": 0, "size_bytes": null, "pruned_bytes": 0,
+        "pruned_at_ms": null, "noticed_at_ms": 1
+    }))
+    .unwrap();
+    assert_eq!(
+        record.notice_due(24 * HOUR_MS + 1, &ReclaimPolicy::default()),
+        NoticeDue::No
+    );
+    assert_eq!(
+        record.notice_due(7 * 24 * HOUR_MS + 1, &ReclaimPolicy::default()),
+        NoticeDue::Again
+    );
+}
+
+#[test]
+fn failed_measurements_preserve_the_locked_notice_clock_through_recovery() {
+    for invalid_boundary in [true, false] {
+        let (tmp, root, checkout) = pushed_workspace();
+        let mut held = subject(&root, &checkout);
+        held.holds = vec![HOLD_LOCKED];
+        let noticed = tomorrow();
+        held.previous = Some(LifecycleRecord {
+            noticed_at_ms: Some(noticed),
+            ..LifecycleRecord::default()
+        });
+        let repositories = held.repositories.clone();
+        let moved = tmp.path().join("temporarily-moved");
+        if invalid_boundary {
+            std::fs::rename(&root, &moved).unwrap();
+        } else {
+            held.repositories = vec![(tmp.path().join("outside"), None)];
+        }
+        let policy = ReclaimPolicy::default();
+        let failed = held.measure(noticed + HOUR_MS, &policy, &budget());
+        assert!(!failed.idle && !failed.reclaimable, "{failed:?}");
+        assert!(failed.holds.contains(&HOLD_UNMEASURED.to_string()));
+        held.previous = Some(failed);
+        if invalid_boundary {
+            std::fs::rename(&moved, &root).unwrap();
+        }
+        held.repositories = repositories;
+        let recovered = held.measure(noticed + 24 * HOUR_MS, &policy, &budget());
+        assert!(recovered.idle, "{recovered:?}");
+        assert_eq!(
+            recovered.notice_due(noticed + 24 * HOUR_MS, &policy),
+            NoticeDue::No,
+            "invalid boundary: {invalid_boundary}, {recovered:?}"
+        );
+        assert_eq!(recovered.noticed_at_ms, Some(noticed));
+        assert_eq!(
+            recovered.notice_due(noticed + 7 * 24 * HOUR_MS, &policy),
+            NoticeDue::Again
+        );
+    }
+}
+
 /// A quiet workspace nothing holds is reclaimable, and sized.
 #[test]
 fn a_quiet_workspace_nothing_holds_is_reclaimable() {

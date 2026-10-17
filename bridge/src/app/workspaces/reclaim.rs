@@ -36,6 +36,7 @@ use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{
     Budget, IndexSnapshot, LifecycleRecord, LinkedTask, NoticeDue, ReclaimPolicy, Subject,
+    HOLD_LOCKED,
 };
 use crate::tracker::{Actor, Task, TaskEventKind, TaskState};
 use crate::workspace::{Workspace, WorkspaceStatus};
@@ -562,7 +563,7 @@ impl AppState {
 
     /// Every workspace Build made, with what can only be read under the mutex.
     /// Adopted checkouts are somebody else's and are not measured.
-    fn reclaim_subjects(&self) -> Vec<Subject> {
+    pub(in crate::app) fn reclaim_subjects(&self) -> Vec<Subject> {
         let linked = self.tasks_linking_workspaces();
         self.measured_workspaces(None)
             .map(|workspace| {
@@ -746,7 +747,7 @@ impl AppState {
     /// Keep what was measured, record on the linked tasks what they should
     /// hear, and tell each project agent about its quiet workspaces. A
     /// workspace a stopped sweep never reached keeps its last verdict.
-    fn settle_workspace_sweep(
+    pub(in crate::app) fn settle_workspace_sweep(
         &mut self,
         measured: Vec<(Subject, LifecycleRecord)>,
         now_ms: i64,
@@ -758,9 +759,16 @@ impl AppState {
         let mut quiet: BTreeMap<String, Vec<Quiet>> = BTreeMap::new();
         for (subject, mut record) in measured {
             // Removed while it was being measured: nothing left to say.
-            if self.workspaces.get(&subject.workspace_id).is_none() {
+            let Some(workspace) = self.workspaces.get(&subject.workspace_id) else {
                 continue;
-            }
+            };
+            // The user can change the lock while measurement runs off the mutex.
+            record.holds.retain(|hold| hold != HOLD_LOCKED);
+            record.hold(if workspace.locked {
+                &[HOLD_LOCKED]
+            } else {
+                &[]
+            });
             record.keep_newer_size(self.workspace_lifecycle.get(&subject.workspace_id));
             if record.pruned_at_ms == Some(now_ms) {
                 self.note_on_linked_tasks(

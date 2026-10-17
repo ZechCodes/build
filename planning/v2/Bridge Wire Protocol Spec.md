@@ -847,6 +847,17 @@ answered as usual. Task timelines gain three event kinds:
 the workspace. Their payloads name the workspace (`workspace_id`,
 `workspace_name`) and its size. None of the three wakes the task's trackers.
 
+Quiet-workspace notices to the project agent include only workspaces whose
+notices are due. Unlocked workspaces repeat once per idle period (24 h by
+default), with activity after a notice resetting the cadence. A `locked` hold
+keeps a workspace out of notices until seven days after its `noticed_at_ms`,
+even if activity happened in between or unlocked siblings are announced.
+No additional lifecycle field is required. The notice tells the agent to
+message the user only if necessary and otherwise handle or leave the workspace
+without posting to the user. For a workspace locked on purpose, the agent
+evaluates whether the user needs a reminder; reclaiming it or asking to unlock
+it is not the default response.
+
 `workspaces.reclaimBranches` (since 1.25.0, #167): once `workspace.reclaim`
 has removed the workspace's checkouts, it deletes the local branch each one
 carried, in the source repository it was cut from, under the rules

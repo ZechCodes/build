@@ -42,6 +42,9 @@ use std::time::Duration;
 /// before the project agent hears about it. A user only looking at it is not
 /// activity (Zech, #135).
 pub const DEFAULT_IDLE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
+/// Locked workspaces are intentional: remind the project agent at most weekly,
+/// even when activity has happened since the last notice.
+const LOCKED_NOTICE_INTERVAL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// How often the service measures every workspace.
 pub const DEFAULT_SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 /// How long after startup the first sweep waits, so it does not compete with
@@ -270,16 +273,23 @@ pub struct LifecycleRecord {
 impl LifecycleRecord {
     /// Whether the project agent should hear about this workspace now.
     ///
-    /// An idle workspace is announced once when it goes quiet. The notice is
-    /// repeated once per idle period while it stays quiet. Activity after the
-    /// last notice starts over, so going quiet again is news straight away.
+    /// An idle workspace is announced once when it goes quiet. Unlocked
+    /// workspaces repeat once per idle period; activity after the last notice
+    /// starts over, so going quiet again is news straight away. Locked
+    /// workspaces repeat only after seven days, even after intervening activity.
     pub fn notice_due(&self, now_ms: i64, policy: &ReclaimPolicy) -> NoticeDue {
         if !self.idle {
             return NoticeDue::No;
         }
+        let locked = self.holds.iter().any(|hold| hold == HOLD_LOCKED);
+        let interval_ms = if locked {
+            LOCKED_NOTICE_INTERVAL_MS
+        } else {
+            policy.idle_after_ms()
+        };
         match self.noticed_at_ms {
-            Some(noticed) if self.last_activity_ms.is_some_and(|at| at <= noticed) => {
-                if now_ms.saturating_sub(noticed) >= policy.idle_after_ms() {
+            Some(noticed) if locked || self.last_activity_ms.is_some_and(|at| at <= noticed) => {
+                if now_ms.saturating_sub(noticed) >= interval_ms {
                     NoticeDue::Again
                 } else {
                     NoticeDue::No
@@ -329,7 +339,8 @@ pub enum NoticeDue {
     No,
     /// The workspace just went quiet. The linked tasks' timelines record it.
     First,
-    /// Still quiet a whole idle period after the last notice.
+    /// Quiet again after the notice interval: seven days when locked,
+    /// otherwise a whole idle period.
     Again,
 }
 
@@ -371,6 +382,10 @@ impl Subject {
         if guard.is_none() {
             let mut record = LifecycleRecord {
                 measured_at_ms: now_ms,
+                noticed_at_ms: self
+                    .previous
+                    .as_ref()
+                    .and_then(|record| record.noticed_at_ms),
                 ..LifecycleRecord::default()
             };
             record.unmeasured();
@@ -379,6 +394,10 @@ impl Subject {
         let Some(repositories) = self.pinned_repositories(guard.as_ref().unwrap()) else {
             let mut record = LifecycleRecord {
                 measured_at_ms: now_ms,
+                noticed_at_ms: self
+                    .previous
+                    .as_ref()
+                    .and_then(|record| record.noticed_at_ms),
                 ..LifecycleRecord::default()
             };
             record.unmeasured();

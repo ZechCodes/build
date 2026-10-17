@@ -201,7 +201,7 @@ describe("the project's agent on a workspace's strip", () => {
   it("is there before the project has a conversation, and says how to start it", async () => {
     await mountWorkspaceRail();
 
-    expect(projectBubble().title).toBe("Project agent");
+    expect(JSON.parse(projectBubble().dataset.railTooltip).purpose).toBe("Project agent");
     // Nothing is minted to paint it. A rail that asked for an owner would give
     // every workspace page a project agent nobody asked for.
     expect(callsTo("project.ensure_conversation")).toHaveLength(0);
@@ -220,7 +220,7 @@ describe("the project's agent on a workspace's strip", () => {
     project = projectPayload({ agents: [agent("pa-1", { unread_count: 3, working: true })] });
     await mountWorkspaceRail();
 
-    expect(projectBubble().title).toBe("Project agent");
+    expect(JSON.parse(projectBubble().dataset.railTooltip).purpose).toBe("Project agent");
     expect(projectBubble().querySelector(".rail-count").textContent).toBe("3");
     expect(projectBubble().classList.contains("working")).toBe(true);
   });
@@ -256,7 +256,7 @@ describe("pressing the project's agent", () => {
     expect(projectBubble().classList.contains("active")).toBe(false);
     // The owner was minted by the first press and carried across both swaps.
     expect(callsTo("project.ensure_conversation")).toHaveLength(1);
-    expect(projectBubble().title).toBe("Project agent");
+    expect(JSON.parse(projectBubble().dataset.railTooltip).purpose).toBe("Project agent");
   });
 });
 
@@ -480,7 +480,7 @@ describe("the strip across a swap", () => {
     expect(agentBubble("wa-1").querySelector(".rail-count").textContent).toBe("2");
     expect(agentBubble("wa-1").classList.contains("working")).toBe(true);
     // …and the project's bubble, now the one beside, still says its own.
-    expect(projectBubble().title).toBe("Project agent");
+    expect(JSON.parse(projectBubble().dataset.railTooltip).purpose).toBe("Project agent");
   });
 });
 

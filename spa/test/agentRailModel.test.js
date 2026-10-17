@@ -122,6 +122,27 @@ describe("who an agent is", () => {
     expect(bubbleTip(agent(named))).toBe("Fix login redirect");
   });
 
+  it("keeps tooltip facts from the exact cached agent, including the project pin", () => {
+    const pin = agent({ id: "pin", name: "Coordinator", topic: "Review changes", provider: "codex_app_server",
+      active_model: "gpt-6-astra", working: true, working_time: { seconds: 85 } });
+    const worker = agent({ id: "worker", name: "Builder", topic: "Ship UI", working: false });
+    const project = railBubbles({ kind: "project", projectName: "Build", pinnedAgentId: "pin",
+      agents: [worker, pin], selectedId: "pin" })[0];
+    expect(project.tooltip).toMatchObject({ name: "Coordinator", work: "Review changes",
+      provider: "Codex", status: "working", purpose: "Project agent", workingTime: { seconds: 85 } });
+    expect(project.tooltip.model).toContain("Astra");
+    const noOwnStamp = railBubbles({ agents: [agent({ working: true, working_time: null,
+      agents_since: "2026-10-17T12:00:00Z" })], selectedId: "ag-1" })[0];
+    expect(noOwnStamp.tooltip.workingTime).toBeNull();
+    const described = railBubbles({ agents: [agent({ topic: "", title: "Please fix the rail" })], selectedId: "ag-1" })[0];
+    expect(described.tooltip.work).toBe("Please fix the rail");
+    const unwatched = railBubbles({ agents: [agent({ watched: false, agents_running: 2 })],
+      selectedId: "ag-1" })[0];
+    expect(unwatched.tooltip).toMatchObject({ status: "idle", watch: "Not watching", descendants: "2 agents working" });
+    const ghost = railBubbles({ agents: [], kind: "workspace", chatCapable: false })[0];
+    expect(ghost.tooltip.description).toBe("No agent conversation is attached to this workspace");
+  });
+
   // Until the agent names its work there is no topic to hover, and the strip
   // may be two agents on the same harness deep: the tip says the harness so the
   // hover is still worth something, and the painted face tells them apart.

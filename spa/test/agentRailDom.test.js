@@ -188,6 +188,7 @@ const menuItem = (action) => railHost().querySelector(`.composer-model .mi[data-
 const reasoningMenuButton = () => railHost().querySelector(".composer-reasoning .caret");
 const reasoningMenuItem = (action) => railHost().querySelector(`.composer-reasoning .mi[data-action="${action}"]`);
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
+const bubbleTooltip = (bubble) => JSON.parse(bubble.dataset.railTooltip);
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
@@ -1065,7 +1066,7 @@ describe("the rail over a machine that is asked nothing", () => {
     await flush();
     expect(railHost().querySelector("#rail-body")).toBe(body);
     expect(body.textContent).toContain("workspace fallback words");
-    expect(headWho()).toBe(TOPICS["ag-first"] || "Claude Code");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 1");
     expect(railHost().querySelector("#railinput")).not.toBeNull();
   });
 
@@ -1373,7 +1374,7 @@ describe("the bubble strip", () => {
 
     rowFor("ag-2").click();
     await vi.waitFor(() => expect(railHost().querySelector(".rail-overview-list")).toBeNull());
-    expect(headWho(panel())).toBe("Second agent");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Second agent");
     expect(panel().getAttribute("aria-hidden")).toBe("false");
   });
 
@@ -1814,8 +1815,7 @@ describe("the bubble strip", () => {
     await pushRow();
 
     expect(panel().querySelector(".rail-harness-icon").dataset.harnessIcon).toBe("codex_app_server");
-    // Nothing named yet, so the hover falls back to the harness — the new one.
-    expect(headWho(panel())).toBe("Codex");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 1");
   });
 
   // The rail reads the row every 1.6s and nearly every read says the same
@@ -1849,8 +1849,8 @@ describe("the bubble strip", () => {
     expect(countOn(bubbles()[0]).hidden).toBe(false);
     expect(bubbles()[0].classList.contains("working")).toBe(true);
     // Working outranks the unread it left before this run (#201); the count says it.
-    expect(bubbles()[0].title).toMatch(/— working$/);
-    expect(bubbles()[0].getAttribute("aria-label")).toBe(`${bubbles()[0].title}, 3 unread`);
+    expect(bubbleTooltip(bubbles()[0]).status).toBe("working");
+    expect(bubbles()[0].getAttribute("aria-label")).toContain("3 unread");
 
     // …and back again: the count goes, the animation stops where it was.
     payload = branchRow({ agents: [agent()] });
@@ -2039,7 +2039,7 @@ describe("the strip's watched agents (#105)", () => {
     await openFromOverview("ag-2");
     expect(stripIds()).toEqual(["ag-1", "ag-2"]);
     expect(bubbleOf("ag-2").classList.contains("rail-bubble-unwatched")).toBe(true);
-    expect(bubbleOf("ag-2").title).toMatch(/Not watching$/);
+    expect(bubbleOf("ag-2").getAttribute("aria-label")).toMatch(/Not watching$/);
     expect(bubbleOf("ag-1").classList.contains("rail-bubble-unwatched")).toBe(false);
 
     bubbleOf("ag-1").click();
@@ -2206,7 +2206,7 @@ describe("the strip's watched agents (#105)", () => {
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
-      expect(projectBubble().title).toBe("Project agent");
+      expect(bubbleTooltip(projectBubble()).purpose).toBe("Project agent");
 
       bubbleOf("ag-one").click();
       await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
@@ -2226,7 +2226,7 @@ describe("the strip's watched agents (#105)", () => {
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
-      expect(projectBubble().title).toBe("Project agent");
+      expect(bubbleTooltip(projectBubble()).purpose).toBe("Project agent");
 
       bubbleOf("ag-one").click();
       await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
@@ -2471,10 +2471,10 @@ describe("taking an agent back off the branch", () => {
   it("removes the agent the strip is lit on, even beside its twin", async () => {
     payload = branchRow({ agents: [agent({ topic: "" }), agent({ id: "ag-2", ordinal: 2, topic: "" })] });
     await mount();
-    expect(headWho(panel())).toBe("Claude Code");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 1");
     bubbles()[1].click();
     await flush();
-    expect(headWho(panel())).toBe("Claude Code");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 2");
 
     removeButton().click();
     await flush();
@@ -2850,7 +2850,7 @@ describe("the conversation panel", () => {
     await mountAgentTab.mock.calls[0][2].onStart();
 
     expect(bubbles()[0].classList.contains("starting")).toBe(true);
-    expect(bubbles()[0].title).toContain("starting…");
+    expect(bubbleTooltip(bubbles()[0]).status).toBe("starting");
 
     payload = branchRow({ agents: [agent({ state: "live" })] });
     await pushRow();
@@ -2876,7 +2876,7 @@ describe("the conversation panel", () => {
     await pushRow();
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
-    expect(bubbles()[0].title).toContain("could not reach the agent");
+    expect(bubbleTooltip(bubbles()[0]).news).toContain("could not reach the agent");
     expect(notifyError).toHaveBeenCalledWith(
       "Could not start the agent",
       "could not reach the agent: no such worktree",
@@ -2985,7 +2985,7 @@ describe("the conversation panel", () => {
     await pushRow();
 
     expect(bubbles()[0].classList.contains("starting")).toBe(false);
-    expect(bubbles()[0].title).toContain("no session to open");
+    expect(bubbleTooltip(bubbles()[0]).news).toContain("no session to open");
     expect(notifyError).toHaveBeenCalledWith(
       "Could not start the agent",
       "no session to open: this entity's session is over",
@@ -3915,7 +3915,7 @@ describe("the chat tab of a branch with no agent", () => {
 
     payload = branchRow({ agents: [agent({ id: "ag-2", provider: "pi", topic: "", model: "", requested_model: "" })] });
     await pushRow();
-    expect(headWho(panel())).toBe("Pi");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 1");
   });
 
   it("keeps model and effort when the selected harness is pressed again", async () => {
@@ -5023,8 +5023,7 @@ describe("creating an agent, before the daemon has answered for it", () => {
 
     expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
     expect(bubbles()[0].classList.contains("active")).toBe(true);
-    // The agent the press made has named nothing yet: the head says its harness.
-    expect(headWho(panel())).toBe("Claude Code");
+    expect(panel().querySelector(".rail-who-name").textContent).toBe("Agent 1");
     expect(timeline().textContent).toContain("start here");
     expect(composer().value).toBe("");
     expect(callsTo("agent.add")).toHaveLength(1);
@@ -7195,7 +7194,7 @@ describe("cached project worker rail", () => {
   it("paints cached workers before any worker-capable greeting and keeps legacy summaries separate", async () => {
     await mountWorkers();
     expect(workerBubble()).toBeTruthy();
-    expect(workerBubble().title).toContain("Source worker");
+    expect(bubbleTooltip(workerBubble()).name).toBe("Source worker");
     expect(railHost().querySelector(".rail-strip").children[1].getAttribute("role") === "separator").toBe(true);
     expect(railHost().querySelector('[data-bubble="add"]')).toBeTruthy();
     await pushRow({ ...payload, agents: [pin()] });
@@ -7250,7 +7249,7 @@ describe("cached project worker rail", () => {
 
   it("names the project pin exactly Project agent", async () => {
     await mountWorkers();
-    expect(railHost().querySelector('[data-agent="project-pin"]').title).toBe("Project agent");
+    expect(bubbleTooltip(railHost().querySelector('[data-agent="project-pin"]')).purpose).toBe("Project agent");
   });
 
   it("adds the cached old-bridge notice without replacing the pin conversation", async () => {

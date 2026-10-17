@@ -562,7 +562,7 @@ impl AppState {
 
     /// Every workspace Build made, with what can only be read under the mutex.
     /// Adopted checkouts are somebody else's and are not measured.
-    fn reclaim_subjects(&self) -> Vec<Subject> {
+    pub(in crate::app) fn reclaim_subjects(&self) -> Vec<Subject> {
         let linked = self.tasks_linking_workspaces();
         self.measured_workspaces(None)
             .map(|workspace| {
@@ -746,7 +746,7 @@ impl AppState {
     /// Keep what was measured, record on the linked tasks what they should
     /// hear, and tell each project agent about its quiet workspaces. A
     /// workspace a stopped sweep never reached keeps its last verdict.
-    fn settle_workspace_sweep(
+    pub(in crate::app) fn settle_workspace_sweep(
         &mut self,
         measured: Vec<(Subject, LifecycleRecord)>,
         now_ms: i64,

@@ -32,7 +32,7 @@ for (const { label, width, height } of [
   { label: "mobile", width: 390, height: 760 },
 ]) {
   for (const theme of ["light", "dark"]) {
-    it(`aligns project and row status dot right edges on ${label} in ${theme}`, async () => {
+    it(`aligns row status dots in the left gutter on ${label} in ${theme}`, async () => {
       await withLayoutPage(async ({ page, basePath }) => {
         await page.emulateMedia({ reducedMotion: "reduce" });
         await mountStatusDotInbox(page, basePath, { grouped: true });
@@ -59,19 +59,20 @@ for (const { label, width, height } of [
             expect(await head.locator(":scope > .inbox-status-dot").count(), state).toBe(0);
             expect(await dot.boundingBox(), state).toEqual(before);
             expect(await head.locator(".inbox-project-name").boundingBox(), state).toEqual(nameBefore);
-            const right = await dot.evaluate((element) => element.getBoundingClientRect().right);
+            const left = await dot.evaluate((element) => element.getBoundingClientRect().left);
             for (const row of await rows.all()) {
               const layout = await rowLayout(row);
-              expect.soft(layout.dot.right, `${state}: ${layout.key}`).toBe(right);
+              expect.soft(layout.dot.left, `${state}: ${layout.key}`).toBe(left);
+              expect.soft(layout.dot.right, `${state}: ${layout.key}`).toBeLessThan(layout.name.left);
+              expect.soft(layout.dot.top + 4, `${state}: ${layout.key}`).toBeCloseTo(layout.name.top + layout.name.height / 2);
               if (!hovered) {
                 await row.hover();
-                expect.soft((await rowLayout(row)).dot.right, `${state}: ${layout.key} hovered`).toBe(right);
+                expect.soft((await rowLayout(row)).dot.left, `${state}: ${layout.key} hovered`).toBe(left);
                 await page.mouse.move(width - 1, height - 1);
               }
             }
             for (const button of await head.locator(".inbox-project-create, .inbox-project-hide").all()) {
               const box = await button.boundingBox();
-              expect(box.x + box.width, state).toBeLessThanOrEqual(before.x - 2);
               expect(box.x, state).toBeGreaterThanOrEqual(nameBefore.x + nameBefore.width);
             }
           }
@@ -110,7 +111,7 @@ for (const { label, width, height } of [
     }, { width, height });
   }, 60_000);
 
-  it(`keeps one right status dot clear of names and hover controls on ${label}`, async () => {
+  it(`keeps one left status dot clear of names and hover controls on ${label}`, async () => {
     await withLayoutPage(async ({ page, basePath }) => {
       for (const grouped of [false, true]) {
         await mountStatusDotInbox(page, basePath, { grouped });
@@ -123,11 +124,11 @@ for (const { label, width, height } of [
           expect(before.counters, key).toBe(0);
           expect(await row.locator(".inbox-status-dot").count(), key).toBe(idle ? 0 : 1);
           if (idle) continue;
-          expect(before.actionsOpacity, key).toBe("1");
           expect(before.dot.width, key).toBe(8);
           expect(before.dot.height, key).toBe(8);
-          expect(before.dot.left, key).toBeGreaterThanOrEqual(before.name.right);
-          expect(before.dot.right, key).toBeLessThan(before.row.right);
+          expect(before.dot.left, key).toBeGreaterThanOrEqual(before.row.left + 6);
+          expect(before.dot.right, key).toBeLessThan(before.name.left);
+          expect(before.dot.top + 4, key).toBeCloseTo(before.name.top + before.name.height / 2);
           expect(before.dot.animation === "none", key).toBe(!before.dot.running);
           await row.hover();
           await page.waitForFunction((key) => [...document.querySelector(`[data-key="${key}"] .inbox-actions`).children]
@@ -137,7 +138,6 @@ for (const { label, width, height } of [
           for (const control of hovered.controls) {
             expect(control.opacity, key).toBe("1");
             expect(control.visibility, key).toBe("visible");
-            expect(control.right, key).toBeLessThanOrEqual(hovered.dot.left - 2);
             expect(control.left, key).toBeGreaterThanOrEqual(hovered.name.right);
           }
         }
@@ -164,12 +164,14 @@ for (const { label, width, height } of [
         const after = await status.boundingBox();
         expect(after).toEqual(before);
         const name = await head.locator(".inbox-project-name").boundingBox();
-        expect(name.x + name.width).toBeLessThanOrEqual(after.x);
+        expect(after.x + after.width).toBeLessThan(name.x);
+        expect(after.y + after.height / 2).toBeCloseTo(name.y + name.height / 2);
+        const fold = await head.locator(".inbox-fold").boundingBox();
+        expect(after.x + after.width).toBeLessThanOrEqual(fold.x - 2);
         const actions = head.locator(".inbox-project-actions");
         expect(await actions.evaluate((element) => getComputedStyle(element).opacity)).toBe("1");
         for (const button of await head.locator(".inbox-project-create, .inbox-project-hide").all()) {
           const box = await button.boundingBox();
-          expect(box.x + box.width).toBeLessThanOrEqual(after.x - 2);
           expect(box.x).toBeGreaterThanOrEqual(name.x + name.width);
         }
         expect(await head.locator(".inbox-project-hide").count()).toBe(1);
@@ -222,14 +224,15 @@ for (const { label, width, height } of [
       const reclaim = row.locator("[data-workspace-reclaim]");
       const control = before.controls[0];
       expect(control.left).toBeGreaterThanOrEqual(before.name.right);
-      expect(control.right).toBeLessThanOrEqual(before.dot.left - 2);
+      expect(before.dot.right).toBeLessThan(before.name.left);
+      expect(before.dot.top + 4).toBeCloseTo(before.name.top + before.name.height / 2);
       await reclaim.click();
       await page.waitForFunction(() => document.querySelector("[data-workspace-reclaim]").textContent === "Reclaiming…");
       const pending = await rowLayout(row);
       expect(pending.name).toEqual(before.name);
       expect(pending.dot.left).toBe(before.dot.left);
       expect(pending.controls[0].left).toBeGreaterThanOrEqual(pending.name.right);
-      expect(pending.controls[0].right).toBeLessThanOrEqual(pending.dot.left - 2);
+      expect(pending.dot.right).toBeLessThan(pending.name.left);
       await captureLayout(page, `inbox-status-dot-${label}-reclaiming.png`);
       await page.evaluate(() => { window.__layoutModules.app.App.viewDispose(); window.__layoutModules.feed.stopFeed(); });
     }, { width, height });

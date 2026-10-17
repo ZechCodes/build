@@ -2722,24 +2722,22 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
-  it("animates only a changed topic while preserving the live header and its focused controls", async () => {
+  it("animates only the work line while preserving the name, header and focused controls", async () => {
     payload = branchRow({ agents: [agent({ topic: "" })] });
     await mount();
-    // Nothing named yet: the head says so, in the shimmering word, and the
-    // hover falls back to the harness.
     const standingHead = panel().querySelector(".rail-head");
     const standingTitle = standingHead.querySelector(".rail-who");
+    const standingName = standingTitle.querySelector(".rail-who-name");
     const standingPin = standingHead.querySelector(".pinbtn");
-    expect(standingTitle.textContent).toBe("Starting");
-    expect(standingTitle.classList.contains("rail-who-starting")).toBe(true);
-    expect(headWho(panel())).toBe("Claude Code");
+    expect(standingName.textContent).toBe("Agent 1");
+    expect(standingTitle.querySelector(".rail-who-work")).toBeNull();
     standingPin.focus();
 
     // An unchanged poll neither rebuilds the head nor starts title motion.
     vi.advanceTimersByTime(1600);
     await flush();
     expect(panel().querySelector(".rail-head")).toBe(standingHead);
-    expect(standingTitle.dataset.titleMotion).toBeUndefined();
+    expect(standingTitle.querySelector(".rail-who-work")).toBeNull();
     expect(document.activeElement).toBe(standingPin);
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
@@ -2749,12 +2747,14 @@ describe("the conversation panel", () => {
     expect(panel().querySelector(".pinbtn")).toBe(standingPin);
     expect(panel().querySelector(".rail-who")).toBe(standingTitle);
     expect(document.activeElement).toBe(standingPin);
-    expect(standingTitle.dataset.titleMotion).toBe("erasing");
+    const work = standingTitle.querySelector(".rail-who-work");
+    expect(work.dataset.titleMotion).toBe("typing");
+    expect(standingName.textContent).toBe("Agent 1");
+    expect(standingName.dataset.titleMotion).toBeUndefined();
 
-    await finishTitleMotion(standingTitle);
-    expect(standingTitle.textContent).toBe("Unify prompt delivery");
-    expect(standingTitle.classList.contains("rail-who-starting")).toBe(false);
-    expect(headWho(panel())).toBe("Unify prompt delivery");
+    await finishTitleMotion(work);
+    expect(work.textContent).toBe("Unify prompt delivery");
+    expect(standingName.textContent).toBe("Agent 1");
   });
 
   it("carries the agent, the one way down to its screen, and a box to write in", async () => {

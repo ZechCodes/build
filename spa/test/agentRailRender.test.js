@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "../src/core/agentRailRender.js";
 
@@ -17,22 +18,19 @@ describe("the lead of the pinned status row", () => {
   });
 });
 
-describe("the head's name slot", () => {
-  it("wears the topic, hovers it in full, and shimmers 'Starting' until there is one", () => {
-    const starting = railWhoHtml("Claude Code", { text: "Starting", starting: true });
-    expect(starting).toContain('class="rail-who rail-who-starting"');
-    // Nothing named yet, so the hover says the harness rather than a number.
-    expect(starting).toContain('title="Claude Code"');
-    expect(starting).toContain(">Starting<");
-
-    const named = railWhoHtml("Unify <prompt> delivery", { text: "Unify <prompt> delivery", starting: false });
-    expect(named).toContain('class="rail-who"');
-    expect(named).not.toContain("rail-who-starting");
-    expect(named).toContain(">Unify &lt;prompt&gt; delivery<");
-    expect(named).toContain('title="Unify &lt;prompt&gt; delivery"');
+describe("the conversation heading", () => {
+  it("keeps the agent name in a large first line and current work below", () => {
+    const host = document.createElement("div");
+    host.innerHTML = railWhoHtml("Rail <helper>", { text: "Unify <prompt> delivery" });
+    expect(host.querySelector(".rail-who-name").textContent).toBe("Rail <helper>");
+    expect(host.querySelector(".rail-who-work").textContent).toBe("Unify <prompt> delivery");
+    expect(host.querySelector(".rail-who-name").dataset.titleMotion).toBeUndefined();
   });
 
-  it("falls back to the name it was handed when no heading is given", () => {
-    expect(railWhoHtml("Codex TUI", null)).toContain(">Codex TUI<");
+  it("has one line when the agent has no current work", () => {
+    const host = document.createElement("div");
+    host.innerHTML = railWhoHtml("Agent 2", null);
+    expect(host.querySelector(".rail-who-name").textContent).toBe("Agent 2");
+    expect(host.querySelector(".rail-who-work")).toBeNull();
   });
 });

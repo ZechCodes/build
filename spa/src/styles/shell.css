@@ -1173,8 +1173,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .rail-harness-icon-dark { display:none; }
 :root[data-theme="dark"] .rail-harness-icon-light { display:none; }
 :root[data-theme="dark"] .rail-harness-icon-dark { display:block; }
-.rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; font-size:15px; font-weight:650; }
+.rail-who { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center;
+  overflow:hidden; white-space:nowrap; }
+.rail-who-name, .rail-who-work { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.rail-who-name { font-size:15px; font-weight:650; line-height:18px; }
+.rail-who-work { color:var(--dim); font-size:11px; line-height:14px; }
 .rail-mode { flex:none; border:1px solid var(--line); border-radius:6px; background:none;
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }

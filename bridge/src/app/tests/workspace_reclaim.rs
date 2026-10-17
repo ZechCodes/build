@@ -220,6 +220,8 @@ fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_task() {
             "quiet (",
             "#1 Quiet work (Backlog)",
             "a task linked to it is not Done",
+            "Only message the user if necessary",
+            "without posting to the user",
         ],
     );
 
@@ -237,6 +239,56 @@ fn a_quiet_workspace_is_announced_to_the_project_agent_and_on_its_task() {
     AppState::sweep_workspaces(&state, &ReclaimPolicy::default(), now_ms());
     assert_eq!(project_agent_notices(&state, &project_id).len(), 1);
     assert_eq!(timeline_kinds(&state, &task).len(), 1);
+}
+
+#[test]
+fn locked_workspaces_are_omitted_from_daily_notices_until_their_week_is_due() {
+    let (_tmp, state, project_id, locked, _task) = linked_workspace();
+    let unlocked = workspace(&mut state.lock().unwrap(), &project_id, "unlocked");
+    let reply = call(
+        &state,
+        "workspace.set_locked",
+        json!({"workspace_id": locked, "locked": true}),
+    );
+    assert_eq!(reply["ok"], true, "{reply:?}");
+    let day = 24 * 60 * 60 * 1000;
+    let start = now_ms() + 2 * day;
+    let policy = ReclaimPolicy::default();
+    AppState::sweep_workspaces(&state, &policy, start);
+    let notices = project_agent_notices(&state, &project_id);
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    assert_says_everything(
+        &notices[0],
+        &[
+            &locked,
+            &unlocked,
+            "Only message the user if necessary",
+            "The user locked this workspace on purpose",
+            "evaluate whether the user should be reminded",
+            "Do not reclaim it or ask the user to unlock it by default",
+        ],
+    );
+
+    for days in 1..7 {
+        AppState::sweep_workspaces(&state, &policy, start + days * day);
+        let notices = project_agent_notices(&state, &project_id);
+        assert_eq!(notices.len(), (days + 1) as usize, "{notices:?}");
+        let latest = notices.last().unwrap();
+        assert!(latest.contains(&unlocked), "{latest}");
+        assert!(!latest.contains(&locked), "{latest}");
+        assert_eq!(lifecycle(&state, &locked)["noticed_at_ms"], start);
+        assert_eq!(
+            lifecycle(&state, &unlocked)["noticed_at_ms"],
+            start + days * day
+        );
+    }
+    AppState::sweep_workspaces(&state, &policy, start + 7 * day - 1);
+    assert_eq!(project_agent_notices(&state, &project_id).len(), 7);
+    AppState::sweep_workspaces(&state, &policy, start + 7 * day);
+    let notices = project_agent_notices(&state, &project_id);
+    assert_eq!(notices.len(), 8, "{notices:?}");
+    assert_says_everything(notices.last().unwrap(), &[&locked, &unlocked]);
+    assert_eq!(lifecycle(&state, &locked)["noticed_at_ms"], start + 7 * day);
 }
 
 /// Once its task is Done and its work is pushed, a quiet workspace is

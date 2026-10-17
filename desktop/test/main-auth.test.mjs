@@ -15,7 +15,18 @@ const tokens = (suffix = "rotated") => ({
   expires_in: 900,
 });
 const response = (payload, ok = true) => ({ ok, json: async () => payload });
+const SIGN_IN_URL = "https://getbuild.ing/auth/login?next=/app/&view=signin";
 let sequence = 0;
+
+function requestSignIn(window, eventName = "will-navigate") {
+  if (eventName === "window-open") {
+    assert.deepEqual(window.webContents.openWindow({ url: SIGN_IN_URL }), { action: "deny" });
+    return;
+  }
+  let prevented = false;
+  window.webContents.emit(eventName, { preventDefault: () => { prevented = true; } }, SIGN_IN_URL);
+  assert.equal(prevented, true);
+}
 
 async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken, showMessageBox } = {}) {
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
@@ -207,6 +218,75 @@ test("first sign-in persists credentials and follows the existing PKCE callback 
   assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-rotated");
   assert.equal(calls.windows.length, 1);
 });
+
+for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
+  test(`${eventName} from the 401 CTA starts PKCE and returns to the desktop window`, async (t) => {
+    const { calls, callback, header, path } = await launch(t);
+    const window = calls.windows[0];
+    requestSignIn(window, eventName);
+    requestSignIn(window, eventName);
+    await flush();
+    assert.equal(calls.browser.length, 1, "one pending authorization despite repeated clicks");
+    const authorization = new URL(calls.browser[0]);
+    assert.equal(authorization.origin, "https://getbuild.ing");
+    assert.equal(authorization.pathname, "/oauth/authorize");
+    assert.equal(authorization.searchParams.get("client_id"), "build-desktop");
+    assert.equal(authorization.searchParams.get("code_challenge_method"), "S256");
+    assert.equal(header(), undefined, "the rejected access token is retired");
+    t.mock.timers.tick(840_000);
+    await flush();
+    assert.equal(calls.fetch.length, 1, "old credentials no longer refresh");
+    callback();
+    await flush();
+    assert.equal(calls.fetch[1].body.get("grant_type"), "authorization_code");
+    assert.ok(calls.fetch[1].body.get("code_verifier"));
+    assert.equal(calls.windows.length, 1);
+    assert.equal(window.url, "https://getbuild.ing/app/desktop");
+    assert.equal(window.actions.filter((action) => action === "load").length, 2);
+    assert.equal(header(), "Bearer fixture-access-rotated");
+    assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-rotated");
+  });
+}
+
+test("401 CTA during authorization-code exchange cannot start another sign-in", async (t) => {
+  const exchange = deferred();
+  const { calls, callback } = await launch(t, {
+    fetch: (count) => count === 1 ? response(tokens()) : exchange.promise,
+  });
+  requestSignIn(calls.windows[0]);
+  await flush();
+  callback();
+  await flush();
+  requestSignIn(calls.windows[0]);
+  await flush();
+  assert.equal(calls.browser.length, 1);
+  exchange.resolve(response(tokens("signed-in")));
+  await flush();
+  assert.equal(calls.windows[0].actions.filter((action) => action === "load").length, 2);
+});
+
+for (const lateResponse of [response(tokens("late")), response({ error: "invalid_grant" }, false)]) {
+  test(`401 CTA invalidates an old refresh (${lateResponse.ok ? "success" : "invalid_grant"})`, async (t) => {
+    const refresh = deferred();
+    const { calls, callback, header, path } = await launch(t, {
+      fetch: (count) => count === 2 ? refresh.promise : response(tokens("signed-in")),
+    });
+    t.mock.timers.tick(840_000);
+    await flush();
+    requestSignIn(calls.windows[0]);
+    await flush();
+    callback();
+    await flush();
+    refresh.resolve(lateResponse);
+    await flush();
+    assert.equal(calls.browser.length, 1);
+    assert.equal(calls.windows.length, 1);
+    assert.equal(calls.windows[0].destroyed, undefined);
+    assert.equal(header(), "Bearer fixture-access-signed-in");
+    assert.equal(readFileSync(path, "utf8"), "encrypted:fixture-refresh-signed-in");
+    assert.deepEqual(calls.dialogs, []);
+  });
+}
 
 test("without encryption sign-in stays in memory and never writes plaintext", async (t) => {
   const { calls, path, callback, header } = await launch(t, { stored: null, available: false });

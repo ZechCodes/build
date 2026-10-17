@@ -32,6 +32,28 @@ const PUBLIC_URLS = [
   "https://getbuild.ing/api-other/devices",
 ];
 
+const SIGN_IN_URL = "https://getbuild.ing/auth/login?next=/app/&view=signin";
+const SIGN_IN_LOOKALIKE_URLS = [
+  "https://getbuild.ing/auth/login",
+  "https://getbuild.ing/auth/login?next=/app/",
+  "https://getbuild.ing/auth/login?next=/&view=signin",
+  "https://getbuild.ing/auth/login/?next=/app/&view=signin",
+  "https://getbuild.ing/auth/login-other?next=/app/&view=signin",
+  "https://getbuild.ing/%61uth/login?next=/app/&view=signin",
+  "https://getbuild.ing/auth/%6cogin?next=/app/&view=signin",
+  "https://getbuild.ing.evil.test/auth/login?next=/app/&view=signin",
+  "https://getbuild.ing@evil.test/auth/login?next=/app/&view=signin",
+  "https://getbuild.ing:8443/auth/login?next=/app/&view=signin",
+  "http://getbuild.ing/auth/login?next=/app/&view=signin",
+  `${SIGN_IN_URL}#other`,
+  `${SIGN_IN_URL}&other=value`,
+];
+
+test("only the exact 401 sign-in CTA requests desktop authentication", () => {
+  assert.equal(classifyNavigation(SIGN_IN_URL), "sign-in");
+  for (const url of SIGN_IN_LOOKALIKE_URLS) assert.equal(classifyNavigation(url), "external", url);
+});
+
 const LOGOUT_LOOKALIKE_URLS = [
   "https://getbuild.ing/auth/logout/",
   "https://getbuild.ing/auth/logout-other",
@@ -154,7 +176,7 @@ test("the OAuth token authenticates the desktop document and API fetches", () =>
 });
 
 test("non-app requests receive no Bearer, including redirected headers", () => {
-  for (const url of [...PUBLIC_URLS, ...LOGOUT_LOOKALIKE_URLS, "https://getbuild.ing/auth/logout", "https://example.com/api/devices", "not a url"]) {
+  for (const url of [...PUBLIC_URLS, ...LOGOUT_LOOKALIKE_URLS, SIGN_IN_URL, ...SIGN_IN_LOOKALIKE_URLS, "https://getbuild.ing/auth/logout", "https://example.com/api/devices", "not a url"]) {
     for (const authorizationName of ["Authorization", "authorization", "AUTHORIZATION"]) {
       const headers = { Accept: "text/html", [authorizationName]: "Bearer access-token" };
       for (const resourceType of ["mainFrame", "xhr"]) {
@@ -241,15 +263,31 @@ function navigationHarness() {
   const external = [];
   const internal = [];
   const signOut = [];
+  const signIn = [];
   securityPolicy.installNavigationPolicy(webContents, {
     openExternal: (...args) => external.push(args),
     loadInternal: (...args) => internal.push(args),
     signOut: (...args) => signOut.push(args),
+    signIn: (...args) => signIn.push(args),
   });
-  return { webContents, external, internal, signOut };
+  return { webContents, external, internal, signOut, signIn };
 }
 
 for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
+  test(`${eventName} starts desktop sign-in instead of loading the web login`, () => {
+    const { webContents, external, internal, signIn } = navigationHarness();
+    if (eventName === "window-open") {
+      assert.deepEqual(webContents.openWindow({ url: SIGN_IN_URL }), { action: "deny" });
+    } else {
+      let prevented = false;
+      webContents.emit(eventName, { preventDefault: () => { prevented = true; } }, SIGN_IN_URL);
+      assert.equal(prevented, true);
+    }
+    assert.deepEqual(signIn, [[]]);
+    assert.deepEqual(external, []);
+    assert.deepEqual(internal, []);
+  });
+
   test(`${eventName} signs out locally instead of navigating to the logout page`, () => {
     const { webContents, external, internal, signOut } = navigationHarness();
     const url = "https://getbuild.ing/auth/logout";
@@ -266,8 +304,8 @@ for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
   });
 
   test(`${eventName} sends non-app links to the system browser without credentials`, () => {
-    for (const url of [...PUBLIC_URLS, ...LOGOUT_LOOKALIKE_URLS, "https://getbuild.ing/api/devices", "https://example.com/", "mailto:support@getbuild.ing"]) {
-      const { webContents, external, internal, signOut } = navigationHarness();
+    for (const url of [...PUBLIC_URLS, ...LOGOUT_LOOKALIKE_URLS, ...SIGN_IN_LOOKALIKE_URLS, "https://getbuild.ing/api/devices", "https://example.com/", "mailto:support@getbuild.ing"]) {
+      const { webContents, external, internal, signOut, signIn } = navigationHarness();
       if (eventName === "window-open") {
         assert.deepEqual(webContents.openWindow({ url }), { action: "deny" });
       } else {
@@ -278,6 +316,7 @@ for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
       assert.deepEqual(external, [[url]], "browser receives just the URL, without headers");
       assert.deepEqual(internal, []);
       assert.deepEqual(signOut, []);
+      assert.deepEqual(signIn, []);
     }
   });
 

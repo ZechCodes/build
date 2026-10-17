@@ -454,11 +454,13 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
 .inbox-entry.active .inbox-actions,
 .inbox-actions:has(.inbox-workspace-done),
 .inbox-actions:has(.inbox-watch),
-.inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+.inbox-actions:has(.inbox-menu:not([hidden])),
+.inbox-actions:has(.reroute-menu:not([hidden])) { opacity:1; pointer-events:auto; }
 .inbox-entry:hover .inbox-actions > button,
 .inbox-entry:focus-within .inbox-actions > button,
 .inbox-entry.active .inbox-actions > button,
-.inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
+.inbox-actions:has(.inbox-menu:not([hidden])) > button,
+.inbox-actions:has(.reroute-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
 .inbox-quiet:not(.inbox-quiet-task) .inbox-actions { top:calc(50% + var(--inbox-quiet-project-offset)); transform:translateY(-50%); }
 /* One width for Done and for Done…, so pressing it does not widen it. */
 .inbox-workspace-done { min-width:var(--inbox-done-width); }
@@ -468,13 +470,15 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
   .inbox-entry .inbox-actions:has(.inbox-workspace-done),
   .inbox-entry .inbox-actions:has(.inbox-watch),
-  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])),
+  .inbox-entry .inbox-actions:has(.reroute-menu:not([hidden])) { opacity:1; pointer-events:auto; }
   .inbox-entry:hover .inbox-actions > button { opacity:0; pointer-events:none; }
   .inbox-entry.active .inbox-actions > button, .inbox-entry:focus-within .inbox-actions > button,
   .inbox-entry .inbox-actions > .inbox-workspace-done,
   .inbox-entry .inbox-actions > .inbox-watch,
   .inbox-entry:hover .inbox-actions > .inbox-watch,
-  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
+  .inbox-entry .inbox-actions:has(.inbox-menu:not([hidden])) > button,
+  .inbox-entry .inbox-actions:has(.reroute-menu:not([hidden])) > button { opacity:1; pointer-events:auto; }
 }
 @media (pointer:coarse) {
   .inbox-entry:has(.inbox-actions > .inbox-watch) { --inbox-control-width:calc(44px + 4px + var(--inbox-menu-width)); min-height:52px; }

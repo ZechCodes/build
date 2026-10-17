@@ -7,8 +7,8 @@ use crate::reclaim::{LifecycleRecord, LinkedTask, ReclaimPolicy, Subject};
 pub(super) const PHASE: &str = "workspace_idle";
 
 /// What the project agent reads about its quiet workspaces: one line per
-/// workspace with everything a decision needs, then the three choices and the
-/// one rule.
+/// workspace with everything a decision needs, then how to handle it and when
+/// the user needs to hear about it.
 pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> String {
     let hours = policy.idle_after.as_secs() / 3600;
     let count = workspaces.len();
@@ -23,11 +23,13 @@ pub(super) fn quiet_workspaces(workspaces: &[Quiet], policy: &ReclaimPolicy) -> 
         .collect();
     format!(
         "{count} {these} had no activity for {hours} hours. This message is from Build, not from \
-         the user.\n\n{}\n\nFor each one, decide: merge it (branch reviewed and green: merge to main, \
-         then reclaim_workspace), delete it (abandoned or superseded: delete_workspace), or surface \
-         it (something needs the user: one question on the linked task, and leave the workspace \
-         alone). Never delete a workspace with uncommitted or unpushed work without asking the user \
-         first. Record what you did on the linked task.",
+         the user.\n\n{}\n\nOnly message the user if necessary, such as a decision only they can make. \
+         Otherwise merge, reclaim, or leave the workspace without posting to the user. \
+         If a user decision is necessary, ask one question on the linked task and leave the \
+         workspace alone.\n\nFor each unlocked workspace, decide: merge it (branch reviewed and \
+         green: merge to main, then reclaim_workspace), delete it (abandoned or superseded: \
+         delete_workspace), or leave it. Never delete a workspace with uncommitted or unpushed \
+         work without asking the user first.",
         lines.join("\n")
     )
 }
@@ -63,7 +65,7 @@ fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
     };
     format!(
         "- {} ({}): {tasks}. Branch {}; {} uncommitted files, {} unpushed commits, {} behind. {} on \
-         disk{}. Last activity {}. {verdict}.",
+         disk{}. Last activity {}. {verdict}.{}",
         subject.name,
         subject.workspace_id,
         if branches.is_empty() { "none".to_string() } else { branches.join(", ") },
@@ -83,6 +85,12 @@ fn quiet_workspace_line(subject: &Subject, record: &LifecycleRecord) -> String {
             .last_activity_ms
             .and_then(rfc3339_of_ms)
             .unwrap_or_else(|| "unknown".to_string()),
+        if record.holds.iter().any(|hold| hold == crate::reclaim::HOLD_LOCKED) {
+            " The user locked this workspace on purpose; evaluate whether the user should be \
+              reminded about it. Do not reclaim it or ask the user to unlock it by default."
+        } else {
+            ""
+        },
     )
 }
 

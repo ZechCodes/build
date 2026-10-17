@@ -880,10 +880,18 @@ descriptors, so replacing a pathname cannot redirect deletion into another
 tree. Explicit reclaim carries the same boundary through its deferred removal.
 An invalid boundary leaves the workspace unmeasured and preserves its files.
 
-Each project agent gets one notice per sweep naming its newly quiet
-workspaces, and the notice repeats daily while they stay quiet. The linked
-tasks record `workspace_idle` and `workspace_pruned` as actor `build`,
-without waking their trackers.
+Each project agent gets one notice per sweep naming its quiet workspaces
+whose notices are due. Unlocked workspaces repeat once per idle period
+(daily by default); activity after a notice resets that cadence. Locked
+workspaces repeat only after seven days since their last notice, even if
+activity happened in between, and are omitted from intermediate notices about
+other workspaces. The existing per-workspace `noticed_at_ms` persists that
+clock across restarts. Every notice tells the agent to message the user only
+if necessary and otherwise merge, reclaim or leave the workspace without
+posting to the user. A locked workspace was locked on purpose: the agent
+evaluates whether a reminder is needed, without reclaiming it or asking to
+unlock it by default. The linked tasks record `workspace_idle` and
+`workspace_pruned` as actor `build`, without waking their trackers.
 
 Dropping build output (tier 1) is off unless the device's `workspace_prune`
 setting turns it on, or `BRIDGE_WORKSPACE_PRUNE` is set, which overrides it.

@@ -1,5 +1,18 @@
 # Build v1 — UI Design Brief & User Stories
 
+## Conversation identity — #651 implementation amendment (2026-10-17)
+
+The rail conversation header shows the agent's name on the large first line
+and its current work on a smaller second line. Topic changes retain the
+erase-then-type effect on the work line alone, with stable header geometry.
+An agent with no current work has only the name line. The harness glyph,
+model label and watch control retain their positions beside the text.
+
+Conversation bubbles use a custom tooltip for cached identity, current work,
+turn runtime or idle state, harness, model and status. It opens on hover and
+keyboard focus, stays within the viewport and replaces the native tooltip.
+Touch-only devices retain their existing tap behavior.
+
 ## Workspace views — #522 implementation amendment (2026-10-13)
 
 The decisions in [Project workspace](Project%20Workspace%20Spec.md) are settled;

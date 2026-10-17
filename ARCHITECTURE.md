@@ -2263,7 +2263,15 @@ support and roster together; a valid roster must name that exact owner and a
 pin present in its agents. Without cached support it paints only the legacy
 pin. Current greetings additionally gate worker creation and new-worker task
 assignment, including a retained picker caller after a capability downgrade.
-The pin's tooltip reads “Project agent”. An explicit cached
+The pin's custom tooltip retains its “Project agent” purpose alongside the
+cached agent identity. Conversation bubbles show the agent's name, current
+work, turn runtime or idle state, harness and model from cached roster data.
+The tooltip opens on hover or keyboard focus, stays inside the viewport and
+does not add a touch-only interaction. It replaces the bubble's native title.
+The conversation header keeps the agent name above the smaller current-work
+line; only the work line erases and types when its topic changes. A missing
+topic leaves just the name, and typing does not change the header's layout.
+An explicit cached
 `projectWorkers: false` shows “Update this device to use project agents.”
 on a project host; unknown support and workspace pins keep
 that notice absent. Rendering the notice does not replace the mounted

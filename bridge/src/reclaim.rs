@@ -382,6 +382,10 @@ impl Subject {
         if guard.is_none() {
             let mut record = LifecycleRecord {
                 measured_at_ms: now_ms,
+                noticed_at_ms: self
+                    .previous
+                    .as_ref()
+                    .and_then(|record| record.noticed_at_ms),
                 ..LifecycleRecord::default()
             };
             record.unmeasured();
@@ -390,6 +394,10 @@ impl Subject {
         let Some(repositories) = self.pinned_repositories(guard.as_ref().unwrap()) else {
             let mut record = LifecycleRecord {
                 measured_at_ms: now_ms,
+                noticed_at_ms: self
+                    .previous
+                    .as_ref()
+                    .and_then(|record| record.noticed_at_ms),
                 ..LifecycleRecord::default()
             };
             record.unmeasured();

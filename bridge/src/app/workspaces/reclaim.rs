@@ -36,6 +36,7 @@ use crate::reclaim::artifacts::{self, Artifact};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::reclaim::{
     Budget, IndexSnapshot, LifecycleRecord, LinkedTask, NoticeDue, ReclaimPolicy, Subject,
+    HOLD_LOCKED,
 };
 use crate::tracker::{Actor, Task, TaskEventKind, TaskState};
 use crate::workspace::{Workspace, WorkspaceStatus};
@@ -758,9 +759,16 @@ impl AppState {
         let mut quiet: BTreeMap<String, Vec<Quiet>> = BTreeMap::new();
         for (subject, mut record) in measured {
             // Removed while it was being measured: nothing left to say.
-            if self.workspaces.get(&subject.workspace_id).is_none() {
+            let Some(workspace) = self.workspaces.get(&subject.workspace_id) else {
                 continue;
-            }
+            };
+            // The user can change the lock while measurement runs off the mutex.
+            record.holds.retain(|hold| hold != HOLD_LOCKED);
+            record.hold(if workspace.locked {
+                &[HOLD_LOCKED]
+            } else {
+                &[]
+            });
             record.keep_newer_size(self.workspace_lifecycle.get(&subject.workspace_id));
             if record.pruned_at_ms == Some(now_ms) {
                 self.note_on_linked_tasks(

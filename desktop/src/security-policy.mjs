@@ -1,6 +1,7 @@
 export const APP_URL = "https://getbuild.ing/app/desktop";
 
 const { origin: APP_ORIGIN, pathname: APP_PATH } = new URL(APP_URL);
+const SIGN_IN_URL = `${APP_ORIGIN}/auth/login?next=/app/&view=signin`;
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
 function parseUrl(value) {
@@ -16,17 +17,19 @@ export function classifyNavigation(value) {
   if (!url) return "deny";
   if (url.origin === APP_ORIGIN && url.pathname === APP_PATH) return "internal";
   if (url.origin === APP_ORIGIN && url.pathname === "/auth/logout") return "sign-out";
+  if (url.href === SIGN_IN_URL) return "sign-in";
   if (EXTERNAL_PROTOCOLS.has(url.protocol)) return "external";
   return "deny";
 }
 
-export function installNavigationPolicy(webContents, { openExternal, loadInternal, signOut }) {
+export function installNavigationPolicy(webContents, { openExternal, loadInternal, signOut, signIn }) {
   const handleNavigation = (event, url) => {
     const destination = classifyNavigation(url);
     if (destination === "internal") return;
 
     event.preventDefault();
     if (destination === "sign-out") void signOut();
+    if (destination === "sign-in") void signIn();
     if (destination === "external") openExternal(url);
   };
 
@@ -37,6 +40,7 @@ export function installNavigationPolicy(webContents, { openExternal, loadInterna
     const destination = classifyNavigation(url);
     if (destination === "internal") loadInternal(url);
     if (destination === "sign-out") void signOut();
+    if (destination === "sign-in") void signIn();
     if (destination === "external") openExternal(url);
     return { action: "deny" };
   });

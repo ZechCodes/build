@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 from datetime import datetime
+from html import unescape
 from types import SimpleNamespace
 
 import pytest
@@ -188,18 +189,57 @@ def test_the_generic_error_page_has_a_fallback_message_and_shows_a_hint():
 
 
 @pytest.mark.parametrize("template_name", ERROR_TEMPLATES)
-def test_signed_in_error_pages_offer_the_app_and_log_out(template_name):
+@pytest.mark.parametrize("status_code", [401, 403, 404, 500])
+def test_signed_in_error_pages_offer_the_app_and_log_out(template_name, status_code):
     user = SimpleNamespace(id="u", name="A", email="a@example.com")
-    html = render_error(template_name, status_code=500, message="", user=user)
+    html = render_error(template_name, status_code=status_code, message="", user=user)
     assert re.search(r'<a class="signin-button" href="/app/">Open Build</a>', html)
     assert 'href="/auth/logout"' in html
     assert 'href="/"' in html
 
 
 @pytest.mark.parametrize("template_name", ERROR_TEMPLATES)
-def test_signed_out_error_pages_offer_only_the_home_page(template_name):
-    html = render_error(template_name, status_code=500, message="", user=None)
+@pytest.mark.parametrize("status_code", [403, 404, 500])
+def test_signed_out_other_error_pages_offer_only_the_home_page(template_name, status_code):
+    html = render_error(template_name, status_code=status_code, message="", user=None)
     assert "/app/" not in html and "/auth/logout" not in html
+    assert '<a class="signin-button" href="/">Go to the home page</a>' in html
+
+
+@pytest.mark.parametrize("context", [{}, {"user": None}])
+def test_signed_out_401_offers_signin_without_request_globals(context):
+    html = render_error("error.html", status_code=401, message="Authentication required", **context)
+    assert '<a class="signin-button" href="/auth/login?next=/app/&amp;view=signin">Sign in</a>' in html
+    assert "Go to the home page" not in html
+    assert "/auth/logout" not in html
+    assert "<script" not in html
+
+
+def test_through_the_real_app_a_signed_out_401_leads_to_passkey_signin(skrift_app):
+    with TestClient(skrift_app, base_url=SECURE_ORIGIN) as client:
+        page = client.get("/app/desktop", headers={"accept": "text/html"})
+        assert page.status_code == 401
+        target = unescape(re.search(r'<a class="signin-button" href="([^"]+)">Sign in</a>', page.text).group(1))
+        signin = client.get(target)
+    assert signin.status_code == 200
+    assert signin.url.path == "/auth/login"
+    assert signin.url.params["next"] == "/app/"
+    assert signin.url.params["view"] == "signin"
+    assert 'id="signin-form"' in signin.text
+    assert_in_builds_frame(signin.text)
+
+
+def test_through_the_real_app_signin_from_a_401_returns_to_the_app(second_factor_app):
+    with TestClient(second_factor_app, base_url=SECURE_ORIGIN) as client:
+        page = client.get("/app/desktop", headers={"accept": "text/html"})
+        target = unescape(re.search(r'<a class="signin-button" href="([^"]+)">Sign in</a>', page.text).group(1))
+        client.get(target)
+        form = client.get("/auth/dummy/login")
+        signed_in = client.post(
+            "/auth/dummy-login", data={"_csrf": csrf_token(form.text), "email": "a@example.com"}, follow_redirects=False
+        )
+    assert signed_in.status_code in (302, 303)
+    assert signed_in.headers["location"] == "/app/"
 
 
 def test_the_start_up_failure_page_renders_with_only_what_asgi_passes():

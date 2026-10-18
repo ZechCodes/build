@@ -240,7 +240,8 @@ fn failed_open_never_publishes_an_active_policy() {
 #[tokio::test]
 async fn a_session_opened_for_an_old_thread_cannot_publish_its_policy() {
     let fixture = PolicyLaunch::new(false);
-    let opened = fixture.open(fixture.reserve());
+    let mut opened = fixture.open(fixture.reserve());
+    opened.recorded_name_is_gone = true;
     let old_thread = opened
         .tab
         .session
@@ -253,8 +254,25 @@ async fn a_session_opened_for_an_old_thread_cannot_publish_its_policy() {
         "replace generation during open",
         OWNER,
         &fixture.agent,
-        |agent| agent.thread = crate::thread::Thread::new(&fixture.agent),
+        |agent| {
+            agent.thread = crate::thread::Thread::new(&fixture.agent);
+            agent.active_model = Some("new-generation-model".into());
+            agent.active_effort = Some("high".into());
+            agent.resume_session_id = Some("new-generation-resume".into());
+        },
     );
+    let waiting = {
+        let mut app = fixture.state.lock().unwrap();
+        app.session_registry
+            .install_mcp_token(fixture.agent.clone(), "new-generation-token".into());
+        app.session_registry.waiting_screen_for_attach(
+            fixture.key.clone(),
+            "new-generation-screen",
+            80,
+            24,
+        )
+    };
+    waiting.attach(&SessionSender::detached("new-generation-client"), None);
     assert!(fixture.publish(opened).is_none());
     let app = fixture.state.lock().unwrap();
     assert!(!app.session_registry.contains(&fixture.key));
@@ -262,6 +280,54 @@ async fn a_session_opened_for_an_old_thread_cannot_publish_its_policy() {
     let thread = app.agent_conversation(OWNER, Some(&fixture.agent)).unwrap();
     assert_ne!(thread.id, old_thread);
     assert!(thread.sessions.is_empty());
+    let agent = app
+        .entity_agents(OWNER)
+        .unwrap()
+        .by_id(&fixture.agent)
+        .unwrap();
+    assert_eq!(agent.active_model.as_deref(), Some("new-generation-model"));
+    assert_eq!(agent.active_effort.as_deref(), Some("high"));
+    assert_eq!(
+        agent.resume_session_id.as_deref(),
+        Some("new-generation-resume")
+    );
+    assert_eq!(
+        app.session_registry.test_token(&fixture.agent),
+        Some("new-generation-token")
+    );
+    assert!(app
+        .session_registry
+        .waiting_screen_keys()
+        .contains(&fixture.key));
+    assert_eq!(waiting.attached(), 1);
+}
+
+#[test]
+fn router_admission_needs_no_canonical_conversation_or_compaction_policy() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let (owner, agent) = captured(&mut app, "route without a coding conversation");
+    let router = app.router_sessions[&owner].clone();
+    let key = TabKey::agent(&AppState::canonical_root(router.scratch_dir()), &agent);
+    let state = app.shared();
+    let reserved = reserve_agent_spawn(
+        &mut state.lock().unwrap(),
+        &key,
+        &AgentSpawnRequest {
+            owner: &owner,
+            agent_id: &agent,
+            conversation_id: &agent,
+            model_choice: router.choice(),
+            force_fresh: false,
+            phase: "route",
+        },
+    )
+    .expect("routers have no conversation policy to resolve");
+    assert!(reserved.plan.launch.compaction_policy.is_none());
+    reserved.holding.abandon(&state, (), &a_frame(&state));
+    let app = state.lock().unwrap();
+    assert!(!app.session_registry.claim_is_held(&key));
+    assert!(app.session_registry.test_token(&agent).is_none());
 }
 
 #[test]

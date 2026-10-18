@@ -285,6 +285,10 @@ fn compaction_policy_scope_patches_are_atomic_on_invalid_input_and_persistence_f
         json!({"claude": 101, "pi": "200"}),
         json!({"claude": 101, "pi": true}),
         json!({"claude": 101, "pi": 9_007_199_254_740_992_u64}),
+        json!({"claude": 101, "compact_above_tokens": 200}),
+        json!({"claude": 101, "project_id": "other-project"}),
+        json!({"claude": 101, "workspace_id": "other-workspace"}),
+        json!({"claude": 101, "compaction_thresholds": {"pi": 200}}),
     ];
     for scope in scopes {
         state
@@ -307,6 +311,9 @@ fn compaction_policy_scope_patches_are_atomic_on_invalid_input_and_persistence_f
         }
         for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
             state.config_persist_failure = Some(failure);
+            state
+                .patch_compaction_thresholds(scope.clone(), &json!({}))
+                .expect("an empty patch does not attempt persistence");
             assert!(state
                 .patch_compaction_thresholds(scope.clone(), &all_cells(Some(456_789)))
                 .is_err());
@@ -328,6 +335,115 @@ fn compaction_policy_scope_patches_are_atomic_on_invalid_input_and_persistence_f
             .patch_compaction_thresholds(scope, &all_cells(Some(777)))
             .is_err());
         assert_eq!(config_on_disk(dir.path()), disk);
+    }
+}
+
+#[test]
+fn compaction_policy_safe_boundaries_accept_maps_and_scalar_without_overwriting_narrower_scopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = scope_app(dir.path());
+    let (project, _) = plain_project(&mut state, dir.path(), "source");
+    let workspace = named_workspace(&mut state, &project, "working");
+    let scopes = [
+        CompactionScope::Device,
+        CompactionScope::Project(project.clone()),
+        CompactionScope::Workspace(workspace.clone()),
+    ];
+    for tokens in [1, crate::compaction::MAX_SAFE_TOKENS] {
+        for scope in &scopes {
+            state
+                .patch_compaction_thresholds(scope.clone(), &all_cells(Some(tokens)))
+                .unwrap();
+            let saved = state.compaction_thresholds(scope).unwrap();
+            assert_eq!(saved.stored_value(), all_cells(Some(tokens)));
+            assert_eq!(saved.read_value(), all_cells(Some(tokens)));
+        }
+    }
+    let before = config_on_disk(dir.path());
+    for tokens in [1, crate::compaction::MAX_SAFE_TOKENS] {
+        state
+            .settings_set(&json!({"compact_above_tokens": tokens}))
+            .unwrap();
+        let disk = config_on_disk(dir.path());
+        assert_eq!(disk["compaction_thresholds"], all_cells(Some(tokens)));
+        assert_eq!(disk["compact_above_tokens"], tokens);
+        assert_eq!(
+            project_policy(&disk, &project),
+            project_policy(&before, &project)
+        );
+        assert_eq!(
+            disk["workspace_compaction_thresholds"],
+            before["workspace_compaction_thresholds"]
+        );
+        for scope in &scopes[1..] {
+            assert_eq!(
+                state.compaction_thresholds(scope).unwrap().stored_value(),
+                all_cells(Some(crate::compaction::MAX_SAFE_TOKENS))
+            );
+        }
+    }
+}
+
+#[test]
+fn compaction_policy_unsafe_legacy_values_read_exactly_without_rounding_or_clamping() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = scope_app(dir.path());
+    let (project, _) = plain_project(&mut state, dir.path(), "source");
+    let owner = project_owner(&mut state, &project);
+    let agent = policy_agent(&mut state, &owner, AgentProvider::Pi);
+    state
+        .settings_set(&json!({"compact_above_tokens": 123_456}))
+        .unwrap();
+    let config = config_on_disk(dir.path());
+    drop(state);
+
+    for tokens in [crate::compaction::MAX_SAFE_TOKENS + 1, u64::MAX] {
+        for mapped in [false, true] {
+            let mut saved = config.clone();
+            saved["compact_above_tokens"] = json!(tokens);
+            saved
+                .as_object_mut()
+                .unwrap()
+                .remove("compaction_thresholds");
+            if mapped {
+                saved["compaction_thresholds"] = all_cells(Some(tokens));
+            }
+            std::fs::write(
+                dir.path().join("state/config.json"),
+                serde_json::to_vec(&saved).unwrap(),
+            )
+            .unwrap();
+            let mut restarted = scope_app(dir.path());
+            let thresholds = restarted
+                .compaction_thresholds(&CompactionScope::Device)
+                .unwrap();
+            assert_eq!(thresholds.stored_value(), all_cells(Some(tokens)));
+            for provider in AgentProvider::ALL {
+                assert_eq!(thresholds.get(provider), Some(tokens));
+                assert_eq!(
+                    thresholds.read_value()[provider.wire_id()],
+                    json!({"tokens_decimal": tokens.to_string()})
+                );
+            }
+            let resolved = restarted.resolve_compaction_policy(&owner, &agent).unwrap();
+            assert_eq!(resolved.tokens, tokens);
+            assert_eq!(
+                resolved.observation(),
+                json!({
+                    "tokens": null,
+                    "tokens_decimal": tokens.to_string(),
+                    "reason": "unsupported_representation",
+                    "source": {"kind": "device"},
+                })
+            );
+            restarted
+                .settings_set(&json!({"watch_agent_filed_tasks": true}))
+                .unwrap();
+            assert_eq!(
+                config_on_disk(dir.path())["compaction_thresholds"],
+                all_cells(Some(tokens))
+            );
+        }
     }
 }
 
@@ -397,6 +513,11 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
     let dir = tempfile::tempdir().unwrap();
     let mut state = scope_app(dir.path());
     let (project, source) = plain_project(&mut state, dir.path(), "source");
+    let owner = project_owner(&mut state, &project);
+    let agents = AgentProvider::ALL
+        .into_iter()
+        .map(|provider| policy_agent(&mut state, &owner, provider))
+        .collect::<Vec<_>>();
     state
         .patch_compaction_thresholds(
             CompactionScope::Project(project.clone()),
@@ -408,6 +529,16 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
     std::fs::rename(&source, &away).unwrap();
     let mut parked = scope_app(dir.path());
     assert!(parked.project(&project).is_none());
+    assert!(parked.projects.project_id_of(&owner).is_none());
+    for agent in &agents {
+        assert_policy(
+            &parked,
+            &owner,
+            agent,
+            123_456,
+            CompactionSource::Project(project.clone()),
+        );
+    }
     parked
         .patch_compaction_thresholds(
             CompactionScope::Device,
@@ -421,9 +552,8 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
     drop(parked);
     std::fs::rename(away, source).unwrap();
     let mut revived = scope_app(dir.path());
-    let owner = project_owner(&mut revived, &project);
-    for provider in AgentProvider::ALL {
-        let agent = policy_agent(&mut revived, &owner, provider);
+    assert_eq!(project_owner(&mut revived, &project), owner);
+    for agent in agents {
         assert_policy(
             &revived,
             &owner,
@@ -454,6 +584,30 @@ fn compaction_policy_workspace_and_project_deletion_prune_only_owned_settings() 
             .patch_compaction_thresholds(scope, &all_cells(Some(123_456)))
             .unwrap();
     }
+    let before = config_on_disk(dir.path());
+    call(
+        &mut state,
+        "workspace.set_locked",
+        json!({"workspace_id": removed_workspace, "locked": true}),
+    );
+    let refused = state.handle(req(
+        "workspace.delete",
+        json!({"workspace_id": removed_workspace}),
+    ));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(config_on_disk(dir.path()), before);
+    assert_eq!(
+        state
+            .compaction_thresholds(&CompactionScope::Workspace(removed_workspace.clone()))
+            .unwrap()
+            .stored_value(),
+        all_cells(Some(123_456))
+    );
+    call(
+        &mut state,
+        "workspace.set_locked",
+        json!({"workspace_id": removed_workspace, "locked": false}),
+    );
     call(
         &mut state,
         "workspace.delete",
@@ -467,6 +621,25 @@ fn compaction_policy_workspace_and_project_deletion_prune_only_owned_settings() 
         disk["workspace_compaction_thresholds"][&sibling],
         all_cells(Some(123_456))
     );
+    for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+        state.config_persist_failure = Some(failure);
+        let refused = state.handle(req(
+            "project.delete",
+            json!({"project_id": removed_project, "confirm": true}),
+        ));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(config_on_disk(dir.path()), disk);
+        for scope in [
+            CompactionScope::Project(removed_project.clone()),
+            CompactionScope::Workspace(sibling.clone()),
+        ] {
+            assert_eq!(
+                state.compaction_thresholds(&scope).unwrap().stored_value(),
+                all_cells(Some(123_456))
+            );
+        }
+        state.config_persist_failure = None;
+    }
     call(
         &mut state,
         "project.delete",

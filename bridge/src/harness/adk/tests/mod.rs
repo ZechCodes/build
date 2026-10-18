@@ -317,6 +317,7 @@ async fn next_report(rx: &mut broadcast::Receiver<ActivityReport>) -> ActivityRe
 
 fn spawn_options() -> SpawnOptions {
     SpawnOptions {
+        compaction_policy: None,
         continue_session: false,
         resume_session_id: None,
         owner_id: "agent-01J".to_string(),

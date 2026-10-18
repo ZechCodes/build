@@ -473,6 +473,17 @@ fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str, TranslationErr
         .ok_or_else(|| TranslationError::Malformed(format!("{field} is missing")))
 }
 
+/// A completed item is a lifecycle boundary, not by itself proof that the
+/// compaction succeeded. Older events omit outcome fields; explicit errors or
+/// non-success statuses must not clear context or publish a successful row.
+pub(super) fn compaction_succeeded(notification: &ItemNotification) -> bool {
+    let item = &notification.item;
+    notification.lifecycle == ItemLifecycle::Completed
+        && item["type"] == "contextCompaction"
+        && (item["status"].is_null() || item["status"] == "completed")
+        && item["error"].is_null()
+}
+
 fn emit_item(
     notification: &ItemNotification,
     lifecycle: ItemLifecycle,
@@ -490,7 +501,9 @@ fn emit_item(
                 .into_iter()
                 .collect()
         }
-        ItemReportKind::ContextCompaction => {
+        ItemReportKind::ContextCompaction
+            if lifecycle == ItemLifecycle::Started || compaction_succeeded(notification) =>
+        {
             vec![ActivityReport::own_work(AgentActivity::Compaction {
                 completed: lifecycle == ItemLifecycle::Completed,
             })]

@@ -379,22 +379,14 @@ impl Agent {
         }
     }
 
-    /// The context size at which this agent's next warm turn is preceded by a
-    /// compaction: its positive threshold, else the device's. Legacy zeros
+    /// The legacy scalar shown by compatibility digests. Session enforcement
+    /// uses its captured policy instead. Legacy zeros
     /// inherit, with the built-in default when the device value is also zero.
     pub fn compact_at_tokens(&self, device_threshold: u64) -> u64 {
         self.max_context_tokens
             .filter(|tokens| *tokens > 0)
             .or((device_threshold > 0).then_some(device_threshold))
             .unwrap_or(DEFAULT_COMPACT_ABOVE_TOKENS)
-    }
-
-    /// Whether the last reported context has reached the threshold. Inclusive,
-    /// and never for an agent whose context nobody has reported.
-    pub fn compaction_due(&self, device_threshold: u64) -> bool {
-        let threshold = self.compact_at_tokens(device_threshold);
-        self.last_context_tokens
-            .is_some_and(|tokens| tokens >= threshold)
     }
 
     /// The context this agent last reported, as what it writes carries it:
@@ -1388,31 +1380,16 @@ mod context_tests {
     }
 
     #[test]
-    fn compaction_is_due_at_the_threshold_and_not_below_it() {
-        assert!(with_context(Some(200_000), None).compaction_due(200_000));
-        assert!(with_context(Some(250_000), None).compaction_due(200_000));
-        assert!(!with_context(Some(199_999), None).compaction_due(200_000));
-        assert!(
-            !with_context(None, None).compaction_due(200_000),
-            "an agent whose context nobody has reported is never compacted"
-        );
-    }
-
-    #[test]
     fn the_agents_own_limit_beats_the_device_and_legacy_zero_inherits() {
         let tighter = with_context(Some(60_000), Some(50_000));
         assert_eq!(tighter.compact_at_tokens(200_000), 50_000);
-        assert!(tighter.compaction_due(200_000));
 
         let inherited = with_context(Some(900_000), Some(0));
         assert_eq!(inherited.compact_at_tokens(200_000), 200_000);
-        assert!(inherited.compaction_due(200_000));
         assert_eq!(inherited.compact_at_tokens(123_456), 123_456);
 
         let defaulted = with_context(Some(900_000), None);
         assert_eq!(defaulted.compact_at_tokens(0), 200_000);
-        assert!(defaulted.compaction_due(0));
-        assert!(!with_context(Some(199_999), Some(0)).compaction_due(0));
     }
 
     #[test]

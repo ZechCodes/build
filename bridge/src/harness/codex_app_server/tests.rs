@@ -4003,6 +4003,32 @@ fn synthetic_codex_retry_and_exhaustion_keep_the_session_live() {
 }
 
 #[test]
+fn unsuccessful_native_compactions_never_report_success() {
+    for outcome in [
+        json!({"status":"failed"}),
+        json!({"status":"cancelled"}),
+        json!({"status":"canceled"}),
+        json!({"status":"interrupted"}),
+        json!({"status":"inProgress"}),
+        json!({"error":"compaction failed"}),
+        json!({"status":"completed","error":{"message":"compaction failed"}}),
+    ] {
+        let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
+        let mut item = json!({"id":"compaction-1","type":"contextCompaction"});
+        item.as_object_mut()
+            .unwrap()
+            .extend(outcome.as_object().unwrap().clone());
+        let reports = translator
+            .translate("item/completed", &item_envelope(item))
+            .unwrap();
+        assert!(
+            reports.is_empty(),
+            "unsuccessful outcome {outcome}: {reports:?}"
+        );
+    }
+}
+
+#[test]
 fn context_compaction_and_review_mode_transitions_stay_visible() {
     let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
     let summaries = |reports: Vec<crate::harness::ActivityReport>| {

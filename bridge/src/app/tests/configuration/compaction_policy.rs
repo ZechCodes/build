@@ -32,7 +32,10 @@ fn assert_legacy_scalar(state: &AppState, expected: u64) {
     agent.last_context_at = Some("now".into());
     let digest = state.agent_digest("policy-owner", &agent, None, crate::app::DigestScope::List);
     assert_eq!(digest["compact_at_tokens"], expected);
-    assert!(agent.compaction_due(state.compact_above_tokens));
+    assert_eq!(
+        agent.compact_at_tokens(state.compact_above_tokens),
+        expected
+    );
     assert_eq!(
         agent
             .context_reading(state.compact_above_tokens)

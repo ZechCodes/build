@@ -957,3 +957,27 @@ fn a_failed_refresh_does_not_give_retained_data_a_fresh_refusal() {
     assert!(Arc::ptr_eq(&original, &readings.held("claude").unwrap()));
     assert_eq!(*readings.changes().borrow(), 1);
 }
+
+#[test]
+fn compaction_version_is_passive_and_a_failed_refresh_removes_its_authority() {
+    let clock = HandClock::leaked();
+    let cli = ScriptedCli::leaked("2.1.280");
+    let readings = inline(clock);
+    assert_eq!(readings.compaction_version("claude"), None);
+    assert_eq!(cli.asked(), 0);
+    readings.reading("claude", cli);
+    assert_eq!(
+        readings.compaction_version("claude").as_deref(),
+        Some("2.1.280")
+    );
+    assert_eq!(cli.asked(), 1);
+    cli.set("unreadable");
+    clock.advance(READING_TTL);
+    readings.reading("claude", cli);
+    assert_eq!(readings.compaction_version("claude"), None);
+    assert_eq!(
+        readings.held("claude").unwrap().version,
+        Some(version("2.1.280"))
+    );
+    assert_eq!(cli.asked(), 2, "policy reads never start an extra probe");
+}

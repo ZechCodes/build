@@ -1015,6 +1015,7 @@ fn real_claude_session_receives_the_whole_multiline_prompt() {
         effort: None,
     };
     let options = SpawnOptions {
+        compaction_policy: None,
         continue_session: false,
         resume_session_id: None,
         owner_id: "e2e".into(),

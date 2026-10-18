@@ -258,6 +258,7 @@ impl Orchestrator {
             worktrees,
             plan_docs_root,
             launch: AgentLaunch {
+                compaction_policy: None,
                 repo_path,
                 bridge_exe,
                 agent,

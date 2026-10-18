@@ -194,6 +194,7 @@ impl AgentSpawnPlan {
             )
             .map_err(|refusal| refusal.to_string())?;
         Ok(ReadyToSpawn {
+            compaction_policy: prepared.compaction_policy,
             spec: prepared.spec,
             size: prepared.pty_size,
             locator,
@@ -206,6 +207,7 @@ impl AgentSpawnPlan {
 /// What the disk answered: everything a child needs, and the one thing the
 /// apply phase has to write down.
 pub struct ReadyToSpawn {
+    pub compaction_policy: Option<crate::harness::compaction::AppliedCompactionPolicy>,
     pub spec: HarnessSpec,
     pub size: PtySize,
     pub locator: Option<Box<dyn SessionLocator>>,

@@ -1007,6 +1007,7 @@ async fn a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone() {
             agent_id.clone(),
             agent_open_request(
                 PreparedAgentLaunch {
+                    compaction_policy: None,
                     spec: HarnessSpec::new("cat"),
                     pty_size: terminal_size(80, 24),
                 },

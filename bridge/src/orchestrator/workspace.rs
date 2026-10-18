@@ -82,6 +82,7 @@ impl AdoptableCheckout {
 /// Per-spawn context an interactive harness builder may honor.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
+    pub compaction_policy: Option<crate::harness::compaction::AppliedCompactionPolicy>,
     /// Resume the harness's own most-recent conversation for this cwd (claude:
     /// `--continue`, codex: `resume --last`) — a GUESS, since what it reopens
     /// is the newest conversation in the checkout whoever was having it. Set
@@ -471,6 +472,7 @@ impl<'a> From<&'a String> for McpGrant<'a> {
 /// released.
 #[derive(Clone)]
 pub(crate) struct AgentLaunch {
+    pub(crate) compaction_policy: Option<crate::harness::compaction::AppliedCompactionPolicy>,
     pub(super) repo_path: PathBuf,
     pub(super) bridge_exe: PathBuf,
     pub(super) agent: Agent,
@@ -479,6 +481,7 @@ pub(crate) struct AgentLaunch {
 
 #[derive(Debug)]
 pub(crate) struct PreparedAgentLaunch {
+    pub(crate) compaction_policy: Option<crate::harness::compaction::AppliedCompactionPolicy>,
     pub(crate) spec: HarnessSpec,
     pub(crate) pty_size: PtySize,
 }
@@ -505,6 +508,7 @@ impl AgentLaunch {
             }
         }
         let options = SpawnOptions {
+            compaction_policy: self.compaction_policy.clone(),
             continue_session,
             resume_session_id,
             owner_id: owner_id.to_string(),
@@ -518,6 +522,7 @@ impl AgentLaunch {
             Agent::WarmBuilder(build) => build("", model_choice, &options),
         }?;
         Ok(PreparedAgentLaunch {
+            compaction_policy: self.compaction_policy.clone(),
             spec,
             pty_size: self.pty_size,
         })

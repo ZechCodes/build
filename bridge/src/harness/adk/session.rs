@@ -415,6 +415,11 @@ fn observed_code(status: ExitStatus) -> i32 {
 }
 
 impl AgentSession for AdkSession {
+    fn opening_succeeded(&self) -> bool {
+        let state = self.state.lock().unwrap();
+        state.announced && state.start_refused.is_none()
+    }
+
     /// Write the turn as one `user` line and return.
     ///
     /// No framing, no submit key, no delay: the protocol takes a turn as a

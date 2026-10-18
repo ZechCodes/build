@@ -348,6 +348,22 @@ impl Readings {
         entries.get(binary).and_then(|entry| entry.reading.clone())
     }
 
+    /// Passive evidence for a launch snapshot. A failed latest attempt gives
+    /// no version authority; this read never schedules a probe.
+    pub(crate) fn compaction_version(&self, binary: &str) -> Option<String> {
+        let entries = self.entries.lock().unwrap();
+        let entry = entries.get(binary)?;
+        if entry.retry {
+            return None;
+        }
+        entry
+            .reading
+            .as_ref()?
+            .version
+            .as_ref()
+            .map(ToString::to_string)
+    }
+
     /// Whether this caller is the one to ask: the entry wants asking, no ask
     /// is already under way, and these readings ask at all.
     fn claim_ask(&self, entry: &mut Entry, wanted: bool) -> Option<u64> {

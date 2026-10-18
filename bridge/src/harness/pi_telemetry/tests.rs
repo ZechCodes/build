@@ -32,7 +32,7 @@ fn telemetry() -> PiTelemetry {
 }
 
 fn event(sequence: u64, kind: &str) -> Value {
-    json!({"sequence": sequence, "launch_id":"launch-one", "thread_id":"thread-one", "owner":"agent-one", "type":kind})
+    json!({"generation": 1, "sequence": sequence, "launch_id":"launch-one", "thread_id":"thread-one", "owner":"agent-one", "type":kind})
 }
 
 fn context(sequence: u64, tokens: Option<u64>) -> Value {
@@ -132,7 +132,7 @@ fn pi_foreign_and_replayed_observations_never_unlock_another_turn() {
 }
 
 #[test]
-fn pi_extension_failure_ends_and_reaps_the_owned_child() {
+fn pi_extension_failure_preserves_the_owned_child_and_ordinary_input() {
     use crate::harness::AgentSession;
     let directory = tempfile::tempdir().unwrap();
     let mut config = telemetry().config.clone();
@@ -150,12 +150,13 @@ fn pi_extension_failure_ends_and_reaps_the_owned_child() {
     let session =
         crate::pty::PtySession::spawn(&spec, None, portable_pty::PtySize::default()).unwrap();
     let exited = session.exited_within(std::time::Duration::from_secs(2));
-    // Always reclaim the fixture, including the expected RED implementation.
+    let ordinary = session.send_turn(&crate::harness::Turn::new("keep working"));
+    let compact = session.send_turn(&crate::harness::Turn::new("/compact"));
+    // Always reclaim only the fixture child after observing its survival.
     session.end();
-    assert!(
-        exited,
-        "extension failure must not leave an unobservable active child"
-    );
+    assert!(!exited, "compaction observation failure must never kill Pi");
+    assert!(ordinary.is_ok(), "ordinary input must survive degradation");
+    assert!(compact.is_err(), "Build compaction must stop after degradation");
     assert_eq!(
         session.compaction_policy().unwrap().enforcement,
         CompactionEnforcement::Unsupported
@@ -244,4 +245,57 @@ async fn pi_terminal_eof_preserves_final_unsupported_and_closes_activity() {
             .expect("failed Pi activity must close with its owner retained"),
         Err(broadcast::error::RecvError::Closed)
     ));
+}
+
+#[test]
+fn pi_lost_heartbeat_withdraws_policy_even_when_the_sink_cannot_report_failure() {
+    let telemetry = telemetry();
+    let started = Instant::now();
+    telemetry.observe(&event(1, "ready"));
+    telemetry.observe(&context(2, Some(101)));
+    telemetry.check_health(started, started + Duration::from_secs(11));
+    assert_eq!(telemetry.policy().enforcement, CompactionEnforcement::Unsupported);
+    assert!(!telemetry.automatic_due(Some(101)));
+    assert!(telemetry.sent(false).is_ok());
+    assert!(telemetry.sent(true).is_err());
+}
+
+#[test]
+fn pi_slow_mcp_initialization_has_a_startup_budget_and_heartbeat_health() {
+    let telemetry = telemetry();
+    let started = Instant::now();
+    telemetry.check_health(started, started + Duration::from_secs(61));
+    assert!(!telemetry.failed(), "two 30-second MCP calls must fit startup grace");
+    telemetry.observe(&event(1, "starting"));
+    telemetry.observe(&event(2, "heartbeat"));
+    telemetry.check_health(started, Instant::now() + Duration::from_secs(5));
+    assert!(!telemetry.failed());
+    telemetry.observe(&event(3, "ready"));
+    assert!(telemetry.confirmed());
+}
+
+#[test]
+fn pi_reload_accepts_a_new_generation_and_rejects_retired_replays() {
+    let telemetry = telemetry();
+    telemetry.observe(&event(1, "ready"));
+    telemetry.observe(&context(2, Some(101)));
+    telemetry.observe(&event(3, "working"));
+    let next = |sequence, kind| {
+        let mut value = event(sequence, kind);
+        value["generation"] = json!(2);
+        value
+    };
+    telemetry.observe(&next(1, "starting"));
+    assert!(!telemetry.confirmed());
+    assert_eq!(telemetry.snapshot().context, None);
+    telemetry.observe(&next(2, "ready"));
+    telemetry.observe(&next(3, "settled"));
+    assert_eq!(telemetry.snapshot().status, AgentStatus::Waiting);
+    telemetry.observe(&event(4, "working"));
+    telemetry.observe(&context(5, Some(999)));
+    assert_eq!(telemetry.snapshot().status, AgentStatus::Waiting);
+    assert_eq!(telemetry.snapshot().context, None);
+    telemetry.sent(false).unwrap();
+    telemetry.observe(&next(3, "settled"));
+    assert_eq!(telemetry.snapshot().status, AgentStatus::Working);
 }

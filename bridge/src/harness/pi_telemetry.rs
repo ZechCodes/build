@@ -101,11 +101,7 @@ impl PiTelemetry {
                     cursor,
                     |value| telemetry.observe(value),
                 );
-                if started.elapsed() >= Duration::from_secs(10)
-                    && telemetry.confirmation.load(Ordering::Acquire) == UNCONFIRMED
-                {
-                    telemetry.fail();
-                }
+                telemetry.check_health(started, Instant::now());
                 if telemetry.failed() {
                     on_failure();
                     break;
@@ -114,6 +110,14 @@ impl PiTelemetry {
             }
             telemetry.finish(cursor);
         });
+    }
+
+    fn check_health(&self, started: Instant, now: Instant) {
+        if now.saturating_duration_since(started) >= Duration::from_secs(10)
+            && self.confirmation.load(Ordering::Acquire) == UNCONFIRMED
+        {
+            self.fail();
+        }
     }
 
     fn finish(&self, mut cursor: super::transcript_activity::Cursor) {

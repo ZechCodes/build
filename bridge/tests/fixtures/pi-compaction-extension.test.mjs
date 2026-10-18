@@ -8,7 +8,7 @@ const source = readFileSync(new URL("../../src/harness/build-tools.ts", import.m
 const extension = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const policy = { tokens: 150000, enabled: true, owner: "agent-a", thread_id: "thread-a", launch_id: "launch-a" };
 
-function fixture(configuration = policy, sink) {
+function fixture(configuration = policy, sink, start = true) {
   const handlers = new Map();
   const records = [];
   const failures = [];
@@ -16,7 +16,8 @@ function fixture(configuration = policy, sink) {
   const telemetry = extension.registerCompactionTelemetry(pi, configuration, sink ?? ((record) => records.push(record)), (reason) => failures.push(reason));
   let usage = { tokens: 149999, contextWindow: 200000 };
   let idle = false;
-  const ctx = { getContextUsage: () => usage, isIdle: () => idle, compact: () => assert.fail("manual compaction must remain wrapper-owned") };
+  const ctx = { sessionManager: { getSessionId: () => configuration.owner }, hasPendingMessages: () => false, getContextUsage: () => usage, isIdle: () => idle, compact: () => assert.fail("manual compaction must remain wrapper-owned") };
+  if (start) handlers.get("session_start")?.({}, ctx);
   return { handlers, records, failures, telemetry, ctx,
     usage: (value) => { usage = value; }, idle: (value) => { idle = value; },
     emit: async (name, event = {}) => handlers.get(name)?.(event, ctx),
@@ -64,7 +65,7 @@ test("saved compaction success invalidates old usage before settling", async () 
   f.usage(undefined);
   f.idle(true);
   await f.emit("agent_settled");
-  assert.deepEqual(f.records.at(-2), { ...identity(), type: "context", tokens: null, window: null });
+  assert.deepEqual(withoutSequence(f.records.at(-2)), { ...identity(), type: "context", tokens: null, window: null });
 });
 
 function identity(configuration = policy) {
@@ -101,7 +102,7 @@ test("context hook failure reports fixed unsupported reason and terminal failure
   await f.emit("agent_start");
   await f.emit("agent_settled");
   assert.deepEqual(f.failures, ["telemetry_failed"]);
-  assert.deepEqual(f.records.at(-1), { ...identity(), type: "unsupported", reason: "telemetry_failed" });
+  assert.deepEqual(withoutSequence(f.records.at(-1)), { ...identity(), type: "unsupported", reason: "telemetry_failed" });
   assert.equal(JSON.stringify(f.records).includes("secret"), false);
 });
 
@@ -124,9 +125,48 @@ test("default sink writes scoped JSONL with private permissions", async () => {
   try {
     const handlers = new Map();
     const telemetry = extension.registerCompactionTelemetry({ on: (name, fn) => handlers.set(name, fn) }, { ...policy, log: path });
+    handlers.get("session_start")({}, { sessionManager: { getSessionId: () => policy.owner }, getContextUsage: () => undefined });
     telemetry.unsupported("extension_failed");
     const lines = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
-    assert.deepEqual(lines, [{ ...identity(), type: "ready" }, { ...identity(), type: "unsupported", reason: "extension_failed" }]);
+    assert.deepEqual(lines.map(withoutSequence).filter((r) => r.type !== "context"), [{ ...identity(), type: "ready" }, { ...identity(), type: "unsupported", reason: "extension_failed" }]);
     assert.equal(statSync(path).mode & 0o777, 0o600);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+function withoutSequence({ sequence: _sequence, ...record }) { return record; }
+
+test("ready waits for session identity and all events have increasing sequence", async () => {
+  const f = fixture(policy, undefined, false);
+  assert.equal(f.records.length, 0);
+  await f.emit("session_start");
+  await f.emit("agent_start");
+  assert.equal(f.records[0].type, "ready");
+  assert.deepEqual(f.records.map((r) => r.sequence), f.records.map((_r, i) => i + 1));
+  const wrong = fixture(policy, undefined, false);
+  wrong.ctx.sessionManager.getSessionId = () => "other-session";
+  await wrong.emit("session_start");
+  assert.equal(wrong.records.some((r) => r.type === "ready"), false);
+  assert.equal(wrong.records.at(-1).type, "unsupported");
+  assert.deepEqual(wrong.failures, ["session_identity_mismatch"]);
+});
+
+test("unsupported unsafe integer policy stays passive without rounding", async () => {
+  const f = fixture({ ...policy, tokens: null, tokens_decimal: "18446744073709551615", enabled: false });
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.throws(() => fixture({ ...policy, tokens: null, tokens_decimal: "18446744073709551615" }), /invalid compaction policy/);
+});
+
+test("manual success settles after native cleanup only if idle and no pending continuation", async () => {
+  const f = fixture();
+  await f.emit("session_compact", { reason: "manual" });
+  assert.equal(f.records.some((r) => r.type === "settled"), false);
+  f.idle(true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(f.records.at(-1).type, "settled");
+  const pending = fixture();
+  pending.idle(true);
+  pending.ctx.hasPendingMessages = () => true;
+  await pending.emit("session_compact", { reason: "manual" });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(pending.records.some((r) => r.type === "settled"), false);
 });

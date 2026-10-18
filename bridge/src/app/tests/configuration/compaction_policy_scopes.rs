@@ -725,7 +725,7 @@ fn compaction_policy_workspace_and_project_deletion_prune_only_owned_settings() 
 }
 
 #[test]
-fn compaction_policy_adopted_checkout_uses_workspace_scope_and_prunes_it_when_gone() {
+fn compaction_policy_adopted_checkout_uses_workspace_scope_and_keeps_it_when_gone() {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo_named(dir.path(), "source");
     let checkout = dir.path().join("external");
@@ -797,10 +797,9 @@ fn compaction_policy_adopted_checkout_uses_workspace_scope_and_prunes_it_when_go
         json!({"project_id": project}),
     );
     assert!(restarted.workspaces.get(&workspace).is_none());
-    assert!(
-        config_on_disk(dir.path())["workspace_compaction_thresholds"]
-            .get(&workspace)
-            .is_none()
+    assert_eq!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+        all_cells(Some(234_567))
     );
     assert_eq!(
         project_policy(&config_on_disk(dir.path()), &project),
@@ -912,10 +911,10 @@ fn compaction_policy_late_cleanup_failure_keeps_successful_delete_and_can_be_ret
     }
 }
 
-/// Checkout IDs derive from paths. If cleanup cannot persist, reusing that
-/// path also reuses its retained policy; tombstone handling belongs to #654.
+/// A missing checkout is not confirmed deletion. Its deterministic path ID
+/// recovers the configured policy when the checkout returns.
 #[test]
-fn compaction_policy_failed_adopted_cleanup_retains_policy_for_same_path_readoption() {
+fn compaction_policy_missing_adopted_checkout_retains_policy_across_save_restart_and_return() {
     let dir = tempfile::tempdir().unwrap();
     let repo = init_repo_named(dir.path(), "source");
     let checkout = dir.path().join("external");
@@ -943,7 +942,21 @@ fn compaction_policy_failed_adopted_cleanup_retains_policy_for_same_path_readopt
         )
         .unwrap();
     std::fs::remove_dir_all(&checkout).unwrap();
-    state.config_persist_failure = Some(ConfigPersistStep::Write);
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert!(state.workspaces.get(&workspace).is_none());
+    assert_eq!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+        cell(AgentProvider::Pi, Some(234_567))
+    );
+    state
+        .settings_set(&json!({"watch_agent_filed_tasks": true}))
+        .unwrap();
+    assert_eq!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+        cell(AgentProvider::Pi, Some(234_567))
+    );
+    drop(state);
+    let mut state = scope_app(dir.path());
     call(&mut state, "workspace.list", json!({"project_id": project}));
     assert!(state.workspaces.get(&workspace).is_none());
     assert_eq!(
@@ -955,7 +968,6 @@ fn compaction_policy_failed_adopted_cleanup_retains_policy_for_same_path_readopt
         &repo,
         &["worktree", "add", checkout.to_str().unwrap(), "external"],
     );
-    state.config_persist_failure = None;
     call(&mut state, "workspace.list", json!({"project_id": project}));
     assert_eq!(crate::worktree::external_worktree_id(&checkout), workspace);
     assert_eq!(

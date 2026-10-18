@@ -278,10 +278,16 @@ impl AppState {
         if let Some(workspace) = self.workspace_of_conversation(owner) {
             return Some(workspace);
         }
+        if self.projects.project_id_of(owner).is_some() {
+            return None;
+        }
         // A parked project's durable owner keeps its recorded project path,
         // but has no live registry binding until the source returns.
         let project = self.compaction_project_of(owner)?;
         let run = self.runs.get(owner)?;
+        if run.run.state.is_terminal() {
+            return None;
+        }
         self.workspaces
             .list(Some(&project))
             .into_iter()

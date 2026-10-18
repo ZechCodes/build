@@ -128,6 +128,24 @@ fn compaction_policy_legacy_conversation_zero_deserializes_as_inheritance() {
     }
 }
 
+fn assert_conversation_policy_read(
+    state: &mut AppState,
+    owner: &str,
+    agent: &str,
+    canonical: &str,
+    tokens: u64,
+) {
+    let resolved = state.resolve_compaction_policy(owner, agent).unwrap();
+    assert_eq!(resolved.tokens, tokens);
+    assert_eq!(
+        resolved.source,
+        crate::compaction::CompactionSource::Conversation(canonical.to_string())
+    );
+    let listed = state.handle(req("agent.list", json!({"entity_id": owner})));
+    assert_eq!(listed["ok"], true, "{listed:?}");
+    assert_eq!(listed["result"]["agents"][0]["max_context_tokens"], tokens);
+}
+
 #[test]
 fn compaction_policy_aliases_share_override_and_canonical_scopes_but_use_launch_provider() {
     use crate::compaction::{CompactionScope, CompactionSource};
@@ -203,15 +221,7 @@ fn compaction_policy_aliases_share_override_and_canonical_scopes_but_use_launch_
         Some(345_678)
     );
     for (entity, agent) in [(&owner, &canonical), (&alias_owner, &alias)] {
-        let resolved = state.resolve_compaction_policy(entity, agent).unwrap();
-        assert_eq!(resolved.tokens, 345_678);
-        assert_eq!(
-            resolved.source,
-            CompactionSource::Conversation(canonical.clone())
-        );
-        let listed = state.handle(req("agent.list", json!({"entity_id": entity})));
-        assert_eq!(listed["ok"], true, "{listed:?}");
-        assert_eq!(listed["result"]["agents"][0]["max_context_tokens"], 345_678);
+        assert_conversation_policy_read(&mut state, entity, agent, &canonical, 345_678);
     }
     for invalid in [0, 9_007_199_254_740_992] {
         assert!(state

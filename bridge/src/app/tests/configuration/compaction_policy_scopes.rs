@@ -518,10 +518,19 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
         .into_iter()
         .map(|provider| policy_agent(&mut state, &owner, provider))
         .collect::<Vec<_>>();
+    let workspace = named_workspace(&mut state, &project, "working");
+    let workspace_run = workspace_owner(&mut state, &workspace);
+    let workspace_agent = policy_agent(&mut state, &workspace_run, AgentProvider::Pi);
     state
         .patch_compaction_thresholds(
             CompactionScope::Project(project.clone()),
             &all_cells(Some(123_456)),
+        )
+        .unwrap();
+    state
+        .patch_compaction_thresholds(
+            CompactionScope::Workspace(workspace.clone()),
+            &cell(AgentProvider::Pi, Some(234_567)),
         )
         .unwrap();
     drop(state);
@@ -530,6 +539,14 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
     let mut parked = scope_app(dir.path());
     assert!(parked.project(&project).is_none());
     assert!(parked.projects.project_id_of(&owner).is_none());
+    assert!(parked.projects.project_id_of(&workspace_run).is_none());
+    assert_policy(
+        &parked,
+        &workspace_run,
+        &workspace_agent,
+        234_567,
+        CompactionSource::Workspace(workspace.clone()),
+    );
     for agent in &agents {
         assert_policy(
             &parked,
@@ -549,10 +566,21 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
         project_policy(&config_on_disk(dir.path()), &project),
         all_cells(Some(123_456))
     );
+    assert_eq!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+        cell(AgentProvider::Pi, Some(234_567))
+    );
     drop(parked);
     std::fs::rename(away, source).unwrap();
     let mut revived = scope_app(dir.path());
     assert_eq!(project_owner(&mut revived, &project), owner);
+    assert_policy(
+        &revived,
+        &workspace_run,
+        &workspace_agent,
+        234_567,
+        CompactionSource::Workspace(workspace),
+    );
     for agent in agents {
         assert_policy(
             &revived,

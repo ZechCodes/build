@@ -43,19 +43,20 @@ import {
   AGENT_STARTING,
   QUIET_SHAPE,
   agentCanInterrupt,
+  agentHeading,
   agentHasTerminal,
   agentIsUp,
   agentIsWatched,
   agentSessionAnswered,
   agentStartFailure,
-  agentHeading,
   agentRemovalWho,
-  agentWho,
   agentModelsSignature,
   canRemoveAgent,
   providerLabel,
+  projectPin,
   railBubbles,
   railEntity,
+  railHeaderName,
   railStatusShape,
   railWorkStatus,
   rememberedAgentId,
@@ -185,6 +186,7 @@ import { providerInSameFamily } from "./providerCatalog.js";
 import { mountComposerClearance } from "./composerClearance.js";
 import { createChatPanelMotion } from "./chatPanelMotion.js";
 import { createChatTitleMotion } from "./chatTitleMotion.js";
+import { createRailBubbleTooltip } from "./railBubbleTooltip.js";
 import { createAgentOverview, overviewAddFor, overviewHtml } from "./agentOverview.js";
 import { workspaceDisplayName } from "./workspaceModel.js";
 import { ICON_CHAT_OVERVIEW } from "./icons.js";
@@ -555,8 +557,11 @@ export function bubbleHtml(bubble) {
     title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}"
     aria-expanded="${Boolean(bubble.expanded)}" aria-controls="rail-panel">${ICON_CHAT_OVERVIEW}</button>`;
   const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
+  const tooltipFacts = bubble.tooltip || { name: bubble.title, work: "", provider: "", model: "", status: "idle" };
+  const tooltip = bubble.type === "add" ? ` title="${esc(bubble.title)}"`
+    : ` data-rail-tooltip="${esc(JSON.stringify(tooltipFacts))}"`;
   return `<button type="button" class="${bubbleClasses(bubble)}" data-bubble="${esc(bubble.type)}"
-    data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
+    data-agent="${esc(bubble.id)}"${pattern}${tooltip}
     aria-label="${esc(bubbleAccessibleName(bubble))}" aria-expanded="${Boolean(bubble.expanded)}"
     aria-controls="rail-panel">${bubbleFaceHtml(bubble)}</button>`;
 }
@@ -1149,6 +1154,7 @@ function mountRailOnContext(host, context, swap) {
   let watchedThreadKey = null;
   let tui = null; // the mounted PTY pane, in TUI mode
   let titleMotion = null;
+  const bubbleTooltip = createRailBubbleTooltip();
   const transientThreadCache = createThreadCache();
   let threadCache = transientThreadCache;
   // The rail's one selection (#148): `selectedId` says whose conversation, and
@@ -1895,6 +1901,7 @@ function mountRailOnContext(host, context, swap) {
       name: projectName || projectAgent.projectId,
       entityId: projectOwner,
       agents: withRollups(onProjectAgentRail ? stripAgents() : alongsideEntity.agents),
+      pinnedAgentId: onProjectAgentRail ? entity.pinnedAgentId : alongsideEntity.pinnedAgentId,
       active: onProjectAgentRail && selectedKind === "agent",
       openAgentId: onProjectAgentRail ? selectedId : null,
     };
@@ -1910,6 +1917,7 @@ function mountRailOnContext(host, context, swap) {
     // The line is not a control: nothing to press, nothing to drop on.
     if (bubble.type === "separator") return;
     button.onclick = () => pressBubble(button.dataset.bubble, button.dataset.agent);
+    if (bubble.type !== "add") bubbleTooltip.wire(button);
     wireBubbleDrop(button);
     const canvas = bubble.pattern ? button.querySelector("canvas.rail-glyph") : null;
     if (!canvas) return;
@@ -1987,6 +1995,7 @@ function mountRailOnContext(host, context, swap) {
 
   const paintStrip = (strip, bubbles) => {
     const painted = patchList(strip, bubbles, { keyOf: bubbleKey, render: bubbleHtml, wire: wireBubble });
+    bubbleTooltip.refresh();
     releaseFacesLeftBehind(new Set(bubbles.map(bubbleKey)));
     syncStripPainters(bubbles, painted, faces);
   };
@@ -2262,13 +2271,16 @@ function mountRailOnContext(host, context, swap) {
   };
 
   const mountTitleMotion = (panel) => {
-    const title = panel.querySelector(".rail-who");
+    const title = panel.querySelector(".rail-who-work");
     if (title) titleMotion = createChatTitleMotion(title);
   };
 
   const syncPanelTitle = (panel, fingerprint, title) => {
     if (panel.dataset.title === fingerprint) return;
-    titleMotion?.show(title);
+    const who = panel.querySelector(".rail-who");
+    who.querySelector(".rail-who-name").textContent = title.name;
+    who.title = title.text || title.name;
+    titleMotion?.show({ text: title.text, title: title.text, starting: title.starting });
     panel.dataset.title = fingerprint;
   };
 
@@ -2322,14 +2334,12 @@ function mountRailOnContext(host, context, swap) {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     const agent = agentInFocus();
-    // The head wears the topic the agent named its work with, and a shimmering
-    // "Starting" until it has. Hovering it says the topic in full — a head too
-    // narrow for a long topic still gives it up on hover — and the harness name
-    // while there is no topic to say. The harness icon beside it says which
-    // harness either way.
-    const who = agent ? agentWho(agent) : entity.kind === "task" ? "Task agent" : "New agent";
+    // The name remains visible while the topic beneath it changes. Until the
+    // agent names its work, the work line says Starting and shimmers.
+    const isProjectPin = entity.kind === "project" && agent?.id === projectPin(visibleAgents(), entity.pinnedAgentId)?.id;
+    const who = agent ? railHeaderName(agent, isProjectPin) : entity.kind === "task" ? "Task agent" : "New agent";
     const removalWho = agent ? agentRemovalWho(agent) : who;
-    const heading = agent ? agentHeading(agent) : { text: who, starting: false };
+    const heading = agent ? agentHeading(agent) : null;
     const provider = agent?.provider || "";
     const settled = settledAgentInFocus();
     const removable = canRemoveAgent({
@@ -2347,15 +2357,12 @@ function mountRailOnContext(host, context, swap) {
     // where the human left it.
     const shownMode = shownPanelMode();
     if (shownMode !== "chat" || addingAgent() || rememberedConversationIsLoading()) leaveUnreadMarker();
-    // Structural head changes replace its controls; a topic change keeps this
-    // head mounted and moves only its title below — so the head is fingerprinted
-    // by WHICH agent it is open on rather than by what that agent is called.
-    // The id is what tells two starting agents on one harness apart: without it
-    // a strip of two unnamed Claude Codes has one fingerprint, and switching
-    // between them would leave the first one's head standing.
+    // Structural changes replace the controls. Names and topics update inside
+    // the kept head; only the work line runs the erase/type animation.
+    // The id still distinguishes two unnamed agents on one harness.
     const chip = projectChip();
     const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal, chipMark(chip), agentModelBadgeHtml(agent)]);
-    const wantedTitle = JSON.stringify([who, heading.text, heading.starting]);
+    const wantedTitle = JSON.stringify([who, heading?.text, heading?.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
@@ -2422,7 +2429,7 @@ function mountRailOnContext(host, context, swap) {
       }
       panel.dataset.conversation = wantedConversation;
     }
-    syncPanelTitle(panel, wantedTitle, { text: heading.text, title: who, starting: heading.starting });
+    syncPanelTitle(panel, wantedTitle, { name: who, text: heading?.text, starting: heading?.starting });
     // The remove button names the agent by its topic too, and a topic arriving
     // is not a structural change: it re-reads on the title's beat rather than
     // waiting for a head the rail has no reason to rebuild.
@@ -4300,6 +4307,7 @@ function mountRailOnContext(host, context, swap) {
   const stopListening = () => {
     if (!listening) return;
     listening = false;
+    bubbleTooltip.dispose();
     unregisterSyncThread();
     overview.close();
     chatLanding.dispose();
@@ -4370,6 +4378,7 @@ function mountRailOnContext(host, context, swap) {
     },
     dispose() {
       disposed = true;
+      bubbleTooltip.dispose();
       stopHearingRetirement();
       stopListening();
       for (const marker of unreadMarkers.values()) marker.leave();

@@ -15,7 +15,7 @@ import { agentModelBadge } from "./agentModelBadge.js";
 // stand against upstream" actually live — the per-agent payload only carries
 // a working boolean, with no stamp to clock it by.
 
-import { agentInitials, agentName } from "./agentName.js";
+import { agentDisplayName, agentInitials, agentName } from "./agentName.js";
 import { entityIdOf } from "./entityId.js";
 import { gitStatusCells } from "./gitStatusCells.js";
 import { unreadReasonText } from "./inbox.js";
@@ -48,20 +48,10 @@ export function agentHeading(agent) {
   return topic ? { text: topic, starting: false } : { text: STARTING_HEADING, starting: true };
 }
 
-/** Which agent this is, in words — its NAME when it has one, else the topic it
- *  named its work with, and its harness while it has neither.
- *
- *  The name comes first because it is the one of the three that is about the
- *  agent rather than about what the agent is doing: a topic moves with the
- *  work and a harness is shared by every agent running on it.
- *
- *  The ordinal stays deliberately absent. It is the agent's place on the
- *  strip, and the strip already says it in the face the bubble wears. */
-export function agentWho(agent) {
-  const name = agentName(agent);
-  if (name) return name;
-  const heading = agentHeading(agent);
-  return heading.starting ? providerLabel(agent && agent.provider) : heading.text;
+/** The stable identity above the moving work line. The unnamed project pin
+ * keeps the same label its bubble and accessible name have always used. */
+export function railHeaderName(agent, projectPin = false) {
+  return projectPin && !agentName(agent) ? "Project agent" : agentDisplayName(agent);
 }
 
 /** Whether this agent has a terminal to drop into.
@@ -201,6 +191,38 @@ export function bubbleTip(agent) {
   return news ? `${title} — ${news}` : title;
 }
 
+/** All tooltip facts come from the roster already in hand. The clock is
+ * formatted when shown so a cached working_since keeps advancing locally. */
+const agentTooltipStatus = (agent) => {
+  if (agent.working) return "working";
+  return agent.state === AGENT_STARTING ? "starting" : "idle";
+};
+
+const descendantTooltipStatus = (agent) => {
+  if (agent.working || !(agent.agents_running > 0)) return "";
+  const noun = agent.agents_running === 1 ? "agent" : "agents";
+  return `${agent.agents_running} ${noun} working`;
+};
+
+const tooltipModel = (agent, badge) => String(badge?.title || agent?.model_label || agent?.active_model || agent?.model || "").trim();
+
+const agentBubbleTooltip = (agent, purpose = "") => {
+  const details = agent || {};
+  const badge = agentModelBadge(agent);
+  return {
+    name: railHeaderName(agent, purpose === "Project agent"),
+    work: String(details.topic || details.title || "").trim(),
+    purpose,
+    provider: providerLabel(details.provider),
+    model: tooltipModel(details, badge),
+    status: agentTooltipStatus(details),
+    workingTime: details.working ? details.working_time || null : null,
+    watch: agentIsWatched(agent) ? "" : "Not watching",
+    descendants: descendantTooltipStatus(details),
+    news: bubbleNews(agent, agentHeading(agent)),
+  };
+};
+
 const supportsMultipleAgents = (kind) => kind === "branch" || kind === "workspace";
 const addAgentTitle = (kind) => kind === "project" ? "Add agent" : `Add another agent to this ${kind === "workspace" ? "workspace" : "branch"}`;
 
@@ -243,7 +265,19 @@ export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) |
  * none open, while they watch none of them; `projectAgentOnTheStrip` says when
  * the strip carries it at all.
  */
-export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null } = {}) {
+export const projectPin = (agents, pinnedAgentId) => pinnedAgentId
+  ? agents.find((agent) => agent.id === pinnedAgentId)
+  : agents.find((agent) => agent.project_role === "coordinator") || (agents.length === 1 ? agents[0] : undefined);
+
+const projectBubbleTooltip = (pin, unwatched) => {
+  const facts = pin ? agentBubbleTooltip(pin, "Project agent") : {
+    name: "Project agent", work: "", purpose: "Project agent", provider: "", model: "", status: "idle",
+    workingTime: null, news: "",
+  };
+  return { ...facts, watch: unwatched ? "Not watching" : "" };
+};
+
+export function projectAgentBubble({ name = "", entityId = null, agents = [], active = false, openAgentId = null, pinnedAgentId = null } = {}) {
   const unwatched = projectAgentMarked(agents, active, openAgentId);
   return {
     type: "project",
@@ -251,6 +285,7 @@ export function projectAgentBubble({ name = "", entityId = null, agents = [], ac
     label: projectInitial(name),
     pattern: null,
     title: "Project agent",
+    tooltip: projectBubbleTooltip(projectPin(agents, pinnedAgentId), unwatched),
     unwatched,
     active,
     unread: rosterUnreadCount(agents),
@@ -303,7 +338,7 @@ export function railBubbles(given = {}) {
 function projectWorkerBubbles({ agents, selectedId, selectedKind, canAdd, projectName, pinnedAgentId }) {
   const pin = agents.find((agent) => agent.id === pinnedAgentId);
   if (!pin) return [];
-  const pinned = ownBubbles({ agents: [pin], selectedId, selectedKind, kind: "project", canAdd: false, projectName, alwaysVisible: true });
+  const pinned = ownBubbles({ agents: [pin], selectedId, selectedKind, kind: "project", canAdd: false, projectName, alwaysVisible: true, pinnedAgentId });
   const workers = agents.filter((agent) => agent.id !== pinnedAgentId);
   const owned = workers.length ? ownBubbles({ agents: workers, selectedId, selectedKind, kind: "workspace", canAdd: false }) : [];
   if (canAdd) owned.push(addBubble("project", selectedKind));
@@ -358,16 +393,21 @@ const onTheStrip = (agent, selectedId, selectedKind) =>
 const UNWATCHED_TIP = "Not watching";
 
 /** The bubbles of the work item the rail is standing on, and nothing else. */
-function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName, alwaysVisible = false }) {
+function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName, alwaysVisible = false, pinnedAgentId = null }) {
   const onProjectPage = kind === "project";
+  const projectPinId = projectPin(agents, pinnedAgentId)?.id;
   const face = (pattern) => (onProjectPage ? projectFace(projectName) : { label: "", pattern });
   if (!agents.length) {
+    const description = onProjectPage ? "Project agent" : chatCapable
+      ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace";
     return [
       {
         type: "ghost",
         id: "",
         ...face(agentPattern(1)),
-        title: onProjectPage ? "Project agent" : chatCapable ? "Send a message to start an agent here" : "No agent conversation is attached to this workspace",
+        title: description,
+        tooltip: { name: onProjectPage ? "Project agent" : "New agent", work: "", purpose: onProjectPage ? "Project agent" : "",
+          description, provider: "", model: "", status: "idle", workingTime: null, news: "" },
         active: selectedKind === "agent",
         unread: 0,
         working: false,
@@ -382,6 +422,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
     // pattern, which says as much as a letter cut from an ordinal would.
     initials: agentInitials(agent),
     title: onProjectPage ? "Project agent" : agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
+    tooltip: agentBubbleTooltip(agent, onProjectPage && agent.id === projectPinId ? "Project agent" : ""),
     unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
     unread: conversationUnreadCount(agent),

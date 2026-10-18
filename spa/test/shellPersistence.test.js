@@ -467,7 +467,10 @@ describe("the strip on a page standing on the project", () => {
       const badge = bubble?.querySelector(".rail-count");
       expect(badge?.textContent).toBe("2");
       expect(badge?.hidden).toBe(false);
-      expect(bubble?.title).toBe("Project agent");
+      expect(bubble?.hasAttribute("title")).toBe(false);
+      expect(JSON.parse(bubble?.dataset.railTooltip || "{}")).toMatchObject({
+        purpose: "Project agent", name: "Project agent", work: "Plan the release",
+      });
     }, { timeout: 30_000, interval: 5 });
     const bubble = document.querySelector('#agent-rail .rail-strip [data-agent="pa-1"]');
     expect(bubble.getAttribute("aria-label")).toBe("Project agent, 2 unread");

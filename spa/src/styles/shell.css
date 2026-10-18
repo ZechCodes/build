@@ -1023,6 +1023,27 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
    through rather than one of the watched. */
 .rail-bubble-unwatched { border-style:dashed; border-color:var(--line3); }
 .rail-bubble-unwatched .rail-glyph { opacity:.45; }
+.rail-bubble-tooltip { position:fixed; z-index:100; box-sizing:border-box; width:max-content;
+  max-width:min(280px, calc(100vw - 16px)); max-height:calc(100vh - 16px);
+  overflow:hidden; overflow-wrap:anywhere; pointer-events:none;
+  padding:9px 11px; border:1px solid var(--line2); border-radius:8px;
+  background:var(--panel2); color:var(--ink); box-shadow:0 8px 24px var(--shadow-soft);
+  font:500 11px/1.35 var(--sans); }
+.rail-bubble-tooltip-name { font-size:12px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rail-bubble-tooltip-work { margin-top:3px; color:var(--ink2); display:-webkit-box;
+  -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; }
+.rail-bubble-tooltip-status { margin-top:6px; color:var(--accent); font-variant-numeric:tabular-nums; }
+.rail-bubble-tooltip-detail, .rail-bubble-tooltip-news { margin-top:3px; color:var(--dim);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media (max-height:240px) {
+  .rail-bubble-tooltip { padding:6px 9px; }
+  .rail-bubble-tooltip-work { -webkit-line-clamp:2; line-clamp:2; }
+  .rail-bubble-tooltip-status { margin-top:3px; }
+  .rail-bubble-tooltip-detail, .rail-bubble-tooltip-news { margin-top:2px; }
+}
+@media (max-height:200px) {
+  .rail-bubble-tooltip-work { -webkit-line-clamp:1; line-clamp:1; }
+}
 /* The chat overview's control (#117): right after the `+`, and a bare icon —
    no face, no ring, no slab — because it is not a conversation. The box stays
    bubble-sized so the strip's rhythm and the press target do not shrink. It is
@@ -1173,8 +1194,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .rail-harness-icon-dark { display:none; }
 :root[data-theme="dark"] .rail-harness-icon-light { display:none; }
 :root[data-theme="dark"] .rail-harness-icon-dark { display:block; }
-.rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; font-size:15px; font-weight:650; }
+.rail-who { flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center;
+  overflow:hidden; white-space:nowrap; }
+.rail-who-name, .rail-who-work { display:block; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.rail-who-name { font-size:15px; font-weight:650; line-height:18px; }
+.rail-who-work { min-height:14px; color:var(--dim); font-size:11px; line-height:14px; }
 .rail-mode { flex:none; border:1px solid var(--line); border-radius:6px; background:none;
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }

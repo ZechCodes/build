@@ -11,6 +11,7 @@ const WORKER = '[data-bubble="agent"][data-agent="project-worker"]';
 const PIN = '[data-bubble="agent"][data-agent="project-pin"]';
 const INPUT = ".thread-composer textarea";
 const VIEWPORTS = [{ width: 390, height: 844 }, { width: 1280, height: 900 }];
+const tooltipFacts = async (page, selector) => JSON.parse(await page.locator(selector).getAttribute("data-rail-tooltip"));
 
 // This fixture has no real bridge, pairing or account. The replica and the
 // device repository are production objects; only RPC answers are stood in.
@@ -131,10 +132,13 @@ for (const { state, news } of [
       await page.locator(`${WORKER} .rail-count:not([hidden])`).waitFor();
       expect(await page.locator(`${WORKER} .rail-count`).textContent()).toBe("2");
       const title = `Project worker · Project worker — ${news}`;
-      expect(await page.locator(WORKER).getAttribute("title")).toBe(title);
+      expect(await page.locator(WORKER).getAttribute("title")).toBeNull();
+      expect(await tooltipFacts(page, WORKER)).toMatchObject({ name: "Project worker", work: "Project worker",
+        status: state === "working" ? "working" : "idle" });
       expect(await page.getByRole("button", { name: `${title}, 2 unread`, exact: true }).count()).toBe(1);
       expect(await page.getByRole("button", { name: "Project agent, 2 unread", exact: true }).count()).toBe(1);
-      expect(await page.locator(PIN).getAttribute("title")).toBe("Project agent");
+      expect(await page.locator(PIN).getAttribute("title")).toBeNull();
+      expect(await tooltipFacts(page, PIN)).toMatchObject({ name: "Build coordinator", purpose: "Project agent" });
       await page.evaluate(async () => {
         const { cache } = window.__layoutModules;
         window.__workerRoster.agents = window.__workerRoster.agents.map((agent) => ({ ...agent, unread_count: 0 }));
@@ -183,7 +187,8 @@ it("announces a workspace agent's unread badge through the same accessible name"
     await page.locator(`${selector} .rail-count:not([hidden])`).waitFor();
     expect(await page.locator(`${selector} .rail-count`).textContent()).toBe("2");
     const title = "Workspace editor · Workspace editor — Blocked — the agent needs you";
-    expect(await page.locator(selector).getAttribute("title")).toBe(title);
+    expect(await page.locator(selector).getAttribute("title")).toBeNull();
+    expect(await tooltipFacts(page, selector)).toMatchObject({ name: "Workspace editor", work: "Workspace editor" });
     expect(await page.getByRole("button", { name: `${title}, 2 unread`, exact: true }).count()).toBe(1);
   });
 });

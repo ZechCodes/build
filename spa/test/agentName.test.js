@@ -29,15 +29,14 @@ describe("what to call an agent", () => {
 
 describe("the renderers that used to print an ordinal", () => {
   it("names an agent in the rail, and keeps the topic after it", async () => {
-    const { agentWho, bubbleTip } = await import("../src/core/agentRailModel.js");
+    const { railHeaderName, bubbleTip } = await import("../src/core/agentRailModel.js");
     const named = { name: "Rail scroll", topic: "Fix the jump", ordinal: 2, provider: "claude" };
-    expect(agentWho(named)).toBe("Rail scroll");
+    expect(railHeaderName(named)).toBe("Rail scroll");
     expect(bubbleTip(named)).toContain("Rail scroll");
     expect(bubbleTip(named)).toContain("Fix the jump");
 
-    // Unnamed reads exactly as it did: the topic, or the harness before there
-    // is one.
-    expect(agentWho({ topic: "Fix the jump", ordinal: 2 })).toBe("Fix the jump");
+    // The header stays on identity while the work topic moves.
+    expect(railHeaderName({ topic: "Fix the jump", ordinal: 2 })).toBe("Agent 2");
     expect(bubbleTip({ topic: "Fix the jump", ordinal: 2 })).toBe("Fix the jump");
   });
 

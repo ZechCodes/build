@@ -34,8 +34,8 @@ pub mod claude_compaction;
 mod cleanup;
 pub(crate) mod codex;
 pub(crate) mod codex_app_server;
-pub mod compaction;
 pub mod codex_compaction;
+pub mod compaction;
 #[cfg(test)]
 mod identity_env_tests;
 pub mod installed;

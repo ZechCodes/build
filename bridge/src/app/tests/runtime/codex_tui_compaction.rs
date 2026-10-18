@@ -246,24 +246,20 @@ fn assert_open(agent: &CompactingAgent, session: &dyn AgentSession, key: &TabKey
     assert!(state.compactions.ready_agents().is_empty());
 }
 
-async fn native_compaction_lifecycle(provider: AgentProvider) {
-    let directory = tempfile::tempdir().unwrap();
-    let agent = CompactingAgent::without_background_services().with_context(
-        if provider == AgentProvider::CodexAppServer {
-            800_000
-        } else {
-            900_000
-        },
-    );
-    let (session, key) = launch(&agent, directory.path(), provider);
+async fn start_and_queue(
+    agent: &CompactingAgent,
+    session: &dyn AgentSession,
+    directory: &Path,
+    provider: AgentProvider,
+) -> Option<u32> {
     wait_for(Duration::from_secs(5), || {
-        session.0.opening_succeeded().then_some(())
+        session.opening_succeeded().then_some(())
     })
     .await
     .expect("provider opened");
-    let pid = session.0.terminal().and_then(|terminal| terminal.pid());
-    session.0.send_turn(&Turn::new("long tool loop")).unwrap();
-    reached(directory.path(), "started").await;
+    let pid = session.terminal().and_then(|terminal| terminal.pid());
+    session.send_turn(&Turn::new("long tool loop")).unwrap();
+    reached(directory, "started").await;
     if provider == AgentProvider::CodexAppServer {
         // The changed reading proves the status pump has consumed Working,
         // including any older startup Waiting snapshot, before input queues.
@@ -279,65 +275,62 @@ async fn native_compaction_lifecycle(provider: AgentProvider) {
         warm: "queued follow-up".into(),
     });
     agent.state.lock().unwrap().delivery_queue.enqueue(turn);
-    release(directory.path(), "compact");
-    reached(directory.path(), "attempted").await;
+    pid
+}
+
+async fn assert_failed_attempt(
+    agent: &CompactingAgent,
+    session: &dyn AgentSession,
+    key: &TabKey,
+    directory: &Path,
+) {
+    release(directory, "compact");
+    reached(directory, "attempted").await;
     // Several follower polls while native work is deliberately held open.
     tokio::time::sleep(Duration::from_millis(350)).await;
-    assert_open(&agent, session.0.as_ref(), &key);
+    assert_open(agent, session, key);
     assert_eq!(
-        completed_compactions(&agent),
+        completed_compactions(agent),
         0,
         "failures, foreign records, old history and terminal banners cannot claim success"
     );
     assert_eq!(agent.agent().last_context_tokens, Some(900_000));
-    if let Some(status) = session.0.status_changed() {
+    if let Some(status) = session.status_changed() {
         assert_eq!(status.borrow().context.unwrap().context_tokens, 900_000);
     }
     assert_eq!(
-        std::fs::read_to_string(directory.path().join("stdin.txt"))
+        std::fs::read_to_string(directory.join("stdin.txt"))
             .unwrap()
             .lines()
             .count(),
         1
     );
+}
 
-    release(directory.path(), "success");
-    reached(directory.path(), "compacted").await;
+async fn assert_successful_boundary(
+    agent: &CompactingAgent,
+    session: &dyn AgentSession,
+    key: &TabKey,
+    directory: &Path,
+    pid: Option<u32>,
+) {
+    release(directory, "success");
+    reached(directory, "compacted").await;
     wait_for(Duration::from_secs(5), || {
-        (completed_compactions(&agent) == 1).then_some(())
+        (completed_compactions(agent) == 1).then_some(())
     })
     .await
     .expect("native completion reached the real activity pump");
-    assert_open(&agent, session.0.as_ref(), &key);
-    assert_eq!(
-        session.0.terminal().and_then(|terminal| terminal.pid()),
-        pid
-    );
-    if let Some(status) = session.0.status_changed() {
+    assert_open(agent, session, key);
+    assert_eq!(session.terminal().and_then(|terminal| terminal.pid()), pid);
+    if let Some(status) = session.status_changed() {
         assert_eq!(status.borrow().context.unwrap().context_tokens, 0);
         assert_eq!(status.borrow().context.unwrap().cache_read_tokens, 7);
     }
+}
 
-    release(directory.path(), "finish");
-    reached(directory.path(), "turn-ended").await;
-    if provider == AgentProvider::Codex {
-        session
-            .0
-            .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
-    }
-    if provider == AgentProvider::Codex {
-        agent
-            .state
-            .lock()
-            .unwrap()
-            .record_agent_working_since(RUN, &agent.agent_id, None);
-        deliver_pending_agent_turns(&agent.state);
-    }
-    // The app-server's real status pump releases its queued turn automatically.
-    reached(directory.path(), "follow-up").await;
-    deliver_pending_agent_turns(&agent.state);
-    assert_eq!(agent.still_queued(), 0);
-    let input = std::fs::read_to_string(directory.path().join("stdin.txt")).unwrap();
+fn assert_delivered_once(directory: &Path, provider: AgentProvider) {
+    let input = std::fs::read_to_string(directory.join("stdin.txt")).unwrap();
     assert_eq!(
         input.lines().count(),
         2,
@@ -353,8 +346,48 @@ async fn native_compaction_lifecycle(provider: AgentProvider) {
         assert!(frames.iter().all(|frame| frame["method"] == "turn/start"));
         assert_eq!(frames[1]["params"]["input"][0]["text"], "queued follow-up");
     }
-    assert_eq!(session.0.session_id().as_deref(), Some(SESSION));
-    assert_eq!(session.0.epitaph(), None);
+}
+
+async fn finish_and_deliver(
+    agent: &CompactingAgent,
+    session: &dyn AgentSession,
+    directory: &Path,
+    provider: AgentProvider,
+) {
+    release(directory, "finish");
+    reached(directory, "turn-ended").await;
+    if provider == AgentProvider::Codex {
+        session.backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+        agent
+            .state
+            .lock()
+            .unwrap()
+            .record_agent_working_since(RUN, &agent.agent_id, None);
+        deliver_pending_agent_turns(&agent.state);
+    }
+    // The app-server's real status pump releases its queued turn automatically.
+    reached(directory, "follow-up").await;
+    deliver_pending_agent_turns(&agent.state);
+    assert_eq!(agent.still_queued(), 0);
+    assert_delivered_once(directory, provider);
+    assert_eq!(session.session_id().as_deref(), Some(SESSION));
+    assert_eq!(session.epitaph(), None);
+}
+
+async fn native_compaction_lifecycle(provider: AgentProvider) {
+    let directory = tempfile::tempdir().unwrap();
+    let agent = CompactingAgent::without_background_services().with_context(
+        if provider == AgentProvider::CodexAppServer {
+            800_000
+        } else {
+            900_000
+        },
+    );
+    let (session, key) = launch(&agent, directory.path(), provider);
+    let pid = start_and_queue(&agent, session.0.as_ref(), directory.path(), provider).await;
+    assert_failed_attempt(&agent, session.0.as_ref(), &key, directory.path()).await;
+    assert_successful_boundary(&agent, session.0.as_ref(), &key, directory.path(), pid).await;
+    finish_and_deliver(&agent, session.0.as_ref(), directory.path(), provider).await;
 }
 
 #[tokio::test]

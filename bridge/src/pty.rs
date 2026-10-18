@@ -454,13 +454,13 @@ impl PtySession {
                 .map(|config| Arc::new(crate::harness::pi_telemetry::PiTelemetry::new(*config))),
         };
         if let Some(telemetry) = &session.pi_telemetry {
-            let child = Arc::clone(&session.child);
+            let last_activity = Arc::clone(&session.last_activity);
             telemetry.follow(Arc::downgrade(&session.output_tx), move || {
-                // This handle owns exactly the launched child. Reap it even
-                // when nobody is polling a session whose extension failed.
-                let mut child = child.lock().unwrap();
-                let _ = child.kill();
-                let _ = child.wait();
+                if last_activity.lock().unwrap().elapsed() < AGENT_WORKING_WINDOW {
+                    AgentStatus::Working
+                } else {
+                    AgentStatus::Waiting
+                }
             });
         }
         Ok(session)
@@ -630,7 +630,7 @@ impl AgentSession for PtySession {
     fn opening_succeeded(&self) -> bool {
         self.pi_telemetry.as_ref().map_or_else(
             || matches!(self.status(), AgentStatus::Waiting | AgentStatus::Working),
-            |telemetry| telemetry.confirmed(),
+            |telemetry| telemetry.confirmed() || telemetry.failed(),
         )
     }
 
@@ -644,6 +644,10 @@ impl AgentSession for PtySession {
         &self,
     ) -> Option<&crate::harness::compaction::AppliedCompactionPolicy> {
         self.compaction_policy()
+    }
+
+    fn observes_compaction_start(&self) -> bool {
+        self.pi_telemetry.is_some()
     }
 
     fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
@@ -701,7 +705,11 @@ impl AgentSession for PtySession {
     fn status(&self) -> AgentStatus {
         match self.exit_code() {
             Some(code) => AgentStatus::Ended { code: Some(code) },
-            None if self.pi_telemetry.is_some() => {
+            None if self
+                .pi_telemetry
+                .as_ref()
+                .is_some_and(|telemetry| !telemetry.failed()) =>
+            {
                 self.pi_telemetry.as_ref().unwrap().snapshot().status
             }
             None if self.idle_for() < AGENT_WORKING_WINDOW => AgentStatus::Working,

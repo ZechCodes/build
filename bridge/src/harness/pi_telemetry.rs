@@ -28,6 +28,9 @@ const UNAVAILABLE: u8 = 2;
 #[derive(Default)]
 struct State {
     sequence: u64,
+    generation: u64,
+    last_observed: Option<Instant>,
+    shutdown: bool,
     pending: bool,
     compacting: bool,
 }
@@ -35,6 +38,9 @@ struct State {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Event {
+    Starting,
+    Heartbeat,
+    Shutdown,
     Ready,
     Working,
     Context {
@@ -86,7 +92,7 @@ impl PiTelemetry {
     pub(crate) fn follow(
         self: &Arc<Self>,
         alive: super::transcript_activity::TerminalAlive,
-        on_failure: impl FnOnce() + Send + 'static,
+        fallback_status: impl Fn() -> AgentStatus + Send + 'static,
     ) {
         let telemetry = Arc::clone(self);
         std::thread::spawn(move || {
@@ -103,8 +109,7 @@ impl PiTelemetry {
                 );
                 telemetry.check_health(started, Instant::now());
                 if telemetry.failed() {
-                    on_failure();
-                    break;
+                    telemetry.transition(fallback_status());
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
@@ -113,9 +118,16 @@ impl PiTelemetry {
     }
 
     fn check_health(&self, started: Instant, now: Instant) {
-        if now.saturating_duration_since(started) >= Duration::from_secs(10)
-            && self.confirmation.load(Ordering::Acquire) == UNCONFIRMED
-        {
+        let state = self.state.lock().unwrap();
+        // MCP initialize and tools/list each have a 30-second request budget.
+        // Once the extension starts, its heartbeat covers both initialization
+        // and idle/working periods; losing the sink withdraws support safely.
+        let (last, budget) = state
+            .last_observed
+            .map_or((started, Duration::from_secs(90)), |last| {
+                (last, Duration::from_secs(10))
+            });
+        if now.saturating_duration_since(last) >= budget {
             self.fail();
         }
     }
@@ -138,7 +150,7 @@ impl PiTelemetry {
                 break;
             }
         }
-        if !self.confirmed() {
+        if !self.state.lock().unwrap().shutdown {
             self.fail();
         }
         self.transition(AgentStatus::Ended { code: None });
@@ -185,7 +197,7 @@ impl PiTelemetry {
         if self.draining.load(Ordering::Acquire) {
             return Err(HarnessError::Session("Pi session has ended".into()));
         }
-        if self.failed() {
+        if compaction && self.failed() {
             return Err(HarnessError::Unsupported(
                 "Pi compaction extension is unavailable".into(),
             ));
@@ -206,11 +218,13 @@ impl PiTelemetry {
     }
 
     pub(crate) fn observe(&self, value: &Value) {
-        if !self.matches_identity(value) || self.confirmation.load(Ordering::Acquire) == UNAVAILABLE
-        {
+        if !self.matches_identity(value) {
             return;
         }
         let mut state = self.state.lock().unwrap();
+        if !self.admit_generation(value, &mut state) || self.failed() || state.shutdown {
+            return;
+        }
         let Some(sequence) = value["sequence"].as_u64() else {
             self.fail();
             return;
@@ -223,10 +237,38 @@ impl PiTelemetry {
             return;
         }
         state.sequence = sequence;
+        state.last_observed = Some(Instant::now());
         match serde_json::from_value::<Event>(value.clone()) {
             Ok(event) => self.apply(event, &mut state),
             Err(_) => self.fail(),
         }
+    }
+
+    fn admit_generation(&self, value: &Value, state: &mut State) -> bool {
+        let Some(generation) = value["generation"]
+            .as_u64()
+            .filter(|generation| *generation > 0)
+        else {
+            self.fail();
+            return false;
+        };
+        if generation <= state.generation {
+            return generation == state.generation;
+        }
+        if value["sequence"] != 1 || !matches!(value["type"].as_str(), Some("starting" | "ready")) {
+            self.fail();
+            return false;
+        }
+        let pending = state.pending && state.generation == 0;
+        *state = State {
+            generation,
+            pending,
+            ..State::default()
+        };
+        self.confirmation.store(UNCONFIRMED, Ordering::Release);
+        self.clear_context();
+        self.transition(AgentStatus::Starting);
+        true
     }
 
     fn matches_identity(&self, value: &Value) -> bool {
@@ -238,6 +280,12 @@ impl PiTelemetry {
 
     fn apply(&self, event: Event, state: &mut State) {
         match event {
+            Event::Starting | Event::Heartbeat => {}
+            Event::Shutdown => {
+                state.shutdown = true;
+                self.clear_context();
+                self.transition(AgentStatus::Starting);
+            }
             Event::Ready => {
                 if self
                     .confirmation

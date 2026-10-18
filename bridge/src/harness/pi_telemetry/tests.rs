@@ -156,7 +156,10 @@ fn pi_extension_failure_preserves_the_owned_child_and_ordinary_input() {
     session.end();
     assert!(!exited, "compaction observation failure must never kill Pi");
     assert!(ordinary.is_ok(), "ordinary input must survive degradation");
-    assert!(compact.is_err(), "Build compaction must stop after degradation");
+    assert!(
+        compact.is_err(),
+        "Build compaction must stop after degradation"
+    );
     assert_eq!(
         session.compaction_policy().unwrap().enforcement,
         CompactionEnforcement::Unsupported
@@ -197,7 +200,11 @@ async fn pi_terminal_eof_drains_final_compaction_before_closing_activity() {
     completed["reason"] = json!("manual");
     std::fs::write(
         &config.path,
-        format!("{}\n{started}\n{completed}\n", event(1, "ready")),
+        format!(
+            "{}\n{started}\n{completed}\n{}\n",
+            event(1, "ready"),
+            event(4, "shutdown")
+        ),
     )
     .unwrap();
     let telemetry = Arc::new(PiTelemetry::new(config));
@@ -254,7 +261,10 @@ fn pi_lost_heartbeat_withdraws_policy_even_when_the_sink_cannot_report_failure()
     telemetry.observe(&event(1, "ready"));
     telemetry.observe(&context(2, Some(101)));
     telemetry.check_health(started, started + Duration::from_secs(11));
-    assert_eq!(telemetry.policy().enforcement, CompactionEnforcement::Unsupported);
+    assert_eq!(
+        telemetry.policy().enforcement,
+        CompactionEnforcement::Unsupported
+    );
     assert!(!telemetry.automatic_due(Some(101)));
     assert!(telemetry.sent(false).is_ok());
     assert!(telemetry.sent(true).is_err());
@@ -265,7 +275,10 @@ fn pi_slow_mcp_initialization_has_a_startup_budget_and_heartbeat_health() {
     let telemetry = telemetry();
     let started = Instant::now();
     telemetry.check_health(started, started + Duration::from_secs(61));
-    assert!(!telemetry.failed(), "two 30-second MCP calls must fit startup grace");
+    assert!(
+        !telemetry.failed(),
+        "two 30-second MCP calls must fit startup grace"
+    );
     telemetry.observe(&event(1, "starting"));
     telemetry.observe(&event(2, "heartbeat"));
     telemetry.check_health(started, Instant::now() + Duration::from_secs(5));

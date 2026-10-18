@@ -741,18 +741,31 @@ loading unqualified observation hooks. Native threshold injection remains unqual
 (`pi_native_threshold_injection_unqualified`); it is not needed for the
 qualified between-turn fallback. `planning/v2/Pi Compaction Qualification.md`
 records the pinned 0.86.1 executable, documented hooks and credential-free
-fake-provider runs that execute Build's telemetry code.
+synthetic-provider runs through the real TUI and unmodified default export,
+with a fake MCP endpoint in an isolated child environment. The supplemental
+RPC probe is hook evidence only. Promotion blockers remain for other Pi
+versions and native threshold injection; neither is claimed supported.
 
 The extension cancels only native `threshold` attempts while fallback owns
 the threshold. Native `overflow` recovery and manual compaction remain
 available. Context and working observations use the private sidecar, never
 screen scraping or shared configuration. `PtySession` consumes these through
 `pi_telemetry.rs`; it retains the terminal escape hatch but stops inferring
-idle from silence for these sessions. The session exposes explicit unsupported
-states until the extension confirms its exact Pi session identity, and after
-an extension failure. A failed or timed-out extension terminates and reaps
-only its owned child, rather than leaving a session waiting forever. The shared
-policy decorator preserves that runtime observation. Foreign launch identities, replayed sequences and malformed or
+idle from silence while telemetry is healthy. The session exposes explicit
+unsupported states until the extension confirms its exact Pi session identity,
+and after extension or telemetry failure. Failure never kills Pi: Build stops
+threshold compaction, clears stale context, and uses the ordinary terminal
+lifecycle for continued work. The extension stops cancelling native threshold
+attempts and closes only its owned MCP child when that transport fails. The
+shared policy decorator preserves the explicit unsupported reason.
+
+A startup record and one-second heartbeats are independent of MCP initialization.
+The initial observation budget is 90 seconds, covering both 30-second MCP
+requests; a ten-second heartbeat gap withdraws support even if a broken sink
+cannot report its own failure. Each extension reload advances a launch-scoped
+generation and restarts its sequence at one. The bridge requires a new starting
+record, resets context and readiness, and rejects records from retired
+generations. Foreign launch identities, replayed sequences and malformed or
 missing records cannot authorize fallback. Terminal EOF drains final complete
 records without publishing another idle boundary, then closes activity even
 while the ended session remains available in the terminal.
@@ -764,8 +777,9 @@ refresh context. Idle manual compaction does not emit `agent_settled` in
 pending continuation before reporting settlement. A newer work event defeats
 that deferred check. Build rejects a `/compact` send without a confirmed idle
 boundary; the command itself immediately reserves that boundary as working.
-Only the observed `session_compact` boundary can complete an attempted
-compaction. Failure, abort and cancellation never do. Overflow compaction
+Pi owns the observed start row, so the shared send path does not append a
+second synthetic start. Only the observed `session_compact` boundary can
+complete an attempted compaction. Failure, abort and cancellation never do. Overflow compaction
 remains activity within the ongoing turn and is identified as overflow
 recovery, not enforcement of Build's configured threshold.
 

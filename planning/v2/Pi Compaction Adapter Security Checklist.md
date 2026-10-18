@@ -8,7 +8,7 @@ other Pi versions remain unsupported. See [Pi Compaction Qualification.md](Pi%20
 
 | # | Control | Evidence |
 | --- | --- | --- |
-| 1 | Only the qualified hook version enables fallback; unknown versions cannot claim support | `pi_compaction_qualifies_only_exact_hook_version_and_keeps_threshold`, `pi_compaction_unknown_version_is_unsupported_without_rounding_intent`; six real pinned-runtime qualification scenarios |
+| 1 | Only the qualified hook version enables fallback; unknown versions cannot claim support | `pi_compaction_qualifies_only_exact_hook_version_and_keeps_threshold`, `pi_compaction_unknown_version_is_unsupported_without_rounding_intent`; six real TUI/default-export scenarios and six supplemental RPC hook scenarios; fake MCP endpoint and synthetic provider only |
 | 2 | Zero is rejected and unsafe legacy values retain exact intent without JS rounding | Shared resolver rejection tests; `pi_compaction_preserves_unsafe_legacy_values_and_rejects_zero`; disabled decimal extension fixture |
 | 3 | Captured choice and identities cannot be silently substituted at spec construction | `pi_compaction_spec_rejects_forged_policy_and_identity_before_writing`; canonical colon-separated thread identity fixture |
 | 4 | Policies and logs stay isolated per opening and outside the checkout; no user/workspace settings writes | `pi_compaction_spec_preserves_exact_session_and_scopes_each_launch`; existing Pi containment tests; private exclusive Rust log creation and no-follow extension writes; Node sink privacy tests |
@@ -16,8 +16,13 @@ other Pi versions remain unsupported. See [Pi Compaction Qualification.md](Pi%20
 | 6 | Long turns and tool work cannot be interrupted by Build's fallback; only confirmed idle boundaries allow manual sends | `pi_long_turn_crosses_threshold_but_only_settled_allows_fallback`, `pi_fallback_waits_for_settled_then_compacts_and_delivers_follow_up_once`; deferred manual settlement fixture |
 | 7 | Null context cannot restore stale readings, including coalesced watch updates | `pi_null_reading_invalidates_old_context_and_identical_fresh_usage_is_new`, `pi_overflow_recovery_preserves_the_open_turn_and_clears_stale_context`; cumulative reset counter and current-reading comparison |
 | 8 | Failure, abort and cancellation cannot report successful compaction or duplicate deferred input | `pi_summary_failure_abort_and_cancel_deliver_follow_up_without_success`; real queue/pump tests, paired compaction observations, actual runtime failure qualification |
-| 9 | An unavailable extension explicitly withdraws support; foreign/replayed observations cannot authorize work | `pi_extension_readiness_and_failure_are_explicit_unsupported_states`, `pi_foreign_and_replayed_observations_never_unlock_another_turn`; `pi_extension_failure_ends_and_reaps_the_owned_child`; terminal EOF final-record drain/activity-closure tests; hook exceptions, identity mismatch and sink failure tests |
-| 10 | Regression, complexity, type and security gates preserve predecessor contracts | Full bridge tests, clippy, fmt, vendor lib tests; pinned Node hook suite and scoped TypeScript check; changed-file semgrep, main..HEAD gitleaks, diff check. Exact exit evidence is recorded on #659 |
+| 9 | An unavailable extension explicitly withdraws support; foreign/replayed observations cannot authorize work | `pi_extension_readiness_and_failure_are_explicit_unsupported_states`, `pi_foreign_and_replayed_observations_never_unlock_another_turn`; `pi_extension_failure_preserves_the_owned_child_and_ordinary_input`, `pi_lost_heartbeat_withdraws_policy_even_when_the_sink_cannot_report_failure`, `pi_slow_mcp_initialization_has_a_startup_budget_and_heartbeat_health`, `pi_reload_accepts_a_new_generation_and_rejects_retired_replays`; terminal EOF final-record drain/activity-closure tests; hook exceptions, identity mismatch and sink failure tests |
+| 10 | Regression, complexity, type and security gates preserve predecessor contracts | Full bridge tests, clippy, fmt, vendor lib tests; pinned Node hook and default-export suites plus scoped TypeScript check, enforced by the existing CI QA client job and documented in AGENTS.md; changed-file semgrep, main..HEAD gitleaks, diff check. Exact exit evidence is recorded on #659 |
+
+Promotion blockers: other Pi versions (`pi_version_unqualified`) and native
+threshold injection (`pi_native_threshold_injection_unqualified`) remain
+unqualified. The pinned 0.86.1 TUI/default-export carrier is qualified, including
+slow MCP startup, reload, and native compaction after MCP or sink failure.
 
 No new complexity allowances are added. Security scoring covers the controls
 above, not support for unqualified Pi versions or native threshold injection.

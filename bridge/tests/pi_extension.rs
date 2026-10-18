@@ -53,7 +53,7 @@ fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf
 }
 
 #[test]
-fn registration_failures_abort_pi_and_close_and_reap_the_mcp_child() {
+fn registration_failures_abort_extension_setup_and_reap_the_mcp_child() {
     for (scenario, expected_error) in [
         (
             "register_tool_failure",
@@ -74,7 +74,7 @@ fn registration_failures_abort_pi_and_close_and_reap_the_mcp_child() {
         );
         assert!(
             !temp.path().join("session.started").exists(),
-            "{scenario} allowed a tool-less Pi session to continue"
+            "{scenario} incorrectly completed extension initialization"
         );
         assert!(
             std::fs::read_to_string(log).unwrap().contains("stdin_end"),
@@ -90,7 +90,7 @@ fn registration_failures_abort_pi_and_close_and_reap_the_mcp_child() {
 }
 
 #[test]
-fn empty_discovered_tool_set_aborts_pi_and_closes_and_reaps_the_mcp_child() {
+fn empty_discovered_tool_set_aborts_extension_setup_and_reaps_the_mcp_child() {
     let (output, temp, log, pid) = run_driver("empty_tools", "empty_tools");
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(
@@ -100,7 +100,7 @@ fn empty_discovered_tool_set_aborts_pi_and_closes_and_reaps_the_mcp_child() {
     );
     assert!(
         !temp.path().join("session.started").exists(),
-        "empty discovery allowed a tool-less Pi session to continue"
+        "empty discovery incorrectly completed extension initialization"
     );
     assert!(
         std::fs::read_to_string(log).unwrap().contains("stdin_end"),
@@ -205,11 +205,7 @@ fn terminal_protocol_failures_only_disable_the_extension() {
         "duplicate_id",
     ] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
-        assert_eq!(
-            output.status.signal(),
-            None,
-            "{mode}: {output:?}"
-        );
+        assert_eq!(output.status.signal(), None, "{mode}: {output:?}");
     }
 }
 
@@ -280,11 +276,7 @@ fn malformed_tool_list_fields_abort_initialization() {
 fn framing_and_utf8_failures_do_not_signal_pi() {
     for mode in ["oversized_frame", "invalid_utf8"] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
-        assert_eq!(
-            output.status.signal(),
-            None,
-            "{mode}: {output:?}"
-        );
+        assert_eq!(output.status.signal(), None, "{mode}: {output:?}");
     }
 }
 

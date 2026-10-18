@@ -45,7 +45,7 @@ test("default export initializes policy telemetry before MCP and qualifies ready
   assert.equal(result.childRunning, false);
 });
 
-for (const [scenario, mode] of [["owner_mismatch", "normal"], ["initialization_failure", "invalid_initialize_object"], ["registration_failure", "normal"], ["mcp_failure", "child_exit"]]) {
+for (const [scenario, mode] of [["owner_mismatch", "normal"], ["initialization_failure", "invalid_initialize_object"], ["registration_failure", "normal"]]) {
   test(`default export ${scenario} withdraws support and only closes its MCP child`, () => {
     const result = run(scenario, mode);
     assert.equal(result.initializationError, undefined);
@@ -62,5 +62,28 @@ test("missing telemetry path leaves Pi usable and native compaction uncancelled"
   assert.equal(result.initializationError, undefined);
   assert.equal(result.threshold.some((value) => value?.cancel), false);
   assert.deepEqual(result.signals, []);
+  assert.equal(result.childRunning, false);
+});
+
+for (const scenario of ["sink_failure", "hook_failure", "lease_failure"]) {
+  test(`${scenario} withdraws compaction while healthy MCP tools remain available`, () => {
+    const result = run(scenario);
+    assert.deepEqual(result.toolResult, { content: [{ type: "text", text: "one" }], details: {} });
+    assert.equal(result.threshold.some((value) => value?.cancel), false);
+    assert.deepEqual(result.signals, []);
+    assert.equal(result.childRunning, false);
+  });
+}
+
+test("actual MCP child death emits unsupported and restores Pi SIGTERM", () => {
+  const result = run("mcp_failure", "child_exit");
+  assert.equal(result.records.some((record) => record.type === "unsupported" && record.reason === "extension_failed"), true);
+  assert.deepEqual(result.signals.map((signal) => signal.signal), ["SIGTERM"]);
+  assert.equal(result.childRunning, false);
+});
+
+test("MCP framing failure during initialization is fatal rather than a semantic initialization error", () => {
+  const result = run("transport_initialization_failure", "malformed_json");
+  assert.deepEqual(result.signals.map((signal) => signal.signal), ["SIGTERM"]);
   assert.equal(result.childRunning, false);
 });

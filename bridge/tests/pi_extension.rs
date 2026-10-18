@@ -195,7 +195,7 @@ fn extension_kills_a_child_that_refuses_normal_close() {
 }
 
 #[test]
-fn terminal_protocol_failures_only_disable_the_extension() {
+fn terminal_protocol_failures_terminate_pi() {
     for mode in [
         "malformed_json",
         "malformed_frame",
@@ -205,14 +205,14 @@ fn terminal_protocol_failures_only_disable_the_extension() {
         "duplicate_id",
     ] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
-        assert_eq!(output.status.signal(), None, "{mode}: {output:?}");
+        assert_eq!(output.status.signal(), Some(libc::SIGTERM), "{mode}: {output:?}");
     }
 }
 
 #[test]
-fn child_death_with_a_pending_call_does_not_signal_pi() {
+fn child_death_with_a_pending_call_terminates_pi() {
     let (output, _temp, _log, _pid) = run_driver("child_exit", "happy");
-    assert_eq!(output.status.signal(), None, "{output:?}");
+    assert_eq!(output.status.signal(), Some(libc::SIGTERM), "{output:?}");
 }
 
 #[test]
@@ -225,7 +225,7 @@ fn child_death_latches_one_failure_for_pending_and_future_calls() {
         .as_str()
         .unwrap()
         .contains("Build MCP"));
-    assert_eq!(value["terminationSignals"], serde_json::json!([]));
+    assert_eq!(value["terminationSignals"][0]["signal"], "SIGTERM");
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn invalid_error_rejects_every_pending_and_future_call_with_one_latched_failure(
         serde_json::json!([expected, expected])
     );
     assert_eq!(value["futureFailure"], expected);
-    assert_eq!(value["terminationSignals"], serde_json::json!([]));
+    assert_eq!(value["terminationSignals"][0]["signal"], "SIGTERM");
 }
 
 #[test]
@@ -273,15 +273,15 @@ fn malformed_tool_list_fields_abort_initialization() {
 }
 
 #[test]
-fn framing_and_utf8_failures_do_not_signal_pi() {
+fn framing_and_utf8_failures_terminate_pi() {
     for mode in ["oversized_frame", "invalid_utf8"] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
-        assert_eq!(output.status.signal(), None, "{mode}: {output:?}");
+        assert_eq!(output.status.signal(), Some(libc::SIGTERM), "{mode}: {output:?}");
     }
 }
 
 #[test]
-fn write_failure_is_latched_without_signalling_pi() {
+fn write_failure_is_latched_and_signals_pi() {
     let (output, _temp, _log, _pid) = run_driver("write_failure", "latched_write");
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -304,7 +304,7 @@ fn is_latched_write_failure(value: &Value) -> bool {
         .as_str()
         .is_some_and(|failure| failure.contains("Build MCP write failed"))
         && value["futureFailure"] == value["failure"]
-        && value["terminationSignals"] == serde_json::json!([])
+        && value["terminationSignals"][0]["signal"] == "SIGTERM"
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn malformed_discovered_tools_abort_initialization_and_reap_the_child() {
 }
 
 #[test]
-fn request_timeout_does_not_signal_pi() {
+fn request_timeout_terminates_pi() {
     let temp = tempfile::tempdir().unwrap();
     let extension = extension_copy(&temp);
     let child = fake_child(&temp);
@@ -336,7 +336,7 @@ fn request_timeout_does_not_signal_pi() {
         .env("PI_DRIVER_SCENARIO", "timeout")
         .output()
         .unwrap();
-    assert_eq!(output.status.signal(), None, "{output:?}");
+    assert_eq!(output.status.signal(), Some(libc::SIGTERM), "{output:?}");
 }
 
 #[test]

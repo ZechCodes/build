@@ -232,8 +232,9 @@ impl PiTelemetry {
     }
 
     pub(crate) fn fail(&self) {
-        self.confirmation.store(UNAVAILABLE, Ordering::Release);
-        self.clear_context();
+        if self.confirmation.swap(UNAVAILABLE, Ordering::AcqRel) != UNAVAILABLE {
+            self.clear_context();
+        }
     }
 
     pub(crate) fn observe(&self, value: &Value) {

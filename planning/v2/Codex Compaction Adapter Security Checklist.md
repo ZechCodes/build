@@ -9,7 +9,7 @@ Production native promotion remains closed. **Score: 100/100** (ten controls at
 | 1 | A version/model label cannot grant unverified native enforcement | `codex_compaction_unqualified_models_and_versions_keep_positive_fallback`; qualification records source and live-run limits; production `prepare` never returns Native |
 | 2 | Translation preserves positive intent without silently accepting Codex's clamp | `codex_compaction_translation_preserves_total_tokens_within_established_model_ceiling`; N=T within floor(9W/10), with exact-boundary checks |
 | 3 | Zero, unsafe thresholds, unknown versions/windows and upstream integer overflow are refused | `codex_compaction_translation_rejects_unknown_or_unrepresentable_inputs`; window multiplication constrained to signed native range; inherited zero/unsafe resolver coverage |
-| 4 | Only child compaction keys are normalized, without parent environment or real file writes | `codex_compaction_normalizes_only_child_compaction_overrides`; fake home/worktree config files retain exact bytes and unrelated window/personality values |
+| 4 | Only child compaction keys are normalized, without parent environment or real file writes; unverified selected profiles block promotion | `codex_compaction_normalizes_only_child_compaction_overrides`; ordinary fake home/worktree config files retain exact bytes and unrelated window/personality values. Legacy selector/table and `--profile x`/`x.config.toml` fixtures retain positive fallback with `codex_model_window_buffer_and_profile_unqualified` and unchanged files. The credential-free 0.160.0 probe rejects legacy `profile`/`profiles` tables; `--profile x` is unavailable to app-server. No native profile precedence is claimed or simulated |
 | 5 | Fresh, exact-resume and continue apply the captured policy through real carrier entry points | `compaction_fake_children_keep_distinct_start_resume_snapshots_and_stale_files_unchanged` uses public app-server open; `compaction_tui_fake_child_uses_root_overrides_for_fresh_exact_and_continue` executes generated TUI argv |
 | 6 | Config cannot leak between agents or into unrelated protocol requests | Concurrent fake app-server children retain distinct thresholds; `compaction_config_is_scoped_to_thread_open_requests_only`; connection config is immutable and only serialized on start/resume |
 | 7 | Stale or malformed native policies are refused during spec construction; app-server rechecks at opening | `codex_compaction_rejects_another_choice_and_corrupted_native_translation`; `compaction_open_rejects_another_launch_choice_before_spawning`; existing admission, generation, failed-open and resume-context contract tests |
@@ -22,7 +22,9 @@ observed boundaries, probe failure and corrected retry, and all promotion
 limits. Native trigger equality requires more than the candidate arithmetic:
 effective raw/usable windows, fallback buffer, post-turn settings and model
 changes must be established for an actual launch. No version/model range is
-advertised as native-capable. The wrapper's between-turn fallback can coexist
+advertised as native-capable. Selected-profile precedence is an additional
+explicit blocker; fallback does not repair rejected legacy profile settings.
+The wrapper's between-turn fallback can coexist
 with Codex's independent default context management.
 
 No Build wire fields/events, SPA, Claude/Pi adapters, spawn routing, session

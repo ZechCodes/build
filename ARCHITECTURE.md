@@ -710,6 +710,17 @@ parent environment, routing and session ownership are untouched. Qualification
 in `planning/v2/Codex Compaction Qualification.md` records isolated app-server
 start/resume and TUI resume compaction, including a mid-turn tool continuation,
 and the dynamic model/buffer/settings limits that keep production native off.
+Selected-profile precedence is another explicit promotion blocker. A
+credential-free 0.160.0 `config/read` probe rejects legacy `profile`/`profiles`
+tables; its suggested `--profile x` file form is disallowed for app-server.
+Ordinary-file overrides are established, but supported runtime-profile and
+per-thread profile precedence remain unverified. Profile fixtures retain
+positive fallback and unchanged files; they do not simulate a native override
+of rejected legacy settings. Fallback does not repair those settings.
+Both selected-profile forms retain the known-version reason
+`codex_model_window_buffer_and_profile_unqualified`. Since the captured launch
+does not establish profile absence, this reason also applies to other 0.160.0
+openings without reading user configuration.
 
 Codex app-server compaction items and the TUI's persisted `compacted` records
 remain activity within an open turn. Fake children exercise both through the

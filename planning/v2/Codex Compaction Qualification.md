@@ -13,8 +13,8 @@ SHA256: `12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad`.
 The isolated `--version` command reported `codex-cli 0.160.0`, exit 0. The
 install-capable `~/.local/bin/codex` wrapper was inspected but never executed.
 
-All executions used constructed environment variables, HOME, CODEX_HOME and
-cwd beneath `/tmp/build-657-qualification`, under `nice -n 10`. For each live
+The initial live executions used constructed environment variables, HOME,
+CODEX_HOME and cwd beneath `/tmp/build-657-qualification`, under `nice -n 10`. For each live
 process, only the authorized `~/.codex/auth.json` was copied, chmod 0400,
 and bind-mounted read-only over the temporary copy. The original was never
 modified, no other protected configuration was inspected, and each copy was
@@ -82,6 +82,76 @@ The low requested threshold did not make a hard ceiling: retained user content
 could leave post-compaction context above 12000, and a completed answer could
 end above threshold until a later safe execution boundary.
 
+## Selected-profile probe (scope-review follow-up)
+
+On 2026-10-18, a separate credential-free probe used the same executable and
+SHA256 above, with fresh HOME, CODEX_HOME and cwd beneath
+`/tmp/build-657-profile-probe`. Its constructed environment contained only
+PATH, HOME, CODEX_HOME, LANG and TERM. No credentials were read or copied, and
+no thread, turn or model call was made. Each process ran at nice 10.
+
+The requested temporary `config.toml` contained:
+
+```toml
+profile = "x"
+[profiles.x]
+model_auto_compact_token_limit = 900000
+model_auto_compact_token_limit_scope = "body_after_prefix"
+model_post_turn_compact_threshold_percent = 70
+model_context_window = 500000
+model_token_budget_fallback_buffer = 12345
+model_effective_context_window_percent = 80
+```
+
+The process argv after `/usr/bin/nice -n 10` was:
+
+```text
+/home/zech/.local/share/mise/installs/codex/0.160.0/bin/codex
+--config model_auto_compact_token_limit=150000
+--config model_auto_compact_token_limit_scope="total"
+--config check_for_update_on_startup=false
+app-server --stdio
+```
+
+Each `--config` value above is one argument, retaining the quotes around
+`total`. After `initialize`/`initialized`, the only request was:
+
+```json
+{"id":2,"method":"config/read","params":{"includeLayers":true}}
+```
+
+| Case | Observed result | Probe / Codex exit |
+| --- | --- | --- |
+| Selected legacy profile above | `config/read` error -32603: legacy `profile = "x"` is unsupported; use `--profile x` with `x.config.toml` | 0 / 0 |
+| Suggested file profile: move the same settings to `x.config.toml`, add root `--profile x` | CLI rejects `--profile` for `app-server` before initialization; permitted command list includes runtime commands and `codex mcp` | 1 / 1 |
+| Ordinary-file control: same stale settings at the root of `config.toml`, no profile selector | Effective limit 150000 and scope `total`, both attributed to `sessionFlags`; post-turn threshold 70 remains user-sourced | 0 / 0 |
+
+The first probe's exit 0 means the driver collected the RPC error successfully;
+it does **not** mean Codex accepted the selected profile. The second probe's
+exit 1 records the missing initialization response after the CLI refusal.
+The ordinary-file control retains the stale 900000/`body_after_prefix` values
+in its lower user layer. It explicitly warns that the two speculative keys
+`model_token_budget_fallback_buffer` and
+`model_effective_context_window_percent` are ignored; their appearance in raw
+layers/origins is not evidence of an effective setting.
+
+These results do not establish a selected-profile override relationship or
+per-thread precedence. The legacy selector is rejected, and the supported
+runtime profile cannot be measured through this app-server `config/read`
+path. **Selected-profile precedence remains a named promotion blocker.**
+No child normalization or production native promotion follows from this probe.
+Fixtures cover both the legacy selector/table and `--profile x` with
+`x.config.toml`, exercise positive fallback and preserve the stale files;
+the fake config evaluator refuses legacy selectors instead of inventing a
+successful native merge. Ordinary-file native fixtures retain their narrower
+precedence claim.
+
+Reproducible drivers and full layer/origin evidence are retained under
+`/tmp/build-657-profile-probe`: `probe.py` / `legacy-evidence.json`,
+`supported-probe.py` / `supported-profile-evidence.json`, and
+`root-file-probe.py` / `root-file-evidence.json`. The task carries these records
+and their exit codes. The version probe also exited 0 (`codex-cli 0.160.0`).
+
 ## Pinned upstream semantics
 
 The [0.160.0 ModelInfo implementation](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/openai_models.rs#L484)
@@ -116,6 +186,17 @@ that can make the full-window cap occur earlier than the 90% limit; bound
 model/catalog/config changes; and verify any
 post-turn threshold setting that can trigger earlier compaction. It must not
 infer support from accepting CLI keys or an app-server config response.
+Selected-profile precedence is also unqualified: the legacy profile table is
+rejected by 0.160.0, while its supported runtime profile cannot be inspected
+through app-server `config/read`. A future promotion must establish that
+selected-profile compaction controls cannot defeat the captured policy, or
+normalize them child-only with separate evidence. Current fallback does not
+repair or claim to override a rejected legacy configuration.
+The shared known-version adapter reports
+`codex_model_window_buffer_and_profile_unqualified`. Its captured inputs do
+not establish profile absence, so this conservative reason applies to all
+0.160.0 production openings, including either selected-profile form, without
+reading user configuration. Unknown versions retain `codex_version_unqualified`.
 
 Unknown versions, unknown model bounds, altered native trigger semantics, and
 thresholds above the exact native ceiling retain between-turn enforcement with

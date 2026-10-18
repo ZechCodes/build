@@ -37,7 +37,7 @@ test("qualified policy cancels threshold only and preserves manual/overflow reco
 
 test("long tool turn emits working/context and settles only at idle agent_settled", async () => {
   const f = fixture();
-  assert.equal(f.records[0].type, "ready");
+  assert.equal(f.records[0].type, "starting");
   await f.emit("agent_start");
   f.usage({ tokens: 180000, contextWindow: 200000 });
   await f.emit("tool_execution_start");
@@ -96,7 +96,7 @@ test("identity and policy remain isolated and immutable after registration", asy
   assert.equal(second.records.every((r) => r.owner === "agent-b"), true);
 });
 
-test("context hook failure reports fixed unsupported reason and terminal failure once", async () => {
+test("context hook failure reports fixed unsupported reason and withdraws cancellation", async () => {
   const f = fixture();
   f.ctx.getContextUsage = () => { throw new Error("secret provider payload"); };
   await f.emit("agent_start");
@@ -106,7 +106,7 @@ test("context hook failure reports fixed unsupported reason and terminal failure
   assert.equal(JSON.stringify(f.records).includes("secret"), false);
 });
 
-test("telemetry write failure terminates instead of claiming supported lifecycle", async () => {
+test("telemetry write failure withdraws cancellation without stopping Pi", async () => {
   let writes = 0;
   const f = fixture(policy, () => { if (++writes > 1) throw new Error("private filesystem path"); });
   await f.emit("agent_start");
@@ -128,19 +128,19 @@ test("default sink writes scoped JSONL with private permissions", async () => {
     handlers.get("session_start")({}, { sessionManager: { getSessionId: () => policy.owner }, getContextUsage: () => undefined });
     telemetry.unsupported("extension_failed");
     const lines = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
-    assert.deepEqual(lines.map(withoutSequence).filter((r) => r.type !== "context"), [{ ...identity(), type: "ready" }, { ...identity(), type: "unsupported", reason: "extension_failed" }]);
+    assert.deepEqual(lines.map(withoutSequence).filter((r) => !["context", "starting"].includes(r.type)), [{ ...identity(), type: "ready" }, { ...identity(), type: "unsupported", reason: "extension_failed" }]);
     assert.equal(statSync(path).mode & 0o777, 0o600);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-function withoutSequence({ sequence: _sequence, ...record }) { return record; }
+function withoutSequence({ sequence: _sequence, generation: _generation, ...record }) { return record; }
 
 test("ready waits for session identity and all events have increasing sequence", async () => {
   const f = fixture(policy, undefined, false);
-  assert.equal(f.records.length, 0);
+  assert.deepEqual(f.records.map((r) => r.type), ["starting"]);
   await f.emit("session_start");
   await f.emit("agent_start");
-  assert.equal(f.records[0].type, "ready");
+  assert.equal(f.records[0].type, "starting");
   assert.deepEqual(f.records.map((r) => r.sequence), f.records.map((_r, i) => i + 1));
   const wrong = fixture(policy, undefined, false);
   wrong.ctx.sessionManager.getSessionId = () => "other-session";
@@ -191,4 +191,35 @@ test("manual failure and abort release idle boundary without success", async () 
     assert.equal(f.records.some((r) => r.completed === true), false);
     assert.equal(f.records.find((r) => r.type === "compaction").failed, true);
   }
+});
+
+
+test("shutdown and reload use fresh generations while old handlers stop cancelling", async () => {
+  const first = fixture();
+  const firstGeneration = first.records[0].generation;
+  assert.equal(Number.isSafeInteger(firstGeneration) && firstGeneration > 0, true);
+  await first.emit("session_shutdown");
+  assert.equal(first.records.at(-1).type, "shutdown");
+  assert.equal(await first.emit("session_before_compact", { reason: "threshold" }), undefined);
+  const second = fixture();
+  assert.equal(second.records[0].generation, firstGeneration + 1);
+  assert.equal(second.records[0].sequence, 1);
+  assert.equal(second.records[0].type, "starting");
+  assert.deepEqual(await second.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(second.records.every((record) => record.generation === firstGeneration + 1), true);
+  await second.emit("session_shutdown");
+});
+
+test("heartbeats cover startup without authorizing work and stop on failure", async () => {
+  const f = fixture(policy, undefined, false);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(f.records.some((record) => record.type === "heartbeat"), true);
+  assert.equal(f.records.some((record) => ["working", "settled", "ready"].includes(record.type)), false);
+  f.telemetry.unsupported("extension_failed");
+  const stopped = f.records.length;
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.equal(await f.emit("session_before_compact", { reason: "overflow" }), undefined);
+  assert.equal(await f.emit("session_before_compact", { reason: "manual" }), undefined);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(f.records.length, stopped);
 });

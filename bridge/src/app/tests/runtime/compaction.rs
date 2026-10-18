@@ -553,3 +553,19 @@ fn conversation_settings_refuses_what_it_cannot_honour() {
     assert_eq!(nobody["ok"], false, "{nobody:?}");
     assert_eq!(agent.agent().max_context_tokens, None);
 }
+
+#[test]
+fn a_warm_policy_does_not_follow_a_later_setting_edit() {
+    let agent = CompactingAgent::new().with_context(60_000);
+    agent.edit(|record| record.max_context_tokens = Some(50_000));
+    agent.say(false);
+    assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
+}
+
+#[test]
+fn a_warm_policy_keeps_its_threshold_when_settings_are_raised() {
+    let agent = CompactingAgent::new().with_context(200_000);
+    agent.edit(|record| record.max_context_tokens = Some(300_000));
+    agent.say(false);
+    assert_eq!(agent.log.turns(), vec!["/compact".to_string()]);
+}

@@ -2,6 +2,7 @@ use super::*;
 
 pub(in crate::app::tests) mod agent_tabs;
 pub(in crate::app::tests) mod compaction;
+mod compaction_policy;
 pub(in crate::app::tests) mod compaction_tools;
 pub(in crate::app::tests) mod delivery;
 pub(in crate::app::tests) mod frame_locks;

@@ -1122,6 +1122,8 @@ impl AppState {
             .map(|workspace| workspace.id.clone())
             .collect::<Vec<_>>();
         for id in stale {
+            // Absence or an inspection error is not confirmed deletion;
+            // keep durable policy for a checkout that may return.
             self.workspaces.forget(&id);
         }
     }

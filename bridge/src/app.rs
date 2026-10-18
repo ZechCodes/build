@@ -448,9 +448,11 @@ pub struct AppState {
     /// the agent explicitly asks or the user enables the setting.
     watch_agent_filed_tasks: bool,
     /// How many tokens of context an agent's last turn may leave before its
-    /// next warm turn is preceded by a compaction; 0 never compacts. An
-    /// agent's own `max_context_tokens` overrides it.
+    /// next warm turn is preceded by a compaction. Always positive; legacy
+    /// zero loads as the default. An agent's own `max_context_tokens`
+    /// overrides it.
     compact_above_tokens: u64,
+    compaction_policies: config::CompactionPolicies,
     /// The compactions agents have asked for and not yet had, and the ones
     /// Build sent and has not yet measured. See
     /// [`CompactionLedger`](self::runtime::delivery::compaction::CompactionLedger).
@@ -713,6 +715,7 @@ impl AppState {
             delivery_queue: Default::default(),
             watch_agent_filed_tasks: false,
             compact_above_tokens: crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS,
+            compaction_policies: config::CompactionPolicies::default(),
             compactions: Default::default(),
             resetting_conversations: Default::default(),
             dispatched_task: HashMap::new(),

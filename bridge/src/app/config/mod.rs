@@ -4,8 +4,10 @@ use crate::isolation::{Isolation, IsolationAvailability, ResolvedIsolation};
 use crate::models::{self, AgentProvider, ModelChoice, ProjectAgentChoice};
 use serde_json::Value;
 
+mod compaction;
 mod persistence;
 mod settings;
+pub(in crate::app) use compaction::CompactionPolicies;
 
 pub(in crate::app) use persistence::isolation_downgrade_note;
 
@@ -179,9 +181,7 @@ impl SettingsPatch {
             Ok(())
         }),
         ("compact_above_tokens", |patch, value, _| {
-            patch.compact_above_tokens = Some(value.as_u64().ok_or_else(|| {
-                "compact_above_tokens must be a whole number of tokens, or 0 for never.".to_string()
-            })?);
+            patch.compact_above_tokens = Some(crate::compaction::parse_tokens(value)?);
             Ok(())
         }),
         // The workspace lifecycle's two (#167). Zero would call every
@@ -206,6 +206,11 @@ impl SettingsPatch {
     /// The patch `params` asks for, or the refusal a set that names no setting
     /// this bridge knows has earned: a no-op dressed as a mutation says so.
     fn parse(params: &Value, available: &IsolationAvailability) -> Result<Self, String> {
+        if params.get("compact_above_tokens").is_some()
+            && params.get("compaction_thresholds").is_some()
+        {
+            return Err("compact_above_tokens and compaction_thresholds cannot be mixed".into());
+        }
         let mut patch = Self::default();
         let mut named_a_setting = false;
         for (key, parse_field) in Self::FIELDS {
@@ -313,6 +318,11 @@ pub(crate) fn announce_isolation_downgrade(reason: &str) -> String {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("parse compaction config {}: {reason}", path.display())]
+    Compaction {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     #[error("read config {}: {source}", path.display())]
     Read {
         path: std::path::PathBuf,
@@ -382,6 +392,13 @@ impl AppState {
     pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
         if let Some(config) = read_config(&path)? {
+            self.compaction_policies =
+                CompactionPolicies::from_config(&config).map_err(|reason| {
+                    ConfigError::Compaction {
+                        path: path.clone(),
+                        reason,
+                    }
+                })?;
             self.apply_config(&config);
         }
         self.config_path = Some(path);
@@ -402,9 +419,11 @@ impl AppState {
         {
             self.watch_agent_filed_tasks = watching;
         }
-        if let Some(tokens) = config.get("compact_above_tokens").and_then(Value::as_u64) {
-            self.compact_above_tokens = tokens;
-        }
+        self.compact_above_tokens = config
+            .get("compact_above_tokens")
+            .and_then(Value::as_u64)
+            .filter(|tokens| *tokens > 0)
+            .unwrap_or(crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS);
         self.reclaim_settings = crate::reclaim::ReclaimSettings {
             idle_after_secs: config
                 .get("workspace_idle_secs")

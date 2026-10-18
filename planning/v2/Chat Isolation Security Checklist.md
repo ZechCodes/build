@@ -245,3 +245,50 @@ exited 0. All gates ran under `nice -n 10` with output redirected to logs.
 The four-pair compatibility matrix uses frozen legacy requests, the production
 client adapter and isolated old/new protocol fixtures; it does not claim
 historical executable runs. #538 records the gate exits and final publication.
+
+## #652 scoped compaction policy storage — 2026-10-18
+
+This extension covers storage, migration and configured-policy resolution only.
+It does not certify native harness enforcement, active-session observations or
+the later per-harness client API.
+
+| Control | Evidence | Score |
+| --- | --- | ---: |
+| Independent harness and owner scopes cannot overwrite one another. | The five-provider precedence/clear matrix, two-project/workspace isolation and project-worker scope tests pass. | 20/20 |
+| New values are positive safe integers; legacy values are preserved without rounding. | Invalid/mixed patches, numeric boundaries, exact unsafe legacy observations and explicit-empty-map restart tests pass. Legacy zero normalizes in the live scalar, settings/digest/context reads, compaction checks and persisted reloads; repeated saves are idempotent. | 20/20 |
+| Persistence failure cannot publish a partial policy mutation. | Write and rename fault tests preserve disk and memory; legacy scalar broadcasts are atomic and leave narrower scopes alone. | 20/20 |
+| Shared history owns one override while the addressed launch provider selects its harness entry. | Same/different-provider aliases share canonical scopes and overrides; alias writes notify both addresses. Active and parked historical owners cannot inherit a reused workspace's policy. | 20/20 |
+| Lifecycle changes preserve source files and remove settings only after confirmed deletion. | Rename/restart, parked revival, stable-ID adopted restart, deletion preflight and retained-cleanup/retry tests pass. Missing and permission-denied adopted checkouts retain policy and recover it on reappearance. The source stays untouched, and the permission test restores the exact original mode during teardown. | 20/20 |
+
+All required checks ran under nice 10. The full, unfiltered `cargo test`
+passed 4,995 tests with zero failures. Thirteen existing opt-in tests remained
+ignored. All normal integration suites ran, including both CLI-version tests
+against the freshly built binary. Strict all-target
+Clippy and formatting passed. The locked vendor library gate passed 223 tests
+with four existing ignores. Semgrep ran 51 rules on all 26 changed Rust files,
+with zero findings; one worker avoided a host resource-allocation error.
+The required Gitleaks `main..HEAD` history scan passed.
+
+The scope and code-review regressions failed before their fixes: legacy zero
+runtime/read behavior, missing-checkout retention and an actual EACCES from
+denied parent-directory traversal. The full rerun includes all three fixes.
+Missing-checkout retention also survives an unrelated config save and restart
+before the checkout returns. Pruning no longer attempts durable policy cleanup;
+only explicit, confirmed deletion does.
+
+The supplementary whole tracked-tree Gitleaks scan exited 1 for two unchanged
+public transport-vector findings at `transport/fixtures/v1.json:308` and
+`:310`. Their public ciphertext/session-key provenance and exact introducing
+commit exceptions are already documented in `transport/fixtures/README.md`
+and `.gitleaksignore`. No scanner exceptions were added by this task.
+
+Each gate used a throwaway HOME under /tmp, deleted on completion. Existing
+Cargo/Rustup directories were mounted read-only, Cargo's bin directory came
+first on PATH, and the Python interop test used the existing uv executable via
+`BST_UV`. Inherited BRIDGE variables were left unchanged.
+
+**Scoped score: 100/100.** The existing authentication boundary and public
+transport fixtures are not rescored. Confirmed deletion can retain an orphan
+policy if its final config write fails; a same-path adopted checkout can then
+reuse that policy. Adoption re-identification and migration remain #654; this
+task does not change adoption order or IDs.

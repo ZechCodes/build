@@ -164,13 +164,13 @@ fn conversation_reset_can_change_harness_and_preserves_a_sibling() {
     params["provider"] = json!("codex_app_server");
     params["model"] = json!("gpt-5.4");
     params["effort"] = json!("high");
-    params["max_context_tokens"] = json!(0);
+    params["max_context_tokens"] = json!(150_000);
     let reply = state.handle(req("conversation.reset", params));
     assert_eq!(reply["ok"], true, "{reply:?}");
     let agent = state.entity_agents(&owner).unwrap().primary().unwrap();
     assert_eq!(agent.choice.provider, AgentProvider::CodexAppServer);
     assert_eq!(agent.choice.model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(agent.max_context_tokens, Some(0));
+    assert_eq!(agent.max_context_tokens, Some(150_000));
     assert_eq!(
         *state
             .entity_agents(&owner)
@@ -421,7 +421,14 @@ fn conversation_reset_invalid_context_limits_are_client_errors() {
     let mut state = qa_state(&repo, dir.path());
     let (_, owner) = planned_run_in_review(&mut state, "invalid reset settings");
     let old = state.agent_conversation(&owner, None).unwrap().clone();
-    for invalid in [json!(-1), json!(1.5), json!("bad"), json!({})] {
+    for invalid in [
+        json!(0),
+        json!(-1),
+        json!(1.5),
+        json!("bad"),
+        json!({}),
+        json!(9_007_199_254_740_992_u64),
+    ] {
         let mut params = reset_params(&state, &owner);
         params["max_context_tokens"] = invalid;
         let reply = state.handle(req("conversation.reset", params));

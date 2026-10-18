@@ -269,8 +269,8 @@ pub struct Agent {
     #[serde(default)]
     pub session_cache_read_tokens: Option<u64>,
     /// This conversation's own compaction threshold: `None` follows the
-    /// device's, `Some(0)` never compacts, `Some(n)` compacts at `n` tokens.
-    #[serde(default)]
+    /// inherited policy. Legacy zero overrides are cleared on JSON load.
+    #[serde(default, deserialize_with = "crate::compaction::deserialize_override")]
     pub max_context_tokens: Option<u64>,
     /// What this agent is FOR on a project's conversation owner: the one
     /// pinned coordinator, or a worker that writes the project's sources.
@@ -380,26 +380,28 @@ impl Agent {
     }
 
     /// The context size at which this agent's next warm turn is preceded by a
-    /// compaction: its own threshold, else the device's. 0 is never.
+    /// compaction: its positive threshold, else the device's. Legacy zeros
+    /// inherit, with the built-in default when the device value is also zero.
     pub fn compact_at_tokens(&self, device_threshold: u64) -> u64 {
-        self.max_context_tokens.unwrap_or(device_threshold)
+        self.max_context_tokens
+            .filter(|tokens| *tokens > 0)
+            .or((device_threshold > 0).then_some(device_threshold))
+            .unwrap_or(DEFAULT_COMPACT_ABOVE_TOKENS)
     }
 
     /// Whether the last reported context has reached the threshold. Inclusive,
     /// and never for an agent whose context nobody has reported.
     pub fn compaction_due(&self, device_threshold: u64) -> bool {
         let threshold = self.compact_at_tokens(device_threshold);
-        threshold > 0
-            && self
-                .last_context_tokens
-                .is_some_and(|tokens| tokens >= threshold)
+        self.last_context_tokens
+            .is_some_and(|tokens| tokens >= threshold)
     }
 
     /// The context this agent last reported, as what it writes carries it:
     /// the tokens, when they were recorded, the window of the model it runs —
-    /// the one running now, else the one chosen — and where its chat compacts
-    /// under `device_threshold`, absent when it never does. `None` without a
-    /// recorded reading, which includes one cleared by a compaction.
+    /// the one running now, else the one chosen — and its positive compaction
+    /// threshold. `None` without a recorded reading, which includes one cleared
+    /// by a compaction.
     pub fn context_reading(&self, device_threshold: u64) -> Option<crate::thread::ContextReading> {
         let tokens = self.last_context_tokens?;
         let at = self.last_context_at.clone()?;
@@ -408,8 +410,7 @@ impl Agent {
             .as_deref()
             .or(self.choice.model.as_deref())
             .and_then(|model| crate::models::context_window_of(self.choice.provider, model));
-        let compact_at =
-            Some(self.compact_at_tokens(device_threshold)).filter(|threshold| *threshold > 0);
+        let compact_at = Some(self.compact_at_tokens(device_threshold));
         Some(crate::thread::ContextReading {
             tokens,
             window,
@@ -1398,18 +1399,20 @@ mod context_tests {
     }
 
     #[test]
-    fn the_agents_own_limit_beats_the_device_and_zero_is_never() {
+    fn the_agents_own_limit_beats_the_device_and_legacy_zero_inherits() {
         let tighter = with_context(Some(60_000), Some(50_000));
         assert_eq!(tighter.compact_at_tokens(200_000), 50_000);
         assert!(tighter.compaction_due(200_000));
 
-        let never = with_context(Some(900_000), Some(0));
-        assert_eq!(never.compact_at_tokens(200_000), 0);
-        assert!(!never.compaction_due(200_000));
+        let inherited = with_context(Some(900_000), Some(0));
+        assert_eq!(inherited.compact_at_tokens(200_000), 200_000);
+        assert!(inherited.compaction_due(200_000));
+        assert_eq!(inherited.compact_at_tokens(123_456), 123_456);
 
-        let device_off = with_context(Some(900_000), None);
-        assert_eq!(device_off.compact_at_tokens(0), 0);
-        assert!(!device_off.compaction_due(0));
+        let defaulted = with_context(Some(900_000), None);
+        assert_eq!(defaulted.compact_at_tokens(0), 200_000);
+        assert!(defaulted.compaction_due(0));
+        assert!(!with_context(Some(199_999), Some(0)).compaction_due(0));
     }
 
     #[test]
@@ -1422,7 +1425,7 @@ mod context_tests {
             Some(crate::thread::ContextReading {
                 tokens: 612_000,
                 window: Some(1_000_000),
-                compact_at: None,
+                compact_at: Some(200_000),
                 at: "2026-09-21T09:30:00Z".to_string(),
             })
         );
@@ -1435,7 +1438,7 @@ mod context_tests {
     }
 
     /// Where the chat compacts rides the reading: the chat's own limit, else
-    /// the device's, and none when neither compacts.
+    /// the device's, with legacy zero inheriting the positive default.
     #[test]
     fn a_reading_carries_where_the_chat_compacts() {
         let mut agent = with_context(Some(190_000), None);
@@ -1446,11 +1449,11 @@ mod context_tests {
                 .and_then(|reading| reading.compact_at)
         };
         assert_eq!(compact_at(&agent, 200_000), Some(200_000));
-        assert_eq!(compact_at(&agent, 0), None);
+        assert_eq!(compact_at(&agent, 0), Some(200_000));
         agent.max_context_tokens = Some(150_000);
         assert_eq!(compact_at(&agent, 200_000), Some(150_000));
         agent.max_context_tokens = Some(0);
-        assert_eq!(compact_at(&agent, 200_000), None);
+        assert_eq!(compact_at(&agent, 200_000), Some(200_000));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use super::*;
 
+mod compaction_policy;
+mod compaction_policy_scopes;
 mod isolation;
 mod projects;
 mod provider_defaults;

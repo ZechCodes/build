@@ -300,23 +300,23 @@ fn the_conversations_own_limit_beats_the_devices() {
 }
 
 #[test]
-fn a_conversation_limit_of_zero_never_compacts() {
+fn a_legacy_conversation_limit_of_zero_inherits_and_compacts() {
     let agent = CompactingAgent::new().with_context(900_000);
     agent.edit(|record| record.max_context_tokens = Some(0));
 
     agent.say(false);
 
-    assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
+    assert_eq!(agent.log.turns(), vec!["/compact".to_string()]);
 }
 
 #[test]
-fn a_device_threshold_of_zero_never_compacts() {
+fn a_legacy_device_threshold_of_zero_uses_default_and_compacts() {
     let agent = CompactingAgent::new().with_context(900_000);
     agent.state.lock().unwrap().compact_above_tokens = 0;
 
     agent.say(false);
 
-    assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
+    assert_eq!(agent.log.turns(), vec!["/compact".to_string()]);
 }
 
 /// A turn for an agent that is still working reaches its session as it
@@ -524,7 +524,7 @@ fn conversation_settings_sets_and_clears_the_conversations_own_limit() {
     assert_eq!(agent.listed()["compact_at_tokens"], 50_000);
 
     let never = agent.set_limit(json!(0));
-    assert_eq!(never["result"]["compact_at_tokens"], 0, "{never:?}");
+    assert_eq!(never["ok"], false, "{never:?}");
 
     let cleared = agent.set_limit(Value::Null);
     assert_eq!(cleared["ok"], true, "{cleared:?}");

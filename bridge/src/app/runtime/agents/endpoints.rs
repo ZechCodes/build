@@ -1500,6 +1500,9 @@ impl AppState {
         });
         let live = tab.as_ref().is_some_and(|tab| tab.live);
         let next_start = agent.choice.clone();
+        let max_context_tokens = self
+            .canonical_compaction_override(entity_id, &agent.id)
+            .unwrap_or(None);
         let mut digest = json!({
             "id": agent.id,
             "watched": agent.watched,
@@ -1575,13 +1578,13 @@ impl AppState {
             // What the last turn left in context and what the session's cache
             // reads have come to, as the harness reported them; null until it
             // has. The threshold is the conversation's own when it set one,
-            // and `compact_at_tokens` is the one in effect (0: never).
+            // and the legacy effective scalar retains its device fallback.
             "last_context_tokens": agent.last_context_tokens,
             // When that reading was recorded; null exactly when it is.
             "last_context_at": agent.last_context_at,
             "session_cache_read_tokens": agent.session_cache_read_tokens,
-            "max_context_tokens": agent.max_context_tokens,
-            "compact_at_tokens": agent.compact_at_tokens(self.compact_above_tokens),
+            "max_context_tokens": max_context_tokens,
+            "compact_at_tokens": max_context_tokens.unwrap_or(self.compact_above_tokens),
             // What to CALL this conversation in a list: the agent's own topic,
             // or — until it sets one — the first line the human opened with.
             // Null for a conversation with neither, which is one nothing has

@@ -662,7 +662,7 @@ fn the_project_agent_choice_round_trips_field_by_field_and_outlives_a_restart() 
 }
 
 /// How big an agent's context may grow before its next turn is preceded by a
-/// compaction: 200k until the device says otherwise, 0 for never, and what it
+/// compaction: 200k until the device says otherwise, positive overrides, and what it
 /// says outlives a restart.
 #[test]
 fn compact_above_tokens_defaults_sets_and_survives_a_reload() {
@@ -704,7 +704,7 @@ fn compact_above_tokens_defaults_sets_and_survives_a_reload() {
     assert_eq!(settings["compact_above_tokens"], 150_000, "{settings:?}");
 
     let off = reloaded.handle(req("settings.set", json!({ "compact_above_tokens": 0 })));
-    assert_eq!(off["result"]["compact_above_tokens"], 0, "0 turns it off");
+    assert_eq!(off["ok"], false, "zero is not a compaction policy");
 }
 
 /// The workspace lifecycle's two device settings (#167): the idle threshold

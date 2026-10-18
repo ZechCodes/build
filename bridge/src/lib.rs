@@ -53,6 +53,7 @@ pub mod branch;
 pub mod capture;
 pub mod carrier;
 pub mod changes;
+pub mod compaction;
 pub mod config;
 pub mod delivery;
 pub mod diff;

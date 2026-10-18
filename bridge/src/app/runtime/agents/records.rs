@@ -656,25 +656,35 @@ impl AppState {
     }
 
     /// `conversation.settings` — the context size this conversation compacts
-    /// at: `None` follows the device's `compact_above_tokens`, `Some(0)` never
-    /// compacts. Answers the limit as stored and the threshold in effect.
+    /// at. The canonical conversation owns this override even when the write
+    /// arrives through an execution alias. `None` restores inheritance.
     pub(crate) fn set_conversation_context_limit(
         &mut self,
         owner: &str,
         agent_id: &str,
         max_context_tokens: Option<u64>,
     ) -> Result<serde_json::Value, String> {
+        if let Some(tokens) = max_context_tokens {
+            crate::compaction::validate_tokens(tokens)
+                .map_err(|why| format!("invalid max_context_tokens: {why}"))?;
+        }
         let address = self.resolve_conversation_address(owner, Some(agent_id))?;
         self.guard_conversation_reservation(&address)?;
         let device_threshold = self.compact_above_tokens;
         let mut compact_at_tokens = None;
-        self.edit_agent_record("set_conversation_context_limit", owner, agent_id, |agent| {
-            agent.max_context_tokens = max_context_tokens;
-            compact_at_tokens = Some(agent.compact_at_tokens(device_threshold));
-        });
+        self.edit_agent_record(
+            "set_conversation_context_limit",
+            &address.conversation_entity_id,
+            &address.conversation_id,
+            |agent| {
+                agent.max_context_tokens = max_context_tokens;
+                compact_at_tokens = Some(agent.compact_at_tokens(device_threshold));
+            },
+        );
         let Some(compact_at_tokens) = compact_at_tokens else {
             return Err(format!("agent {agent_id} is not on {owner}"));
         };
+        self.note_compaction_override_changed(&address.conversation_id);
         Ok(serde_json::json!({
             "agent_id": agent_id,
             "max_context_tokens": max_context_tokens,

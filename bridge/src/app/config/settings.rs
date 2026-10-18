@@ -153,6 +153,11 @@ impl AppState {
             prune: patch.workspace_prune.or(self.reclaim_settings.prune),
         };
         let mut config = self.config_value(&projects_dir, default_harness, isolation);
+        let mut compaction_policies = self.compaction_policies.clone();
+        if let Some(tokens) = patch.compact_above_tokens {
+            compaction_policies.device = crate::compaction::CompactionThresholds::broadcast(tokens);
+        }
+        compaction_policies.write_config(&mut config);
         config["agent_modes"] = json!(agent_modes);
         config["project_agent"] = json!(project_agent);
         config["role_models"] = json!(role_models);
@@ -169,6 +174,7 @@ impl AppState {
         self.role_models = role_models;
         self.watch_agent_filed_tasks = watch_agent_filed_tasks;
         self.compact_above_tokens = compact_above_tokens;
+        self.compaction_policies = compaction_policies;
         if reclaim_settings != self.reclaim_settings {
             self.reclaim_settings = reclaim_settings;
             // A sweep soon, so what was just chosen is what the workspaces

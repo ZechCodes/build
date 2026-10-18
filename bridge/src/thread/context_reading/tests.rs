@@ -32,7 +32,7 @@ fn a_reading_that_compacts_is_measured_against_its_threshold() {
 }
 
 #[test]
-fn a_reading_that_never_compacts_falls_back_to_the_window() {
+fn a_reading_without_a_threshold_falls_back_to_the_window() {
     assert_eq!(
         compacting_at(612_000, 0).sentence("Rail scroll"),
         "Rail scroll is at 612k of 1M (61%)."

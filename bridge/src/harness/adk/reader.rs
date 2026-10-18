@@ -30,6 +30,9 @@ pub(super) struct ProtocolReader {
     /// The context the newest top-level request held, and the cache reads of
     /// every turn so far — published whole when a turn ends.
     context: TurnContext,
+    /// Newer CLIs report native compaction through status as well as hooks.
+    /// Both observations describe one attempt inside the current turn.
+    compaction_active: bool,
     /// The child this reader is reading, for the one thing a reader may do
     /// to it: end it when its `init` line says it is running a model Build
     /// did not ask for. `None` for a reader driven from a recording.
@@ -51,6 +54,7 @@ impl ProtocolReader {
             revision,
             shell_poller: Arc::new(Mutex::new(None)),
             context: TurnContext::default(),
+            compaction_active: false,
             child: None,
         }
     }
@@ -208,10 +212,9 @@ impl ProtocolReader {
         };
         match subtype {
             "init" => self.read_init(event),
+            "status" => self.read_compaction_status(event),
             "hook_started" if event["hook_event"].as_str() == Some("PreCompact") => {
-                self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
-                    completed: false,
-                }));
+                self.start_compaction();
             }
             "compact_boundary" => self.read_compact_boundary(event),
             "background_tasks_changed" => self.read_task_roster(event),
@@ -225,10 +228,34 @@ impl ProtocolReader {
         }
     }
 
+    fn start_compaction(&mut self) {
+        if !self.compaction_active {
+            self.compaction_active = true;
+            self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
+                completed: false,
+            }));
+        }
+    }
+
+    fn read_compaction_status(&mut self, event: &Value) {
+        if event["status"].as_str() == Some("compacting") {
+            self.start_compaction();
+        } else if event["compact_result"]
+            .as_str()
+            .is_some_and(|result| result != "success")
+        {
+            // A failed attempt can be retried within this turn. Only the
+            // authoritative compact_boundary may report success or replace
+            // context; status(null, success) precedes that boundary.
+            self.compaction_active = false;
+        }
+    }
+
     /// A compaction finished. What the context held before it is gone, so the
     /// reading is replaced by what survived — nothing, when the boundary does
     /// not say — rather than left standing over a context that shrank.
     fn read_compact_boundary(&mut self, event: &Value) {
+        self.compaction_active = false;
         self.send_report(ActivityReport::own_work(AgentActivity::Compaction {
             completed: true,
         }));
@@ -546,6 +573,7 @@ impl ProtocolReader {
     /// unanswered here is one the child never acted on, and the failure the
     /// result reports is the turn's own.
     fn read_result(&mut self, event: &Value) {
+        self.compaction_active = false;
         let failed = event["is_error"].as_bool().unwrap_or(false)
             || event["subtype"]
                 .as_str()

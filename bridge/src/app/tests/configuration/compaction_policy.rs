@@ -22,17 +22,22 @@ fn assert_legacy_scalar(state: &AppState, expected: u64) {
     assert_eq!(state.settings_get()["compact_above_tokens"], expected);
     assert_eq!(saved_config(state)["compact_above_tokens"], expected);
     let mut agent = crate::agent::Agent::new(
-        "policy-agent", "policy-owner", ModelChoice::default(), 1, "now",
+        "policy-agent",
+        "policy-owner",
+        ModelChoice::default(),
+        1,
+        "now",
     );
     agent.last_context_tokens = Some(expected);
     agent.last_context_at = Some("now".into());
-    let digest = state.agent_digest(
-        "policy-owner", &agent, None, crate::app::DigestScope::List,
-    );
+    let digest = state.agent_digest("policy-owner", &agent, None, crate::app::DigestScope::List);
     assert_eq!(digest["compact_at_tokens"], expected);
     assert!(agent.compaction_due(state.compact_above_tokens));
     assert_eq!(
-        agent.context_reading(state.compact_above_tokens).unwrap().compact_at,
+        agent
+            .context_reading(state.compact_above_tokens)
+            .unwrap()
+            .compact_at,
         Some(expected)
     );
 }
@@ -44,7 +49,9 @@ fn assert_legacy_scalar_reload(root: &Path, path: &Path, expected: u64) {
     for _ in 0..2 {
         let mut restarted = policy_app(root).with_config(path).unwrap();
         assert_legacy_scalar(&restarted, expected);
-        restarted.settings_set(&json!({"watch_agent_filed_tasks": true})).unwrap();
+        restarted
+            .settings_set(&json!({"watch_agent_filed_tasks": true}))
+            .unwrap();
         assert_eq!(std::fs::read(path).unwrap(), persisted);
     }
 }

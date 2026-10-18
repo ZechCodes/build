@@ -385,7 +385,7 @@ impl Agent {
     pub fn compact_at_tokens(&self, device_threshold: u64) -> u64 {
         self.max_context_tokens
             .filter(|tokens| *tokens > 0)
-            .or_else(|| (device_threshold > 0).then_some(device_threshold))
+            .or((device_threshold > 0).then_some(device_threshold))
             .unwrap_or(DEFAULT_COMPACT_ABOVE_TOKENS)
     }
 

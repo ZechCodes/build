@@ -1,0 +1,124 @@
+# Codex compaction qualification — #657
+
+Observed 2026-10-18. Native enforcement remains **unqualified for production**
+for both Codex carriers. Successful isolated runs establish the mechanism on
+0.160.0 with `gpt-6.1-sol`; they do not establish arbitrary launch configuration,
+model catalog contents, or a safe production threshold range.
+
+## Isolation and executable
+
+Direct executable:
+`/home/zech/.local/share/mise/installs/codex/0.160.0/bin/codex`.
+SHA256: `12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad`.
+The isolated `--version` command reported `codex-cli 0.160.0`, exit 0. The
+install-capable `~/.local/bin/codex` wrapper was inspected but never executed.
+
+All executions used constructed environment variables, HOME, CODEX_HOME and
+cwd beneath `/tmp/build-657-qualification`, under `nice -n 10`. For each live
+process, only the authorized `~/.codex/auth.json` was copied, chmod 0400,
+and bind-mounted read-only over the temporary copy. The original was never
+modified, no other protected configuration was inspected, and each copy was
+deleted after its process exited. No bridge executable, installer, login,
+browser, pairing, or network/firewall configuration was used. Codex's normal
+provider and plugin discovery wrote only into the temporary Codex home.
+
+App-server used stdio JSONL with initialize/initialized, thread/start or exact
+thread/resume, and turn/start. Both process flags and thread config carried:
+
+```text
+model_auto_compact_token_limit = 12000
+model_auto_compact_token_limit_scope = "total"
+```
+
+Model selection was `gpt-6.1-sol`, effort `low`, approval `never`, sandbox
+`read-only`. Initial prompts requested only `OK`; one added 1100 numbered
+synthetic filler lines. No manual compaction request was sent. The TUI resumed
+the same thread in an owned PTY with the same root flags and `--no-alt-screen`.
+Only terminal capability responses and Ctrl-C after task completion were sent
+by the PTY driver.
+
+## Live observations
+
+| Path | Observation | Probe / Codex exit |
+| --- | --- | --- |
+| App-server fresh, first turn | `OK`; active context 14229; no compaction yet | 0 / 0 |
+| Same process, next turn | `contextCompaction` started then completed; context estimate 6018; new filler input then completed at 25648 | 0 / 0 |
+| Exact app-server resume | Compaction completed at estimate 22592, then `OK` at 24416; native persisted task completion | 1 / 0, reader issue below |
+| Repeated exact app-server resume | Compaction completed at estimate 22552, then `OK` at 24416; `turn/completed` observed | 0 / 0 |
+| Exact TUI resume | Persisted `compacted` record and completed `ContextCompaction`; estimate 22541, then `OK` and `task_complete` at 25280 | 0 / 0 |
+| Resumed app-server, one tool continuation | Pre-turn and mid-turn native compactions completed, then `OK` and normal `turn/completed` | 0 / 0 |
+| Fresh app-server, window probe | N=25000 with temporary `model_context_window=20000`; `OK` and reported usable window 19000 | 0 / 0 |
+
+The tool-continuation prompt requested only `printf qualification-probe`. The
+owned read-only isolated environment refused unified-exec creation with
+permission denied (tool exit -1). Codex consumed that failed tool result,
+completed a second native compaction within the same still-open turn, and
+returned `OK`. This verifies continuation after a tool result, not successful
+shell execution. No shell command ran.
+
+The first resume driver incorrectly combined buffered text reads with file
+readiness polling. It timed out after receiving compaction and token updates;
+the persisted rollout already recorded successful completion and the Codex
+process exited 0. The driver was corrected to buffer raw reads and the exact
+resume repeated successfully. This was a qualification-driver failure, not a
+native compaction failure.
+
+Before resume, the temporary user config deliberately contained N=900000 and
+scope `body_after_prefix`. `config/read` resolved N=12000/`total` from session
+flags, and both resumed carriers actually compacted. This establishes that
+these root overrides beat that ordinary stale file. The matching thread config
+was accepted on fresh and resumed app-server paths; acceptance alone is not
+proof of native timing or every precedence relationship.
+
+Sanitized machine-readable evidence is retained locally at
+`/tmp/build-657-qualification/sanitized-evidence.json`; it contains event kinds,
+completion statuses and token counters, without credentials or model text.
+The credential copy was confirmed absent after the final run.
+
+The provider-fetched temporary model catalog advertised raw context 500000,
+maximum context 872000, and effective percentage 95. Normal token reports
+showed 475000 usable context. These values were observed for these runs only.
+The low requested threshold did not make a hard ceiling: retained user content
+could leave post-compaction context above 12000, and a completed answer could
+end above threshold until a later safe execution boundary.
+
+## Pinned upstream semantics
+
+The [0.160.0 ModelInfo implementation](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/openai_models.rs#L484)
+resolves raw context from `context_window`, falling back to
+`max_context_window`. Total-scope automatic compaction clamps its configured
+threshold to floor(90% of raw context). The usable inference window separately
+uses `effective_context_window_percent` (default 95). The two bounds must not
+be confused: raw 500000 gives native ceiling 450000 and usual usable window
+475000. Translation must refuse an unrepresentable requested threshold instead
+of reporting it unchanged after native clamping.
+
+The [0.160.0 context status implementation](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/session/context_window.rs#L53)
+counts the full active context for `total`. `body_after_prefix` subtracts the
+window's initial prefix and has different limit handling. A configured token
+budget fallback buffer can delay the threshold, while the full usable context
+bound independently forces compaction. Therefore N and `total` alone do not
+prove an effective trigger of N in arbitrary settings.
+
+The [0.160.0 turn loop](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/core/src/session/turn.rs#L533)
+checks after sampling and tools. Threshold compaction proceeds when another
+sampling step or pending input requires continuation. It also has a separate
+post-turn percentage path. Its pre-turn check precedes recording new user
+input, explaining why one large message can pass the threshold before a later
+check. These are native scheduling semantics, not a strict token ceiling.
+
+## Promotion boundary
+
+No production model/version/range is promoted by these observations. A future
+qualification must establish the effective model window and token-budget buffer
+for the actual launch, including the configurable effective-context percentage
+that can make the full-window cap occur earlier than the 90% limit; bound
+model/catalog/config changes; and verify any
+post-turn threshold setting that can trigger earlier compaction. It must not
+infer support from accepting CLI keys or an app-server config response.
+
+Unknown versions, unknown model bounds, altered native trigger semantics, and
+thresholds above the exact native ceiling retain between-turn enforcement with
+an explicit reason. Native automatic compaction is not disabled by this adapter;
+manual compaction remains available. The between-turn fallback therefore does
+not assert exclusive control over Codex's own context management.

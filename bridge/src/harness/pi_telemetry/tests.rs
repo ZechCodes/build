@@ -146,7 +146,7 @@ fn pi_extension_failure_ends_and_reaps_the_owned_child() {
             event(1, "ready"),
             event(2, "unsupported")
         ));
-    spec.pi_telemetry = Some(config);
+    spec.pi_telemetry = Some(Box::new(config));
     let session =
         crate::pty::PtySession::spawn(&spec, None, portable_pty::PtySize::default()).unwrap();
     let exited = session.exited_within(std::time::Duration::from_secs(2));
@@ -211,6 +211,8 @@ async fn pi_terminal_eof_drains_final_compaction_before_closing_activity() {
     );
     assert!(telemetry.confirmed());
     assert_eq!(telemetry.snapshot().context, None);
+    assert!(telemetry.sent(false).is_err());
+    assert!(telemetry.sent(true).is_err());
     assert!(matches!(
         tokio::time::timeout(Duration::from_secs(2), activity.recv())
             .await

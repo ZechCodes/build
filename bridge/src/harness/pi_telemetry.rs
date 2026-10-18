@@ -6,7 +6,7 @@ use super::{
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, watch};
@@ -57,9 +57,10 @@ pub(crate) struct PiTelemetry {
     unconfirmed: AppliedCompactionPolicy,
     unavailable: AppliedCompactionPolicy,
     confirmation: AtomicU8,
+    draining: AtomicBool,
     state: Mutex<State>,
     status: watch::Sender<SessionStatusSnapshot>,
-    activity: broadcast::Sender<ActivityReport>,
+    activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
     activity_rx: Mutex<Option<broadcast::Receiver<ActivityReport>>>,
 }
 
@@ -74,9 +75,10 @@ impl PiTelemetry {
             unconfirmed,
             unavailable,
             confirmation: AtomicU8::new(UNCONFIRMED),
+            draining: AtomicBool::new(false),
             state: Mutex::new(State::default()),
             status,
-            activity,
+            activity: Mutex::new(Some(activity)),
             activity_rx: Mutex::new(Some(rx)),
         }
     }
@@ -110,11 +112,35 @@ impl PiTelemetry {
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
-            if !telemetry.confirmed() {
-                telemetry.fail();
-            }
-            telemetry.transition(AgentStatus::Ended { code: None });
+            telemetry.finish(cursor);
         });
+    }
+
+    fn finish(&self, mut cursor: super::transcript_activity::Cursor) {
+        // The terminal can close before the last sidecar poll. Consume its
+        // complete records, but never publish a fresh idle boundary at EOF.
+        self.draining.store(true, Ordering::Release);
+        loop {
+            let mut observed = false;
+            cursor = super::transcript_activity::read_complete_lines(
+                &self.config.path,
+                cursor,
+                |value| {
+                    observed = true;
+                    self.observe(value);
+                },
+            );
+            if !observed {
+                break;
+            }
+        }
+        if !self.confirmed() {
+            self.fail();
+        }
+        self.transition(AgentStatus::Ended { code: None });
+        // A dead session remains in the registry for its terminal/history.
+        // Its activity stream must still close after the final status exists.
+        self.activity.lock().unwrap().take();
     }
 
     pub(crate) fn snapshot(&self) -> SessionStatusSnapshot {
@@ -152,6 +178,9 @@ impl PiTelemetry {
 
     pub(crate) fn sent(&self, compaction: bool) -> Result<(), HarnessError> {
         let mut state = self.state.lock().unwrap();
+        if self.draining.load(Ordering::Acquire) {
+            return Err(HarnessError::Session("Pi session has ended".into()));
+        }
         if self.failed() {
             return Err(HarnessError::Unsupported(
                 "Pi compaction extension is unavailable".into(),
@@ -251,18 +280,18 @@ impl PiTelemetry {
         } else {
             self.transition(AgentStatus::Working);
             if reason == Some("overflow") {
-                let _ = self
-                    .activity
-                    .send(ActivityReport::own_work(AgentActivity::TaskUpdate {
-                        summary: "Pi is recovering from context overflow".into(),
-                    }));
+                self.publish_activity(AgentActivity::TaskUpdate {
+                    summary: "Pi is recovering from context overflow".into(),
+                });
             }
         }
-        let _ = self
-            .activity
-            .send(ActivityReport::own_work(AgentActivity::Compaction {
-                completed,
-            }));
+        self.publish_activity(AgentActivity::Compaction { completed });
+    }
+
+    fn publish_activity(&self, activity: AgentActivity) {
+        if let Some(sender) = self.activity.lock().unwrap().as_ref() {
+            let _ = sender.send(ActivityReport::own_work(activity));
+        }
     }
 
     fn context(&self, tokens: Option<u64>) {
@@ -289,6 +318,9 @@ impl PiTelemetry {
     }
 
     fn transition(&self, status: AgentStatus) {
+        if self.draining.load(Ordering::Acquire) && !matches!(status, AgentStatus::Ended { .. }) {
+            return;
+        }
         self.status.send_if_modified(|snapshot| {
             if let Some(next) = snapshot.transition(status) {
                 *snapshot = next;

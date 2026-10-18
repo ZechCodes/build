@@ -35,6 +35,7 @@ mod cleanup;
 pub(crate) mod codex;
 pub(crate) mod codex_app_server;
 pub mod compaction;
+pub mod codex_compaction;
 #[cfg(test)]
 mod identity_env_tests;
 pub mod installed;

@@ -312,3 +312,63 @@ fn pi_reload_accepts_a_new_generation_and_rejects_retired_replays() {
     telemetry.observe(&next(3, "settled"));
     assert_eq!(telemetry.snapshot().status, AgentStatus::Working);
 }
+
+#[test]
+fn pi_failure_invalidates_once_per_generation_and_reload_can_requalify() {
+    let telemetry = telemetry();
+    telemetry.observe(&event(1, "ready"));
+    telemetry.observe(&context(2, Some(101)));
+    let before = telemetry.snapshot().context_reset_count;
+    let started = Instant::now();
+    for _ in 0..40 {
+        telemetry.check_health(started, started + Duration::from_secs(11));
+    }
+    assert_eq!(telemetry.snapshot().context_reset_count, before + 1);
+    assert!(telemetry.failed());
+    let mut ready = event(1, "ready");
+    ready["generation"] = json!(2);
+    telemetry.observe(&ready);
+    assert!(telemetry.confirmed());
+    let next = telemetry.snapshot().context_reset_count;
+    telemetry.fail();
+    telemetry.fail();
+    assert_eq!(telemetry.snapshot().context_reset_count, next + 1);
+}
+
+#[tokio::test]
+async fn pi_observer_receipt_advances_only_for_read_records_and_reports_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = telemetry().config.clone();
+    config.path = directory.path().join("telemetry.jsonl");
+    std::fs::write(&config.path, format!("{}\n", event(1, "ready"))).unwrap();
+    let receipt = directory.path().join("telemetry.jsonl.ack");
+    let telemetry = Arc::new(PiTelemetry::new(config));
+    let alive = Arc::new(Mutex::new(Some(broadcast::channel(1).0)));
+    telemetry.follow(Arc::downgrade(&alive), || AgentStatus::Waiting);
+    let acknowledged = wait_for_receipt(&receipt, "ready").await;
+    assert_eq!(acknowledged["sequence"], 1);
+    assert_eq!(acknowledged["generation"], 1);
+    assert_eq!(acknowledged["owner"], "agent-one");
+    assert_eq!(std::fs::metadata(&receipt).unwrap().permissions().mode() & 0o777, 0o600);
+    std::fs::set_permissions(telemetry.path(), std::fs::Permissions::from_mode(0o200)).unwrap();
+    assert!(std::fs::read(telemetry.path()).is_err(), "probe requires actual reader permission loss");
+    use std::io::Write;
+    let mut writer = std::fs::OpenOptions::new().append(true).open(telemetry.path()).unwrap();
+    writeln!(writer, "{}", event(2, "heartbeat")).unwrap();
+    telemetry.check_health(Instant::now(), Instant::now() + Duration::from_secs(11));
+    let failed = wait_for_receipt(&receipt, "unsupported").await;
+    assert_eq!(failed["sequence"], 1, "unread writes must not renew observation");
+    alive.lock().unwrap().take();
+}
+
+async fn wait_for_receipt(path: &std::path::Path, status: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(value) = std::fs::read(path).map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap()) {
+                if value["status"] == status { break value; }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }).await.expect("observer must publish its receipt")
+}

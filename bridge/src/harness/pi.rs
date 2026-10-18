@@ -542,6 +542,7 @@ mod tests {
 
     fn options(owner_id: &str, cwd: &Path) -> SpawnOptions {
         SpawnOptions {
+            compaction_policy: None,
             owner_id: owner_id.to_string(),
             mcp_session_token: "secret-token".to_string(),
             cwd: cwd.to_path_buf(),

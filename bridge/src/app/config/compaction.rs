@@ -215,12 +215,23 @@ impl AppState {
         owner: &str,
         agent_id: &str,
     ) -> Result<ResolvedCompactionPolicy, String> {
-        let address = self.resolve_conversation_address(owner, Some(agent_id))?;
         let provider = self
             .entity_agents(owner)?
             .resolve(Some(agent_id))?
             .choice
             .provider;
+        self.resolve_compaction_policy_for_provider(owner, agent_id, provider)
+    }
+
+    /// An admitted queued launch keeps its captured provider, even if the
+    /// addressed agent's choice has since changed.
+    pub(in crate::app) fn resolve_compaction_policy_for_provider(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        provider: crate::models::AgentProvider,
+    ) -> Result<ResolvedCompactionPolicy, String> {
+        let address = self.resolve_conversation_address(owner, Some(agent_id))?;
         let canonical_owner = &address.conversation_entity_id;
         let mut candidates = vec![(
             self.canonical_compaction_override(owner, agent_id)?,

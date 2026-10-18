@@ -108,6 +108,7 @@ pub(in crate::app) struct OpenedSession {
     /// carries, so the record has to forget it.
     pub(in crate::app) recorded_name_is_gone: bool,
     pub(in crate::app) claim: SpawnClaim,
+    token_lease: McpTokenLease,
     /// Where the child stands, which its session lineage records.
     pub(in crate::app) cwd: std::path::PathBuf,
 }
@@ -319,7 +320,29 @@ pub(in crate::app) fn reserve_agent_spawn(
         }
         Err(unknown) => return Err(unknown),
     };
-    let launch = s.agent_launch_for(&project_id)?;
+    let mut launch = s.agent_launch_for(&project_id)?;
+    let harness = crate::harness::harness_for(model_choice.provider);
+    launch.compaction_policy = if crate::router::is_router_agent(agent_id) {
+        // Capture routers have no canonical conversation or session policy.
+        None
+    } else {
+        Some(
+            harness
+                .prepare_compaction_policy(
+                    s.resolve_compaction_policy_for_provider(
+                        owner,
+                        agent_id,
+                        model_choice.provider,
+                    )?,
+                    model_choice.clone(),
+                    s.cli_readings.compaction_version(harness.binary()),
+                    crate::harness::compaction::CompactionLaunchIdentity::new(
+                        s.agent_conversation(owner, Some(agent_id))?.id.clone(),
+                    ),
+                )
+                .map_err(|error| error.to_string())?,
+        )
+    };
     let replaced = s
         .session_registry
         .agent_snapshot(key)
@@ -430,6 +453,7 @@ pub(in crate::app) fn agent_open_request(
         .or_else(|| resume_session_id.clone());
     let identity = known.clone().map(SessionIdentitySource::Known);
     SessionOpenRequest {
+        compaction_policy: prepared.compaction_policy,
         spec: prepared.spec,
         root,
         choice: model_choice.clone(),
@@ -490,6 +514,7 @@ pub(in crate::app) fn open_agent_session(
     let stands_in = cwd.clone();
     let opened = plan.probe_and_scaffold().and_then(|ready| {
         let ReadyToSpawn {
+            compaction_policy,
             spec,
             size,
             locator,
@@ -504,6 +529,7 @@ pub(in crate::app) fn open_agent_session(
         };
         let mut request = agent_open_request(
             PreparedAgentLaunch {
+                compaction_policy,
                 spec,
                 pty_size: size,
             },
@@ -527,6 +553,7 @@ pub(in crate::app) fn open_agent_session(
                 output,
                 recorded_name_is_gone,
                 claim: holding.claim,
+                token_lease: holding.token_lease,
                 cwd: stands_in,
             }))
         }
@@ -573,6 +600,7 @@ pub(in crate::app) fn publish_agent_tab(
         output,
         recorded_name_is_gone,
         claim,
+        token_lease,
         cwd,
     } = opened;
     let (owner, agent_id) = tab
@@ -586,6 +614,23 @@ pub(in crate::app) fn publish_agent_tab(
     let stranded;
     {
         let mut s = timer.lock(state);
+        let policy_current = tab
+            .session
+            .compaction_launch_identity()
+            .is_none_or(|identity| {
+                s.agent_conversation(&owner, Some(&agent_id))
+                    .is_ok_and(|thread| thread.id == identity.thread_id)
+            });
+        if !policy_current {
+            s.session_registry.revoke_mcp_token_if_current(&token_lease);
+            claim.settle(&mut s);
+            drop(s);
+            if let Some(screen) = &tab.screen {
+                screen.close(SPAWN_NEVER_OPENED);
+            }
+            tab.session.end();
+            return None;
+        }
         // The probe read the recorded name and the provider no longer holds it.
         // Forgetting it is a state write, so it happens here rather than in the
         // probe that found out.
@@ -608,6 +653,7 @@ pub(in crate::app) fn publish_agent_tab(
         if stranded {
             s.retire_tab(key, "closed");
         } else {
+            s.forget_agent_context(&owner, &agent_id);
             let instance = s.record_agent_session_start_in(
                 &owner,
                 &agent_id,

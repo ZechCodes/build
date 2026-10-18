@@ -33,6 +33,7 @@ pub(crate) mod claude;
 mod cleanup;
 pub(crate) mod codex;
 pub(crate) mod codex_app_server;
+pub mod compaction;
 #[cfg(test)]
 mod identity_env_tests;
 pub mod installed;
@@ -231,6 +232,18 @@ pub trait Harness: Send + Sync {
         false
     }
 
+    /// Prepare an immutable policy for this version, value and launch choice.
+    /// Unknown versions never acquire native support by inference.
+    fn prepare_compaction_policy(
+        &self,
+        requested: crate::compaction::ResolvedCompactionPolicy,
+        choice: ModelChoice,
+        version: Option<String>,
+        launch_identity: compaction::CompactionLaunchIdentity,
+    ) -> Result<compaction::AppliedCompactionPolicy, HarnessError> {
+        compaction::fallback_policy(self, requested, choice, version, launch_identity)
+    }
+
     /// What asks a session to compact, focused on `focus` where the harness
     /// takes a focus. Claude reads whatever follows `/compact` as what the
     /// summary should keep.
@@ -427,6 +440,7 @@ pub struct TerminalOpenOptions {
 
 /// Everything a provider needs to construct one live session.
 pub struct SessionOpenRequest {
+    pub compaction_policy: Option<compaction::AppliedCompactionPolicy>,
     pub spec: HarnessSpec,
     pub root: PathBuf,
     pub choice: ModelChoice,
@@ -460,8 +474,12 @@ fn open_session_with_harness(
     harness: &dyn Harness,
     request: SessionOpenRequest,
 ) -> Result<OpenedSession, HarnessError> {
-    let opened = harness.open_session(request)?;
+    let policy = request.compaction_policy.clone();
+    let mut opened = harness.open_session(request)?;
     refuse_a_session_nobody_can_watch(opened.session.as_ref())?;
+    if let Some(policy) = policy {
+        opened.session = compaction::PolicySession::attach(opened.session, policy);
+    }
     Ok(opened)
 }
 
@@ -898,6 +916,7 @@ mod tests {
 
     fn protocol_open_request(provider: AgentProvider, root: &Path) -> SessionOpenRequest {
         SessionOpenRequest {
+            compaction_policy: None,
             spec: fake_protocol_spec(),
             root: root.to_path_buf(),
             choice: ModelChoice {

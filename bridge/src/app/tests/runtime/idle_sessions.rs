@@ -222,6 +222,7 @@ pub(in crate::app::tests) fn test_agent_session_request(
     size: PtySize,
 ) -> SessionOpenRequest {
     SessionOpenRequest {
+        compaction_policy: None,
         spec,
         root,
         choice: ModelChoice {

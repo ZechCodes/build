@@ -1144,6 +1144,7 @@ fn concurrent_fresh_sessions_never_trust_the_same_first_writer_locator() {
     let request = |_agent_id: &str| {
         agent_open_request(
             PreparedAgentLaunch {
+                compaction_policy: None,
                 spec: HarnessSpec::new("true"),
                 pty_size: terminal_size(80, 24),
             },
@@ -1227,6 +1228,7 @@ async fn pi_mcp_child_death_runs_the_normal_tab_exit_path() {
         agent_id.clone(),
         agent_open_request(
             PreparedAgentLaunch {
+                compaction_policy: None,
                 spec: pi_extension_child_death_spec(directory.path(), &agent_id),
                 pty_size: terminal_size(120, 40),
             },

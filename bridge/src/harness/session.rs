@@ -272,6 +272,34 @@ fn status_time() -> String {
 
 /// What Build needs from an agent. Every session implements this.
 pub trait AgentSession: Send + Sync {
+    /// Whether the provider accepted the fresh start or exact resume. Protocol
+    /// carriers override this: sending a turn can report Working before init.
+    fn opening_succeeded(&self) -> bool {
+        matches!(self.status(), AgentStatus::Waiting | AgentStatus::Working)
+            && self.start_refused().is_none()
+    }
+
+    /// Admission identity is available even while protocol startup is pending.
+    fn compaction_launch_identity(&self) -> Option<&super::compaction::CompactionLaunchIdentity> {
+        self.compaction_policy()
+            .map(|policy| &policy.launch_identity)
+    }
+
+    /// Applied only after a successful opening. None means legacy/unknown;
+    /// a current setting must never be manufactured into an active snapshot.
+    fn compaction_policy(&self) -> Option<&super::compaction::AppliedCompactionPolicy> {
+        None
+    }
+
+    /// The wrapper owns the threshold decision; delivery owns eligibility,
+    /// queues and receipts. Working or starting sessions cannot compact here.
+    fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
+        self.status() == AgentStatus::Waiting
+            && self
+                .compaction_policy()
+                .is_some_and(|policy| policy.automatic_due(context_tokens))
+    }
+
     /// Hand the agent one turn. Returns when the turn is accepted, not when it
     /// is finished.
     ///

@@ -70,7 +70,7 @@ impl AppState {
     /// for a harness that cannot compact, and never ahead of a turn that is
     /// itself a compaction. A compaction an agent asked for goes first once it
     /// is ready; otherwise one is due once the last reported context has
-    /// reached the agent's positive threshold (its own, else the device's).
+    /// reached the live session's captured positive threshold.
     fn compaction_before(
         &self,
         turn: &PendingAgentTurn,
@@ -89,8 +89,8 @@ impl AppState {
         if let Some(instructions) = self.compactions.ready(&turn.owner, &turn.agent_id) {
             return Some(Some(instructions.to_string()));
         }
-        agent
-            .compaction_due(self.compact_above_tokens)
+        self.session_for_turn(turn)?
+            .automatic_compaction_due(agent.last_context_tokens)
             .then_some(None)
     }
 

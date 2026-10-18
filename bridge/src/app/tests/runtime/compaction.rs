@@ -159,6 +159,13 @@ impl CompactingAgent {
         Self::with_threshold(None)
     }
 
+    /// These fixtures explicitly drive delivery and the session pumps. Build
+    /// shared state off Tokio so the unrelated assignment service cannot drain
+    /// a deliberately queued follow-up before the test releases the work turn.
+    pub(super) fn without_background_services() -> CompactingAgent {
+        std::thread::spawn(Self::new).join().unwrap()
+    }
+
     fn with_threshold(threshold: Option<u64>) -> CompactingAgent {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());

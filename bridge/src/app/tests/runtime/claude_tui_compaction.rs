@@ -190,7 +190,7 @@ fn assert_open_turn(agent: &CompactingAgent, session: &dyn AgentSession, key: &T
 #[tokio::test]
 async fn claude_tui_native_hooks_preserve_open_turn_and_deliver_queued_follow_up_once() {
     let directory = tempfile::tempdir().unwrap();
-    let agent = CompactingAgent::new().with_context(900_000);
+    let agent = CompactingAgent::without_background_services().with_context(900_000);
     let (session, key) = native_tui(&agent, directory.path());
     let pid = session.0.terminal().unwrap().pid();
     assert!(pid.is_some());

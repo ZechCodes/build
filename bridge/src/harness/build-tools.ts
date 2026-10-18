@@ -21,6 +21,7 @@ function compactionConfiguration(owner) {
   const encoded = process.env.BUILD_PI_COMPACTION_POLICY;
   const log = process.env.BUILD_PI_TELEMETRY_LOG;
   if (encoded === undefined && log === undefined) return undefined;
+  if (encoded === undefined) throw new Error("Build Pi telemetry requires a compaction policy");
   const policy = JSON.parse(encoded);
   if (policy?.owner !== owner) throw new Error("Build Pi compaction owner mismatch");
   return { ...policy, log };
@@ -68,8 +69,8 @@ function compactionReason(event) {
   return ["manual", "threshold", "overflow"].includes(event.reason) ? event.reason : "unknown";
 }
 
-// Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Only
-// agent_settled can authorize the wrapper's next between-turn delivery.
+// Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Agent
+// work settles only at agent_settled; manual compaction has separate cleanup.
 /**
  * @param {PiCompactionApi} pi
  * @param {PiCompactionPolicy} configuration

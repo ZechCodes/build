@@ -157,6 +157,16 @@ impl Harness for CodexAppServerHarness {
         CodexHarness.compaction_command(focus)
     }
 
+    fn prepare_compaction_policy(
+        &self,
+        requested: crate::compaction::ResolvedCompactionPolicy,
+        choice: ModelChoice,
+        version: Option<String>,
+        launch_identity: super::compaction::CompactionLaunchIdentity,
+    ) -> Result<super::compaction::AppliedCompactionPolicy, HarnessError> {
+        super::codex_compaction::prepare(self, requested, choice, version, launch_identity)
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,
@@ -180,19 +190,27 @@ impl Harness for CodexAppServerHarness {
         // The same trust grant the terminal carrier passes: the worktree is
         // one Build minted moments ago, and codex's project trust is keyed by
         // path whichever front end opens it.
-        Ok(spec
+        spec = spec
             .arg("--config")
-            .arg(codex::trust_override(&options.cwd)))
+            .arg(codex::trust_override(&options.cwd));
+        super::codex_compaction::apply(spec, choice, options.compaction_policy.as_ref())
     }
 
     fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
-        let (session, activity) = session::CodexAppServerSession::spawn_with_recovery(
+        let settings = session::SessionLaunchSettings {
+            thread_config: super::codex_compaction::thread_config(
+                &request.choice,
+                request.compaction_policy.as_ref(),
+            )?,
+            recovery: request.recovery_context,
+        };
+        let (session, activity) = session::CodexAppServerSession::spawn_with_settings(
             &request.spec,
             request.root,
             request.choice,
             request.resume_session_id,
             limits::AppServerLimits::default(),
-            request.recovery_context,
+            settings,
         )?;
         let surfaces = session.surfaces_changed();
         Ok(OpenedSession {
@@ -242,8 +260,8 @@ impl Harness for CodexAppServerHarness {
 }
 
 #[cfg(test)]
+mod config_tests;
+#[cfg(test)]
 mod fixtures;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod config_tests;

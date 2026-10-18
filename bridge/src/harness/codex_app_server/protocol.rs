@@ -68,10 +68,20 @@ impl PendingOperation {
         }
     }
 
+    #[cfg(test)]
     pub fn serialize_request(
         &self,
         id: RequestId,
         writer: &mut dyn Write,
+    ) -> Result<(), serde_json::Error> {
+        self.serialize_request_with_config(id, writer, None)
+    }
+
+    pub fn serialize_request_with_config(
+        &self,
+        id: RequestId,
+        writer: &mut dyn Write,
+        thread_config: Option<&Value>,
     ) -> Result<(), serde_json::Error> {
         match self {
             PendingOperation::Initialize => serialize_request(
@@ -92,6 +102,7 @@ impl PendingOperation {
                 id,
                 self.method(),
                 &ThreadStartParams {
+                    config: thread_config,
                     cwd,
                     model: model.as_deref(),
                     approval_policy: "never",
@@ -107,6 +118,7 @@ impl PendingOperation {
                 id,
                 self.method(),
                 &ThreadResumeParams {
+                    config: thread_config,
                     thread_id,
                     cwd,
                     model: model.as_deref(),
@@ -1124,6 +1136,8 @@ struct EmptyObject {}
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ThreadStartParams<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<&'a Value>,
     cwd: &'a str,
     model: Option<&'a str>,
     approval_policy: &'a str,
@@ -1133,6 +1147,8 @@ struct ThreadStartParams<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ThreadResumeParams<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<&'a Value>,
     thread_id: &'a str,
     cwd: &'a str,
     model: Option<&'a str>,

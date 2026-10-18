@@ -325,6 +325,12 @@ struct SessionCore {
     recovery_source: String,
 }
 
+#[derive(Default)]
+pub(super) struct SessionLaunchSettings {
+    pub recovery: Option<RecoveryContext>,
+    pub thread_config: Option<Value>,
+}
+
 impl CodexAppServerSession {
     #[cfg(test)]
     pub fn spawn(
@@ -346,9 +352,18 @@ impl CodexAppServerSession {
         limits: AppServerLimits,
         wait_for_grace: impl FnOnce(Duration) + Send + 'static,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
-        Self::spawn_configured(spec, root, choice, resume_id, limits, wait_for_grace, None)
+        Self::spawn_configured(
+            spec,
+            root,
+            choice,
+            resume_id,
+            limits,
+            wait_for_grace,
+            SessionLaunchSettings::default(),
+        )
     }
 
+    #[cfg(test)]
     pub(super) fn spawn_with_recovery(
         spec: &HarnessSpec,
         root: PathBuf,
@@ -357,6 +372,27 @@ impl CodexAppServerSession {
         limits: AppServerLimits,
         recovery: Option<RecoveryContext>,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
+        Self::spawn_with_settings(
+            spec,
+            root,
+            choice,
+            resume_id,
+            limits,
+            SessionLaunchSettings {
+                recovery,
+                thread_config: None,
+            },
+        )
+    }
+
+    pub(super) fn spawn_with_settings(
+        spec: &HarnessSpec,
+        root: PathBuf,
+        choice: ModelChoice,
+        resume_id: Option<String>,
+        limits: AppServerLimits,
+        settings: SessionLaunchSettings,
+    ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         Self::spawn_configured(
             spec,
             root,
@@ -364,7 +400,7 @@ impl CodexAppServerSession {
             resume_id,
             limits,
             std::thread::sleep,
-            recovery,
+            settings,
         )
     }
 
@@ -375,9 +411,10 @@ impl CodexAppServerSession {
         resume_id: Option<String>,
         limits: AppServerLimits,
         wait_for_grace: impl FnOnce(Duration) + Send + 'static,
-        recovery: Option<RecoveryContext>,
+        settings: SessionLaunchSettings,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
-        let recovery = recovery
+        let recovery = settings
+            .recovery
             .map(RecoveryJournal::new)
             .transpose()
             .map_err(HarnessError::Setup)?;
@@ -393,10 +430,10 @@ impl CodexAppServerSession {
             Arc::clone(&events),
             wait_for_grace,
         )?;
-        let connection = Arc::new(AppServerConnection::new(
-            Box::new(pipes.stdin),
-            limits.connection(),
-        ));
+        let connection = Arc::new(
+            AppServerConnection::new(Box::new(pipes.stdin), limits.connection())
+                .with_thread_config(settings.thread_config),
+        );
         let (sender, receiver) = broadcast::channel(ACTIVITY_BACKLOG);
         let (status, _) = watch::channel(SessionStatusSnapshot::new(AgentStatus::Starting));
         let (receipts, _) = watch::channel(TurnReceiptSnapshot::default());

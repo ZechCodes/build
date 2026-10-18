@@ -174,6 +174,16 @@ impl Harness for CodexHarness {
         super::COMPACT_COMMAND.to_string()
     }
 
+    fn prepare_compaction_policy(
+        &self,
+        requested: crate::compaction::ResolvedCompactionPolicy,
+        choice: ModelChoice,
+        version: Option<String>,
+        launch_identity: super::compaction::CompactionLaunchIdentity,
+    ) -> Result<super::compaction::AppliedCompactionPolicy, HarnessError> {
+        super::codex_compaction::prepare(self, requested, choice, version, launch_identity)
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,
@@ -203,6 +213,7 @@ impl Harness for CodexHarness {
         ] {
             spec = spec.arg("--config").arg(override_arg);
         }
+        spec = super::codex_compaction::apply(spec, choice, options.compaction_policy.as_ref())?;
         // Alternatives, never both — claude's rule in codex's shape: resume is
         // a SUBCOMMAND here, and it keeps the argv tail the guess already
         // worked from, behind every global `--config` override.

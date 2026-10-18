@@ -17,6 +17,38 @@ fn saved_config(state: &AppState) -> Value {
     state.config_value(&state.projects_dir, state.default_harness, state.isolation)
 }
 
+fn assert_legacy_scalar(state: &AppState, expected: u64) {
+    assert_eq!(state.compact_above_tokens, expected);
+    assert_eq!(state.settings_get()["compact_above_tokens"], expected);
+    assert_eq!(saved_config(state)["compact_above_tokens"], expected);
+    let mut agent = crate::agent::Agent::new(
+        "policy-agent", "policy-owner", ModelChoice::default(), 1, "now",
+    );
+    agent.last_context_tokens = Some(expected);
+    agent.last_context_at = Some("now".into());
+    let digest = state.agent_digest(
+        "policy-owner", &agent, None, crate::app::DigestScope::List,
+    );
+    assert_eq!(digest["compact_at_tokens"], expected);
+    assert!(agent.compaction_due(state.compact_above_tokens));
+    assert_eq!(
+        agent.context_reading(state.compact_above_tokens).unwrap().compact_at,
+        Some(expected)
+    );
+}
+
+fn assert_legacy_scalar_reload(root: &Path, path: &Path, expected: u64) {
+    let persisted = std::fs::read(path).unwrap();
+    let disk: Value = serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(disk["compact_above_tokens"], expected);
+    for _ in 0..2 {
+        let mut restarted = policy_app(root).with_config(path).unwrap();
+        assert_legacy_scalar(&restarted, expected);
+        restarted.settings_set(&json!({"watch_agent_filed_tasks": true})).unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), persisted);
+    }
+}
+
 #[test]
 fn compaction_policy_migrates_legacy_once_and_preserves_an_empty_map() {
     for (legacy, expected) in [
@@ -32,6 +64,7 @@ fn compaction_policy_migrates_legacy_once_and_preserves_an_empty_map() {
         }
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
         let mut state = policy_app(dir.path()).with_config(&path).unwrap();
+        assert_legacy_scalar(&state, expected);
         let migrated = saved_config(&state);
         for provider in AgentProvider::ALL {
             assert_eq!(
@@ -42,12 +75,12 @@ fn compaction_policy_migrates_legacy_once_and_preserves_an_empty_map() {
         state
             .settings_set(&json!({"watch_agent_filed_tasks": true}))
             .unwrap();
-        let restarted = policy_app(dir.path()).with_config(&path).unwrap();
-        assert_eq!(saved_config(&restarted), saved_config(&state));
+        assert_legacy_scalar_reload(dir.path(), &path, expected);
         config["compaction_thresholds"] = json!({});
         std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
         let empty = policy_app(dir.path()).with_config(&path).unwrap();
         assert_eq!(saved_config(&empty)["compaction_thresholds"], json!({}));
+        assert_legacy_scalar(&empty, expected);
     }
 }
 

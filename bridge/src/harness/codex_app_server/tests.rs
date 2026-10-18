@@ -4015,9 +4015,16 @@ fn unsuccessful_native_compactions_never_report_success() {
     ] {
         let mut translator = CodexActivityTranslator::new(AppServerLimits::default().translator());
         let mut item = json!({"id":"compaction-1","type":"contextCompaction"});
-        item.as_object_mut().unwrap().extend(outcome.as_object().unwrap().clone());
-        let reports = translator.translate("item/completed", &item_envelope(item)).unwrap();
-        assert!(reports.is_empty(), "unsuccessful outcome {outcome}: {reports:?}");
+        item.as_object_mut()
+            .unwrap()
+            .extend(outcome.as_object().unwrap().clone());
+        let reports = translator
+            .translate("item/completed", &item_envelope(item))
+            .unwrap();
+        assert!(
+            reports.is_empty(),
+            "unsuccessful outcome {outcome}: {reports:?}"
+        );
     }
 }
 

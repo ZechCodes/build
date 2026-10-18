@@ -5,6 +5,7 @@ use crate::app::runtime::spawning::{
 use crate::compaction::{CompactionScope, CompactionSource};
 
 const OWNER: &str = "run-policy-lifecycle";
+const CONTEXT_AT: &str = "2026-10-18T12:00:00Z";
 
 struct PolicyLaunch {
     _dir: tempfile::TempDir,
@@ -28,6 +29,7 @@ impl PolicyLaunch {
         let builds = Arc::new(Mutex::new(Vec::new()));
         {
             let recorded = Arc::clone(&builds);
+            let input_root = dir.path().to_path_buf();
             let mut app = state.lock().unwrap();
             app.set_agent_model_choice(OWNER, &agent, choice.clone())
                 .unwrap();
@@ -38,11 +40,23 @@ impl PolicyLaunch {
                 repo,
                 worktrees,
                 Agent::WarmBuilder(Arc::new(move |_, _, options| {
-                    recorded.lock().unwrap().push(options.clone());
+                    let launch_number = {
+                        let mut builds = recorded.lock().unwrap();
+                        builds.push(options.clone());
+                        builds.len()
+                    };
                     Ok(if fail_open {
                         HarnessSpec::new("/nonexistent/build-655-test-harness")
                     } else {
-                        warm_tui_spec()
+                        HarnessSpec::new("sh")
+                            .arg("-c")
+                            .arg("printf '\\033[?2004h'; cat > \"$1\"")
+                            .arg("policy-launch-fixture")
+                            .arg(
+                                input_root
+                                    .join(format!("launch-{launch_number}.stdin"))
+                                    .to_string_lossy(),
+                            )
                     })
                 })),
                 Templates::default(),
@@ -117,6 +131,41 @@ impl PolicyLaunch {
             .unwrap()
             .session
     }
+
+    fn record_resumable_context(&self, tokens: u64) {
+        let mut app = self.state.lock().unwrap();
+        let instance = app
+            .session_registry
+            .agent_snapshot(&self.key)
+            .unwrap()
+            .instance
+            .unwrap();
+        app.note_self_report(
+            OWNER,
+            &self.agent,
+            &instance,
+            SelfReport {
+                named: Some("policy-resume-session".into()),
+                model: None,
+                effort: None,
+            },
+        );
+        app.edit_agent_record("saved context", OWNER, &self.agent, |agent| {
+            agent.last_context_tokens = Some(tokens);
+            agent.last_context_at = Some(CONTEXT_AT.into());
+        });
+    }
+
+    fn assert_context(&self, tokens: Option<u64>) {
+        let app = self.state.lock().unwrap();
+        let agent = app
+            .entity_agents(OWNER)
+            .unwrap()
+            .by_id(&self.agent)
+            .unwrap();
+        assert_eq!(agent.last_context_tokens, tokens);
+        assert_eq!(agent.last_context_at.as_deref(), tokens.map(|_| CONTEXT_AT));
+    }
 }
 
 #[tokio::test]
@@ -161,35 +210,17 @@ async fn admitted_policy_survives_setting_edits_warm_reuse_and_browser_attach() 
 }
 
 #[tokio::test]
-async fn resumed_session_captures_new_policy_and_forgets_previous_context_reading() {
+async fn resumed_session_captures_new_policy_and_preserves_previous_context_reading() {
     let fixture = PolicyLaunch::new(false);
     fixture.set_threshold(123_456);
     fixture.publish(fixture.open(fixture.reserve())).unwrap();
     let first = fixture.session().compaction_policy().unwrap().clone();
-    {
-        let mut app = fixture.state.lock().unwrap();
-        let instance = app
-            .session_registry
-            .agent_snapshot(&fixture.key)
-            .unwrap()
-            .instance
-            .unwrap();
-        app.note_self_report(
-            OWNER,
-            &fixture.agent,
-            &instance,
-            SelfReport {
-                named: Some("policy-resume-session".into()),
-                model: None,
-                effort: None,
-            },
-        );
-        app.edit_agent_record("old context", OWNER, &fixture.agent, |agent| {
-            agent.last_context_tokens = Some(456_789);
-            agent.last_context_at = Some("2026-10-18T12:00:00Z".into());
-        });
-        app.retire_tab(&fixture.key, "test restart");
-    }
+    fixture.record_resumable_context(456_789);
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .retire_tab(&fixture.key, "test restart");
     fixture.set_threshold(234_567);
     fixture.publish(fixture.open(fixture.reserve())).unwrap();
     let session = fixture.session();
@@ -206,14 +237,7 @@ async fn resumed_session_captures_new_policy_and_forgets_previous_context_readin
         builds[1].resume_session_id.as_deref(),
         Some("policy-resume-session")
     );
-    let app = fixture.state.lock().unwrap();
-    let agent = app
-        .entity_agents(OWNER)
-        .unwrap()
-        .by_id(&fixture.agent)
-        .unwrap();
-    assert_eq!(agent.last_context_tokens, None);
-    assert_eq!(agent.last_context_at, None);
+    fixture.assert_context(Some(456_789));
 }
 
 #[test]
@@ -396,12 +420,12 @@ async fn boot_roster_delivery_reopens_once_with_the_saved_policy_edit() {
     fixture.set_threshold(123_456);
     fixture.publish(fixture.open(fixture.reserve())).unwrap();
     let original = fixture.session().compaction_policy().unwrap().clone();
+    fixture.record_resumable_context(100_000);
     let roster = {
         let mut app = fixture.state.lock().unwrap();
         app.edit_agent_record("before restart", OWNER, &fixture.agent, |agent| {
             agent.state = crate::agent::AgentLifecycle::Live;
             agent.working_since = None;
-            agent.last_context_tokens = Some(456_789);
         });
         let roster = app.resume_roster("before-restart");
         app.retire_tab(&fixture.key, "test restart");
@@ -435,16 +459,19 @@ async fn boot_roster_delivery_reopens_once_with_the_saved_policy_edit() {
     );
     deliver_pending_agent_turns(&fixture.state);
     assert_eq!(fixture.builds.lock().unwrap().len(), 2);
-    let app = fixture.state.lock().unwrap();
-    assert!(app.delivery_queue.queued_is_empty());
+    assert!(fixture
+        .state
+        .lock()
+        .unwrap()
+        .delivery_queue
+        .queued_is_empty());
     assert_eq!(
-        app.entity_agents(OWNER)
-            .unwrap()
-            .by_id(&fixture.agent)
-            .unwrap()
-            .last_context_tokens,
-        None
+        fixture.builds.lock().unwrap()[1]
+            .resume_session_id
+            .as_deref(),
+        Some("policy-resume-session")
     );
+    fixture.assert_context(Some(100_000));
 }
 
 #[tokio::test]
@@ -471,4 +498,152 @@ async fn idle_demotion_keeps_the_live_policy_until_a_real_reopen() {
     assert!(Arc::ptr_eq(&original, &fixture.session()));
     assert_eq!(fixture.session().compaction_policy(), Some(&policy));
     assert_eq!(fixture.builds.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn idle_retirement_then_exact_reopen_preserves_context_with_the_new_policy() {
+    let fixture = PolicyLaunch::new(false);
+    fixture.set_threshold(123_456);
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    fixture.record_resumable_context(100_000);
+    let original = fixture.session();
+    original.backdate_last_output(Duration::from_secs(600));
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.session_registry
+            .test_tab_mut(&fixture.key)
+            .unwrap()
+            .last_delivered_at = Some(std::time::Instant::now() - QUIET_THRESHOLD);
+        assert_eq!(
+            app.mark_idle_tasks(QUIET_THRESHOLD),
+            vec![OWNER.to_string()]
+        );
+        app.retire_tab(&fixture.key, "test idle eviction");
+        assert!(!app.session_registry.contains(&fixture.key));
+    }
+    fixture.assert_context(Some(100_000));
+    fixture.set_threshold(234_567);
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    assert!(!Arc::ptr_eq(&original, &fixture.session()));
+    assert_eq!(
+        fixture
+            .session()
+            .compaction_policy()
+            .unwrap()
+            .requested
+            .tokens,
+        234_567
+    );
+    assert_eq!(
+        fixture.builds.lock().unwrap()[1]
+            .resume_session_id
+            .as_deref(),
+        Some("policy-resume-session")
+    );
+    fixture.assert_context(Some(100_000));
+}
+
+#[tokio::test]
+async fn missing_recorded_resume_starts_fresh_and_clears_the_old_context() {
+    let fixture = PolicyLaunch::new(false);
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    fixture.record_resumable_context(456_789);
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.retire_tab(&fixture.key, "test restart");
+        app.resume_id_probe = Arc::new(|_, _, _| false);
+    }
+    let opened = fixture.open(fixture.reserve());
+    assert!(
+        opened.recorded_name_is_gone,
+        "the exact provider history is missing"
+    );
+    fixture.publish(opened).unwrap();
+    assert_eq!(fixture.builds.lock().unwrap()[1].resume_session_id, None);
+    fixture.assert_context(None);
+}
+
+#[tokio::test]
+async fn first_user_turn_after_exact_reopen_compacts_with_the_saved_context_before() {
+    let fixture = PolicyLaunch::new(false);
+    fixture.set_threshold(234_567);
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    fixture.record_resumable_context(456_789);
+    fixture
+        .state
+        .lock()
+        .unwrap()
+        .retire_tab(&fixture.key, "test restart");
+    // Explicitly reopen before the user's turn, as agent.start/attach does.
+    // This preserves the existing distinction between cold and warm delivery.
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    const USER_TURN: &str = "first-user-turn-after-policy-resume";
+    {
+        let mut app = fixture.state.lock().unwrap();
+        let agent = app
+            .entity_agents(OWNER)
+            .unwrap()
+            .by_id(&fixture.agent)
+            .unwrap();
+        let turn = PendingAgentTurn {
+            operation_id: None,
+            root: fixture.key.root.clone(),
+            owner: OWNER.into(),
+            agent_id: fixture.agent.clone(),
+            conversation_id: agent.conversation_id().to_string(),
+            model_choice: fixture.choice.clone(),
+            choice_revision: agent.choice_revision,
+            interrupt: false,
+            say: Some(TurnText {
+                cold: USER_TURN.into(),
+                warm: USER_TURN.into(),
+            }),
+            phase: "build",
+            wants_catch_up: false,
+            survives_refusal: false,
+        };
+        app.delivery_queue.enqueue(turn);
+    }
+    deliver_pending_agent_turns(&fixture.state);
+    let captured = fixture._dir.path().join("launch-2.stdin");
+    let input = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let input = std::fs::read_to_string(&captured).unwrap_or_default();
+            if input.contains("/compact") || input.contains(USER_TURN) {
+                break input;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the fake child receives a turn");
+    assert!(
+        input.contains("/compact"),
+        "expected compaction first, got {input:?}"
+    );
+    assert!(
+        !input.contains(USER_TURN),
+        "the user turn must wait for compaction"
+    );
+    let mut app = fixture.state.lock().unwrap();
+    assert_eq!(app.delivery_queue.queued_len(), 1);
+    app.record_agent_turn_context(
+        OWNER,
+        &fixture.agent,
+        TurnContext {
+            context_tokens: 10_000,
+            cache_read_tokens: 0,
+        },
+    );
+    let thread = app.agent_conversation(OWNER, Some(&fixture.agent)).unwrap();
+    let detail = thread
+        .items
+        .iter()
+        .find_map(|item| match item {
+            crate::thread::ThreadItem::Event(event) => event.compaction.as_ref(),
+            _ => None,
+        })
+        .expect("the compaction row retains its measurements");
+    assert_eq!(detail.context_before, Some(456_789));
+    assert_eq!(detail.context_after, Some(10_000));
 }

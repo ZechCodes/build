@@ -312,3 +312,36 @@ test("missing observer expires after startup grace despite successful telemetry 
   await f.emit("tool_execution_end");
   assert.deepEqual(f.failures, ["telemetry_failed"]);
 });
+
+test("a first observed ready receipt cannot renew an already stale emission", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  let observed;
+  const f = fixture(policy, undefined, true, () => observed);
+  const delayed = receipt(f.records.at(-1));
+  for (now = 4000; now <= 8000; now += 4000) await f.emit("tool_execution_end");
+  observed = delayed;
+  now = 9000;
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+});
+
+test("advancing receipts renew from the corresponding emission time rather than read time", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  let observed;
+  const f = fixture(policy, undefined, true, () => observed);
+  observed = receipt(f.records.at(-1));
+  await f.emit("tool_execution_end");
+  now = 4000;
+  await f.emit("tool_execution_end");
+  const delayed = receipt(f.records.at(-1));
+  now = 7000;
+  observed = delayed;
+  await f.emit("tool_execution_end");
+  now = 11000;
+  await f.emit("tool_execution_end");
+  now = 13000;
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+});

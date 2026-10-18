@@ -96,16 +96,6 @@ impl Harness for AdkHarness {
         ClaudeHarness.compacts_on_command()
     }
 
-    /// The interactive argv with the TUI swapped for the protocol, and nothing
-    /// else moved.
-    ///
-    /// The MCP half is identical on purpose — the same per-agent
-    /// `--mcp-config` (added to the user's own servers, not in place of
-    /// them), the same `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because
-    /// `post_thread_message` and `search_conversation`
-    /// arrive over the same unix socket whichever provider is running. No
-    /// settle window and no submit delay: those are how a prompt is typed into
-    /// a line editor, and this harness is handed a turn as a value.
     fn prepare_compaction_policy(
         &self,
         requested: crate::compaction::ResolvedCompactionPolicy,
@@ -116,6 +106,16 @@ impl Harness for AdkHarness {
         super::claude_compaction::prepare(self, requested, choice, version, launch_identity)
     }
 
+    /// The interactive argv with the TUI swapped for the protocol, and nothing
+    /// else moved.
+    ///
+    /// The MCP half is identical on purpose — the same per-agent
+    /// `--mcp-config` (added to the user's own servers, not in place of
+    /// them), the same `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because
+    /// `post_thread_message` and `search_conversation`
+    /// arrive over the same unix socket whichever provider is running. No
+    /// settle window and no submit delay: those are how a prompt is typed into
+    /// a line editor, and this harness is handed a turn as a value.
     fn spec(
         &self,
         choice: &ModelChoice,

@@ -666,15 +666,25 @@ Linux managed files, fragments and the remote cache names observed conflicting
 keys without exposing values. Such fallback is explicitly **best effort,
 managed policy present**; unreadable, dynamic and unverified platform policy
 also reports its limit. This is a launch-time local observation, not a claim
-about subsequent remote policy refreshes. No policy helper is executed. The
-qualification record is `planning/v2/Claude Compaction Qualification.md`:
+about subsequent remote policy refreshes. No policy helper is executed. These
+bounded reads currently run under the app lock as part of admission, where the
+complete immutable policy is captured; moving them off-lock requires separating
+captured inputs from adapter preparation. The qualification record is
+`planning/v2/Claude Compaction Qualification.md`:
 four isolated 2.1.284 model runs observed successful resumed auto-compaction,
 but did not establish production budget/fallback invariants.
 
 ADK recognizes both PreCompact hooks and 2.1.284 `status=compacting` as one
 compaction start. Only `compact_boundary` establishes completion and changed
 context. Status and hook events do not finish the ongoing turn or consume
-queued input; failed attempts cannot report successful compaction.
+queued input; failed attempts cannot report successful compaction. The Claude
+TUI reports start and completion through its generated PreCompact/PostCompact
+commands and the compaction sidecar. Its fake-child integration test runs those
+commands through the sidecar follower and activity pump during an open turn:
+PreCompact and terminal text cannot establish success, PostCompact completes the
+compaction row, and both leave the session working and its queued follow-up
+untouched. After an explicit turn end, the real delivery queue sends that
+follow-up once without injecting a Build threshold command under Native.
 
 Automatic delivery asks the live session policy whether its last trustworthy
 context reading reached the captured threshold (`>=`). Only an idle warm

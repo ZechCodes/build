@@ -156,6 +156,10 @@ pub(super) struct CompactingAgent {
 
 impl CompactingAgent {
     pub(super) fn new() -> CompactingAgent {
+        Self::with_threshold(None)
+    }
+
+    fn with_threshold(threshold: Option<u64>) -> CompactingAgent {
         let (dir, repo) = init_repo();
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), RUN, RunState::Building);
@@ -163,6 +167,7 @@ impl CompactingAgent {
         app.edit_agent_record("test", RUN, &agent_id, |agent| {
             agent.name = Some("Compaction".to_string());
             agent.name_asked = true;
+            agent.max_context_tokens = threshold;
         });
         app.set_agent_model_choice(
             RUN,
@@ -185,6 +190,28 @@ impl CompactingAgent {
                 .recording_into(&log)
                 .watching_status(watched),
         );
+        let policy = crate::harness::harness_for(AgentProvider::CodexAppServer)
+            .prepare_compaction_policy(
+                app.resolve_compaction_policy(RUN, &agent_id).unwrap(),
+                app.entity_agents(RUN)
+                    .unwrap()
+                    .by_id(&agent_id)
+                    .unwrap()
+                    .choice
+                    .clone(),
+                None,
+                crate::harness::compaction::CompactionLaunchIdentity::new(
+                    app.agent_conversation(RUN, Some(&agent_id))
+                        .unwrap()
+                        .id
+                        .clone(),
+                ),
+            )
+            .unwrap();
+        let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
+        let tab = app.session_registry.test_tab_mut(&key).unwrap();
+        tab.session =
+            crate::harness::compaction::PolicySession::attach(Arc::clone(&tab.session), policy);
         CompactingAgent {
             _dir: dir,
             state: app.shared(),
@@ -291,8 +318,7 @@ fn below_the_threshold_the_turn_goes_straight_through() {
 
 #[test]
 fn the_conversations_own_limit_beats_the_devices() {
-    let agent = CompactingAgent::new().with_context(60_000);
-    agent.edit(|record| record.max_context_tokens = Some(50_000));
+    let agent = CompactingAgent::with_threshold(Some(50_000)).with_context(60_000);
 
     agent.say(false);
 
@@ -568,4 +594,51 @@ fn a_warm_policy_keeps_its_threshold_when_settings_are_raised() {
     agent.edit(|record| record.max_context_tokens = Some(300_000));
     agent.say(false);
     assert_eq!(agent.log.turns(), vec!["/compact".to_string()]);
+}
+
+#[test]
+fn native_policy_does_not_schedule_automatic_compaction_but_manual_commands_still_work() {
+    let agent = CompactingAgent::new().with_context(900_000);
+    {
+        let key = agent.turn(false).tab_key();
+        let mut app = agent.state.lock().unwrap();
+        let tab = app.session_registry.test_tab_mut(&key).unwrap();
+        let mut policy = tab.session.compaction_policy().unwrap().clone();
+        policy.enforcement = crate::harness::compaction::CompactionEnforcement::Native;
+        tab.session =
+            crate::harness::compaction::PolicySession::attach(Arc::clone(&tab.session), policy);
+    }
+    agent.say(false);
+    assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
+    let mut turn = agent.turn(false);
+    turn.say = Some(TurnText {
+        cold: "/compact".into(),
+        warm: "/compact".into(),
+    });
+    agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+    deliver_pending_agent_turns(&agent.state);
+    assert_eq!(
+        agent.log.turns(),
+        vec!["warm".to_string(), "/compact".to_string()]
+    );
+}
+
+#[test]
+fn an_unknown_context_never_schedules_automatic_compaction() {
+    let agent = CompactingAgent::new();
+    agent.say(false);
+    assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
+}
+
+#[test]
+fn a_legacy_session_without_a_snapshot_stays_unknown() {
+    let agent = CompactingAgent::new().with_context(900_000);
+    {
+        let mut app = agent.state.lock().unwrap();
+        let key = TabKey::agent(&AppState::canonical_root(&agent.root), &agent.agent_id);
+        app.session_registry.test_tab_mut(&key).unwrap().session =
+            Arc::new(DictatedSession::reporting(AgentStatus::Waiting).recording_into(&agent.log));
+    }
+    agent.say(false);
+    assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
 }

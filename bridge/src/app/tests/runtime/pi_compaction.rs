@@ -79,7 +79,7 @@ if outcome != 'overflow':
         emit('compaction', completed=True, reason='manual')
     else:
         emit('compaction', completed=False, failed=True, reason='manual', outcome=outcome)
-    emit('context', tokens=None)
+    emit('context', tokens=None if outcome == 'success' else 200000)
     emit('settled')
     line = capture()
 assert line.strip() == 'queued follow-up', repr(line)

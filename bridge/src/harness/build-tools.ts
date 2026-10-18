@@ -1,10 +1,110 @@
 import { spawn } from "node:child_process";
+import { appendFileSync, constants, closeSync, fstatSync, openSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const CLOSE_GRACE_MS = 500;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
+
+function compactionConfiguration(owner) {
+  const encoded = process.env.BUILD_PI_COMPACTION_POLICY;
+  const log = process.env.BUILD_PI_TELEMETRY_LOG;
+  if (encoded === undefined && log === undefined) return undefined;
+  const policy = JSON.parse(encoded);
+  if (policy?.owner !== owner) throw new Error("Build Pi compaction owner mismatch");
+  return { ...policy, log };
+}
+
+function validateCompactionPolicy(policy) {
+  if (!isObject(policy)
+      || !Number.isSafeInteger(policy.tokens) || policy.tokens <= 0
+      || typeof policy.enabled !== "boolean"
+      || ![policy.owner, policy.thread_id, policy.launch_id].every(isNonEmptyString)) {
+    throw new Error("Build Pi extension received invalid compaction policy");
+  }
+}
+
+function telemetryFileSink(path) {
+  if (typeof path !== "string" || !isAbsolute(path)) {
+    throw new Error("Build Pi telemetry path must be absolute");
+  }
+  // Reopen only the private launch file; never follow a replaced symbolic link.
+  return (record) => {
+    const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || (info.mode & 0o077) !== 0) {
+        throw new Error("Build Pi telemetry file must be private");
+      }
+      appendFileSync(fd, `${JSON.stringify(record)}\n`);
+    } finally {
+      closeSync(fd);
+    }
+  };
+}
+
+function contextValue(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function compactionReason(event) {
+  return ["manual", "threshold", "overflow"].includes(event.reason) ? event.reason : "unknown";
+}
+
+// Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Only
+// agent_settled can authorize the wrapper's next between-turn delivery.
+export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}) {
+  validateCompactionPolicy(configuration);
+  const { owner, thread_id, launch_id, enabled } = configuration;
+  const write = sink ?? telemetryFileSink(configuration.log);
+  const emit = (event) => write({ owner, thread_id, launch_id, ...event });
+  let failed = false;
+  const unsupported = (reason) => {
+    if (failed) return;
+    failed = true;
+    const label = reason === "extension_failed" ? reason : "telemetry_failed";
+    try { emit({ type: "unsupported", reason: label }); } catch { /* The terminal failure remains authoritative. */ }
+    onFailure(label);
+  };
+  const context = (ctx) => {
+    const usage = ctx.getContextUsage();
+    emit({ type: "context", tokens: contextValue(usage?.tokens), window: contextValue(usage?.contextWindow) });
+  };
+  const on = (name, handler) => pi.on(name, (event, ctx) => {
+    if (failed) return undefined;
+    try { return handler(event, ctx); } catch { unsupported("telemetry_failed"); }
+  });
+  const working = (_event, ctx) => {
+    emit({ type: "working" });
+    context(ctx);
+  };
+  on("agent_start", working);
+  on("tool_execution_start", working);
+  on("tool_execution_end", (_event, ctx) => context(ctx));
+  on("turn_end", (_event, ctx) => context(ctx));
+  on("agent_end", (_event, ctx) => context(ctx));
+  on("agent_settled", (_event, ctx) => {
+    context(ctx);
+    if (ctx.isIdle()) emit({ type: "settled" });
+  });
+  on("session_before_compact", (event, ctx) => {
+    context(ctx);
+    if (enabled && event.reason === "threshold") return { cancel: true };
+    emit({ type: "working" });
+    emit({ type: "compaction", completed: false, reason: compactionReason(event) });
+  });
+  on("session_compact", (event, ctx) => {
+    emit({ type: "compaction", completed: true, reason: compactionReason(event) });
+    context(ctx);
+  });
+  on("session_compact_failed", (event, ctx) => {
+    emit({ type: "compaction", completed: false, failed: true, reason: compactionReason(event) });
+    context(ctx);
+  });
+  emit({ type: "ready" });
+  return { unsupported };
+}
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -280,6 +380,7 @@ class McpStdioClient {
     if (this.failure || this.closing) return;
     this.failure = new Error(message);
     this.closing = true;
+    this.onTerminalFailure?.();
     this.#rejectPending(this.failure);
     void this.stopChild().finally(() => process.kill(process.pid, "SIGTERM"));
   }
@@ -323,9 +424,17 @@ class McpStdioClient {
 
 export default async function buildTools(pi) {
   let client;
+  let telemetry;
   try {
     const { command, owner, timeoutMs } = runtimeConfiguration();
     client = new McpStdioClient(command, owner, timeoutMs);
+    const policy = compactionConfiguration(owner);
+    if (policy) {
+      telemetry = registerCompactionTelemetry(pi, policy, undefined, () => {
+        client.failTerminal("Build Pi compaction telemetry failed");
+      });
+      client.onTerminalFailure = () => telemetry.unsupported("extension_failed");
+    }
     await client.start();
     const tools = await client.initialize();
     for (const tool of tools) {
@@ -346,6 +455,7 @@ export default async function buildTools(pi) {
     pi.on("session_before_fork", () => ({ cancel: true }));
     pi.on("session_shutdown", () => client.close());
   } catch (error) {
+    telemetry?.unsupported("extension_failed");
     if (client) await client.close();
     throw new Error(`Build Pi extension initialization failed: ${errorMessage(error)}`, {
       cause: error,

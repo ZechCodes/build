@@ -82,6 +82,36 @@ fn check_child(
         ..SpawnOptions::default()
     };
     let spec = harness.spec(&choice, &options, context).unwrap();
+    let result = run_child(script, user_path, spec);
+    assert_eq!(
+        result["env"]["DISABLE_AUTO_COMPACT"],
+        if tokens.is_some() { "0" } else { "1" }
+    );
+    assert_eq!(
+        result["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
+        translation
+            .as_ref()
+            .map(|t| t.window.to_string())
+            .unwrap_or_default()
+    );
+    assert_eq!(
+        result["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"],
+        translation
+            .as_ref()
+            .and_then(|t| t.percentage.clone())
+            .unwrap_or_default()
+    );
+    assert_eq!(result["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "64000");
+    assert_eq!(result["manual"], true);
+    assert!(result["hooks"]["PreCompact"].is_array());
+    check_args(&result, translation.as_ref(), resume);
+}
+
+fn run_child(
+    script: &std::path::Path,
+    user_path: &std::path::Path,
+    spec: crate::pty::HarnessSpec,
+) -> Value {
     let mut command = Command::new("python3");
     command
         .arg(script)
@@ -106,31 +136,13 @@ fn check_child(
         .unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        result["env"]["DISABLE_AUTO_COMPACT"],
-        if tokens.is_some() { "0" } else { "1" }
-    );
-    assert_eq!(
-        result["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"],
-        translation
-            .as_ref()
-            .map(|t| t.window.to_string())
-            .unwrap_or_default()
-    );
-    assert_eq!(
-        result["env"]["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"],
-        translation
-            .as_ref()
-            .and_then(|t| t.percentage.clone())
-            .unwrap_or_default()
-    );
-    assert_eq!(result["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"], "64000");
-    assert_eq!(result["manual"], true);
-    assert!(result["hooks"]["PreCompact"].is_array());
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn check_args(result: &Value, translation: Option<&super::Translation>, resume: Option<&str>) {
     let args = result["args"].as_array().unwrap();
     assert!(args.contains(&json!("claude-opus-5[1m]")));
-    if let Some(t) = &translation {
+    if let Some(t) = translation {
         let index = args.iter().position(|arg| arg == "--autocompact").unwrap();
         assert_eq!(args[index + 1], t.window.to_string());
     } else {

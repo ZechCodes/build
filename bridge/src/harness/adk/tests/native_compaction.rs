@@ -166,7 +166,7 @@ fn failed_native_compaction_status_never_reports_success_or_clears_context() {
         state.open_turn();
     }
     let _ = reports_already_sent(&mut activity);
-    for result in ["error", "cancelled", "interrupted"] {
+    for result in ["failed", "error", "cancelled", "interrupted"] {
         reader.read_line(r#"{"type":"system","subtype":"status","status":"compacting"}"#);
         reader.read_line(
             &json!({

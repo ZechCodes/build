@@ -42,12 +42,15 @@ were untouched.
 |---|---:|---:|---|---:|
 | Fresh | 18.75 | 15000 | Successful two-turn tool interaction; no compact boundary | 0 |
 | Exact resume | 18.75 | 15000 | Successful two-turn tool interaction; no compact boundary | 0 |
-| Fresh | 9 | 7200 | Successful two-turn tool interaction; no compact boundary | 0 |
+| Fresh | 9 | 7200 | Auto attempt reported `compact_result:failed`; no boundary; turn still finished successfully | 0 |
 | Exact resume | 9 | 7200 | Two auto boundaries, 8039→1000 and 8570→1577 tokens; final result successful | 0 |
 
 All init records selected `claude-haiku-4-5`. Model usage reported a 200000
 context window and 32000 maximum output tokens. The last resumed turn continued
-after compaction and completed successfully. The observed boundaries occur at
+after compaction and completed successfully. The fresh low-threshold run also
+showed that a failed compaction attempt can leave the ongoing turn successful;
+its failure status must not clear context or imply a completed summary. The
+observed boundaries occur at
 safe loop boundaries, not a hard token ceiling. These runs establish native
 compaction during this isolated resumed interaction; they do not prove exact
 trigger timing, arbitrary configuration, TUI execution, model fallback, or

@@ -223,3 +223,14 @@ test("heartbeats cover startup without authorizing work and stop on failure", as
   await new Promise((resolve) => setTimeout(resolve, 1100));
   assert.equal(f.records.length, stopped);
 });
+
+test("Pi loader timer handles without unref do not disable telemetry", async () => {
+  const timer = globalThis.setInterval;
+  globalThis.setInterval = () => 42;
+  try {
+    const f = fixture();
+    assert.equal(f.records.some((record) => record.type === "ready"), true);
+    assert.deepEqual(f.failures, []);
+    await f.emit("session_shutdown");
+  } finally { globalThis.setInterval = timer; }
+});

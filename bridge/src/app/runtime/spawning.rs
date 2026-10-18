@@ -636,6 +636,7 @@ pub(in crate::app) fn publish_agent_tab(
         // probe that found out.
         if recorded_name_is_gone {
             s.record_agent_resume_id(&owner, &agent_id, None);
+            s.forget_agent_context(&owner, &agent_id);
         }
         inherited = inherit_waiting_clients(&mut s, key, &tab);
         let (reported_model, reported_effort) = tab.session.active_choice();
@@ -653,7 +654,6 @@ pub(in crate::app) fn publish_agent_tab(
         if stranded {
             s.retire_tab(key, "closed");
         } else {
-            s.forget_agent_context(&owner, &agent_id);
             let instance = s.record_agent_session_start_in(
                 &owner,
                 &agent_id,

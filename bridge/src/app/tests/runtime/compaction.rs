@@ -421,12 +421,28 @@ fn a_harness_that_cannot_compact_is_never_asked_to() {
     let agent = CompactingAgent::new().with_context(900_000);
     let mut turn = agent.turn(false);
     turn.model_choice.provider = AgentProvider::Pi;
+    let mut app = agent.state.lock().unwrap();
+    let policy = crate::harness::harness_for(AgentProvider::Pi)
+        .prepare_compaction_policy(
+            app.resolve_compaction_policy_for_provider(RUN, &agent.agent_id, AgentProvider::Pi)
+                .unwrap(),
+            turn.model_choice.clone(),
+            None,
+            crate::harness::compaction::CompactionLaunchIdentity::new(
+                app.agent_conversation(RUN, Some(&agent.agent_id))
+                    .unwrap()
+                    .id
+                    .clone(),
+            ),
+        )
+        .unwrap();
+    let tab = app.session_registry.test_tab_mut(&turn.tab_key()).unwrap();
+    // Changing a queued provider cannot replace the policy of the live session.
+    // This fixture needs the actual unqualified Pi snapshot it is exercising.
+    tab.session =
+        crate::harness::compaction::PolicySession::attach(Arc::clone(&tab.session), policy);
 
-    assert!(!agent
-        .state
-        .lock()
-        .unwrap()
-        .compaction_due_before(&turn, Spawned::Warm, "warm"));
+    assert!(!app.compaction_due_before(&turn, Spawned::Warm, "warm"));
 }
 
 /// The whole loop through the status pump: the reading that asks for the

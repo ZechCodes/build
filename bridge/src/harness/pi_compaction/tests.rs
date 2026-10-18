@@ -138,6 +138,49 @@ fn env(spec: &crate::pty::HarnessSpec, key: &str) -> String {
     spec.env.iter().find(|(k, _)| k == key).unwrap().1.clone()
 }
 
+fn assert_scoped_launch(
+    spec: &crate::pty::HarnessSpec,
+    options: &crate::orchestrator::SpawnOptions,
+    state: &std::path::Path,
+) -> std::path::PathBuf {
+    let owner = options.owner_id.as_str();
+    let policy: serde_json::Value =
+        serde_json::from_str(&env(spec, "BUILD_PI_COMPACTION_POLICY")).unwrap();
+    assert_eq!(policy["tokens"], 150_000);
+    assert_eq!(policy["owner"], owner);
+    assert_eq!(policy["thread_id"], "thread:agent-one:reset-generation");
+    assert_eq!(
+        policy["launch_id"],
+        options
+            .compaction_policy
+            .as_ref()
+            .unwrap()
+            .launch_identity
+            .id
+    );
+    assert_eq!(policy["enabled"], true);
+    assert_eq!(spec.known_session_id.as_deref(), Some(owner));
+    assert!(spec
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--session-id", owner]));
+    assert!(!spec
+        .args
+        .iter()
+        .any(|arg| arg == "--continue" || arg == "--resume"));
+    let telemetry = spec.pi_telemetry.as_ref().unwrap();
+    assert_eq!(telemetry.policy, options.compaction_policy.clone().unwrap());
+    assert_eq!(telemetry.owner, owner);
+    assert_eq!(
+        telemetry.path.to_string_lossy(),
+        env(spec, "BUILD_PI_TELEMETRY_LOG")
+    );
+    assert!(telemetry
+        .path
+        .starts_with(state.join("harness/pi/sessions").join(owner)));
+    telemetry.path.clone()
+}
+
 #[test]
 fn pi_compaction_spec_preserves_exact_session_and_scopes_each_launch() {
     let state = tempfile::tempdir().unwrap();
@@ -150,41 +193,7 @@ fn pi_compaction_spec_preserves_exact_session_and_scopes_each_launch() {
             options.continue_session = resume == Some("continue");
             options.resume_session_id = resume.filter(|r| *r != "continue").map(str::to_owned);
             let spec = PiHarness.spec(&choice(), &options, &context).unwrap();
-            let policy: serde_json::Value =
-                serde_json::from_str(&env(&spec, "BUILD_PI_COMPACTION_POLICY")).unwrap();
-            assert_eq!(policy["tokens"], 150_000);
-            assert_eq!(policy["owner"], owner);
-            assert_eq!(policy["thread_id"], "thread:agent-one:reset-generation");
-            assert_eq!(
-                policy["launch_id"],
-                options
-                    .compaction_policy
-                    .as_ref()
-                    .unwrap()
-                    .launch_identity
-                    .id
-            );
-            assert_eq!(policy["enabled"], true);
-            assert_eq!(spec.known_session_id.as_deref(), Some(owner));
-            assert!(spec
-                .args
-                .windows(2)
-                .any(|pair| pair == ["--session-id", owner]));
-            assert!(!spec
-                .args
-                .iter()
-                .any(|arg| arg == "--continue" || arg == "--resume"));
-            let telemetry = spec.pi_telemetry.as_ref().unwrap();
-            assert_eq!(telemetry.policy, options.compaction_policy.clone().unwrap());
-            assert_eq!(telemetry.owner, owner);
-            assert_eq!(
-                telemetry.path.to_string_lossy(),
-                env(&spec, "BUILD_PI_TELEMETRY_LOG")
-            );
-            assert!(telemetry
-                .path
-                .starts_with(state.path().join("harness/pi/sessions").join(owner)));
-            assert!(paths.insert(telemetry.path.clone()));
+            assert!(paths.insert(assert_scoped_launch(&spec, &options, state.path())));
         }
     }
     assert_eq!(std::fs::read_dir(checkout.path()).unwrap().count(), 0);

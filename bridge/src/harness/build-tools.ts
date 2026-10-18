@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, constants, closeSync, fstatSync, openSync } from "node:fs";
+import { appendFileSync, constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -8,6 +8,7 @@ const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
 // Withdraw locally before the wrapper's ten-second lease can expire.
 const TELEMETRY_LEASE_MS = 8000;
+const OBSERVER_STARTUP_MS = 90000;
 
 /** @typedef {{tokens: number|null, contextWindow: number}|undefined} PiContextUsage */
 /** @typedef {{getContextUsage: () => PiContextUsage, isIdle: () => boolean, hasPendingMessages: () => boolean, sessionManager: {getSessionId: () => string}}} PiCompactionContext */
@@ -62,6 +63,48 @@ function telemetryFileSink(path) {
   };
 }
 
+function telemetryReceiptReader(log) {
+  if (typeof log !== "string" || !isAbsolute(log)) throw new Error("Build Pi telemetry receipt path must be absolute");
+  return () => {
+    let fd;
+    try { fd = openSync(`${log}.ack`, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || (info.mode & 0o077) !== 0 || info.size > 4096) throw new Error("Build Pi telemetry receipt must be private and bounded");
+      return JSON.parse(readFileSync(fd, "utf8"));
+    } finally { closeSync(fd); }
+  };
+}
+
+function matchingReceipt(receipt, configuration, generation, emittedSequence) {
+  if (!isObject(receipt)) return false;
+  if (!["owner", "thread_id", "launch_id"].every((key) => receipt[key] === configuration[key])) return false;
+  return receipt.generation === generation && Number.isSafeInteger(receipt.sequence)
+    && receipt.sequence > 0 && receipt.sequence <= emittedSequence
+    && ["starting", "ready", "unsupported"].includes(receipt.status);
+}
+
+function compactionObserver(configuration, generation, readReceipt) {
+  const startedAt = performance.now();
+  let lastReceiptAt;
+  let lastSequence = 0;
+  return (emittedSequence, readySequence) => {
+    const now = performance.now();
+    const deadline = lastReceiptAt === undefined ? startedAt + OBSERVER_STARTUP_MS : lastReceiptAt + TELEMETRY_LEASE_MS;
+    if (now > deadline) throw new Error("Build Pi telemetry observer lease expired");
+    const receipt = readReceipt();
+    if (!matchingReceipt(receipt, configuration, generation, emittedSequence)) return false;
+    if (receipt.sequence < lastSequence) return false;
+    if (receipt.status === "unsupported") throw new Error("Build Pi telemetry observer withdrew support");
+    if (receipt.sequence > lastSequence) {
+      lastSequence = receipt.sequence;
+      lastReceiptAt = now;
+    }
+    return receipt.status === "ready" && readySequence !== undefined && receipt.sequence >= readySequence;
+  };
+}
+
 function contextValue(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
@@ -70,8 +113,8 @@ function compactionReason(event) {
   return ["manual", "threshold", "overflow"].includes(event.reason) ? event.reason : "unknown";
 }
 
-/** @param {PiCompactionPolicy} configuration @param {(record: PiTelemetryRecord) => void} [sink] @param {(reason: string) => void} [onFailure] */
-function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
+/** @param {PiCompactionPolicy} configuration @param {(record: PiTelemetryRecord) => void} [sink] @param {(reason: string) => void} [onFailure] @param {() => unknown} [receiptReader] */
+function compactionTelemetryChannel(configuration, sink, onFailure = () => {}, receiptReader) {
   const { owner, thread_id, launch_id } = configuration;
   const write = sink ?? telemetryFileSink(configuration.log);
   const key = Symbol.for("build.pi.compaction.generations");
@@ -81,7 +124,9 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
   previous?.retire();
   const generation = (previous?.generation ?? 0) + 1;
   if (!Number.isSafeInteger(generation)) throw new Error("Build Pi telemetry generation exhausted");
+  const observed = compactionObserver({ owner, thread_id, launch_id }, generation, receiptReader ?? telemetryReceiptReader(configuration.log));
   let sequence = 0;
+  let readySequence;
   let active = true;
   let lastEmission = performance.now();
   /** @type {ReturnType<typeof setInterval>|undefined} */
@@ -91,7 +136,9 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
   /** @param {PiTelemetryEvent} event */
   const emit = (event) => {
     if (performance.now() - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");
+    observed(sequence, readySequence);
     writeRecord(event);
+    if (event.type === "ready") readySequence = sequence;
     const now = performance.now();
     if (now - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");
     lastEmission = now;
@@ -117,7 +164,7 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
     }, 1000);
     heartbeat.unref?.();
   } catch { unsupported("telemetry_failed"); }
-  return { emit, unsupported, shutdown, active: () => active };
+  return { emit, unsupported, shutdown, active: () => active, confirmed: () => observed(sequence, readySequence) };
 }
 
 // Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Agent
@@ -127,11 +174,12 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
  * @param {PiCompactionPolicy} configuration
  * @param {(record: PiTelemetryRecord) => void} [sink]
  * @param {(reason: string) => void} [onFailure]
+ * @param {() => unknown} [receiptReader]
  */
-export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}) {
+export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}, receiptReader) {
   validateCompactionPolicy(configuration);
   const { owner, enabled } = configuration;
-  const channel = compactionTelemetryChannel(configuration, sink, onFailure);
+  const channel = compactionTelemetryChannel(configuration, sink, onFailure, receiptReader);
   const { emit, unsupported } = channel;
   let workGeneration = 0;
   /** @param {PiCompactionContext} ctx */
@@ -184,7 +232,7 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
     on("agent_settled", (_event, ctx) => settle(ctx));
     on("session_before_compact", (event, ctx) => {
       context(ctx);
-      if (enabled && event.reason === "threshold") return { cancel: true };
+      if (enabled && event.reason === "threshold" && channel.confirmed()) return { cancel: true };
       workGeneration += 1;
       emit({ type: "working" });
       emit({ type: "compaction", completed: false, reason: compactionReason(event) });
@@ -478,7 +526,7 @@ class McpStdioClient {
     this.failure = new Error(message);
     this.closing = true;
     this.#rejectPending(this.failure);
-    this.closePromise = this.stopChild();
+    this.closePromise = this.stopChild().finally(() => process.kill(process.pid, "SIGTERM"));
     this.onTerminalFailure?.();
   }
 
@@ -519,19 +567,25 @@ class McpStdioClient {
   }
 }
 
-export default async function buildTools(pi) {
-  let client;
-  let telemetry;
-  const configured = process.env.BUILD_PI_COMPACTION_POLICY !== undefined || process.env.BUILD_PI_TELEMETRY_LOG !== undefined;
+function configureCompactionTelemetry(pi) {
   try {
     const policy = compactionConfiguration(process.env.BUILD_PI_MCP_OWNER);
-    if (policy) {
-      telemetry = registerCompactionTelemetry(pi, policy, undefined, () => {
-        void client?.close();
-      });
-      if (policy.ownerMismatch) telemetry.unsupported("extension_failed");
-      if (!telemetry.active()) return;
-    }
+    if (!policy) return undefined;
+    const telemetry = registerCompactionTelemetry(pi, policy);
+    if (policy.ownerMismatch) telemetry.unsupported("extension_failed");
+    return telemetry;
+  } catch {
+    // A missing/broken telemetry path is observed through the wrapper deadline.
+    // Compaction qualification must never take healthy MCP tools down with it.
+    return undefined;
+  }
+}
+
+export default async function buildTools(pi) {
+  let client;
+  const telemetry = configureCompactionTelemetry(pi);
+  const configured = process.env.BUILD_PI_COMPACTION_POLICY !== undefined || process.env.BUILD_PI_TELEMETRY_LOG !== undefined;
+  try {
     const { command, owner, timeoutMs } = runtimeConfiguration();
     client = new McpStdioClient(command, owner, timeoutMs);
     client.onTerminalFailure = () => telemetry?.unsupported("extension_failed");

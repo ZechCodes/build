@@ -197,6 +197,13 @@ class Probe:
         assert any(event["type"] == "session_compact_failed" and event["reason"] == "threshold"
                    and event["aborted"] for event in events)
         assert all(event["owner"] == self.owner for event in telemetry)
+        generation, sequence = 0, 0
+        for event in telemetry:
+            if event["generation"] != generation:
+                assert event["generation"] == generation + 1 and event["type"] == "starting"
+                generation, sequence = event["generation"], 0
+            assert event["sequence"] == sequence + 1
+            sequence = event["sequence"]
         startup = records(self.home / "fake-mcp.jsonl")[0]["startup"]
         assert startup["socket"] == self.evidence["fake_endpoint"]
         assert startup["token"] == "qualification-dummy-token"

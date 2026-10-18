@@ -51,7 +51,7 @@ impl PolicyLaunch {
                     } else {
                         HarnessSpec::new("sh")
                             .arg("-c")
-                            .arg("printf '\\033[?2004h'; cat > \"$1\"")
+                            .arg("printf '\\033[?2004hPOLICY-LAUNCH-READY'; cat > \"$1\"")
                             .arg("policy-launch-fixture")
                             .arg(
                                 input_root
@@ -578,6 +578,15 @@ async fn first_user_turn_after_exact_reopen_compacts_with_the_saved_context_befo
     // Explicitly reopen before the user's turn, as agent.start/attach does.
     // This preserves the existing distinction between cold and warm delivery.
     fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    let screen =
+        wait_for_agent_screen(&fixture.state, &fixture.key.root, "POLICY-LAUNCH-READY").await;
+    assert!(screen.contains("POLICY-LAUNCH-READY"));
+    // PTY startup paint counts as Working for 30 seconds. Age that fake
+    // paint only after observing it, so this is the first eligible user turn.
+    let resumed = fixture.session();
+    resumed.backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+    assert_eq!(resumed.status(), AgentStatus::Waiting);
+    fixture.assert_context(Some(456_789));
     const USER_TURN: &str = "first-user-turn-after-policy-resume";
     {
         let mut app = fixture.state.lock().unwrap();
@@ -586,6 +595,7 @@ async fn first_user_turn_after_exact_reopen_compacts_with_the_saved_context_befo
             .unwrap()
             .by_id(&fixture.agent)
             .unwrap();
+        assert!(agent.working_since.is_none());
         let turn = PendingAgentTurn {
             operation_id: None,
             root: fixture.key.root.clone(),

@@ -176,15 +176,19 @@ fn read_bounded(path: &Path, budget: &mut u64) -> Result<Option<Vec<u8>>, ()> {
 }
 
 fn read_with_budget(reader: impl Read, budget: &mut u64) -> Result<Vec<u8>, ()> {
-    let limit = MAX_FILE_BYTES.min(*budget);
-    let mut bytes = Vec::new();
-    reader.take(limit + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| ())?;
-    if bytes.len() as u64 > limit {
+    // The extra byte detects growth beyond the per-file cap, but must itself
+    // fit the aggregate cap. Reaching that cap without proving EOF fails closed.
+    let limit = (MAX_FILE_BYTES + 1).min(*budget);
+    if limit == 0 {
         return Err(());
     }
+    let mut bytes = Vec::new();
+    let result = reader.take(limit).read_to_end(&mut bytes);
     *budget -= bytes.len() as u64;
+    result.map_err(|_| ())?;
+    if bytes.len() as u64 == limit {
+        return Err(());
+    }
     Ok(bytes)
 }
 
@@ -219,7 +223,10 @@ mod tests {
         let reader = std::io::Cursor::new(b"partial").chain(FailingReader);
         assert!(read_with_budget(reader, &mut budget).is_err());
         assert_eq!(budget, 3);
-        assert_eq!(read_with_budget(&b"{}"[..], &mut budget), Ok(b"{}".to_vec()));
+        assert_eq!(
+            read_with_budget(&b"{}"[..], &mut budget),
+            Ok(b"{}".to_vec())
+        );
         assert_eq!(budget, 1);
     }
 

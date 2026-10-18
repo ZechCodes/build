@@ -1,6 +1,7 @@
 use super::*;
 
 mod isolation;
+mod compaction_policy;
 mod projects;
 mod provider_defaults;
 mod remote_urls;

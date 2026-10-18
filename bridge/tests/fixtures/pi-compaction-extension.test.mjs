@@ -8,12 +8,12 @@ const source = readFileSync(new URL("../../src/harness/build-tools.ts", import.m
 const extension = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const policy = { tokens: 150000, enabled: true, owner: "agent-a", thread_id: "thread-a", launch_id: "launch-a" };
 
-function fixture(configuration = policy, sink, start = true) {
+function fixture(configuration = policy, sink, start = true, receiptReader) {
   const handlers = new Map();
   const records = [];
   const failures = [];
   const pi = { on: (name, handler) => handlers.set(name, handler) };
-  const telemetry = extension.registerCompactionTelemetry(pi, configuration, sink ?? ((record) => records.push(record)), (reason) => failures.push(reason));
+  const telemetry = extension.registerCompactionTelemetry(pi, configuration, sink ?? ((record) => records.push(record)), (reason) => failures.push(reason), receiptReader ?? (() => receipt(records.at(-1), records.some((r) => r.type === "ready") ? "ready" : "starting")));
   let usage = { tokens: 149999, contextWindow: 200000 };
   let idle = false;
   const ctx = { sessionManager: { getSessionId: () => configuration.owner }, hasPendingMessages: () => false, getContextUsage: () => usage, isIdle: () => idle, compact: () => assert.fail("manual compaction must remain wrapper-owned") };
@@ -247,4 +247,68 @@ test("a stalled event loop cannot resume threshold cancellation under an expired
   const reopened = fixture();
   assert.deepEqual(await reopened.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
   await reopened.emit("session_shutdown");
+});
+
+function receipt(record, status = "ready") {
+  if (!record) return undefined;
+  const { owner, thread_id, launch_id, generation, sequence } = record;
+  return { owner, thread_id, launch_id, generation, sequence, status };
+}
+
+test("native threshold stays available without observer confirmation", async () => {
+  const f = fixture(policy, undefined, true, () => undefined);
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.equal(f.records.some((r) => r.type === "unsupported"), false);
+  await f.emit("session_shutdown");
+});
+
+test("foreign, future and starting receipts never authorize threshold cancellation", async () => {
+  for (const patch of [{ owner: "foreign" }, { thread_id: "foreign" }, { launch_id: "foreign" }, { generation: 0 }, { sequence: Number.MAX_SAFE_INTEGER }, { status: "starting" }]) {
+    let f;
+    f = fixture(policy, undefined, true, () => ({ ...receipt(f?.records.at(-1)), ...patch }));
+    assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+    await f.emit("session_shutdown");
+  }
+});
+
+test("rereading one receipt cannot renew the observer lease while telemetry writes continue", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  let observed;
+  const f = fixture(policy, undefined, true, () => observed);
+  observed = receipt(f.records.at(-1));
+  assert.deepEqual(await f.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  now = 7000;
+  await f.emit("tool_execution_end");
+  now = 9000;
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+});
+
+test("matching unsupported receipt revokes cancellation immediately", async () => {
+  let observed;
+  const f = fixture(policy, undefined, true, () => observed);
+  observed = receipt(f.records.at(-1));
+  assert.deepEqual(await f.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  observed.status = "unsupported";
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+});
+
+test("new registration requires a receipt for its own generation", async () => {
+  const first = fixture();
+  const previous = receipt(first.records.at(-1));
+  const reloaded = fixture(policy, undefined, true, () => previous);
+  assert.equal(await reloaded.emit("session_before_compact", { reason: "threshold" }), undefined);
+  await reloaded.emit("session_shutdown");
+});
+
+test("missing observer expires after startup grace despite successful telemetry writes", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture(policy, undefined, true, () => undefined);
+  for (now = 5000; now <= 90000; now += 5000) await f.emit("tool_execution_end");
+  assert.deepEqual(f.failures, []);
+  await f.emit("tool_execution_end");
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
 });

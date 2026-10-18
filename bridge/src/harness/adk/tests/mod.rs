@@ -337,6 +337,7 @@ fn context() -> HarnessContext {
 }
 
 mod activity;
+mod native_compaction;
 
 mod protocol_reader;
 mod provider;

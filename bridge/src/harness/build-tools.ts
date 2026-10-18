@@ -6,6 +6,8 @@ const DEFAULT_TIMEOUT_MS = 30000;
 const CLOSE_GRACE_MS = 500;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
+// Withdraw locally before the wrapper's ten-second lease can expire.
+const TELEMETRY_LEASE_MS = 8000;
 
 /** @typedef {{tokens: number|null, contextWindow: number}|undefined} PiContextUsage */
 /** @typedef {{getContextUsage: () => PiContextUsage, isIdle: () => boolean, hasPendingMessages: () => boolean, sessionManager: {getSessionId: () => string}}} PiCompactionContext */
@@ -81,16 +83,25 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
   if (!Number.isSafeInteger(generation)) throw new Error("Build Pi telemetry generation exhausted");
   let sequence = 0;
   let active = true;
+  let lastEmission = performance.now();
   /** @type {ReturnType<typeof setInterval>|undefined} */
   let heartbeat;
   /** @param {PiTelemetryEvent} event */
-  const emit = (event) => write({ owner, thread_id, launch_id, generation, sequence: ++sequence, ...event });
+  const writeRecord = (event) => write({ owner, thread_id, launch_id, generation, sequence: ++sequence, ...event });
+  /** @param {PiTelemetryEvent} event */
+  const emit = (event) => {
+    if (performance.now() - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");
+    writeRecord(event);
+    const now = performance.now();
+    if (now - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");
+    lastEmission = now;
+  };
   const stop = () => { active = false; clearInterval(heartbeat); };
   const unsupported = (reason) => {
     if (!active) return;
     stop();
     const label = ["extension_failed", "session_identity_mismatch"].includes(reason) ? reason : "telemetry_failed";
-    try { emit({ type: "unsupported", reason: label }); } catch { /* The independent heartbeat watchdog withdraws support. */ }
+    try { writeRecord({ type: "unsupported", reason: label }); } catch { /* The independent heartbeat watchdog withdraws support. */ }
     onFailure(label);
   };
   const shutdown = () => {

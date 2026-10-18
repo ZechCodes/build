@@ -983,6 +983,89 @@ fn compaction_policy_missing_adopted_checkout_retains_policy_across_save_restart
     assert!(!checkout.join(crate::workspace::MANIFEST_FILE).exists());
 }
 
+#[cfg(unix)]
+#[test]
+fn compaction_policy_inaccessible_adopted_checkout_keeps_policy_until_access_returns() {
+    use std::os::unix::fs::PermissionsExt;
+
+    struct RestorePermissions {
+        path: PathBuf,
+        permissions: std::fs::Permissions,
+    }
+    impl Drop for RestorePermissions {
+        fn drop(&mut self) {
+            std::fs::set_permissions(&self.path, self.permissions.clone())
+                .expect("restore the fixture directory's original permissions");
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let parent = dir.path().join("external-parent");
+    std::fs::create_dir(&parent).unwrap();
+    let checkout = parent.join("checkout");
+    git_in(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "external",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let contents = std::fs::read(checkout.join("README.md")).unwrap();
+    let mut state = scope_app(dir.path());
+    let project = state.add_project(repo, "main".into());
+    let workspace = crate::worktree::external_worktree_id(&checkout);
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert!(state.workspaces.get(&workspace).is_some());
+    state
+        .patch_compaction_thresholds(
+            CompactionScope::Workspace(workspace.clone()),
+            &cell(AgentProvider::Pi, Some(234_567)),
+        )
+        .unwrap();
+
+    let permissions = std::fs::metadata(&parent).unwrap().permissions();
+    let original_mode = permissions.mode();
+    let restore = RestorePermissions {
+        path: parent.clone(),
+        permissions,
+    };
+    std::fs::set_permissions(
+        &parent,
+        std::fs::Permissions::from_mode(original_mode & !0o111),
+    )
+    .unwrap();
+    let denied = std::fs::metadata(&checkout)
+        .expect_err("fixture must deny traversal; run this test as an unprivileged user");
+    assert_eq!(denied.kind(), std::io::ErrorKind::PermissionDenied);
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert!(state.workspaces.get(&workspace).is_none());
+    assert_eq!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+        cell(AgentProvider::Pi, Some(234_567))
+    );
+
+    drop(restore);
+    assert_eq!(
+        std::fs::metadata(&parent).unwrap().permissions().mode(),
+        original_mode
+    );
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert_eq!(crate::worktree::external_worktree_id(&checkout), workspace);
+    assert_eq!(state.workspaces.get(&workspace).unwrap().root, checkout);
+    assert_eq!(
+        state
+            .compaction_thresholds(&CompactionScope::Workspace(workspace))
+            .unwrap()
+            .get(AgentProvider::Pi),
+        Some(234_567)
+    );
+    assert_eq!(std::fs::read(checkout.join("README.md")).unwrap(), contents);
+}
+
 #[test]
 fn compaction_policy_historical_terminal_owner_does_not_inherit_reused_workspace_policy() {
     for parked in [false, true] {

@@ -350,25 +350,76 @@ async fn pi_observer_receipt_advances_only_for_read_records_and_reports_failure(
     assert_eq!(acknowledged["sequence"], 1);
     assert_eq!(acknowledged["generation"], 1);
     assert_eq!(acknowledged["owner"], "agent-one");
-    assert_eq!(std::fs::metadata(&receipt).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&receipt).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     std::fs::set_permissions(telemetry.path(), std::fs::Permissions::from_mode(0o200)).unwrap();
-    assert!(std::fs::read(telemetry.path()).is_err(), "probe requires actual reader permission loss");
+    assert!(
+        std::fs::read(telemetry.path()).is_err(),
+        "probe requires actual reader permission loss"
+    );
     use std::io::Write;
-    let mut writer = std::fs::OpenOptions::new().append(true).open(telemetry.path()).unwrap();
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(telemetry.path())
+        .unwrap();
     writeln!(writer, "{}", event(2, "heartbeat")).unwrap();
     telemetry.check_health(Instant::now(), Instant::now() + Duration::from_secs(11));
     let failed = wait_for_receipt(&receipt, "unsupported").await;
-    assert_eq!(failed["sequence"], 1, "unread writes must not renew observation");
+    assert_eq!(
+        failed["sequence"], 1,
+        "unread writes must not renew observation"
+    );
     alive.lock().unwrap().take();
 }
 
 async fn wait_for_receipt(path: &std::path::Path, status: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Ok(value) = std::fs::read(path).map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap()) {
-                if value["status"] == status { break value; }
+            if let Ok(value) =
+                std::fs::read(path).map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap())
+            {
+                if value["status"] == status {
+                    break value;
+                }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-    }).await.expect("observer must publish its receipt")
+    })
+    .await
+    .expect("observer must publish its receipt")
+}
+
+/// Opt-in carrier probe: runs the real Rust observer, never a bridge daemon.
+#[test]
+#[ignore = "requires isolated qualification paths supplied by the pinned-Pi driver"]
+fn pi_qualification_observer() {
+    let mut config = telemetry().config.clone();
+    config.path = std::env::var_os("PI_QUAL_LOG").unwrap().into();
+    config.owner = std::env::var("PI_QUAL_OWNER").unwrap();
+    config.policy.requested.tokens = 150000;
+    config.policy.launch_identity.thread_id = std::env::var("PI_QUAL_THREAD_ID").unwrap();
+    config.policy.launch_identity.id = std::env::var("PI_QUAL_LAUNCH_ID").unwrap();
+    let report = PathBuf::from(std::env::var_os("PI_QUAL_REPORT").unwrap());
+    let stop = PathBuf::from(std::env::var_os("PI_QUAL_STOP").unwrap());
+    let telemetry = Arc::new(PiTelemetry::new(config));
+    let alive = Arc::new(Mutex::new(Some(broadcast::channel(1).0)));
+    telemetry.follow(Arc::downgrade(&alive), || AgentStatus::Waiting);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !stop.exists() && Instant::now() < deadline {
+        let snapshot = telemetry.snapshot();
+        let value = json!({
+            "enforcement": format!("{:?}", telemetry.policy().enforcement),
+            "reason": telemetry.policy().reason,
+            "status": format!("{:?}", snapshot.status),
+            "context_reset_count": snapshot.context_reset_count,
+        });
+        let temporary = report.with_extension("tmp");
+        std::fs::write(&temporary, value.to_string()).unwrap();
+        std::fs::rename(temporary, &report).unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    alive.lock().unwrap().take();
+    assert!(stop.exists(), "qualification driver must stop its observer");
 }

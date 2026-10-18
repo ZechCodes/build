@@ -18,6 +18,8 @@ pub struct PiTelemetryConfig {
     pub policy: AppliedCompactionPolicy,
 }
 
+mod receipt;
+
 #[cfg(test)]
 mod tests;
 
@@ -98,6 +100,7 @@ impl PiTelemetry {
         std::thread::spawn(move || {
             let started = Instant::now();
             let mut cursor = super::transcript_activity::Cursor::default();
+            let mut receipt = None;
             while alive
                 .upgrade()
                 .is_some_and(|live| live.lock().unwrap().is_some())
@@ -108,13 +111,29 @@ impl PiTelemetry {
                     |value| telemetry.observe(value),
                 );
                 telemetry.check_health(started, Instant::now());
+                telemetry.publish_receipt(&mut receipt);
                 if telemetry.failed() {
                     telemetry.transition(fallback_status());
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
             telemetry.finish(cursor);
+            telemetry.publish_receipt(&mut receipt);
         });
+    }
+
+    fn publish_receipt(&self, last: &mut Option<receipt::Version>) {
+        let state = self.state.lock().unwrap();
+        if receipt::publish(
+            &self.config,
+            &state,
+            self.confirmation.load(Ordering::Acquire),
+            last,
+        )
+        .is_err()
+        {
+            self.fail();
+        }
     }
 
     fn check_health(&self, started: Instant, now: Instant) {

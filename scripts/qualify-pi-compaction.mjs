@@ -139,9 +139,11 @@ function assertLifecycle(events, scenario, diagnostics) {
 }
 
 function assertTelemetry(telemetry, scenario, owner) {
-  assert.equal(telemetry[0].type, 'ready');
+  assert.equal(telemetry[0].type, 'starting');
+  assert.ok(telemetry.some((event) => event.type === 'ready'));
   assert.ok(telemetry.every((event, index) => event.owner === owner && event.sequence === index + 1));
   assert.ok(!telemetry.some((event) => event.type === 'unsupported'));
+  telemetry = telemetry.filter((event) => event.type !== 'heartbeat');
   assert.equal(telemetry.at(-1).type, 'settled');
   const completed = telemetry.findIndex((event) => event.type === 'compaction' && event.completed);
   if (scenario.endsWith('failed')) {

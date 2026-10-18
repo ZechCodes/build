@@ -141,7 +141,7 @@ fn launch(agent: &CompactingAgent, directory: &Path, outcome: &str) -> (EndingSe
     );
     spec.env
         .push(("HOME".into(), directory.to_string_lossy().into_owned()));
-    let session = harness
+    let opened = harness
         .open_session(SessionOpenRequest {
             spec,
             root: agent.root.clone(),
@@ -156,9 +156,9 @@ fn launch(agent: &CompactingAgent, directory: &Path, outcome: &str) -> (EndingSe
             resume_session_id: None,
             recovery_context: None,
         })
-        .unwrap()
-        .session;
-    let activity = session.activity();
+        .unwrap();
+    let session = opened.session;
+    let activity = opened.output.activity;
     let key = insert_agent_tab(
         &mut app,
         &agent.root,
@@ -167,6 +167,11 @@ fn launch(agent: &CompactingAgent, directory: &Path, outcome: &str) -> (EndingSe
         DictatedSession::reporting(AgentStatus::Starting),
     );
     let tab = app.session_registry.test_tab_mut(&key).unwrap();
+    tab.role = TabRole::Agent {
+        owner: RUN.into(),
+        agent_id: agent.agent_id.clone(),
+        provider: AgentProvider::Pi,
+    };
     tab.session = Arc::clone(&session);
     let instance = tab.session_instance.clone();
     drop(app);
@@ -265,7 +270,8 @@ async fn assert_no_early_compaction(
     directory: &Path,
 ) {
     session.backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
-    deliver_pending_agent_turns(&agent.state);
+    // A queued follow-up is released by the status pump. Calling the generic
+    // explicit drain here would intentionally steer a same-model live turn.
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_open(agent, session, key);
     assert!(
@@ -299,7 +305,7 @@ async fn assert_delivered_once(
     assert_eq!(
         agent.agent().last_context_tokens,
         None,
-        "null post-compaction context invalidates the persisted reading"
+        "the consumed threshold reading cannot recursively schedule compaction"
     );
     assert!(
         !session.automatic_compaction_due(Some(200_000)),
@@ -320,6 +326,15 @@ async fn fallback(outcome: &str) {
     assert_eq!(completed_compactions(&agent), 0);
     release(directory.path(), "complete");
     assert_delivered_once(&agent, session.0.as_ref(), directory.path(), true).await;
+    let telemetry = session.0.status_changed().unwrap();
+    assert_eq!(
+        telemetry
+            .borrow()
+            .context
+            .map(|context| context.context_tokens),
+        (outcome != "success").then_some(200_000),
+        "failed summaries retain actual usage without renewing the consumed threshold reading"
+    );
     wait_for(Duration::from_secs(5), || {
         (completed_compactions(&agent) == usize::from(outcome == "success")).then_some(())
     })

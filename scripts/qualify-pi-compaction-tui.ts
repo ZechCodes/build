@@ -13,13 +13,13 @@ let toolCalled = false;
 function stream(model) {
   const output = createAssistantMessageEventStream();
   const overflow = scenario === "overflow" && requests === 1;
-  const callTool = scenario === "mcp_failure" && phase("fail-mcp") && !toolCalled;
+  const callTool = phase("call-tool") && !toolCalled;
   requests += 1;
   toolCalled ||= callTool;
   const message = {
     role: "assistant", api: model.api, provider: model.provider, model: model.id,
     content: callTool
-      ? [{type: "toolCall", id: "qualification-tool", name: "done", arguments: {kind: "child_exit"}}]
+      ? [{type: "toolCall", id: "qualification-tool", name: "done", arguments: {kind: scenario === "mcp_failure" ? "child_exit" : "one"}}]
       : [{type: "text", text: "QUALIFICATION_OK"}],
     usage: {input: 50000, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 50001,
       cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
@@ -37,6 +37,9 @@ function stream(model) {
 }
 
 export default async function qualification(pi) {
+  process.once("SIGTERM", () => record({type: "signal", signal: "SIGTERM"}));
+  pi.on("tool_execution_end", (event) => record({type: "tool_execution_end",
+    toolName: event.toolName, isError: event.isError, result: event.result}));
   pi.registerProvider("qualification", {
     baseUrl: "http://invalid.invalid", apiKey: "synthetic-placeholder", api: "qualification",
     models: [{id: "local", name: "Local qualification", reasoning: false, input: ["text"],

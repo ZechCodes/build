@@ -19,7 +19,7 @@ import time
 import uuid
 
 PI_SHA256 = "9b939197c9ca98182981fc448ac6d441076d3c37360cf8dc649193e664fcf6f7"
-SCENARIOS = ("manual", "overflow", "reload", "slow_mcp", "mcp_failure", "sink_failure")
+SCENARIOS = ("manual", "overflow", "reload", "slow_mcp", "mcp_failure", "sink_failure", "read_loss")
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -35,7 +35,7 @@ def count(events, kind):
 
 
 class Probe:
-    def __init__(self, root, scenario, binary, node):
+    def __init__(self, root, scenario, binary, node, observer):
         self.home = root / scenario
         self.home.mkdir(mode=0o700)
         self.scenario = scenario
@@ -43,6 +43,16 @@ class Probe:
         self.telemetry = self.home / "telemetry.jsonl"
         self.telemetry.touch(mode=0o600)
         self.owner = str(uuid.uuid4())
+        self.report = self.home / "observer-report.json"
+        self.observer_stop = self.home / "observer-stop"
+        self.observer_output = (self.home / "observer-output.log").open("wb")
+        observer_env = {"HOME": str(self.home), "PATH": "/usr/bin:/bin",
+                        "PI_QUAL_LOG": str(self.telemetry), "PI_QUAL_OWNER": self.owner,
+                        "PI_QUAL_THREAD_ID": "thread-qualification", "PI_QUAL_LAUNCH_ID": "launch-qualification",
+                        "PI_QUAL_REPORT": str(self.report), "PI_QUAL_STOP": str(self.observer_stop)}
+        self.observer = subprocess.Popen([str(observer), "--ignored", "--exact",
+            "harness::pi_telemetry::tests::pi_qualification_observer", "--nocapture"],
+            cwd=self.home, env=observer_env, stdout=self.observer_output, stderr=subprocess.STDOUT)
         agent = self.home / "agent"
         agent.mkdir()
         (agent / "settings.json").write_text(json.dumps({
@@ -114,15 +124,26 @@ class Probe:
         except (FileNotFoundError, ProcessLookupError, ValueError):
             pass
 
+    def telemetry_diagnostics(self):
+        try:
+            return records(self.telemetry)[-12:]
+        except PermissionError:
+            return "unreadable"
+
+    def observed(self):
+        return json.loads(self.report.read_text()) if self.report.exists() else {}
+
     def wait(self, predicate, label, timeout=25):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.pump()
+            assert self.observer.poll() is None, ("Rust observer exited early: " +
+                (self.home / "observer-output.log").read_text())
             assert self.child.poll() is None, f"{self.scenario}: Pi exited {self.child.returncode} during {label}"
             if predicate():
                 return
         raise AssertionError(f"{self.scenario}: timed out during {label}; events={records(self.events)[-12:]}; "
-                             f"telemetry={records(self.telemetry)[-12:]}; "
+                             f"observer={self.observed()}; telemetry={self.telemetry_diagnostics()}; "
                              f"terminal={self.output[-2000:].decode(errors='replace')}")
 
     def pause(self, duration):
@@ -148,6 +169,7 @@ class Probe:
             assert count(records(self.telemetry), "heartbeat") >= 5
             self.evidence["alive_before_ready_after_seconds"] = round(time.monotonic() - self.started, 3)
         self.wait(lambda: any(event["type"] == "ready" for event in records(self.telemetry)), "extension ready")
+        self.wait(lambda: self.observed().get("enforcement") == "BetweenTurn", "Rust observer readiness")
         self.wait(lambda: self.paste_ready, "TUI paste mode")
         self.pause(0.6)
         self.prompt("Synthetic first context. " * 20)
@@ -176,20 +198,51 @@ class Probe:
         assert ready["generation"] > prior["generation"]
         assert any(event["type"] == "settled" and event["generation"] == ready["generation"] for event in records(self.telemetry))
 
-    def failure(self):
+    def transport_failure(self):
+        (self.home / "call-tool").touch()
+        self.send("Synthetic work triggers actual MCP child exit.")
+        deadline = time.monotonic() + 10
+        while self.child.poll() is None and time.monotonic() < deadline:
+            self.pump()
+        assert self.child.poll() is not None, "Pi must terminate on MCP transport failure"
+        assert any(event["type"] == "signal" and event["signal"] == "SIGTERM"
+                   for event in records(self.events)), "MCP failure must deliver SIGTERM"
+        assert any(event["type"] == "unsupported" for event in records(self.telemetry))
+        deadline = time.monotonic() + 2
+        while self.observed().get("enforcement") != "Unsupported" and time.monotonic() < deadline:
+            self.pump()
+        assert self.observed().get("enforcement") == "Unsupported"
+        self.evidence["transport_failure_exit"] = self.child.returncode
+
+    def telemetry_failure(self):
         before = count(records(self.events), "session_compact")
-        if self.scenario == "sink_failure":
-            self.telemetry.chmod(0o644)
-        else:
-            (self.home / "fail-mcp").touch()
-        self.prompt("Synthetic work after injected failure.")
+        original_size = self.telemetry.stat().st_size
+        self.telemetry.chmod(0o200 if self.scenario == "read_loss" else 0o644)
+        if self.scenario == "read_loss":
+            try:
+                self.telemetry.read_bytes()
+            except PermissionError:
+                self.evidence["read_denied"] = True
+            else:
+                raise AssertionError("write-only sidecar must deny read")
+        self.wait(lambda: self.observed().get("enforcement") == "Unsupported", "Rust observes telemetry loss")
+        self.pause(1.2)
+        if self.scenario == "read_loss":
+            assert self.telemetry.stat().st_size > original_size, "JS must still append after read loss"
+            self.evidence["js_appended_after_read_loss"] = True
+        (self.home / "call-tool").touch()
+        self.prompt("Synthetic work after telemetry loss must call the healthy MCP tool.")
         self.wait(lambda: count(records(self.events), "session_compact") > before, "native compaction after loss of fallback")
         assert any(event["type"] == "session_compact" and event["reason"] == "threshold"
                    for event in records(self.events))
-        if self.scenario == "mcp_failure":
-            assert any(event["type"] == "unsupported" for event in records(self.telemetry))
+        tools = [event for event in records(self.events) if event["type"] == "tool_execution_end"]
+        assert any(not event["isError"] and any(item.get("text") == "one" for item in event["result"]["content"])
+                   for event in tools), "healthy MCP tool must succeed after telemetry failure"
         self.prompt("Synthetic follow-up proves Pi survived.")
+        self.evidence["observer_after_failure"] = self.observed()
         assert self.child.poll() is None
+        if self.scenario == "read_loss":
+            self.telemetry.chmod(0o600)
 
     def verify(self):
         events = records(self.events)
@@ -204,6 +257,14 @@ class Probe:
                 generation, sequence = event["generation"], 0
             assert event["sequence"] == sequence + 1
             sequence = event["sequence"]
+        receipt_path = Path(str(self.telemetry) + ".ack")
+        assert not receipt_path.is_symlink() and receipt_path.is_file()
+        assert receipt_path.stat().st_mode & 0o777 == 0o600
+        receipt = json.loads(receipt_path.read_text())
+        assert receipt["owner"] == self.owner and receipt["thread_id"] == "thread-qualification"
+        assert receipt["launch_id"] == "launch-qualification" and receipt["generation"] == generation
+        assert 0 < receipt["sequence"] <= sequence
+        self.evidence["observer_receipt"] = receipt
         startup = records(self.home / "fake-mcp.jsonl")[0]["startup"]
         assert startup["socket"] == self.evidence["fake_endpoint"]
         assert startup["token"] == "qualification-dummy-token"
@@ -214,10 +275,20 @@ class Probe:
                             if event["type"] == "session_compact" and event["reason"] == "overflow")
             assert events[boundary]["willRetry"]
             assert any(event["type"] == "agent_start" for event in events[boundary + 1:])
-        self.evidence.update(events=events, telemetry=telemetry, pi_alive_after_assertions=self.child.poll() is None)
+        self.evidence.update(events=events, telemetry=telemetry, observer=self.observed(),
+                             pi_alive_after_assertions=self.child.poll() is None)
         return self.evidence
 
     def close(self):
+        self.telemetry.chmod(0o600)
+        self.observer_stop.touch()
+        try:
+            self.observer.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.observer.kill()
+            self.observer.wait(timeout=3)
+        self.observer_output.close()
+        self.evidence["observer_exit"] = self.observer.returncode
         self.capture_mcp()
         if self.child.poll() is None:
             self.child.terminate()
@@ -246,32 +317,38 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pi", type=Path, required=True)
     parser.add_argument("--node", type=Path, required=True)
+    parser.add_argument("--observer", type=Path, required=True)
+    parser.add_argument("--extension-source", type=Path, default=REPO / "bridge/src/harness/build-tools.ts")
     parser.add_argument("--scenario", choices=SCENARIOS, action="append")
     args = parser.parse_args()
-    assert args.pi.is_absolute() and args.node.is_absolute()
+    assert args.pi.is_absolute() and args.node.is_absolute() and args.observer.is_absolute()
     assert hashlib.sha256(args.pi.read_bytes()).hexdigest() == PI_SHA256, "unqualified Pi executable"
     evidence = []
     with tempfile.TemporaryDirectory(prefix="build-pi-tui-qualification-") as directory:
         root = Path(directory)
-        shutil.copyfile(REPO / "bridge/src/harness/build-tools.ts", root / "build-tools.ts")
+        shutil.copyfile(args.extension_source, root / "build-tools.ts")
         extension_hash = hashlib.sha256((root / "build-tools.ts").read_bytes()).hexdigest()
         shutil.copyfile(REPO / "scripts/qualify-pi-compaction-tui.ts", root / "qualification.ts")
         shutil.copyfile(REPO / "bridge/tests/fixtures/pi-mcp-child.mjs", root / "pi-mcp-child.mjs")
         for scenario in args.scenario or SCENARIOS:
-            probe = Probe(root, scenario, args.pi, args.node)
+            probe = Probe(root, scenario, args.pi, args.node, args.observer)
             try:
                 probe.start()
                 if scenario == "reload":
                     probe.reload()
-                elif scenario.endswith("failure"):
-                    probe.failure()
+                elif scenario == "mcp_failure":
+                    probe.transport_failure()
+                elif scenario in ("sink_failure", "read_loss"):
+                    probe.telemetry_failure()
                 elif scenario != "overflow":
                     probe.manual()
                 evidence.append(probe.verify())
             finally:
                 probe.close()
+            assert probe.observer.returncode == 0, "Rust observer gate failed"
     print(json.dumps({"carrier": "tui", "pi": str(args.pi), "sha256": PI_SHA256,
-                      "node": str(args.node), "extension_sha256": extension_hash, "evidence": evidence}, indent=2))
+                      "node": str(args.node), "observer": str(args.observer),
+                      "extension_sha256": extension_hash, "evidence": evidence}, indent=2))
 
 
 if __name__ == "__main__":

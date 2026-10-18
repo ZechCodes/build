@@ -19,6 +19,10 @@ const record = (value) => appendFileSync(process.env.QUAL_EVENTS, JSON.stringify
 let request = 0;
 let failSummary = false;
 let queued = false;
+// Supplemental hook-only observer. Production carrier proof uses the Rust
+// observer and private receipt file in qualify-pi-compaction-tui.py.
+let receipt;
+let receiptReady = false;
 export default function (pi) {
   pi.registerProvider('qualification', {
     baseUrl: 'http://invalid.invalid', apiKey: 'synthetic-placeholder', api: 'qualification',
@@ -61,8 +65,15 @@ export default function (pi) {
   });
   registerCompactionTelemetry(pi, {owner: process.env.QUAL_OWNER, thread_id: 'thread-qualification',
     launch_id: 'launch-qualification', tokens: 150000, enabled: true},
-    (event) => appendFileSync(process.env.QUAL_TELEMETRY, JSON.stringify(event) + '\n'),
-    (reason) => { throw new Error(reason); });
+    (event) => {
+      appendFileSync(process.env.QUAL_TELEMETRY, JSON.stringify(event) + '\n');
+      if (event.type === 'starting') receiptReady = false;
+      if (event.type === 'ready') receiptReady = true;
+      receipt = {owner: event.owner, thread_id: event.thread_id, launch_id: event.launch_id,
+        generation: event.generation, sequence: event.sequence,
+        status: event.type === 'unsupported' ? 'unsupported' : receiptReady ? 'ready' : 'starting'};
+    },
+    (reason) => { throw new Error(reason); }, () => receipt);
   pi.on('session_before_compact', (event) => {
     if (process.env.QUAL_SCENARIO.endsWith('failed')) { failSummary = true; return; }
     return {compaction: {summary: 'Synthetic qualification summary.',

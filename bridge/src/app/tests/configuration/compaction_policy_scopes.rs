@@ -592,6 +592,58 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
     }
 }
 
+fn assert_locked_workspace_policy_retained(state: &mut AppState, root: &Path, workspace: &str) {
+    let before = config_on_disk(root);
+    call(
+        state,
+        "workspace.set_locked",
+        json!({"workspace_id": workspace, "locked": true}),
+    );
+    let refused = state.handle(req("workspace.delete", json!({"workspace_id": workspace})));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert_eq!(config_on_disk(root), before);
+    assert_eq!(
+        state
+            .compaction_thresholds(&CompactionScope::Workspace(workspace.into()))
+            .unwrap()
+            .stored_value(),
+        all_cells(Some(123_456))
+    );
+    call(
+        state,
+        "workspace.set_locked",
+        json!({"workspace_id": workspace, "locked": false}),
+    );
+}
+
+fn assert_project_policy_retained_on_failed_delete(
+    state: &mut AppState,
+    root: &Path,
+    project: &str,
+    workspace: &str,
+) {
+    let disk = config_on_disk(root);
+    for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+        state.config_persist_failure = Some(failure);
+        let refused = state.handle(req(
+            "project.delete",
+            json!({"project_id": project, "confirm": true}),
+        ));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(config_on_disk(root), disk);
+        for scope in [
+            CompactionScope::Project(project.into()),
+            CompactionScope::Workspace(workspace.into()),
+        ] {
+            assert_eq!(
+                state.compaction_thresholds(&scope).unwrap().stored_value(),
+                all_cells(Some(123_456))
+            );
+        }
+        state.config_persist_failure = None;
+    }
+}
+
 #[test]
 fn compaction_policy_workspace_and_project_deletion_prune_only_owned_settings() {
     let dir = tempfile::tempdir().unwrap();
@@ -612,30 +664,7 @@ fn compaction_policy_workspace_and_project_deletion_prune_only_owned_settings() 
             .patch_compaction_thresholds(scope, &all_cells(Some(123_456)))
             .unwrap();
     }
-    let before = config_on_disk(dir.path());
-    call(
-        &mut state,
-        "workspace.set_locked",
-        json!({"workspace_id": removed_workspace, "locked": true}),
-    );
-    let refused = state.handle(req(
-        "workspace.delete",
-        json!({"workspace_id": removed_workspace}),
-    ));
-    assert_eq!(refused["ok"], false, "{refused}");
-    assert_eq!(config_on_disk(dir.path()), before);
-    assert_eq!(
-        state
-            .compaction_thresholds(&CompactionScope::Workspace(removed_workspace.clone()))
-            .unwrap()
-            .stored_value(),
-        all_cells(Some(123_456))
-    );
-    call(
-        &mut state,
-        "workspace.set_locked",
-        json!({"workspace_id": removed_workspace, "locked": false}),
-    );
+    assert_locked_workspace_policy_retained(&mut state, dir.path(), &removed_workspace);
     call(
         &mut state,
         "workspace.delete",
@@ -649,25 +678,12 @@ fn compaction_policy_workspace_and_project_deletion_prune_only_owned_settings() 
         disk["workspace_compaction_thresholds"][&sibling],
         all_cells(Some(123_456))
     );
-    for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
-        state.config_persist_failure = Some(failure);
-        let refused = state.handle(req(
-            "project.delete",
-            json!({"project_id": removed_project, "confirm": true}),
-        ));
-        assert_eq!(refused["ok"], false, "{refused}");
-        assert_eq!(config_on_disk(dir.path()), disk);
-        for scope in [
-            CompactionScope::Project(removed_project.clone()),
-            CompactionScope::Workspace(sibling.clone()),
-        ] {
-            assert_eq!(
-                state.compaction_thresholds(&scope).unwrap().stored_value(),
-                all_cells(Some(123_456))
-            );
-        }
-        state.config_persist_failure = None;
-    }
+    assert_project_policy_retained_on_failed_delete(
+        &mut state,
+        dir.path(),
+        &removed_project,
+        &sibling,
+    );
     call(
         &mut state,
         "project.delete",

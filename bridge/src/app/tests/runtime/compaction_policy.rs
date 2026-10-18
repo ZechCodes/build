@@ -377,3 +377,88 @@ fn frozen_provider_resolves_canonical_alias_scopes_after_the_choice_changes() {
         345_678
     );
 }
+
+#[tokio::test]
+async fn boot_roster_delivery_reopens_once_with_the_saved_policy_edit() {
+    let fixture = PolicyLaunch::new(false);
+    let config = fixture._dir.path().join("policy-config.json");
+    fixture.state.lock().unwrap().config_path = Some(config.clone());
+    fixture.set_threshold(123_456);
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    let original = fixture.session().compaction_policy().unwrap().clone();
+    let roster = {
+        let mut app = fixture.state.lock().unwrap();
+        app.edit_agent_record("before restart", OWNER, &fixture.agent, |agent| {
+            agent.state = crate::agent::AgentLifecycle::Live;
+            agent.working_since = None;
+            agent.last_context_tokens = Some(456_789);
+        });
+        let roster = app.resume_roster("before-restart");
+        app.retire_tab(&fixture.key, "test restart");
+        roster
+    };
+    assert_eq!(roster.agents.len(), 1);
+    let roster_root = fixture._dir.path().join("restart-roster");
+    std::fs::create_dir_all(&roster_root).unwrap();
+    roster.save(&roster_root).unwrap();
+    fixture.set_threshold(234_567);
+    let saved: Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    assert_eq!(saved["compaction_thresholds"]["claude"], 234_567);
+    let roster = crate::resume::ResumeRoster::take(&roster_root).unwrap();
+    assert!(crate::resume::ResumeRoster::take(&roster_root).is_none());
+    {
+        let mut app = fixture.state.lock().unwrap();
+        assert_eq!(
+            app.resume_recorded_agents(&roster, "after-restart"),
+            vec![fixture.agent.clone()]
+        );
+        assert_eq!(app.delivery_queue.queued_len(), 1);
+    }
+    deliver_pending_agent_turns(&fixture.state);
+    let session = fixture.session();
+    let applied = session.compaction_policy().unwrap();
+    assert_eq!(applied.requested.tokens, 234_567);
+    assert_ne!(applied.launch_identity.id, original.launch_identity.id);
+    assert_eq!(
+        applied.launch_identity.thread_id,
+        original.launch_identity.thread_id
+    );
+    deliver_pending_agent_turns(&fixture.state);
+    assert_eq!(fixture.builds.lock().unwrap().len(), 2);
+    let app = fixture.state.lock().unwrap();
+    assert!(app.delivery_queue.queued_is_empty());
+    assert_eq!(
+        app.entity_agents(OWNER)
+            .unwrap()
+            .by_id(&fixture.agent)
+            .unwrap()
+            .last_context_tokens,
+        None
+    );
+}
+
+#[tokio::test]
+async fn idle_demotion_keeps_the_live_policy_until_a_real_reopen() {
+    let fixture = PolicyLaunch::new(false);
+    fixture.set_threshold(123_456);
+    fixture.publish(fixture.open(fixture.reserve())).unwrap();
+    let original = fixture.session();
+    let policy = original.compaction_policy().unwrap().clone();
+    fixture.set_threshold(234_567);
+    original.backdate_last_output(Duration::from_secs(600));
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.session_registry
+            .test_tab_mut(&fixture.key)
+            .unwrap()
+            .last_delivered_at = Some(std::time::Instant::now() - QUIET_THRESHOLD);
+        assert_eq!(
+            app.mark_idle_tasks(QUIET_THRESHOLD),
+            vec![OWNER.to_string()]
+        );
+        assert_eq!(app.runs[OWNER].run.state, RunState::IdleUnreported);
+    }
+    assert!(Arc::ptr_eq(&original, &fixture.session()));
+    assert_eq!(fixture.session().compaction_policy(), Some(&policy));
+    assert_eq!(fixture.builds.lock().unwrap().len(), 1);
+}

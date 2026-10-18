@@ -2270,6 +2270,9 @@ The tooltip opens on hover or visible keyboard focus, closes on click or
 pointer leave, stays inside the viewport and does not add a touch-only
 interaction. It replaces the bubble's native title. An unnamed pinned agent
 uses the same “Project agent” label in its tooltip and conversation header.
+Hover and keyboard focus retain separate owners across kept-button repaints.
+Long work text is ellipsized so the fixed facts fit without scrolling, and
+models without a compact badge retain their cached label or id.
 The conversation header keeps the agent name above the smaller current-work
 line; only the work line erases and types when its topic changes. A missing
 topic retains the existing shimmering “Starting” text, regardless of lifecycle

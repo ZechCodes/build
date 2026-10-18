@@ -15,6 +15,9 @@ Conversation bubbles use a custom tooltip for cached identity, current work,
 turn runtime or idle state, harness, model and status. It opens on hover and
 visible keyboard focus, closes on click or pointer leave, stays within the
 viewport and replaces the native tooltip.
+It remains non-interactive: long work text is ellipsized to keep the fixed
+facts visible. Cached model labels or ids remain visible even when no compact
+model badge exists.
 Touch-only devices retain their existing tap behavior.
 
 ## Workspace views — #522 implementation amendment (2026-10-13)

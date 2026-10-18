@@ -72,7 +72,7 @@ async function failIfMcpChildLeaks() {
   }
   if (!mcpChildIsRunning()) return;
   const childPid = Number(readFileSync(process.env.FAKE_MCP_PID, "utf8"));
-  process.kill(childPid, "SIGKILL");
+  ownedProcessKill(childPid, "SIGKILL");
   process.exit(3);
 }
 

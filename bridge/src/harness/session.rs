@@ -170,6 +170,8 @@ pub struct SessionStatusSnapshot {
     /// The newest turn context the harness reported, carried across status
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
+    /// Cumulative explicit invalidations; survives coalesced watch updates.
+    pub context_reset_count: u64,
     /// Why this session is idle, when the reason is that its harness has run out
     /// of usage (task #58).
     ///
@@ -193,6 +195,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: 0,
             successful_response_count: 0,
             context: None,
+            context_reset_count: 0,
             usage_limit: None,
         }
     }
@@ -213,6 +216,7 @@ impl SessionStatusSnapshot {
                 usage_limit_count: self.usage_limit_count,
                 successful_response_count: self.successful_response_count,
                 context: self.context,
+                context_reset_count: self.context_reset_count,
                 usage_limit: self.usage_limit.clone(),
             }
         })
@@ -232,6 +236,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: self.usage_limit_count.saturating_add(1),
             successful_response_count: self.successful_response_count,
             context: self.context,
+            context_reset_count: self.context_reset_count,
             usage_limit: Some(limit),
         }
     }
@@ -246,6 +251,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: self.usage_limit_count,
             successful_response_count: self.successful_response_count.saturating_add(1),
             context: self.context,
+            context_reset_count: self.context_reset_count,
             usage_limit: None,
         }
     }

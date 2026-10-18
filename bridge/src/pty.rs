@@ -297,6 +297,7 @@ pub struct PtySession {
     identity: Option<crate::harness::SessionIdentitySource>,
     activity_rx: Mutex<Option<broadcast::Receiver<crate::harness::ActivityReport>>>,
     compaction_sidecar: Option<PathBuf>,
+    pi_telemetry: Option<Arc<crate::harness::pi_telemetry::PiTelemetry>>,
 }
 
 /// Start `binary` with `spec`'s arguments and environment on `slave`, at a
@@ -364,24 +365,10 @@ impl PtySession {
         placement: ChildPlacement,
     ) -> Result<PtySession, HarnessError> {
         if let Some(path) = spec.compaction_sidecar.as_ref() {
-            let parent = path.parent().ok_or_else(|| {
-                HarnessError::Setup(format!(
-                    "compaction sidecar {} has no parent",
-                    path.display()
-                ))
-            })?;
-            std::fs::create_dir_all(parent).map_err(|error| {
-                HarnessError::Setup(format!("create {}: {error}", parent.display()))
-            })?;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .mode(0o600)
-                .open(path)
-                .map_err(|error| {
-                    HarnessError::Setup(format!("create {}: {error}", path.display()))
-                })?;
+            prepare_observation_log(path, false)?;
+        }
+        if let Some(config) = spec.pi_telemetry.as_ref() {
+            prepare_observation_log(&config.path, true)?;
         }
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
@@ -447,7 +434,7 @@ impl PtySession {
             });
         }
 
-        Ok(PtySession {
+        let session = PtySession {
             writer: Arc::new(Mutex::new(writer)),
             master: Mutex::new(pair.master),
             child: Mutex::new(child),
@@ -461,7 +448,15 @@ impl PtySession {
             identity: None,
             activity_rx: Mutex::new(None),
             compaction_sidecar: spec.compaction_sidecar.clone(),
-        })
+            pi_telemetry: spec
+                .pi_telemetry
+                .clone()
+                .map(|config| Arc::new(crate::harness::pi_telemetry::PiTelemetry::new(config))),
+        };
+        if let Some(telemetry) = &session.pi_telemetry {
+            telemetry.follow(Arc::downgrade(&session.output_tx));
+        }
+        Ok(session)
     }
 
     /// Hand this session its launch-known or transcript-located conversation
@@ -474,7 +469,9 @@ impl PtySession {
         mut self,
         identity: Option<crate::harness::SessionIdentitySource>,
     ) -> PtySession {
-        if let Some(path) = self.compaction_sidecar.clone() {
+        if let Some(telemetry) = &self.pi_telemetry {
+            *self.activity_rx.lock().unwrap() = telemetry.activity();
+        } else if let Some(path) = self.compaction_sidecar.clone() {
             *self.activity_rx.lock().unwrap() =
                 Some(crate::harness::transcript_activity::follow_sidecar(
                     path,
@@ -489,7 +486,7 @@ impl PtySession {
         self,
         activity_locator: Option<(Box<dyn crate::harness::SessionLocator>, Option<String>)>,
     ) -> PtySession {
-        if self.compaction_sidecar.is_none() {
+        if self.compaction_sidecar.is_none() && self.pi_telemetry.is_none() {
             if let Some((locator, known)) = activity_locator {
                 *self.activity_rx.lock().unwrap() =
                     locator.activity(known.as_deref(), Arc::downgrade(&self.output_tx));
@@ -605,7 +602,50 @@ impl PtySession {
 /// synthesized from the age of the last paint. The session is opaque — Build
 /// sees what it launched and what the agent reported over MCP, and nothing in
 /// between — so it offers the escape hatch.
+fn prepare_observation_log(path: &std::path::Path, exclusive: bool) -> Result<(), HarnessError> {
+    let parent = path.parent().ok_or_else(|| {
+        HarnessError::Setup(format!("observation log {} has no parent", path.display()))
+    })?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| HarnessError::Setup(format!("create {}: {error}", parent.display())))?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .create_new(exclusive)
+        .truncate(!exclusive)
+        .write(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| HarnessError::Setup(format!("create {}: {error}", path.display())))?;
+    Ok(())
+}
+
 impl AgentSession for PtySession {
+    fn opening_succeeded(&self) -> bool {
+        self.pi_telemetry.as_ref().map_or_else(
+            || matches!(self.status(), AgentStatus::Waiting | AgentStatus::Working),
+            |telemetry| telemetry.confirmed(),
+        )
+    }
+
+    fn compaction_policy(&self) -> Option<&crate::harness::compaction::AppliedCompactionPolicy> {
+        self.pi_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.policy())
+    }
+
+    fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
+        self.pi_telemetry
+            .as_ref()
+            .is_some_and(|telemetry| telemetry.automatic_due(context_tokens))
+    }
+
+    fn status_changed(
+        &self,
+    ) -> Option<tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>> {
+        self.pi_telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.subscribe())
+    }
     /// Hand the agent one turn, through the harness's own paste framing and
     /// submit key.
     ///
@@ -614,7 +654,18 @@ impl AgentSession for PtySession {
     /// is written. Re-checking per turn would park the caller behind a mid-turn
     /// repaint, and this call must return promptly — see the trait doc.
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
-        self.write_prompt(&turn.text)
+        if let Some(telemetry) = &self.pi_telemetry {
+            telemetry.sent(
+                turn.text.split_whitespace().next() == Some(crate::harness::COMPACT_COMMAND),
+            )?;
+        }
+        let result = self.write_prompt(&turn.text);
+        if result.is_err() {
+            if let Some(telemetry) = &self.pi_telemetry {
+                telemetry.fail();
+            }
+        }
+        result
     }
 
     /// The four conjuncts of the old `agent_is_working`, minus the two the
@@ -628,6 +679,9 @@ impl AgentSession for PtySession {
     fn status(&self) -> AgentStatus {
         match self.exit_code() {
             Some(code) => AgentStatus::Ended { code: Some(code) },
+            None if self.pi_telemetry.is_some() => {
+                self.pi_telemetry.as_ref().unwrap().snapshot().status
+            }
             None if self.idle_for() < AGENT_WORKING_WINDOW => AgentStatus::Working,
             None => AgentStatus::Waiting,
         }
@@ -652,7 +706,15 @@ impl AgentSession for PtySession {
     }
 
     fn conversation_artifacts(&self) -> Vec<PathBuf> {
-        self.compaction_sidecar.iter().cloned().collect()
+        self.compaction_sidecar
+            .iter()
+            .cloned()
+            .chain(
+                self.pi_telemetry
+                    .iter()
+                    .map(|telemetry| telemetry.path().to_owned()),
+            )
+            .collect()
     }
 
     /// Always, for a CLI wrapper: it is opaque, so the human needs a way in.

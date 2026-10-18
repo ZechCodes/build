@@ -66,6 +66,7 @@ pub(in crate::app) fn spawn_status_pump(
         session: Arc::downgrade(&session),
         instance,
         recorded_context: None,
+        recorded_context_reset_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
     };
     tokio::spawn(async move {
@@ -93,6 +94,7 @@ struct StatusPump {
     session: std::sync::Weak<dyn AgentSession>,
     instance: SessionInstance,
     recorded_context: Option<crate::harness::TurnContext>,
+    recorded_context_reset_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
 }
 
@@ -115,6 +117,11 @@ impl StatusPump {
             }
             let owner = &instance.entity_id;
             app.record_agent_status_snapshot(owner, &instance.agent_id, snapshot);
+            if snapshot.context_reset_count > self.recorded_context_reset_count {
+                app.forget_agent_context(owner, &instance.agent_id);
+                self.recorded_context = None;
+                self.recorded_context_reset_count = snapshot.context_reset_count;
+            }
             record_new_turn_context(&mut app, instance, snapshot, &mut self.recorded_context);
             // A limit recorded wants its reset waited for, and one cleared
             // may have left agents to start again: either is a drain.

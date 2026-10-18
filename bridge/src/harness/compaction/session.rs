@@ -35,10 +35,24 @@ impl AgentSession for PolicySession {
         Some(&self.policy.launch_identity)
     }
     fn compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
+        // A hook-backed carrier can explicitly withdraw support after an
+        // extension failure. Its runtime observation owns that decision.
+        if let Some(policy) = self.inner.compaction_policy() {
+            return Some(policy);
+        }
         if self.inner.opening_succeeded() {
             self.applied.store(true, Ordering::Relaxed);
         }
         self.applied.load(Ordering::Relaxed).then_some(&self.policy)
+    }
+    fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
+        if self.inner.compaction_policy().is_some() {
+            return self.inner.automatic_compaction_due(context_tokens);
+        }
+        self.status() == AgentStatus::Waiting
+            && self
+                .compaction_policy()
+                .is_some_and(|policy| policy.automatic_due(context_tokens))
     }
     fn turn_choice_support(&self, choice: &ModelChoice) -> TurnChoiceSupport {
         if self.policy.enforcement == CompactionEnforcement::Native && choice != &self.policy.choice

@@ -419,9 +419,11 @@ impl AppState {
         {
             self.watch_agent_filed_tasks = watching;
         }
-        if let Some(tokens) = config.get("compact_above_tokens").and_then(Value::as_u64) {
-            self.compact_above_tokens = tokens;
-        }
+        self.compact_above_tokens = config
+            .get("compact_above_tokens")
+            .and_then(Value::as_u64)
+            .filter(|tokens| *tokens > 0)
+            .unwrap_or(crate::agent::DEFAULT_COMPACT_ABOVE_TOKENS);
         self.reclaim_settings = crate::reclaim::ReclaimSettings {
             idle_after_secs: config
                 .get("workspace_idle_secs")

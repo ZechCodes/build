@@ -374,8 +374,8 @@ pub struct AgentRemoveParams {
     pub thread_id: Option<String>,
 }
 
-/// `conversation.settings`. `max_context_tokens` must be named: a number of
-/// tokens (0 never compacts), or `null` to follow the device again.
+/// `conversation.settings`. `max_context_tokens` must be named: a positive
+/// safe integer of tokens, or `null` to inherit again.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationSettingsParams {
     pub entity_id: String,
@@ -651,12 +651,12 @@ pub struct AgentDigest {
     /// Cache-read tokens the agent's current session has spent in all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_cache_read_tokens: Option<u64>,
-    /// The conversation's own compaction threshold; absent follows the
-    /// device's, 0 never compacts.
+    /// The canonical conversation's positive compaction threshold; absent
+    /// inherits. Legacy zero loads as inheritance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context_tokens: Option<u64>,
-    /// The threshold in effect: the conversation's, else the device's. 0 is
-    /// never.
+    /// The legacy positive threshold: the canonical conversation's, else
+    /// the device scalar. It does not describe per-harness scope resolution.
     pub compact_at_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surfaces: Option<AgentSurfaces>,
@@ -688,7 +688,7 @@ pub struct ConversationSettings {
     /// The conversation's own threshold as stored; absent follows the device.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_context_tokens: Option<u64>,
-    /// The threshold in effect. 0 is never.
+    /// The legacy positive threshold: the conversation's, else the device scalar.
     pub compact_at_tokens: u64,
 }
 

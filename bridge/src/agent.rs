@@ -380,26 +380,28 @@ impl Agent {
     }
 
     /// The context size at which this agent's next warm turn is preceded by a
-    /// compaction: its own threshold, else the device's. 0 is never.
+    /// compaction: its positive threshold, else the device's. Legacy zeros
+    /// inherit, with the built-in default when the device value is also zero.
     pub fn compact_at_tokens(&self, device_threshold: u64) -> u64 {
-        self.max_context_tokens.unwrap_or(device_threshold)
+        self.max_context_tokens
+            .filter(|tokens| *tokens > 0)
+            .or_else(|| (device_threshold > 0).then_some(device_threshold))
+            .unwrap_or(DEFAULT_COMPACT_ABOVE_TOKENS)
     }
 
     /// Whether the last reported context has reached the threshold. Inclusive,
     /// and never for an agent whose context nobody has reported.
     pub fn compaction_due(&self, device_threshold: u64) -> bool {
         let threshold = self.compact_at_tokens(device_threshold);
-        threshold > 0
-            && self
-                .last_context_tokens
-                .is_some_and(|tokens| tokens >= threshold)
+        self.last_context_tokens
+            .is_some_and(|tokens| tokens >= threshold)
     }
 
     /// The context this agent last reported, as what it writes carries it:
     /// the tokens, when they were recorded, the window of the model it runs —
-    /// the one running now, else the one chosen — and where its chat compacts
-    /// under `device_threshold`, absent when it never does. `None` without a
-    /// recorded reading, which includes one cleared by a compaction.
+    /// the one running now, else the one chosen — and its positive compaction
+    /// threshold. `None` without a recorded reading, which includes one cleared
+    /// by a compaction.
     pub fn context_reading(&self, device_threshold: u64) -> Option<crate::thread::ContextReading> {
         let tokens = self.last_context_tokens?;
         let at = self.last_context_at.clone()?;
@@ -408,8 +410,7 @@ impl Agent {
             .as_deref()
             .or(self.choice.model.as_deref())
             .and_then(|model| crate::models::context_window_of(self.choice.provider, model));
-        let compact_at =
-            Some(self.compact_at_tokens(device_threshold)).filter(|threshold| *threshold > 0);
+        let compact_at = Some(self.compact_at_tokens(device_threshold));
         Some(crate::thread::ContextReading {
             tokens,
             window,

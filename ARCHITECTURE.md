@@ -569,7 +569,9 @@ Device `compaction_thresholds` lives at the config root, project
 `workspace_compaction_thresholds[workspace_id]` at the root. Workspace maps
 never enter checkout manifests or adopted source directories. Stable owner
 IDs preserve policy across rename, restart and parked projects. Only confirmed
-owner deletion removes its maps; an unavailable project is not a deletion.
+owner deletion removes its maps; an unavailable project or checkout is not a
+deletion. Pruning an absent adopted checkout's row retains its policy, so
+re-adoption at the same deterministic checkout ID recovers the saved settings.
 Workspace deletion preflights the current config write before removing files.
 After confirmed deletion, policy cleanup is best effort: a late persistence
 failure logs a warning and returns an internal retained-settings outcome
@@ -590,11 +592,16 @@ configured intent; it does not apply or report an active harness policy.
 Loading a config without a device map seeds all five entries from the legacy
 `compact_above_tokens`, substituting 200000 for zero or an absent value.
 An explicitly empty map is never reseeded. Agent JSON loading clears a legacy
-`max_context_tokens` zero to inheritance. The legacy device scalar is retained;
-an old scalar write broadcasts a positive safe integer to all five device
+`max_context_tokens` zero to inheritance. The legacy device scalar is retained,
+with an absent or zero value normalized to 200000 on load, including runtime
+checks, settings/digest reads and subsequent persistence. Runtime threshold
+resolution also treats a legacy conversation zero as inheritance and a device
+zero as 200000; zero no longer disables automatic compaction.
+An old scalar write broadcasts a positive safe integer to all five device
 entries and leaves narrower scopes alone. Combining a scalar and map mutation
-is refused. The legacy read scalar is only the last broadcast/default value
-and cannot describe divergent harness entries. Config preserves out-of-range
+is refused. The legacy read scalar is the normalized legacy value or the last
+scalar broadcast; it cannot describe divergent harness entries or narrower
+scope maps. Config preserves out-of-range
 legacy integers exactly; internal read maps use `{tokens_decimal: "…"}`, and
 resolved observations use `tokens: null` with that exact decimal and an
 `unsupported_representation` reason. Those representations cannot be submitted

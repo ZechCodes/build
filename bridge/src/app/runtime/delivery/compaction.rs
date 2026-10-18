@@ -70,7 +70,7 @@ impl AppState {
     /// for a harness that cannot compact, and never ahead of a turn that is
     /// itself a compaction. A compaction an agent asked for goes first once it
     /// is ready; otherwise one is due once the last reported context has
-    /// reached the agent's threshold (its own, else the device's; 0 is never).
+    /// reached the agent's positive threshold (its own, else the device's).
     fn compaction_before(
         &self,
         turn: &PendingAgentTurn,

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// One agent's context as its harness last reported it: `tokens` in context,
 /// the `window` of the model it runs when Build knows it, `compact_at`, the
-/// threshold its chat compacts at when it compacts at all, and `at`, the
+/// threshold its chat compacts at when known, and `at`, the
 /// RFC3339 time the reading was recorded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextReading {
@@ -24,7 +24,7 @@ pub struct ContextReading {
 impl ContextReading {
     /// The one line a reader is given about its author, measured against
     /// where its chat compacts — "Rail scroll is at 190k of 200k (95%,
-    /// compacts at 200k)." A chat that never compacts is measured against the
+    /// compacts at 200k)." A reading without a threshold is measured against the
     /// window instead — "Rail scroll is at 612k of 1M (61%)." — and one with
     /// neither says only its size: "Rail scroll is at 612k."
     pub fn sentence(&self, author: &str) -> String {

@@ -432,7 +432,7 @@ pub struct SettingsSetParams {
     )]
     pub watch_agent_filed_tasks: Named<bool>,
     /// The context size an agent's next warm turn is preceded by a compaction
-    /// at, unless the conversation sets its own; 0 never compacts.
+    /// at, unless the conversation sets its own. Must be a positive safe integer.
     #[serde(
         default,
         deserialize_with = "named",
@@ -967,7 +967,7 @@ pub struct SettingsResult {
     #[serde(default)]
     pub watch_agent_filed_tasks: bool,
     /// The context size an agent's next warm turn is preceded by a compaction
-    /// at, unless its conversation sets its own. 0 never compacts.
+    /// at, unless its conversation sets its own. Legacy zero loads as 200000.
     pub compact_above_tokens: u64,
     /// The idle threshold the reclaim service sweeps by now, in seconds
     /// (1.25.0, `settings.workspaceLifecycle`). Absent from older bridges.

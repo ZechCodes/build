@@ -9,13 +9,13 @@ const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
 
 /** @typedef {{tokens: number|null, contextWindow: number}|undefined} PiContextUsage */
 /** @typedef {{getContextUsage: () => PiContextUsage, isIdle: () => boolean, hasPendingMessages: () => boolean, sessionManager: {getSessionId: () => string}}} PiCompactionContext */
-/** @typedef {"session_start"|"agent_start"|"tool_execution_start"|"tool_execution_end"|"turn_end"|"agent_end"|"agent_settled"|"session_before_compact"|"session_compact"|"session_compact_failed"} PiCompactionHook */
+/** @typedef {"session_shutdown"|"session_start"|"agent_start"|"tool_execution_start"|"tool_execution_end"|"turn_end"|"agent_end"|"agent_settled"|"session_before_compact"|"session_compact"|"session_compact_failed"} PiCompactionHook */
 /** @typedef {{reason?: string}} PiCompactionEvent */
 /** @typedef {(event: PiCompactionEvent, ctx: PiCompactionContext) => void|{cancel: boolean}} PiCompactionHandler */
 /** @typedef {{on: (name: PiCompactionHook, handler: PiCompactionHandler) => void}} PiCompactionApi */
 /** @typedef {{tokens: number|null, tokens_decimal?: string, enabled: boolean, owner: string, thread_id: string, launch_id: string, log?: string}} PiCompactionPolicy */
-/** @typedef {{type: "ready"|"working"|"settled"}|{type: "context", tokens: number|null, window: number|null}|{type: "compaction", completed: boolean, reason: string, failed?: boolean}|{type: "unsupported", reason: string}} PiTelemetryEvent */
-/** @typedef {PiTelemetryEvent & {owner: string, thread_id: string, launch_id: string, sequence: number}} PiTelemetryRecord */
+/** @typedef {{type: "starting"|"heartbeat"|"shutdown"|"ready"|"working"|"settled"}|{type: "context", tokens: number|null, window: number|null}|{type: "compaction", completed: boolean, reason: string, failed?: boolean}|{type: "unsupported", reason: string}} PiTelemetryEvent */
+/** @typedef {PiTelemetryEvent & {owner: string, thread_id: string, launch_id: string, generation: number, sequence: number}} PiTelemetryRecord */
 
 function compactionConfiguration(owner) {
   const encoded = process.env.BUILD_PI_COMPACTION_POLICY;
@@ -23,8 +23,7 @@ function compactionConfiguration(owner) {
   if (encoded === undefined && log === undefined) return undefined;
   if (encoded === undefined) throw new Error("Build Pi telemetry requires a compaction policy");
   const policy = JSON.parse(encoded);
-  if (policy?.owner !== owner) throw new Error("Build Pi compaction owner mismatch");
-  return { ...policy, log };
+  return { ...policy, owner, log, ownerMismatch: policy?.owner !== owner };
 }
 
 function validateCompactionPolicy(policy) {
@@ -69,6 +68,47 @@ function compactionReason(event) {
   return ["manual", "threshold", "overflow"].includes(event.reason) ? event.reason : "unknown";
 }
 
+/** @param {PiCompactionPolicy} configuration @param {(record: PiTelemetryRecord) => void} [sink] @param {(reason: string) => void} [onFailure] */
+function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
+  const { owner, thread_id, launch_id } = configuration;
+  const write = sink ?? telemetryFileSink(configuration.log);
+  const key = Symbol.for("build.pi.compaction.generations");
+  /** @type {Map<string, {generation: number, retire: () => void}>} */
+  const registry = globalThis[key] ??= new Map();
+  const previous = registry.get(launch_id);
+  previous?.retire();
+  const generation = (previous?.generation ?? 0) + 1;
+  if (!Number.isSafeInteger(generation)) throw new Error("Build Pi telemetry generation exhausted");
+  let sequence = 0;
+  let active = true;
+  /** @type {ReturnType<typeof setInterval>|undefined} */
+  let heartbeat;
+  /** @param {PiTelemetryEvent} event */
+  const emit = (event) => write({ owner, thread_id, launch_id, generation, sequence: ++sequence, ...event });
+  const stop = () => { active = false; clearInterval(heartbeat); };
+  const unsupported = (reason) => {
+    if (!active) return;
+    stop();
+    const label = ["extension_failed", "session_identity_mismatch"].includes(reason) ? reason : "telemetry_failed";
+    try { emit({ type: "unsupported", reason: label }); } catch { /* The independent heartbeat watchdog withdraws support. */ }
+    onFailure(label);
+  };
+  const shutdown = () => {
+    if (!active) return;
+    try { emit({ type: "shutdown" }); } catch { unsupported("telemetry_failed"); }
+    stop();
+  };
+  registry.set(launch_id, { generation, retire: shutdown });
+  try {
+    emit({ type: "starting" });
+    heartbeat = setInterval(() => {
+      try { emit({ type: "heartbeat" }); } catch { unsupported("telemetry_failed"); }
+    }, 1000);
+    heartbeat.unref();
+  } catch { unsupported("telemetry_failed"); }
+  return { emit, unsupported, shutdown, active: () => active };
+}
+
 // Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Agent
 // work settles only at agent_settled; manual compaction has separate cleanup.
 /**
@@ -79,20 +119,10 @@ function compactionReason(event) {
  */
 export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}) {
   validateCompactionPolicy(configuration);
-  const { owner, thread_id, launch_id, enabled } = configuration;
-  const write = sink ?? telemetryFileSink(configuration.log);
-  let sequence = 0;
-  /** @param {PiTelemetryEvent} event */
-  const emit = (event) => write({ owner, thread_id, launch_id, sequence: ++sequence, ...event });
-  let failed = false;
+  const { owner, enabled } = configuration;
+  const channel = compactionTelemetryChannel(configuration, sink, onFailure);
+  const { emit, unsupported } = channel;
   let workGeneration = 0;
-  const unsupported = (reason) => {
-    if (failed) return;
-    failed = true;
-    const label = ["extension_failed", "session_identity_mismatch"].includes(reason) ? reason : "telemetry_failed";
-    try { emit({ type: "unsupported", reason: label }); } catch { /* The terminal failure remains authoritative. */ }
-    onFailure(label);
-  };
   /** @param {PiCompactionContext} ctx */
   const context = (ctx) => {
     const usage = ctx.getContextUsage();
@@ -100,7 +130,7 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
   };
   /** @param {PiCompactionHook} name @param {PiCompactionHandler} handler */
   const on = (name, handler) => pi.on(name, (event, ctx) => {
-    if (failed) return undefined;
+    if (!channel.active()) return undefined;
     try { return handler(event, ctx); } catch { unsupported("telemetry_failed"); }
   });
   /** @type {PiCompactionHandler} */
@@ -121,42 +151,45 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
     // Native manual compact clears its compacting flag AFTER session_compact.
     // A macrotask observes that cleanup, without authorizing pending work.
     setTimeout(() => {
-      if (failed || generation !== workGeneration) return;
+      if (!channel.active() || generation !== workGeneration) return;
       try { settle(ctx); } catch { unsupported("telemetry_failed"); }
     }, 0);
   };
-  on("session_start", (_event, ctx) => {
-    if (ctx.sessionManager.getSessionId() !== owner) {
-      unsupported("session_identity_mismatch");
-      return;
-    }
-    emit({ type: "ready" });
-    context(ctx);
-  });
-  on("agent_start", working);
-  on("tool_execution_start", working);
-  on("tool_execution_end", (_event, ctx) => context(ctx));
-  on("turn_end", (_event, ctx) => context(ctx));
-  on("agent_end", (_event, ctx) => context(ctx));
-  on("agent_settled", (_event, ctx) => settle(ctx));
-  on("session_before_compact", (event, ctx) => {
-    context(ctx);
-    if (enabled && event.reason === "threshold") return { cancel: true };
-    workGeneration += 1;
-    emit({ type: "working" });
-    emit({ type: "compaction", completed: false, reason: compactionReason(event) });
-  });
-  on("session_compact", (event, ctx) => {
-    emit({ type: "compaction", completed: true, reason: compactionReason(event) });
-    context(ctx);
-    manualSettled(event, ctx);
-  });
-  on("session_compact_failed", (event, ctx) => {
-    emit({ type: "compaction", completed: false, failed: true, reason: compactionReason(event) });
-    context(ctx);
-    manualSettled(event, ctx);
-  });
-  return { unsupported };
+  try {
+    pi.on("session_shutdown", () => channel.shutdown());
+    on("session_start", (_event, ctx) => {
+      if (ctx.sessionManager.getSessionId() !== owner) {
+        unsupported("session_identity_mismatch");
+        return;
+      }
+      emit({ type: "ready" });
+      context(ctx);
+    });
+    on("agent_start", working);
+    on("tool_execution_start", working);
+    on("tool_execution_end", (_event, ctx) => context(ctx));
+    on("turn_end", (_event, ctx) => context(ctx));
+    on("agent_end", (_event, ctx) => context(ctx));
+    on("agent_settled", (_event, ctx) => settle(ctx));
+    on("session_before_compact", (event, ctx) => {
+      context(ctx);
+      if (enabled && event.reason === "threshold") return { cancel: true };
+      workGeneration += 1;
+      emit({ type: "working" });
+      emit({ type: "compaction", completed: false, reason: compactionReason(event) });
+    });
+    on("session_compact", (event, ctx) => {
+      emit({ type: "compaction", completed: true, reason: compactionReason(event) });
+      context(ctx);
+      manualSettled(event, ctx);
+    });
+    on("session_compact_failed", (event, ctx) => {
+      emit({ type: "compaction", completed: false, failed: true, reason: compactionReason(event) });
+      context(ctx);
+      manualSettled(event, ctx);
+    });
+  } catch { unsupported("extension_failed"); }
+  return channel;
 }
 
 function requiredEnvironment(name) {
@@ -433,9 +466,9 @@ class McpStdioClient {
     if (this.failure || this.closing) return;
     this.failure = new Error(message);
     this.closing = true;
-    this.onTerminalFailure?.();
     this.#rejectPending(this.failure);
-    void this.stopChild().finally(() => process.kill(process.pid, "SIGTERM"));
+    this.closePromise = this.stopChild();
+    this.onTerminalFailure?.();
   }
 
   close() {
@@ -478,16 +511,19 @@ class McpStdioClient {
 export default async function buildTools(pi) {
   let client;
   let telemetry;
+  const configured = process.env.BUILD_PI_COMPACTION_POLICY !== undefined || process.env.BUILD_PI_TELEMETRY_LOG !== undefined;
   try {
-    const { command, owner, timeoutMs } = runtimeConfiguration();
-    client = new McpStdioClient(command, owner, timeoutMs);
-    const policy = compactionConfiguration(owner);
+    const policy = compactionConfiguration(process.env.BUILD_PI_MCP_OWNER);
     if (policy) {
       telemetry = registerCompactionTelemetry(pi, policy, undefined, () => {
-        client.failTerminal("Build Pi compaction telemetry failed");
+        void client?.close();
       });
-      client.onTerminalFailure = () => telemetry.unsupported("extension_failed");
+      if (policy.ownerMismatch) telemetry.unsupported("extension_failed");
+      if (!telemetry.active()) return;
     }
+    const { command, owner, timeoutMs } = runtimeConfiguration();
+    client = new McpStdioClient(command, owner, timeoutMs);
+    client.onTerminalFailure = () => telemetry?.unsupported("extension_failed");
     await client.start();
     const tools = await client.initialize();
     for (const tool of tools) {
@@ -510,6 +546,7 @@ export default async function buildTools(pi) {
   } catch (error) {
     telemetry?.unsupported("extension_failed");
     if (client) await client.close();
+    if (configured) return;
     throw new Error(`Build Pi extension initialization failed: ${errorMessage(error)}`, {
       cause: error,
     });

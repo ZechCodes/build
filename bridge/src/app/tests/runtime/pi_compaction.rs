@@ -46,6 +46,21 @@ def capture():
 assert sys.argv[sys.argv.index('--session-id') + 1] == policy['owner']
 emit('ready')
 stage('ready')
+if outcome in ['manual-command', 'manual-observation']:
+    if outcome == 'manual-command':
+        assert capture().strip() == '/compact'
+    else:
+        wait('manual-request')
+    emit('working')
+    emit('compaction', completed=False, reason='manual')
+    stage('compact-requested')
+    wait('complete')
+    emit('compaction', completed=True, reason='manual')
+    emit('context', tokens=None)
+    emit('settled')
+    stage('manual-completed')
+    while True:
+        capture()
 capture()
 emit('working')
 emit('context', tokens=200000)
@@ -56,13 +71,10 @@ emit('agent_end')
 stage('early-ended')
 if outcome == 'overflow':
     wait('overflow')
-    for failed in ['failed', 'aborted', 'cancelled']:
-        emit('compaction', completed=False, reason='overflow')
-        emit('compaction', completed=False, failed=True, reason='overflow', outcome=failed)
-    print('Compacted (terminal text only)', flush=True)
-    stage('failures')
-    wait('success')
     emit('compaction', completed=False, reason='overflow')
+    print('Compacted (terminal text only)', flush=True)
+    stage('compacting')
+    wait('success')
     emit('compaction', completed=True, reason='overflow')
     emit('context', tokens=None)
     stage('compacted')
@@ -198,19 +210,27 @@ fn release(directory: &Path, stage: &str) {
     std::fs::write(directory.join(stage), "").unwrap();
 }
 
-fn completed_compactions(agent: &CompactingAgent) -> usize {
+fn compaction_history(agent: &CompactingAgent) -> Vec<String> {
     agent
         .agent()
         .thread
         .items
-        .iter()
-        .filter(|item| {
-            matches!(item,
-                crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::Compaction
-                && event.summary.as_deref() == Some("Compacted")
-            )
+        .into_iter()
+        .filter_map(|item| match item {
+            crate::thread::ThreadItem::Event(event)
+                if event.event == crate::thread::ThreadEventKind::Compaction =>
+            {
+                event.summary
+            }
+            _ => None,
         })
+        .collect()
+}
+
+fn completed_compactions(agent: &CompactingAgent) -> usize {
+    compaction_history(agent)
+        .iter()
+        .filter(|summary| summary.as_str() == "Compacted")
         .count()
 }
 
@@ -340,6 +360,13 @@ async fn fallback(outcome: &str) {
     })
     .await
     .expect("only successful summary produces a completion");
+    if outcome == "success" {
+        assert_eq!(
+            compaction_history(&agent),
+            ["Compacted"],
+            "one command and its hooks describe one completed attempt"
+        );
+    }
 }
 
 #[tokio::test]
@@ -362,8 +389,12 @@ async fn pi_overflow_recovery_preserves_the_open_turn_and_clears_stale_context()
     start_and_queue(&agent, session.0.as_ref(), directory.path()).await;
     assert_no_early_compaction(&agent, session.0.as_ref(), &key, directory.path()).await;
     release(directory.path(), "overflow");
-    reached(directory.path(), "failures").await;
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    reached(directory.path(), "compacting").await;
+    wait_for(Duration::from_secs(5), || {
+        (compaction_history(&agent) == ["Compacting"]).then_some(())
+    })
+    .await
+    .expect("unsolicited overflow still publishes its start");
     assert_eq!(completed_compactions(&agent), 0);
     assert_open(&agent, session.0.as_ref(), &key);
     release(directory.path(), "success");
@@ -374,6 +405,7 @@ async fn pi_overflow_recovery_preserves_the_open_turn_and_clears_stale_context()
     })
     .await
     .expect("overflow completion clears persisted context through both real pumps");
+    assert_eq!(compaction_history(&agent), ["Compacted"]);
     assert_open(&agent, session.0.as_ref(), &key);
     release(directory.path(), "settle");
     assert_delivered_once(&agent, session.0.as_ref(), directory.path(), false).await;
@@ -384,4 +416,54 @@ async fn pi_overflow_recovery_preserves_the_open_turn_and_clears_stale_context()
     })
     .await
     .expect("an identical reading after reset is new context, not a duplicate");
+}
+
+async fn manual_compaction_history(outcome: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let agent = CompactingAgent::without_background_services().with_context(199_999);
+    let (session, _) = launch(&agent, directory.path(), outcome);
+    wait_for(Duration::from_secs(5), || {
+        (session.0.status() == AgentStatus::Waiting).then_some(())
+    })
+    .await
+    .expect("manual compaction starts from the extension's idle boundary");
+    if outcome == "manual-command" {
+        let mut turn = agent.turn(false);
+        turn.say = Some(TurnText {
+            cold: "/compact".into(),
+            warm: "/compact".into(),
+        });
+        agent.state.lock().unwrap().delivery_queue.enqueue(turn);
+        deliver_pending_agent_turns(&agent.state);
+    } else {
+        release(directory.path(), "manual-request");
+    }
+    reached(directory.path(), "compact-requested").await;
+    wait_for(Duration::from_secs(5), || {
+        (!compaction_history(&agent).is_empty()).then_some(())
+    })
+    .await
+    .expect("manual start reaches the real activity pump");
+    release(directory.path(), "complete");
+    reached(directory.path(), "manual-completed").await;
+    wait_for(Duration::from_secs(5), || {
+        (completed_compactions(&agent) == 1).then_some(())
+    })
+    .await
+    .expect("manual completion reaches the real activity pump");
+    assert_eq!(
+        compaction_history(&agent),
+        ["Compacted"],
+        "no duplicate active row remains after completion"
+    );
+}
+
+#[tokio::test]
+async fn pi_manual_command_has_one_completed_history_row() {
+    manual_compaction_history("manual-command").await;
+}
+
+#[tokio::test]
+async fn pi_unsolicited_manual_compaction_keeps_start_and_completion_observations() {
+    manual_compaction_history("manual-observation").await;
 }

@@ -18,11 +18,17 @@ function compactionConfiguration(owner) {
 
 function validateCompactionPolicy(policy) {
   if (!isObject(policy)
-      || !Number.isSafeInteger(policy.tokens) || policy.tokens <= 0
+      || !validCompactionTokens(policy)
       || typeof policy.enabled !== "boolean"
       || ![policy.owner, policy.thread_id, policy.launch_id].every(isNonEmptyString)) {
     throw new Error("Build Pi extension received invalid compaction policy");
   }
+}
+
+function validCompactionTokens(policy) {
+  if (Number.isSafeInteger(policy.tokens) && policy.tokens > 0) return true;
+  return policy.enabled === false && policy.tokens === null
+    && typeof policy.tokens_decimal === "string" && /^[1-9][0-9]{0,19}$/.test(policy.tokens_decimal);
 }
 
 function telemetryFileSink(path) {
@@ -58,12 +64,13 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
   validateCompactionPolicy(configuration);
   const { owner, thread_id, launch_id, enabled } = configuration;
   const write = sink ?? telemetryFileSink(configuration.log);
-  const emit = (event) => write({ owner, thread_id, launch_id, ...event });
+  let sequence = 0;
+  const emit = (event) => write({ owner, thread_id, launch_id, sequence: ++sequence, ...event });
   let failed = false;
   const unsupported = (reason) => {
     if (failed) return;
     failed = true;
-    const label = reason === "extension_failed" ? reason : "telemetry_failed";
+    const label = ["extension_failed", "session_identity_mismatch"].includes(reason) ? reason : "telemetry_failed";
     try { emit({ type: "unsupported", reason: label }); } catch { /* The terminal failure remains authoritative. */ }
     onFailure(label);
   };
@@ -79,15 +86,33 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
     emit({ type: "working" });
     context(ctx);
   };
+  const settle = (ctx) => {
+    context(ctx);
+    if (ctx.isIdle() && !ctx.hasPendingMessages()) emit({ type: "settled" });
+  };
+  const manualSettled = (event, ctx) => {
+    if (event.reason !== "manual") return;
+    // Native manual compact clears its compacting flag AFTER session_compact.
+    // A macrotask observes that cleanup, without authorizing pending work.
+    setTimeout(() => {
+      if (failed) return;
+      try { settle(ctx); } catch { unsupported("telemetry_failed"); }
+    }, 0);
+  };
+  on("session_start", (_event, ctx) => {
+    if (ctx.sessionManager.getSessionId() !== owner) {
+      unsupported("session_identity_mismatch");
+      return;
+    }
+    emit({ type: "ready" });
+    context(ctx);
+  });
   on("agent_start", working);
   on("tool_execution_start", working);
   on("tool_execution_end", (_event, ctx) => context(ctx));
   on("turn_end", (_event, ctx) => context(ctx));
   on("agent_end", (_event, ctx) => context(ctx));
-  on("agent_settled", (_event, ctx) => {
-    context(ctx);
-    if (ctx.isIdle()) emit({ type: "settled" });
-  });
+  on("agent_settled", (_event, ctx) => settle(ctx));
   on("session_before_compact", (event, ctx) => {
     context(ctx);
     if (enabled && event.reason === "threshold") return { cancel: true };
@@ -97,12 +122,13 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
   on("session_compact", (event, ctx) => {
     emit({ type: "compaction", completed: true, reason: compactionReason(event) });
     context(ctx);
+    manualSettled(event, ctx);
   });
   on("session_compact_failed", (event, ctx) => {
     emit({ type: "compaction", completed: false, failed: true, reason: compactionReason(event) });
     context(ctx);
+    manualSettled(event, ctx);
   });
-  emit({ type: "ready" });
   return { unsupported };
 }
 

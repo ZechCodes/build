@@ -37,7 +37,7 @@ impl AgentSession for PolicySession {
     fn compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
         // A hook-backed carrier can explicitly withdraw support after an
         // extension failure. Its runtime observation owns that decision.
-        if let Some(policy) = self.inner.compaction_policy() {
+        if let Some(policy) = self.inner.observed_compaction_policy() {
             return Some(policy);
         }
         if self.inner.opening_succeeded() {
@@ -45,8 +45,11 @@ impl AgentSession for PolicySession {
         }
         self.applied.load(Ordering::Relaxed).then_some(&self.policy)
     }
+    fn observed_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
+        self.inner.observed_compaction_policy()
+    }
     fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
-        if self.inner.compaction_policy().is_some() {
+        if self.inner.observed_compaction_policy().is_some() {
             return self.inner.automatic_compaction_due(context_tokens);
         }
         self.status() == AgentStatus::Waiting
@@ -64,6 +67,14 @@ impl AgentSession for PolicySession {
         self.inner.turn_choice_support(choice)
     }
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+        let policy = self.compaction_policy().unwrap_or(&self.policy);
+        if turn.text.split_whitespace().next() == Some(COMPACT_COMMAND)
+            && !policy.capabilities.between_turn_compact
+        {
+            return Err(HarnessError::Unsupported(
+                "this session has no qualified compaction command".into(),
+            ));
+        }
         self.inner.send_turn(turn)
     }
     fn accepts_turn_choice(&self) -> bool {

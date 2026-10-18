@@ -273,7 +273,7 @@ pub struct PtySession {
     /// thread that outlives the borrow a caller holds on the session.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Box<dyn Child + Send + Sync>>,
+    child: Arc<Mutex<Box<dyn Child + Send + Sync>>>,
     /// The output broadcast sender, dropped by the reader thread at PTY EOF so
     /// every subscriber observes `Closed` when the child exits — even while the
     /// session itself is still held (the keyed-terminal pumps key off this).
@@ -437,7 +437,7 @@ impl PtySession {
         let session = PtySession {
             writer: Arc::new(Mutex::new(writer)),
             master: Mutex::new(pair.master),
-            child: Mutex::new(child),
+            child: Arc::new(Mutex::new(child)),
             output_tx,
             last_activity,
             accepts_paste,
@@ -454,7 +454,14 @@ impl PtySession {
                 .map(|config| Arc::new(crate::harness::pi_telemetry::PiTelemetry::new(config))),
         };
         if let Some(telemetry) = &session.pi_telemetry {
-            telemetry.follow(Arc::downgrade(&session.output_tx));
+            let child = Arc::clone(&session.child);
+            telemetry.follow(Arc::downgrade(&session.output_tx), move || {
+                // This handle owns exactly the launched child. Reap it even
+                // when nobody is polling a session whose extension failed.
+                let mut child = child.lock().unwrap();
+                let _ = child.kill();
+                let _ = child.wait();
+            });
         }
         Ok(session)
     }
@@ -633,10 +640,18 @@ impl AgentSession for PtySession {
             .map(|telemetry| telemetry.policy())
     }
 
+    fn observed_compaction_policy(
+        &self,
+    ) -> Option<&crate::harness::compaction::AppliedCompactionPolicy> {
+        self.compaction_policy()
+    }
+
     fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
-        self.pi_telemetry
-            .as_ref()
-            .is_some_and(|telemetry| telemetry.automatic_due(context_tokens))
+        self.status() == AgentStatus::Waiting
+            && self
+                .pi_telemetry
+                .as_ref()
+                .is_some_and(|telemetry| telemetry.automatic_due(context_tokens))
     }
 
     fn status_changed(
@@ -645,6 +660,13 @@ impl AgentSession for PtySession {
         self.pi_telemetry
             .as_ref()
             .map(|telemetry| telemetry.subscribe())
+    }
+
+    fn epitaph(&self) -> Option<String> {
+        self.pi_telemetry
+            .as_ref()
+            .filter(|telemetry| telemetry.failed())
+            .map(|_| "Pi compaction extension is unavailable".into())
     }
     /// Hand the agent one turn, through the harness's own paste framing and
     /// submit key.

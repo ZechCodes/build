@@ -297,6 +297,12 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    /// A carrier's observed capability can withdraw its launch qualification
+    /// when an extension fails. Static policy decorators are not observations.
+    fn observed_compaction_policy(&self) -> Option<&super::compaction::AppliedCompactionPolicy> {
+        None
+    }
+
     /// The wrapper owns the threshold decision; delivery owns eligibility,
     /// queues and receipts. Working or starting sessions cannot compact here.
     fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {

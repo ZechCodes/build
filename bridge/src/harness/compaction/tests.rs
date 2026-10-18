@@ -175,5 +175,7 @@ fn pi_unsupported_policy_keeps_messages_but_refuses_unobservable_manual_compacti
         policy,
     );
     assert!(session.send_turn(&Turn::new("ordinary input")).is_ok());
-    assert!(session.send_turn(&Turn::new("/compact keep the task")).is_err());
+    assert!(session
+        .send_turn(&Turn::new("/compact keep the task"))
+        .is_err());
 }

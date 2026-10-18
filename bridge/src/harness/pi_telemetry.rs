@@ -81,7 +81,11 @@ impl PiTelemetry {
         }
     }
 
-    pub(crate) fn follow(self: &Arc<Self>, alive: super::transcript_activity::TerminalAlive) {
+    pub(crate) fn follow(
+        self: &Arc<Self>,
+        alive: super::transcript_activity::TerminalAlive,
+        on_failure: impl FnOnce() + Send + 'static,
+    ) {
         let telemetry = Arc::clone(self);
         std::thread::spawn(move || {
             let started = Instant::now();
@@ -100,9 +104,15 @@ impl PiTelemetry {
                 {
                     telemetry.fail();
                 }
+                if telemetry.failed() {
+                    on_failure();
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(25));
             }
-            telemetry.fail();
+            if !telemetry.confirmed() {
+                telemetry.fail();
+            }
             telemetry.transition(AgentStatus::Ended { code: None });
         });
     }
@@ -122,6 +132,9 @@ impl PiTelemetry {
     pub(crate) fn confirmed(&self) -> bool {
         self.confirmation.load(Ordering::Acquire) == CONFIRMED
     }
+    pub(crate) fn failed(&self) -> bool {
+        self.confirmation.load(Ordering::Acquire) == UNAVAILABLE
+    }
     pub(crate) fn policy(&self) -> &AppliedCompactionPolicy {
         match self.confirmation.load(Ordering::Acquire) {
             CONFIRMED => &self.config.policy,
@@ -139,6 +152,11 @@ impl PiTelemetry {
 
     pub(crate) fn sent(&self, compaction: bool) -> Result<(), HarnessError> {
         let mut state = self.state.lock().unwrap();
+        if self.failed() {
+            return Err(HarnessError::Unsupported(
+                "Pi compaction extension is unavailable".into(),
+            ));
+        }
         if compaction && (!self.confirmed() || self.snapshot().status != AgentStatus::Waiting) {
             return Err(HarnessError::Unsupported(
                 "Pi compaction requires a confirmed idle boundary".into(),
@@ -202,7 +220,7 @@ impl PiTelemetry {
                 self.transition(AgentStatus::Working);
             }
             Event::Context { tokens } => self.context(tokens),
-            Event::Settled if self.confirmed() => {
+            Event::Settled if self.confirmed() && !state.compacting => {
                 state.pending = false;
                 self.transition(AgentStatus::Waiting);
             }

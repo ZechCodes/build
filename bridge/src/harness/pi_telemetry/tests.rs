@@ -141,12 +141,23 @@ fn pi_extension_failure_ends_and_reaps_the_owned_child() {
         .arg("-c")
         .arg("import sys,time; open(sys.argv[1], 'a').write(sys.argv[2]); time.sleep(60)")
         .arg(config.path.to_string_lossy())
-        .arg(format!("{}\n{}\n", event(1, "ready"), event(2, "unsupported")));
+        .arg(format!(
+            "{}\n{}\n",
+            event(1, "ready"),
+            event(2, "unsupported")
+        ));
     spec.pi_telemetry = Some(config);
-    let session = crate::pty::PtySession::spawn(&spec, None, portable_pty::PtySize::default()).unwrap();
+    let session =
+        crate::pty::PtySession::spawn(&spec, None, portable_pty::PtySize::default()).unwrap();
     let exited = session.exited_within(std::time::Duration::from_secs(2));
     // Always reclaim the fixture, including the expected RED implementation.
     session.end();
-    assert!(exited, "extension failure must not leave an unobservable active child");
-    assert_eq!(session.compaction_policy().unwrap().enforcement, CompactionEnforcement::Unsupported);
+    assert!(
+        exited,
+        "extension failure must not leave an unobservable active child"
+    );
+    assert_eq!(
+        session.compaction_policy().unwrap().enforcement,
+        CompactionEnforcement::Unsupported
+    );
 }

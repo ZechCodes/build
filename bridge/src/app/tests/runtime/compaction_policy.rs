@@ -255,7 +255,10 @@ async fn a_session_opened_for_an_old_thread_cannot_publish_its_policy() {
         OWNER,
         &fixture.agent,
         |agent| {
+            let revision = agent.thread.generation_revision.saturating_add(1);
             agent.thread = crate::thread::Thread::new(&fixture.agent);
+            agent.thread.id = format!("thread:{}:{}", fixture.agent, uuid::Uuid::new_v4());
+            agent.thread.generation_revision = revision;
             agent.active_model = Some("new-generation-model".into());
             agent.active_effort = Some("high".into());
             agent.resume_session_id = Some("new-generation-resume".into());
@@ -263,6 +266,13 @@ async fn a_session_opened_for_an_old_thread_cannot_publish_its_policy() {
     );
     let waiting = {
         let mut app = fixture.state.lock().unwrap();
+        assert_ne!(
+            app.agent_conversation(OWNER, Some(&fixture.agent))
+                .unwrap()
+                .id,
+            old_thread,
+            "the replacement generation must differ before publication"
+        );
         app.session_registry
             .install_mcp_token(fixture.agent.clone(), "new-generation-token".into());
         app.session_registry.waiting_screen_for_attach(

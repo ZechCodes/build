@@ -85,7 +85,7 @@ function matchingReceipt(receipt, configuration, generation, emittedSequence) {
     && ["starting", "ready", "unsupported"].includes(receipt.status);
 }
 
-function compactionObserver(configuration, generation, readReceipt) {
+function compactionObserver(configuration, generation, readReceipt, emissionTimes) {
   const startedAt = performance.now();
   let lastReceiptAt;
   let lastSequence = 0;
@@ -97,9 +97,12 @@ function compactionObserver(configuration, generation, readReceipt) {
     if (!matchingReceipt(receipt, configuration, generation, emittedSequence)) return false;
     if (receipt.sequence < lastSequence) return false;
     if (receipt.status === "unsupported") throw new Error("Build Pi telemetry observer withdrew support");
+    const emittedAt = emissionTimes.get(receipt.sequence);
+    if (emittedAt === undefined) return false;
+    if (now - emittedAt > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry receipt is stale");
     if (receipt.sequence > lastSequence) {
       lastSequence = receipt.sequence;
-      lastReceiptAt = now;
+      lastReceiptAt = emittedAt;
     }
     return receipt.status === "ready" && readySequence !== undefined && receipt.sequence >= readySequence;
   };
@@ -124,7 +127,8 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}, r
   previous?.retire();
   const generation = (previous?.generation ?? 0) + 1;
   if (!Number.isSafeInteger(generation)) throw new Error("Build Pi telemetry generation exhausted");
-  const observed = compactionObserver({ owner, thread_id, launch_id }, generation, receiptReader ?? telemetryReceiptReader(configuration.log));
+  const emissionTimes = new Map();
+  const observed = compactionObserver({ owner, thread_id, launch_id }, generation, receiptReader ?? telemetryReceiptReader(configuration.log), emissionTimes);
   let sequence = 0;
   let readySequence;
   let active = true;
@@ -132,7 +136,12 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}, r
   /** @type {ReturnType<typeof setInterval>|undefined} */
   let heartbeat;
   /** @param {PiTelemetryEvent} event */
-  const writeRecord = (event) => write({ owner, thread_id, launch_id, generation, sequence: ++sequence, ...event });
+  const writeRecord = (event) => {
+    const emittedAt = performance.now();
+    write({ owner, thread_id, launch_id, generation, sequence: ++sequence, ...event });
+    emissionTimes.set(sequence, emittedAt);
+    if (emissionTimes.size > 512) emissionTimes.delete(emissionTimes.keys().next().value);
+  };
   /** @param {PiTelemetryEvent} event */
   const emit = (event) => {
     if (performance.now() - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");

@@ -762,7 +762,10 @@ shared policy decorator preserves the explicit unsupported reason.
 A startup record and one-second heartbeats are independent of MCP initialization.
 The initial observation budget is 90 seconds, covering both 30-second MCP
 requests; a ten-second heartbeat gap withdraws support even if a broken sink
-cannot report its own failure. Each extension reload advances a launch-scoped
+cannot report its own failure. The extension also expires its own lease after
+eight seconds without a successful write, so a stalled event loop cannot
+resume threshold cancellation after the bridge has withdrawn support.
+Each extension reload advances a launch-scoped
 generation and restarts its sequence at one. The bridge requires a new starting
 record, resets context and readiness, and rejects records from retired
 generations. Foreign launch identities, replayed sequences and malformed or

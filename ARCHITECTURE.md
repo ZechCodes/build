@@ -570,6 +570,12 @@ Device `compaction_thresholds` lives at the config root, project
 never enter checkout manifests or adopted source directories. Stable owner
 IDs preserve policy across rename, restart and parked projects. Only confirmed
 owner deletion removes its maps; an unavailable project is not a deletion.
+Workspace deletion preflights the current config write before removing files.
+After confirmed deletion, policy cleanup is best effort: a late persistence
+failure logs a warning and returns an internal retained-settings outcome
+without changing the successful deletion response. Such orphan maps remain
+on disk; re-adopting the same external checkout path can reuse its deterministic
+ID and retained policy. Startup adoption and identity rules are unchanged.
 
 The internal `AppState::resolve_compaction_policy` resolves
 conversation override → workspace → project → device → 200000, including the

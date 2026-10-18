@@ -421,7 +421,14 @@ fn conversation_reset_invalid_context_limits_are_client_errors() {
     let mut state = qa_state(&repo, dir.path());
     let (_, owner) = planned_run_in_review(&mut state, "invalid reset settings");
     let old = state.agent_conversation(&owner, None).unwrap().clone();
-    for invalid in [json!(0), json!(-1), json!(1.5), json!("bad"), json!({}), json!(9_007_199_254_740_992_u64)] {
+    for invalid in [
+        json!(0),
+        json!(-1),
+        json!(1.5),
+        json!("bad"),
+        json!({}),
+        json!(9_007_199_254_740_992_u64),
+    ] {
         let mut params = reset_params(&state, &owner);
         params["max_context_tokens"] = invalid;
         let reply = state.handle(req("conversation.reset", params));

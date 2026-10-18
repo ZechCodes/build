@@ -175,18 +175,24 @@ fn compaction_policy_aliases_share_override_and_canonical_scopes_but_use_launch_
     assert_eq!(distinct.tokens, 234_567);
     assert_eq!(distinct.source, CompactionSource::Project(project));
     let subscriber = crate::carrier::SessionSender::detached("alias-policy-subscriber");
-    state.changes.subscribe(&subscriber, crate::changes::SubscriptionSpec {
-        id: "alias-policy".into(),
-        scope: crate::changes::Scope::Entity(alias_owner.clone()),
-        kinds: [crate::changes::Kind::State].into_iter().collect(),
-        mode: crate::changes::Mode::Off,
-        priority: crate::changes::Priority::Foreground,
-    });
+    state.changes.subscribe(
+        &subscriber,
+        crate::changes::SubscriptionSpec {
+            id: "alias-policy".into(),
+            scope: crate::changes::Scope::Entity(alias_owner.clone()),
+            kinds: [crate::changes::Kind::State].into_iter().collect(),
+            mode: crate::changes::Mode::Off,
+            priority: crate::changes::Priority::Foreground,
+        },
+    );
     assert!(!state.changes.has_pending());
     state
         .set_conversation_context_limit(&alias_owner, &alias, Some(345_678))
         .unwrap();
-    assert!(state.changes.has_pending(), "an alias subscriber must hear the canonical edit");
+    assert!(
+        state.changes.has_pending(),
+        "an alias subscriber must hear the canonical edit"
+    );
     assert_eq!(
         state
             .entity_agents(&owner)

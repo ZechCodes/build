@@ -1122,10 +1122,7 @@ impl AppState {
             .map(|workspace| workspace.id.clone())
             .collect::<Vec<_>>();
         for id in stale {
-            if let Err(error) = self.forget_workspace_compaction(std::slice::from_ref(&id)) {
-                eprintln!("prune adopted workspace policy: {error}");
-                continue;
-            }
+            self.cleanup_deleted_workspace_compaction(std::slice::from_ref(&id));
             self.workspaces.forget(&id);
         }
     }

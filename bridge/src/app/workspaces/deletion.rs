@@ -197,7 +197,7 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
     }
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
-        app.complete_workspace_delete(&self.workspace_id, &self.run_ids)?;
+        let _cleanup = app.complete_workspace_delete(&self.workspace_id, &self.run_ids)?;
         match &self.removal {
             Removal::Finish(finishing) if result["branch_deleted"] == true => {
                 for branch in finishing.branches.iter().map(BranchDeletion::branch) {
@@ -323,6 +323,13 @@ impl AppState {
         removal: Removal,
         boundary: WorkspaceBoundary,
     ) -> Result<(), String> {
+        // Refuse a known config failure before stopping processes or deleting
+        // files. Keep the current policy until the removal actually succeeds.
+        self.persist_config(&self.config_value(
+            &self.projects_dir,
+            self.default_harness,
+            self.isolation,
+        ))?;
         self.preserve_project_task_identities(&workspace.project_id)?;
         // A merged Done closes linked open tasks only after identity
         // preservation succeeds. Do this before retiring agents, so
@@ -506,7 +513,7 @@ impl AppState {
         &mut self,
         workspace_id: &str,
         run_ids: &[String],
-    ) -> Result<(), String> {
+    ) -> Result<crate::compaction::CompactionCleanup, String> {
         let project_id = self
             .workspaces
             .get(workspace_id)
@@ -526,10 +533,10 @@ impl AppState {
             self.forget_session_owner(run_id);
             self.forget_run(run_id);
         }
-        self.forget_workspace_compaction(&[workspace_id.to_string()])?;
+        let cleanup = self.cleanup_deleted_workspace_compaction(&[workspace_id.to_string()]);
         self.workspaces.forget(workspace_id);
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
-        Ok(())
+        Ok(cleanup)
     }
 }
 

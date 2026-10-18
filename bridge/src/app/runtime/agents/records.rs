@@ -684,6 +684,7 @@ impl AppState {
         let Some(compact_at_tokens) = compact_at_tokens else {
             return Err(format!("agent {agent_id} is not on {owner}"));
         };
+        self.note_compaction_override_changed(&address.conversation_id);
         Ok(serde_json::json!({
             "agent_id": agent_id,
             "max_context_tokens": max_context_tokens,

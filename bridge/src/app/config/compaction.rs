@@ -1,6 +1,7 @@
 use crate::app::AppState;
 use crate::compaction::{
-    CompactionScope, CompactionSource, CompactionThresholds, ResolvedCompactionPolicy,
+    CompactionCleanup, CompactionScope, CompactionSource, CompactionThresholds,
+    ResolvedCompactionPolicy,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -173,19 +174,25 @@ impl AppState {
 
     /// Called only after a deletion has succeeded, never merely because a
     /// workspace is absent from a boot-time listing or its project is parked.
-    pub(in crate::app) fn forget_workspace_compaction(
+    pub(in crate::app) fn cleanup_deleted_workspace_compaction(
         &mut self,
         ids: &[String],
-    ) -> Result<(), String> {
+    ) -> CompactionCleanup {
         if !ids
             .iter()
             .any(|id| self.compaction_policies.workspaces.contains_key(id))
         {
-            return Ok(());
+            return CompactionCleanup::Complete;
         }
         let mut prospective = self.compaction_policies.clone();
         prospective.forget_workspaces(ids);
-        self.persist_compaction_policies(prospective)
+        match self.persist_compaction_policies(prospective) {
+            Ok(()) => CompactionCleanup::Complete,
+            Err(error) => {
+                eprintln!("retain compaction policies for deleted workspaces {ids:?}: {error}");
+                CompactionCleanup::Retained { error }
+            }
+        }
     }
 
     pub(in crate::app) fn canonical_compaction_override(
@@ -220,7 +227,7 @@ impl AppState {
             CompactionSource::Conversation(address.conversation_id),
         )];
         if !self.is_project_conversation_owner(canonical_owner) {
-            if let Some(workspace) = self.workspace_of_conversation(canonical_owner) {
+            if let Some(workspace) = self.compaction_workspace_of(canonical_owner) {
                 candidates.push((
                     self.compaction_policies
                         .get(&CompactionScope::Workspace(workspace.clone()))
@@ -257,8 +264,43 @@ impl AppState {
             return Some(id.to_string());
         }
         let retained_path = self.projects.project_path_for(owner);
-        self.projects.parked().iter()
-            .find(|entry| crate::app::projects::configured_primary_path(entry) == Some(retained_path.as_str()))
-            .and_then(|entry| entry["id"].as_str()).map(str::to_owned)
+        self.projects
+            .parked()
+            .iter()
+            .find(|entry| {
+                crate::app::projects::configured_primary_path(entry) == Some(retained_path.as_str())
+            })
+            .and_then(|entry| entry["id"].as_str())
+            .map(str::to_owned)
+    }
+
+    fn compaction_workspace_of(&self, owner: &str) -> Option<String> {
+        if let Some(workspace) = self.workspace_of_conversation(owner) {
+            return Some(workspace);
+        }
+        // A parked project's durable owner keeps its recorded project path,
+        // but has no live registry binding until the source returns.
+        let project = self.compaction_project_of(owner)?;
+        let run = self.runs.get(owner)?;
+        self.workspaces
+            .list(Some(&project))
+            .into_iter()
+            .find(|workspace| {
+                crate::app::workspaces::same_path(&workspace.root, &run.worktree.path)
+            })
+            .map(|workspace| workspace.id.clone())
+    }
+
+    pub(in crate::app) fn note_compaction_override_changed(&self, conversation: &str) {
+        for owner in self.runs.keys().chain(self.plans.keys()) {
+            if self.entity_agents(owner).is_ok_and(|agents| {
+                agents
+                    .iter()
+                    .any(|agent| agent.conversation_id() == conversation)
+            }) {
+                self.note_entity_changed(owner);
+                self.publish_live_roster_for(owner);
+            }
+        }
     }
 }

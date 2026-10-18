@@ -118,6 +118,14 @@ pub enum CompactionScope {
     Workspace(String),
 }
 
+/// Internal outcome after a confirmed deletion. Retained settings do not
+/// turn a completed filesystem deletion into a failed wire response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CompactionCleanup {
+    Complete,
+    Retained { error: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum CompactionSource {

@@ -1,0 +1,132 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+const source = readFileSync(new URL("../../src/harness/build-tools.ts", import.meta.url), "utf8");
+const extension = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+const policy = { tokens: 150000, enabled: true, owner: "agent-a", thread_id: "thread-a", launch_id: "launch-a" };
+
+function fixture(configuration = policy, sink) {
+  const handlers = new Map();
+  const records = [];
+  const failures = [];
+  const pi = { on: (name, handler) => handlers.set(name, handler) };
+  const telemetry = extension.registerCompactionTelemetry(pi, configuration, sink ?? ((record) => records.push(record)), (reason) => failures.push(reason));
+  let usage = { tokens: 149999, contextWindow: 200000 };
+  let idle = false;
+  const ctx = { getContextUsage: () => usage, isIdle: () => idle, compact: () => assert.fail("manual compaction must remain wrapper-owned") };
+  return { handlers, records, failures, telemetry, ctx,
+    usage: (value) => { usage = value; }, idle: (value) => { idle = value; },
+    emit: async (name, event = {}) => handlers.get(name)?.(event, ctx),
+  };
+}
+
+test("qualified policy cancels threshold only and preserves manual/overflow recovery", async () => {
+  const f = fixture();
+  assert.deepEqual(await f.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  for (const reason of ["manual", "overflow"]) {
+    assert.equal(await f.emit("session_before_compact", { reason }), undefined);
+  }
+  assert.equal(f.records.filter((r) => r.type === "compaction").every((r) => !r.completed), true);
+  const passive = fixture({ ...policy, enabled: false });
+  assert.equal(await passive.emit("session_before_compact", { reason: "threshold" }), undefined);
+});
+
+test("long tool turn emits working/context and settles only at idle agent_settled", async () => {
+  const f = fixture();
+  assert.equal(f.records[0].type, "ready");
+  await f.emit("agent_start");
+  f.usage({ tokens: 180000, contextWindow: 200000 });
+  await f.emit("tool_execution_start");
+  await f.emit("tool_execution_end");
+  await f.emit("turn_end");
+  await f.emit("agent_end");
+  assert.equal(f.records.some((r) => r.type === "settled"), false);
+  assert.equal(f.records.some((r) => r.type === "context" && r.tokens === 180000), true);
+  await f.emit("agent_settled");
+  assert.equal(f.records.some((r) => r.type === "settled"), false);
+  f.idle(true);
+  await f.emit("agent_settled");
+  assert.equal(f.records.at(-1).type, "settled");
+  assert.equal(f.records.filter((r) => r.type === "working").length >= 2, true);
+});
+
+test("saved compaction success invalidates old usage before settling", async () => {
+  const f = fixture();
+  await f.emit("agent_start");
+  f.usage({ tokens: null, contextWindow: 200000 });
+  await f.emit("session_compact", { reason: "overflow", compactionEntry: { type: "compaction" } });
+  assert.deepEqual(f.records.slice(-2).map((r) => [r.type, r.completed, r.tokens]), [
+    ["compaction", true, undefined], ["context", undefined, null],
+  ]);
+  f.usage(undefined);
+  f.idle(true);
+  await f.emit("agent_settled");
+  assert.deepEqual(f.records.at(-2), { ...identity(), type: "context", tokens: null, window: null });
+});
+
+function identity(configuration = policy) {
+  return { owner: configuration.owner, thread_id: configuration.thread_id, launch_id: configuration.launch_id };
+}
+
+test("summary failure, abort and cancelled threshold never report success or raw error", async () => {
+  const f = fixture();
+  await f.emit("session_before_compact", { reason: "threshold" });
+  for (const aborted of [true, false]) {
+    await f.emit("session_compact_failed", { reason: "overflow", aborted, errorMessage: "secret provider payload" });
+  }
+  assert.equal(f.records.some((r) => r.completed === true), false);
+  assert.equal(JSON.stringify(f.records).includes("secret"), false);
+});
+
+test("identity and policy remain isolated and immutable after registration", async () => {
+  const mutable = { ...policy };
+  const first = fixture(mutable);
+  const second = fixture({ ...policy, owner: "agent-b", thread_id: "thread-b", launch_id: "launch-b", enabled: false });
+  mutable.owner = "changed";
+  mutable.enabled = false;
+  await first.emit("agent_start");
+  await second.emit("agent_start");
+  assert.equal(await second.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.deepEqual(await first.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  assert.equal(first.records.every((r) => r.owner === "agent-a"), true);
+  assert.equal(second.records.every((r) => r.owner === "agent-b"), true);
+});
+
+test("context hook failure reports fixed unsupported reason and terminal failure once", async () => {
+  const f = fixture();
+  f.ctx.getContextUsage = () => { throw new Error("secret provider payload"); };
+  await f.emit("agent_start");
+  await f.emit("agent_settled");
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+  assert.deepEqual(f.records.at(-1), { ...identity(), type: "unsupported", reason: "telemetry_failed" });
+  assert.equal(JSON.stringify(f.records).includes("secret"), false);
+});
+
+test("telemetry write failure terminates instead of claiming supported lifecycle", async () => {
+  let writes = 0;
+  const f = fixture(policy, () => { if (++writes > 1) throw new Error("private filesystem path"); });
+  await f.emit("agent_start");
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+});
+
+test("invalid policy and missing identity fail closed", () => {
+  for (const patch of [{ tokens: 0 }, { tokens: -1 }, { tokens: 1.5 }, { tokens: Number.MAX_SAFE_INTEGER + 1 }, { enabled: "true" }, { owner: "" }, { thread_id: "" }, { launch_id: "" }]) {
+    assert.throws(() => fixture({ ...policy, ...patch }), /invalid compaction policy/);
+  }
+});
+
+test("default sink writes scoped JSONL with private permissions", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-compaction-extension-"));
+  const path = join(dir, "telemetry.jsonl");
+  try {
+    const handlers = new Map();
+    const telemetry = extension.registerCompactionTelemetry({ on: (name, fn) => handlers.set(name, fn) }, { ...policy, log: path });
+    telemetry.unsupported("extension_failed");
+    const lines = readFileSync(path, "utf8").trim().split("\n").map(JSON.parse);
+    assert.deepEqual(lines, [{ ...identity(), type: "ready" }, { ...identity(), type: "unsupported", reason: "extension_failed" }]);
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

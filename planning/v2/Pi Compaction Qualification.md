@@ -2,9 +2,10 @@
 
 Observed 2026-10-18 against Pi **0.86.1**. The production **TUI under a PTY**
 now executes Build's actual default extension export, real MCP initialization
-and private telemetry-file sink. A synthetic in-process provider and an owned
-stdio MCP fixture make the qualification credential-free. Six TUI scenarios
-pass; six supplemental RPC scenarios cover finer callback/failure ordering.
+and private telemetry-file sink. The actual Rust `PiTelemetry::follow` observer
+reads that file and atomically publishes private acknowledgement receipts. A
+synthetic in-process provider and an owned stdio MCP fixture make the
+qualification credential-free. Seven TUI scenarios pass; six supplemental RPC scenarios cover finer callback/failure ordering.
 This qualifies the pinned carrier and hooks below, not native enforcement of
 Build's N-token policy, summary quality, arbitrary Pi versions or a production
 provider.
@@ -24,7 +25,9 @@ tools, skills, prompt templates and themes, and does not persist sessions.
 The registered provider returns deterministic assistant events in process;
 its placeholder API key is synthetic and no provider request is made.
 The driver imports only Build's `registerCompactionTelemetry` named export;
-it never calls the MCP-launching default extension function.
+it never calls the MCP-launching default extension function. Its fifth-argument
+receipt reader is a synchronous fake observer, used only for supplemental hook
+ordering. The TUI proof below exclusively uses the real Rust observer.
 
 No installed bridge, daemon, installer, browser, pairing, credentials, protected
 user configuration, network configuration or firewall is used. Cleanup signals
@@ -49,7 +52,8 @@ printf 'exit=%s\n' "$qual_exit"
 
 The six-scenario RPC rerun on pinned Node **22.23.3** exited **0**, using the
 current Build extension including its manual-settlement generation guard,
-unsafe-number policy validation and eight-second local heartbeat lease. Initial development runs used Node 26.8.1;
+unsafe-number policy validation and eight-second Rust-observer receipt lease.
+Initial development runs used Node 26.8.1;
 the final command above is the recorded supported-Node qualification. Its
 JSON output contains only synthetic
 event metadata, context counts and generated session identifiers. The driver
@@ -67,6 +71,16 @@ dependency, fake event dispatcher or fake telemetry sink. The default export
 initializes the existing `bridge/tests/fixtures/pi-mcp-child.mjs` through its
 ordinary subprocess/JSON-RPC path and writes its ordinary private sidecar.
 
+Every TUI scenario also launches the ignored Rust lib-test helper
+`harness::pi_telemetry::tests::pi_qualification_observer` from an explicitly
+provided source-built test artifact. The helper uses actual `PiTelemetry::follow`
+with the scenario owner, thread and launch identity. It writes actual atomic
+0600 `${log}.ack` receipts and an atomic report of enforcement, reason, status
+and context resets. No fake acknowledgement is injected into the TUI extension.
+The helper's standalone process is isolated with a constructed environment,
+own temporary HOME and explicit log/report/stop paths. Each scenario asks it to
+stop and requires exit 0; its 60-second deadline bounds abandoned probes.
+
 For this probe, the coordinator explicitly authorized **only two fake values
 in the constructed child environment**: `BRIDGE_MCP_SOCKET` names
 `<owned temporary scenario directory>/unused-fake-mcp.sock`, and
@@ -74,7 +88,7 @@ in the constructed child environment**: `BRIDGE_MCP_SOCKET` names
 or live values are read, copied, printed or changed. The fake socket path is
 unused: the fixture serves MCP over stdio. Assertions verify that the fixture
 received exactly that path, dummy token and `mcp --task <owner>` arguments.
-No socket server, bridge executable or daemon is involved.
+No socket server, installed bridge executable or daemon is involved.
 
 The driver constructs HOME, Pi agent directory, cwd and settings beneath its
 temporary root. `PI_OFFLINE=1` disables startup update checks. The CLI allows
@@ -87,7 +101,9 @@ nothing. Owned child PIDs are captured before shutdown and retained as pidfds
 so cleanup cannot signal a recycled PID. The driver deletes its temporary
 HOME, files and fixtures after every run.
 
-Reproduce from the repository root:
+Reproduce from the repository root, after compiling the bridge lib-test
+artifact under the repository's normal clean-HOME/nice gates. Pass that exact
+artifact's absolute path as `--observer`; never pass an installed bridge:
 
 ```bash
 qual_home=$(mktemp -d /tmp/build-659-tui-home.XXXXXX)
@@ -95,19 +111,23 @@ env -i HOME="$qual_home" PATH=/usr/bin:/bin nice -n 10 python3 \
   scripts/qualify-pi-compaction-tui.py \
   --pi /home/zech/.local/share/mise/installs/pi/0.86.1/pi/pi \
   --node /home/zech/.local/share/mise/installs/node/22.23.3/bin/node \
+  --observer /absolute/path/to/source-built/bridge-lib-test-artifact \
   > /tmp/build-659-pi-tui.json 2> /tmp/build-659-pi-tui.err
 qual_exit=$?
 printf 'exit=%s\n' "$qual_exit"
 ```
 
-The complete six-scenario TUI gate exited **0**. The exact exercised extension
-SHA256 is `c981d94c86e83fcc5c8c489c2b4ed026e1a8a31a20e860ee5cd609b84a86e18a`.
+The complete seven-scenario TUI gate exited **0**. The exact exercised extension
+SHA256 is `76e0b9f56e85e625543048859c3d752c659c3f34b434423e186db256673735ef`.
 The driver writes that hash, the pinned Pi hash, synthetic event records and
 private-file telemetry to its JSON result. Evidence from the run is retained
-locally at `/tmp/659-logs/pi-tui-all-final.json`; no temporary fixture state is
-needed to reproduce it. All six Pi children stayed alive through their
-assertions and exited 0 after controlled cleanup. The owned MCP children also
-stopped; reload created two successive fixture children, other scenarios one.
+locally at `/tmp/659-logs/pi-tui-round3-final.json`; no temporary fixture state is
+needed to reproduce it. In the true MCP-transport-failure scenario, the actual
+extension sends SIGTERM and Pi exits. The other six Pi children remain alive
+through their assertions and exit after controlled cleanup. All Rust observer
+helpers exit 0, and all owned MCP children stop; reload creates two successive
+fixture children, other scenarios one. All seven observer exits and all seven
+Pi process exits are 0, including Pi's controlled exit after transport SIGTERM.
 
 | TUI scenario | Measured result |
 | --- | --- |
@@ -115,20 +135,26 @@ stopped; reload created two successive fixture children, other scenarios one.
 | Overflow | A synthetic `prompt is too long` response causes actual native `overflow` compaction with `willRetry: true`, then another agent run and final settlement. Build does not cancel it. |
 | Reload | Typing native `/reload` tears down the original extension and loads the default export again. Readiness advances generation 1→2, sequence restarts at 1 in the new generation, and a new prompt settles normally. No old-generation records reappear after the replacement starts. |
 | Slow MCP initialization | The fake child delays initialization 11.5 seconds. At 10.5 seconds Pi is alive, readiness has not been emitted and starting heartbeats are present. Initialization then completes; ordinary prompts and native manual compaction succeed. |
-| MCP failure | An actual registered tool call makes the owned fake MCP child exit 17. The default extension emits unsupported, while Pi stays alive. Native threshold compaction then succeeds and a further prompt completes. |
-| Sink failure | Changing only the owned telemetry file to mode 0644 makes Build's private-file sink reject it. Pi stays alive, native threshold compaction succeeds and a further prompt completes. The broken sink cannot claim that it wrote an unsupported record; heartbeat loss is the wrapper's independent signal. |
+| MCP transport failure | An actual registered tool call makes the owned fake MCP child exit 17. The default extension emits unsupported and sends SIGTERM to Pi; the fixture records the signal and requires Pi to terminate. |
+| Sink failure | Changing only the owned telemetry file to mode 0644 makes the private-file sink reject it. The real Rust observer reports Unsupported. Pi remains alive, native threshold compaction succeeds, a healthy MCP `done` call returns `one`, and a further prompt completes. |
+| Reader loss with a writable sink | Changing only the owned sidecar to mode 0200 causes a confirmed `PermissionError` on reads while its size increases from actual JavaScript appends. The real Rust observer reports Unsupported and revokes its receipt. Pi allows native threshold compaction, preserves a healthy MCP call returning `one`, and completes another prompt. The driver restores file readability only after those assertions. |
 
-The two failure scenarios each observed three successful native threshold
-compactions after the injected failure. These assertions prove native behavior
-resumes, not merely that a PID remains alive. Successful summaries still come
+The telemetry-failure scenarios require successful native threshold compaction
+and a healthy MCP tool result after the injected failure. These assertions
+prove that fallback withdrawal restores native behavior while preserving the
+separate MCP transport. A real transport failure deliberately terminates Pi. Successful summaries still come
 from the documented custom-compaction return value; no external LLM is used.
 All telemetry assertions check the captured owner and contiguous sequence
-numbers within strictly advancing generations.
+numbers within strictly advancing generations. Every receipt must have mode
+0600 and matching owner, thread, launch and generation, and acknowledge an
+actually emitted sequence. Each failure scenario also requires exactly one
+additional Rust context reset despite subsequent health polling.
 
-The PTY probe executes Pi directly. It proves the carrier emits starting and
-heartbeat records during slow initialization; Rust wrapper heartbeat deadlines,
-queue fencing and fallback withdrawal are covered separately by repository
-tests. It does not invoke the installed bridge or a live daemon to prove them.
+The PTY probe executes Pi directly with the actual Rust telemetry observer.
+It proves carrier-to-observer receipt exchange, starting heartbeats through slow
+initialization, reload generations, and fallback withdrawal on reader loss.
+The broader PtySession queue fencing and compaction policy engine remain
+covered by repository tests. It never invokes the installed bridge or daemon.
 
 ## Supplemental RPC behavior
 
@@ -194,7 +220,35 @@ its work generation, `ctx.isIdle()` and `!ctx.hasPendingMessages()`. That
 callback must not authorize delivery if another run has started. Native
 overflow continues to wait for the actual `agent_settled` event.
 
-## Limits and failed probes
+## Regression evidence and limits
+
+The cross-side regression probes were run against the saved pre-receipt
+extension from commit `30fb34fd7`, with the real Rust observer helper. Each
+failed with exit **1** at the intended behavior boundary:
+
+- Mode 0200 denied reads while JavaScript continued appending. Rust reported
+  Unsupported, but the old extension kept cancelling threshold attempts; the
+  gate timed out waiting for native compaction.
+- Mode 0644 withdrew telemetry and also closed the healthy MCP client. The
+  gate failed because the subsequent `done` call could not return `one`.
+- A real fake-MCP child exit left Pi alive. The gate failed because Pi did not
+  terminate on transport failure.
+
+The baseline source override is explicit (`--extension-source`) and isolated
+in a temporary copied extension; no shared production file was swapped. The
+final seven-scenario run uses the default current source. Local RED logs are
+`/tmp/659-logs/pi-round3-red-read_loss.err`,
+`/tmp/659-logs/pi-round3-red-sink_failure.err` and
+`/tmp/659-logs/pi-round3-red-mcp_failure.err`.
+
+
+The first final cross-side run exited 1 at the fixture's fixed 100 ms manual
+settlement assertion while the repository was compiling. The assertion now
+waits for the actual `settled` record after completed manual compaction, with a
+bounded deadline and observer/event diagnostics. The manual-only rerun exited
+0; the final full run uses that event condition, not a longer blind sleep.
+Python AST parsing, pinned Node `--check` and own-file `git diff --check` also
+exited 0 under nice 10.
 
 An initial probe used only one prompt and Pi refused manual compaction as
 `Nothing to compact (session too small)`; the driver exited 1. Seeding a second

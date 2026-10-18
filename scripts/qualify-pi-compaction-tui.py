@@ -185,7 +185,8 @@ class Probe:
         assert actual["usage"]["tokens"] is None
         completed = [event for event in records(self.telemetry) if event["type"] == "compaction" and event.get("completed")]
         assert completed[-1]["reason"] == "manual"
-        assert any(event["type"] == "settled" for event in records(self.telemetry)[records(self.telemetry).index(completed[-1]):])
+        self.wait(lambda: any(event["type"] == "settled" for event in
+            records(self.telemetry)[records(self.telemetry).index(completed[-1]):]), "manual telemetry settlement")
 
     def reload(self):
         prior = [event for event in records(self.telemetry) if event["type"] == "ready"][-1]
@@ -199,6 +200,7 @@ class Probe:
         assert any(event["type"] == "settled" and event["generation"] == ready["generation"] for event in records(self.telemetry))
 
     def transport_failure(self):
+        resets_before = self.observed()["context_reset_count"]
         (self.home / "call-tool").touch()
         self.send("Synthetic work triggers actual MCP child exit.")
         deadline = time.monotonic() + 10
@@ -212,9 +214,12 @@ class Probe:
         while self.observed().get("enforcement") != "Unsupported" and time.monotonic() < deadline:
             self.pump()
         assert self.observed().get("enforcement") == "Unsupported"
+        assert self.observed()["context_reset_count"] == resets_before + 1
+        self.evidence["observer_resets_before_failure"] = resets_before
         self.evidence["transport_failure_exit"] = self.child.returncode
 
     def telemetry_failure(self):
+        resets_before = self.observed()["context_reset_count"]
         before = count(records(self.events), "session_compact")
         original_size = self.telemetry.stat().st_size
         self.telemetry.chmod(0o200 if self.scenario == "read_loss" else 0o644)
@@ -240,6 +245,8 @@ class Probe:
                    for event in tools), "healthy MCP tool must succeed after telemetry failure"
         self.prompt("Synthetic follow-up proves Pi survived.")
         self.evidence["observer_after_failure"] = self.observed()
+        self.evidence["observer_resets_before_failure"] = resets_before
+        assert self.observed()["context_reset_count"] == resets_before + 1
         assert self.child.poll() is None
         if self.scenario == "read_loss":
             self.telemetry.chmod(0o600)
@@ -343,6 +350,10 @@ def main():
                 elif scenario != "overflow":
                     probe.manual()
                 evidence.append(probe.verify())
+            except Exception as error:
+                error.add_note(f"scenario={scenario}; observer={probe.observed()}; "
+                               f"events={records(probe.events)[-12:]}; telemetry={probe.telemetry_diagnostics()}")
+                raise
             finally:
                 probe.close()
             assert probe.observer.returncode == 0, "Rust observer gate failed"

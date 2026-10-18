@@ -51,10 +51,17 @@ impl CompactionLaunchIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeCompactionSettings {
+    Claude(super::claude_compaction::Translation),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppliedCompactionPolicy {
     pub requested: ResolvedCompactionPolicy,
     /// A qualified native trigger, when the adapter can establish one.
     pub translated_trigger: Option<u64>,
+    /// Captured adapter settings; never re-resolved during spec construction.
+    pub native_settings: Option<NativeCompactionSettings>,
     pub enforcement: CompactionEnforcement,
     pub reason: Option<String>,
     pub capabilities: CompactionCapabilities,
@@ -112,6 +119,7 @@ pub(super) fn fallback_policy<H: Harness + ?Sized>(
     Ok(AppliedCompactionPolicy {
         requested,
         translated_trigger: None,
+        native_settings: None,
         enforcement,
         reason: Some(reason.into()),
         capabilities,

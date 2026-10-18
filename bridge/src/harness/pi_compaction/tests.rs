@@ -118,7 +118,7 @@ fn options(
                     },
                     choice(),
                     version.map(str::to_owned),
-                    CompactionLaunchIdentity::new("thread-one"),
+                    CompactionLaunchIdentity::new("thread:agent-one:reset-generation"),
                 )
                 .unwrap(),
         ),
@@ -154,7 +154,7 @@ fn pi_compaction_spec_preserves_exact_session_and_scopes_each_launch() {
                 serde_json::from_str(&env(&spec, "BUILD_PI_COMPACTION_POLICY")).unwrap();
             assert_eq!(policy["tokens"], 150_000);
             assert_eq!(policy["owner"], owner);
-            assert_eq!(policy["thread_id"], "thread-one");
+            assert_eq!(policy["thread_id"], "thread:agent-one:reset-generation");
             assert_eq!(
                 policy["launch_id"],
                 options
@@ -191,28 +191,45 @@ fn pi_compaction_spec_preserves_exact_session_and_scopes_each_launch() {
 }
 
 #[test]
-fn pi_compaction_spec_keeps_unsupported_telemetry_without_enabling_cancellation() {
+fn pi_compaction_spec_keeps_unsafe_value_telemetry_without_enabling_cancellation() {
     let state = tempfile::tempdir().unwrap();
     let checkout = tempfile::tempdir().unwrap();
-    for (version, tokens) in [(None, 150_000), (Some("0.86.1"), u64::MAX)] {
-        let options = options(checkout.path(), "agent", version, tokens);
+    let options = options(checkout.path(), "agent", Some("0.86.1"), u64::MAX);
+    let spec = PiHarness
+        .spec(&choice(), &options, &context(state.path()))
+        .unwrap();
+    let policy: serde_json::Value =
+        serde_json::from_str(&env(&spec, "BUILD_PI_COMPACTION_POLICY")).unwrap();
+    assert_eq!(policy["enabled"], false);
+    assert!(spec.pi_telemetry.is_some());
+    assert!(policy["tokens"].is_null());
+    assert_eq!(policy["tokens_decimal"], u64::MAX.to_string());
+}
+
+#[test]
+fn pi_compaction_unknown_hook_version_keeps_legacy_terminal_lifecycle() {
+    let state = tempfile::tempdir().unwrap();
+    let checkout = tempfile::tempdir().unwrap();
+    for version in [None, Some("0.86.0"), Some("0.86.2")] {
+        let options = options(checkout.path(), "agent", version, 150_000);
         let spec = PiHarness
             .spec(&choice(), &options, &context(state.path()))
             .unwrap();
-        let policy: serde_json::Value =
-            serde_json::from_str(&env(&spec, "BUILD_PI_COMPACTION_POLICY")).unwrap();
-        assert_eq!(policy["enabled"], false);
-        assert!(spec.pi_telemetry.is_some());
-        if tokens > MAX_SAFE_TOKENS {
-            assert!(policy["tokens"].is_null());
-            assert_eq!(policy["tokens_decimal"], tokens.to_string());
+        assert!(spec.pi_telemetry.is_none());
+        for key in ["BUILD_PI_COMPACTION_POLICY", "BUILD_PI_TELEMETRY_LOG"] {
+            assert!(spec.unset.iter().any(|item| item == key));
+            assert!(!spec.env.iter().any(|(item, _)| item == key));
         }
+        assert_eq!(
+            options.compaction_policy.unwrap().reason.as_deref(),
+            Some("pi_version_unqualified")
+        );
     }
 }
 
 #[test]
 fn pi_compaction_spec_rejects_forged_policy_and_identity_before_writing() {
-    for mutation in 0..7 {
+    for mutation in 0..9 {
         let state = tempfile::tempdir().unwrap();
         let checkout = tempfile::tempdir().unwrap();
         let mut options = options(checkout.path(), "agent-one", Some("0.86.1"), 150_000);
@@ -225,6 +242,8 @@ fn pi_compaction_spec_rejects_forged_policy_and_identity_before_writing() {
             4 => policy.launch_identity.thread_id = "".into(),
             5 => policy.capabilities.qualification.version = None,
             6 => options.owner_id = "../owner".into(),
+            7 => policy.launch_identity.thread_id = "thread:agent\nforged".into(),
+            8 => policy.launch_identity.thread_id = "x".repeat(1025),
             _ => unreachable!(),
         }
         assert!(

@@ -122,3 +122,80 @@ thresholds above the exact native ceiling retain between-turn enforcement with
 an explicit reason. Native automatic compaction is not disabled by this adapter;
 manual compaction remains available. The between-turn fallback therefore does
 not assert exclusive control over Codex's own context management.
+
+## Exact launch and protocol templates
+
+These templates reproduce the argv and constructed environment used by the
+Python drivers; the drivers supplied cwd directly to `Popen`. They assume the
+authorized read-only credential copy has already been prepared as described
+above and remove it after the owned process exits. `<thread-id>` denotes the
+exact ID returned by the successful fresh thread response. Neither template
+invokes the installed wrapper.
+
+Common isolated launcher (the braces are shell variable expansion, not a
+request to read the original credential file):
+
+```bash
+QUAL_ROOT=/tmp/build-657-qualification
+QUAL_CODEX=/home/zech/.local/share/mise/installs/codex/0.160.0/bin/codex
+QUAL_PREFIX=(
+  /usr/bin/env -i PATH=/usr/bin:/bin
+  HOME="$QUAL_ROOT/home" CODEX_HOME="$QUAL_ROOT/codex"
+  TERM=xterm-256color LANG=C.UTF-8
+  /usr/bin/bwrap --ro-bind / / --bind "$QUAL_ROOT" "$QUAL_ROOT"
+  --ro-bind "$QUAL_ROOT/codex/auth.json" "$QUAL_ROOT/codex/auth.json"
+  -- /usr/bin/nice -n 10
+)
+cd "$QUAL_ROOT/cwd"
+```
+
+App-server process argv:
+
+```bash
+"${QUAL_PREFIX[@]}" "$QUAL_CODEX" \
+  -c model_auto_compact_token_limit=12000 \
+  -c 'model_auto_compact_token_limit_scope="total"' \
+  -c 'model_reasoning_effort="low"' \
+  -c check_for_update_on_startup=false \
+  app-server --stdio
+```
+
+The stdio handshake and fresh thread request were these JSONL shapes; each
+request awaited its correlated response before the next dependent request:
+
+```json
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"build_657_qualification","version":"0.1"},"capabilities":{}}}
+{"method":"initialized","params":{}}
+{"id":2,"method":"thread/start","params":{"cwd":"/tmp/build-657-qualification/cwd","model":"gpt-6.1-sol","approvalPolicy":"never","sandbox":"read-only","config":{"model_auto_compact_token_limit":12000,"model_auto_compact_token_limit_scope":"total"}}}
+{"id":3,"method":"turn/start","params":{"threadId":"<thread-id>","input":[{"type":"text","text":"Reply only OK. Do not use tools."}],"model":"gpt-6.1-sol","effort":"low"}}
+```
+
+An exact resume replaced the `thread/start` request with this request, retaining
+the same two compaction keys and selected model:
+
+```json
+{"id":2,"method":"thread/resume","params":{"threadId":"<thread-id>","cwd":"/tmp/build-657-qualification/cwd","model":"gpt-6.1-sol","approvalPolicy":"never","sandbox":"read-only","excludeTurns":true,"config":{"model_auto_compact_token_limit":12000,"model_auto_compact_token_limit_scope":"total"}}}
+```
+
+Resume probes also issued `config/read` with `{"includeLayers":true}` before
+starting the turn, advancing the subsequent request ID accordingly. The fresh
+window probe changed both N occurrences to 25000 and added root
+`-c model_context_window=20000`. Diagnostic resume runs additionally supplied
+`RUST_LOG=codex_core::session::turn=debug` or `trace` in their constructed
+environment; the model and compaction parameters were unchanged.
+
+TUI process argv, attached to the owned 150-column by 40-row PTY:
+
+```bash
+"${QUAL_PREFIX[@]}" "$QUAL_CODEX" --no-alt-screen \
+  -c model_auto_compact_token_limit=12000 \
+  -c 'model_auto_compact_token_limit_scope="total"' \
+  -c check_for_update_on_startup=false \
+  -c 'model_reasoning_effort="low"' \
+  -a never -s read-only -m gpt-6.1-sol \
+  resume '<thread-id>' 'Reply only OK. Do not use tools.'
+```
+
+TUI evidence covers this exact-resume invocation. It does not claim a separately
+executed fresh TUI launch. No additional model runs were made to write these
+command templates.

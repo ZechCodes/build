@@ -104,7 +104,7 @@ function compactionTelemetryChannel(configuration, sink, onFailure = () => {}) {
     heartbeat = setInterval(() => {
       try { emit({ type: "heartbeat" }); } catch { unsupported("telemetry_failed"); }
     }, 1000);
-    heartbeat.unref();
+    heartbeat.unref?.();
   } catch { unsupported("telemetry_failed"); }
   return { emit, unsupported, shutdown, active: () => active };
 }

@@ -729,7 +729,6 @@ fn compaction_policy_adopted_checkout_uses_workspace_scope_and_prunes_it_when_go
     let workspace = crate::worktree::external_worktree_id(&checkout);
     call(&mut state, "workspace.list", json!({"project_id": project}));
     assert!(!state.workspaces.get(&workspace).unwrap().managed);
-    let owner = workspace_owner(&mut state, &workspace);
     state
         .patch_compaction_thresholds(
             CompactionScope::Project(project.clone()),
@@ -742,16 +741,6 @@ fn compaction_policy_adopted_checkout_uses_workspace_scope_and_prunes_it_when_go
             &all_cells(Some(234_567)),
         )
         .unwrap();
-    for provider in AgentProvider::ALL {
-        let agent = policy_agent(&mut state, &owner, provider);
-        assert_policy(
-            &state,
-            &owner,
-            &agent,
-            234_567,
-            CompactionSource::Workspace(workspace.clone()),
-        );
-    }
     assert!(!checkout.join(crate::workspace::MANIFEST_FILE).exists());
     assert_eq!(
         std::fs::read(repo.join(".git/config")).unwrap(),
@@ -771,6 +760,20 @@ fn compaction_policy_adopted_checkout_uses_workspace_scope_and_prunes_it_when_go
             .get(AgentProvider::Pi),
         Some(234_567)
     );
+    // Restart with the stable external-workspace ID. Re-identification after
+    // persisting its conversation is tracked separately by #654.
+    let owner = workspace_owner(&mut restarted, &workspace);
+    for provider in AgentProvider::ALL {
+        let agent = policy_agent(&mut restarted, &owner, provider);
+        assert_policy(
+            &restarted,
+            &owner,
+            &agent,
+            234_567,
+            CompactionSource::Workspace(workspace.clone()),
+        );
+    }
+    assert!(!checkout.join(crate::workspace::MANIFEST_FILE).exists());
     std::fs::remove_dir_all(&checkout).unwrap();
     call(
         &mut restarted,

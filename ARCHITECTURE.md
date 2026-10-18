@@ -553,6 +553,49 @@ and its controls are
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
 
+#### Compaction policy configuration
+
+`bridge/src/compaction.rs` defines sparse per-harness token maps, and
+`bridge/src/app/config/compaction.rs` owns their persistence and resolution.
+The independent keys are `claude`, `claude_adk`, `codex`, `codex_app_server`,
+and `pi`. New values must be positive safe integers (at most 9007199254740991).
+An omitted patch key is unchanged; a provider's `null` removes its override.
+An empty patch does nothing. Unknown providers, invalid numbers and mixed
+scopes are refused before persistence. Each mutation has one typed scope and
+writes a prospective config atomically before changing memory.
+
+Device `compaction_thresholds` lives at the config root, project
+`compaction_thresholds` on the project entry, and
+`workspace_compaction_thresholds[workspace_id]` at the root. Workspace maps
+never enter checkout manifests or adopted source directories. Stable owner
+IDs preserve policy across rename, restart and parked projects. Only confirmed
+owner deletion removes its maps; an unavailable project is not a deletion.
+
+The internal `AppState::resolve_compaction_policy` resolves
+conversation override → workspace → project → device → 200000, including the
+winning source. The addressed agent's launch choice selects the harness key.
+The canonical conversation owns `max_context_tokens` and the workspace/project
+scopes: alias reads and writes share that override, while aliases launching
+different harnesses select different entries from the same scopes. Project
+coordinators and workers skip workspace scope. Spawn, routing, model choice,
+and session ownership remain addressed-agent behavior. This resolver reports
+configured intent; it does not apply or report an active harness policy.
+
+Loading a config without a device map seeds all five entries from the legacy
+`compact_above_tokens`, substituting 200000 for zero or an absent value.
+An explicitly empty map is never reseeded. Agent JSON loading clears a legacy
+`max_context_tokens` zero to inheritance. The legacy device scalar is retained;
+an old scalar write broadcasts a positive safe integer to all five device
+entries and leaves narrower scopes alone. Combining a scalar and map mutation
+is refused. The legacy read scalar is only the last broadcast/default value
+and cannot describe divergent harness entries. Config preserves out-of-range
+legacy integers exactly; internal read maps use `{tokens_decimal: "…"}`, and
+resolved observations use `tokens: null` with that exact decimal and an
+`unsupported_representation` reason. Those representations cannot be submitted
+as mutations. Older bridge binaries can discard the new maps when rewriting
+config; downgrade preservation is unsupported. These map APIs are internal;
+there are no per-harness wire setters or events yet.
+
 ### Workspaces and worktrees
 
 `WorktreeManager` (`bridge/src/worktree/manager.rs`) is the entry point for

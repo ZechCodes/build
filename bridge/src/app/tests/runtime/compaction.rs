@@ -524,7 +524,7 @@ fn conversation_settings_sets_and_clears_the_conversations_own_limit() {
     assert_eq!(agent.listed()["compact_at_tokens"], 50_000);
 
     let never = agent.set_limit(json!(0));
-    assert_eq!(never["result"]["compact_at_tokens"], 0, "{never:?}");
+    assert_eq!(never["ok"], false, "{never:?}");
 
     let cleared = agent.set_limit(Value::Null);
     assert_eq!(cleared["ok"], true, "{cleared:?}");

@@ -200,11 +200,11 @@ impl AppState {
                     .clone();
                 reset_process_fields(&mut current);
                 current.thread = desired.thread;
+                if current.id == address.conversation_id && selected_limit {
+                    current.max_context_tokens = desired.max_context_tokens;
+                }
                 if current.id == address.agent_id {
                     current.choose(desired.choice);
-                    if selected_limit {
-                        current.max_context_tokens = desired.max_context_tokens;
-                    }
                 } else {
                     current.choose(current.choice.clone());
                 }
@@ -257,6 +257,18 @@ impl AppState {
         params: &Value,
         choice: ModelChoice,
     ) -> Result<Vec<Agent>, String> {
+        let limit = params
+            .get("max_context_tokens")
+            .map(|value| {
+                if value.is_null() {
+                    Ok(None)
+                } else {
+                    crate::compaction::parse_tokens(value)
+                        .map(Some)
+                        .map_err(|why| format!("invalid max_context_tokens: {why}"))
+                }
+            })
+            .transpose()?;
         let mut agents = Vec::new();
         for owner in self.runs.keys().chain(self.plans.keys()) {
             for old in self
@@ -271,17 +283,12 @@ impl AppState {
                     agent.thread.id = format!("thread:{}:{}", agent.id, uuid::Uuid::new_v4());
                     agent.thread.generation_revision =
                         old.thread.generation_revision.saturating_add(1);
+                    if let Some(limit) = limit {
+                        agent.max_context_tokens = limit;
+                    }
                 }
                 if agent.id == address.agent_id {
                     agent.choose(choice.clone());
-                    if let Some(limit) = params.get("max_context_tokens") {
-                        agent.max_context_tokens = match limit {
-                            Value::Null => None,
-                            _ => Some(limit.as_u64().ok_or(
-                                "invalid max_context_tokens: expected a nonnegative integer or null",
-                            )?),
-                        };
-                    }
                 } else {
                     agent.choose(agent.choice.clone());
                 }

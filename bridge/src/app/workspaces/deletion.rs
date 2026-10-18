@@ -526,6 +526,7 @@ impl AppState {
             self.forget_session_owner(run_id);
             self.forget_run(run_id);
         }
+        self.forget_workspace_compaction(&[workspace_id.to_string()])?;
         self.workspaces.forget(workspace_id);
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(())

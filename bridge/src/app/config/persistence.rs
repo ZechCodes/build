@@ -30,7 +30,7 @@ impl AppState {
         isolation: Isolation,
         prospective_project: Option<&Project>,
     ) -> Value {
-        json!({
+        let mut config = json!({
             "next_project": self.projects.next_id() + u64::from(prospective_project.is_some()),
             "projects_dir": projects_dir.display().to_string(),
             "default_harness": default_harness,
@@ -74,7 +74,9 @@ impl AppState {
                 }
                 entry
             }).chain(self.projects.parked().iter().cloned()).collect::<Vec<_>>(),
-        })
+        });
+        self.compaction_policies.write_config(&mut config);
+        config
     }
 
     /// Write the config as it stands, for a verb that has already put its

@@ -292,6 +292,16 @@ impl AppState {
             .as_array_mut()
             .expect("project config array")
             .retain(|entry| entry["id"].as_str() != Some(project_id));
+        let workspace_ids: Vec<_> = self
+            .workspaces
+            .list(Some(project_id))
+            .iter()
+            .map(|workspace| workspace.id.clone())
+            .collect();
+        let mut policies = self.compaction_policies.clone();
+        policies.forget_project(project_id);
+        policies.forget_workspaces(&workspace_ids);
+        policies.write_config(&mut config);
         self.persist_config(&config)?;
         if let Some(store) = &self.store {
             store
@@ -301,6 +311,7 @@ impl AppState {
                 })?;
         }
         self.forget_session_owner(project_id);
+        self.compaction_policies = policies;
         self.workspaces.forget_project(project_id);
         self.projects.remove(project_id);
         self.board.diff_mut().remove_project(project_id);

@@ -269,8 +269,8 @@ pub struct Agent {
     #[serde(default)]
     pub session_cache_read_tokens: Option<u64>,
     /// This conversation's own compaction threshold: `None` follows the
-    /// device's, `Some(0)` never compacts, `Some(n)` compacts at `n` tokens.
-    #[serde(default)]
+    /// inherited policy. Legacy zero overrides are cleared on JSON load.
+    #[serde(default, deserialize_with = "crate::compaction::deserialize_override")]
     pub max_context_tokens: Option<u64>,
     /// What this agent is FOR on a project's conversation owner: the one
     /// pinned coordinator, or a worker that writes the project's sources.

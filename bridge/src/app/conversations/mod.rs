@@ -31,8 +31,8 @@ pub(in crate::app) use read::{thread_cursor, thread_detail, view_thread_detail, 
 
 /// One addressed agent and the durable conversation it is bound to.
 ///
-/// The addressed identity drives the harness and settings. The canonical
-/// identity drives history storage. Keeping both in one resolved value makes
+/// The addressed identity drives the harness and model settings. The canonical
+/// identity drives history storage and its compaction override/scopes. Keeping both in one resolved value makes
 /// it impossible for a caller to validate one agent and then accidentally
 /// read the roster's current primary conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]

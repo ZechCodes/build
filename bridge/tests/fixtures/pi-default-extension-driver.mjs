@@ -55,7 +55,7 @@ if (scenario === "lease_failure") {
   delete performance.now;
 }
 let toolResult;
-if (["sink_failure", "hook_failure", "lease_failure", "missing_log"].includes(scenario)) {
+if (["initial_sink_failure", "sink_failure", "hook_failure", "lease_failure", "missing_log"].includes(scenario)) {
   try { toolResult = await registered.get("done").execute("call", { kind: "one" }); } catch (error) { toolResult = { error: error.message }; }
 }
 if (process.env.PI_DEFAULT_SCENARIO === "mcp_failure") {

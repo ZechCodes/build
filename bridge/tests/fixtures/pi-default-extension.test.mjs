@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,6 +26,7 @@ function run(scenario, mode = "normal") {
       PI_DEFAULT_SCENARIO: scenario,
     };
     if (scenario !== "missing_log") env.BUILD_PI_TELEMETRY_LOG = join(directory, "telemetry.jsonl");
+    if (scenario === "initial_sink_failure") mkdirSync(env.BUILD_PI_TELEMETRY_LOG);
     const result = spawnSync(process.execPath, [new URL("pi-default-extension-driver.mjs", import.meta.url).pathname], { env, timeout: 10000, encoding: "utf8" });
     assert.equal(result.status, 0, JSON.stringify({ status: result.status, signal: result.signal, stderr: result.stderr }));
     return JSON.parse(result.stdout);
@@ -63,9 +64,10 @@ test("missing telemetry path leaves Pi usable and native compaction uncancelled"
   assert.equal(result.threshold.some((value) => value?.cancel), false);
   assert.deepEqual(result.signals, []);
   assert.equal(result.childRunning, false);
+  assert.deepEqual(result.toolResult, { content: [{ type: "text", text: "one" }], details: {} });
 });
 
-for (const scenario of ["sink_failure", "hook_failure", "lease_failure"]) {
+for (const scenario of ["initial_sink_failure", "sink_failure", "hook_failure", "lease_failure"]) {
   test(`${scenario} withdraws compaction while healthy MCP tools remain available`, () => {
     const result = run(scenario);
     assert.deepEqual(result.toolResult, { content: [{ type: "text", text: "one" }], details: {} });

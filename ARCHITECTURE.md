@@ -633,8 +633,8 @@ enforcement (`native`, `between_turn`, `unsupported`), the launch choice and
 identity, and version/evidence/reason. Capability descriptors include native
 threshold and between-turn command support plus the native unit/range when
 qualified. Native adapters remain unqualified. Claude and Codex carriers use
-the existing between-turn command path; Pi reports unsupported fallback until
-its command adapter lands. Unknown or failed version readings never infer
+the existing between-turn command path; Pi qualifies its extension-backed
+fallback only for 0.86.1. Unknown or failed version readings never infer
 native support. Unsafe legacy values remain exact and unsupported; zero is
 refused. These are internal observations; wire fields/events are a later step.
 
@@ -730,6 +730,49 @@ the session working and queued follow-up intact. After the turn ends the
 follow-up is delivered exactly once, without Build threshold compaction under
 Native. Fresh/resumed config fixtures independently preserve stale file bytes
 and isolate concurrent sessions' captured thresholds.
+
+Pi's adapter (`harness/pi_compaction.rs`, #659) passes the captured positive
+policy and exact owner/thread/launch identities only to its child extension.
+It leaves user and workspace settings alone. The existing private session
+directory and `--session-id <owner>` preserve exact continuation; each opening
+gets a new private telemetry file. Unknown versions remain unsupported with
+`pi_version_unqualified` and retain the existing terminal lifecycle without
+loading unqualified observation hooks. Native threshold injection remains unqualified
+(`pi_native_threshold_injection_unqualified`); it is not needed for the
+qualified between-turn fallback. `planning/v2/Pi Compaction Qualification.md`
+records the pinned 0.86.1 executable, documented hooks and credential-free
+fake-provider runs that execute Build's telemetry code.
+
+The extension cancels only native `threshold` attempts while fallback owns
+the threshold. Native `overflow` recovery and manual compaction remain
+available. Context and working observations use the private sidecar, never
+screen scraping or shared configuration. `PtySession` consumes these through
+`pi_telemetry.rs`; it retains the terminal escape hatch but stops inferring
+idle from silence for these sessions. The session exposes explicit unsupported
+states until the extension confirms its exact Pi session identity, and after
+an extension failure. A failed or timed-out extension terminates and reaps
+only its owned child, rather than leaving a session waiting forever. The shared
+policy decorator preserves that runtime observation. Foreign launch identities, replayed sequences and malformed or
+missing records cannot authorize fallback.
+
+Ordinary Pi work becomes idle only at `agent_settled`, after retries, tool work,
+automatic compaction and queued continuations. `agent_end` and `turn_end` only
+refresh context. Idle manual compaction does not emit `agent_settled` in
+0.86.1: its completion hook schedules a macrotask that verifies idle with no
+pending continuation before reporting settlement. A newer work event defeats
+that deferred check. Build rejects a `/compact` send without a confirmed idle
+boundary; the command itself immediately reserves that boundary as working.
+Only the observed `session_compact` boundary can complete an attempted
+compaction. Failure, abort and cancellation never do. Overflow compaction
+remains activity within the ongoing turn and is identified as overflow
+recovery, not enforcement of Build's configured threshold.
+
+Null context clears the session reading and advances a cumulative invalidation
+counter. The shared status pump clears the persisted reading and its dedup
+state even when watch updates coalesce; an identical later, fresh reading is
+then observable again. Pi additionally requires the persisted reading to match
+its current observation before declaring automatic compaction due. The common
+ledger and queue deliver deferred input once after compaction settles.
 
 Automatic delivery asks the live session policy whether its last trustworthy
 context reading reached the captured threshold (`>=`). Only an idle warm

@@ -1408,10 +1408,24 @@ fn a_choice_this_child_cannot_take_in_place_is_refused_and_says_so() {
 /// agent would otherwise report every turn as the model the human chose.
 #[test]
 fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() {
-    let session = open_with(
+    let choice = choosing(Some("claude-opus-5"), None);
+    let session = Arc::new(open_with(
         &stream_json_harness(&[RESULT]),
-        &choosing(Some("claude-opus-5"), None),
-    );
+        &choice,
+    ));
+    let policy = crate::harness::harness_for(choice.provider)
+        .prepare_compaction_policy(
+            crate::compaction::ResolvedCompactionPolicy {
+                tokens: 150_000,
+                source: crate::compaction::CompactionSource::Device,
+            },
+            choice,
+            None,
+            crate::harness::compaction::CompactionLaunchIdentity::new("adk-mismatch"),
+        )
+        .unwrap();
+    let wrapped = crate::harness::compaction::PolicySession::attach(session.clone(), policy);
+    assert_eq!(wrapped.compaction_policy(), None);
     session
         .send_turn(&Turn::new("go"))
         .expect("the turn is written");
@@ -1432,6 +1446,11 @@ fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() 
         session.start_refused().as_deref(),
         Some(epitaph.as_str()),
         "and the agent's start_error says it in the same sentence"
+    );
+    assert_eq!(
+        wrapped.compaction_policy(),
+        None,
+        "a rejected model announcement must not apply the launch policy"
     );
 
     // And the model it WAS asked for is announced without incident.

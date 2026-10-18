@@ -24,6 +24,7 @@ root, outcome = pathlib.Path(sys.argv[1]), sys.argv[2]
 policy = json.loads(os.environ['BUILD_PI_COMPACTION_POLICY'])
 log = pathlib.Path(os.environ['BUILD_PI_TELEMETRY_LOG'])
 sequence = 0
+generation = 1
 def stage(name):
     (root / name).touch()
 def wait(name):
@@ -33,7 +34,7 @@ def emit(kind, **fields):
     global sequence
     sequence += 1
     value = {key: policy[key] for key in ['launch_id', 'thread_id', 'owner']}
-    value.update(sequence=sequence, generation=1, type=kind, **fields)
+    value.update(sequence=sequence, generation=generation, type=kind, **fields)
     with log.open('a') as out:
         out.write(json.dumps(value) + '\n')
 def capture():
@@ -46,6 +47,26 @@ def capture():
 assert sys.argv[sys.argv.index('--session-id') + 1] == policy['owner']
 emit('ready')
 stage('ready')
+if outcome == 'health-failure':
+    emit('context', tokens=200000)
+    emit('settled')
+    stage('failure-context')
+    wait('fail')
+    emit('unsupported')
+    stage('failed')
+    wait('recover')
+    generation = 2
+    sequence = 0
+    emit('starting')
+    emit('ready')
+    emit('context', tokens=200000)
+    emit('settled')
+    stage('recovered')
+    wait('fail-again')
+    emit('unsupported')
+    stage('failed-again')
+    while True:
+        capture()
 if outcome in ['manual-command', 'manual-observation']:
     if outcome == 'manual-command':
         assert capture().strip() == '/compact'
@@ -466,4 +487,111 @@ async fn pi_manual_command_has_one_completed_history_row() {
 #[tokio::test]
 async fn pi_unsolicited_manual_compaction_keeps_start_and_completion_observations() {
     manual_compaction_history("manual-observation").await;
+}
+
+/// Audit actual durable roster writes in this fixture's throwaway database.
+/// No production counter is added: the one-agent fixture's normal persistence
+/// path hits this trigger even when an UPDATE merely rewrites unchanged JSON.
+fn audit_agent_writes(agent: &CompactingAgent) -> rusqlite::Connection {
+    let database = agent
+        .state
+        .lock()
+        .unwrap()
+        .state_root
+        .join("store/build.db");
+    let connection = rusqlite::Connection::open(database).unwrap();
+    connection.busy_timeout(Duration::from_secs(5)).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE pi_agent_write_audit (writes INTEGER NOT NULL);
+         CREATE TRIGGER pi_agent_write_capture AFTER UPDATE OF record ON agents
+         BEGIN INSERT INTO pi_agent_write_audit VALUES (1); END;",
+        )
+        .unwrap();
+    connection
+}
+
+fn agent_write_count(connection: &rusqlite::Connection) -> u64 {
+    connection
+        .query_row("SELECT COUNT(*) FROM pi_agent_write_audit", [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+}
+
+fn invalidation_count(agent: &CompactingAgent) -> u64 {
+    agent.state.lock().unwrap().changes.board_revision()
+}
+
+async fn failure_reached(agent: &CompactingAgent, session: &dyn AgentSession) {
+    wait_for(Duration::from_secs(5), || {
+        (agent.agent().last_context_tokens.is_none()
+            && session.compaction_policy().unwrap().enforcement
+                == CompactionEnforcement::Unsupported)
+            .then_some(())
+    })
+    .await
+    .expect("the extension failure clears persisted context through the real status pump");
+}
+
+#[tokio::test]
+async fn pi_failed_generation_invalidates_persistence_once_across_repeated_health_polls() {
+    let directory = tempfile::tempdir().unwrap();
+    let agent = CompactingAgent::without_background_services().with_context(199_999);
+    let (session, _) = launch(&agent, directory.path(), "health-failure");
+    reached(directory.path(), "failure-context").await;
+    wait_for(Duration::from_secs(5), || {
+        (agent.agent().last_context_tokens == Some(200_000)
+            && session.0.status() == AgentStatus::Waiting)
+            .then_some(())
+    })
+    .await
+    .expect("the initial generation's trustworthy context is persisted");
+    // Keep legacy terminal fallback idle as well, so its working clock cannot
+    // add unrelated roster writes during the persistence observation window.
+    session
+        .0
+        .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+    let pid = session.0.terminal().unwrap().pid();
+    let connection = audit_agent_writes(&agent);
+    let before = invalidation_count(&agent);
+    release(directory.path(), "fail");
+    reached(directory.path(), "failed").await;
+    failure_reached(&agent, session.0.as_ref()).await;
+    assert_eq!(agent_write_count(&connection), 1);
+    assert_eq!(invalidation_count(&agent), before + 1);
+
+    // The follower's stale budget is ten seconds, and its real health loop
+    // polls every 25 ms. This spans another fifty polls after that budget.
+    tokio::time::sleep(Duration::from_millis(11_250)).await;
+    assert_eq!(
+        agent_write_count(&connection),
+        1,
+        "failed health polls must not keep rewriting the agent row"
+    );
+    assert_eq!(
+        invalidation_count(&agent),
+        before + 1,
+        "failed health polls must not repeatedly invalidate clients"
+    );
+    assert_eq!(session.0.terminal().unwrap().pid(), pid);
+    assert!(!session.0.exited_within(Duration::ZERO));
+
+    release(directory.path(), "recover");
+    reached(directory.path(), "recovered").await;
+    wait_for(Duration::from_secs(5), || {
+        (agent.agent().last_context_tokens == Some(200_000)
+            && session.0.compaction_policy().unwrap().enforcement
+                == CompactionEnforcement::BetweenTurn)
+            .then_some(())
+    })
+    .await
+    .expect("a fresh generation recovers and persists fresh context");
+    let recovered_writes = agent_write_count(&connection);
+    let recovered_invalidations = invalidation_count(&agent);
+    release(directory.path(), "fail-again");
+    reached(directory.path(), "failed-again").await;
+    failure_reached(&agent, session.0.as_ref()).await;
+    assert_eq!(agent_write_count(&connection), recovered_writes + 1);
+    assert_eq!(invalidation_count(&agent), recovered_invalidations + 1);
 }

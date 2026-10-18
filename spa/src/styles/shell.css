@@ -1035,6 +1035,15 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .rail-bubble-tooltip-status { margin-top:6px; color:var(--accent); font-variant-numeric:tabular-nums; }
 .rail-bubble-tooltip-detail, .rail-bubble-tooltip-news { margin-top:3px; color:var(--dim);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+@media (max-height:240px) {
+  .rail-bubble-tooltip { padding:6px 9px; }
+  .rail-bubble-tooltip-work { -webkit-line-clamp:2; line-clamp:2; }
+  .rail-bubble-tooltip-status { margin-top:3px; }
+  .rail-bubble-tooltip-detail, .rail-bubble-tooltip-news { margin-top:2px; }
+}
+@media (max-height:200px) {
+  .rail-bubble-tooltip-work { -webkit-line-clamp:1; line-clamp:1; }
+}
 /* The chat overview's control (#117): right after the `+`, and a bare icon —
    no face, no ring, no slab — because it is not a conversation. The box stays
    bubble-sized so the strip's rhythm and the press target do not shrink. It is

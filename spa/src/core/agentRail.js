@@ -2280,19 +2280,7 @@ function mountRailOnContext(host, context, swap) {
     const who = panel.querySelector(".rail-who");
     who.querySelector(".rail-who-name").textContent = title.name;
     who.title = title.text || title.name;
-    let work = who.querySelector(".rail-who-work");
-    if (!title.text) {
-      disposeTitleMotion();
-      work?.remove();
-    } else {
-      if (!work) {
-        work = document.createElement("span");
-        work.className = "rail-who-work";
-        who.append(work);
-        mountTitleMotion(panel);
-      }
-      titleMotion?.show({ text: title.text, title: title.text, starting: title.starting });
-    }
+    titleMotion?.show({ text: title.text, title: title.text, starting: title.starting });
     panel.dataset.title = fingerprint;
   };
 

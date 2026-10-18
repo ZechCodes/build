@@ -2705,6 +2705,69 @@ mod tests {
     }
 
     #[test]
+    fn native_compaction_activity_preserves_the_active_turn_and_operation() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), &format!(
+            "read turn; printf '%s\\n' '{}'; read hold",
+            json!({"id":4,"result":{"turn":{"id":TURN_ID}}}),
+        ));
+        let (session, mut activity) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        let mut turn = Turn::new("continue the task");
+        turn.operation_id = Some("op-work".to_string());
+        session.send_turn(&turn).unwrap();
+        wait_until("started the work turn", || {
+            session.core.state.lock().unwrap().diagnostic_phase() == "working"
+        });
+        let notification = ServerNotification::decode("item/completed", json!({
+            "threadId":THREAD_ID,"turnId":TURN_ID,
+            "item":{"id":"native-compact","type":"contextCompaction","status":"completed"}
+        })).unwrap();
+        session.core.dispatch_notification(notification).unwrap();
+        assert!(matches!(activity.try_recv().unwrap().activity,
+            crate::harness::AgentActivity::Compaction { completed: true }));
+        assert!(activity.try_recv().is_err());
+        assert_eq!(session.status(), AgentStatus::Working);
+        assert_eq!(session.core.state.lock().unwrap().failure_operation_id().as_deref(), Some("op-work"));
+        assert!(session.turn_receipts().unwrap().borrow().seen_operation_ids.is_empty());
+        assert_eq!(session.core.pending_receipts.lock().unwrap().turns.len(), 1);
+        session.end();
+    }
+
+    #[test]
+    fn unsuccessful_native_compactions_preserve_context_and_pending_receipts() {
+        let root = tempfile::tempdir().unwrap();
+        let script = opened_thread_script(root.path(), "read hold");
+        let (session, _activity) = scripted_session(root.path(), &script);
+        wait_until("opened its thread", || session.session_id().is_some());
+        let context = TurnContext { context_tokens: 90_000, cache_read_tokens: 45_000 };
+        publish_context(&session.core.status, context);
+        let mut compact = Turn::new("/compact");
+        compact.operation_id = Some("op-compact".to_string());
+        session.core.pending_receipts.lock().unwrap().register(&compact);
+        let receipts = session.turn_receipts().unwrap();
+        for outcome in [
+            json!({"status":"failed"}),
+            json!({"status":"cancelled"}),
+            json!({"status":"canceled"}),
+            json!({"status":"interrupted"}),
+            json!({"error":"compaction failed"}),
+            json!({"status":"completed","error":{"message":"compaction failed"}}),
+        ] {
+            let mut item = json!({"id":"compaction-1","type":"contextCompaction"});
+            item.as_object_mut().unwrap().extend(outcome.as_object().unwrap().clone());
+            let notification = ServerNotification::decode("item/completed", json!({
+                "threadId":THREAD_ID,"turnId":TURN_ID,"item":item
+            })).unwrap();
+            let ServerNotification::Item(item) = notification else { panic!("expected item") };
+            session.core.observe_compaction(&item);
+            assert_eq!(session.core.status.borrow().context, Some(context), "{outcome}");
+            assert!(receipts.borrow().seen_operation_ids.is_empty(), "{outcome}");
+        }
+        session.end();
+    }
+
+    #[test]
     fn token_usage_and_a_compaction_publish_the_threads_context() {
         let root = tempfile::tempdir().unwrap();
         let compact_capture = root.path().join("compact-frame.json");

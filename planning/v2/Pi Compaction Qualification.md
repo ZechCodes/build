@@ -35,15 +35,20 @@ From the repository root, with a known Node executable and the pinned Pi path:
 ```bash
 qual_home=$(mktemp -d /tmp/build-659-qual-home.XXXXXX)
 env -i HOME="$qual_home" PATH=/usr/bin:/bin nice -n 10 \
-  /home/zech/.local/share/mise/installs/node/26.8.1/bin/node \
+  /home/zech/.local/share/mise/installs/node/22.23.3/bin/node \
   scripts/qualify-pi-compaction.mjs \
   /home/zech/.local/share/mise/installs/pi/0.86.1/pi/pi \
-  > /tmp/build-659-pi-qualification.json
+  > /tmp/build-659-pi-qualification-node22.json \
+  2> /tmp/build-659-pi-qualification-node22.err
 qual_exit=$?
 printf 'exit=%s\n' "$qual_exit"
 ```
 
-The six-scenario gate exited **0**. Its JSON output contains only synthetic
+The final six-scenario rerun on pinned Node **22.23.3** exited **0**, using the
+current Build extension including its manual-settlement generation guard and
+unsafe-number policy validation. Initial development runs used Node 26.8.1;
+the final command above is the recorded supported-Node qualification. Its
+JSON output contains only synthetic
 event metadata, context counts and generated session identifiers. The driver
 is opt-in and is not executed by ordinary repository tests. It requires the
 explicit pinned executable; it does not discover, download or install Pi.

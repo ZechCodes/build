@@ -755,18 +755,27 @@ screen scraping or shared configuration. `PtySession` consumes these through
 `pi_telemetry.rs`; it retains the terminal escape hatch but stops inferring
 idle from silence while telemetry is healthy. The session exposes explicit
 unsupported states until the extension confirms its exact Pi session identity,
-and after extension or telemetry failure. Failure never kills Pi: Build stops
-threshold compaction, clears stale context, and uses the ordinary terminal
-lifecycle for continued work. The extension stops cancelling native threshold
-attempts and closes only its owned MCP child when that transport fails. The
-shared policy decorator preserves the explicit unsupported reason.
+and after extension or telemetry failure. Those failures never kill Pi or
+close a healthy MCP client: Build stops threshold compaction, clears stale
+context once per generation, and uses the ordinary terminal lifecycle for
+continued work. Build tools remain available. Actual MCP transport failure is
+different: the extension reaps its owned MCP child and signals Pi with SIGTERM
+so the normal tab-exit path can respawn it with working tools, including when
+no compaction policy exists. The shared policy decorator preserves the explicit
+unsupported reason for compaction observation failure.
 
 A startup record and one-second heartbeats are independent of MCP initialization.
 The initial observation budget is 90 seconds, covering both 30-second MCP
 requests; a ten-second heartbeat gap withdraws support even if a broken sink
-cannot report its own failure. The extension also expires its own lease after
-eight seconds without a successful write, so a stalled event loop cannot
-resume threshold cancellation after the bridge has withdrawn support.
+cannot report its own failure. Threshold cancellation requires a fresh receipt
+from the Rust observer in a private, atomically replaced `.ack` sidecar. The
+receipt binds owner, thread, launch, generation and the last sequence actually
+read; only a ready observer can authorize cancellation. Reading the same receipt
+again cannot renew its eight-second monotonic lease, which is bounded by the
+original record emission time rather than the receipt arrival time. Thus successful writes
+without a working reader cannot suppress native threshold compaction. Failure
+withdraws the receipt once; a valid new generation can requalify. The extension
+also rejects a stalled local writer, without closing healthy Build tools.
 Each extension reload advances a launch-scoped
 generation and restarts its sequence at one. The bridge requires a new starting
 record, resets context and readiness, and rejects records from retired

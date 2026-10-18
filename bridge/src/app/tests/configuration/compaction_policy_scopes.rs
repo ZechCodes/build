@@ -1,5 +1,5 @@
 use super::*;
-use crate::compaction::{CompactionScope, CompactionSource};
+use crate::compaction::{CompactionCleanup, CompactionScope, CompactionSource};
 
 fn scope_app(root: &Path) -> AppState {
     let state_root = root.join("state");
@@ -794,4 +794,163 @@ fn compaction_policy_adopted_checkout_uses_workspace_scope_and_prunes_it_when_go
         std::fs::read(repo.join(".git/config")).unwrap(),
         original_git_config
     );
+}
+
+#[test]
+fn compaction_policy_workspace_delete_preflight_preserves_files_when_config_is_unwritable() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = scope_app(dir.path());
+    let (project, source) = plain_project(&mut state, dir.path(), "source");
+    let workspace = named_workspace(&mut state, &project, "working");
+    let scope = CompactionScope::Workspace(workspace.clone());
+    state
+        .patch_compaction_thresholds(scope.clone(), &all_cells(Some(123_456)))
+        .unwrap();
+    let root = state.workspaces.get(&workspace).unwrap().root.clone();
+    let manifest = root.join(crate::workspace::MANIFEST_FILE);
+    let manifest_before = std::fs::read(&manifest).unwrap();
+    let disk_before = config_on_disk(dir.path());
+    for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+        state.config_persist_failure = Some(failure);
+        let refused = state.handle(req("workspace.delete", json!({"workspace_id": workspace})));
+        assert_eq!(refused["ok"], false, "{refused}");
+        assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before);
+        assert_eq!(
+            std::fs::read_to_string(source.join("notes.txt")).unwrap(),
+            "source stays unchanged\n"
+        );
+        assert_eq!(
+            state.compaction_thresholds(&scope).unwrap().stored_value(),
+            all_cells(Some(123_456))
+        );
+        assert_eq!(config_on_disk(dir.path()), disk_before);
+        assert!(state.deferred_work.is_none());
+    }
+    state.config_persist_failure = None;
+    call(
+        &mut state,
+        "workspace.delete",
+        json!({"workspace_id": workspace}),
+    );
+    assert!(!root.exists());
+    assert!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"]
+            .get(&workspace)
+            .is_none()
+    );
+}
+
+#[test]
+fn compaction_policy_late_cleanup_failure_keeps_successful_delete_and_can_be_retried() {
+    for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = scope_app(dir.path());
+        let (project, source) = plain_project(&mut state, dir.path(), "source");
+        let workspace = named_workspace(&mut state, &project, "working");
+        state
+            .patch_compaction_thresholds(
+                CompactionScope::Workspace(workspace.clone()),
+                &all_cells(Some(123_456)),
+            )
+            .unwrap();
+        let root = state.workspaces.get(&workspace).unwrap().root.clone();
+        state
+            .workspace_delete(&json!({"workspace_id": workspace}))
+            .unwrap();
+        let Some(DeferredWork::Git(git)) = state.deferred_work.take() else {
+            panic!("workspace deletion must prepare a filesystem job");
+        };
+        let result = git.call.run(&git.params);
+        assert!(result.is_ok(), "{result:?}");
+        assert!(!root.exists());
+        state.config_persist_failure = Some(failure);
+        let deleted = state
+            .apply_git(&git, result)
+            .expect("policy cleanup cannot undo a completed deletion");
+        assert_eq!(deleted, json!({"workspace_id": workspace, "deleted": true}));
+        assert!(state.workspaces.get(&workspace).is_none());
+        assert_eq!(
+            config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+            all_cells(Some(123_456))
+        );
+        assert_eq!(
+            std::fs::read_to_string(source.join("notes.txt")).unwrap(),
+            "source stays unchanged\n"
+        );
+        match state.cleanup_deleted_workspace_compaction(std::slice::from_ref(&workspace)) {
+            CompactionCleanup::Retained { error } => assert!(!error.is_empty()),
+            CompactionCleanup::Complete => {
+                panic!("unwritable policy cleanup must report retained settings")
+            }
+        }
+        state.config_persist_failure = None;
+        assert!(matches!(
+            state.cleanup_deleted_workspace_compaction(std::slice::from_ref(&workspace)),
+            CompactionCleanup::Complete
+        ));
+        assert!(
+            config_on_disk(dir.path())["workspace_compaction_thresholds"]
+                .get(&workspace)
+                .is_none()
+        );
+    }
+}
+
+/// Checkout IDs derive from paths. If cleanup cannot persist, reusing that
+/// path also reuses its retained policy; tombstone handling belongs to #654.
+#[test]
+fn compaction_policy_failed_adopted_cleanup_retains_policy_for_same_path_readoption() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = init_repo_named(dir.path(), "source");
+    let checkout = dir.path().join("external");
+    git_in(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "external",
+            checkout.to_str().unwrap(),
+        ],
+    );
+    let mut state = scope_app(dir.path());
+    let project = state.add_project(repo.clone(), "main".into());
+    let workspace = crate::worktree::external_worktree_id(&checkout);
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert!(state
+        .workspace_conversation_owner(state.workspaces.get(&workspace).unwrap())
+        .is_none());
+    state
+        .patch_compaction_thresholds(
+            CompactionScope::Workspace(workspace.clone()),
+            &cell(AgentProvider::Pi, Some(234_567)),
+        )
+        .unwrap();
+    std::fs::remove_dir_all(&checkout).unwrap();
+    state.config_persist_failure = Some(ConfigPersistStep::Write);
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert!(state.workspaces.get(&workspace).is_none());
+    assert_eq!(
+        config_on_disk(dir.path())["workspace_compaction_thresholds"][&workspace],
+        cell(AgentProvider::Pi, Some(234_567))
+    );
+    git_in(&repo, &["worktree", "prune"]);
+    git_in(
+        &repo,
+        &["worktree", "add", checkout.to_str().unwrap(), "external"],
+    );
+    state.config_persist_failure = None;
+    call(&mut state, "workspace.list", json!({"project_id": project}));
+    assert_eq!(crate::worktree::external_worktree_id(&checkout), workspace);
+    assert_eq!(
+        state
+            .compaction_thresholds(&CompactionScope::Workspace(workspace.clone()))
+            .unwrap()
+            .get(AgentProvider::Pi),
+        Some(234_567)
+    );
+    assert!(state
+        .workspace_conversation_owner(state.workspaces.get(&workspace).unwrap())
+        .is_none());
+    assert!(!checkout.join(crate::workspace::MANIFEST_FILE).exists());
 }

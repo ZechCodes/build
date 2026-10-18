@@ -3,6 +3,7 @@ use crate::app::runtime::spawning::{
     open_agent_session, publish_agent_tab, OpenedSession, ReservedSpawn,
 };
 use crate::compaction::{CompactionScope, CompactionSource};
+use crate::harness::TurnContext;
 
 const OWNER: &str = "run-policy-lifecycle";
 const CONTEXT_AT: &str = "2026-10-18T12:00:00Z";

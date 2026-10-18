@@ -458,3 +458,18 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
     assert_eq!(report["report"]["status"], "blocked");
     assert_eq!(report["report"]["message_id"], "message-real-mcp");
 }
+
+#[test]
+fn compaction_hook_and_default_export_contracts_run_with_the_bridge_suite() {
+    let home = tempfile::tempdir().unwrap();
+    let output = Command::new("node")
+        .arg("--test")
+        .arg(fixture("pi-compaction-extension.test.mjs"))
+        .arg(fixture("pi-default-extension.test.mjs"))
+        .env_clear()
+        .env("HOME", home.path())
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+}

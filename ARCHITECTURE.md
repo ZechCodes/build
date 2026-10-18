@@ -2266,11 +2266,15 @@ assignment, including a retained picker caller after a capability downgrade.
 The pin's custom tooltip retains its “Project agent” purpose alongside the
 cached agent identity. Conversation bubbles show the agent's name, current
 work, turn runtime or idle state, harness and model from cached roster data.
-The tooltip opens on hover or keyboard focus, stays inside the viewport and
-does not add a touch-only interaction. It replaces the bubble's native title.
+The tooltip opens on hover or visible keyboard focus, closes on click or
+pointer leave, stays inside the viewport and does not add a touch-only
+interaction. It replaces the bubble's native title. An unnamed pinned agent
+uses the same “Project agent” label in its tooltip and conversation header.
 The conversation header keeps the agent name above the smaller current-work
 line; only the work line erases and types when its topic changes. A missing
-topic leaves just the name, and typing does not change the header's layout.
+topic retains the existing shimmering “Starting” text, regardless of lifecycle
+state. Clearing a topic erases back into Starting. The work line stays mounted
+and keeps its space throughout, so the name and adjacent controls do not shift.
 An explicit cached
 `projectWorkers: false` shows “Update this device to use project agents.”
 on a project host; unknown support and workspace pins keep

@@ -170,3 +170,25 @@ test("manual success settles after native cleanup only if idle and no pending co
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(pending.records.some((r) => r.type === "settled"), false);
 });
+
+test("deferred manual cleanup cannot settle a newer run or duplicate its settlement", async () => {
+  const f = fixture();
+  await f.emit("session_compact", { reason: "manual" });
+  await f.emit("agent_start");
+  f.idle(true);
+  await f.emit("agent_settled");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(f.records.filter((r) => r.type === "settled").length, 1);
+});
+
+test("manual failure and abort release idle boundary without success", async () => {
+  for (const aborted of [true, false]) {
+    const f = fixture();
+    f.idle(true);
+    await f.emit("session_compact_failed", { reason: "manual", aborted, errorMessage: "private error body" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(f.records.at(-1).type, "settled");
+    assert.equal(f.records.some((r) => r.completed === true), false);
+    assert.equal(f.records.find((r) => r.type === "compaction").failed, true);
+  }
+});

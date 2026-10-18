@@ -609,6 +609,52 @@ as mutations. Older bridge binaries can discard the new maps when rewriting
 config; downgrade preservation is unsupported. These map APIs are internal;
 there are no per-harness wire setters or events yet.
 
+#### Compaction session policy
+
+`bridge/src/harness/compaction.rs` owns the wrapper contract. Each admission
+captures the resolver's positive token threshold and source, the queued
+launch's frozen model/provider choice, the canonical thread generation and a
+unique launch identity. `AgentLaunch`, `SpawnOptions`, `PreparedAgentLaunch`
+and `SessionOpenRequest` carry that same value through off-lock preparation.
+A settings edit during preparation stays pending for the next opening.
+
+The common harness opener decorates the opened session with `PolicySession`.
+Its active `AppliedCompactionPolicy` is unavailable until the carrier confirms
+a successful start or resume: ADK's init announcement and Codex app-server's
+accepted thread response are the protocol boundaries, independent of whether
+an early send already reports Working. Failed launches install no active
+policy. Publication checks the captured thread generation before touching
+newer runtime settings, tokens or waiting clients. Capture routers have no
+canonical conversation and retain their existing launch behavior without a
+policy snapshot.
+
+The snapshot records requested tokens/source, any qualified native trigger,
+enforcement (`native`, `between_turn`, `unsupported`), the launch choice and
+identity, and version/evidence/reason. Capability descriptors include native
+threshold and between-turn command support plus the native unit/range when
+qualified. All native adapters remain unqualified in this step. Claude and
+Codex carriers use the existing between-turn command path; Pi reports
+unsupported fallback until its command adapter lands. Unknown or failed
+version readings never infer native support. Unsafe legacy values remain
+exact and unsupported; zero is refused. These are internal observations;
+wire fields/events and native argv/env translation are later steps.
+
+Automatic delivery asks the live session policy whether its last trustworthy
+context reading reached the captured threshold (`>=`). Only an idle warm
+session is eligible; unknown readings and legacy sessions without a snapshot
+never schedule threshold compaction. Native mode never schedules a duplicate
+Build threshold command. The existing ledger, manual/agent-requested commands,
+queue and consumption receipts retain their behavior. A successful send spends
+its reading once. Failed/cancelled/interrupted native compaction items are not
+successes and cannot clear context or consume a pending receipt; a successful
+native compaction is activity within the ongoing turn.
+
+Actual reopening, including recovery after process loss or bridge restart,
+resolves again and clears the previous process's context reading. Warm turns,
+idle demotion (which retains the live session) and browser attach keep their
+snapshot. Native model changes require requalification at an opening; fallback
+uses its unchanged token threshold across a supported in-place model change.
+
 ### Workspaces and worktrees
 
 `WorktreeManager` (`bridge/src/worktree/manager.rs`) is the entry point for

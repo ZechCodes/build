@@ -622,8 +622,8 @@ The common harness opener decorates the opened session with `PolicySession`.
 Its active `AppliedCompactionPolicy` is unavailable until the carrier confirms
 a successful start or resume: ADK's init announcement with no startup refusal
 and Codex app-server's accepted thread response are the protocol boundaries,
-independent of whether an early send already reports Working. Failed launches install no active
-policy. Publication checks the captured thread generation before touching
+independent of whether an early send already reports Working. Failed launches
+install no active policy. Publication checks the captured thread generation before touching
 newer runtime settings, tokens or waiting clients. Capture routers have no
 canonical conversation and retain their existing launch behavior without a
 policy snapshot.
@@ -656,8 +656,9 @@ That reading remains available for the context gauge, threshold decisions and
 compaction before/after reporting. A resume probe that establishes the recorded
 session is gone clears its reading when the replacement starts fresh;
 conversation reset also clears it. Warm turns, idle demotion (which retains
-the live session) and browser attach keep their policy snapshot. Native model changes require requalification at an opening; fallback
-uses its unchanged token threshold across a supported in-place model change.
+the live session) and browser attach keep their policy snapshot. Native model
+changes require requalification at an opening; fallback uses its unchanged
+token threshold across a supported in-place model change.
 
 ### Workspaces and worktrees
 

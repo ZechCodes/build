@@ -1409,10 +1409,7 @@ fn a_choice_this_child_cannot_take_in_place_is_refused_and_says_so() {
 #[test]
 fn a_child_running_another_model_than_asked_is_ended_with_that_as_its_epitaph() {
     let choice = choosing(Some("claude-opus-5"), None);
-    let session = Arc::new(open_with(
-        &stream_json_harness(&[RESULT]),
-        &choice,
-    ));
+    let session = Arc::new(open_with(&stream_json_harness(&[RESULT]), &choice));
     let policy = crate::harness::harness_for(choice.provider)
         .prepare_compaction_policy(
             crate::compaction::ResolvedCompactionPolicy {

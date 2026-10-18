@@ -67,6 +67,7 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
   let sequence = 0;
   const emit = (event) => write({ owner, thread_id, launch_id, sequence: ++sequence, ...event });
   let failed = false;
+  let workGeneration = 0;
   const unsupported = (reason) => {
     if (failed) return;
     failed = true;
@@ -83,6 +84,7 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
     try { return handler(event, ctx); } catch { unsupported("telemetry_failed"); }
   });
   const working = (_event, ctx) => {
+    workGeneration += 1;
     emit({ type: "working" });
     context(ctx);
   };
@@ -92,10 +94,11 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
   };
   const manualSettled = (event, ctx) => {
     if (event.reason !== "manual") return;
+    const generation = workGeneration;
     // Native manual compact clears its compacting flag AFTER session_compact.
     // A macrotask observes that cleanup, without authorizing pending work.
     setTimeout(() => {
-      if (failed) return;
+      if (failed || generation !== workGeneration) return;
       try { settle(ctx); } catch { unsupported("telemetry_failed"); }
     }, 0);
   };
@@ -116,6 +119,7 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
   on("session_before_compact", (event, ctx) => {
     context(ctx);
     if (enabled && event.reason === "threshold") return { cancel: true };
+    workGeneration += 1;
     emit({ type: "working" });
     emit({ type: "compaction", completed: false, reason: compactionReason(event) });
   });

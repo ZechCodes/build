@@ -7,6 +7,16 @@ const CLOSE_GRACE_MS = 500;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
 
+/** @typedef {{tokens: number|null, contextWindow: number}|undefined} PiContextUsage */
+/** @typedef {{getContextUsage: () => PiContextUsage, isIdle: () => boolean, hasPendingMessages: () => boolean, sessionManager: {getSessionId: () => string}}} PiCompactionContext */
+/** @typedef {"session_start"|"agent_start"|"tool_execution_start"|"tool_execution_end"|"turn_end"|"agent_end"|"agent_settled"|"session_before_compact"|"session_compact"|"session_compact_failed"} PiCompactionHook */
+/** @typedef {{reason?: string}} PiCompactionEvent */
+/** @typedef {(event: PiCompactionEvent, ctx: PiCompactionContext) => void|{cancel: boolean}} PiCompactionHandler */
+/** @typedef {{on: (name: PiCompactionHook, handler: PiCompactionHandler) => void}} PiCompactionApi */
+/** @typedef {{tokens: number|null, tokens_decimal?: string, enabled: boolean, owner: string, thread_id: string, launch_id: string, log?: string}} PiCompactionPolicy */
+/** @typedef {{type: "ready"|"working"|"settled"}|{type: "context", tokens: number|null, window: number|null}|{type: "compaction", completed: boolean, reason: string, failed?: boolean}|{type: "unsupported", reason: string}} PiTelemetryEvent */
+/** @typedef {PiTelemetryEvent & {owner: string, thread_id: string, launch_id: string, sequence: number}} PiTelemetryRecord */
+
 function compactionConfiguration(owner) {
   const encoded = process.env.BUILD_PI_COMPACTION_POLICY;
   const log = process.env.BUILD_PI_TELEMETRY_LOG;
@@ -60,11 +70,18 @@ function compactionReason(event) {
 
 // Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Only
 // agent_settled can authorize the wrapper's next between-turn delivery.
+/**
+ * @param {PiCompactionApi} pi
+ * @param {PiCompactionPolicy} configuration
+ * @param {(record: PiTelemetryRecord) => void} [sink]
+ * @param {(reason: string) => void} [onFailure]
+ */
 export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}) {
   validateCompactionPolicy(configuration);
   const { owner, thread_id, launch_id, enabled } = configuration;
   const write = sink ?? telemetryFileSink(configuration.log);
   let sequence = 0;
+  /** @param {PiTelemetryEvent} event */
   const emit = (event) => write({ owner, thread_id, launch_id, sequence: ++sequence, ...event });
   let failed = false;
   let workGeneration = 0;
@@ -75,23 +92,28 @@ export function registerCompactionTelemetry(pi, configuration, sink, onFailure =
     try { emit({ type: "unsupported", reason: label }); } catch { /* The terminal failure remains authoritative. */ }
     onFailure(label);
   };
+  /** @param {PiCompactionContext} ctx */
   const context = (ctx) => {
     const usage = ctx.getContextUsage();
     emit({ type: "context", tokens: contextValue(usage?.tokens), window: contextValue(usage?.contextWindow) });
   };
+  /** @param {PiCompactionHook} name @param {PiCompactionHandler} handler */
   const on = (name, handler) => pi.on(name, (event, ctx) => {
     if (failed) return undefined;
     try { return handler(event, ctx); } catch { unsupported("telemetry_failed"); }
   });
+  /** @type {PiCompactionHandler} */
   const working = (_event, ctx) => {
     workGeneration += 1;
     emit({ type: "working" });
     context(ctx);
   };
+  /** @param {PiCompactionContext} ctx */
   const settle = (ctx) => {
     context(ctx);
     if (ctx.isIdle() && !ctx.hasPendingMessages()) emit({ type: "settled" });
   };
+  /** @type {PiCompactionHandler} */
   const manualSettled = (event, ctx) => {
     if (event.reason !== "manual") return;
     const generation = workGeneration;

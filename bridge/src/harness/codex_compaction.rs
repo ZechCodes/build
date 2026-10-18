@@ -75,13 +75,14 @@ pub(super) fn prepare<H: Harness + ?Sized>(
     let reason = if policy.capabilities.qualification.version.as_deref() != Some(VERSION) {
         "codex_version_unqualified"
     } else {
-        "codex_model_window_and_fallback_buffer_unqualified"
+        "codex_model_window_buffer_and_profile_unqualified"
     };
     // No launch currently captures a qualified effective native ceiling. The
-    // provider's mutable model catalog and config precedence cannot be inferred
-    // from a version/model string. Re-evaluate on each opening, never warm reuse.
+    // provider's mutable model catalog, selected-profile absence and config
+    // precedence cannot be inferred from a version/model string. Re-evaluate on
+    // each opening, never warm reuse. Do not read user config to guess support.
     policy.capabilities.qualification.evidence =
-        "Codex total-token translation revision 1 (0.160.0); isolated compaction observed; effective model window and fallback buffer unqualified".into();
+        "Codex total-token translation revision 1 (0.160.0); isolated compaction observed; effective model window, fallback buffer and selected-profile precedence unqualified".into();
     policy.capabilities.unsupported_reason = Some(reason.into());
     policy.reason = Some(reason.into());
     Ok(policy)

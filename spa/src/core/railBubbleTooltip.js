@@ -5,6 +5,8 @@ const GAP = 8;
 let nextTooltipId = 0;
 
 const clamp = (value, lower, upper) => Math.max(lower, Math.min(value, Math.max(lower, upper)));
+const focusVisible = (button) => !!button && button.isConnected
+  && document.activeElement === button && button.matches(":focus-visible");
 
 /** The tip lives on the page, outside the rail's scrolling strip. */
 export function positionRailBubbleTooltip(tip, button) {
@@ -50,6 +52,8 @@ export function createRailBubbleTooltip() {
   let tip = null;
   let interval = null;
   let disposed = false;
+  let hovered = null;
+  let focused = null;
   const tooltipId = `rail-bubble-tooltip-${++nextTooltipId}`;
   const onEscape = (event) => { if (event.key === "Escape") hide(); };
   const hide = () => {
@@ -65,13 +69,18 @@ export function createRailBubbleTooltip() {
   };
   const refresh = () => {
     if (!active) return;
-    if (!active.isConnected || !active.dataset.railTooltip) { hide(); return; }
+    if (!active.isConnected || !active.dataset.railTooltip) {
+      const old = active;
+      hide();
+      restore(old);
+      return;
+    }
     paintTooltip(tip, JSON.parse(active.dataset.railTooltip));
     active.setAttribute("aria-describedby", tooltipId);
     positionRailBubbleTooltip(tip, active);
   };
   const show = (button) => {
-    if (disposed || !button.dataset.railTooltip) return;
+    if (disposed || !button.isConnected || !button.dataset.railTooltip) return;
     if (active !== button) hide();
     active = button;
     if (!tip) {
@@ -88,24 +97,51 @@ export function createRailBubbleTooltip() {
     button.setAttribute("aria-describedby", tip.id);
     refresh();
   };
+  const restore = (leaving) => {
+    if (focused && !focused.isConnected) focused = null;
+    if (hovered && !hovered.isConnected) hovered = null;
+    if (focused !== leaving && focusVisible(focused)) show(focused);
+    else if (hovered && hovered !== leaving) show(hovered);
+  };
   return {
     wire(button) {
       let touchOrigin = false;
       button.addEventListener("pointerdown", (event) => {
         touchOrigin = event.pointerType === "touch";
-        if (touchOrigin && active === button) hide();
+        if (touchOrigin) {
+          if (hovered === button) hovered = null;
+          if (active === button) hide();
+        }
       });
-      button.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") show(button); });
-      button.addEventListener("pointerleave", () => { if (document.activeElement !== button) hide(); });
-      button.addEventListener("focus", () => { if (!touchOrigin) show(button); });
+      button.addEventListener("pointerenter", (event) => {
+        if (event.pointerType === "touch") return;
+        hovered = button;
+        show(button);
+      });
+      button.addEventListener("pointerleave", () => {
+        if (hovered === button) hovered = null;
+        if (active === button) { hide(); restore(button); }
+      });
+      button.addEventListener("click", () => {
+        if (hovered === button) hovered = null;
+        if (focused === button) focused = null;
+        if (active === button) hide();
+      });
+      button.addEventListener("focus", () => {
+        if (!touchOrigin && button.matches(":focus-visible")) { focused = button; show(button); }
+      });
       button.addEventListener("keydown", (event) => {
         if (event.key === "Escape") return;
         touchOrigin = false;
-        if (document.activeElement === button) show(button);
+        if (document.activeElement === button && button.matches(":focus-visible")) { focused = button; show(button); }
       });
-      button.addEventListener("blur", () => { touchOrigin = false; hide(); });
+      button.addEventListener("blur", () => {
+        touchOrigin = false;
+        if (focused === button) focused = null;
+        if (active === button && hovered !== button) { hide(); restore(button); }
+      });
     },
     refresh,
-    dispose() { disposed = true; hide(); },
+    dispose() { disposed = true; hovered = null; focused = null; hide(); },
   };
 }

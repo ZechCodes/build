@@ -75,7 +75,7 @@ describe("conversation bubble tooltip", () => {
     document.body.append(button);
     const controller = createRailBubbleTooltip();
     controller.wire(button);
-    button.focus();
+    button.dispatchEvent(new Event("pointerenter"));
     const describedBy = button.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
     button.removeAttribute("aria-describedby");
@@ -88,6 +88,76 @@ describe("conversation bubble tooltip", () => {
     controller.dispose();
   });
 
+  it("shows on keyboard focus but dismisses on pointer leave and click", () => {
+    const button = document.createElement("button");
+    button.dataset.railTooltip = JSON.stringify(bubble().tooltip);
+    document.body.append(button);
+    let focusVisible = false;
+    vi.spyOn(button, "matches").mockImplementation((selector) => selector === ":focus-visible" && focusVisible);
+    const controller = createRailBubbleTooltip();
+    controller.wire(button);
+    button.focus();
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeNull();
+    button.dispatchEvent(new Event("pointerenter"));
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeTruthy();
+    button.click();
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeNull();
+    button.dispatchEvent(new Event("pointerenter"));
+    button.dispatchEvent(new Event("pointerleave"));
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeNull();
+    focusVisible = true;
+    button.dispatchEvent(new FocusEvent("focus"));
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeTruthy();
+    controller.dispose();
+  });
+
+  it("keeps hover and focus ownership on the right bubble", () => {
+    const first = document.createElement("button");
+    const second = document.createElement("button");
+    first.dataset.railTooltip = JSON.stringify({ ...bubble().tooltip, name: "First agent" });
+    second.dataset.railTooltip = JSON.stringify({ ...bubble().tooltip, name: "Second agent" });
+    document.body.append(first, second);
+    vi.spyOn(first, "matches").mockReturnValue(true);
+    vi.spyOn(second, "matches").mockReturnValue(true);
+    const controller = createRailBubbleTooltip();
+    controller.wire(first);
+    controller.wire(second);
+
+    first.dispatchEvent(new Event("pointerenter"));
+    first.focus();
+    first.blur();
+    expect(document.querySelector(".rail-bubble-tooltip-name")?.textContent).toBe("First agent");
+    expect(first.hasAttribute("aria-describedby")).toBe(true);
+
+    first.focus();
+    second.focus();
+    expect(document.querySelector(".rail-bubble-tooltip-name")?.textContent).toBe("Second agent");
+    first.dispatchEvent(new Event("pointerleave"));
+    expect(document.querySelector(".rail-bubble-tooltip-name")?.textContent).toBe("Second agent");
+    expect(second.hasAttribute("aria-describedby")).toBe(true);
+    controller.dispose();
+  });
+
+  it("restores the keyboard-focused bubble after another bubble's hover ends", () => {
+    const hovered = document.createElement("button");
+    const focused = document.createElement("button");
+    hovered.dataset.railTooltip = JSON.stringify({ ...bubble().tooltip, name: "Hovered agent" });
+    focused.dataset.railTooltip = JSON.stringify({ ...bubble().tooltip, name: "Focused agent" });
+    document.body.append(hovered, focused);
+    vi.spyOn(focused, "matches").mockReturnValue(true);
+    const controller = createRailBubbleTooltip();
+    controller.wire(hovered);
+    controller.wire(focused);
+    focused.focus();
+    expect(document.querySelector(".rail-bubble-tooltip-name")?.textContent).toBe("Focused agent");
+    hovered.dispatchEvent(new Event("pointerenter"));
+    expect(document.querySelector(".rail-bubble-tooltip-name")?.textContent).toBe("Hovered agent");
+    hovered.dispatchEvent(new Event("pointerleave"));
+    expect(document.querySelector(".rail-bubble-tooltip-name")?.textContent).toBe("Focused agent");
+    expect(focused.hasAttribute("aria-describedby")).toBe(true);
+    controller.dispose();
+  });
+
   it("does not show a tooltip from a touch-origin focus and gives concurrent rails unique IDs", () => {
     const button = document.createElement("button");
     button.dataset.railTooltip = JSON.stringify(bubble().tooltip);
@@ -97,6 +167,8 @@ describe("conversation bubble tooltip", () => {
     const second = createRailBubbleTooltip();
     first.wire(button);
     second.wire(other);
+    vi.spyOn(button, "matches").mockReturnValue(true);
+    vi.spyOn(other, "matches").mockReturnValue(true);
     button.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "touch" }));
     button.focus();
     expect(document.querySelector(".rail-bubble-tooltip")).toBeNull();

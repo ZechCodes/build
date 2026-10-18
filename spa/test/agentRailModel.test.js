@@ -10,12 +10,13 @@ import {
   agentSessionAnswered,
   agentSessionIsLive,
   agentHeading,
+  railHeaderName,
   agentPattern,
-  agentWho,
   agentModelsSignature,
   bubbleTip,
   canRemoveAgent,
   providerLabel,
+  projectPin,
   railBubbles,
   railEntity,
   railStatusShape,
@@ -88,6 +89,12 @@ describe("what the conversation is called", () => {
     expect(agentHeading(agent({ topic: "   " }))).toEqual({ text: "Starting", starting: true });
     expect(agentHeading(null)).toEqual({ text: "Starting", starting: true });
   });
+
+  it("keeps Starting as the work line through a cleared topic", () => {
+    for (const state of [AGENT_STARTING, "live", "idle"]) {
+      expect(agentHeading(agent({ state, topic: "" }))).toEqual({ text: "Starting", starting: true });
+    }
+  });
 });
 
 describe("who an agent is", () => {
@@ -99,14 +106,11 @@ describe("who an agent is", () => {
     expect(providerLabel("claude")).toBe("Claude Code TUI");
   });
 
-  // The ordinal is the agent's place on the strip — it picks the face the
-  // bubble wears, and it is never read out: "Codex TUI 2" named a harness and a
-  // number where the human had already named the work.
-  it("names an agent by its topic, and by its harness alone until it has one", () => {
-    expect(agentWho(agent({ ordinal: 2, provider: "codex", topic: "Fix login redirect" })))
-      .toBe("Fix login redirect");
-    expect(agentWho(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex TUI");
-    expect(agentWho(agent({ ordinal: 3, topic: "   " }))).toBe("Claude Code");
+  it("keeps a stable header name and calls an unnamed project pin Project agent", () => {
+    expect(railHeaderName(agent({ ordinal: 2, topic: "Fix login redirect" }))).toBe("Agent 2");
+    expect(railHeaderName(agent({ ordinal: 2 }), true)).toBe("Project agent");
+    expect(railHeaderName(agent({ name: "Coordinator" }), true)).toBe("Coordinator");
+    expect(railHeaderName(agent({ ordinal: 3, project_role: "worker" }))).toBe("Agent 3");
   });
 
   it("says what an unnamed provider is, rather than nothing", () => {
@@ -131,6 +135,18 @@ describe("who an agent is", () => {
     expect(project.tooltip).toMatchObject({ name: "Coordinator", work: "Review changes",
       provider: "Codex", status: "working", purpose: "Project agent", workingTime: { seconds: 85 } });
     expect(project.tooltip.model).toContain("Astra");
+    const unnamedPin = railBubbles({ kind: "project", projectName: "Build", pinnedAgentId: "pin",
+      agents: [worker, { ...pin, name: "" }], selectedId: "pin" })[0];
+    expect(unnamedPin.tooltip.name).toBe("Project agent");
+    const unknownModel = railBubbles({ agents: [agent({ provider: "pi", model: "gemini-2.5-pro" })],
+      selectedId: "ag-1" })[0];
+    expect(unknownModel.tooltip.model).toContain("gemini-2.5-pro");
+    const legacyWorkers = railBubbles({ kind: "project", projectName: "Build",
+      agents: [agent({ id: "pin", ordinal: 1, project_role: "coordinator" }),
+        agent({ id: "worker", ordinal: 2, project_role: "worker" })], selectedId: "worker" });
+    expect(legacyWorkers[0].tooltip.name).toBe("Project agent");
+    expect(legacyWorkers[1].tooltip.name).toBe("Agent 2");
+    expect(projectPin([worker], "missing-pin")).toBeUndefined();
     const noOwnStamp = railBubbles({ agents: [agent({ working: true, working_time: null,
       agents_since: "2026-10-17T12:00:00Z" })], selectedId: "ag-1" })[0];
     expect(noOwnStamp.tooltip.workingTime).toBeNull();

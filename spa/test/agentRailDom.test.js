@@ -1202,7 +1202,7 @@ describe("the rail over a machine that is asked nothing", () => {
         { entity_id: "run-one", agent_id: "ag-one" }));
       railHost().querySelector('[data-bubble="project"]').click();
       await vi.waitFor(() => {
-        expect(headWho(panel())).toBe("Project agent");
+        expect(panel().querySelector(".rail-who-name").textContent).toBe("Project agent");
         expect(panel()?.querySelector(".rail-watch")?.title).toBe("Watching");
       });
 
@@ -1450,7 +1450,7 @@ describe("the bubble strip", () => {
     await vi.waitFor(() => expect(railHost().querySelector('[data-bubble="project"][data-agent="run-project"]')).toBeTruthy());
 
     railHost().querySelector('[data-bubble="project"]').click();
-    await vi.waitFor(() => expect(headWho(panel())).toBe("Project agent"));
+    await vi.waitFor(() => expect(panel().querySelector(".rail-who-name").textContent).toBe("Project agent"));
     railHost().querySelector(".rail-overview-toggle").click();
     await vi.waitFor(() => expect(railHost().querySelectorAll(".rail-overview-section")).toHaveLength(2));
     const sections = [...railHost().querySelectorAll(".rail-overview-section")];
@@ -2092,7 +2092,7 @@ describe("the strip's watched agents (#105)", () => {
     await vi.waitFor(() => {
       expect(stripIds()).toEqual(["ag-1", "ag-3"]);
       expect(bubbleOf("ag-3").classList.contains("active")).toBe(true);
-      expect(headWho(panel())).toBe("Third agent");
+      expect(panel().querySelector(".rail-who-name").textContent).toBe("Third agent");
     });
   });
 
@@ -2202,14 +2202,14 @@ describe("the strip's watched agents (#105)", () => {
       await vi.waitFor(() => expect(overviewRow("ag-project")).toBeTruthy());
       overviewRow("ag-project").click();
       await vi.waitFor(() => {
-        expect(headWho(panel())).toBe("Project agent");
+        expect(panel().querySelector(".rail-who-name").textContent).toBe("Project agent");
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
       expect(bubbleTooltip(projectBubble()).purpose).toBe("Project agent");
 
       bubbleOf("ag-one").click();
-      await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
+      await vi.waitFor(() => expect(panel().querySelector(".rail-who-name").textContent).toBe("Workspace agent"));
       await vi.waitFor(() => expect(projectBubble()).toBeNull());
     });
 
@@ -2222,14 +2222,14 @@ describe("the strip's watched agents (#105)", () => {
       await vi.waitFor(() => expect(overviewRow("ag-helper")).toBeTruthy());
       overviewRow("ag-helper").click();
       await vi.waitFor(() => {
-        expect(headWho(panel())).toBe("Project helper");
+        expect(panel().querySelector(".rail-who-name").textContent).toBe("Project helper");
         expect(projectBubble()?.classList.contains("active")).toBe(true);
         expect(projectBubble().classList.contains("rail-bubble-unwatched")).toBe(true);
       });
       expect(bubbleTooltip(projectBubble()).purpose).toBe("Project agent");
 
       bubbleOf("ag-one").click();
-      await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
+      await vi.waitFor(() => expect(panel().querySelector(".rail-who-name").textContent).toBe("Workspace agent"));
       await vi.waitFor(() => expect(projectBubble()?.classList.contains("rail-bubble-unwatched")).toBe(false));
     });
 
@@ -2258,7 +2258,7 @@ describe("the strip's watched agents (#105)", () => {
         ?.value?.agents?.[0]?.watched).toBe(true));
 
       bubbleOf("ag-one").click();
-      await vi.waitFor(() => expect(headWho(panel())).toBe("Workspace agent"));
+      await vi.waitFor(() => expect(panel().querySelector(".rail-who-name").textContent).toBe("Workspace agent"));
       expect(projectBubble()).toBeTruthy();
     });
   });
@@ -2722,6 +2722,14 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
+  it("closes its bubble tooltip when the machine's conversation repository retires", async () => {
+    await mount();
+    bubbles()[0].dispatchEvent(new Event("pointerenter"));
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeTruthy();
+    chatRepository.dispose();
+    expect(document.querySelector(".rail-bubble-tooltip")).toBeNull();
+  });
+
   it("animates only the work line while preserving the name, header and focused controls", async () => {
     payload = branchRow({ agents: [agent({ topic: "" })] });
     await mount();
@@ -2730,14 +2738,16 @@ describe("the conversation panel", () => {
     const standingName = standingTitle.querySelector(".rail-who-name");
     const standingPin = standingHead.querySelector(".pinbtn");
     expect(standingName.textContent).toBe("Agent 1");
-    expect(standingTitle.querySelector(".rail-who-work")).toBeNull();
+    const work = standingTitle.querySelector(".rail-who-work");
+    expect(work.textContent).toBe("Starting");
+    expect(work.classList.contains("rail-who-starting")).toBe(true);
     standingPin.focus();
 
     // An unchanged poll neither rebuilds the head nor starts title motion.
     vi.advanceTimersByTime(1600);
     await flush();
     expect(panel().querySelector(".rail-head")).toBe(standingHead);
-    expect(standingTitle.querySelector(".rail-who-work")).toBeNull();
+    expect(standingTitle.querySelector(".rail-who-work")).toBe(work);
     expect(document.activeElement).toBe(standingPin);
 
     payload = branchRow({ agents: [agent({ topic: "Unify prompt delivery" })] });
@@ -2747,14 +2757,25 @@ describe("the conversation panel", () => {
     expect(panel().querySelector(".pinbtn")).toBe(standingPin);
     expect(panel().querySelector(".rail-who")).toBe(standingTitle);
     expect(document.activeElement).toBe(standingPin);
-    const work = standingTitle.querySelector(".rail-who-work");
-    expect(work.dataset.titleMotion).toBe("typing");
+    expect(standingTitle.querySelector(".rail-who-work")).toBe(work);
+    expect(work.dataset.titleMotion).toBe("erasing");
     expect(standingName.textContent).toBe("Agent 1");
     expect(standingName.dataset.titleMotion).toBeUndefined();
 
     await finishTitleMotion(work);
     expect(work.textContent).toBe("Unify prompt delivery");
+    expect(work.classList.contains("rail-who-starting")).toBe(false);
     expect(standingName.textContent).toBe("Agent 1");
+
+    payload = branchRow({ agents: [agent({ topic: "" })] });
+    await pushRow();
+    expect(work.dataset.titleMotion).toBe("erasing");
+    expect(standingTitle.querySelector(".rail-who-work")).toBe(work);
+    expect(standingName.textContent).toBe("Agent 1");
+    await finishTitleMotion(work);
+    expect(work.textContent).toBe("Starting");
+    expect(work.classList.contains("rail-who-starting")).toBe(true);
+    expect(standingTitle.querySelector(".rail-who-work")).toBe(work);
   });
 
   it("carries the agent, the one way down to its screen, and a box to write in", async () => {
@@ -7250,6 +7271,15 @@ describe("cached project worker rail", () => {
   it("names the project pin exactly Project agent", async () => {
     await mountWorkers();
     expect(bubbleTooltip(railHost().querySelector('[data-agent="project-pin"]')).purpose).toBe("Project agent");
+  });
+
+  it("keeps Project agent as the unnamed pin's header and tooltip identity", async () => {
+    await mountWorkers();
+    await writeRoster([worker(), { ...pin(), name: null }]);
+    const pinBubble = railHost().querySelector('[data-agent="project-pin"]');
+    await vi.waitFor(() => expect(bubbleTooltip(pinBubble).name).toBe("Project agent"));
+    pinBubble.click();
+    await vi.waitFor(() => expect(panel().querySelector(".rail-who-name").textContent).toBe("Project agent"));
   });
 
   it("adds the cached old-bridge notice without replacing the pin conversation", async () => {

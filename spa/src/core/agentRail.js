@@ -43,6 +43,7 @@ import {
   AGENT_STARTING,
   QUIET_SHAPE,
   agentCanInterrupt,
+  agentHeading,
   agentHasTerminal,
   agentIsUp,
   agentIsWatched,
@@ -52,8 +53,10 @@ import {
   agentModelsSignature,
   canRemoveAgent,
   providerLabel,
+  projectPin,
   railBubbles,
   railEntity,
+  railHeaderName,
   railStatusShape,
   railWorkStatus,
   rememberedAgentId,
@@ -62,7 +65,6 @@ import {
   startFailuresLearned,
 } from "./agentRailModel.js";
 import { agentModelBadgeHtml, agentModelsFromFeed } from "./agentModelBadge.js";
-import { agentDisplayName } from "./agentName.js";
 import { railStatusLeadClass, railStatusLeadHtml, railWhoHtml } from "./agentRailRender.js";
 import { createGitStatusTicker } from "./gitStatusTicker.js";
 import { watchTimeUpdates } from "./timeUpdates.js";
@@ -2289,7 +2291,7 @@ function mountRailOnContext(host, context, swap) {
         who.append(work);
         mountTitleMotion(panel);
       }
-      titleMotion?.show({ text: title.text, title: title.text });
+      titleMotion?.show({ text: title.text, title: title.text, starting: title.starting });
     }
     panel.dataset.title = fingerprint;
   };
@@ -2344,11 +2346,12 @@ function mountRailOnContext(host, context, swap) {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     const agent = agentInFocus();
-    // The name remains visible while the topic beneath it changes. A blank
-    // topic leaves one line; the harness icon still identifies the runner.
-    const who = agent ? agentDisplayName(agent) : entity.kind === "task" ? "Task agent" : "New agent";
+    // The name remains visible while the topic beneath it changes. Until the
+    // agent names its work, the work line says Starting and shimmers.
+    const isProjectPin = entity.kind === "project" && agent?.id === projectPin(visibleAgents(), entity.pinnedAgentId)?.id;
+    const who = agent ? railHeaderName(agent, isProjectPin) : entity.kind === "task" ? "Task agent" : "New agent";
     const removalWho = agent ? agentRemovalWho(agent) : who;
-    const heading = { text: typeof agent?.topic === "string" ? agent.topic.trim() : "" };
+    const heading = agent ? agentHeading(agent) : null;
     const provider = agent?.provider || "";
     const settled = settledAgentInFocus();
     const removable = canRemoveAgent({
@@ -2371,7 +2374,7 @@ function mountRailOnContext(host, context, swap) {
     // The id still distinguishes two unnamed agents on one harness.
     const chip = projectChip();
     const wantedHead = JSON.stringify([agent ? agent.id : "", provider, removable, hasTerminal, chipMark(chip), agentModelBadgeHtml(agent)]);
-    const wantedTitle = JSON.stringify([who, heading.text]);
+    const wantedTitle = JSON.stringify([who, heading?.text, heading?.starting]);
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = wantedPanelBody();
@@ -2438,7 +2441,7 @@ function mountRailOnContext(host, context, swap) {
       }
       panel.dataset.conversation = wantedConversation;
     }
-    syncPanelTitle(panel, wantedTitle, { name: who, text: heading.text });
+    syncPanelTitle(panel, wantedTitle, { name: who, text: heading?.text, starting: heading?.starting });
     // The remove button names the agent by its topic too, and a topic arriving
     // is not a structural change: it re-reads on the title's beat rather than
     // waiting for a head the rail has no reason to rebuild.
@@ -4316,6 +4319,7 @@ function mountRailOnContext(host, context, swap) {
   const stopListening = () => {
     if (!listening) return;
     listening = false;
+    bubbleTooltip.dispose();
     unregisterSyncThread();
     overview.close();
     chatLanding.dispose();

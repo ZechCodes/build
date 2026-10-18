@@ -2,11 +2,11 @@ import { QUIET_SHAPE, STARTING_SHAPE, WORKING_SHAPE } from "./agentRailModel.js"
 import { esc } from "./text.js";
 
 /** The agent's stable name and its current work occupy separate lines. The
- * work element is absent when no topic exists, and is the only animated node. */
+ * work element is the only animated node. */
 export function railWhoHtml(who, heading) {
   const work = heading?.text || "";
   return `<span class="rail-who" title="${esc(work || who)}"><span class="rail-who-name">${esc(who)}</span>${work
-    ? `<span class="rail-who-work">${esc(work)}</span>` : ""}</span>`;
+    ? `<span class="rail-who-work${heading.starting ? " rail-who-starting" : ""}">${esc(work)}</span>` : ""}</span>`;
 }
 
 const LEAD_CLASS = {

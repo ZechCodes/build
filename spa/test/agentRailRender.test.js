@@ -33,4 +33,11 @@ describe("the conversation heading", () => {
     expect(host.querySelector(".rail-who-name").textContent).toBe("Agent 2");
     expect(host.querySelector(".rail-who-work")).toBeNull();
   });
+
+  it("shimmers Starting only on the work line", () => {
+    const host = document.createElement("div");
+    host.innerHTML = railWhoHtml("Project agent", { text: "Starting", starting: true });
+    expect(host.querySelector(".rail-who-work").classList.contains("rail-who-starting")).toBe(true);
+    expect(host.querySelector(".rail-who-name").classList.contains("rail-who-starting")).toBe(false);
+  });
 });

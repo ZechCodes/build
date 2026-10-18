@@ -469,7 +469,7 @@ describe("the strip on a page standing on the project", () => {
       expect(badge?.hidden).toBe(false);
       expect(bubble?.hasAttribute("title")).toBe(false);
       expect(JSON.parse(bubble?.dataset.railTooltip || "{}")).toMatchObject({
-        purpose: "Project agent", name: "Agent 1", work: "Plan the release",
+        purpose: "Project agent", name: "Project agent", work: "Plan the release",
       });
     }, { timeout: 30_000, interval: 5 });
     const bubble = document.querySelector('#agent-rail .rail-strip [data-agent="pa-1"]');

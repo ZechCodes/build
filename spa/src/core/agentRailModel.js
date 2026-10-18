@@ -48,20 +48,10 @@ export function agentHeading(agent) {
   return topic ? { text: topic, starting: false } : { text: STARTING_HEADING, starting: true };
 }
 
-/** Which agent this is, in words — its NAME when it has one, else the topic it
- *  named its work with, and its harness while it has neither.
- *
- *  The name comes first because it is the one of the three that is about the
- *  agent rather than about what the agent is doing: a topic moves with the
- *  work and a harness is shared by every agent running on it.
- *
- *  The ordinal stays deliberately absent. It is the agent's place on the
- *  strip, and the strip already says it in the face the bubble wears. */
-export function agentWho(agent) {
-  const name = agentName(agent);
-  if (name) return name;
-  const heading = agentHeading(agent);
-  return heading.starting ? providerLabel(agent && agent.provider) : heading.text;
+/** The stable identity above the moving work line. The unnamed project pin
+ * keeps the same label its bubble and accessible name have always used. */
+export function railHeaderName(agent, projectPin = false) {
+  return projectPin && !agentName(agent) ? "Project agent" : agentDisplayName(agent);
 }
 
 /** Whether this agent has a terminal to drop into.
@@ -214,15 +204,17 @@ const descendantTooltipStatus = (agent) => {
   return `${agent.agents_running} ${noun} working`;
 };
 
+const tooltipModel = (agent, badge) => String(badge?.title || agent?.model_label || agent?.active_model || agent?.model || "").trim();
+
 const agentBubbleTooltip = (agent, purpose = "") => {
   const details = agent || {};
   const badge = agentModelBadge(agent);
   return {
-    name: agentDisplayName(agent),
+    name: railHeaderName(agent, purpose === "Project agent"),
     work: String(details.topic || details.title || "").trim(),
     purpose,
     provider: providerLabel(details.provider),
-    model: badge ? badge.title : "",
+    model: tooltipModel(details, badge),
     status: agentTooltipStatus(details),
     workingTime: details.working ? details.working_time || null : null,
     watch: agentIsWatched(agent) ? "" : "Not watching",
@@ -273,8 +265,9 @@ export const projectInitial = (name) => (String(name || "").trim().slice(0, 1) |
  * none open, while they watch none of them; `projectAgentOnTheStrip` says when
  * the strip carries it at all.
  */
-const projectPin = (agents, pinnedAgentId) => agents.find((agent) => agent.id === pinnedAgentId)
-  || agents.find((agent) => agent.project_role === "coordinator") || agents[0];
+export const projectPin = (agents, pinnedAgentId) => pinnedAgentId
+  ? agents.find((agent) => agent.id === pinnedAgentId)
+  : agents.find((agent) => agent.project_role === "coordinator") || (agents.length === 1 ? agents[0] : undefined);
 
 const projectBubbleTooltip = (pin, unwatched) => {
   const facts = pin ? agentBubbleTooltip(pin, "Project agent") : {
@@ -402,6 +395,7 @@ const UNWATCHED_TIP = "Not watching";
 /** The bubbles of the work item the rail is standing on, and nothing else. */
 function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAdd, projectName, alwaysVisible = false, pinnedAgentId = null }) {
   const onProjectPage = kind === "project";
+  const projectPinId = projectPin(agents, pinnedAgentId)?.id;
   const face = (pattern) => (onProjectPage ? projectFace(projectName) : { label: "", pattern });
   if (!agents.length) {
     const description = onProjectPage ? "Project agent" : chatCapable
@@ -428,7 +422,7 @@ function ownBubbles({ agents, selectedId, selectedKind, kind, chatCapable, canAd
     // pattern, which says as much as a letter cut from an ordinal would.
     initials: agentInitials(agent),
     title: onProjectPage ? "Project agent" : agentIsWatched(agent) ? bubbleTip(agent) : `${bubbleTip(agent)} · ${UNWATCHED_TIP}`,
-    tooltip: agentBubbleTooltip(agent, onProjectPage && (!pinnedAgentId || agent.id === pinnedAgentId) ? "Project agent" : ""),
+    tooltip: agentBubbleTooltip(agent, onProjectPage && agent.id === projectPinId ? "Project agent" : ""),
     unwatched: !agentIsWatched(agent),
     active: selectedKind === "agent" && agent.id === selectedId,
     unread: conversationUnreadCount(agent),

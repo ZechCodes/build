@@ -954,3 +954,65 @@ fn compaction_policy_failed_adopted_cleanup_retains_policy_for_same_path_readopt
         .is_none());
     assert!(!checkout.join(crate::workspace::MANIFEST_FILE).exists());
 }
+
+#[test]
+fn compaction_policy_historical_terminal_owner_does_not_inherit_reused_workspace_policy() {
+    for parked in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = scope_app(dir.path());
+        let (project, source) = plain_project(&mut state, dir.path(), "source");
+        let workspace = named_workspace(&mut state, &project, "working");
+        let historical = workspace_owner(&mut state, &workspace);
+        let historical_agent = policy_agent(&mut state, &historical, AgentProvider::Pi);
+        let mut finished = state.runs.remove(&historical).unwrap();
+        finished.run.state = crate::run::RunState::Archived;
+        state
+            .finish_run_mutation(historical.clone(), finished)
+            .unwrap();
+        let current = workspace_owner(&mut state, &workspace);
+        let current_agent = policy_agent(&mut state, &current, AgentProvider::Pi);
+        assert_ne!(historical, current);
+        state
+            .patch_compaction_thresholds(
+                CompactionScope::Project(project.clone()),
+                &cell(AgentProvider::Pi, Some(123_456)),
+            )
+            .unwrap();
+        state
+            .patch_compaction_thresholds(
+                CompactionScope::Workspace(workspace.clone()),
+                &cell(AgentProvider::Pi, Some(234_567)),
+            )
+            .unwrap();
+        drop(state);
+        if parked {
+            std::fs::rename(source, dir.path().join("source-away")).unwrap();
+        }
+        let restarted = scope_app(dir.path());
+        assert_eq!(restarted.project(&project).is_none(), parked);
+        assert_eq!(
+            restarted.projects.project_id_of(&historical).is_none(),
+            parked
+        );
+        assert!(restarted.runs[&historical].run.state.is_terminal());
+        assert_eq!(
+            restarted.runs[&historical].worktree.path,
+            restarted.runs[&current].worktree.path
+        );
+        assert_eq!(restarted.workspace_of_conversation(&historical), None);
+        assert_policy(
+            &restarted,
+            &historical,
+            &historical_agent,
+            123_456,
+            CompactionSource::Project(project),
+        );
+        assert_policy(
+            &restarted,
+            &current,
+            &current_agent,
+            234_567,
+            CompactionSource::Workspace(workspace),
+        );
+    }
+}

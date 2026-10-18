@@ -1116,7 +1116,7 @@ mod tests {
     /// harnesses `harness_for` constructs, and the sessions they open. Kept
     /// honest against its owner by
     /// [`the_ban_list_covers_every_harness_harness_for_constructs`].
-    const CONCRETE_HARNESS_TYPES: [&str; 7] = [
+    const CONCRETE_HARNESS_TYPES: [&str; 8] = [
         "AdkHarness",
         "AdkSession",
         "ClaudeHarness",
@@ -1124,6 +1124,7 @@ mod tests {
         "CodexAppServerHarness",
         "CodexAppServerSession",
         "PiHarness",
+        "PolicySession",
     ];
 
     /// The harness types `harness_for` names, read out of the function itself so

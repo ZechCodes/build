@@ -329,3 +329,109 @@ print(json.dumps({'tail':tail, 'effective':settings, 'launch':launch}))
         assert_stale_configs_unchanged(root.path());
     }
 }
+
+// These fixtures exercise preparation only. The pinned config/read probe rejects
+// legacy profile selection; no fake native merge may establish its precedence.
+#[test]
+fn compaction_selected_profile_files_keep_both_public_carriers_on_fallback() {
+    for legacy in [true, false] {
+        for harness in [
+            &crate::harness::codex::CodexHarness as &dyn Harness,
+            &super::CodexAppServerHarness as &dyn Harness,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let files = profile_configs(legacy);
+        assert!(files.iter().any(|(_, bytes)| bytes.contains("profile-sentinel")), "missing selected-profile fixture");
+            for (path, bytes) in &files {
+                let path = root.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, bytes).unwrap();
+            }
+            let mut choice = selected_choice();
+            choice.provider = harness.provider();
+            let policy = harness
+                .prepare_compaction_policy(
+                    ResolvedCompactionPolicy {
+                        tokens: 150_000,
+                        source: CompactionSource::Device,
+                    },
+                    choice.clone(),
+                    Some("0.160.0".into()),
+                    CompactionLaunchIdentity::new("profile-thread"),
+                )
+                .unwrap();
+            assert_eq!(policy.enforcement, CompactionEnforcement::BetweenTurn);
+            assert_eq!(policy.requested.tokens, 150_000);
+            assert_eq!(
+                policy.reason.as_deref(),
+                Some("codex_model_window_buffer_and_profile_unqualified")
+            );
+            assert!(policy.native_settings.is_none());
+            assert!(policy.translated_trigger.is_none());
+            assert!(!policy.capabilities.native_threshold);
+            assert_eq!(
+                crate::harness::codex_compaction::thread_config(&choice, Some(&policy)).unwrap(),
+                None
+            );
+            let mut options = spawn_options();
+            options.cwd = root.path().to_path_buf();
+            let mut original = harness.spec(&choice, &options, &harness_context()).unwrap();
+            options.compaction_policy = Some(policy);
+            let mut prepared = harness.spec(&choice, &options, &harness_context()).unwrap();
+            if !legacy {
+                original.args.extend(["--profile".into(), "x".into()]);
+                prepared.args.extend(["--profile".into(), "x".into()]);
+            }
+            assert_eq!(prepared.args, original.args);
+            assert_eq!(prepared.env, original.env);
+            for (path, bytes) in files {
+                assert_eq!(
+                    std::fs::read(root.path().join(path)).unwrap(),
+                    bytes.as_bytes()
+                );
+            }
+        }
+    }
+}
+
+fn profile_configs(legacy: bool) -> Vec<(&'static str, String)> {
+    let _ = legacy;
+    stale_configs()
+        .into_iter()
+        .map(|(path, bytes)| (path, bytes.to_owned()))
+        .collect()
+}
+
+#[test]
+fn compaction_config_read_fixture_refuses_legacy_profile_precedence_claims() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    write_stale_configs(root.path());
+    std::fs::write(
+        root.path().join("fake-home/.codex/config.toml"),
+        "profile=\"x\"\n[profiles.x]\nmodel_auto_compact_token_limit=31\n",
+    )
+    .unwrap();
+    let mut child = std::process::Command::new("python3")
+        .args(["-c", CHILD])
+        .current_dir(root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"{\"id\":1,\"method\":\"config/read\"}\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let response: Value = serde_json::from_slice(&output.stdout)
+        .expect("config/read must refuse unsupported legacy profiles explicitly");
+    assert_eq!(response["error"]["code"], -32603);
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("legacy profile"));
+}

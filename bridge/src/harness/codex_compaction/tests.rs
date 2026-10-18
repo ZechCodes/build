@@ -152,33 +152,39 @@ fn codex_compaction_translation_rejects_unknown_or_unrepresentable_inputs() {
 
 #[test]
 fn codex_compaction_unqualified_models_and_versions_keep_positive_fallback() {
-    for version in [None, Some("0.159.0"), Some("0.160.0"), Some("0.161.0")] {
-        for model in [
-            None,
-            Some("gpt-6.1-sol"),
-            Some("gpt-5.4"),
-            Some("unknown-model"),
-        ] {
-            let mut selection = choice();
-            selection.model = model.map(str::to_owned);
-            let p = prepare(
-                &CodexHarness,
-                ResolvedCompactionPolicy {
-                    tokens: 200_000,
-                    source: CompactionSource::Conversation("agent".into()),
-                },
-                selection.clone(),
-                version.map(str::to_owned),
-                CompactionLaunchIdentity::new("thread"),
-            )
-            .unwrap();
-            assert_eq!(p.choice, selection);
-            assert_eq!(p.enforcement, CompactionEnforcement::BetweenTurn);
-            assert!(!p.capabilities.native_threshold);
-            assert!(p.native_settings.is_none());
-            assert!(p.translated_trigger.is_none());
-            assert!(p.reason.as_deref().unwrap().starts_with("codex_"));
-            assert_eq!(p.reason, p.capabilities.unsupported_reason);
+    for harness in [
+        &CodexHarness as &dyn Harness,
+        &crate::harness::codex_app_server::CodexAppServerHarness as &dyn Harness,
+    ] {
+        for version in [None, Some("0.159.0"), Some("0.160.0"), Some("0.161.0")] {
+            for model in [
+                None,
+                Some("gpt-6.1-sol"),
+                Some("gpt-5.4"),
+                Some("unknown-model"),
+            ] {
+                let mut selection = choice();
+                selection.model = model.map(str::to_owned);
+                selection.provider = harness.provider();
+                let p = harness
+                    .prepare_compaction_policy(
+                        ResolvedCompactionPolicy {
+                            tokens: 200_000,
+                            source: CompactionSource::Conversation("agent".into()),
+                        },
+                        selection.clone(),
+                        version.map(str::to_owned),
+                        CompactionLaunchIdentity::new("thread"),
+                    )
+                    .unwrap();
+                assert_eq!(p.choice, selection);
+                assert_eq!(p.enforcement, CompactionEnforcement::BetweenTurn);
+                assert!(!p.capabilities.native_threshold);
+                assert!(p.native_settings.is_none());
+                assert!(p.translated_trigger.is_none());
+                assert!(p.reason.as_deref().unwrap().starts_with("codex_"));
+                assert_eq!(p.reason, p.capabilities.unsupported_reason);
+            }
         }
     }
 }

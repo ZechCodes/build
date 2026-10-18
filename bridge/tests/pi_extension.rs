@@ -27,6 +27,15 @@ fn fake_child(temp: &tempfile::TempDir) -> PathBuf {
     child
 }
 
+fn isolated_node(temp: &tempfile::TempDir) -> Command {
+    let mut command = Command::new("node");
+    command
+        .env_clear()
+        .env("HOME", temp.path())
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    command
+}
+
 fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let extension = extension_copy(&temp);
@@ -34,13 +43,13 @@ fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf
     let log = temp.path().join("mcp.log");
     let pid = temp.path().join("mcp.pid");
     let session_started = temp.path().join("session.started");
-    let output = Command::new("node")
+    let output = isolated_node(&temp)
         .arg(fixture("pi-extension-driver.mjs"))
         .env("BUILD_PI_EXTENSION_PATH", extension)
         .env("BUILD_PI_MCP_COMMAND", child)
         .env("BUILD_PI_MCP_OWNER", "agent-01J")
-        .env("BRIDGE_MCP_SOCKET", "/tmp/build-mcp.sock")
-        .env("BRIDGE_MCP_TOKEN", "rotated-token")
+        .env("BRIDGE_MCP_SOCKET", temp.path().join("fake.sock"))
+        .env("BRIDGE_MCP_TOKEN", "fixture-dummy-token")
         .env("BUILD_PI_MCP_TIMEOUT_MS", "5000")
         .env("FAKE_MCP_MODE", mode)
         .env("FAKE_MCP_LOG", &log)
@@ -117,7 +126,7 @@ fn empty_discovered_tool_set_aborts_extension_setup_and_reaps_the_mcp_child() {
 #[test]
 #[allow(clippy::cognitive_complexity)] // ratchet: extension_discovers_tools_forwards_calls_and_converts_only_text is at 30, threshold 15 — bring it under, then remove
 fn extension_discovers_tools_forwards_calls_and_converts_only_text() {
-    let (output, _temp, log, _pid) = run_driver("normal", "happy");
+    let (output, temp, log, _pid) = run_driver("normal", "happy");
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["tools"][0]["name"], "done");
@@ -157,8 +166,11 @@ fn extension_discovers_tools_forwards_calls_and_converts_only_text() {
         requests[0]["startup"]["argv"],
         serde_json::json!(["mcp", "--task", "agent-01J"])
     );
-    assert_eq!(requests[0]["startup"]["socket"], "/tmp/build-mcp.sock");
-    assert_eq!(requests[0]["startup"]["token"], "rotated-token");
+    assert_eq!(
+        requests[0]["startup"]["socket"],
+        temp.path().join("fake.sock").to_string_lossy().as_ref()
+    );
+    assert_eq!(requests[0]["startup"]["token"], "fixture-dummy-token");
     assert_eq!(requests[1]["method"], "initialize");
     assert_eq!(requests[2]["method"], "notifications/initialized");
     assert!(requests[2].get("id").is_none());
@@ -332,13 +344,13 @@ fn request_timeout_terminates_pi() {
     let temp = tempfile::tempdir().unwrap();
     let extension = extension_copy(&temp);
     let child = fake_child(&temp);
-    let output = Command::new("node")
+    let output = isolated_node(&temp)
         .arg(fixture("pi-extension-driver.mjs"))
         .env("BUILD_PI_EXTENSION_PATH", extension)
         .env("BUILD_PI_MCP_COMMAND", child)
         .env("BUILD_PI_MCP_OWNER", "agent-timeout")
-        .env("BRIDGE_MCP_SOCKET", "/tmp/build-mcp.sock")
-        .env("BRIDGE_MCP_TOKEN", "rotated-token")
+        .env("BRIDGE_MCP_SOCKET", temp.path().join("fake.sock"))
+        .env("BRIDGE_MCP_TOKEN", "fixture-dummy-token")
         .env("BUILD_PI_MCP_TIMEOUT_MS", "30")
         .env("FAKE_MCP_MODE", "timeout")
         .env("PI_DRIVER_SCENARIO", "timeout")
@@ -359,13 +371,13 @@ fn missing_runtime_environment_aborts_before_spawning_mcp() {
         let extension = extension_copy(&temp);
         let child = fake_child(&temp);
         let pid = temp.path().join("mcp.pid");
-        let output = Command::new("node")
+        let output = isolated_node(&temp)
             .arg(fixture("pi-extension-driver.mjs"))
             .env("BUILD_PI_EXTENSION_PATH", extension)
             .env("BUILD_PI_MCP_COMMAND", child)
             .env("BUILD_PI_MCP_OWNER", "agent-01J")
-            .env("BRIDGE_MCP_SOCKET", "/tmp/build-mcp.sock")
-            .env("BRIDGE_MCP_TOKEN", "rotated-token")
+            .env("BRIDGE_MCP_SOCKET", temp.path().join("fake.sock"))
+            .env("BRIDGE_MCP_TOKEN", "fixture-dummy-token")
             .env("FAKE_MCP_PID", &pid)
             .env_remove(missing)
             .output()

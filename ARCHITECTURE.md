@@ -632,12 +632,49 @@ The snapshot records requested tokens/source, any qualified native trigger,
 enforcement (`native`, `between_turn`, `unsupported`), the launch choice and
 identity, and version/evidence/reason. Capability descriptors include native
 threshold and between-turn command support plus the native unit/range when
-qualified. All native adapters remain unqualified in this step. Claude and
-Codex carriers use the existing between-turn command path; Pi reports
-unsupported fallback until its command adapter lands. Unknown or failed
-version readings never infer native support. Unsafe legacy values remain
-exact and unsupported; zero is refused. These are internal observations;
-wire fields/events and native argv/env translation are later steps.
+qualified. Native adapters remain unqualified. Claude and Codex carriers use
+the existing between-turn command path; Pi reports unsupported fallback until
+its command adapter lands. Unknown or failed version readings never infer
+native support. Unsafe legacy values remain exact and unsupported; zero is
+refused. These are internal observations; wire fields/events are a later step.
+
+Both Claude carriers share `harness/claude_compaction.rs` (#656). Formula
+revision 1 targets the inspected 2.1.284 explicit window: reserve is the smaller
+of the effective output maximum and 20000; the trigger is window minus reserve
+minus 13000, optionally lowered by a valid percentage of usable context.
+Small thresholds use a legal 100k window and a decimal percentage whose actual
+round trip preserves the requested count. The model window clamps the usable
+window, never the requested policy. The adapter refuses unknown versions,
+unknown budgets and targets above the native trigger. A captured optional
+`NativeCompactionSettings` carries a translated window/percentage so spec
+construction cannot recompute it from later settings.
+
+Production Claude native promotion is deliberately closed: the requested
+model and observed CLI version cannot bound settings-sourced output reserves,
+managed model remapping or in-turn model fallback. Both carriers report a
+reason and use between-turn enforcement. Their specs merge only compaction
+controls into their existing hook `--settings`, including `settings.env`,
+because Claude applies that environment after inherited child environment.
+Fallback sets child-only `DISABLE_AUTO_COMPACT=1` and `DISABLE_COMPACT=0`, clears
+stale window/percentage overrides, and leaves manual `/compact` available.
+Output limits, selected model IDs (including `[1m]`), ordinary settings,
+credentials and parent environment are unchanged. Policy-free routers keep
+their original specs.
+
+Managed settings outrank flag settings. Bounded read-only inspection of local
+Linux managed files, fragments and the remote cache names observed conflicting
+keys without exposing values. Such fallback is explicitly **best effort,
+managed policy present**; unreadable, dynamic and unverified platform policy
+also reports its limit. This is a launch-time local observation, not a claim
+about subsequent remote policy refreshes. No policy helper is executed. The
+qualification record is `planning/v2/Claude Compaction Qualification.md`:
+four isolated 2.1.284 model runs observed successful resumed auto-compaction,
+but did not establish production budget/fallback invariants.
+
+ADK recognizes both PreCompact hooks and 2.1.284 `status=compacting` as one
+compaction start. Only `compact_boundary` establishes completion and changed
+context. Status and hook events do not finish the ongoing turn or consume
+queued input; failed attempts cannot report successful compaction.
 
 Automatic delivery asks the live session policy whether its last trustworthy
 context reading reached the captured threshold (`>=`). Only an idle warm

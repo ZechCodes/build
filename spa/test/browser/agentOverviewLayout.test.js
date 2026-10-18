@@ -185,7 +185,7 @@ it("keeps overview scope on the workspace page after opening the project agent",
     await page.waitForSelector('[data-bubble="agent"][data-agent="workspace-agent"]', { timeout: 5000 });
     await page.waitForSelector('[data-bubble="project"][data-agent="project-run"]', { timeout: 5000 });
     await page.locator('[data-bubble="project"]').click();
-    await page.waitForFunction(() => document.querySelector("#rail-panel .rail-who")?.title === "Project agent", null, { timeout: 5000 });
+    await page.waitForFunction(() => document.querySelector("#rail-panel .rail-who-name")?.textContent === "Project agent", null, { timeout: 5000 });
     await page.waitForSelector('[data-bubble="agent"][data-agent="workspace-agent"]', { timeout: 5000 });
     await page.locator(".rail-overview-toggle").click();
     await page.waitForSelector('[data-overview-agent="workspace-agent"]', { timeout: 5000 });

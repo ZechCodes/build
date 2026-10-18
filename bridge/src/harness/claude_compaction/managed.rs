@@ -172,15 +172,20 @@ fn read_bounded(path: &Path, budget: &mut u64) -> Result<Option<Vec<u8>>, ()> {
     if !metadata.is_file() || metadata.len() > limit {
         return Err(());
     }
+    read_with_budget(file, budget).map(Some)
+}
+
+fn read_with_budget(reader: impl Read, budget: &mut u64) -> Result<Vec<u8>, ()> {
+    let limit = MAX_FILE_BYTES.min(*budget);
     let mut bytes = Vec::new();
-    file.take(limit + 1)
+    reader.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| ())?;
     if bytes.len() as u64 > limit {
         return Err(());
     }
     *budget -= bytes.len() as u64;
-    Ok(Some(bytes))
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -198,6 +203,44 @@ mod tests {
 
     fn conflict(root: &Path) -> Option<String> {
         inspect(&root.join("system"), &root.join("config"))
+    }
+
+    struct FailingReader;
+
+    impl Read for FailingReader {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("injected read failure"))
+        }
+    }
+
+    #[test]
+    fn managed_policy_partial_read_failure_debits_consumed_bytes() {
+        let mut budget = 10;
+        let reader = std::io::Cursor::new(b"partial").chain(FailingReader);
+        assert!(read_with_budget(reader, &mut budget).is_err());
+        assert_eq!(budget, 3);
+        assert_eq!(read_with_budget(&b"{}"[..], &mut budget), Ok(b"{}".to_vec()));
+        assert_eq!(budget, 1);
+    }
+
+    #[test]
+    fn managed_policy_growth_past_file_limit_debits_the_oversize_probe() {
+        let mut budget = MAX_TOTAL_BYTES;
+        // A descriptor may grow after its metadata passed the initial limit.
+        let mut reader = std::io::repeat(b' ');
+        assert!(read_with_budget(&mut reader, &mut budget).is_err());
+        assert_eq!(budget, MAX_TOTAL_BYTES - MAX_FILE_BYTES - 1);
+    }
+
+    #[test]
+    fn managed_policy_exhausted_budget_does_not_read_more_probe_bytes() {
+        let mut budget = 3;
+        let mut reader = std::io::Cursor::new(b"longer than the budget");
+        assert!(read_with_budget(&mut reader, &mut budget).is_err());
+        assert_eq!(reader.position(), 3);
+        assert_eq!(budget, 0);
+        assert!(read_with_budget(&mut reader, &mut budget).is_err());
+        assert_eq!(reader.position(), 3);
     }
 
     #[test]

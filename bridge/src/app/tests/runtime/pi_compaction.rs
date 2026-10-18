@@ -511,7 +511,7 @@ fn audit_agent_writes(agent: &CompactingAgent) -> rusqlite::Connection {
     connection
 }
 
-fn agent_write_count(connection: &rusqlite::Connection) -> u64 {
+fn agent_write_count(connection: &rusqlite::Connection) -> i64 {
     connection
         .query_row("SELECT COUNT(*) FROM pi_agent_write_audit", [], |row| {
             row.get(0)

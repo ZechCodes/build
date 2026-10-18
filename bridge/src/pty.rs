@@ -182,7 +182,7 @@ pub struct HarnessSpec {
     pub submit_delay: Duration,
     pub known_session_id: Option<String>,
     pub compaction_sidecar: Option<PathBuf>,
-    pub pi_telemetry: Option<crate::harness::pi_telemetry::PiTelemetryConfig>,
+    pub pi_telemetry: Option<Box<crate::harness::pi_telemetry::PiTelemetryConfig>>,
     /// The Build agent this spec starts, when the harness logs anything that
     /// must name it (task #58: a usage limit in bridge.log says whose turn).
     pub agent_id: Option<String>,
@@ -451,7 +451,7 @@ impl PtySession {
             pi_telemetry: spec
                 .pi_telemetry
                 .clone()
-                .map(|config| Arc::new(crate::harness::pi_telemetry::PiTelemetry::new(config))),
+                .map(|config| Arc::new(crate::harness::pi_telemetry::PiTelemetry::new(*config))),
         };
         if let Some(telemetry) = &session.pi_telemetry {
             let child = Arc::clone(&session.child);

@@ -753,7 +753,9 @@ states until the extension confirms its exact Pi session identity, and after
 an extension failure. A failed or timed-out extension terminates and reaps
 only its owned child, rather than leaving a session waiting forever. The shared
 policy decorator preserves that runtime observation. Foreign launch identities, replayed sequences and malformed or
-missing records cannot authorize fallback.
+missing records cannot authorize fallback. Terminal EOF drains final complete
+records without publishing another idle boundary, then closes activity even
+while the ended session remains available in the terminal.
 
 Ordinary Pi work becomes idle only at `agent_settled`, after retries, tool work,
 automatic compaction and queued continuations. `agent_end` and `turn_end` only

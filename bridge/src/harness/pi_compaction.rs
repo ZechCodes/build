@@ -114,10 +114,10 @@ pub(super) fn apply(spec: HarnessSpec, options: &SpawnOptions, session_dir: &Pat
     spec = spec
         .env(POLICY_ENV, encoded.to_string())
         .env(TELEMETRY_ENV, path.to_string_lossy().into_owned());
-    spec.pi_telemetry = Some(PiTelemetryConfig {
+    spec.pi_telemetry = Some(Box::new(PiTelemetryConfig {
         path,
         owner: options.owner_id.clone(),
         policy: policy.clone(),
-    });
+    }));
     spec
 }

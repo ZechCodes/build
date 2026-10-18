@@ -205,7 +205,11 @@ fn terminal_protocol_failures_terminate_pi() {
         "duplicate_id",
     ] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
-        assert_eq!(output.status.signal(), Some(libc::SIGTERM), "{mode}: {output:?}");
+        assert_eq!(
+            output.status.signal(),
+            Some(libc::SIGTERM),
+            "{mode}: {output:?}"
+        );
     }
 }
 
@@ -276,7 +280,11 @@ fn malformed_tool_list_fields_abort_initialization() {
 fn framing_and_utf8_failures_terminate_pi() {
     for mode in ["oversized_frame", "invalid_utf8"] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
-        assert_eq!(output.status.signal(), Some(libc::SIGTERM), "{mode}: {output:?}");
+        assert_eq!(
+            output.status.signal(),
+            Some(libc::SIGTERM),
+            "{mode}: {output:?}"
+        );
     }
 }
 

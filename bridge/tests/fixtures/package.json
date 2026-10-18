@@ -1,0 +1,19 @@
+{
+  "name": "build-bridge-extension-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@12.0.2",
+  "engines": {
+    "node": ">=22.23.3 <23",
+    "npm": "12.0.2"
+  },
+  "scripts": {
+    "test:compaction": "node --test pi-compaction-extension.test.mjs pi-default-extension.test.mjs",
+    "typecheck:compaction": "node check-pi-compaction-types.mjs node_modules/typescript/bin/tsc node_modules/@types"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}

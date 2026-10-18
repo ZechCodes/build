@@ -161,3 +161,85 @@ fn pi_extension_failure_ends_and_reaps_the_owned_child() {
         CompactionEnforcement::Unsupported
     );
 }
+
+async fn finish_after_terminal_eof(
+    telemetry: &Arc<PiTelemetry>,
+) -> broadcast::Receiver<ActivityReport> {
+    let activity = telemetry.activity().unwrap();
+    let mut status = telemetry.subscribe();
+    // The child has appended its final records and the PTY reader has reached
+    // EOF before the sidecar follower's next poll. Retain the session owner.
+    let alive = Arc::new(Mutex::new(None));
+    telemetry.follow(Arc::downgrade(&alive), || {
+        panic!("a process whose terminal is already closed must not be killed")
+    });
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        status.wait_for(|snapshot| matches!(snapshot.status, AgentStatus::Ended { .. })),
+    )
+    .await
+    .expect("terminal EOF must publish Ended")
+    .unwrap();
+    activity
+}
+
+#[tokio::test]
+async fn pi_terminal_eof_drains_final_compaction_before_closing_activity() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = telemetry().config.clone();
+    config.path = directory.path().join("telemetry.jsonl");
+    let mut started = event(2, "compaction");
+    started["completed"] = json!(false);
+    started["reason"] = json!("manual");
+    let mut completed = event(3, "compaction");
+    completed["completed"] = json!(true);
+    completed["reason"] = json!("manual");
+    std::fs::write(
+        &config.path,
+        format!("{}\n{started}\n{completed}\n", event(1, "ready")),
+    )
+    .unwrap();
+    let telemetry = Arc::new(PiTelemetry::new(config));
+    let mut activity = finish_after_terminal_eof(&telemetry).await;
+    assert_eq!(
+        activity.try_recv().unwrap().activity,
+        AgentActivity::Compaction { completed: false }
+    );
+    assert_eq!(
+        activity.try_recv().unwrap().activity,
+        AgentActivity::Compaction { completed: true }
+    );
+    assert!(telemetry.confirmed());
+    assert_eq!(telemetry.snapshot().context, None);
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), activity.recv())
+            .await
+            .expect("activity must close even while its Pi session is retained"),
+        Err(broadcast::error::RecvError::Closed)
+    ));
+}
+
+#[tokio::test]
+async fn pi_terminal_eof_preserves_final_unsupported_and_closes_activity() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut config = telemetry().config.clone();
+    config.path = directory.path().join("telemetry.jsonl");
+    std::fs::write(&config.path, format!("{}\n", event(2, "unsupported"))).unwrap();
+    let telemetry = Arc::new(PiTelemetry::new(config));
+    telemetry.observe(&event(1, "ready"));
+    let mut activity = finish_after_terminal_eof(&telemetry).await;
+    assert!(
+        telemetry.failed(),
+        "the final unsupported record must survive EOF"
+    );
+    assert_eq!(
+        telemetry.policy().reason.as_deref(),
+        Some("pi_extension_unavailable")
+    );
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(2), activity.recv())
+            .await
+            .expect("failed Pi activity must close with its owner retained"),
+        Err(broadcast::error::RecvError::Closed)
+    ));
+}

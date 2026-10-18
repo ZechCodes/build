@@ -48,6 +48,9 @@ impl AgentSession for PolicySession {
     fn observed_compaction_policy(&self) -> Option<&AppliedCompactionPolicy> {
         self.inner.observed_compaction_policy()
     }
+    fn observes_compaction_start(&self) -> bool {
+        self.inner.observes_compaction_start()
+    }
     fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {
         if self.inner.observed_compaction_policy().is_some() {
             return self.inner.automatic_compaction_due(context_tokens);

@@ -247,7 +247,7 @@ pub(in crate::app) fn send_compaction(
     if !app.compaction_generation_is_current(send) {
         return false;
     }
-    if send.session.terminal().is_some() {
+    if send.session.terminal().is_some() && !send.session.observes_compaction_start() {
         app.record_agent_activity(
             &send.owner,
             &send.agent_id,

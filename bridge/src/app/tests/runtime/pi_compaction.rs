@@ -33,7 +33,7 @@ def emit(kind, **fields):
     global sequence
     sequence += 1
     value = {key: policy[key] for key in ['launch_id', 'thread_id', 'owner']}
-    value.update(sequence=sequence, type=kind, **fields)
+    value.update(sequence=sequence, generation=1, type=kind, **fields)
     with log.open('a') as out:
         out.write(json.dumps(value) + '\n')
 def capture():

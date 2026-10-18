@@ -303,6 +303,12 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    /// The activity stream reports compaction starts, including commands sent
+    /// by Build. Delivery must not synthesize a second start for those commands.
+    fn observes_compaction_start(&self) -> bool {
+        false
+    }
+
     /// The wrapper owns the threshold decision; delivery owns eligibility,
     /// queues and receipts. Working or starting sessions cannot compact here.
     fn automatic_compaction_due(&self, context_tokens: Option<u64>) -> bool {

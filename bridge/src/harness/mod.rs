@@ -36,6 +36,8 @@ pub(crate) mod codex;
 pub(crate) mod codex_app_server;
 pub mod codex_compaction;
 pub mod compaction;
+pub mod pi_compaction;
+pub mod pi_telemetry;
 #[cfg(test)]
 mod identity_env_tests;
 pub mod installed;

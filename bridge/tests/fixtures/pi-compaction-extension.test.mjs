@@ -234,3 +234,17 @@ test("Pi loader timer handles without unref do not disable telemetry", async () 
     await f.emit("session_shutdown");
   } finally { globalThis.setInterval = timer; }
 });
+
+test("a stalled event loop cannot resume threshold cancellation under an expired lease", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture();
+  now = 9000;
+  assert.equal(await f.emit("session_before_compact", { reason: "threshold" }), undefined);
+  assert.deepEqual(f.failures, ["telemetry_failed"]);
+  assert.equal(f.records.at(-1).type, "unsupported");
+  assert.equal(await f.emit("session_before_compact", { reason: "overflow" }), undefined);
+  const reopened = fixture();
+  assert.deepEqual(await reopened.emit("session_before_compact", { reason: "threshold" }), { cancel: true });
+  await reopened.emit("session_shutdown");
+});

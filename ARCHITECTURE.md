@@ -745,6 +745,8 @@ synthetic-provider runs through the real TUI and unmodified default export,
 with a fake MCP endpoint in an isolated child environment. The supplemental
 RPC probe is hook evidence only. Promotion blockers remain for other Pi
 versions and native threshold injection; neither is claimed supported.
+Live-provider summary quality also remains unqualified: the carrier evidence
+uses a synthetic provider and does not promote any external provider.
 
 The extension cancels only native `threshold` attempts while fallback owns
 the threshold. Native `overflow` recovery and manual compaction remain

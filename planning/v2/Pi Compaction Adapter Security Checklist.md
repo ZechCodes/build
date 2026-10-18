@@ -23,6 +23,8 @@ Promotion blockers: other Pi versions (`pi_version_unqualified`) and native
 threshold injection (`pi_native_threshold_injection_unqualified`) remain
 unqualified. The pinned 0.86.1 TUI/default-export carrier is qualified, including
 slow MCP startup, reload, and native compaction after MCP or sink failure.
+Live-provider summary quality remains unqualified; the synthetic carrier
+evidence does not promote an external provider.
 
 No new complexity allowances are added. Security scoring covers the controls
 above, not support for unqualified Pi versions or native threshold injection.

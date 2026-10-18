@@ -2,6 +2,7 @@ use super::*;
 
 pub(in crate::app::tests) mod agent_tabs;
 mod claude_tui_compaction;
+mod codex_tui_compaction;
 pub(in crate::app::tests) mod compaction;
 mod compaction_policy;
 pub(in crate::app::tests) mod compaction_tools;

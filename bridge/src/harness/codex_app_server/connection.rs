@@ -44,6 +44,8 @@ pub struct AppServerConnection {
     next_id: Mutex<RequestId>,
     limits: ConnectionLimits,
     frame_reader: Mutex<JsonlFrameReader>,
+    /// Immutable launch snapshot, applied to both fresh and resumed threads.
+    thread_config: Option<Value>,
 }
 
 impl AppServerConnection {
@@ -54,7 +56,13 @@ impl AppServerConnection {
             next_id: Mutex::new(1),
             limits,
             frame_reader: Mutex::new(JsonlFrameReader::new()),
+            thread_config: None,
         }
+    }
+
+    pub fn with_thread_config(mut self, config: Option<Value>) -> Self {
+        self.thread_config = config;
+        self
     }
 
     #[cfg(test)]
@@ -117,7 +125,11 @@ impl AppServerConnection {
         operation: &PendingOperation,
     ) -> Result<(), ConnectionError> {
         let mut encoded = CappedBuffer::new(self.limits.outbound_frame_bytes);
-        let result = operation.serialize_request(request_id, &mut encoded);
+        let result = operation.serialize_request_with_config(
+            request_id,
+            &mut encoded,
+            self.thread_config.as_ref(),
+        );
         self.finish_serialization(encoded, result)
     }
 

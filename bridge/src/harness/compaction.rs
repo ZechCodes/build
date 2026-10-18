@@ -53,6 +53,7 @@ impl CompactionLaunchIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeCompactionSettings {
     Claude(super::claude_compaction::Translation),
+    Codex(super::codex_compaction::Translation),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

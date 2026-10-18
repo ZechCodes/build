@@ -686,6 +686,51 @@ compaction row, and both leave the session working and its queued follow-up
 untouched. After an explicit turn end, the real delivery queue sends that
 follow-up once without injecting a Build threshold command under Native.
 
+Both Codex carriers share `harness/codex_compaction.rs` (#657). Translation
+revision 1 targets 0.160.0: `model_auto_compact_token_limit=T` with explicit
+`model_auto_compact_token_limit_scope="total"`, bounded by the native ceiling
+`floor(9 * raw_model_window / 10)`. This is distinct from the usual 95% usable
+context window. The translator refuses zero, unsafe integers, overflowing
+upstream window arithmetic and thresholds beyond that ceiling. Exact trigger
+qualification also requires an established usable-context cap, zero fallback
+buffer and compatible post-turn settings; no model/window is inferred from a
+version or catalog name. Both carriers currently report explicit between-turn
+fallback. Codex's native defaults remain active; there is no native-disable
+mechanism or claim of exclusive fallback control.
+
+A captured Codex native translation, when qualified, normalizes only the two
+compaction overrides in each child's argv. The TUI applies them before fresh,
+exact-resume or `resume --last` selection. App-server also stores the same
+immutable config per connection and includes it only on `thread/start` and
+`thread/resume`. Both specs reject a mismatched launch choice or malformed
+native snapshot; app-server validates again when opening its thread. The TUI
+uses the existing immutable prepared spec and default terminal opener.
+User/project configuration files, `model_context_window`,
+parent environment, routing and session ownership are untouched. Qualification
+in `planning/v2/Codex Compaction Qualification.md` records isolated app-server
+start/resume and TUI resume compaction, including a mid-turn tool continuation,
+and the dynamic model/buffer/settings limits that keep production native off.
+Selected-profile precedence is another explicit promotion blocker. A
+credential-free 0.160.0 `config/read` probe rejects legacy `profile`/`profiles`
+tables; its suggested `--profile x` file form is disallowed for app-server.
+Ordinary-file overrides are established, but supported runtime-profile and
+per-thread profile precedence remain unverified. Profile fixtures retain
+positive fallback and unchanged files; they do not simulate a native override
+of rejected legacy settings. Fallback does not repair those settings.
+Both selected-profile forms retain the known-version reason
+`codex_model_window_buffer_and_profile_unqualified`. Since the captured launch
+does not establish profile absence, this reason also applies to other 0.160.0
+openings without reading user configuration.
+
+Codex app-server compaction items and the TUI's persisted `compacted` records
+remain activity within an open turn. Fake children exercise both through the
+real runtime pumps and delivery queue: failed items, foreign sessions, old
+history and terminal banners cannot report success; successful compaction keeps
+the session working and queued follow-up intact. After the turn ends the
+follow-up is delivered exactly once, without Build threshold compaction under
+Native. Fresh/resumed config fixtures independently preserve stale file bytes
+and isolate concurrent sessions' captured thresholds.
+
 Automatic delivery asks the live session policy whether its last trustworthy
 context reading reached the captured threshold (`>=`). Only an idle warm
 session is eligible; unknown readings and legacy sessions without a snapshot

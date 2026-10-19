@@ -44,6 +44,26 @@ async function mountRail(page, basePath, { agent = {}, projectPin = false } = {}
   await page.waitForSelector(".rail-head");
 }
 
+it("retains the header controls while cached model changes update the bubble tooltip", async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    await mountRail(page, basePath);
+    await page.evaluate(async () => {
+      window.__originalRailHead = document.querySelector(".rail-head");
+      await window.__writeRailRow({
+        ...window.__railRow,
+        agents: [{ ...window.__railRow.agents[0], active_model: "claude-sonnet-4-6" }],
+      });
+    });
+    await page.waitForFunction(() => {
+      const bubble = document.querySelector('[data-bubble="agent"][data-agent="layout-agent"]');
+      return JSON.parse(bubble?.dataset.railTooltip || "{}").model?.includes("Sonnet");
+    });
+    assert.equal(await page.evaluate(() => document.querySelector(".rail-head") === window.__originalRailHead), true,
+      "model updates must keep the standing header controls");
+    assert.equal(await page.locator(".rail-head .agent-model-badge").count(), 0);
+  });
+}, 30_000);
+
 for (const width of [1180, 390]) it(`keeps the ${width}px header and controls still through every erased and typed frame`, async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountRail(page, basePath);
@@ -61,7 +81,7 @@ for (const width of [1180, 390]) it(`keeps the ${width}px header and controls st
       };
       const sample = () => ({ text: work.textContent, nameText: head.querySelector(".rail-who-name").textContent,
         name: rect(head.querySelector(".rail-who-name")), harness: rect(head.querySelector(".rail-harness-icon")),
-        model: rect(head.querySelector(".agent-model-badge")), watch: rect(head.querySelector(".rail-watch")),
+        watch: rect(head.querySelector(".rail-watch")),
         head: rect(head), work: rect(work),
         nameUnobscured: unobscured(head.querySelector(".rail-who-name")), workUnobscured: unobscured(work) });
       const seen = [sample()];
@@ -85,7 +105,7 @@ for (const width of [1180, 390]) it(`keeps the ${width}px header and controls st
       assert.equal(frame.nameText, "Rail helper", "the agent name never animates");
       assert.equal(frame.nameUnobscured, true, "the name must be visible above the page");
       assert.equal(frame.workUnobscured, true, "the work must be visible above the page");
-      for (const key of ["name", "harness", "model", "watch", "head"]) {
+      for (const key of ["name", "harness", "watch", "head"]) {
         for (const dimension of ["x", "y", "width", "height"]) {
           assert.ok(Math.abs(frame[key][dimension] - samples[0][key][dimension]) <= 1, `${key}.${dimension} shifted`);
         }
@@ -101,7 +121,7 @@ for (const width of [1180, 390]) it(`keeps the ${width}px header and controls st
         return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       };
       const sample = () => ({ text: work.textContent, work: box(work), name: box(head.querySelector(".rail-who-name")),
-        harness: box(head.querySelector(".rail-harness-icon")), model: box(head.querySelector(".agent-model-badge")),
+        harness: box(head.querySelector(".rail-harness-icon")),
         watch: box(head.querySelector(".rail-watch")), head: box(head) });
       window.__clearSamples = [sample()];
       window.__clearObserver = new MutationObserver(() => { if (work.isConnected) window.__clearSamples.push(sample()); });
@@ -121,7 +141,7 @@ for (const width of [1180, 390]) it(`keeps the ${width}px header and controls st
     assert.ok(cleared.some((frame) => frame.text === ""), "the fully erased work frame was measured");
     for (const frame of cleared) {
       assert.ok(frame.work.height >= 14, "work line kept its space throughout clearing");
-      for (const key of ["name", "harness", "model", "watch", "head"]) {
+      for (const key of ["name", "harness", "watch", "head"]) {
         for (const dimension of ["x", "y", "width", "height"]) {
           assert.ok(Math.abs(frame[key][dimension] - cleared[0][key][dimension]) <= 1,
             `${key}.${dimension} shifted while clearing`);

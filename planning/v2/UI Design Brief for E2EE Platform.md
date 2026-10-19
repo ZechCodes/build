@@ -8,8 +8,11 @@ erase-then-type effect on the work line alone, with stable header geometry.
 An agent with no topic retains the shimmering “Starting” work line, regardless
 of lifecycle state. Clearing a topic erases back into Starting; the work line
 always keeps its space. An unnamed pinned project agent reads “Project agent”
-in both the header and tooltip. The harness glyph,
-model label and watch control retain their positions beside the text.
+in both the header and tooltip. The harness glyph and watch control retain
+their positions beside the text. As of #662, conversation headers omit the
+model label; model details remain in the bubble tooltip. The harness glyph
+uses the inbox glyph's left inset, and the toolbar closes the extra gap
+between the inbox button and project chevron at phone and desktop widths.
 
 Conversation bubbles use a custom tooltip for cached identity, current work,
 turn runtime or idle state, harness, model and status. It opens on hover and

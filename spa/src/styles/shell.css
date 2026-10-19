@@ -14,6 +14,7 @@
      icons, the same column at every width, so the work's left edge never
      moves between a phone and a desktop. */
   --dir-rail:40px;
+  --inbox-glyph-inset:calc((var(--dir-rail) - 17px) / 2);
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:44px;     /* the view column's top row — what a full console clears */
@@ -24,7 +25,7 @@
      styles.css and styles/surfaces.css both read it. */
   --surface-head:46px;
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
-  /* Default collapsed toolbar inset, including the safe area. Desktop chevrons
+  /* Default collapsed toolbar inset, including the safe area. Project chevrons
      use the rail-aligned toggle's edge instead; its badge may cover empty
      target padding visually, while pointer events pass through. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
@@ -729,29 +730,29 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   transition:padding-left 240ms cubic-bezier(.2,.8,.2,1); }
 body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   --tb-project-cap:min(96px, calc((100cqw - var(--inbox-open-clear) - 10px) / 4)); }
+/* The chevron target starts at the inbox button's right edge at every width.
+   Its badge can cover empty padding visually without intercepting a press. */
+body.inbox-collapsed .toolbar:has(> .tb-switch) {
+  --inbox-open-clear:calc((var(--dir-rail) + var(--inbox-toggle)) / 2 + env(safe-area-inset-left, 0px)); }
 /* The pinned glyph takes the inbox glyph's offset above the directory column.
    Its target fills the room before the project, keeping the existing 4px gap.
    Left padding and width move together so the glyph and crumbs never jump. */
 @media (min-width: 901px) {
-  .toolbar { --tb-inbox-glyph-left:calc((var(--dir-rail) - 17px) / 2);
-    --tb-pinned-target:calc(var(--tb-inbox-glyph-left) + 18px); }
-  /* The floating target starts at the inbox button's right edge. */
-  body.inbox-collapsed .toolbar:has(> .tb-switch) {
-    --inbox-open-clear:calc((var(--dir-rail) + var(--inbox-toggle)) / 2 + env(safe-area-inset-left, 0px)); }
+  .toolbar { --tb-pinned-target:calc(var(--inbox-glyph-inset) + 18px); }
   body:not(.inbox-collapsed) .toolbar { padding-left:0;
     --tb-project-cap:min(96px, calc((100cqw + 44px - var(--tb-pinned-target) - 10px) / 4)); }
-  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(44px - 18px);
+  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(32px - 18px);
     transition:width 240ms cubic-bezier(.2,.8,.2,1), padding-left 240ms cubic-bezier(.2,.8,.2,1); }
   body:not(.inbox-collapsed) .tb-switch { width:var(--tb-pinned-target);
-    padding-left:var(--tb-inbox-glyph-left); }
+    padding-left:var(--inbox-glyph-inset); }
 }
 @media (prefers-reduced-motion: reduce) {
   .toolbar, .toolbar .tb-switch { transition:none; }
 }
 .tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
-  width:44px; height:44px; padding:0; border:0; border-radius:6px;
+  width:32px; height:44px; padding:0; border:0; border-radius:6px;
   background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }
-/* Keep the 44px target; align the glyph near the project instead of shrinking it. */
+/* Keep the full row height and the glyph close to its project link. */
 .tb-switch > span { display:flex; }
 .tb-switch svg { width:18px; height:18px; }
 .tb-breadcrumbs { flex:0 1 auto; min-width:0; max-width:calc(100% - 96px); }
@@ -1166,7 +1167,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 
 .rail-head { position:absolute; z-index:5; top:0; right:0; left:0;
   height:var(--surface-head); min-height:var(--surface-head);
-  display:flex; align-items:center; gap:8px; padding:8px 9px 8px 16px;
+  display:flex; align-items:center; gap:8px; padding:8px 9px 8px var(--inbox-glyph-inset);
   border:0; border-top-left-radius:inherit; border-top-right-radius:inherit;
   background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }

@@ -37,10 +37,10 @@ for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directo
       }, directory);
       await settle(page);
       const before = await switcherHits(page);
-      expect(before.width).toBe(44);
+      expect(before.width).toBe(32);
       expect(before.height).toBe(44);
-      expect(before.glyphX).toBe(60 + inset);
-      expect(before.hits).toHaveLength(44 * 44);
+      expect(before.glyphX).toBe(48 + inset);
+      expect(before.hits).toHaveLength(32 * 44);
       expect(before.hits.some((hit) => hit.owned)).toBe(true);
 
       await page.evaluate(() => {
@@ -49,7 +49,7 @@ for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directo
       });
       await settle(page);
       const after = await switcherHits(page);
-      expect(after.width).toBe(44);
+      expect(after.width).toBe(32);
       expect(after.height).toBe(44);
       expect(after.glyphX).toBe(before.glyphX);
       // Rounded corners already exclude a few pixel centres. The badge must

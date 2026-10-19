@@ -384,7 +384,7 @@ describe("the machine's own panels", () => {
 
     document.querySelector("#device-settings-retry").click();
     await vi.waitFor(() => expect(document.querySelector("#projlist").textContent).toContain("relaydb"));
-    expect(document.getElementById("defaultharness").value).toBe("claude");
+    await vi.waitFor(() => expect(document.getElementById("defaultharness").value).toBe("claude"));
   });
 
   it("refreshes that device's model catalog when a harness setting is saved", async () => {
@@ -657,7 +657,9 @@ describe("device settings", () => {
       };
       openSession.mockResolvedValueOnce(newSession);
       document.querySelector("#device-settings-retry").click();
-      await vi.waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
+      // The cached selection can already be worktree before the new read lands.
+      await vi.waitFor(() => expect(document.querySelector("[data-isolation=lock]").textContent).toContain("Rift is absent on the reconnected device"));
+      expect(document.querySelector("[data-isolation=select]").value).toBe("worktree");
       const callsBeforeLateSave = newSession.call.mock.calls.length;
 
       if (completion === "resolve") resolveSave({ isolation: "rift", isolation_available: { rift: true } });

@@ -853,3 +853,34 @@ test("browser-auth helper cannot launch a new browser handoff during Sign Out", 
   storage.resolve();
   await cleanup;
 });
+
+for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
+  test(`${eventName} to the web app path loads authenticated desktop without browser sign-in`, async (t) => {
+    const { calls, header } = await launch(t);
+    const window = calls.windows[0];
+    for (const url of ["https://getbuild.ing/app", "https://getbuild.ing/app/"]) {
+      if (eventName === "window-open") window.webContents.openWindow({ url });
+      else window.webContents.emit(eventName, { preventDefault() {} }, url, false, true);
+      assert.equal(window.url, "https://getbuild.ing/app/desktop");
+    }
+    await flush();
+    assert.deepEqual(calls.browser, []);
+    assert.equal(calls.fetch.length, 1);
+    assert.equal(header(), "Bearer fixture-access-rotated");
+    assert.equal(window.actions.filter((action) => action === "load").length, 3);
+  });
+}
+
+test("overlapping ordinary refresh failures use one native failure dialog", async (t) => {
+  const pending = deferred();
+  const { calls, refreshTokens } = await launch(t, {
+    fetch: (count) => count === 2 ? pending.promise : response(tokens()),
+  });
+  const first = refreshTokens();
+  const overlapping = refreshTokens();
+  await flush();
+  pending.resolve(response({ error: "server_error" }, false));
+  assert.deepEqual(await Promise.all([first, overlapping]), [false, false]);
+  assert.equal(calls.fetch.length, 2);
+  assert.equal(calls.dialogs.length, 1);
+});

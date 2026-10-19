@@ -10,6 +10,8 @@ import {
   createWindowOptions,
   installAuthorizationHeader,
   installNavigationPolicy,
+  installUnauthorizedResponsePolicy,
+  isAuthenticationDocument,
 } from "./security-policy.mjs";
 import {
   CLIENT_ID,
@@ -42,6 +44,8 @@ let tokenSession = null;
 const tokenRequests = new Set();
 const SIGN_OUT_WAIT_MS = 5_000;
 let signOutComplete = false;
+let unauthorizedRecovery = null;
+const windowNavigations = new WeakMap();
 
 function openOutsideElectron(url) {
   if (classifyNavigation(url) !== "external") return;
@@ -51,7 +55,16 @@ function openOutsideElectron(url) {
 }
 
 function loadInsideElectron(window, url) {
+  const recovery = unauthorizedRecovery;
+  const generation = credentialGeneration;
+  const navigation = windowNavigations.get(window);
+  const attempt = ++navigation.loadAttempt;
+  const load = { canceled: false };
+  navigation.currentLoad = load;
   void window.loadURL(url).catch((error) => {
+    if (isCanceledDocumentLoad(window, url, error.errno, error.code, load)) return;
+    if (attempt !== navigation.loadAttempt) return;
+    if (generation === credentialGeneration && failRecoveryLoad(window, recovery)) return;
     console.error("could not load the Build web client", error);
   });
 }
@@ -138,6 +151,13 @@ function clearCredentials() {
 
 function openAuthenticatedWindow() {
   if (signingOut) return;
+  if (unauthorizedRecovery) {
+    const phase = unauthorizedRecovery.phase;
+    if (phase === "refresh" || phase === "oauth") {
+      unauthorizedRecovery.phase = `retry-${phase}`;
+      unauthorizedRecovery.rejectedNavigation = windowNavigations.get(mainWindow)?.sequence ?? 0;
+    }
+  }
   if (!mainWindow) mainWindow = createWindow();
   else loadInsideElectron(mainWindow, APP_URL);
 }
@@ -153,11 +173,11 @@ async function performRefresh(generation) {
   return true;
 }
 
-async function refreshTokens() {
+async function refreshTokens({ unauthorized = false } = {}) {
   if (!refreshToken) return false;
-  if (refreshInFlight) return refreshInFlight;
   const generation = credentialGeneration;
-  const request = performRefresh(generation);
+  const ownsFailurePolicy = !refreshInFlight;
+  const request = refreshInFlight || performRefresh(generation);
   refreshInFlight = request;
   let error;
   try {
@@ -168,6 +188,9 @@ async function refreshTokens() {
     if (refreshInFlight === request) refreshInFlight = null;
   }
   if (generation !== credentialGeneration) return false;
+  // An observed document rejection owns the pending exchange's failure policy,
+  // including when the scheduled refresh started that exchange first.
+  if (unauthorized || unauthorizedRecovery || !ownsFailurePolicy) return false;
   if (error.code === "invalid_grant") {
     clearCredentials();
     try {
@@ -186,12 +209,114 @@ async function refreshTokens() {
   return false;
 }
 
+function recoveryIsCurrent(recovery) {
+  return !signingOut && unauthorizedRecovery === recovery && mainWindow === recovery.window;
+}
+
+async function authenticateAfterRejection(recovery) {
+  recovery.phase = "oauth";
+  recovery.rejectedNavigation = windowNavigations.get(recovery.window).sequence;
+  await beginAuthentication();
+}
+
+async function failRejectedAuthentication(recovery, message = "Build rejected the sign-in. Please try again.") {
+  recovery.phase = "failed";
+  clearCredentials();
+  await showAuthenticationError(new Error(message));
+}
+
+async function retryRejectedRecovery(recovery, navigation) {
+  // Canceled headers can also produce a navigation notification. A retry can
+  // consume the next recovery step only after a new main-frame navigation.
+  if (!recovery.phase.startsWith("retry-") || navigation.sequence <= recovery.rejectedNavigation) return;
+  recovery.window.hide();
+  if (recovery.phase === "retry-refresh") await authenticateAfterRejection(recovery);
+  else await failRejectedAuthentication(recovery);
+}
+
+async function recoverUnauthorized(window, requestId, canceledUrl) {
+  if (!window || signingOut || window !== mainWindow) return;
+  const navigation = windowNavigations.get(window);
+  if (requestId !== undefined) {
+    if (navigation.rejectedRequests.has(requestId)) return;
+    navigation.rejectedRequests.add(requestId);
+  }
+  if (canceledUrl) {
+    navigation.canceledUrls.add(canceledUrl);
+    if (navigation.currentLoad) navigation.currentLoad.canceled = true;
+  }
+  const previous = unauthorizedRecovery;
+  if (previous) return retryRejectedRecovery(previous, navigation);
+  const recovery = { window, phase: "refresh", rejectedNavigation: navigation.sequence };
+  unauthorizedRecovery = recovery;
+  window.hide();
+  const generation = credentialGeneration;
+  const refreshed = await refreshTokens({ unauthorized: true });
+  if (!recoveryIsCurrent(recovery) || generation !== credentialGeneration) return;
+  if (refreshed) openAuthenticatedWindow();
+  else await authenticateAfterRejection(recovery);
+}
+
+function isCanceledDocumentLoad(window, url, errorCode, errorName, load) {
+  if (errorCode === -3 || errorName === "ERR_ABORTED") return true;
+  // Electron's canceled onHeadersReceived callback normally reports -20;
+  // recognize only URLs whose 401 response this window actually canceled.
+  const blocked = errorCode === -20 || errorName === "ERR_BLOCKED_BY_CLIENT";
+  const canceled = load ? load.canceled : windowNavigations.get(window)?.canceledUrls.has(url);
+  return blocked && canceled;
+}
+
+function failRecoveryLoad(window, recovery = unauthorizedRecovery) {
+  if (!recovery || !recoveryIsCurrent(recovery) || window !== recovery.window) return false;
+  if (!recovery.phase.startsWith("retry-")) return false;
+  void failRejectedAuthentication(recovery, "Build could not load the signed-in desktop. Please try again.");
+  return true;
+}
+
+function didNavigateMainFrame(window, navigation, url, statusCode) {
+  if (window !== mainWindow || signingOut) return;
+  if (statusCode === 401 && isAuthenticationDocument(url)) {
+    void recoverUnauthorized(window);
+    return;
+  }
+  const recovery = unauthorizedRecovery;
+  if (!recovery || !recovery.phase.startsWith("retry-")) return;
+  if (navigation.sequence <= recovery.rejectedNavigation || classifyNavigation(url) !== "internal") return;
+  if (statusCode >= 400) {
+    failRecoveryLoad(window, recovery);
+    return;
+  }
+  if (!(statusCode >= 200 && statusCode < 300)) return;
+  unauthorizedRecovery = null;
+  navigation.rejectedRequests.clear();
+  navigation.canceledUrls.clear();
+  window.show();
+}
+
+function observeMainFrameNavigation(window) {
+  const navigation = { sequence: 0, loadAttempt: 0, rejectedRequests: new Set(), canceledUrls: new Set() };
+  windowNavigations.set(window, navigation);
+  window.webContents.on("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => {
+    if (isMainFrame) navigation.sequence++;
+  });
+  window.webContents.on("did-navigate", (_event, url, statusCode) => {
+    didNavigateMainFrame(window, navigation, url, statusCode);
+  });
+  window.webContents.on("did-fail-load", (_event, errorCode, _description, url, isMainFrame) => {
+    if (!isMainFrame || isCanceledDocumentLoad(window, url, errorCode)) return;
+    if (classifyNavigation(url) === "internal") failRecoveryLoad(window);
+  });
+}
+
 async function startAuthentication() {
-  if (signingOut) return;
+  if (signingOut || unauthorizedRecovery) return;
   try {
     refreshToken ||= tokenStore.load();
     if (!refreshToken) await beginAuthentication();
-    else if (await refreshTokens()) openAuthenticatedWindow();
+    else {
+      const refreshed = await refreshTokens();
+      if (refreshed && !unauthorizedRecovery) openAuthenticatedWindow();
+    }
   } catch {
     await showAuthenticationError(new Error("Build could not read the saved sign-in."), startAuthentication);
   }
@@ -231,6 +356,7 @@ async function reportSignOutFailures(failures) {
 async function signOut() {
   if (signingOut) return;
   signingOut = true;
+  unauthorizedRecovery = null;
   clearCredentials();
   for (const controller of tokenRequests) controller.abort();
   // Retire the renderer before clearing persistent storage so it cannot
@@ -279,6 +405,7 @@ async function showAuthenticationError(error, retry = beginAuthentication) {
 
 async function beginAuthentication() {
   if (signingOut || pendingAuthorization || exchangingCode) return;
+  if (unauthorizedRecovery) unauthorizedRecovery.phase = "oauth";
   // A 401 recovery retires the rejected credentials and any late refresh result.
   clearCredentials();
   pendingAuthorization = createAuthorizationRequest();
@@ -347,15 +474,19 @@ function createWindow() {
     title: "Build",
   });
 
+  observeMainFrameNavigation(window);
   installNavigationPolicy(window.webContents, {
     openExternal: openOutsideElectron,
     loadInternal: (url) => loadInsideElectron(window, url),
     signOut,
     signIn: beginAuthentication,
   });
-  window.once("ready-to-show", () => window.show());
+  window.once("ready-to-show", () => {
+    if (window === mainWindow && !signingOut && !unauthorizedRecovery) window.show();
+  });
   window.on("closed", () => {
     if (mainWindow === window) mainWindow = null;
+    if (unauthorizedRecovery?.window === window) unauthorizedRecovery = null;
   });
   loadInsideElectron(window, APP_URL);
   return window;
@@ -379,7 +510,7 @@ if (!hasSingleInstanceLock) {
       void handleAuthorizationCallback(callback);
       return;
     }
-    if (!mainWindow) return;
+    if (!mainWindow || unauthorizedRecovery) return;
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
@@ -390,11 +521,16 @@ if (!hasSingleInstanceLock) {
     tokenStore = createTokenStore({ userData: app.getPath("userData"), safeStorage });
     installPermissionPolicy();
     installAuthorizationHeader(session.defaultSession.webRequest, () => accessToken);
+    installUnauthorizedResponsePolicy(
+      session.defaultSession.webRequest,
+      () => mainWindow?.webContents,
+      (requestId, url) => void recoverUnauthorized(mainWindow, requestId, url),
+    );
     installApplicationMenu();
     void startAuthentication().finally(() => { starting = false; });
 
     app.on("activate", () => {
-      if (mainWindow || starting || exchangingCode) return;
+      if (mainWindow || starting || exchangingCode || unauthorizedRecovery) return;
       if (accessToken) mainWindow = createWindow();
       else if (!pendingAuthorization) void startAuthentication();
     });

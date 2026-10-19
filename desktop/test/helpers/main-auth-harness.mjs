@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 export const flush = async () => {
   for (let index = 0; index < 6; index++) await new Promise(setImmediate);
@@ -14,20 +14,9 @@ export const tokens = (suffix = "rotated") => ({
   expires_in: 900,
 });
 export const response = (payload, ok = true) => ({ ok, json: async () => payload });
-const SIGN_IN_URL = "https://getbuild.ing/auth/login?next=/app/&view=signin";
 let sequence = 0;
 
-function requestSignIn(window, eventName = "will-navigate") {
-  if (eventName === "window-open") {
-    assert.deepEqual(window.webContents.openWindow({ url: SIGN_IN_URL }), { action: "deny" });
-    return;
-  }
-  let prevented = false;
-  window.webContents.emit(eventName, { preventDefault: () => { prevented = true; } }, SIGN_IN_URL);
-  assert.equal(prevented, true);
-}
-
-export async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken, showMessageBox } = {}) {
+export async function launch(t, { stored = "fixture-refresh-saved", available = true, fetch, userData, openExternal, safeStorage = {}, clearStorageData, clearCache, removeSavedToken, showMessageBox, loadURL } = {}) {
   const directory = userData || mkdtempSync(join(tmpdir(), "desktop-main-auth-"));
   const path = join(directory, "refresh-token.enc");
   if (stored && !userData) writeFileSync(path, `encrypted:${stored}`, { mode: 0o600 });
@@ -59,7 +48,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
     loadURL(url) {
       this.actions.push("load"); this.url = url;
       this.webContents.emit("did-start-navigation", {}, url, false, true);
-      return Promise.resolve();
+      return loadURL ? loadURL(this, url) : Promise.resolve();
     }
     hide() { this.actions.push("hide"); }
     show() { this.actions.push("show"); }
@@ -159,6 +148,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
       if (url === new URL(`../../src/main.mjs?test=${id}`, import.meta.url).href) {
         return { ...loaded, source: `${loaded.source}\nexport {
           refreshTokens as testRefreshTokens,
+          clearCredentials as testClearCredentials,
           showAuthenticationError as testShowAuthenticationError,
           openAuthenticatedWindow as testOpenAuthenticatedWindow,
           startAuthentication as testStartAuthentication,
@@ -182,7 +172,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
   });
   const {
     testRefreshTokens, testShowAuthenticationError, testOpenAuthenticatedWindow,
-    testStartAuthentication, testBeginAuthentication,
+    testStartAuthentication, testBeginAuthentication, testClearCredentials,
   } = await import(`../../src/main.mjs?test=${id}`);
   await flush();
   const header = () => {
@@ -197,7 +187,7 @@ export async function launch(t, { stored = "fixture-refresh-saved", available = 
   };
   return {
     app, calls, defaultState, tokenState, path, header, signOut, callback,
-    refreshTokens: testRefreshTokens, showAuthenticationError: testShowAuthenticationError,
+    refreshTokens: testRefreshTokens, clearCredentials: testClearCredentials, showAuthenticationError: testShowAuthenticationError,
     openAuthenticatedWindow: testOpenAuthenticatedWindow,
     startAuthentication: testStartAuthentication, beginAuthentication: testBeginAuthentication,
     safeStorage: fixture.safeStorage,

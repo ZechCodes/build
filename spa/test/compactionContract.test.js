@@ -74,3 +74,10 @@ describe("compaction wire fixtures", () => {
     expect(v1.parseResult("agent.list", example.result)).toEqual(example.result);
   });
 });
+
+
+it("explains an older bridge with the agreed compaction editor copy", async () => {
+  const adapter = v1.create(() => { throw new Error("must not send"); }, { api_version: "3.21.0", capabilities: [] });
+  await expect(adapter.call("settings.set", { compaction_thresholds: { codex: 150000 } }))
+    .rejects.toMatchObject({ code: "unknown_method", message: "Update the bridge to set compaction defaults by harness." });
+});

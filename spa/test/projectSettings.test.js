@@ -664,7 +664,8 @@ it("preserves the cached compaction editor and focused draft across project and 
   openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
   await vi.waitFor(() => expect(document.querySelector('[data-compaction-harness="claude"] input')?.value).toBe("150000"));
   const input = document.querySelector('[data-compaction-harness="claude"] input');
-  type(input, "175000");
+  input.value = "175000";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
   input.focus();
   input.setSelectionRange(1, 4);
   await writeCached(address, { ...project, compaction_thresholds: { claude: 250000 } });

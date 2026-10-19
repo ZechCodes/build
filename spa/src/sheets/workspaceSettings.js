@@ -1,3 +1,4 @@
+import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 // The cog at the right of the view-area toolbar: what this workspace is
 // called, what its agents start on, and the one way to take it away.
 //
@@ -173,10 +174,14 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     title: "Workspace settings",
     bodyHtml: `${nameFieldHtml(workspace.name)}
       ${directoriesHtml()}
+      ${scopedCompactionEditorHtml({ scope: "workspace", prefix: "workspace-compaction" })}
       ${harnessDefaultsPanelHtml({ prefix: PREFIX, title: "🤖 Agent defaults here", blurb: DEFAULTS_BLURB })}
       ${dangerZoneHtml()}`,
   });
   $("#scrim").classList.add("show");
+  const compactionEditor = mountScopedCompactionEditor(sheet, {
+    scope: "workspace", prefix: "workspace-compaction", ownerId: workspace.id, deviceId, callRpc,
+  });
   let disposeDirectories = () => {};
   let disposeCatalog = () => {};
   const deletion = mountDeletionAvailability(workspace, { sheet, deviceId });
@@ -193,6 +198,7 @@ export function openWorkspaceSettings(workspace, { callRpc, catalog, deviceId = 
     if (closed) return closed;
     repoAsk?.stop();
     disposeRepoPickers(sheet);
+    compactionEditor.dispose();
     disposeDirectories();
     disposeCatalog();
     deletion.dispose();

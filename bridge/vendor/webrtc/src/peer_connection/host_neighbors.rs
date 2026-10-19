@@ -591,6 +591,136 @@ mod tests {
         assert_eq!(dump.addresses, vec![Ipv4Addr::new(192, 168, 1, 10)]);
     }
 
+    fn table_datagram(interface_start: u32, interface_count: u32) -> Vec<u8> {
+        let mut global = vec![libc::AF_INET as u8, 0, 0, 0];
+        global.extend(attribute(1, b"arp_cache\0"));
+        global.extend(attribute(3, &512u32.to_ne_bytes()));
+        global.extend(attribute(4, &1024u32.to_ne_bytes()));
+        let mut config = vec![0; 32];
+        config[..2].copy_from_slice(&4u16.to_ne_bytes());
+        config[4..8].copy_from_slice(&92u32.to_ne_bytes());
+        global.extend(attribute(5, &config));
+        let global = message(libc::RTM_NEWNEIGHTBL, 2, SEQUENCE, &global);
+        let mut datagram = global;
+        for interface_index in interface_start..interface_start + interface_count {
+            let mut parameters = vec![libc::AF_INET as u8, 0, 0, 0];
+            parameters.extend(attribute(1, b"arp_cache\0"));
+            parameters.extend(attribute(6, &attribute(1, &interface_index.to_ne_bytes())));
+            datagram.extend(message(libc::RTM_NEWNEIGHTBL, 2, SEQUENCE, &parameters));
+        }
+        datagram
+    }
+
+    #[test]
+    fn multipart_table_dump_with_repeated_config_allows_an_on_link_22_sweep_probe() {
+        use super::super::host_sweep::{HostSweep, SweepSubnet};
+        use rtc::shared::ifaces::{Interface, Kind};
+
+        let mut dump = Dump::scout();
+        let phone = Ipv4Addr::new(10, 72, 3, 254);
+        let outside = Ipv4Addr::new(10, 72, 4, 2);
+        for address in [phone, outside] {
+            assert!(
+                !dump
+                    .consume(&neighbor(2, OWNER, libc::NUD_REACHABLE, address), OWNER)
+                    .unwrap()
+            );
+        }
+        // RTM_GETNEIGH completes before the separate table dump begins.
+        assert!(dump.consume(&message(3, 2, SEQUENCE, &[]), OWNER).unwrap());
+        let mut interface_index = 1u32;
+        for interfaces in [15, 1] {
+            // The kernel repeats the global config when its interface cursor
+            // continues in a later datagram, even though the table is unchanged.
+            let datagram = table_datagram(interface_index, interfaces);
+            interface_index += interfaces;
+            assert!(!dump.consume(&datagram, OWNER).unwrap());
+        }
+        assert!(
+            dump.consume(&message(3, 2, SEQUENCE, &0i32.to_ne_bytes()), OWNER)
+                .unwrap()
+        );
+        let pressure = dump.table.finish().unwrap();
+        assert_eq!(
+            (pressure.entries, pressure.gc_thresh2, pressure.gc_thresh3),
+            (92, 512, 1024)
+        );
+        let now = Instant::now();
+        let snapshot = ScoutSnapshot {
+            observed_at: now,
+            usable: dump.addresses,
+            incomplete: dump.incomplete,
+            failed: dump.failed,
+            netns_total: dump.netns_total,
+            incomplete_total: dump.incomplete_total,
+            table_entries: pressure.entries,
+            gc_thresh2: pressure.gc_thresh2,
+            gc_thresh3: pressure.gc_thresh3,
+        };
+        let local = "10.72.0.1:45000".parse().unwrap();
+        let interface = Interface {
+            name: "wifi".into(),
+            kind: Kind::Ipv4,
+            addr: Some("10.72.0.1:0".parse().unwrap()),
+            mask: Some("255.255.252.0:0".parse().unwrap()),
+            hop: None,
+        };
+        let subnet = SweepSubnet::from_interface(local, &interface, OWNER, &[]).unwrap();
+        assert!(subnet.authorizes(phone));
+        assert!(!subnet.authorizes(outside));
+        let mut sweep = HostSweep::default();
+        sweep.start(7, "fixture".into(), 40000, now - Duration::from_millis(250));
+        sweep.prepare(40000, vec![subnet]);
+        let probe = sweep
+            .next_usable_probe(now, false, |subnet, address| {
+                subnet.interface_index == OWNER
+                    && subnet.authorizes(address)
+                    && snapshot.usable.contains(&address)
+            })
+            .expect("the parsed multipart snapshot must allow the /22 LAN neighbor to be swept");
+        assert_eq!(probe.destination, phone);
+        assert_eq!(probe.subnet.local, local);
+        assert_eq!(probe.port, 40000);
+        sweep.record_result(probe.port, true);
+        assert!(
+            sweep
+                .next_usable_probe(now + Duration::from_millis(5), false, |_, address| {
+                    snapshot.usable.contains(&address)
+                })
+                .is_none(),
+            "the off-link neighbor cannot become a sweep destination"
+        );
+    }
+
+    #[test]
+    #[ignore = "informational parser benchmark; run explicitly with --ignored --nocapture"]
+    fn multipart_table_dump_parsing_cost() {
+        const ITERATIONS: u32 = 2000;
+        let done = message(3, 2, SEQUENCE, &0i32.to_ne_bytes());
+        for parts in [2u32, 64] {
+            let datagrams: Vec<_> = (0..parts)
+                .map(|part| table_datagram(1 + part * 15, if part + 1 == parts { 1 } else { 15 }))
+                .collect();
+            let started = Instant::now();
+            for _ in 0..ITERATIONS {
+                let mut dump = Dump::scout();
+                for datagram in &datagrams {
+                    assert!(!dump.consume(std::hint::black_box(datagram), OWNER).unwrap());
+                }
+                assert!(dump.consume(&done, OWNER).unwrap());
+                let pressure = std::hint::black_box(dump.table.finish().unwrap());
+                assert_eq!(pressure.entries, 92);
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "multipart table parser: parts={parts}, interfaces={}, iterations={ITERATIONS}, ns/dump={:.0}, us/dump={:.2}",
+                (parts - 1) * 15 + 1,
+                elapsed.as_nanos() as f64 / f64::from(ITERATIONS),
+                elapsed.as_secs_f64() * 1_000_000.0 / f64::from(ITERATIONS),
+            );
+        }
+    }
+
     #[test]
     fn aligned_unknown_attributes_are_skipped_without_reinterpreting_bytes() {
         let mut payload = vec![2, 0, 0, 0];

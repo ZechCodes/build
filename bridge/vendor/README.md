@@ -1,4 +1,4 @@
-# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376)
+# Vendored crates: webrtc, rtc and rtc-ice 0.20.4, patched (#166, #179, #298, #372, #374, #375, #376, #674)
 
 The bridge builds `webrtc`, `rtc` and `rtc-ice` from here instead of crates.io, through
 the `[patch.crates-io]` entries at the end of `bridge/Cargo.toml`:
@@ -472,6 +472,28 @@ The runner creates private user/network namespaces and veth interfaces, starts
 only a private UDP receiver, and never starts a production bridge or changes the
 host firewall. Removing the probe headroom gate from an isolated source copy
 makes the ordinary send poll pending, providing the red control.
+
+#674: Linux can repeat the global `arp_cache` config in an
+`RTM_GETNEIGHTBL` multipart dump when the per-interface parameter list continues
+in a later datagram. Rejecting that repeated config discarded the whole scout
+snapshot as `neighbor-snapshot-unavailable`, leaving an otherwise eligible
+private /22 without sweep destinations. `host_neighbor_table.rs` now accepts
+independently validated samples and retains the maximum entries and minimum
+`gc_thresh2`/`gc_thresh3` across them. A later sample cannot reduce the pressure
+already observed. Duplicate attributes within one message, malformed data and
+missing global configuration still fail closed; dump budgets are unchanged.
+This fix is carried in `webrtc-host-candidate-sweep.patch`.
+
+Parser regressions cover identical repeats and differing pressure in either
+order. A deterministic multipart fixture mirrors the kernel's 15-then-1
+per-interface messages with repeated global config, completes with `NLMSG_DONE`,
+and feeds the parsed snapshot into the real sweep scheduler: its reachable /22
+LAN neighbor is selected for a real-port probe, while an off-link neighbor remains
+excluded. An informational benchmark exercises the same parser with 2 and 64
+parts, without timing assertions. From `bridge/`:
+
+    nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib host_neighbors
+    nice -n 10 cargo test --locked --manifest-path vendor/Cargo.toml --lib multipart_table_dump_parsing_cost -- --ignored --nocapture
 
 #375: the driver capped one UDP GSO batch at 65535 bytes, but the kernel refuses
 a batch whose total is over the largest UDP payload of the peer's IP family:

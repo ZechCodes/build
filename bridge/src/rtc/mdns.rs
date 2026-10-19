@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
@@ -14,8 +15,10 @@ use rtc::sansio::Protocol;
 use rtc::shared::{TaggedBytesMut, TransportContext, TransportProtocol};
 
 mod cache;
+mod diagnostics;
 mod egress;
 pub(super) use cache::LanAddressCache;
+use diagnostics::{ReceiveHealth, RoundDiagnostics};
 
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -43,17 +46,6 @@ enum AnswerRejection {
     UnqueriedInterface,
     NonLocalAddress,
     MissingArrival,
-}
-
-impl AnswerRejection {
-    fn code(self) -> &'static str {
-        match self {
-            Self::OffSubnet => "off-subnet",
-            Self::UnqueriedInterface => "unqueried-interface",
-            Self::NonLocalAddress => "nonlocal-address",
-            Self::MissingArrival => "arrival-interface-unavailable",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,11 +82,15 @@ trait Transport: Send + Sync {
         ))
     }
     async fn receive(&self) -> io::Result<Datagram>;
+    fn receive_health(&self) -> Option<ReceiveHealth> {
+        None
+    }
 }
 
 struct UdpTransport {
     socket: tokio::net::UdpSocket,
     destination: SocketAddr,
+    receive_errors: AtomicU64,
 }
 
 impl UdpTransport {
@@ -116,6 +112,7 @@ impl UdpTransport {
         Ok(Self {
             socket: tokio::net::UdpSocket::from_std(socket.into())?,
             destination: MDNS_DEST_ADDR,
+            receive_errors: AtomicU64::new(0),
         })
     }
 
@@ -153,7 +150,11 @@ impl Transport for UdpTransport {
     }
 
     async fn receive(&self) -> io::Result<Datagram> {
-        receive_with_packet_info(&self.socket).await
+        let received = receive_with_packet_info(&self.socket).await;
+        if received.is_err() {
+            diagnostics::add_atomic(&self.receive_errors, 1);
+        }
+        received
     }
 }
 
@@ -207,6 +208,7 @@ impl SharedSocket {
         SharedTransport {
             socket: self.clone(),
             replies: tokio::sync::Mutex::new(self.replies.subscribe()),
+            lagged: AtomicU64::new(0),
         }
     }
 }
@@ -236,6 +238,7 @@ async fn fan_out(
 struct SharedTransport {
     socket: Arc<SharedSocket>,
     replies: tokio::sync::Mutex<tokio::sync::broadcast::Receiver<Received>>,
+    lagged: AtomicU64,
 }
 
 #[async_trait]
@@ -262,10 +265,20 @@ impl Transport for SharedTransport {
         loop {
             match self.replies.lock().await.recv().await {
                 Ok(Ok(packet)) => return Ok(packet),
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    diagnostics::add_atomic(&self.lagged, count);
+                    continue;
+                }
                 _ => return Err(socket_gone_error()),
             }
         }
+    }
+
+    fn receive_health(&self) -> Option<ReceiveHealth> {
+        Some(ReceiveHealth {
+            errors: self.socket.transport.receive_errors.load(Ordering::Relaxed),
+            lagged: self.lagged.load(Ordering::Relaxed),
+        })
     }
 
     async fn send_to_peer(
@@ -680,14 +693,39 @@ fn answer_from(name: &str, packet: &[u8], source: SocketAddr) -> Option<IpAddr> 
         .filter(|address| matches!(address, IpAddr::V4(address) if usable_ipv4(*address)))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PacketAnswer {
+    Query,
+    Malformed,
+    Unsupported,
+    WrongName,
+    NoMatchingA,
+    Answer(IpAddr),
+}
+
+#[cfg(test)]
 fn decoded_answer(name: &str, packet: &[u8], _: SocketAddr) -> Option<IpAddr> {
+    match inspect_answer(name, packet) {
+        PacketAnswer::Answer(address) => Some(address),
+        _ => None,
+    }
+}
+
+fn inspect_answer(name: &str, packet: &[u8]) -> PacketAnswer {
+    inspect_dns_answer(name, packet).unwrap_or(PacketAnswer::Malformed)
+}
+
+fn inspect_dns_answer(name: &str, packet: &[u8]) -> Option<PacketAnswer> {
     // The upstream private decoder reports an AAAA record as its IPv4 sender.
     // Read only IN/A RDATA here; a sender address is never an advertised answer.
     let mut cursor = DnsCursor { packet, offset: 0 };
     let header = cursor.take(12)?;
     let flags = u16::from_be_bytes([header[2], header[3]]);
+    if flags & 0x8000 == 0 {
+        return Some(PacketAnswer::Query);
+    }
     if flags & 0xf80f != 0x8000 {
-        return None; // response, standard opcode, successful result
+        return Some(PacketAnswer::Unsupported);
     }
     let questions = u16::from_be_bytes([header[4], header[5]]);
     let answers = u16::from_be_bytes([header[6], header[7]]);
@@ -695,19 +733,24 @@ fn decoded_answer(name: &str, packet: &[u8], _: SocketAddr) -> Option<IpAddr> {
         cursor.name()?;
         cursor.take(4)?;
     }
+    let mut matching_name = false;
     for _ in 0..answers {
         let answer = cursor.answer()?;
-        if answer.kind == 1
-            && answer.class & 0x7fff == 1
-            && answer.ttl > 0
-            && answer.name.eq_ignore_ascii_case(name.as_bytes())
-        {
+        if !answer.name.eq_ignore_ascii_case(name.as_bytes()) {
+            continue;
+        }
+        matching_name = true;
+        if answer.kind == 1 && answer.class & 0x7fff == 1 && answer.ttl > 0 {
             if let Ok(octets) = <[u8; 4]>::try_from(answer.data) {
-                return Some(Ipv4Addr::from(octets).into());
+                return Some(PacketAnswer::Answer(Ipv4Addr::from(octets).into()));
             }
         }
     }
-    None
+    Some(if answers > 0 && !matching_name {
+        PacketAnswer::WrongName
+    } else {
+        PacketAnswer::NoMatchingA
+    })
 }
 
 struct DnsCursor<'a> {
@@ -811,6 +854,7 @@ fn dns_name(packet: &[u8], mut offset: usize) -> Option<(Vec<u8>, usize)> {
     None
 }
 
+#[cfg(test)]
 fn validated_answer(
     name: &str,
     packet: &[u8],
@@ -828,6 +872,7 @@ fn validated_answer(
     )
 }
 
+#[cfg(test)]
 fn validated_answer_for_platform(
     name: &str,
     packet: &[u8],
@@ -839,6 +884,16 @@ fn validated_answer_for_platform(
     let Some(IpAddr::V4(address)) = decoded_answer(name, packet, source) else {
         return Ok(None);
     };
+    validated_address_for_platform(address, source, arrival, interfaces, require_arrival).map(Some)
+}
+
+fn validated_address_for_platform(
+    address: Ipv4Addr,
+    source: SocketAddr,
+    arrival: Option<u32>,
+    interfaces: &[LanInterface],
+    require_arrival: bool,
+) -> Result<IpAddr, AnswerRejection> {
     if require_arrival && arrival.is_none() {
         return Err(AnswerRejection::MissingArrival);
     }
@@ -864,7 +919,7 @@ fn validated_answer_for_platform(
     if !on_lan {
         return Err(AnswerRejection::OffSubnet);
     }
-    Ok(Some(address.into()))
+    Ok(address.into())
 }
 
 #[cfg(test)]
@@ -886,28 +941,75 @@ async fn resolve_remembered_with(
     session_id: &str,
     remembered: Option<Ipv4Addr>,
 ) -> Result<Vec<IpAddr>, ResolveFailure> {
+    let (result, report) =
+        resolve_observed_with(name, interfaces, transport, timeout, remembered).await;
+    super::diagnostic(session_id, &report.summary(&result));
+    result
+}
+
+async fn resolve_observed_with(
+    name: &str,
+    interfaces: &[LanInterface],
+    transport: &impl Transport,
+    timeout: Duration,
+    remembered: Option<Ipv4Addr>,
+) -> (Result<Vec<IpAddr>, ResolveFailure>, RoundDiagnostics) {
+    let mut report = RoundDiagnostics::new(interfaces, timeout);
+    let health = transport.receive_health();
     let deadline = tokio::time::Instant::now() + timeout;
+    let result = query_interfaces(
+        name,
+        interfaces,
+        transport,
+        deadline,
+        remembered,
+        &mut report,
+    )
+    .await;
+    if let (Some(before), Some(after)) = (health, transport.receive_health()) {
+        report.shared_receiver = true;
+        report.receive_errors = after.errors.saturating_sub(before.errors);
+        report.receive_lagged = after.lagged.saturating_sub(before.lagged);
+    }
+    (result, report)
+}
+
+async fn query_interfaces(
+    name: &str,
+    interfaces: &[LanInterface],
+    transport: &impl Transport,
+    deadline: tokio::time::Instant,
+    remembered: Option<Ipv4Addr>,
+    report: &mut RoundDiagnostics,
+) -> Result<Vec<IpAddr>, ResolveFailure> {
     if interfaces.is_empty() {
+        report.stop = "no-interfaces";
         return Err(ResolveFailure::NoLanInterfaces);
     }
     let joined = interfaces
         .iter()
-        .filter(|interface| transport.join(interface).is_ok())
+        .filter(|interface| {
+            let joined = transport.join(interface).is_ok();
+            if joined {
+                report.joined(interface);
+            }
+            joined
+        })
         .cloned()
         .collect::<Vec<_>>();
-    super::diagnostic_debug(
-        session_id,
-        &format!(
-            "mdns-query eligible_interfaces={} joined_interfaces={} failed_interfaces={}",
-            interfaces.len(),
-            joined.len(),
-            interfaces.len() - joined.len()
-        ),
-    );
     if joined.is_empty() {
+        report.stop = "join-failed";
         return Err(ResolveFailure::SocketUnavailable);
     }
-    query_round(name, &joined, transport, session_id, deadline, remembered).await
+    let query = query_bytes(name);
+    let successes = send_queries(&joined, transport, &query, deadline, report).await;
+    let direct_sent =
+        send_remembered_query(&joined, transport, &query, deadline, remembered, report).await;
+    if successes == 0 && !direct_sent {
+        report.stop = "send-failed";
+        return Err(ResolveFailure::SocketUnavailable);
+    }
+    receive_answers(name, &joined, transport, &query, deadline, report).await
 }
 
 async fn send_queries(
@@ -915,42 +1017,18 @@ async fn send_queries(
     transport: &impl Transport,
     query: &[u8],
     deadline: tokio::time::Instant,
+    report: &mut RoundDiagnostics,
 ) -> usize {
     let mut successes = 0;
     for interface in interfaces {
-        if matches!(
-            tokio::time::timeout_at(deadline, transport.send(interface, query)).await,
-            Ok(Ok(()))
-        ) {
+        let result = tokio::time::timeout_at(deadline, transport.send(interface, query)).await;
+        let succeeded = matches!(result, Ok(Ok(())));
+        report.sent(interface, succeeded, result.is_err());
+        if succeeded {
             successes += 1;
         }
     }
     successes
-}
-
-async fn query_round(
-    name: &str,
-    interfaces: &[LanInterface],
-    transport: &impl Transport,
-    session_id: &str,
-    deadline: tokio::time::Instant,
-    remembered: Option<Ipv4Addr>,
-) -> Result<Vec<IpAddr>, ResolveFailure> {
-    let query = query_bytes(name);
-    let successes = send_queries(interfaces, transport, &query, deadline).await;
-    let direct_sent =
-        send_remembered_query(interfaces, transport, &query, deadline, remembered).await;
-    super::diagnostic_debug(
-        session_id,
-        &format!(
-            "mdns-query sent_interfaces={successes} failed_sends={}",
-            interfaces.len() - successes
-        ),
-    );
-    if successes == 0 && !direct_sent {
-        return Err(ResolveFailure::SocketUnavailable);
-    }
-    receive_answers(name, interfaces, transport, &query, deadline, session_id).await
 }
 
 async fn send_remembered_query(
@@ -959,6 +1037,7 @@ async fn send_remembered_query(
     query: &[u8],
     deadline: tokio::time::Instant,
     remembered: Option<Ipv4Addr>,
+    report: &mut RoundDiagnostics,
 ) -> bool {
     let Some(peer) = remembered.filter(|peer| local_ipv4(*peer) && usable_ipv4(*peer)) else {
         return false;
@@ -971,10 +1050,11 @@ async fn send_remembered_query(
     };
     // The remembered address is only a destination for this fresh UUID.local
     // question. It never enters the answer path, and retries remain multicast.
-    matches!(
-        tokio::time::timeout_at(deadline, transport.send_to_peer(interface, query, peer)).await,
-        Ok(Ok(()))
-    )
+    let result =
+        tokio::time::timeout_at(deadline, transport.send_to_peer(interface, query, peer)).await;
+    let succeeded = matches!(result, Ok(Ok(())));
+    report.direct(interface, succeeded, result.is_err());
+    succeeded
 }
 
 async fn receive_answers(
@@ -983,27 +1063,32 @@ async fn receive_answers(
     transport: &impl Transport,
     query: &[u8],
     deadline: tokio::time::Instant,
-    session_id: &str,
+    report: &mut RoundDiagnostics,
 ) -> Result<Vec<IpAddr>, ResolveFailure> {
     let mut answers = Vec::new();
     let mut answer_deadline = None;
-    let mut rejected = HashSet::new();
     let mut retry =
         tokio::time::interval_at(tokio::time::Instant::now() + RETRY_INTERVAL, RETRY_INTERVAL);
     loop {
         let wake = answer_deadline.unwrap_or(deadline).min(deadline);
         tokio::select! {
             biased;
-            _ = tokio::time::sleep_until(wake) => return resolved_or(answers, rejection_failure(&rejected)),
-            _ = retry.tick() => { send_queries(interfaces, transport, query, deadline).await; }
-            received = receive_datagram(transport) => {
+            _ = tokio::time::sleep_until(wake) => {
+                report.stop = if wake == deadline { "deadline" } else { "answer-grace" };
+                let failure = if report.has_rejections() { ResolveFailure::AnswerRejected } else { ResolveFailure::Unresolved };
+                return resolved_or(answers, failure);
+            },
+            _ = retry.tick() => {
+                diagnostics::add(&mut report.retries, 1);
+                send_queries(interfaces, transport, query, deadline, report).await;
+            }
+            received = receive_observed(transport, report) => {
                 let Ok(datagram) = received else {
+                    report.stop = "receive-failed";
                     return resolved_or(answers, ResolveFailure::SocketUnavailable);
                 };
-                if let Some(address) = accept_answer(name, &datagram, interfaces, &mut rejected, session_id) {
-                    if !answers.contains(&address) {
-                        answers.push(address);
-                    }
+                if let Some(address) = accept_answer(name, &datagram, interfaces, report) {
+                    if !answers.contains(&address) { answers.push(address); }
                     answer_deadline.get_or_insert_with(|| tokio::time::Instant::now() + ANSWER_GRACE);
                 }
             }
@@ -1011,11 +1096,21 @@ async fn receive_answers(
     }
 }
 
-fn rejection_failure(rejected: &HashSet<AnswerRejection>) -> ResolveFailure {
-    if rejected.is_empty() {
-        ResolveFailure::Unresolved
-    } else {
-        ResolveFailure::AnswerRejected
+async fn receive_observed(
+    transport: &impl Transport,
+    report: &mut RoundDiagnostics,
+) -> io::Result<Datagram> {
+    loop {
+        match transport.receive().await {
+            Ok(datagram) => return Ok(datagram),
+            Err(error) => {
+                diagnostics::add(&mut report.receive_errors, 1);
+                if socket_gone(&error) {
+                    return Err(error);
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
     }
 }
 
@@ -1023,24 +1118,26 @@ fn accept_answer(
     name: &str,
     datagram: &Datagram,
     interfaces: &[LanInterface],
-    rejected: &mut HashSet<AnswerRejection>,
-    session_id: &str,
+    report: &mut RoundDiagnostics,
 ) -> Option<IpAddr> {
-    match validated_answer(
-        name,
-        &datagram.packet,
+    let outcome = inspect_answer(name, &datagram.packet);
+    report.packet(datagram, outcome, interfaces);
+    let PacketAnswer::Answer(IpAddr::V4(address)) = outcome else {
+        return None;
+    };
+    match validated_address_for_platform(
+        address,
         datagram.source,
         datagram.arrival,
         interfaces,
+        cfg!(target_os = "linux"),
     ) {
-        Ok(address) => address,
+        Ok(address) => {
+            report.accepted();
+            Some(address)
+        }
         Err(reason) => {
-            if rejected.insert(reason) {
-                super::diagnostic(
-                    session_id,
-                    &format!("mdns-answer-rejected reason={}", reason.code()),
-                );
-            }
+            report.rejected(reason);
             None
         }
     }
@@ -1648,6 +1745,7 @@ mod tests {
         sent: Mutex<Vec<Ipv4Addr>>,
         direct_sent: Mutex<Vec<(Ipv4Addr, Ipv4Addr)>>,
         direct_reply: Option<Datagram>,
+        failed_direct: bool,
         failed_join: Option<Ipv4Addr>,
         failed_send: Option<Ipv4Addr>,
         reply_delay: Duration,
@@ -1683,6 +1781,7 @@ mod tests {
                 sent: Mutex::new(Vec::new()),
                 direct_sent: Mutex::default(),
                 direct_reply: None,
+                failed_direct: false,
                 failed_join: None,
                 failed_send: None,
                 reply_delay: Duration::ZERO,
@@ -1768,6 +1867,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((interface.address, peer));
+            if self.failed_direct {
+                return Err(io::Error::other("synthetic direct egress failure"));
+            }
             if let Some(reply) = &self.direct_reply {
                 self.sender.send(reply.clone()).unwrap();
             }
@@ -2522,4 +2624,5 @@ mod tests {
         .await
         .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
     }
+    include!("mdns/diagnostics_tests.rs");
 }

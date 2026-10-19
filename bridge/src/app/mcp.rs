@@ -878,3 +878,7 @@ mod pr_error_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/runtime/mcp_wait_timing.rs"]
+mod wait_timing_tests;

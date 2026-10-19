@@ -23,7 +23,7 @@ const switcherHits = (page) => page.evaluate(() => {
     glyphX: switcher.querySelector("svg").getBoundingClientRect().left - view.left };
 });
 
-for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directory of [true, false]) {
+for (const width of [390, 901, 1280]) for (const inset of [0, 20]) for (const directory of [true, false]) {
   it(`keeps the unread badge off the switcher hit area at ${width}px, safe-area ${inset}px, rail ${directory}`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       const cdp = await page.context().newCDPSession(page);
@@ -37,11 +37,11 @@ for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directo
       }, directory);
       await settle(page);
       const before = await switcherHits(page);
-      expect(before.width).toBe(44);
+      expect(before.width).toBe(24);
       expect(before.height).toBe(44);
-      expect(before.glyphX).toBe(60 + inset);
-      expect(before.hits).toHaveLength(44 * 44);
-      expect(before.hits.some((hit) => hit.owned)).toBe(true);
+      expect(before.glyphX).toBe(40.5 + (directory ? 0 : inset));
+      expect(before.hits).toHaveLength(24 * 44);
+      expect(before.hits.filter((hit) => !hit.owned)).toEqual([]);
 
       await page.evaluate(() => {
         document.querySelector("#inbox-open").classList.add("has-attention");
@@ -49,13 +49,11 @@ for (const width of [901, 1280]) for (const inset of [0, 20]) for (const directo
       });
       await settle(page);
       const after = await switcherHits(page);
-      expect(after.width).toBe(44);
+      expect(after.width).toBe(24);
       expect(after.height).toBe(44);
       expect(after.glyphX).toBe(before.glyphX);
-      // Rounded corners already exclude a few pixel centres. The badge must
-      // leave every point in the existing switcher hit shape reachable.
-      const blocked = after.hits.filter((hit, index) => before.hits[index].owned && !hit.owned);
-      expect(blocked.length, JSON.stringify(blocked.slice(0, 3))).toBe(0);
+      expect(after.hits).toHaveLength(24 * 44);
+      expect(after.hits.filter((hit) => !hit.owned)).toEqual([]);
 
       const inboxPoints = await page.locator("#inbox-open").evaluate((button) => {
         const box = button.getBoundingClientRect();

@@ -19,7 +19,6 @@ test("the desktop app opens the production web client", () => {
 const PUBLIC_URLS = [
   "https://getbuild.ing/",
   "https://getbuild.ing/docs/guide",
-  "https://getbuild.ing/app/",
   "https://getbuild.ing/auth/passkey?next=%2Fapp%2F",
   "https://getbuild.ing/oauth/token",
   "https://getbuild.ing/app/downloads",
@@ -31,6 +30,8 @@ const PUBLIC_URLS = [
   "https://getbuild.ing/api/../docs",
   "https://getbuild.ing/api-other/devices",
 ];
+
+const APP_ALIASES = ["https://getbuild.ing/app", "https://getbuild.ing/app/", "https://getbuild.ing/app/?source=web#/tasks/42"];
 
 const SIGN_IN_URL = "https://getbuild.ing/auth/login?next=/app/&view=signin";
 const SIGN_IN_LOOKALIKE_URLS = [
@@ -176,7 +177,7 @@ test("the OAuth token authenticates the desktop document and API fetches", () =>
 });
 
 test("non-app requests receive no Bearer, including redirected headers", () => {
-  for (const url of [...PUBLIC_URLS, ...LOGOUT_LOOKALIKE_URLS, SIGN_IN_URL, ...SIGN_IN_LOOKALIKE_URLS, "https://getbuild.ing/auth/logout", "https://example.com/api/devices", "not a url"]) {
+  for (const url of [...PUBLIC_URLS, ...APP_ALIASES, ...LOGOUT_LOOKALIKE_URLS, SIGN_IN_URL, ...SIGN_IN_LOOKALIKE_URLS, "https://getbuild.ing/auth/logout", "https://example.com/api/devices", "not a url"]) {
     for (const authorizationName of ["Authorization", "authorization", "AUTHORIZATION"]) {
       const headers = { Accept: "text/html", [authorizationName]: "Bearer access-token" };
       for (const resourceType of ["mainFrame", "xhr"]) {
@@ -359,4 +360,31 @@ test("packaged binaries disable Electron escape hatches", async () => {
     onlyLoadAppFromAsar: true,
     grantFileProtocolExtraPrivileges: false,
   });
+});
+
+for (const eventName of ["will-navigate", "will-redirect", "window-open"]) {
+  test(`${eventName} normalizes exact web app aliases to the authenticated desktop URL`, () => {
+    for (const url of APP_ALIASES) {
+      assert.equal(classifyNavigation(url), "app-alias");
+      const { webContents, external, internal, signIn } = navigationHarness();
+      if (eventName === "window-open") webContents.openWindow({ url });
+      else {
+        let prevented = false;
+        webContents.emit(eventName, { preventDefault: () => { prevented = true; } }, url, false, true);
+        assert.equal(prevented, true);
+      }
+      assert.deepEqual(internal, [[APP_URL]]);
+      assert.deepEqual(external, []);
+      assert.deepEqual(signIn, []);
+    }
+  });
+}
+
+test("subframe redirects to app aliases are canceled without loading the main window", () => {
+  const { webContents, external, internal } = navigationHarness();
+  let prevented = false;
+  webContents.emit("will-redirect", { preventDefault: () => { prevented = true; } }, "https://getbuild.ing/app/", false, false);
+  assert.equal(prevented, true);
+  assert.deepEqual(internal, []);
+  assert.deepEqual(external, []);
 });

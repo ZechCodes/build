@@ -155,6 +155,12 @@ every verb live in `fixtures/api/v1/` and are checked by
 
 Everything else is queued to the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
+Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
+arrival order; its overflow answers retryable `busy`. The pool has eight
+workers and separate foreground/background queues, with at most two workers
+running background frames. Terminal lanes and immediate handlers run outside
+that eight-worker bound. A deferred handler releases the app lock during its
+external work, but retains its dispatch worker until it finishes.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -257,7 +263,46 @@ section on the blocking pool. A worker parked on the lock behind a slow frame
 would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
-and `Store` wraps its own connection mutex (`bridge/src/store.rs`).
+and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
+clones share that one SQLite connection: reads and writes serialize on its
+mutex even though the database uses WAL. Routed v1 handlers receive
+`&mut AppState`, and their Store calls can execute while the app mutex is held.
+`off_the_workers` protects runtime workers from blocking; it does not remove
+these serialization points.
+
+Some read-named verbs mutate state. Task list/detail reads can backfill stored
+records; project listing revives parked projects; workspace listing/detail
+can adopt legacy workspaces and refresh manifests; board reads reconcile
+attention and schedule cache/sweep work. Moving these handlers to a read lane
+requires separating those effects first. The push bus owns separate locks,
+but its current `app/facts.rs::entity_facts` source still takes the app mutex
+for state/thread facts before doing Git work outside it.
+
+`timing.rs::FrameClock` exposes total and app-hold histograms through
+`bridge.stats`, with queue/lock waits in slow-frame logs. SQLite time and the
+per-wire admission wait are not separately measured. The priority queues'
+`p95_ms` fields describe total frame duration, not queue wait alone.
+`bridge.stats` avoids the app lock in its handler but still queues for a
+dispatch worker.
+
+**Proposed concurrency boundary (#681; not implemented).**
+[`Bridge Concurrency Plan.md`](<planning/v2/Bridge Concurrency Plan.md>) records
+the verb inventory, minimal timing comparison and staged tests. SQL history/task
+reads move first to an independent WAL read pool, followed by immutable
+board/project/workspace/agent views. Reads never return capacity refusals;
+an exhausted SQL read pool waits on its own connections, never the app lock or
+writer. Snapshot/control frames bypass SQL admission at intake; the SPA paces
+SQL sends with per-session credits while views keep rendering from cache.
+Credits track the sending carrier and return once on reply, cancellation,
+carrier close, restored-path reset or opening end. Restore clears old SQL
+calls before resync; carrier release drops its queued SQL and discards running
+replies, preserving the existing opening-end conditions and usable replacements.
+Excess reads may backpressure their ordered carrier, delaying later frames not
+yet admitted. The target releases app/domain guards for SQL and external work, uses
+device → project → workspace write ownership, and orders successful writes
+commit → publish → stage changes → acknowledge. Failed saves cannot enter
+canonical views or emit their changes. The plan covers maintenance/autonomous
+writers and existing review publication fences before scoped parallel writes.
 
 Checkout-root refreshes use the reverse conversation lookup in
 `app/workspaces/mod.rs`. It filters candidates against the queried run before

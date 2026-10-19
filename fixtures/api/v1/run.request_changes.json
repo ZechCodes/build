@@ -70,7 +70,25 @@
         "has_terminal": true,
         "compact_at_tokens": 200000,
         "can_interrupt": true,
-        "created_at": "2026-09-13T09:00:00Z"
+        "created_at": "2026-09-13T09:00:00Z",
+        "compaction": {
+          "configured": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "inherited": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "active": null,
+          "enforcement": "unsupported",
+          "reason": "active_policy_unknown",
+          "pending_change": null
+        }
       }
     ],
     "auto_advance": false,

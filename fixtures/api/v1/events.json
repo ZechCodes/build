@@ -54,7 +54,25 @@
                 "can_interrupt": true,
                 "created_at": "2026-09-18T09:40:00Z",
                 "topic": null,
-                "title": "ship it"
+                "title": "ship it",
+                "compaction": {
+                  "configured": {
+                    "tokens": 200000,
+                    "source": {
+                      "kind": "device"
+                    }
+                  },
+                  "inherited": {
+                    "tokens": 200000,
+                    "source": {
+                      "kind": "device"
+                    }
+                  },
+                  "active": null,
+                  "enforcement": "unsupported",
+                  "reason": "active_policy_unknown",
+                  "pending_change": null
+                }
               }
             ],
             "working": true,
@@ -259,7 +277,74 @@
                 "name": "build",
                 "path": "/home/ada/code/build",
                 "base_branch": "main",
-                "is_git": true
+                "is_git": true,
+                "compaction_thresholds": {},
+                "compaction": {
+                  "inherited": {
+                    "claude": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "claude_adk": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex_app_server": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "pi": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    }
+                  },
+                  "effective": {
+                    "claude": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "claude_adk": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex_app_server": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "pi": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    }
+                  }
+                }
               }
             ]
           }
@@ -279,7 +364,7 @@
                 "harness": "claude_adk",
                 "since": "2026-09-20T21:30:47Z",
                 "resets_at": "2026-09-20T22:20:00Z",
-                "said": "You've hit your session limit \u00b7 resets 6:20pm (America/New_York)"
+                "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
               }
             ]
           }
@@ -318,7 +403,74 @@
                   }
                 ],
                 "entity_id": null,
-                "conversations": []
+                "conversations": [],
+                "compaction_thresholds": {},
+                "compaction": {
+                  "inherited": {
+                    "claude": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "claude_adk": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex_app_server": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "pi": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    }
+                  },
+                  "effective": {
+                    "claude": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "claude_adk": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "codex_app_server": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    },
+                    "pi": {
+                      "tokens": 200000,
+                      "source": {
+                        "kind": "device"
+                      }
+                    }
+                  }
+                }
               }
             ]
           }
@@ -524,6 +676,32 @@
           }
         }
       ]
+    },
+    {
+      "type": "compaction.changed",
+      "scope": "device",
+      "owner_id": null
+    },
+    {
+      "type": "compaction.changed",
+      "scope": "project",
+      "owner_id": "proj-1"
+    },
+    {
+      "type": "compaction.changed",
+      "scope": "workspace",
+      "owner_id": "ws-3f2a91c4"
+    },
+    {
+      "type": "compaction.changed",
+      "scope": "conversation",
+      "owner_id": "agent-2"
     }
-  ]
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "event": "compaction.changed",
+    "payload": "Scope/owner invalidation only; refresh authoritative settings and held agent records."
+  }
 }

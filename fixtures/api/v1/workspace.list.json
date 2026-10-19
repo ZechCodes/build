@@ -73,6 +73,73 @@
           "pruned_bytes": 0,
           "pruned_at_ms": null,
           "noticed_at_ms": 1789916700000
+        },
+        "compaction_thresholds": {},
+        "compaction": {
+          "inherited": {
+            "claude": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "claude_adk": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex_app_server": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "pi": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            }
+          },
+          "effective": {
+            "claude": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "claude_adk": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex_app_server": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "pi": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            }
+          }
         }
       },
       {
@@ -98,7 +165,74 @@
           }
         ],
         "entity_id": null,
-        "conversations": []
+        "conversations": [],
+        "compaction_thresholds": {},
+        "compaction": {
+          "inherited": {
+            "claude": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "claude_adk": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex_app_server": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "pi": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            }
+          },
+          "effective": {
+            "claude": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "claude_adk": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex_app_server": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "pi": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            }
+          }
+        }
       }
     ]
   },
@@ -186,6 +320,73 @@
               "version": 3,
               "status": "open",
               "latest_published_snapshot_id": "snapshot-1"
+            },
+            "compaction_thresholds": {},
+            "compaction": {
+              "inherited": {
+                "claude": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "claude_adk": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "codex": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "codex_app_server": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "pi": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                }
+              },
+              "effective": {
+                "claude": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "claude_adk": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "codex": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "codex_app_server": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                },
+                "pi": {
+                  "tokens": 200000,
+                  "source": {
+                    "kind": "device"
+                  }
+                }
+              }
             }
           }
         ]

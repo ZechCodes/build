@@ -38,7 +38,25 @@
       "name": "Rail scroll",
       "thread_id": "thread:agent-2:fresh",
       "thread_generation_revision": 1,
-      "max_context_tokens": 150000
+      "max_context_tokens": 150000,
+      "compaction": {
+        "configured": {
+          "tokens": 150000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "inherited": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "active": null,
+        "enforcement": "unsupported",
+        "reason": "active_policy_unknown",
+        "pending_change": null
+      }
     },
     "thread": {
       "id": "thread:agent-2:fresh",

@@ -1,0 +1,109 @@
+{
+  "method": "project.set_compaction",
+  "since": "3.22.0",
+  "params": {
+    "project_id": "proj-1",
+    "compaction_thresholds": {
+      "claude": 150000,
+      "codex": null
+    }
+  },
+  "result": {
+    "project_id": "proj-1",
+    "name": "build",
+    "path": "/home/ada/code/build",
+    "base_branch": "main",
+    "is_git": true,
+    "remote": "git@github.com:ada/build.git",
+    "isolation": "worktree",
+    "isolation_default": "worktree",
+    "isolation_effective": "worktree",
+    "isolation_available": {
+      "rift": false,
+      "reason": "rift is not installed on this device"
+    },
+    "compaction_thresholds": {
+      "claude": 150000
+    },
+    "compaction": {
+      "inherited": {
+        "claude": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "claude_adk": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex_app_server": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "pi": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        }
+      },
+      "effective": {
+        "claude": {
+          "tokens": 150000,
+          "source": {
+            "kind": "project",
+            "id": "proj-1"
+          }
+        },
+        "claude_adk": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex_app_server": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "pi": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        }
+      }
+    }
+  },
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "fields": [
+      "compaction_thresholds",
+      "compaction"
+    ]
+  }
+}

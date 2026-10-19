@@ -3,7 +3,7 @@
   "since": "1.0.0",
   "params": {},
   "result": {
-    "api_version": "3.21.0",
+    "api_version": "3.22.0",
     "capabilities": [
       "agent.add",
       "agent.attach",
@@ -38,6 +38,7 @@
       "changes.subscribe",
       "changes.subscriptions",
       "changes.unsubscribe",
+      "compaction.harnessThresholds",
       "conversation.reset",
       "conversation.settings",
       "conversation.unwatch",
@@ -97,6 +98,7 @@
       "project.init_git",
       "project.list",
       "project.remove_source",
+      "project.set_compaction",
       "project.set_isolation",
       "project.set_remote",
       "project.sync_source",
@@ -212,6 +214,7 @@
       "workspace.remove_directory",
       "workspace.rename",
       "workspace.retry",
+      "workspace.set_compaction",
       "workspace.set_locked",
       "workspaces.lifecycle",
       "workspaces.reclaimBranches",
@@ -223,7 +226,8 @@
       "bridge.update_status",
       "models.changed",
       "rtc.diagnostics",
-      "harnesses.changed"
+      "harnesses.changed",
+      "compaction.changed"
     ],
     "coalesce_window_ms": 250,
     "changes": {
@@ -279,5 +283,15 @@
     "task_field": {
       "watch_started_after": "Optional timeline entry ID; omitted or null for an origin watch. Legacy tasks can derive their latest Watched event."
     }
+  },
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "optional_params": {
+      "capabilities": [
+        "compaction.harnessThresholds"
+      ]
+    },
+    "negotiation": "Send opt-in only after a current greeting announces compaction.harnessThresholds. Initial hello retains its legacy shape. Refresh authoritative records after opt-in."
   }
 }

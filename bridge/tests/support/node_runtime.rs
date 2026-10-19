@@ -41,6 +41,14 @@ fn resolve_node(path: &OsStr, override_path: Option<&OsStr>) -> Result<PathBuf, 
         .ok_or_else(|| NODE_HINT.into())
 }
 
+fn resolve_node_with_probe(
+    path: &OsStr,
+    override_path: Option<&OsStr>,
+    _probe: impl FnOnce() -> std::io::Result<std::process::Output>,
+) -> Result<PathBuf, String> {
+    resolve_node(path, override_path)
+}
+
 fn command_with_node(home: &Path, node: &Path, path: &OsStr) -> Command {
     // The owned alias also handles overrides named node22: MCP's env-node
     // shebang must use the very same executable as the extension driver.
@@ -77,6 +85,58 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::path::Path;
+
+    #[test]
+    fn shim_only_path_resolves_once_with_parent_environment_before_isolation() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = executable(temp.path(), "native/node22");
+        let shim = executable(temp.path(), "mise/shims/node");
+        std::fs::write(&shim, "#!/bin/sh\n[ \"$1\" = -p ] && [ \"$2\" = process.execPath ] || exit 9\nprintf '%s\\n' \"$TEST_PARENT_NODE\"\n").unwrap();
+        let path = shim.parent().unwrap().as_os_str();
+        let calls = std::cell::Cell::new(0);
+        let resolved = resolve_node_with_probe(path, None, || {
+            calls.set(calls.get() + 1);
+            Command::new("node").args(["-p", "process.execPath"])
+                .env_clear().env("HOME", temp.path()).env("PATH", path)
+                .env("TEST_PARENT_NODE", &native).output()
+        }).unwrap();
+        assert_eq!(resolved, native);
+        assert_eq!(calls.get(), 1);
+        let child = command_with_node(temp.path(), &resolved, path);
+        assert!(!child.get_envs().any(|(name, _)| name == "TEST_PARENT_NODE"));
+    }
+
+    #[test]
+    fn fallback_rejects_failure_invalid_output_and_all_shim_targets() {
+        use std::os::unix::process::ExitStatusExt;
+        let temp = tempfile::tempdir().unwrap();
+        let shim = executable(temp.path(), "custom/shims/node");
+        let alias = temp.path().join("alias-node");
+        symlink(&shim, &alias).unwrap();
+        let path = temp.path().join("missing");
+        for stdout in [b"relative/node\n".to_vec(), Vec::new(), vec![255], shim.as_os_str().as_encoded_bytes().to_vec(), alias.as_os_str().as_encoded_bytes().to_vec()] {
+            let error = resolve_node_with_probe(path.as_os_str(), None, || Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(0), stdout, stderr: Vec::new(),
+            })).unwrap_err();
+            assert!(error.contains("process.execPath") && error.contains("BUILD_TEST_NODE"), "{error}");
+        }
+        let error = resolve_node_with_probe(path.as_os_str(), None, || Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(7 << 8), stdout: Vec::new(), stderr: b"private diagnostic".to_vec(),
+        })).unwrap_err();
+        assert!(error.contains("failed") && !error.contains("private diagnostic"), "{error}");
+        assert!(resolve_node_with_probe(path.as_os_str(), None, || Err(std::io::Error::other("spawn failed"))).unwrap_err().contains("process.execPath"));
+    }
+
+    #[test]
+    fn overrides_and_native_path_never_invoke_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let native = executable(temp.path(), "native/node");
+        let path = native.parent().unwrap().as_os_str();
+        let never = || panic!("fallback must not run");
+        assert_eq!(resolve_node_with_probe(path, None, never).unwrap(), native);
+        assert_eq!(resolve_node_with_probe(OsStr::new(""), Some(native.as_os_str()), never).unwrap(), native);
+        assert!(resolve_node_with_probe(path, Some(OsStr::new("relative")), never).is_err());
+    }
 
     fn executable(root: &Path, name: &str) -> PathBuf {
         let path = root.join(name);

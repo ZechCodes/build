@@ -860,6 +860,12 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
 .tbmenu-head button { flex:none; min-height:44px; border:0; padding:0 8px;
   background:none; color:var(--accent); font:inherit; cursor:pointer; }
 @media (max-width:760px) {
+  /* A 44px phone hit area uses the blank margin left of the floating inbox,
+     ending exactly where the chevron's 44px target begins. Keep native window
+     control reservations intact when this width belongs to a desktop window. */
+  :root:not([data-window-controls-overlay]) #inbox-open::before {
+    content:""; position:absolute; inset:-8px 0 -8px -16px; }
+
   .tbmenu { left:0!important; right:0; width:100%; border-radius:10px 10px 0 0;
     padding:6px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .tbmenu .mi { min-height:44px; justify-content:center; }
@@ -1730,11 +1736,6 @@ body.gated #inbox-rail { display:none; }
 
 /* ---- narrow viewports: the inbox overlays, as the project rail used to ---- */
 @media (max-width: 900px) {
-  /* A 44px phone hit area uses the blank margin left of the floating inbox,
-     ending exactly where the chevron's 44px target begins. Keep native window
-     control reservations intact when this width belongs to a desktop window. */
-  :root:not([data-window-controls-overlay]) #inbox-open::before {
-    content:""; position:absolute; inset:-8px 0 -8px -16px; }
   body { --inbox-space:0px; }
   #inbox-rail { position:absolute; left:0; top:var(--global-head);
     bottom:0; height:auto; margin:0; z-index:40;

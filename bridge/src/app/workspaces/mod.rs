@@ -1191,7 +1191,21 @@ pub(in crate::app) fn is_scratch_checkout(
         || (path_within(path, temp_root) && !path_within(repo_path, temp_root))
 }
 
+#[cfg(test)]
+thread_local! {
+    static PATH_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::app) fn count_path_comparisons<T>(read: impl FnOnce() -> T) -> (T, usize) {
+    let previous = PATH_COMPARISONS.replace(0);
+    let value = read();
+    (value, PATH_COMPARISONS.replace(previous))
+}
+
 pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
+    #[cfg(test)]
+    PATH_COMPARISONS.with(|count| count.set(count.get() + 1));
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,

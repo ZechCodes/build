@@ -41,7 +41,7 @@ for (const width of [390, 901, 1280]) for (const inset of [0, 20]) for (const di
       expect(before.height).toBe(44);
       expect(before.glyphX).toBe(40.5 + (directory ? 0 : inset));
       expect(before.hits).toHaveLength(24 * 44);
-      expect(before.hits.some((hit) => hit.owned)).toBe(true);
+      expect(before.hits.filter((hit) => !hit.owned)).toEqual([]);
 
       await page.evaluate(() => {
         document.querySelector("#inbox-open").classList.add("has-attention");
@@ -52,10 +52,8 @@ for (const width of [390, 901, 1280]) for (const inset of [0, 20]) for (const di
       expect(after.width).toBe(24);
       expect(after.height).toBe(44);
       expect(after.glyphX).toBe(before.glyphX);
-      // Rounded corners already exclude a few pixel centres. The badge must
-      // leave every point in the existing switcher hit shape reachable.
-      const blocked = after.hits.filter((hit, index) => before.hits[index].owned && !hit.owned);
-      expect(blocked.length, JSON.stringify(blocked.slice(0, 3))).toBe(0);
+      expect(after.hits).toHaveLength(24 * 44);
+      expect(after.hits.filter((hit) => !hit.owned)).toEqual([]);
 
       const inboxPoints = await page.locator("#inbox-open").evaluate((button) => {
         const box = button.getBoundingClientRect();

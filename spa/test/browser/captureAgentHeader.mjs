@@ -32,6 +32,16 @@ try {
           }, theme);
           await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
           await page.screenshot({ path: join(directory, `agent-${view}-${name}-${theme}.png`) });
+          if (view === "header") {
+            const switcher = page.locator(".tb-switch");
+            await switcher.hover();
+            await page.screenshot({ path: join(directory, `agent-chevron-hover-${name}-${theme}.png`) });
+            await page.mouse.move(0, 0);
+            await page.keyboard.press("Tab");
+            await switcher.focus();
+            await page.screenshot({ path: join(directory, `agent-chevron-focus-${name}-${theme}.png`) });
+            await switcher.evaluate((button) => button.blur());
+          }
         }
       }
     }, { width, height: 844 });

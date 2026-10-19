@@ -9,6 +9,7 @@ afterAll(async () => { await session?.close(); });
 async function appearance(control) {
   return control.evaluate((element) => {
     const style = getComputedStyle(element);
+    const focusStyle = element.matches(".tb-switch") ? getComputedStyle(element, "::before") : style;
     const { x, y, width, height } = element.getBoundingClientRect();
     const probe = document.createElement("span");
     probe.style.color = "var(--accent)";
@@ -16,7 +17,7 @@ async function appearance(control) {
     const accent = getComputedStyle(probe).color;
     probe.remove();
     return { colour: style.color, background: style.backgroundColor, shadow: style.boxShadow,
-      outline: style.outlineStyle, outlineWidth: parseFloat(style.outlineWidth), outlineColour: style.outlineColor,
+      outline: focusStyle.outlineStyle, outlineWidth: parseFloat(focusStyle.outlineWidth), outlineColour: focusStyle.outlineColor,
       accent, bounds: { x, y, width, height },
       icons: [...element.querySelectorAll("svg, .tb-caret")].map((icon) => getComputedStyle(icon).color) };
   });

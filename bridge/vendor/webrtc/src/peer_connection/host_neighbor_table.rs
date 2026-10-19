@@ -37,10 +37,16 @@ impl Table {
             return Ok(());
         }
         let pressure = fields.pressure()?;
-        if self.pressure.is_some() {
-            return Err(invalid_dump());
+        if let Some(previous) = &mut self.pressure {
+            // A multipart kernel dump can repeat the global config as its
+            // interface cursor resumes. Keep the most restrictive pressure
+            // evidence if entries or thresholds change between those samples.
+            previous.entries = previous.entries.max(pressure.entries);
+            previous.gc_thresh2 = previous.gc_thresh2.min(pressure.gc_thresh2);
+            previous.gc_thresh3 = previous.gc_thresh3.min(pressure.gc_thresh3);
+        } else {
+            self.pressure = Some(pressure);
         }
-        self.pressure = Some(pressure);
         Ok(())
     }
 
@@ -150,6 +156,31 @@ mod tests {
     }
 
     #[test]
+    fn repeated_global_configs_preserve_the_most_conservative_pressure() {
+        for samples in [
+            [(92, 512, 1024), (92, 512, 1024)],
+            [(900, 768, 1024), (100, 512, 2048)],
+            [(100, 512, 2048), (900, 768, 1024)],
+        ] {
+            let mut table = Table::new();
+            for (entries, second, third) in samples {
+                table
+                    .observe(&payload(2, b"arp_cache\0", entries, second, third))
+                    .unwrap();
+            }
+            let pressure = table.finish().unwrap();
+            assert_eq!(
+                (pressure.entries, pressure.gc_thresh2, pressure.gc_thresh3),
+                (
+                    samples[0].0.max(samples[1].0) as usize,
+                    samples[0].1.min(samples[1].1) as usize,
+                    samples[0].2.min(samples[1].2) as usize,
+                )
+            );
+        }
+    }
+
+    #[test]
     fn per_interface_parameters_and_other_families_do_not_substitute_global_config() {
         let mut table = Table::new();
         table
@@ -169,11 +200,8 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_or_missing_global_config_and_thresholds_fail_closed() {
+    fn missing_global_config_and_thresholds_fail_closed() {
         let good = payload(2, b"arp_cache\0", 900, 768, 1024);
-        let mut table = Table::new();
-        table.observe(&good).unwrap();
-        assert!(table.observe(&good).is_err());
         for missing_kind in [1u16, 3, 4, 5] {
             let mut filtered = vec![2, 0, 0, 0];
             let mut attributes = &good[4..];
@@ -233,6 +261,33 @@ mod tests {
             Table::new().observe(&short).err().unwrap().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn repeated_configs_still_validate_each_message_and_reject_duplicate_attributes() {
+        let good = payload(2, b"arp_cache\0", 900, 768, 1024);
+        for kind in [1, 3, 4, 5] {
+            let mut duplicate = good.clone();
+            duplicate.extend(attribute(kind, &[0; 4]));
+            let mut table = Table::new();
+            table.observe(&good).unwrap();
+            assert_eq!(
+                table.observe(&duplicate).err().unwrap().kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        for (entries, second, third) in [(1, 0, 1024), (1, 1025, 1024), (u32::MAX, 768, 1024)] {
+            let mut table = Table::new();
+            table.observe(&good).unwrap();
+            assert_eq!(
+                table
+                    .observe(&payload(2, b"arp_cache\0", entries, second, third))
+                    .err()
+                    .unwrap()
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
     }
 
     #[test]

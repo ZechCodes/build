@@ -19,10 +19,8 @@ Their touch targets meet at that gap's midpoint: the inbox keeps its 44×44px
 area and the chevron uses 24×44px, with no overlap or dead zone between them.
 The chevron owns that complete rectangle, corners included; a separate rounded
 visual layer carries its feedback without clipping the touch area.
-On a pinned phone conversation or Agents overview, the scrolling viewport
-begins below the header, keeping obscured controls from attracting toolbar taps.
-The initial content position is unchanged; content stops at the header instead
-of scrolling behind its translucent background.
+Pinned-phone conversations and the Agents overview keep scrolling beneath
+their translucent glass headers.
 
 Conversation bubbles use a custom tooltip for cached identity, current work,
 turn runtime or idle state, harness, model and status. It opens on hover and

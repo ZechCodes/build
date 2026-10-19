@@ -152,3 +152,56 @@ it("ignores a late response after the editor is disposed", async () => {
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect((await readCached(addresses.project())).value.compaction_thresholds.codex).toBe(150000);
 });
+
+it("preserves a focused clean input's caret when a new cached value arrives", async () => {
+  await mount();
+  const held = input(); held.focus(); held.setSelectionRange(2, 4, "backward");
+  await writeCached(addresses.project(), settings(250000));
+  await controller.read();
+  expect(input().value).toBe("250000");
+  expect(document.activeElement).toBe(held);
+  expect([held.selectionStart, held.selectionEnd, held.selectionDirection]).toEqual([2, 4, "backward"]);
+});
+
+it("shows the adapter's current-greeting rejection even while cached support is true", async () => {
+  const message = "Update the bridge to set compaction defaults by harness.";
+  await mount({ callRpc: async () => { throw Object.assign(new Error(message), { code: "unknown_method" }); } });
+  draft("180000"); save();
+  await vi.waitFor(() => expect(status().textContent).toBe(message));
+  expect(input().value).toBe("180000");
+  expect((await readCached(addresses.project())).value.compaction_thresholds.codex).toBe(150000);
+});
+
+it("displays actionable adapter messages as text", async () => {
+  const message = "<b>Compaction defaults need a valid project</b>";
+  await mount({ callRpc: async () => { throw new Error(message); } });
+  draft("180000"); save();
+  await vi.waitFor(() => expect(status().textContent).toContain(message));
+  expect(status().querySelector("b")).toBeNull();
+});
+
+it("retires subscriptions and pending saves when its section is removed", async () => {
+  let finish;
+  await mount({ callRpc: () => new Promise((resolve) => { finish = resolve; }) });
+  draft("180000"); save(); await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+  const section = document.querySelector("[data-compaction-editor]");
+  const held = input(); section.remove();
+  await Promise.resolve(); finish(settings(180000));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect((await readCached(addresses.project())).value.compaction_thresholds.codex).toBe(150000);
+  await writeCached(addresses.project(), settings(250000));
+  await writeCached(compactionSupportAddress("device"), { harnessThresholds: false });
+  await controller.read();
+  expect(held.value).toBe("180000");
+  expect(held.readOnly).toBe(false);
+});
+
+it("keeps a synchronously transplanted section subscribed", async () => {
+  await mount();
+  const section = document.querySelector("[data-compaction-editor]");
+  section.remove(); document.body.append(section);
+  await Promise.resolve();
+  await writeCached(addresses.project(), settings(250000));
+  await controller.read();
+  expect(input().value).toBe("250000");
+});

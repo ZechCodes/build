@@ -958,6 +958,7 @@ impl Subscription {
     /// covers is noted again, and the board lists it was to carry stay owed.
     fn requeue(&mut self, frame: &DueFrame, now: Instant) {
         self.pending_lists.merge(frame.lists);
+        self.restore_departures(&frame.removed);
         let covered = frame
             .items
             .iter()
@@ -989,6 +990,19 @@ impl Subscription {
             }
             if self.accepts_compaction() {
                 self.note_compaction(&item.compaction, now);
+            }
+        }
+    }
+
+    /// Taking a board frame advances `covered_last` before delivery. Put its
+    /// unsent departures back so the next board frame still owes them. Compare
+    /// against current membership on retry: an entity that returned must not
+    /// be removed alongside its fresh upsert. Set union also makes repeated
+    /// requeue of a frame's separate payloads idempotent.
+    fn restore_departures(&mut self, removed: &[String]) {
+        if self.spec.scope == Scope::All {
+            if let Some(covered) = &mut self.covered_last {
+                covered.extend(removed.iter().cloned());
             }
         }
     }

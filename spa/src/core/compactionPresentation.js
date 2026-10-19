@@ -25,6 +25,7 @@ export function compactionPendingLabel(compaction) {
 }
 
 export function compactionObservationCopy(compaction) {
+  if (!compaction) return "Update the bridge to set compaction defaults by harness.";
   const applied = compaction?.active ? `Applied at last start: ${compactionTokenLabel(compaction.active)}.` : "Applied setting unknown.";
   const fallback = compaction?.enforcement === "between_turn" ? COMPACTION_FALLBACK : "";
   const pending = compactionPendingLabel(compaction);

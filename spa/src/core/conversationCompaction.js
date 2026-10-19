@@ -5,7 +5,7 @@ export const COMPACT_OPTION_PREFIX = "compact:";
 const LIMITS = [null, 150000, 200000, 300000];
 const isCustomLimit = (limit) => positiveCompactionTokens(limit) && !LIMITS.includes(limit);
 const optionIdOf = (limit) => `${COMPACT_OPTION_PREFIX}${limit === null ? "default" : limit}`;
-const ownLimitOf = (agent) => agent?.max_context_tokens || null;
+const ownLimitOf = (agent) => agent?.max_context_tokens ?? null;
 const thresholdWord = (tokens) => tokens % 1000 === 0 ? `${tokens / 1000}k` : compactionTokenLabel({ tokens });
 
 export function compactionMenuOptions(agent) {
@@ -19,7 +19,8 @@ export function compactionMenuOptions(agent) {
   }));
   if (standing !== null && !positiveCompactionTokens(standing)) options.push({
     id: `${COMPACT_OPTION_PREFIX}observed`,
-    label: `Saved (${compactionTokenLabel(agent?.compaction?.configured)}; unsupported value)`,
+    label: standing === 0 ? "Setting from an older client"
+      : `Saved (${compactionTokenLabel(agent?.compaction?.configured)}; unsupported value)`,
     selected: true, disabled: true,
   });
   return options;
@@ -103,7 +104,7 @@ export function createCompactionChoice({ call, capture, write, onFailure = () =>
         const captured = await capture(entityId).catch(() => null);
         const reply = await ask(entityId, agent, maxContextTokens);
         if (!reply) return false;
-        onSaved();
+        onSaved(agent);
         if (!captured) return true;
         const fields = answeredFields(reply);
         // The bridge has it once it answers: a cache that cannot take the

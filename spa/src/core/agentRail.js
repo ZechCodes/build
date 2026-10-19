@@ -1091,7 +1091,7 @@ function mountRailOnContext(host, context, swap) {
     onFailure: (error) => {
       if (standing()) notifyCommandFailure(error, COMPACTION_REFUSED, COMPACTION_UNSUPPORTED);
     },
-    onSaved: () => { if (standing()) notifySuccess(COMPACTION_SAVED); },
+    onSaved: (agent) => { if (standing()) notifySuccess(agent.compaction ? COMPACTION_SAVED : "Saved."); },
   });
   let { projectAgent, standing: onProjectAgentRail } = projectAgentState(context);
   const { entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);

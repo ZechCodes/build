@@ -4424,9 +4424,20 @@ mod compaction_events {
         String,
         SubscriptionSpec,
     ) {
-        let bus = ChangeBus::new(Duration::ZERO);
-        let (sender, rx, key) = SessionSender::observable("rekind-overflow");
+        let listed = Arc::new(Mutex::new(vec!["run-old".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|_: &[FactsRequest]| Vec::new()),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("rekind-overflow");
         let mut subscription = spec(Kind::State);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        rx.try_recv().unwrap();
+        listed.lock().unwrap().clear();
         subscription.mode = Mode::Off;
         subscription.kinds.insert(Kind::Thread);
         if with_compaction {
@@ -4458,11 +4469,13 @@ mod compaction_events {
         let mut device = false;
         while let Ok(message) = rx.try_recv() {
             let frame = SessionSender::decrypt_push(key, &message);
-            board |= frame["items"].as_array().is_some_and(|items| {
-                items
-                    .iter()
-                    .any(|item| item["entity_id"] == BOARD_ITEM_ID && item.get("state").is_some())
-            });
+            if let Some(item) = frame["items"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["entity_id"] == BOARD_ITEM_ID))
+            {
+                assert_eq!(item["state"]["removed"], json!(["run-old"]));
+                board = item["state"].get("revision").is_some();
+            }
             device |= frame == compaction_changed_payload("device", None);
         }
         assert!(
@@ -4514,5 +4527,104 @@ mod compaction_events {
         bus.subscribe(&sender, subscription);
         assert_eq!(bus.deliver(due, Vec::new()), 0);
         assert_overflow_then_live(&bus, &mut rx, &key, true);
+    }
+
+    #[test]
+    fn review_requeue_preserves_departures_upserts_and_lists() {
+        let listed = Arc::new(Mutex::new(vec!["run-old".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|requests: &[FactsRequest]| {
+                requests
+                    .iter()
+                    .map(|request| EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        state: Some(if request.entity_id == BOARD_ITEM_ID {
+                            json!({"projects": [{"id": "project-new"}]})
+                        } else {
+                            json!({"status": "current"})
+                        }),
+                        ..EntityFacts::default()
+                    })
+                    .collect()
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("requeue-obligations");
+        let mut subscription = spec(Kind::State);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        rx.try_recv().unwrap();
+        *listed.lock().unwrap() = vec!["run-new".into()];
+        bus.note_entity("run-new");
+        bus.note_board_lists(BoardLists {
+            projects: true,
+            ..BoardLists::default()
+        });
+        let due = bus.take_due();
+        assert_eq!(due.frames[0].removed, vec!["run-old"]);
+        subscription.kinds.insert(Kind::Thread);
+        bus.subscribe(&sender, subscription.clone());
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        // A second interruption must not consume or duplicate the obligation.
+        let due = bus.take_due();
+        subscription.kinds.insert(Kind::CompactionChanged);
+        bus.subscribe(&sender, subscription);
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        assert_eq!(bus.flush(), 1);
+        let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        let items = frame["items"].as_array().unwrap();
+        let board = items
+            .iter()
+            .find(|item| item["entity_id"] == BOARD_ITEM_ID)
+            .unwrap();
+        assert_eq!(board["state"]["removed"], json!(["run-old"]));
+        assert_eq!(board["state"]["projects"], json!([{"id": "project-new"}]));
+        let upsert = items
+            .iter()
+            .find(|item| item["entity_id"] == "run-new")
+            .unwrap();
+        assert_eq!(upsert["state"]["status"], "current");
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        assert!(frame["items"][0]["state"].get("removed").is_none());
+    }
+
+    #[test]
+    fn review_requeue_does_not_remove_an_entity_that_returned_before_retry() {
+        let listed = Arc::new(Mutex::new(vec!["run-old".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|_: &[FactsRequest]| Vec::new()),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("requeue-returned");
+        let mut subscription = spec(Kind::State);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        rx.try_recv().unwrap();
+        listed.lock().unwrap().clear();
+        bus.note_board();
+        let due = bus.take_due();
+        assert_eq!(due.frames[0].removed, vec!["run-old"]);
+        subscription.kinds.insert(Kind::Thread);
+        bus.subscribe(&sender, subscription);
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        listed.lock().unwrap().push("run-old".into());
+        bus.note_entity("run-old");
+        assert_eq!(bus.flush(), 1);
+        let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        let items = frame["items"].as_array().unwrap();
+        let board = items
+            .iter()
+            .find(|item| item["entity_id"] == BOARD_ITEM_ID)
+            .unwrap();
+        assert!(board["state"].get("removed").is_none());
+        assert!(items.iter().any(|item| item["entity_id"] == "run-old"));
     }
 }

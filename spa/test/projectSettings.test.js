@@ -654,3 +654,25 @@ describe("keeping a source's base branch up to date", () => {
     expect(statusOf("source-1")).toContain("<img src=x onerror=alert(1)>");
   });
 });
+
+
+it("preserves the cached compaction editor and focused draft across project and support paints", async () => {
+  const address = projectSettingsAddress("dev-1", PROJECT.project_id);
+  const project = { ...PROJECT, compaction_thresholds: { claude: 150000 } };
+  await writeCached(address, project);
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "compaction-support" }, { harnessThresholds: true });
+  openProjectSettings(PROJECT.project_id, { deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+  await vi.waitFor(() => expect(document.querySelector('[data-compaction-harness="claude"] input')?.value).toBe("150000"));
+  const input = document.querySelector('[data-compaction-harness="claude"] input');
+  type(input, "175000");
+  input.focus();
+  input.setSelectionRange(1, 4);
+  await writeCached(address, { ...project, compaction_thresholds: { claude: 250000 } });
+  await editsInPlace();
+  await vi.waitFor(() => expect(input === document.querySelector('[data-compaction-harness="claude"] input')).toBe(true));
+  expect(input.value).toBe("175000");
+  expect(document.activeElement).toBe(input);
+  expect([input.selectionStart, input.selectionEnd]).toEqual([1, 4]);
+  expect(document.querySelector("#sheet").textContent).toContain("Compaction defaults for this project");
+  document.querySelector("#pscancel").click();
+});

@@ -668,9 +668,11 @@ it("preserves the cached compaction editor and focused draft across project and 
   input.dispatchEvent(new Event("input", { bubbles: true }));
   input.focus();
   input.setSelectionRange(1, 4);
-  await writeCached(address, { ...project, compaction_thresholds: { claude: 250000 } });
+  await writeCached(address, { ...project, name: "Updated project", compaction_thresholds: { claude: 250000 } });
   await editsInPlace();
-  await vi.waitFor(() => expect(input === document.querySelector('[data-compaction-harness="claude"] input')).toBe(true));
+  await vi.waitFor(() => expect(document.querySelector("#psproject").value).toBe("Updated project"));
+  await vi.waitFor(() => expect(document.querySelector('.ps-source[data-source-id="source-2"] input[data-field="name"]').readOnly).toBe(false));
+  expect(input === document.querySelector('[data-compaction-harness="claude"] input')).toBe(true);
   expect(input.value).toBe("175000");
   expect(document.activeElement).toBe(input);
   expect([input.selectionStart, input.selectionEnd]).toEqual([1, 4]);

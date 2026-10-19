@@ -7,8 +7,6 @@ const pidPath = process.env.FAKE_MCP_PID;
 if (pidPath) writeFileSync(pidPath, String(process.pid));
 
 let buffer = "";
-const concurrentCalls = [];
-const invalidErrorCalls = [];
 
 function log(value) {
   if (logPath) appendFileSync(logPath, `${JSON.stringify(value)}\n`);
@@ -123,14 +121,11 @@ const modeCallHandlers = new Map([
   ["child_exit", () => { process.exit(17); return true; }],
   ["timeout", () => true],
   ["invalid_error", (request) => {
-    invalidErrorCalls.push(request);
-    if (invalidErrorCalls.length === 2) {
-      send({
-        jsonrpc: "2.0",
-        id: invalidErrorCalls[0].id,
-        error: { code: "not-an-integer", message: 7 },
-      });
-    }
+    send({
+      jsonrpc: "2.0",
+      id: request.id,
+      error: { code: "not-an-integer", message: 7 },
+    });
     return true;
   }],
 ]);
@@ -138,10 +133,8 @@ const modeCallHandlers = new Map([
 const kindCallHandlers = new Map([
   ["rpc_error", (request) => rpcError(request.id, "canonical rpc error")],
   ["concurrent", (request) => {
-    concurrentCalls.push(request);
-    if (concurrentCalls.length === 2) {
-      for (const pending of concurrentCalls.reverse()) reply(pending.id, callResult(pending));
-    }
+    // Concurrent callers queue in Pi, matching Rust's serial stdio dispatcher.
+    setTimeout(() => reply(request.id, callResult(request)), 10);
   }],
 ]);
 

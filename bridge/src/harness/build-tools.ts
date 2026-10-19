@@ -410,6 +410,7 @@ class McpStdioClient {
     this.closePromise = undefined;
     this.frame = "";
     this.writeChain = Promise.resolve();
+    this.toolCallChain = undefined;
     this.decoder = new TextDecoder("utf-8", { fatal: true });
   }
 
@@ -447,6 +448,16 @@ class McpStdioClient {
   }
 
   request(method, params) {
+    if (method !== "tools/call") return this.dispatchRequest(method, params);
+    // Rust processes stdio calls serially. Start each budget only when its
+    // predecessor has replied, so time queued behind that call costs no budget.
+    const dispatch = () => this.dispatchRequest(method, params);
+    const reply = this.toolCallChain ? this.toolCallChain.then(dispatch, dispatch) : dispatch();
+    this.toolCallChain = reply;
+    return reply;
+  }
+
+  dispatchRequest(method, params) {
     if (this.failure) return Promise.reject(this.failure);
     if (this.closing) return Promise.reject(new Error("Build MCP session is shutting down"));
     const id = this.nextId++;

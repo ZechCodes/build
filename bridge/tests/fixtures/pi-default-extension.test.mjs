@@ -71,6 +71,65 @@ test("explicit fixture deadlines still bound tools/call without waiting minutes"
   assert.match((await reply).message, /call may have been applied; check its outcome before retrying/);
 });
 
+test("queued tools/call requests each receive their own reply budget after dispatch", async (t) => {
+  const { client, writes, stopped } = requestFixture(t);
+  const first = client.request("tools/call", { name: "first" }).catch((error) => error);
+  const second = client.request("tools/call", { name: "second" }).catch((error) => error);
+  t.mock.timers.tick(200000);
+  client.readLine(JSON.stringify({ jsonrpc: "2.0", id: writes[0].id, result: "first applied" }));
+  assert.equal(await first, "first applied");
+  t.mock.timers.tick(200000);
+  assert.equal(client.failure?.message, undefined);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes.map((message) => message.params.name), ["first", "second"]);
+  client.readLine(JSON.stringify({ jsonrpc: "2.0", id: writes[1].id, result: "second applied" }));
+  assert.equal(await second, "second applied");
+  t.mock.timers.tick(310000);
+  assert.equal(client.failure, undefined);
+  assert.equal(stopped.mock.callCount(), 0);
+});
+
+test("queued tools/call dispatches after a preceding JSON-RPC error", async (t) => {
+  const { client, writes } = requestFixture(t);
+  const first = client.request("tools/call", {}).catch((error) => error);
+  const second = client.request("tools/call", {}).catch((error) => error);
+  t.mock.timers.tick(200000);
+  client.readLine(JSON.stringify({ jsonrpc: "2.0", id: writes[0].id, error: { code: -32000, message: "invalid arguments" } }));
+  assert.equal((await first).message, "invalid arguments");
+  t.mock.timers.tick(200000);
+  assert.equal(client.failure?.message, undefined);
+  assert.equal(writes.length, 2);
+  client.readLine(JSON.stringify({ jsonrpc: "2.0", id: writes[1].id, result: "applied" }));
+  assert.equal(await second, "applied");
+});
+
+test("terminal failure rejects queued tools/call without dispatching it", async (t) => {
+  const { client, writes, stopped, signaled } = requestFixture(t);
+  const first = client.request("tools/call", {}).catch((error) => error);
+  const second = client.request("tools/call", {}).catch((error) => error);
+  t.mock.timers.tick(310000);
+  assert.equal(await first, client.failure);
+  assert.equal(await second, client.failure);
+  await client.closePromise;
+  assert.equal(writes.length, 1);
+  assert.equal(stopped.mock.callCount(), 1);
+  assert.equal(signaled.mock.callCount(), 1);
+});
+
+test("close rejects queued tools/call without dispatching it", async (t) => {
+  const { client, writes, signaled } = requestFixture(t);
+  const first = client.request("tools/call", {}).catch((error) => error);
+  const second = client.request("tools/call", {}).catch((error) => error);
+  await client.close();
+  for (const error of await Promise.all([first, second])) {
+    assert.equal(error.message, "Build MCP session is shutting down");
+  }
+  t.mock.timers.tick(310000);
+  assert.equal(writes.length, 1);
+  assert.equal(client.failure, undefined);
+  assert.equal(signaled.mock.callCount(), 0);
+});
+
 function run(scenario, mode = "normal") {
   const directory = mkdtempSync(join(tmpdir(), "build-pi-default-"));
   try {

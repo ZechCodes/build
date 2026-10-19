@@ -19,7 +19,7 @@ const CATALOG = {
     { id: "codex", label: "Codex", models: [{ id: "gpt", label: "GPT" }], efforts: [] },
   ],
 };
-const claude = (tokens, extra = {}) => ({ id: "a1", provider: "claude_adk", last_context_tokens: tokens, ...extra });
+const claude = (tokens, extra = {}) => ({ id: "a1", provider: "claude_adk", last_context_tokens: tokens, ...extra, ...(extra.compact_at_tokens > 0 ? { compaction: { active: { tokens: extra.compact_at_tokens }, enforcement: "between_turn" } } : {}) });
 
 const gaugeNode = () => document.querySelector(`#${composerPartIds(IDS.input).gauge}`);
 const textarea = () => document.querySelector(`#${IDS.input}`);
@@ -43,6 +43,22 @@ describe("contextWindowOf", () => {
 });
 
 describe("contextGauge", () => {
+  it("never treats configured intent or a legacy scalar as an active threshold", () => {
+    for (const compaction of [undefined, { configured: { tokens: 150000 }, active: null }, { active: { tokens: 150000, translated_trigger: null }, enforcement: "native" }]) {
+      const gauge = contextGauge({ provider: "claude_adk", last_context_tokens: 120000, compact_at_tokens: 150000, compaction }, CATALOG);
+      expect(gauge.expanded).toBe("120k/1M 12%");
+      expect(gauge.title).not.toContain("compacts at");
+    }
+  });
+
+  it("uses the native translated trigger and separates a pending configured value", () => {
+    const gauge = contextGauge({ provider: "claude_adk", last_context_tokens: 120000, compaction: {
+      configured: { tokens: 150000 }, active: { tokens: 200000, translated_trigger: 180000 }, enforcement: "native", pending_change: true,
+    } }, CATALOG);
+    expect(gauge.expanded).toBe("120k/180k 67%");
+    expect(gauge.title).toContain("Configured: 150k tokens · Applied at last start: 200k tokens");
+  });
+
   it("measures against the compaction threshold when the chat compacts", () => {
     const gauge = contextGauge(claude(190000, { compact_at_tokens: 200000 }), CATALOG);
     expect(gauge).toMatchObject({ text: "190k", expanded: "190k/200k 95%", percent: 95, step: "warning" });

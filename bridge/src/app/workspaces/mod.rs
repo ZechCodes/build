@@ -357,6 +357,7 @@ impl AppState {
                     // under it without asking for the row.
                     let owner = self.workspace_conversation_owner(workspace);
                     let mut value = workspace_json(workspace);
+                    self.add_scope_compaction(&mut value, &crate::compaction::CompactionScope::Workspace(workspace.id.clone()));
                     let summary = owner
                         .as_deref()
                         .map(|id| self.session_summary(id))
@@ -402,6 +403,10 @@ impl AppState {
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         let owner = self.workspace_conversation_owner(&workspace);
         let mut value = workspace_json(&workspace);
+        self.add_scope_compaction(
+            &mut value,
+            &crate::compaction::CompactionScope::Workspace(workspace.id.clone()),
+        );
         self.extend_workspace_review_summary(&workspace.id, &mut value)?;
         let summary = owner
             .as_deref()

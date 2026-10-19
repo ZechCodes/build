@@ -685,10 +685,12 @@ impl AppState {
             return Err(format!("agent {agent_id} is not on {owner}"));
         };
         self.note_compaction_override_changed(&address.conversation_id);
+        self.publish_compaction_changed("conversation", Some(&address.conversation_id));
         Ok(serde_json::json!({
             "agent_id": agent_id,
             "max_context_tokens": max_context_tokens,
             "compact_at_tokens": compact_at_tokens,
+            "compaction": {"inherited": self.inherited_compaction_policy(owner, agent_id)?.observation()},
         }))
     }
 

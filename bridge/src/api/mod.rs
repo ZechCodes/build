@@ -58,7 +58,7 @@ use std::collections::BTreeSet;
 /// agent roster (#532), original-source terminal ownership (#531), and the
 /// captured sync-base path precondition (#530), plus waiting-on task graph,
 /// deferred assignment and read contracts (#562).
-pub const API_VERSION: &str = "3.21.0";
+pub const API_VERSION: &str = "3.22.0";
 
 /// Verbs served outside the typed v1 table. Keep this list beside the
 /// capability builder so the greeting cannot silently omit a legacy verb.
@@ -127,6 +127,7 @@ pub const FEATURE_CAPABILITIES: &[&str] = &[
     "messages.context",
     "messages.fromAgent",
     "messages.taskNotices",
+    "compaction.harnessThresholds", // Since 3.22.0: scoped policies and observations.
     "models.installedCli", // Since 2.2.0: models.list offers what the installed CLI runs, with cli_version/unavailable; models.changed push.
     "params.strict",
     "requests.priority",

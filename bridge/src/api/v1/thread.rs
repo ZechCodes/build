@@ -590,6 +590,8 @@ pub type AgentSurfaces = BTreeMap<String, serde_json::Value>;
 /// is live, and how much of its conversation is waiting for the human.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentDigest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<serde_json::Value>,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
@@ -684,6 +686,8 @@ pub struct ConversationWatch {
 /// `conversation.settings`: the context size one conversation compacts at.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ConversationSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<serde_json::Value>,
     pub agent_id: String,
     /// The conversation's own threshold as stored; absent follows the device.
     #[serde(default, skip_serializing_if = "Option::is_none")]

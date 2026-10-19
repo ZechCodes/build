@@ -175,6 +175,11 @@ fn check(sub: &SubscriptionSpec) -> Result<(), ApiError> {
             "missing required param: subscription_id",
         ));
     }
+    if sub.kinds.contains(Kind::CompactionChanged) && sub.scope != Scope::All {
+        return Err(ApiError::invalid_params(
+            "compaction.changed requires all scope",
+        ));
+    }
     if sub.kinds.is_empty() {
         return Err(ApiError::invalid_params(
             "changes.subscribe: name at least one kind — state, thread, git, files, or terminals",

@@ -51,6 +51,12 @@ use serde::{Deserialize, Serialize};
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
         v1_method!(
+            "workspace.set_compaction",
+            set_compaction,
+            SetCompactionParams,
+            WorkspaceDetail
+        ),
+        v1_method!(
             "workspace.list",
             workspace_list,
             WorkspaceListParams,
@@ -144,6 +150,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 }
 
 // ---------------------------------------------------------------- params ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SetCompactionParams {
+    pub workspace_id: String,
+    pub compaction_thresholds: serde_json::Value,
+}
 
 /// The workspaces of one project, or of every project when no project is
 /// named — the feed reads it unfiltered.
@@ -297,6 +309,11 @@ pub struct WorkspaceDirectoryRow {
 /// A workspace as every workspace verb answers it.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct WorkspaceRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_thresholds: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<serde_json::Value>,
+
     pub id: String,
     /// The same id, under the name every workspace param spells it.
     pub workspace_id: String,
@@ -698,6 +715,23 @@ fn workspace_measure_sizes(
 }
 
 // ----------------------------------------------------------------- tests ---
+
+fn set_compaction(
+    app: &mut AppState,
+    params: SetCompactionParams,
+) -> Result<Answer<WorkspaceDetail>, ApiError> {
+    crate::compaction::CompactionThresholds::default()
+        .patched(&params.compaction_thresholds)
+        .map_err(ApiError::invalid_params)?;
+    answer(app.set_workspace_compaction(&params.workspace_id, &params.compaction_thresholds))
+        .map_err(|error| {
+            if error.message() == "unknown compaction policy owner" {
+                ApiError::not_found(error.message())
+            } else {
+                error
+            }
+        })
+}
 
 #[cfg(test)]
 mod tests {

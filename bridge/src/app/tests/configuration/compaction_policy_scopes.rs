@@ -427,6 +427,27 @@ fn compaction_policy_unsafe_legacy_values_read_exactly_without_rounding_or_clamp
             }
             let resolved = restarted.resolve_compaction_policy(&owner, &agent).unwrap();
             assert_eq!(resolved.tokens, tokens);
+            let wire = call(&mut restarted, "settings.get", json!({}));
+            for provider in AgentProvider::ALL {
+                assert_eq!(
+                    wire["compaction_thresholds"][provider.wire_id()],
+                    json!({"tokens_decimal":tokens.to_string()})
+                );
+                assert_eq!(
+                    wire["compaction"]["effective"][provider.wire_id()],
+                    resolved.observation()
+                );
+            }
+            let scoped = call(
+                &mut restarted,
+                "project.set_compaction",
+                json!({"project_id":project,"compaction_thresholds":{}}),
+            );
+            assert_eq!(
+                scoped["compaction"]["inherited"]["pi"],
+                resolved.observation()
+            );
+
             assert_eq!(
                 resolved.observation(),
                 json!({
@@ -538,6 +559,14 @@ fn compaction_policy_parked_project_survives_unrelated_save_and_revival() {
     std::fs::rename(&source, &away).unwrap();
     let mut parked = scope_app(dir.path());
     assert!(parked.project(&project).is_none());
+    let before_wire_refusal = config_on_disk(dir.path());
+    let refused = parked.handle(req(
+        "project.set_compaction",
+        json!({"project_id":project,"compaction_thresholds":{"pi":12}}),
+    ));
+    assert_eq!(refused["error_code"], "not_found");
+    assert_eq!(config_on_disk(dir.path()), before_wire_refusal);
+
     assert!(parked.projects.project_id_of(&owner).is_none());
     assert!(parked.projects.project_id_of(&workspace_run).is_none());
     assert_policy(
@@ -1126,4 +1155,199 @@ fn compaction_policy_historical_terminal_owner_does_not_inherit_reused_workspace
             CompactionSource::Workspace(workspace),
         );
     }
+}
+
+#[test]
+fn compaction_wire_scopes_and_unknown_active_are_authoritative() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = scope_app(temp.path());
+    let (project, _) = plain_project(&mut state, temp.path(), "wire");
+    let workspace = named_workspace(&mut state, &project, "wire-workspace");
+    let owner = workspace_owner(&mut state, &workspace);
+    let agent = policy_agent(&mut state, &owner, AgentProvider::Claude);
+    let settings = call(
+        &mut state,
+        "settings.set",
+        json!({"compaction_thresholds":{"claude":150000}}),
+    );
+    assert_eq!(settings["compaction_thresholds"]["claude"], 150000);
+    assert_eq!(
+        settings["compaction"]["inherited"]["claude"]["source"]["kind"],
+        "default"
+    );
+    let row = call(
+        &mut state,
+        "project.set_compaction",
+        json!({"project_id":project,"compaction_thresholds":{"claude":120000}}),
+    );
+    assert_eq!(row["compaction"]["inherited"]["claude"]["tokens"], 150000);
+    let row = call(
+        &mut state,
+        "workspace.set_compaction",
+        json!({"workspace_id":workspace,"compaction_thresholds":{"claude":100000}}),
+    );
+    assert_eq!(row["compaction"]["effective"]["claude"]["tokens"], 100000);
+    let settings = call(
+        &mut state,
+        "conversation.settings",
+        json!({"entity_id":owner,"agent_id":agent,"max_context_tokens":90000}),
+    );
+    assert_eq!(settings["compaction"]["inherited"]["tokens"], 100000);
+    let row = call(
+        &mut state,
+        "workspace.get",
+        json!({"workspace_id":workspace}),
+    );
+    let digest = row["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == agent)
+        .unwrap();
+    assert_eq!(digest["compaction"]["configured"]["tokens"], 90000);
+    assert_eq!(digest["compaction"]["active"], Value::Null);
+    assert_eq!(digest["compaction"]["pending_change"], Value::Null);
+}
+
+#[test]
+fn compaction_wire_map_invalid_mutations_are_atomic() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = scope_app(temp.path());
+    let before = call(&mut state, "settings.get", json!({}));
+    for patch in [
+        json!({"claude":0}),
+        json!({"unknown":12}),
+        json!({"pi":123,"claude":0}),
+        Value::Null,
+    ] {
+        let response = state.handle(req(
+            "settings.set",
+            json!({"compaction_thresholds":patch,"watch_agent_filed_tasks":false}),
+        ));
+        assert_eq!(response["ok"], false, "{response}");
+        assert_eq!(call(&mut state, "settings.get", json!({})), before);
+    }
+    assert_eq!(
+        call(
+            &mut state,
+            "settings.set",
+            json!({"compaction_thresholds":{}})
+        ),
+        before
+    );
+}
+
+#[test]
+fn compaction_wire_scope_setters_reject_unknowns_zero_and_preserve_null_patch_semantics() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = scope_app(temp.path());
+    let (project, _) = plain_project(&mut state, temp.path(), "wire-scopes");
+    let workspace = named_workspace(&mut state, &project, "wire-workspace");
+    for (method, field, owner) in [
+        ("project.set_compaction", "project_id", project),
+        ("workspace.set_compaction", "workspace_id", workspace),
+    ] {
+        let before = call(
+            &mut state,
+            method,
+            json!({field:owner,"compaction_thresholds":{"pi":123456,"claude":150000}}),
+        );
+        for patch in [
+            json!({"pi":0,"claude":120000}),
+            json!({"other":123}),
+            json!({"pi":-1}),
+            json!({"pi":1.5}),
+            json!({"pi":"123"}),
+            json!({"pi":9007199254740992u64}),
+            Value::Null,
+        ] {
+            let response = state.handle(req(
+                method,
+                json!({field:owner,"compaction_thresholds":patch}),
+            ));
+            assert_eq!(response["ok"], false, "{response}");
+            assert_eq!(response["error_code"], "invalid_params", "{response}");
+            assert_eq!(
+                call(
+                    &mut state,
+                    method,
+                    json!({field:owner,"compaction_thresholds":{}})
+                ),
+                before
+            );
+        }
+        for params in [
+            json!({field:owner}),
+            json!({field:owner,"compaction_thresholds":{},"extra":1}),
+        ] {
+            assert_eq!(
+                state.handle(req(method, params))["error_code"],
+                "invalid_params"
+            );
+        }
+        let cleared = call(
+            &mut state,
+            method,
+            json!({field:owner,"compaction_thresholds":{"pi":null}}),
+        );
+        assert!(cleared["compaction_thresholds"].get("pi").is_none());
+        assert_eq!(cleared["compaction_thresholds"]["claude"], 150000);
+        assert_eq!(
+            state.handle(req(
+                method,
+                json!({field:"missing","compaction_thresholds":{"pi":123}})
+            ))["error_code"],
+            "not_found"
+        );
+    }
+}
+
+#[test]
+fn compaction_wire_mutations_invalidate_other_clients_only_after_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut state = scope_app(temp.path());
+    state.changes = crate::changes::ChangeBus::new(std::time::Duration::ZERO);
+    let bus = state.changes();
+    let (saving, mut saving_rx, saving_key) = crate::carrier::SessionSender::observable("saving");
+    let (other, mut other_rx, other_key) = crate::carrier::SessionSender::observable("other");
+    let subscription: crate::changes::SubscriptionSpec = serde_json::from_value(json!({
+        "subscription_id":"compaction", "scope":{"kind":"all"}, "kinds":["compaction.changed"], "mode":"realtime", "priority":"background"
+    })).unwrap();
+    for sender in [&saving, &other] {
+        bus.subscribe(sender, subscription.clone());
+    }
+    call(
+        &mut state,
+        "settings.set",
+        json!({"compaction_thresholds":{}}),
+    );
+    let rejected = state.handle(req(
+        "settings.set",
+        json!({"compaction_thresholds":{"pi":0}}),
+    ));
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(bus.flush(), 0);
+    call(
+        &mut state,
+        "settings.set",
+        json!({"compaction_thresholds":{"pi":123456}}),
+    );
+    assert_eq!(bus.flush(), 2);
+    for (rx, key) in [(&mut saving_rx, &saving_key), (&mut other_rx, &other_key)] {
+        assert_eq!(
+            crate::carrier::SessionSender::decrypt_push(key, &rx.try_recv().unwrap()),
+            crate::changes::compaction_changed_payload("device", None)
+        );
+    }
+    let old = state.settings_get();
+    let config = temp.path().join("state/config.json");
+    std::fs::remove_file(&config).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    let rejected = state.handle(req(
+        "settings.set",
+        json!({"compaction_thresholds":{"pi":222222}}),
+    ));
+    assert_eq!(rejected["ok"], false);
+    assert_eq!(state.settings_get(), old);
+    assert_eq!(bus.flush(), 0);
 }

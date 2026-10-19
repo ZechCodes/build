@@ -473,6 +473,8 @@ impl ReadSubject {
 }
 
 pub(in crate::app) struct ProjectListRow {
+    pub(in crate::app) compaction_thresholds: Value,
+    pub(in crate::app) compaction: Value,
     pub(in crate::app) project_id: String,
     pub(in crate::app) name: String,
     pub(in crate::app) repo_path: std::path::PathBuf,
@@ -506,6 +508,8 @@ impl ProjectListRow {
             .collect::<Vec<_>>();
         json!({
             "project_id": self.project_id,
+            "compaction_thresholds": self.compaction_thresholds,
+            "compaction": self.compaction,
             "name": self.name,
             "path": self.repo_path.display().to_string(),
             "base_branch": self.base_branch,

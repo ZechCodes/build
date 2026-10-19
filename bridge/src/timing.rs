@@ -683,6 +683,10 @@ pub(crate) fn recording_clock() -> (Arc<FrameClock>, Arc<Mutex<Vec<String>>>) {
 }
 
 #[cfg(test)]
+#[path = "timing/aggregate_tests.rs"]
+mod aggregate_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -924,13 +928,13 @@ mod tests {
     #[test]
     fn a_flood_of_invented_methods_collapses_into_one_record() {
         let (clock, _) = recording_clock();
-        for n in 0..MAX_TRACKED_METHODS + 50 {
+        for n in 0..1_000 {
             drop(clock.frame(&format!("made.up.{n}")));
         }
         let stats = clock.stats();
         let methods = stats["methods"].as_object().unwrap();
-        assert_eq!(methods.len(), MAX_TRACKED_METHODS + 1);
-        assert_eq!(methods[OVERFLOW_METHOD]["served"], 50);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[OVERFLOW_METHOD]["served"], 1_000);
     }
 
     #[test]

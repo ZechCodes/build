@@ -74,6 +74,26 @@ fn invalid_reply_reports_unknown_outcome() {
     assert_unknown_outcome(&error);
 }
 
+#[test]
+fn missing_reply_reaches_overall_deadline_with_unknown_outcome() {
+    let steps = (0..40)
+        .map(|_| ReadStep::Error(ErrorKind::TimedOut))
+        .collect();
+    let error = scripted_response(steps).unwrap_err();
+    assert!(error.contains("overall reply deadline"), "{error}");
+    assert_unknown_outcome(&error);
+}
+
+#[test]
+fn trickling_bytes_cannot_reset_or_evade_overall_deadline() {
+    let mut steps = vec![ReadStep::Bytes(b"{")];
+    steps.extend((0..40).map(|_| ReadStep::Bytes(b" ")));
+    steps.push(ReadStep::Bytes(b"\"ok\":true}\n"));
+    let error = scripted_response(steps).unwrap_err();
+    assert!(error.contains("overall reply deadline"), "{error}");
+    assert_unknown_outcome(&error);
+}
+
 fn assert_unknown_outcome(error: &str) {
     assert!(error.contains("may have been applied"), "{error}");
     assert!(

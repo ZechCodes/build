@@ -22,16 +22,16 @@ try {
           await page.locator(".rail-overview-list").waitFor();
         }
         for (const theme of ["light", "dark"]) {
-        await page.evaluate((theme) => {
-          document.documentElement.dataset.theme = theme;
-          document.querySelector("#inbox-open").classList.add("has-attention");
-          document.querySelector(".inbox-open-count").textContent = "2";
-          for (const animation of document.getAnimations()) {
-            if (animation instanceof CSSTransition) animation.finish();
-          }
-        }, theme);
-        await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        await page.screenshot({ path: join(directory, `agent-${view}-${name}-${theme}.png`) });
+          await page.evaluate((theme) => {
+            document.documentElement.dataset.theme = theme;
+            document.querySelector("#inbox-open").classList.add("has-attention");
+            document.querySelector(".inbox-open-count").textContent = "2";
+            for (const animation of document.getAnimations()) {
+              if (animation instanceof CSSTransition) animation.finish();
+            }
+          }, theme);
+          await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          await page.screenshot({ path: join(directory, `agent-${view}-${name}-${theme}.png`) });
         }
       }
     }, { width, height: 844 });

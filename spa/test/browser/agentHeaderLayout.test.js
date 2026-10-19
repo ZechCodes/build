@@ -73,9 +73,10 @@ for (const width of [320, 390, 1280]) for (const directory of [true, false]) for
         const workspace = rect(document.querySelector('[data-select="workspace"] .tb-name'));
         const midpoint = (inboxGlyph.right + glyph.left) / 2;
         const missedHits = [];
-        // Scan both halves of the visible gap along the full 44px height.
-        // This catches overlapping targets and dead strips, not just boxes.
-        for (let y = 0.5; y < 44; y++) {
+        // Scan both halves of the gap through the target interior. Chromium
+        // rounds the last half-pixel into the adjacent surface below the bar;
+        // the separate rectangle assertions check the full 44px height.
+        for (let y = 1; y < 44; y++) {
           for (let x = inboxGlyph.right + 1; x < glyph.left; x++) {
             const owner = x < midpoint ? inbox : switcher;
             if (!owner.contains(document.elementFromPoint(x, target.top + y))) missedHits.push({ x, y });
@@ -86,7 +87,7 @@ for (const width of [320, 390, 1280]) for (const directory of [true, false]) for
           targetWidth: target.width, targetHeight: target.height,
           inboxWidth: inboxTarget.right - inboxTarget.left, inboxHeight: inboxTarget.bottom - inboxTarget.top,
           seam: target.left - inboxTarget.right, midpointOffset: target.left - midpoint,
-          missedHits: missedHits.slice(0, 5), midpoint, centerY: target.top + target.height / 2,
+          missedHits: missedHits.slice(0, 5), midpoint, inboxLeft: inboxTarget.left, centerY: target.top + target.height / 2,
           toolbarHeight: rect(document.querySelector("#toolbar")).height,
           overflow: document.documentElement.scrollWidth > innerWidth,
         };
@@ -107,6 +108,9 @@ for (const width of [320, 390, 1280]) for (const directory of [true, false]) for
       await page.locator(".tb-filter").waitFor();
       await page.keyboard.press("Escape");
       await page.touchscreen.tap(layout.midpoint - 1, layout.centerY);
+      expect(await page.locator("body").evaluate((body) => body.classList.contains("inbox-popover-open"))).toBe(true);
+      await page.keyboard.press("Escape");
+      await page.touchscreen.tap(layout.inboxLeft + 1, layout.centerY);
       expect(await page.locator("body").evaluate((body) => body.classList.contains("inbox-popover-open"))).toBe(true);
     }, { width, height: 844, hasTouch: true });
   }, 30_000);

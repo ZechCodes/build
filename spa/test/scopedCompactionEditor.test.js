@@ -76,10 +76,13 @@ it.each(["device", "project", "workspace"])("saves %s thresholds through the sup
 
 it("sends null for inherit, without translating it to zero", async () => {
   const answer = settings(); delete answer.compaction_thresholds.codex;
+  answer.compaction.effective.codex = answer.compaction.inherited.codex;
   const call = await mount({ callRpc: vi.fn(async () => answer) });
   row().querySelector('[data-compaction-action="inherit"]').click();
   await vi.waitFor(() => expect(call).toHaveBeenCalledWith("project.set_compaction", { project_id: "owner", compaction_thresholds: { codex: null } }));
   await vi.waitFor(() => expect(input().value).toBe(""));
+  expect(row().querySelector("[data-compaction-effective]").textContent).toBe("Effective: 200k tokens");
+  expect(row().querySelector("[data-compaction-inherit]").textContent).toBe("Inherit — 200k tokens from device");
 });
 
 it.each(["0", "-1", "1.5", "9007199254740992", "1e5", ""])("rejects unsafe token text %j before dispatch", async (value) => {
@@ -213,5 +216,41 @@ it("declares numeric keyboard and autofill traits for each token field", async (
       .map((name) => [name, field.getAttribute(name)]))).toEqual({
       autocomplete: "off", autocorrect: "off", autocapitalize: "off", spellcheck: "false", inputmode: "numeric", enterkeyhint: "done",
     });
+  }
+});
+
+
+it("updates a pushed inheritance value and source without replacing the draft", async () => {
+  await mount();
+  const held = input(); draft("175000");
+  const changed = settings();
+  changed.compaction.inherited.codex = observation(225000, "project");
+  await writeCached(addresses.project(), changed);
+  await controller.read();
+  expect(row().querySelector("[data-compaction-inherit]").textContent).toBe("Inherit — 225k tokens from project");
+  expect(row().querySelector("[data-compaction-effective]").textContent).toBe("Effective: 150k tokens");
+  expect(input()).toBe(held);
+  expect(input().value).toBe("175000");
+});
+
+it("does not read or write localStorage while editing, saving, or inheriting", async () => {
+  const spies = ["getItem", "setItem", "removeItem", "clear"].map((method) => vi.spyOn(Storage.prototype, method));
+  try {
+    await mount({ callRpc: async (_method, { compaction_thresholds }) => {
+      const answer = settings(compaction_thresholds.codex);
+      if (compaction_thresholds.codex === null) {
+        delete answer.compaction_thresholds.codex;
+        answer.compaction.effective.codex = answer.compaction.inherited.codex;
+      }
+      return answer;
+    } });
+    draft("175000"); save();
+    await vi.waitFor(() => expect(status().textContent).toContain("Saved."));
+    row().querySelector("[data-compaction-inherit]").click();
+    await vi.waitFor(() => expect(input().value).toBe(""));
+    controller.dispose();
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  } finally {
+    for (const spy of spies) spy.mockRestore();
   }
 });

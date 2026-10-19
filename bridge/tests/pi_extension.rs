@@ -31,12 +31,7 @@ fn fake_child(temp: &tempfile::TempDir) -> PathBuf {
 }
 
 fn isolated_node(temp: &tempfile::TempDir) -> Command {
-    let mut command = Command::new("node");
-    command
-        .env_clear()
-        .env("HOME", temp.path())
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-    command
+    node_runtime::isolated_node(temp.path())
 }
 
 fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf, PathBuf) {
@@ -438,7 +433,7 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
         }
         frames
     });
-    let output = Command::new("node")
+    let output = isolated_node(&temp)
         .arg(fixture("pi-extension-driver.mjs"))
         .env("BUILD_PI_EXTENSION_PATH", extension)
         .env("BUILD_PI_MCP_COMMAND", env!("CARGO_BIN_EXE_build-bridge"))
@@ -477,13 +472,10 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
 #[test]
 fn compaction_hook_and_default_export_contracts_run_with_the_bridge_suite() {
     let home = tempfile::tempdir().unwrap();
-    let output = Command::new("node")
+    let output = isolated_node(&home)
         .arg("--test")
         .arg(fixture("pi-compaction-extension.test.mjs"))
         .arg(fixture("pi-default-extension.test.mjs"))
-        .env_clear()
-        .env("HOME", home.path())
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .output()
         .unwrap();
     assert!(output.status.success(), "{output:?}");

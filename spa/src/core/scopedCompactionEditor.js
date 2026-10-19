@@ -30,10 +30,10 @@ function rowHtml([provider, label], prefix) {
       <label for="${esc(id)}">Compact at</label>
       <input id="${esc(id)}" data-compaction-tokens type="text" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" aria-label="${label}: Compact at" aria-describedby="${esc(id)}-effective ${esc(id)}-status">
       <span>tokens</span>
-      <button type="button" class="btn mini" data-compaction-save data-compaction-action="save" disabled>Save</button>
+      <button id="${esc(id)}-save" type="button" class="btn mini" data-compaction-save data-compaction-action="save" disabled>Save</button>
     </div>
     <p id="${esc(id)}-effective" class="sub" data-compaction-effective></p>
-    <button type="button" class="btn mini scoped-compaction-inherit" data-compaction-inherit data-compaction-action="inherit" disabled>Inherit</button>
+    <button id="${esc(id)}-inherit" type="button" class="btn mini scoped-compaction-inherit" data-compaction-inherit data-compaction-action="inherit" disabled>Inherit</button>
     <p id="${esc(id)}-status" class="sub scoped-compaction-status" role="status" aria-live="polite"></p>
   </div>`;
 }

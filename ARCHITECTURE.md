@@ -267,6 +267,8 @@ every root, with repeated filesystem canonicalization under the app lock.
 Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
+Subscribed thread pushes use the same lookup, preserving their project-scoped
+workspace filter and resolving ownership once per entity rather than per agent.
 
 ### Liveness and signaling
 
@@ -1918,14 +1920,20 @@ and partial response through socket read timeouts. An absolute five-minute reply
 budget bounds the wait; reaching it reports that the call may have been applied
 and must be checked before retrying. It never automatically resends an action.
 Pi's owned stdio wrapper allows 310 seconds for `tools/call`, so the Rust
-adapter's five-minute result can arrive first. Its existing 30-second
-initialization and tool-discovery deadlines remain unchanged. If the outer
+adapter's five-minute result can arrive first. It queues tool calls locally and
+starts each deadline when that call is dispatched, after the previous call's
+reply; time waiting behind another call does not consume the active-call budget.
+Its existing 30-second initialization and tool-discovery deadlines remain
+unchanged. If the outer
 tool-call deadline fires, it also warns to check the outcome before retrying.
-Control-frame slow logs account for semaphore admission (`permit_wait`), blocking
-pool scheduling (`pool_wait`) and every app-lock acquisition (`lock_wait`),
-including the update-admission check in MCP and ordinary RPC dispatch.
-Reacquiring a turn after deferred work is
-included in the permit wait; the deferred work itself is not pool queue time.
+An authenticated action the daemon cannot parse gets an explicit error response,
+so a newer adapter's unsupported action does not wait for the reply deadline.
+MCP control-frame slow logs account for semaphore admission (`permit_wait`) and
+blocking pool scheduling (`pool_wait`). These fields appear only when measured;
+ordinary RPC frames omit them. Both MCP and ordinary RPC dispatch measure every
+app-lock acquisition (`lock_wait`), including the update-admission check.
+Reacquiring a turn after deferred work is included in the permit wait; the
+deferred work itself is not pool queue time.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see

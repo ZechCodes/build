@@ -169,6 +169,18 @@ for (const deviceScaleFactor of [1, 2]) for (const badge of [false, true]) {
 }
 
 
+for (const kind of ["project", "workspace"]) for (const deviceScaleFactor of [1, 2]) for (const badge of [false, true]) {
+  it(`keeps the pinned phone ${kind} overview from taking chevron taps, badge ${badge}, DPR ${deviceScaleFactor}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      const switcher = await mountChevron(page, basePath, { pinned: true, badge, kind });
+      await page.locator('[data-bubble="overview"]').click();
+      await page.locator(".rail-overview-section-head h2").first().waitFor();
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await assertEdgeInput(page, switcher, "touch");
+    }, { width: 390, height: 844, hasTouch: true, deviceScaleFactor });
+  }, 30_000);
+}
+
 for (const content of ["chat", "usage banner", "terminal"]) {
   it(`starts the pinned phone ${content} viewport immediately below its visible header`, async () => {
     await session.withPage(async ({ page, basePath }) => {

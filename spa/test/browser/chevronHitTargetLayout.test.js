@@ -173,14 +173,18 @@ for (const content of ["chat", "usage banner", "terminal"]) {
   it(`starts the pinned phone ${content} viewport immediately below its visible header`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       await mountChevron(page, basePath, { pinned: true });
-      const bounds = await page.evaluate((content) => {
+      await page.evaluate((content) => {
         const body = document.querySelector(".rail-body");
         if (content === "terminal") body.classList.add("rail-body-tui");
         if (content === "usage banner") body.insertAdjacentHTML("beforebegin",
           '<div class="usage-limit-banners"><div class="usage-limit-banner">Usage limit reached</div></div>');
+      }, content);
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      const bounds = await page.evaluate(() => {
+        const body = document.querySelector(".rail-body");
         const above = body.previousElementSibling;
         return { top: body.getBoundingClientRect().top, aboveBottom: above.getBoundingClientRect().bottom };
-      }, content);
+      });
       expect(bounds.top).toBeCloseTo(bounds.aboveBottom, 1);
     }, { width: 390, height: 844 });
   }, 30_000);

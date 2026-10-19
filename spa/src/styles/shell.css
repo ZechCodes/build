@@ -1633,6 +1633,13 @@ body .toolbar button.tb-switch:active:not(:disabled, [aria-disabled="true"]) { b
     top:var(--toolbar-h); bottom:calc(var(--console-space) + var(--agent-strip));
     z-index:30; width:auto; background:var(--panel); border-radius:10px;
     box-shadow:0 8px 24px var(--shadow-soft); }
+  /* Keep conversation hit targets below the adjoining toolbar. A padded
+     scroller behind the glass header lets Chromium's touch adjustment choose
+     hidden conversation controls instead of the chevron's bottom corners.
+     Move the viewport, preserving the first line and scroll destination. */
+  #agent-rail:not(.rail-popover) .rail-body:not(.rail-body-tui) {
+    margin-top:var(--surface-head); padding-top:14px; scroll-padding-top:0; }
+  #agent-rail:not(.rail-popover) .usage-limit-banners + .rail-body { margin-top:0; }
   /* Only on phones is the conversation below the inbox. With no directory
      column, both follow the safe area; an unpinned card also costs 6px of
      outer inset and a 1px border before its header begins. */

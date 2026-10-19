@@ -1,6 +1,7 @@
 export const APP_URL = "https://getbuild.ing/app/desktop";
 
 const { origin: APP_ORIGIN, pathname: APP_PATH } = new URL(APP_URL);
+const APP_ALIASES = new Set(["/app", "/app/"]);
 const SIGN_IN_URL = `${APP_ORIGIN}/auth/login?next=/app/&view=signin`;
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
 
@@ -16,6 +17,7 @@ export function classifyNavigation(value) {
   const url = parseUrl(value);
   if (!url) return "deny";
   if (url.origin === APP_ORIGIN && url.pathname === APP_PATH) return "internal";
+  if (url.origin === APP_ORIGIN && APP_ALIASES.has(url.pathname)) return "app-alias";
   if (url.origin === APP_ORIGIN && url.pathname === "/auth/logout") return "sign-out";
   if (url.href === SIGN_IN_URL) return "sign-in";
   if (EXTERNAL_PROTOCOLS.has(url.protocol)) return "external";
@@ -23,11 +25,13 @@ export function classifyNavigation(value) {
 }
 
 export function installNavigationPolicy(webContents, { openExternal, loadInternal, signOut, signIn }) {
-  const handleNavigation = (event, url) => {
+  const handleNavigation = (event, url, _isInPlace, isMainFrame = true) => {
     const destination = classifyNavigation(url);
     if (destination === "internal") return;
 
     event.preventDefault();
+    if (!isMainFrame) return;
+    if (destination === "app-alias") loadInternal(APP_URL);
     if (destination === "sign-out") void signOut();
     if (destination === "sign-in") void signIn();
     if (destination === "external") openExternal(url);
@@ -39,10 +43,29 @@ export function installNavigationPolicy(webContents, { openExternal, loadInterna
   webContents.setWindowOpenHandler(({ url }) => {
     const destination = classifyNavigation(url);
     if (destination === "internal") loadInternal(url);
+    if (destination === "app-alias") loadInternal(APP_URL);
     if (destination === "sign-out") void signOut();
     if (destination === "sign-in") void signIn();
     if (destination === "external") openExternal(url);
     return { action: "deny" };
+  });
+}
+
+// Recovery recognizes documents that may reject a desktop credential. It does
+// not grant navigation, permissions or Bearer headers to any additional URL.
+export function isAuthenticationDocument(value) {
+  const url = parseUrl(value);
+  if (url?.origin !== APP_ORIGIN) return false;
+  return url.pathname === APP_PATH || APP_ALIASES.has(url.pathname) || url.pathname.startsWith("/auth/");
+}
+
+export function installUnauthorizedResponsePolicy(webRequest, getWebContents, recover) {
+  webRequest.onHeadersReceived({ urls: [`${APP_ORIGIN}/*`] }, (details, callback) => {
+    const contents = getWebContents();
+    const unauthorized = details.statusCode === 401 && details.resourceType === "mainFrame"
+      && contents && details.webContentsId === contents.id && isAuthenticationDocument(details.url);
+    callback(unauthorized ? { cancel: true } : {});
+    if (unauthorized) recover(details.id, details.url);
   });
 }
 

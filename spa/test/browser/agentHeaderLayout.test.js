@@ -51,3 +51,20 @@ for (const width of [1280, 390, 320]) {
     }, { width, height: 844 });
   }, 30_000);
 }
+
+for (const directory of [true, false]) it(`aligns phone header with safe-area inbox, directory rail ${directory}`, async () => {
+  await session.withPage(async ({ page, basePath }) => {
+    const cdp = await page.context().newCDPSession(page);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await mountAgentHeader(page, basePath);
+    if (!directory) await page.locator("#dir-rail").evaluate((rail) => rail.replaceChildren());
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: { left: 20 } });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const positions = await page.evaluate(() => ({
+      inbox: document.querySelector("#inbox-open svg").getBoundingClientRect().left,
+      harness: document.querySelector(".rail-head .rail-harness-icon svg").getBoundingClientRect().left,
+    }));
+    expect(positions.inbox).toBe(directory ? 21.5 : 41.5);
+    expect(positions.harness).toBeCloseTo(positions.inbox, 1);
+  }, { width: 390, height: 844 });
+}, 30_000);

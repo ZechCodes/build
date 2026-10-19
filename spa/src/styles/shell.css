@@ -1611,6 +1611,10 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
     top:var(--toolbar-h); bottom:calc(var(--console-space) + var(--agent-strip));
     z-index:30; width:auto; background:var(--panel); border-radius:10px;
     box-shadow:0 8px 24px var(--shadow-soft); }
+  /* With no directory column, the inbox follows the phone's safe area. The
+     conversation header below it follows the same left edge. */
+  #view:not(:has(#dir-rail:not(:empty))) .rail-head {
+    padding-left:calc(var(--inbox-glyph-inset) + env(safe-area-inset-left, 0px)); }
   .rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
     transform:translateY(10px) scale(.985); }
   /* Unpinned, the same room read as a card: it sits ABOVE the strip and points

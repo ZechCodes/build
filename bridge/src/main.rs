@@ -1229,7 +1229,7 @@ fn env(key: &str, default: &str) -> String {
 /// The wire key stays `task_id` for cross-version compatibility. Without the
 /// socket it just logs (for testing).
 fn mcp_stdio() {
-    use std::io::{BufRead, Write};
+    use std::io::Write;
 
     let args: Vec<String> = std::env::args().collect();
     let owner_id = args
@@ -1273,26 +1273,13 @@ fn mcp_stdio() {
             let Some(path) = &socket else {
                 return Err("Build daemon socket is not configured".to_string());
             };
-            let mut stream = std::os::unix::net::UnixStream::connect(path)
-                .map_err(|error| format!("could not reach Build daemon: {error}"))?;
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                .map_err(|error| format!("could not set daemon timeout: {error}"))?;
             let line = serde_json::json!({
                 "task_id": owner_id,
                 "session_token": session_token,
                 "request": action
             })
             .to_string();
-            writeln!(stream, "{line}")
-                .map_err(|error| format!("could not send request: {error}"))?;
-            let mut response = String::new();
-            std::io::BufReader::new(stream)
-                .read_line(&mut response)
-                .map_err(|error| format!("could not read response: {error}"))?;
-            let value: serde_json::Value = serde_json::from_str(&response)
-                .map_err(|error| format!("invalid daemon response: {error}"))?;
-            build_bridge::mcp::daemon_action_result(value)
+            build_bridge::mcp::request_daemon(path, &line)
         },
     );
 }

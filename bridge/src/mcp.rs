@@ -37,9 +37,12 @@ const READABLE_BODIES: &[&str] = &[
     "message_workspace_agent",
 ];
 
+mod client;
 mod compaction;
 mod reviews;
 mod waiting_on;
+
+pub use client::request_daemon;
 
 /// The protocol version this server advertises when a client omits one.
 const DEFAULT_PROTOCOL_VERSION: &str = "2025-06-18";

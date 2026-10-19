@@ -1,12 +1,11 @@
 //! What one frame spent its time on.
 //!
-//! Four durations describe every request the bridge answers: how long it waited
-//! for a worker, how long it waited for the app mutex, how long it held it, and
-//! how long the whole thing took. They are measured in one place — nothing on
-//! the frame path calls `Instant::now` for itself — because the numbers only
-//! mean something together: a `board.list` that took a second because it queued
-//! behind seven others is a different daemon from one that took a second inside
-//! the lock.
+//! A frame records its dispatch queue, semaphore and blocking-pool waits, its
+//! app-mutex wait and hold, and how long the whole thing took. They are measured
+//! in one place — nothing on the frame path calls `Instant::now` for itself —
+//! because the numbers only mean something together: a `board.list` that took a
+//! second because it queued behind seven others is a different daemon from one
+//! that took a second inside the lock.
 //!
 //! [`FrameClock`] is that place. The relay hands it a frame when it joins the
 //! dispatch queue; the worker starts the frame's [`FrameTimer`] when it picks it
@@ -17,7 +16,7 @@
 //! time went.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
@@ -29,8 +28,8 @@ use crate::logline::Throttle;
 
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
-/// above it a human is already waiting and wants to know which of the four
-/// durations to blame.
+/// above it a human is already waiting and wants to know which wait or hold
+/// to blame.
 pub const SLOW_FRAME: Duration = Duration::from_millis(200);
 
 /// How often the daemon's clock writes a line for one method's slow frames.
@@ -308,10 +307,12 @@ impl FrameClock {
     }
 }
 
-/// The four durations one frame spent.
+/// The waits, hold and total duration one frame spent.
 struct Spent {
     queued: Duration,
     lock_wait: Duration,
+    permit_wait: Option<Duration>,
+    pool_wait: Option<Duration>,
     held: Duration,
     total: Duration,
 }
@@ -319,12 +320,18 @@ struct Spent {
 /// The one line a slow frame writes.
 fn slow_frame_line(method: &str, spent: &Spent, queue_depth: usize) -> String {
     format!(
-        "slow frame {method} total={} queued={} lock_wait={} held={} waiting={queue_depth}",
+        "slow frame {method} total={} queued={} lock_wait={} held={}{}{} waiting={queue_depth}",
         millis(spent.total),
         millis(spent.queued),
         millis(spent.lock_wait),
         millis(spent.held),
+        optional_wait("permit_wait", spent.permit_wait),
+        optional_wait("pool_wait", spent.pool_wait),
     )
+}
+
+fn optional_wait(label: &str, duration: Option<Duration>) -> String {
+    duration.map_or_else(String::new, |waited| format!(" {label}={}", millis(waited)))
 }
 
 fn millis(duration: Duration) -> String {
@@ -356,6 +363,10 @@ impl QueuedFrame {
             queued: self.since.elapsed(),
             started: Instant::now(),
             lock_wait_micros: AtomicU64::new(0),
+            permit_wait_micros: AtomicU64::new(0),
+            permit_wait_recorded: AtomicBool::new(false),
+            pool_wait_micros: AtomicU64::new(0),
+            pool_wait_recorded: AtomicBool::new(false),
             held_micros: AtomicU64::new(0),
         }
     }
@@ -404,10 +415,43 @@ pub struct FrameTimer {
     queued: Duration,
     started: Instant,
     lock_wait_micros: AtomicU64,
+    permit_wait_micros: AtomicU64,
+    permit_wait_recorded: AtomicBool,
+    pool_wait_micros: AtomicU64,
+    pool_wait_recorded: AtomicBool,
     held_micros: AtomicU64,
 }
 
+/// A wait whose endpoint may run on a different thread from its frame.
+/// Stop it at admission, before doing the work, then record that duration on
+/// the frame. Moving this marker into a blocking closure needs no allocation.
+pub(crate) struct WaitTimer(Instant);
+
+impl WaitTimer {
+    pub(crate) fn start() -> Self {
+        Self(Instant::now())
+    }
+
+    pub(crate) fn elapsed(self) -> Duration {
+        self.0.elapsed()
+    }
+}
+
 impl FrameTimer {
+    /// Add a semaphore acquisition, including reacquisition after deferred work.
+    pub(crate) fn record_permit_wait(&self, waited: Duration) {
+        self.permit_wait_micros
+            .fetch_add(micros(waited), Ordering::Relaxed);
+        self.permit_wait_recorded.store(true, Ordering::Relaxed);
+    }
+
+    /// Add only the time before a blocking-pool closure began running.
+    pub(crate) fn record_pool_wait(&self, waited: Duration) {
+        self.pool_wait_micros
+            .fetch_add(micros(waited), Ordering::Relaxed);
+        self.pool_wait_recorded.store(true, Ordering::Relaxed);
+    }
+
     /// Take the app mutex, timing the wait and the hold.
     ///
     /// The returned guard derefs to the state. While it lives, `bridge.stats`
@@ -442,6 +486,14 @@ impl FrameTimer {
         Spent {
             queued: self.queued,
             lock_wait: Duration::from_micros(self.lock_wait_micros.load(Ordering::Relaxed)),
+            permit_wait: self
+                .permit_wait_recorded
+                .load(Ordering::Relaxed)
+                .then(|| Duration::from_micros(self.permit_wait_micros.load(Ordering::Relaxed))),
+            pool_wait: self
+                .pool_wait_recorded
+                .load(Ordering::Relaxed)
+                .then(|| Duration::from_micros(self.pool_wait_micros.load(Ordering::Relaxed))),
             held: Duration::from_micros(self.held_micros.load(Ordering::Relaxed)),
             total: self.queued + self.started.elapsed(),
         }
@@ -471,7 +523,7 @@ impl<'a, T> LockedFor<'a, T> {
     /// expires, and take it again.
     ///
     /// The wait is the one way a frame gives the mutex back without ending its
-    /// hold, so it is also the one way the frame's four durations could lie: it
+    /// hold, so it is also the one way the frame's hold duration could lie: it
     /// closes the hold before waiting and charges the reacquisition to lock
     /// wait, which is what the wait actually is.
     pub fn wait_until(
@@ -649,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_frame_logs_its_four_durations() {
+    fn a_slow_frame_logs_its_waits_hold_and_total() {
         let (clock, lines) = recording_clock();
         let state = Arc::new(Mutex::new(0u32));
 
@@ -676,6 +728,37 @@ mod tests {
             assert!(line.contains(label), "{label} missing from {line}");
         }
         assert_eq!(clock.stats()["slow_frames"], 1);
+    }
+
+    #[test]
+    fn unmeasured_queue_waits_are_absent_from_slow_frame_lines() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("board.list");
+        let line = slow_frame_line("board.list", &timer.spent(), 0);
+        assert!(!line.contains("permit_wait="), "{line}");
+        assert!(!line.contains("pool_wait="), "{line}");
+    }
+
+    #[test]
+    fn measured_zero_queue_waits_remain_in_slow_frame_lines() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("mcp.control");
+        timer.record_permit_wait(Duration::ZERO);
+        timer.record_pool_wait(Duration::ZERO);
+        let line = slow_frame_line("mcp.control", &timer.spent(), 0);
+        assert!(line.contains("permit_wait=0.0ms"), "{line}");
+        assert!(line.contains("pool_wait=0.0ms"), "{line}");
+    }
+
+    #[test]
+    fn queue_wait_fields_are_reported_independently_and_accumulated() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("mcp.control");
+        timer.record_permit_wait(Duration::from_millis(2));
+        timer.record_permit_wait(Duration::from_millis(3));
+        let line = slow_frame_line("mcp.control", &timer.spent(), 0);
+        assert!(line.contains("permit_wait=5.0ms"), "{line}");
+        assert!(!line.contains("pool_wait="), "{line}");
     }
 
     /// Under load the slow frames of one verb come by the thousand (#131).

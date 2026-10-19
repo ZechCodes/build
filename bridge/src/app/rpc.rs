@@ -181,7 +181,7 @@ pub(in crate::app) fn dispatch_frame(
     ) {
         None
     } else {
-        state.lock().unwrap().update_admission()
+        timer.lock(state).update_admission()
     };
     let _lease = match admission {
         Some(gate) => match gate.try_enter() {

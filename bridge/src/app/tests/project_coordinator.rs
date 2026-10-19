@@ -344,8 +344,8 @@ async fn stale_project_sessions_cannot_act_for_the_pin_or_a_removed_worker() {
     let shared = Arc::new(Mutex::new(state));
     let clock = Arc::clone(&shared.lock().unwrap().frame_clock);
     let plane = ControlPlane::new(Arc::clone(&clock));
-    let mut turn = Turn::take(&plane).await;
     let timer = clock.frame(crate::app::mcp::MCP_CONTROL_METHOD);
+    let mut turn = Turn::take(&plane, &timer).await;
     let answered = handle_coding_mcp_frame(&shared, &frame, &generation, &timer, &mut turn).await;
     assert_eq!(answered.unwrap()["ok"], false);
     let state = shared.lock().unwrap();

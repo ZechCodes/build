@@ -4,7 +4,7 @@ use crate::app::{
 };
 use crate::mcp::{BridgeAction, DoneReport};
 use crate::store::now_rfc3339;
-use crate::timing::{FrameClock, FrameTimer};
+use crate::timing::{FrameClock, FrameTimer, WaitTimer};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -84,7 +84,7 @@ impl ControlPlane {
     #[cfg(unix)]
     async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
         let timer = self.clock.frame(MCP_CONTROL_METHOD);
-        let turn = Turn::take(self).await;
+        let turn = Turn::take(self, &timer).await;
         answer_off_the_workers(state, frame, timer, turn).await
     }
 
@@ -110,12 +110,12 @@ pub(in crate::app) struct Turn {
 }
 
 impl Turn {
-    pub(in crate::app) async fn take(plane: &Arc<ControlPlane>) -> Turn {
+    pub(in crate::app) async fn take(plane: &Arc<ControlPlane>, timer: &FrameTimer) -> Turn {
         let mut turn = Turn {
             plane: Arc::clone(plane),
             permit: None,
         };
-        turn.take_again().await;
+        turn.take_again(timer).await;
         turn
     }
 
@@ -123,19 +123,22 @@ impl Turn {
     /// after it.
     pub(in crate::app) async fn aside<T>(
         &mut self,
+        timer: &FrameTimer,
         work: impl std::future::Future<Output = T>,
     ) -> T {
         self.give_back();
         let done = work.await;
-        self.take_again().await;
+        self.take_again(timer).await;
         done
     }
 
-    async fn take_again(&mut self) {
+    async fn take_again(&mut self, timer: &FrameTimer) {
+        let waiting = WaitTimer::start();
         let permit = Arc::clone(&self.plane.turns)
             .acquire_owned()
             .await
             .expect("the control plane's turns are never closed");
+        timer.record_permit_wait(waiting.elapsed());
         #[cfg(test)]
         {
             use std::sync::atomic::Ordering::SeqCst;
@@ -193,10 +196,18 @@ pub(in crate::app) async fn apply_off_the_socket(
     mut deferred: DeferredJob,
 ) -> Result<Value, String> {
     loop {
-        let done = turn
-            .aside(tokio::task::spawn_blocking(move || deferred.run()))
+        let waiting = WaitTimer::start();
+        let (done, pool_wait) = turn
+            .aside(
+                timer,
+                tokio::task::spawn_blocking(move || {
+                    let waited = waiting.elapsed();
+                    (deferred.run(), waited)
+                }),
+            )
             .await
             .expect("the lifecycle job panicked");
+        timer.record_pool_wait(pool_wait);
         match timer
             .lock(state)
             .apply_deferred_stage(MCP_CONTROL_METHOD, &Value::Null, done)
@@ -287,7 +298,9 @@ async fn answer_off_the_workers(
     mut turn: Turn,
 ) -> Option<Value> {
     let runtime = tokio::runtime::Handle::current();
+    let waiting = WaitTimer::start();
     off_the_workers(move || {
+        timer.record_pool_wait(waiting.elapsed());
         runtime.block_on(handle_authenticated_mcp_frame(
             &state, &frame, &timer, &mut turn,
         ))
@@ -301,7 +314,7 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
     timer: &FrameTimer,
     turn: &mut Turn,
 ) -> Option<Value> {
-    let admission = state.lock().unwrap().update_admission();
+    let admission = timer.lock(state).update_admission();
     let _lease = match admission {
         Some(gate) => match gate.try_enter() {
             Some(lease) => Some(lease),
@@ -344,10 +357,10 @@ pub(in crate::app) async fn handle_router_mcp_frame(
         timer.lock(state).on_router_done(capture_id, report);
         return None;
     }
-    let action = serde_json::from_value::<BridgeAction>(
-        frame.get("request").cloned().unwrap_or(Value::Null),
-    )
-    .ok()?;
+    let action = match parse_action_request(frame) {
+        Ok(action) => action,
+        Err(error) => return Some(mcp_action_response(Err(error))),
+    };
     let (answered, deferred) = timer.lock(state).router_deferring(capture_id, action);
     let result = match deferred {
         Some(deferred) => apply_off_the_socket(state, timer, turn, deferred).await,
@@ -382,10 +395,10 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
         DeliveryRunner::drain(state, timer);
         return None;
     }
-    let action = serde_json::from_value::<BridgeAction>(
-        frame.get("request").cloned().unwrap_or(Value::Null),
-    )
-    .ok()?;
+    let action = match parse_action_request(frame) {
+        Ok(action) => action,
+        Err(error) => return Some(mcp_action_response(Err(error))),
+    };
     let (answered, deferred) = {
         let mut app = timer.lock(state);
         if let Err(error) = generation.guard(&app) {
@@ -399,6 +412,14 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
     };
     DeliveryRunner::drain(state, timer);
     Some(mcp_action_response(result))
+}
+
+fn parse_action_request(frame: &Value) -> Result<BridgeAction, String> {
+    // Serde errors can echo untrusted action names and field contents. Return
+    // one fixed refusal after session authentication, including for actions
+    // introduced by an adapter newer than this daemon.
+    serde_json::from_value(frame.get("request").cloned().unwrap_or(Value::Null))
+        .map_err(|_| "invalid MCP action request".to_string())
 }
 
 pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Value {
@@ -878,3 +899,7 @@ mod pr_error_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/runtime/mcp_wait_timing.rs"]
+mod wait_timing_tests;

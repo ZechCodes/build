@@ -67,18 +67,65 @@ for (const width of [390, 1280]) for (const pinned of [false, true]) for (const 
   }, 30_000);
 }
 
-for (const width of [390, 1280]) {
-  it(`opens the switcher from the top-right target corner at ${width}px`, async () => {
-    await session.withPage(async ({ page, basePath }) => {
-      const switcher = await mountChevron(page, basePath, { pinned: true, badge: true });
-      const target = await switcher.boundingBox();
-      await page.touchscreen.tap(target.x + 23, target.y + 1);
-      await page.locator(".tb-filter").waitFor({ timeout: 5000 });
-      expect(await switcher.getAttribute("aria-expanded")).toBe("true");
-      expect(await page.locator("body").evaluate((body) => body.classList.contains("inbox-popover-open"))).toBe(false);
-    }, { width, height: 844, hasTouch: true });
-  }, 30_000);
+const edgeSamples = [
+  ["bottom-right", 23.5, 43.5], ["bottom-left", 0.5, 43.5],
+  ["top-left", 0.5, 0.5], ["top-right", 23.5, 0.5],
+  ["bottom", 12, 43.5], ["top", 12, 0.5],
+  ["left", 0.5, 22], ["right", 23.5, 22],
+];
 
+async function recordInput(page) {
+  await page.evaluate(() => {
+    window.__chevronInput = [];
+    for (const type of ["pointerdown", "pointerup", "click"]) {
+      document.addEventListener(type, (event) => window.__chevronInput.push({
+        type, chevron: Boolean(event.target.closest(".tb-switch")),
+        railHead: Boolean(event.target.closest(".rail-head")),
+        target: event.target.id || event.target.className || event.target.tagName,
+      }), { capture: true });
+    }
+  });
+}
+
+async function dispatchTap(cdp, input, x, y) {
+  if (input === "touch") {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, radiusX: 1, radiusY: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", clickCount: 1 });
+    await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", clickCount: 1 });
+  }
+}
+
+for (const width of [390, 1280]) for (const pinned of [false, true]) for (const badge of [false, true])
+  for (const deviceScaleFactor of [1, 2]) for (const input of ["touch", "mouse"]) {
+  it(`opens from every corner and edge with ${input} at ${width}px, pinned ${pinned}, badge ${badge}, DPR ${deviceScaleFactor}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      const switcher = await mountChevron(page, basePath, { pinned, badge });
+      expect(await page.locator(".rail-head .pinbtn").getAttribute("aria-pressed")).toBe(String(pinned));
+      const target = await switcher.boundingBox();
+      expect([target.width, target.height]).toEqual([24, 44]);
+      await recordInput(page);
+      const cdp = await page.context().newCDPSession(page);
+      for (const [edge, x, y] of edgeSamples) {
+        await page.evaluate(() => { window.__chevronInput = []; });
+        await dispatchTap(cdp, input, target.x + x, target.y + y);
+        await page.waitForFunction(() => window.__chevronInput.some((event) => event.type === "click"));
+        const events = await page.evaluate(() => window.__chevronInput);
+        expect.soft(events.map((event) => event.type), edge).toEqual(["pointerdown", "pointerup", "click"]);
+        expect.soft(events.filter((event) => !event.chevron || event.railHead), edge).toEqual([]);
+        expect.soft(await switcher.getAttribute("aria-expanded"), edge).toBe("true");
+        expect.soft(await page.locator(".tb-filter").isVisible(), edge).toBe(true);
+        await page.keyboard.press("Escape");
+        expect(await switcher.getAttribute("aria-expanded")).toBe("false");
+      }
+      expect((await targetPixels(switcher)).misses).toEqual([]);
+      await cdp.detach();
+    }, { width, height: 844, hasTouch: true, deviceScaleFactor });
+  }, 30_000);
+}
+
+for (const width of [390, 1280]) {
   it(`keeps rounded hover and keyboard-focus visuals independent of the rectangular target at ${width}px`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       const switcher = await mountChevron(page, basePath, { pinned: true });

@@ -21,6 +21,7 @@ function unauthorized(calls, window, overrides = {}) {
 }
 function navigate(window, url = APP_URL, status = 200) {
   window.webContents.emit("did-navigate", {}, url, status, "fixture status");
+  if (status >= 200 && status < 300) window.webContents.emit("did-finish-load");
 }
 function startNavigation(window, url = APP_URL) {
   window.webContents.emit("did-start-navigation", {}, url, false, true);
@@ -358,7 +359,7 @@ for (const status of [403, 500]) {
     navigate(window, APP_URL, status);
     await flush();
     assert.equal(calls.dialogs.length, 1);
-    assert.equal(calls.dialogs[0].title, "Build sign-in failed");
+    assert.equal(calls.dialogs[0].title, "Build could not load");
     assert.equal(window.actions.includes("show"), false);
     app.emit("second-instance", {}, ["build"]);
     assert.equal(window.actions.includes("show"), false);
@@ -379,14 +380,14 @@ for (const signal of ["loadURL", "did-fail-load"]) {
     if (signal === "did-fail-load") window.webContents.emit("did-fail-load", {}, -2, "fixture failure", APP_URL, true);
     await flush();
     assert.equal(calls.dialogs.length, 1);
-    assert.equal(calls.dialogs[0].title, "Build sign-in failed");
+    assert.equal(calls.dialogs[0].title, "Build could not load");
     assert.equal(window.actions.includes("show"), false);
   });
 }
 
 test("intentional canceled 401 loads and subframe failures cannot fail a pending recovery", async (t) => {
   const { calls } = await launch(t, {
-    loadURL: (window) => loads(window) > 1
+    loadURL: (window) => loads(window) === 1
       ? Promise.reject(Object.assign(new Error("fixture canceled"), { code: "ERR_ABORTED", errno: -3 }))
       : Promise.resolve(),
   });

@@ -7,9 +7,9 @@ let session;
 beforeAll(async () => { session = await openLayoutSession({ plugins: [navigationAppShim] }); }, 30_000);
 afterAll(async () => { await session?.close(); });
 
-async function mountChevron(page, basePath, { pinned, badge = false } = {}) {
+async function mountChevron(page, basePath, { pinned, badge = false, kind } = {}) {
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await mountAgentHeader(page, basePath, { pinned });
+  await mountAgentHeader(page, basePath, { pinned, kind });
   await page.locator("#inbox-open").evaluate((button, badge) => {
     button.classList.toggle("has-attention", badge);
     button.querySelector(".inbox-open-count").textContent = badge ? "99+" : "";
@@ -68,6 +68,7 @@ for (const width of [390, 1280]) for (const pinned of [false, true]) for (const 
 }
 
 const edgeSamples = [
+  ["reported bottom-right", 23, 43],
   ["bottom-right", 23.5, 43.5], ["bottom-left", 0.5, 43.5],
   ["top-left", 0.5, 0.5], ["top-right", 23.5, 0.5],
   ["bottom", 12, 43.5], ["top", 12, 0.5],
@@ -102,26 +103,86 @@ for (const width of [390, 1280]) for (const pinned of [false, true]) for (const 
   it(`opens from every corner and edge with ${input} at ${width}px, pinned ${pinned}, badge ${badge}, DPR ${deviceScaleFactor}`, async () => {
     await session.withPage(async ({ page, basePath }) => {
       const switcher = await mountChevron(page, basePath, { pinned, badge });
+      expect(await page.evaluate(() => devicePixelRatio)).toBe(deviceScaleFactor);
       expect(await page.locator(".rail-head .pinbtn").getAttribute("aria-pressed")).toBe(String(pinned));
-      const target = await switcher.boundingBox();
-      expect([target.width, target.height]).toEqual([24, 44]);
-      await recordInput(page);
-      const cdp = await page.context().newCDPSession(page);
-      for (const [edge, x, y] of edgeSamples) {
-        await page.evaluate(() => { window.__chevronInput = []; });
-        await dispatchTap(cdp, input, target.x + x, target.y + y);
-        await page.waitForFunction(() => window.__chevronInput.some((event) => event.type === "click"));
-        const events = await page.evaluate(() => window.__chevronInput);
-        expect.soft(events.map((event) => event.type), edge).toEqual(["pointerdown", "pointerup", "click"]);
-        expect.soft(events.filter((event) => !event.chevron || event.railHead), edge).toEqual([]);
-        expect.soft(await switcher.getAttribute("aria-expanded"), edge).toBe("true");
-        expect.soft(await page.locator(".tb-filter").isVisible(), edge).toBe(true);
-        await page.keyboard.press("Escape");
-        expect(await switcher.getAttribute("aria-expanded")).toBe("false");
-      }
-      expect((await targetPixels(switcher)).misses).toEqual([]);
-      await cdp.detach();
+      await assertEdgeInput(page, switcher, input);
     }, { width, height: 844, hasTouch: true, deviceScaleFactor });
+  }, 30_000);
+}
+
+async function assertEdgeInput(page, switcher, input) {
+  const target = await switcher.boundingBox();
+  expect([target.width, target.height]).toEqual([24, 44]);
+  await recordInput(page);
+  const cdp = await page.context().newCDPSession(page);
+  for (const [edge, x, y] of edgeSamples) {
+    await page.evaluate(() => {
+      document.activeElement?.blur();
+      window.__chevronInput = [];
+    });
+    await dispatchTap(cdp, input, target.x + x, target.y + y);
+    await page.waitForFunction(() => window.__chevronInput.some((event) => event.type === "click"));
+    const events = await page.evaluate(() => window.__chevronInput);
+    expect.soft(events.map((event) => event.type), edge).toEqual(["pointerdown", "pointerup", "click"]);
+    expect.soft(events.filter((event) => !event.chevron || event.railHead), edge).toEqual([]);
+    expect.soft(await switcher.getAttribute("aria-expanded"), edge).toBe("true");
+    expect.soft(await page.locator(".tb-filter").isVisible(), edge).toBe(true);
+    await page.keyboard.press("Escape");
+    expect(await switcher.getAttribute("aria-expanded")).toBe("false");
+  }
+  expect((await targetPixels(switcher)).misses).toEqual([]);
+  await cdp.detach();
+}
+
+async function populateConversation(page) {
+  await page.evaluate(async () => {
+    const items = [];
+    let sequence = 0;
+    for (let index = 0; index < 30; index++) {
+      items.push({ type: "message", data: { sequence: ++sequence, role: "user", body: `Inspect file ${index}.` } });
+      items.push({ type: "event", data: { sequence: ++sequence, event: "tool_use", summary: `Read file-${index}.js` } });
+      items.push({ type: "event", data: { sequence: ++sequence, event: "tool_use", summary: `Test file-${index}.js` } });
+      items.push({ type: "message", data: { sequence: ++sequence, role: "agent", body: `Finished file ${index}.` } });
+    }
+    await window.__layoutModules.cache.writeCached(
+      { deviceId: "nav-device", entityId: "current", kind: "thread", sub: "header-agent" },
+      { items, deliveredSequence: sequence },
+    );
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".thread-activity-group-head").length > 10);
+}
+
+for (const deviceScaleFactor of [1, 2]) for (const badge of [false, true]) {
+  it(`keeps scrolled activity behind the pinned phone header from taking chevron taps, badge ${badge}, DPR ${deviceScaleFactor}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      const switcher = await mountChevron(page, basePath, { pinned: true, badge, kind: "workspace" });
+      await populateConversation(page);
+      await page.evaluate(() => {
+        const body = document.querySelector(".rail-body");
+        const summary = body.querySelector(".thread-activity-group-head");
+        body.scrollTop += summary.getBoundingClientRect().top - document.querySelector(".rail-head").getBoundingClientRect().top;
+      });
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await assertEdgeInput(page, switcher, "touch");
+    }, { width: 390, height: 844, hasTouch: true, deviceScaleFactor });
+  }, 30_000);
+}
+
+
+for (const content of ["chat", "usage banner", "terminal"]) {
+  it(`starts the pinned phone ${content} viewport immediately below its visible header`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountChevron(page, basePath, { pinned: true });
+      const bounds = await page.evaluate((content) => {
+        const body = document.querySelector(".rail-body");
+        if (content === "terminal") body.classList.add("rail-body-tui");
+        if (content === "usage banner") body.insertAdjacentHTML("beforebegin",
+          '<div class="usage-limit-banners"><div class="usage-limit-banner">Usage limit reached</div></div>');
+        const above = body.previousElementSibling;
+        return { top: body.getBoundingClientRect().top, aboveBottom: above.getBoundingClientRect().bottom };
+      }, content);
+      expect(bounds.top).toBeCloseTo(bounds.aboveBottom, 1);
+    }, { width: 390, height: 844 });
   }, 30_000);
 }
 

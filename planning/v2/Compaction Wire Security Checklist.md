@@ -5,8 +5,8 @@ harness qualification and session-policy checklists continue to govern actual
 enforcement. Editors and the conversation menu belong to step 7.
 
 Each control below is worth 10 points. **Score: 100/100.** All ten controls
-pass. The final bridge suite passes 5,112 tests (14 ignored), and the full SPA
-suite passes 10,818 tests across 701 files, including Chromium. Clippy, fmt,
+pass. The final bridge suite passes 5,118 tests (14 ignored), and the full SPA
+suite passes 10,825 tests across 702 files, including Chromium. Clippy, fmt,
 API/manifest contracts, vendor/Pi checks, lint, build, captures, Semgrep,
 gitleaks and diff checks pass; the #660 handoff carries the exit-code ledger.
 
@@ -14,13 +14,13 @@ gitleaks and diff checks pass; the #660 handoff carries the exit-code ledger.
 | --- | --- | --- |
 | 1 | Provider-map writes accept only the five declared harness keys and positive safe integers or provider null; malformed patches and mixed legacy/map writes are atomic | `compaction_wire_map_invalid_mutations_are_atomic`, `compaction_wire_scope_setters_reject_unknowns_zero_and_preserve_null_patch_semantics`, existing policy boundary and persistence-failure tests |
 | 2 | Typed setters bind a server-owned project/workspace ID, reject unknown params, and cannot mutate an unavailable owner before answering | Scoped wire setter tests, parked-owner refusal assertion, strict param contract suite |
-| 3 | Every configured, inherited and effective observation uses canonical ownership and provider resolution; legacy scalar compatibility remains distinct | `compaction_wire_scopes_and_unknown_active_are_authoritative`, existing all-provider/alias/project-worker/parked/adopted policy tests |
+| 3 | Every configured, inherited and effective observation uses canonical ownership and provider resolution; legacy scalar compatibility remains distinct | `compaction_wire_scopes_and_unknown_active_are_authoritative`, existing all-provider/alias/project-worker/parked/adopted policy tests; `compaction_fixtures.rs` checks every fixture scope and agent, including production harness preparation |
 | 4 | Unsafe legacy values retain exact decimal read representations and cannot be submitted back as numeric mutations | Existing `compaction_policy_unsafe_legacy_values_read_exactly_without_rounding_or_clamping` extended through wire reads; `compactionContract.test.js`; adapter unsafe-integer test |
 | 5 | A save cannot invent active policy, restart work or send a turn; unknown active and pending state stay null | `compaction_wire_saves_never_replace_the_applied_session_policy`, unknown-active scope test, SPA save-preserves-active test |
 | 6 | The invalidation carries scope and owner only; delivery requires a current subscription, and queued/in-flight delivery is revoked with its kind | `compaction_wire_delivery_is_opted_in_and_revoked_with_the_subscription`, `compaction_wire_in_flight_event_is_fenced_by_kind_removal`, shared event fixtures |
-| 7 | Subscription coalescing cannot lose a compaction invalidation, and the accepted subscription triggers authoritative catch-up | `compaction_wire_survives_a_prior_pending_overflow`, both requeue race regressions, and the unsent-thread cursor regression; SPA subscription acceptance, other-client invalidation and burst tests |
+| 7 | Subscription coalescing cannot lose a compaction invalidation, and the accepted subscription triggers authoritative catch-up | `compaction_wire_survives_a_prior_pending_overflow`, both requeue race regressions, the unsent-thread cursor regression, and all three `review_overflow` regressions preserving resync through kind changes and in-flight requeue; SPA subscription acceptance, other-client invalidation and burst tests |
 | 8 | Current greeting authority gates new params and setters; cached support is rendering evidence only and downgrade clears it | `deviceContexts.test.js`, `compactionCache.test.js` capability/old-bridge/downgrade tests; no new hello params |
-| 9 | Cache writes are fenced against newer invalidations, records, generations and greetings, including inside delayed transactions; clearing an override clears stale cached values | `compactionCache.test.js` race/transaction/clear-override tests; shared settings-pull transaction guard and ordinary sync push fences |
+| 9 | Cache writes are fenced against newer invalidations, records, generations and greetings, including inside delayed transactions; clearing an override clears stale cached values | `compactionCache.test.js` race/transaction/clear-override tests; ordinary settings/roster read push fences checked inside transactions, including project-list detail copies; `compactionSettingsRace.test.js` and newer-value-wins regressions |
 | 10 | The change adds no credentials, config-file destinations, subprocess launches or live harness operations; verification is isolated and complexity allowances do not increase | Throwaway HOME/TMPDIR gate runs, full bridge/SPA/contract suites, existing complexity-ratchet tests, Semgrep, gitleaks and diff checks |
 
 The service conservatively refreshes all held compaction dependencies on the
@@ -41,3 +41,10 @@ Legacy `compact_at_tokens` retains the conversation override or device scalar;
 `project.set_compaction` requires an available project record to return its
 authoritative row. Parked project maps remain preserved by the existing policy
 storage layer; an unavailable wire owner is refused without changing them.
+
+Review round 1 adds explicit regressions for old ordinary reads landing before
+the authoritative refresh, overflow resync surviving subscription kind changes,
+and fixture observations matching production preparation. The pending Codex
+example uses the actual unqualified between-turn fallback; conversation-reset
+observations name the conversation override source. The full reruns and
+test-first failures are attached to the revised #660 gate ledger.

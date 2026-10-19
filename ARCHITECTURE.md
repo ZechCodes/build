@@ -155,6 +155,12 @@ every verb live in `fixtures/api/v1/` and are checked by
 
 Everything else is queued to the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
+Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
+arrival order; its overflow answers retryable `busy`. The pool has eight
+workers and separate foreground/background queues, with at most two workers
+running background frames. Terminal lanes and immediate handlers run outside
+that eight-worker bound. A deferred handler releases the app lock during its
+external work, but retains its dispatch worker until it finishes.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -257,7 +263,50 @@ section on the blocking pool. A worker parked on the lock behind a slow frame
 would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
-and `Store` wraps its own connection mutex (`bridge/src/store.rs`).
+and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
+clones share that one SQLite connection: reads and writes serialize on its
+mutex even though the database uses WAL. Routed v1 handlers receive
+`&mut AppState`, and their Store calls can execute while the app mutex is held.
+`off_the_workers` protects runtime workers from blocking; it does not remove
+these serialization points.
+
+Some read-named verbs mutate state. Task list/detail reads can backfill stored
+records; project listing revives parked projects; workspace listing/detail
+can adopt legacy workspaces and refresh manifests; board reads reconcile
+attention and schedule cache/sweep work. Moving these handlers to a read lane
+requires separating those effects first. The push bus owns separate locks,
+but its current `app/facts.rs::entity_facts` source still takes the app mutex
+for state/thread facts before doing Git work outside it.
+
+`timing.rs::FrameClock` exposes total and app-hold histograms through
+`bridge.stats`, with queue/lock waits in slow-frame logs. SQLite time and the
+per-wire admission wait are not separately measured. The priority queues'
+`p95_ms` fields describe total frame duration, not queue wait alone.
+`bridge.stats` avoids the app lock in its handler but still queues for a
+dispatch worker.
+
+**Proposed concurrency boundary (#681; not implemented).**
+[`Bridge Concurrency Plan.md`](<planning/v2/Bridge Concurrency Plan.md>) records
+the complete verb inventory, evidence gaps, instrumentation and staged tests.
+Its target is immutable published read views, read-only WAL connections and
+one independent SQLite writer. Read requests obtain execution capacity without
+waiting behind writers or other reads; bounded overload returns `busy`.
+Filesystem/Git reads have separate capacity from cheap state and SQL reads.
+No app/domain mutex is held while executing or waiting for SQL or external
+work. This supersedes the older planning documents' proposed exception for
+SQLite and config writes under the app lock; it does not claim that migration
+has already happened.
+
+The proposed write order is device → project → workspace, with stable sorting
+within a level and compatible ancestor intentions so sibling workspace writes
+can overlap. Complete scope sets are reserved before work; short state guards
+are released for I/O while the operation retains its conflict reservation.
+Canonical shared Git repositories still require their own exclusion. The DB
+writer acquires no app/scope locks. A successful write commits, publishes its
+affected canonical read views, stages changes, then acknowledges; a later
+read uses a fresh published view or SQL transaction. Push facts use those
+committed views. Read-side maintenance becomes service work, and MCP, pumps,
+reclaim, source sync and delivery must migrate with the RPC writers.
 
 Checkout-root refreshes use the reverse conversation lookup in
 `app/workspaces/mod.rs`. It filters candidates against the queried run before

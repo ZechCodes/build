@@ -287,26 +287,15 @@ dispatch worker.
 
 **Proposed concurrency boundary (#681; not implemented).**
 [`Bridge Concurrency Plan.md`](<planning/v2/Bridge Concurrency Plan.md>) records
-the complete verb inventory, evidence gaps, instrumentation and staged tests.
-Its target is immutable published read views, read-only WAL connections and
-one independent SQLite writer. Read requests obtain execution capacity without
-waiting behind writers or other reads; bounded overload returns `busy`.
-Filesystem/Git reads have separate capacity from cheap state and SQL reads.
-No app/domain mutex is held while executing or waiting for SQL or external
-work. This supersedes the older planning documents' proposed exception for
-SQLite and config writes under the app lock; it does not claim that migration
-has already happened.
-
-The proposed write order is device → project → workspace, with stable sorting
-within a level and compatible ancestor intentions so sibling workspace writes
-can overlap. Complete scope sets are reserved before work; short state guards
-are released for I/O while the operation retains its conflict reservation.
-Canonical shared Git repositories still require their own exclusion. The DB
-writer acquires no app/scope locks. A successful write commits, publishes its
-affected canonical read views, stages changes, then acknowledges; a later
-read uses a fresh published view or SQL transaction. Push facts use those
-committed views. Read-side maintenance becomes service work, and MCP, pumps,
-reclaim, source sync and delivery must migrate with the RPC writers.
+the verb inventory, minimal timing comparison and staged tests. SQL history/task
+reads move first to an independent WAL read pool, followed by immutable
+board/project/workspace/agent views. Reads never return capacity refusals;
+an exhausted SQL read pool waits on its own connections, never the app lock or
+writer. The target releases app/domain guards for SQL and external work, uses
+device → project → workspace write ownership, and orders successful writes
+commit → publish → stage changes → acknowledge. Failed saves cannot enter
+canonical views or emit their changes. The plan covers maintenance/autonomous
+writers and existing review publication fences before scoped parallel writes.
 
 Checkout-root refreshes use the reverse conversation lookup in
 `app/workspaces/mod.rs`. It filters candidates against the queried run before

@@ -256,7 +256,8 @@ async fn the_greeting_announces_push_events() {
             "bridge.update_status",
             "models.changed",
             "rtc.diagnostics",
-            "harnesses.changed"
+            "harnesses.changed",
+            "compaction.changed"
         ]),
         "{hello:?}"
     );
@@ -269,7 +270,7 @@ async fn the_greeting_announces_push_events() {
         json!({
             "subscriptions": true,
             "mode": "subscriptions",
-            "kinds": ["state", "thread", "git", "files", "terminals", "tasks"],
+            "kinds": ["state", "thread", "git", "files", "terminals", "tasks", "compaction.changed"],
             "items": "bodies",
             "batch_ms": { "min": 1000, "max": 600_000 },
         }),

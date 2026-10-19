@@ -166,74 +166,7 @@
         "name": "build",
         "path": "/home/ada/code/build",
         "base_branch": "main",
-        "is_git": true,
-        "compaction_thresholds": {},
-        "compaction": {
-          "inherited": {
-            "claude": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "claude_adk": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "codex": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "codex_app_server": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "pi": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            }
-          },
-          "effective": {
-            "claude": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "claude_adk": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "codex": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "codex_app_server": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            },
-            "pi": {
-              "tokens": 200000,
-              "source": {
-                "kind": "device"
-              }
-            }
-          }
-        }
+        "is_git": true
       }
     ],
     "runs": [
@@ -366,7 +299,7 @@
         "harness": "claude_adk",
         "since": "2026-09-20T21:30:47Z",
         "resets_at": "2026-09-20T22:20:00Z",
-        "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
+        "said": "You've hit your session limit \u00b7 resets 6:20pm (America/New_York)"
       }
     ]
   },
@@ -425,74 +358,7 @@
             "name": "build",
             "path": "/home/ada/code/build",
             "base_branch": "main",
-            "is_git": true,
-            "compaction_thresholds": {},
-            "compaction": {
-              "inherited": {
-                "claude": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "claude_adk": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex_app_server": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "pi": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                }
-              },
-              "effective": {
-                "claude": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "claude_adk": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex_app_server": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "pi": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                }
-              }
-            }
+            "is_git": true
           }
         ],
         "runs": [],
@@ -702,74 +568,7 @@
             "name": "build",
             "path": "/home/ada/code/build",
             "base_branch": "main",
-            "is_git": true,
-            "compaction_thresholds": {},
-            "compaction": {
-              "inherited": {
-                "claude": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "claude_adk": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex_app_server": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "pi": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                }
-              },
-              "effective": {
-                "claude": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "claude_adk": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "codex_app_server": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                },
-                "pi": {
-                  "tokens": 200000,
-                  "source": {
-                    "kind": "device"
-                  }
-                }
-              }
-            }
+            "is_git": true
           }
         ],
         "runs": [
@@ -902,7 +701,7 @@
             "harness": "claude_adk",
             "since": "2026-09-20T21:30:47Z",
             "resets_at": "2026-09-20T22:20:00Z",
-            "said": "You've hit your session limit · resets 6:20pm (America/New_York)"
+            "said": "You've hit your session limit \u00b7 resets 6:20pm (America/New_York)"
           }
         ]
       }

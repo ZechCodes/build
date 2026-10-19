@@ -757,11 +757,20 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
 @media (prefers-reduced-motion: reduce) {
   .toolbar, .toolbar .tb-switch { transition:none; }
 }
-.tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
-  width:calc(18px + var(--inbox-chevron-gap) / 2); height:44px; padding:0; border:0; border-radius:6px;
+/* Own the last pixel row above the adjoining pinned panel (30), while
+   floating cards (36) and the inbox overlay (46) still cover the control. */
+.tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none; position:relative; z-index:31;
+  width:calc(18px + var(--inbox-chevron-gap) / 2); height:44px; padding:0; border:0; border-radius:0;
   background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }
-/* The straight shared edge leaves no dead strip at the top/bottom corners. */
-body.inbox-collapsed .tb-switch { border-top-left-radius:0; border-bottom-left-radius:0; }
+/* Keep the complete hit rectangle. Rounding belongs to the visual layer,
+   which cannot intercept a corner tap or clip the button's hit box. */
+.tb-switch::before { content:""; position:absolute; inset:0; z-index:-1;
+  border-radius:6px; background:inherit; pointer-events:none; transition-property:none; }
+.tb-switch:focus-visible { outline:none; }
+.tb-switch:focus-visible::before { outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
+body .toolbar button.tb-switch:active:not(:disabled, [aria-disabled="true"]) { box-shadow:none; }
+.tb-switch:active:not(:disabled, [aria-disabled="true"])::before {
+  box-shadow:inset 0 0 0 999px color-mix(in srgb, currentColor 18%, transparent); }
 .tb-switch > span { display:flex; }
 .tb-switch svg { width:18px; height:18px; }
 .tb-breadcrumbs { flex:0 1 auto; min-width:0; max-width:calc(100% - 96px); }
@@ -789,7 +798,7 @@ body.inbox-collapsed .tb-switch { border-top-left-radius:0; border-bottom-left-r
   color:var(--accent); background:transparent; box-shadow:none; }
 .tb-sel:hover .tb-caret { color:inherit; }
 .tb-verb .btn:hover:not(:disabled) { border-color:var(--line); }
-#inbox-open:focus-visible, .tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
+#inbox-open:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
   outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
 /* Only the docked header shares the bar's row. Floating cards and phone
    overlays keep their own hover treatment below it. Selection keeps its fill. */

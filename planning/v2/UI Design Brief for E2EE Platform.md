@@ -17,6 +17,8 @@ With the inbox collapsed, the phone and desktop toolbar put 12px between
 the inbox and project chevron glyphs, matching the project/workspace text gap.
 Their touch targets meet at that gap's midpoint: the inbox keeps its 44×44px
 area and the chevron uses 24×44px, with no overlap or dead zone between them.
+The chevron owns that complete rectangle, corners included; a separate rounded
+visual layer carries its feedback without clipping the touch area.
 
 Conversation bubbles use a custom tooltip for cached identity, current work,
 turn runtime or idle state, harness, model and status. It opens on hover and

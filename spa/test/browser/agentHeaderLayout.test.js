@@ -73,10 +73,9 @@ for (const width of [320, 390, 1280]) for (const directory of [true, false]) for
         const workspace = rect(document.querySelector('[data-select="workspace"] .tb-name'));
         const midpoint = (inboxGlyph.right + glyph.left) / 2;
         const missedHits = [];
-        // Scan both halves of the gap through the target interior. Chromium
-        // rounds the last half-pixel into the adjacent surface below the bar;
-        // the separate rectangle assertions check the full 44px height.
-        for (let y = 1; y < 44; y++) {
+        // Scan both halves of the gap through every pixel row, including
+        // the shared boundary with the surface below the toolbar.
+        for (let y = 0.5; y < 44; y++) {
           for (let x = inboxGlyph.right + 1; x < glyph.left; x++) {
             const owner = x < midpoint ? inbox : switcher;
             if (!owner.contains(document.elementFromPoint(x, target.top + y))) missedHits.push({ x, y });

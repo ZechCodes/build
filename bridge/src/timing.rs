@@ -16,7 +16,7 @@
 //! time went.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
 use std::time::{Duration, Instant};
 
@@ -311,8 +311,8 @@ impl FrameClock {
 struct Spent {
     queued: Duration,
     lock_wait: Duration,
-    permit_wait: Duration,
-    pool_wait: Duration,
+    permit_wait: Option<Duration>,
+    pool_wait: Option<Duration>,
     held: Duration,
     total: Duration,
 }
@@ -320,14 +320,18 @@ struct Spent {
 /// The one line a slow frame writes.
 fn slow_frame_line(method: &str, spent: &Spent, queue_depth: usize) -> String {
     format!(
-        "slow frame {method} total={} queued={} lock_wait={} held={} permit_wait={} pool_wait={} waiting={queue_depth}",
+        "slow frame {method} total={} queued={} lock_wait={} held={}{}{} waiting={queue_depth}",
         millis(spent.total),
         millis(spent.queued),
         millis(spent.lock_wait),
         millis(spent.held),
-        millis(spent.permit_wait),
-        millis(spent.pool_wait),
+        optional_wait("permit_wait", spent.permit_wait),
+        optional_wait("pool_wait", spent.pool_wait),
     )
+}
+
+fn optional_wait(label: &str, duration: Option<Duration>) -> String {
+    duration.map_or_else(String::new, |waited| format!(" {label}={}", millis(waited)))
 }
 
 fn millis(duration: Duration) -> String {
@@ -360,7 +364,9 @@ impl QueuedFrame {
             started: Instant::now(),
             lock_wait_micros: AtomicU64::new(0),
             permit_wait_micros: AtomicU64::new(0),
+            permit_wait_recorded: AtomicBool::new(false),
             pool_wait_micros: AtomicU64::new(0),
+            pool_wait_recorded: AtomicBool::new(false),
             held_micros: AtomicU64::new(0),
         }
     }
@@ -410,7 +416,9 @@ pub struct FrameTimer {
     started: Instant,
     lock_wait_micros: AtomicU64,
     permit_wait_micros: AtomicU64,
+    permit_wait_recorded: AtomicBool,
     pool_wait_micros: AtomicU64,
+    pool_wait_recorded: AtomicBool,
     held_micros: AtomicU64,
 }
 
@@ -434,12 +442,14 @@ impl FrameTimer {
     pub(crate) fn record_permit_wait(&self, waited: Duration) {
         self.permit_wait_micros
             .fetch_add(micros(waited), Ordering::Relaxed);
+        self.permit_wait_recorded.store(true, Ordering::Relaxed);
     }
 
     /// Add only the time before a blocking-pool closure began running.
     pub(crate) fn record_pool_wait(&self, waited: Duration) {
         self.pool_wait_micros
             .fetch_add(micros(waited), Ordering::Relaxed);
+        self.pool_wait_recorded.store(true, Ordering::Relaxed);
     }
 
     /// Take the app mutex, timing the wait and the hold.
@@ -476,8 +486,14 @@ impl FrameTimer {
         Spent {
             queued: self.queued,
             lock_wait: Duration::from_micros(self.lock_wait_micros.load(Ordering::Relaxed)),
-            permit_wait: Duration::from_micros(self.permit_wait_micros.load(Ordering::Relaxed)),
-            pool_wait: Duration::from_micros(self.pool_wait_micros.load(Ordering::Relaxed)),
+            permit_wait: self
+                .permit_wait_recorded
+                .load(Ordering::Relaxed)
+                .then(|| Duration::from_micros(self.permit_wait_micros.load(Ordering::Relaxed))),
+            pool_wait: self
+                .pool_wait_recorded
+                .load(Ordering::Relaxed)
+                .then(|| Duration::from_micros(self.pool_wait_micros.load(Ordering::Relaxed))),
             held: Duration::from_micros(self.held_micros.load(Ordering::Relaxed)),
             total: self.queued + self.started.elapsed(),
         }

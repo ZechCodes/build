@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+#[path = "support/node_runtime.rs"]
+mod node_runtime;
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")

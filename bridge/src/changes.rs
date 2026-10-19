@@ -3174,7 +3174,13 @@ mod subscriptions {
         });
         let parsed: SubscriptionSpec = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(parsed.scope, Scope::Entity("run-7".into()));
-        assert_eq!(parsed.kinds, KindSet::all());
+        assert_eq!(
+            parsed.kinds,
+            Kind::ALL
+                .into_iter()
+                .filter(|kind| *kind != Kind::CompactionChanged)
+                .collect()
+        );
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
     }
 

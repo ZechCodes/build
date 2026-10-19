@@ -779,6 +779,8 @@ impl NameSet {
 /// One entity's un-flushed item, for one subscription.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PendingItem {
+    // The overflow fallback is a resynchronization obligation, not a requested kind.
+    overflow_resync: bool,
     compaction: Vec<Value>,
     kinds: KindSet,
     files: NameSet,
@@ -824,6 +826,7 @@ impl PendingItem {
             ..PendingItem::default()
         };
         let mut due = PendingItem {
+            overflow_resync: self.overflow_resync,
             compaction: self.compaction,
             ..PendingItem::default()
         };
@@ -938,7 +941,9 @@ impl Subscription {
         }
         self.scope_epoch += 1;
         self.pending.retain(|_, item| {
-            item.kinds.0.retain(|kind| kinds.contains(*kind));
+            item.kinds.0.retain(|kind| {
+                kinds.contains(*kind) || (item.overflow_resync && *kind == Kind::State)
+            });
             if !kinds.contains(Kind::CompactionChanged) {
                 item.compaction.clear();
             }
@@ -959,6 +964,11 @@ impl Subscription {
             .filter(|(id, _)| *id == BOARD_ITEM_ID || self.spec.scope.covers(id))
             .collect::<Vec<_>>();
         for (id, item) in covered {
+            if item.overflow_resync {
+                self.first_pending_at.get_or_insert(now);
+                self.collapse();
+                continue;
+            }
             for kind in item
                 .kinds
                 .iter()
@@ -1042,7 +1052,10 @@ impl Subscription {
                 .push(compaction_changed_payload("device", None));
             self.pending.insert(COMPACTION_CHANGED_EVENT.into(), item);
         }
-        let mut board = PendingItem::default();
+        let mut board = PendingItem {
+            overflow_resync: true,
+            ..PendingItem::default()
+        };
         board.kinds.insert(Kind::State);
         self.pending.insert(BOARD_ITEM_ID.to_string(), board);
     }
@@ -4401,5 +4414,105 @@ mod compaction_events {
             bus.subscriptions.lock().unwrap()[0].emitted_tips.is_empty(),
             "only a compaction invalidation was delivered, not thread sequence 42"
         );
+    }
+    fn collapsed_subscription(
+        with_compaction: bool,
+    ) -> (
+        Arc<ChangeBus>,
+        SessionSender,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+        String,
+        SubscriptionSpec,
+    ) {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, rx, key) = SessionSender::observable("rekind-overflow");
+        let mut subscription = spec(Kind::State);
+        subscription.mode = Mode::Off;
+        subscription.kinds.insert(Kind::Thread);
+        if with_compaction {
+            subscription.kinds.insert(Kind::CompactionChanged);
+        }
+        bus.subscribe(&sender, subscription.clone());
+        if with_compaction {
+            bus.note_compaction("project", Some("project-a"));
+        }
+        for index in 0..=PENDING_KEY_CAP {
+            bus.note_kind(&format!("thread-{index}"), Kind::Thread);
+        }
+        assert!(bus.subscriptions.lock().unwrap()[0].collapsed);
+        (bus, sender, rx, key, subscription)
+    }
+
+    fn assert_overflow_then_live(
+        bus: &ChangeBus,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+        key: &str,
+        with_compaction: bool,
+    ) {
+        assert_eq!(
+            bus.flush(),
+            if with_compaction { 2 } else { 1 },
+            "the overflow resync must still be delivered"
+        );
+        let mut board = false;
+        let mut device = false;
+        while let Ok(message) = rx.try_recv() {
+            let frame = SessionSender::decrypt_push(key, &message);
+            board |= frame["items"].as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item["entity_id"] == BOARD_ITEM_ID && item.get("state").is_some())
+            });
+            device |= frame == compaction_changed_payload("device", None);
+        }
+        assert!(
+            board,
+            "missed thread events require a resync even without state subscription"
+        );
+        assert_eq!(device, with_compaction);
+        assert!(!bus.subscriptions.lock().unwrap()[0].collapsed);
+        bus.note_kind("thread-after-overflow", Kind::Thread);
+        assert_eq!(
+            bus.flush(),
+            1,
+            "future events must not remain permanently suppressed"
+        );
+        let frame = SessionSender::decrypt_push(key, &rx.try_recv().unwrap());
+        assert_eq!(frame["items"][0]["entity_id"], "thread-after-overflow");
+        assert!(frame["items"][0].get("thread").is_some());
+    }
+
+    #[test]
+    fn review_overflow_rekind_preserves_resync_and_resumes_thread_delivery() {
+        let (bus, sender, mut rx, key, mut subscription) = collapsed_subscription(false);
+        subscription.kinds = [Kind::Thread].into_iter().collect();
+        subscription.mode = Mode::Realtime;
+        bus.subscribe(&sender, subscription);
+        assert_overflow_then_live(&bus, &mut rx, &key, false);
+    }
+
+    #[test]
+    fn review_overflow_rekind_preserves_mixed_compaction_and_thread_resync() {
+        let (bus, sender, mut rx, key, mut subscription) = collapsed_subscription(true);
+        subscription.kinds = [Kind::Thread, Kind::CompactionChanged]
+            .into_iter()
+            .collect();
+        subscription.mode = Mode::Realtime;
+        bus.subscribe(&sender, subscription);
+        assert_overflow_then_live(&bus, &mut rx, &key, true);
+    }
+
+    #[test]
+    fn review_overflow_rekind_requeues_an_in_flight_resync() {
+        let (bus, sender, mut rx, key, mut subscription) = collapsed_subscription(true);
+        subscription.mode = Mode::Realtime;
+        bus.subscribe(&sender, subscription.clone());
+        let due = bus.take_due();
+        subscription.kinds = [Kind::Thread, Kind::CompactionChanged]
+            .into_iter()
+            .collect();
+        bus.subscribe(&sender, subscription);
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        assert_overflow_then_live(&bus, &mut rx, &key, true);
     }
 }

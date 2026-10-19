@@ -357,10 +357,10 @@ pub(in crate::app) async fn handle_router_mcp_frame(
         timer.lock(state).on_router_done(capture_id, report);
         return None;
     }
-    let action = serde_json::from_value::<BridgeAction>(
-        frame.get("request").cloned().unwrap_or(Value::Null),
-    )
-    .ok()?;
+    let action = match parse_action_request(frame) {
+        Ok(action) => action,
+        Err(error) => return Some(mcp_action_response(Err(error))),
+    };
     let (answered, deferred) = timer.lock(state).router_deferring(capture_id, action);
     let result = match deferred {
         Some(deferred) => apply_off_the_socket(state, timer, turn, deferred).await,
@@ -395,10 +395,10 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
         DeliveryRunner::drain(state, timer);
         return None;
     }
-    let action = serde_json::from_value::<BridgeAction>(
-        frame.get("request").cloned().unwrap_or(Value::Null),
-    )
-    .ok()?;
+    let action = match parse_action_request(frame) {
+        Ok(action) => action,
+        Err(error) => return Some(mcp_action_response(Err(error))),
+    };
     let (answered, deferred) = {
         let mut app = timer.lock(state);
         if let Err(error) = generation.guard(&app) {
@@ -412,6 +412,14 @@ pub(in crate::app) async fn handle_coding_mcp_frame(
     };
     DeliveryRunner::drain(state, timer);
     Some(mcp_action_response(result))
+}
+
+fn parse_action_request(frame: &Value) -> Result<BridgeAction, String> {
+    // Serde errors can echo untrusted action names and field contents. Return
+    // one fixed refusal after session authentication, including for actions
+    // introduced by an adapter newer than this daemon.
+    serde_json::from_value(frame.get("request").cloned().unwrap_or(Value::Null))
+        .map_err(|_| "invalid MCP action request".to_string())
 }
 
 pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Value {

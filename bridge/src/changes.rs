@@ -786,6 +786,31 @@ struct PendingItem {
 }
 
 impl PendingItem {
+    /// A device invalidation subsumes every scoped invalidation. Keep the
+    /// union when old taken work is requeued beside newer pending edits.
+    fn merge_compaction(&mut self, payloads: &[Value], collapsed: bool) {
+        let device = compaction_changed_payload("device", None);
+        if collapsed
+            || self
+                .compaction
+                .iter()
+                .chain(payloads)
+                .any(|value| *value == device)
+        {
+            self.compaction = vec![device];
+            return;
+        }
+        for payload in payloads {
+            if !self.compaction.contains(payload) {
+                self.compaction.push(payload.clone());
+            }
+            if self.compaction.len() > PENDING_KEY_CAP {
+                self.compaction = vec![device];
+                return;
+            }
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.kinds.is_empty()
     }
@@ -937,7 +962,7 @@ impl Subscription {
             for kind in item
                 .kinds
                 .iter()
-                .filter(|kind| self.spec.kinds.contains(*kind))
+                .filter(|kind| *kind != Kind::CompactionChanged && self.spec.kinds.contains(*kind))
                 .collect::<Vec<_>>()
             {
                 let names = match kind {
@@ -951,11 +976,28 @@ impl Subscription {
             if let Some(held) = self.pending.get_mut(id) {
                 held.files.truncated |= item.files.truncated;
                 held.tasks.truncated |= item.tasks.truncated;
-                if self.spec.kinds.contains(Kind::CompactionChanged) {
-                    held.compaction.clone_from(&item.compaction);
-                }
+            }
+            if self.accepts_compaction() {
+                self.note_compaction(&item.compaction, now);
             }
         }
+    }
+
+    fn accepts_compaction(&self) -> bool {
+        self.spec.scope == Scope::All && self.spec.kinds.contains(Kind::CompactionChanged)
+    }
+
+    fn note_compaction(&mut self, payloads: &[Value], now: Instant) {
+        if payloads.is_empty() {
+            return;
+        }
+        self.note(COMPACTION_CHANGED_EVENT, Kind::CompactionChanged, &[], now);
+        let item = self
+            .pending
+            .entry(COMPACTION_CHANGED_EVENT.into())
+            .or_default();
+        item.kinds.insert(Kind::CompactionChanged);
+        item.merge_compaction(payloads, self.collapsed);
     }
 
     fn wants(&self, entity_id: &str, kind: Kind) -> bool {
@@ -1758,21 +1800,11 @@ impl ChangeBus {
         let now = Instant::now();
         let payload = compaction_changed_payload(scope, owner);
         let mut subscriptions = self.subscriptions.lock().unwrap();
-        for sub in subscriptions.iter_mut().filter(|sub| {
-            sub.spec.scope == Scope::All && sub.spec.kinds.contains(Kind::CompactionChanged)
-        }) {
-            sub.note(COMPACTION_CHANGED_EVENT, Kind::CompactionChanged, &[], now);
-            let item = sub
-                .pending
-                .entry(COMPACTION_CHANGED_EVENT.into())
-                .or_default();
-            item.kinds.insert(Kind::CompactionChanged);
-            if !item.compaction.contains(&payload) {
-                item.compaction.push(payload.clone());
-            }
-            if sub.collapsed || item.compaction.len() > PENDING_KEY_CAP {
-                item.compaction = vec![compaction_changed_payload("device", None)];
-            }
+        for sub in subscriptions
+            .iter_mut()
+            .filter(|sub| sub.accepts_compaction())
+        {
+            sub.note_compaction(std::slice::from_ref(&payload), now);
         }
         drop(subscriptions);
         self.wake.notify_one();
@@ -4264,5 +4296,60 @@ mod compaction_events {
         assert_eq!(bus.deliver(due, Vec::new()), 0);
         assert!(rx.try_recv().is_err());
         assert_eq!(bus.flush(), 0);
+    }
+    fn requeued_events(collapse: bool) -> Vec<Value> {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("requeue");
+        let mut subscription = spec(Kind::CompactionChanged);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_compaction("project", Some("project-a"));
+        bus.note_compaction("conversation", Some("conversation-c"));
+        let due = bus.take_due();
+        subscription.kinds.insert(Kind::State);
+        bus.subscribe(&sender, subscription);
+        bus.note_compaction("workspace", Some("workspace-b"));
+        if collapse {
+            for index in 0..=PENDING_KEY_CAP {
+                bus.note_kind(&format!("entity-{index}"), Kind::State);
+            }
+        }
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        bus.flush();
+        let mut events = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            let frame = SessionSender::decrypt_push(&key, &message);
+            if frame["type"] == COMPACTION_CHANGED_EVENT {
+                events.push(frame);
+            }
+        }
+        events
+    }
+
+    #[test]
+    fn compaction_wire_requeue_merges_newer_scopes_without_duplicates() {
+        let events = requeued_events(false);
+        assert_eq!(
+            events.len(),
+            3,
+            "requeue each old frame only once: {events:?}"
+        );
+        for (scope, owner) in [
+            ("project", "project-a"),
+            ("workspace", "workspace-b"),
+            ("conversation", "conversation-c"),
+        ] {
+            assert!(
+                events.contains(&compaction_changed_payload(scope, Some(owner))),
+                "missing {scope}: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_wire_requeue_preserves_a_collapsed_device_invalidation() {
+        assert_eq!(
+            requeued_events(true),
+            vec![compaction_changed_payload("device", None)]
+        );
     }
 }

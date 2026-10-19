@@ -103,6 +103,15 @@ async fn malformed_actions_do_not_bypass_session_authentication() {
 }
 
 #[tokio::test]
+async fn valid_done_reports_remain_notifications() {
+    for surface in [Surface::Coding, Surface::Router, Surface::Project] {
+        let (_dir, state, agent) = fixture(surface);
+        let report = json!({ "report": { "status": "blocked", "summary": "test completion" } });
+        assert_eq!(answer(&state, &frame(&agent, report)).await, None);
+    }
+}
+
+#[tokio::test]
 async fn malformed_action_receives_a_socket_reply_without_waiting_for_the_client_deadline() {
     let (_dir, state, agent) = fixture(Surface::Coding);
     let plane = ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));

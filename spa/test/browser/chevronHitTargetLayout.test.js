@@ -75,10 +75,10 @@ const edgeSamples = [
   ["left", 0.5, 22], ["right", 23.5, 22],
 ];
 
-// Main 32aeb1e15's native 44×44 chevron has these same touch misses beside a
-// pinned phone panel, at DPR 1/2 with either badge state. Scrolled activity also
-// takes the bottom midpoint. Document the existing gap instead of sacrificing
-// the glass header to claim it fixed; all other samples must open the switcher.
+// #673 tracks these native edge misses, reproduced on main 32aeb1e15's 44×44
+// chevron beside a pinned phone panel at DPR 1/2 with either badge state.
+// Scrolled activity also takes the bottom midpoint. Preserve the glass and
+// assert the existing gap explicitly; all other samples must open the switcher.
 const mainCornerMisses = ["reported bottom-right", "bottom-right", "bottom-left"];
 
 async function recordInput(page) {

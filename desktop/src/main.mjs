@@ -346,7 +346,7 @@ function observeMainFrameNavigation(window) {
   });
   window.webContents.on("did-finish-load", () => {
     const load = navigation.currentLoad;
-    if (!load) return;
+    if (!load?.committed) return;
     load.finished = true;
     completeRecoveryLoad(window, navigation, load);
   });

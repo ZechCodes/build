@@ -1,9 +1,75 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+// Exercise the actual request/response path without spawning or signaling a process.
+const source = readFileSync(new URL("../../src/harness/build-tools.ts", import.meta.url), "utf8");
+const testSource = `${source}\nexport { McpStdioClient, DEFAULT_TIMEOUT_MS };\n//# sourceURL=build-tools-fixture.mjs`;
+const { McpStdioClient, DEFAULT_TIMEOUT_MS } = await import(`data:text/javascript;base64,${Buffer.from(testSource).toString("base64")}`);
+
+function requestFixture(t, timeoutMs = DEFAULT_TIMEOUT_MS, toolTimeoutMs) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new McpStdioClient("unused-fixture-command", "fixture-owner", timeoutMs, toolTimeoutMs);
+  const writes = [];
+  t.mock.method(client, "write", async (message) => { writes.push(message); });
+  const stopped = t.mock.method(client, "stopChild", async () => {});
+  const signaled = t.mock.method(process, "kill", () => true);
+  t.after(() => client.close());
+  return { client, writes, stopped, signaled };
+}
+
+for (const method of ["initialize", "tools/list"]) {
+  test(`${method} retains its 30-second request deadline`, async (t) => {
+    const { client, stopped } = requestFixture(t);
+    const reply = client.request(method, {}).catch((error) => error);
+    t.mock.timers.tick(29999);
+    assert.equal(client.failure, undefined);
+    t.mock.timers.tick(1);
+    assert.match((await reply).message, /Build MCP request 1 timed out/);
+    assert.equal(stopped.mock.callCount(), 1);
+  });
+}
+
+test("tools/call keeps the same pending request beyond 30 seconds and delivers its reply", async (t) => {
+  const { client, writes, stopped } = requestFixture(t);
+  const reply = client.request("tools/call", { name: "comment_task", arguments: {} }).catch((error) => error);
+  t.mock.timers.tick(31000);
+  assert.equal(client.failure, undefined);
+  assert.equal(client.pending.size, 1);
+  assert.equal(stopped.mock.callCount(), 0);
+  assert.equal(writes.length, 1);
+  const result = { isError: false, content: [{ type: "text", text: "applied" }] };
+  client.readLine(JSON.stringify({ jsonrpc: "2.0", id: writes[0].id, result }));
+  assert.deepEqual(await reply, result);
+  assert.equal(client.pending.size, 0);
+  t.mock.timers.tick(310000);
+  assert.equal(client.failure, undefined);
+});
+
+test("tools/call allows Rust's five-minute cap first and reports an uncertain outcome at 310 seconds", async (t) => {
+  const { client, stopped, signaled } = requestFixture(t);
+  const reply = client.request("tools/call", { name: "comment_task", arguments: {} }).catch((error) => error);
+  t.mock.timers.tick(309999);
+  assert.equal(client.failure, undefined);
+  t.mock.timers.tick(1);
+  const error = await reply;
+  assert.match(error.message, /timed out/);
+  assert.match(error.message, /call may have been applied; check its outcome before retrying/);
+  await client.closePromise;
+  assert.equal(client.pending.size, 0);
+  assert.equal(stopped.mock.callCount(), 1);
+  assert.deepEqual(signaled.mock.calls[0].arguments, [process.pid, "SIGTERM"]);
+});
+
+test("explicit fixture deadlines still bound tools/call without waiting minutes", async (t) => {
+  const { client } = requestFixture(t, 30, 30);
+  const reply = client.request("tools/call", {}).catch((error) => error);
+  t.mock.timers.tick(30);
+  assert.match((await reply).message, /call may have been applied; check its outcome before retrying/);
+});
 
 function run(scenario, mode = "normal") {
   const directory = mkdtempSync(join(tmpdir(), "build-pi-default-"));

@@ -3,6 +3,8 @@ import { appendFileSync, constants, closeSync, fstatSync, openSync, readFileSync
 import { isAbsolute } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 30000;
+// Let the Rust MCP client's five-minute reply budget report its outcome first.
+const TOOL_CALL_TIMEOUT_MS = 310000;
 const CLOSE_GRACE_MS = 500;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
@@ -276,7 +278,9 @@ function runtimeConfiguration() {
   if (!Number.isInteger(configuredTimeout) || configuredTimeout < 1) {
     throw new Error("BUILD_PI_MCP_TIMEOUT_MS must be a positive integer");
   }
-  return { command, owner, timeoutMs: configuredTimeout };
+  // Keep explicit fixture overrides applying to every request.
+  const toolTimeoutMs = process.env.BUILD_PI_MCP_TIMEOUT_MS === undefined ? TOOL_CALL_TIMEOUT_MS : configuredTimeout;
+  return { command, owner, timeoutMs: configuredTimeout, toolTimeoutMs };
 }
 
 function errorMessage(error) {
@@ -394,10 +398,11 @@ function parseResponseEnvelope(line, pendingIds) {
 }
 
 class McpStdioClient {
-  constructor(command, owner, timeoutMs) {
+  constructor(command, owner, timeoutMs, toolTimeoutMs = TOOL_CALL_TIMEOUT_MS) {
     this.command = command;
     this.owner = owner;
     this.timeoutMs = timeoutMs;
+    this.toolTimeoutMs = toolTimeoutMs;
     this.nextId = 1;
     this.pending = new Map();
     this.failure = undefined;
@@ -445,8 +450,10 @@ class McpStdioClient {
     if (this.failure) return Promise.reject(this.failure);
     if (this.closing) return Promise.reject(new Error("Build MCP session is shutting down"));
     const id = this.nextId++;
+    const timeoutMs = method === "tools/call" ? this.toolTimeoutMs : this.timeoutMs;
+    const outcome = method === "tools/call" ? "; call may have been applied; check its outcome before retrying" : "";
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.failTerminal(`Build MCP request ${id} timed out`), this.timeoutMs);
+      const timer = setTimeout(() => this.failTerminal(`Build MCP request ${id} timed out${outcome}`), timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params }).catch((error) => {
         this.failTerminal(`Build MCP write failed: ${errorMessage(error)}`);
@@ -595,8 +602,8 @@ export default async function buildTools(pi) {
   const telemetry = configureCompactionTelemetry(pi);
   const configured = process.env.BUILD_PI_COMPACTION_POLICY !== undefined || process.env.BUILD_PI_TELEMETRY_LOG !== undefined;
   try {
-    const { command, owner, timeoutMs } = runtimeConfiguration();
-    client = new McpStdioClient(command, owner, timeoutMs);
+    const { command, owner, timeoutMs, toolTimeoutMs } = runtimeConfiguration();
+    client = new McpStdioClient(command, owner, timeoutMs, toolTimeoutMs);
     client.onTerminalFailure = () => telemetry?.unsupported("extension_failed");
     await client.start();
     const tools = await client.initialize();

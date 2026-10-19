@@ -43,7 +43,8 @@
         "configured": {
           "tokens": 150000,
           "source": {
-            "kind": "device"
+            "kind": "conversation",
+            "id": "agent-2"
           }
         },
         "inherited": {

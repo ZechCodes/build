@@ -175,9 +175,10 @@
                 }
               },
               "inherited": {
-                "tokens": 200000,
+                "tokens": 150000,
                 "source": {
-                  "kind": "device"
+                  "kind": "project",
+                  "id": "proj-1"
                 }
               },
               "active": {
@@ -189,12 +190,12 @@
                 "evidence": "applied_at_start",
                 "qualification": {
                   "version": "0.160.0",
-                  "evidence": "Pinned Codex native threshold qualification"
+                  "evidence": "Codex total-token translation revision 1 (0.160.0); isolated compaction observed; effective model window, fallback buffer and selected-profile precedence unqualified"
                 },
-                "translated_trigger": 200000
+                "translated_trigger": null
               },
-              "enforcement": "native",
-              "reason": null,
+              "enforcement": "between_turn",
+              "reason": "codex_model_window_buffer_and_profile_unqualified",
               "pending_change": true
             }
           }

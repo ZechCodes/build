@@ -1984,6 +1984,7 @@ impl ChangeBus {
                 .into_iter()
                 .map(move |payload| (frame, payload))
         }) {
+            let carries_changes = payload["type"] == CHANGES_EVENT;
             let sent = frame
                 .session
                 .seal(payload)
@@ -1995,8 +1996,7 @@ impl ChangeBus {
                     if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
                         let _ = observe.send(std::thread::current().name().map(str::to_owned));
                     }
-                    self.stamp_thread_tips(frame, &by_entity);
-                    self.rearm_unanswered_lists(frame, &by_entity);
+                    self.record_changes_delivery(frame, &by_entity, carries_changes);
                 }
                 Some(Sent::Stale) => {}
                 Some(Sent::Gone) | None => dead.push(frame.session.session_id().to_string()),
@@ -2006,6 +2006,20 @@ impl ChangeBus {
             self.unsubscribe(&session_id);
         }
         frames
+    }
+
+    /// Standalone invalidations carry no entity data and cannot acknowledge
+    /// the thread cursors or board lists of a not-yet-delivered changes frame.
+    fn record_changes_delivery(
+        &self,
+        frame: &DueFrame,
+        facts: &BTreeMap<&str, &EntityFacts>,
+        carries_changes: bool,
+    ) {
+        if carries_changes {
+            self.stamp_thread_tips(frame, facts);
+            self.rearm_unanswered_lists(frame, facts);
+        }
     }
 
     /// Send a sealed frame unless its subscription was re-scoped, dropped or
@@ -4356,6 +4370,36 @@ mod compaction_events {
         assert_eq!(
             requeued_events(true),
             vec![compaction_changed_payload("device", None)]
+        );
+    }
+    #[test]
+    fn compaction_wire_requeue_invalidation_does_not_acknowledge_unsent_thread_data() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("thread-bookkeeping");
+        let mut subscription = spec(Kind::CompactionChanged);
+        subscription.kinds.insert(Kind::Thread);
+        bus.subscribe(&sender, subscription);
+        bus.note_kind("run-1", Kind::Thread);
+        bus.note_compaction("device", None);
+        let due = bus.take_due();
+        let facts = vec![EntityFacts {
+            entity_id: "run-1".into(),
+            withdrawn: true,
+            threads: vec![ThreadTip {
+                agent_id: "agent-1".into(),
+                last_sequence: 42,
+                ..ThreadTip::default()
+            }],
+            ..EntityFacts::default()
+        }];
+        assert_eq!(bus.deliver(due, facts), 1);
+        assert_eq!(
+            SessionSender::decrypt_push(&key, &rx.try_recv().unwrap())["type"],
+            COMPACTION_CHANGED_EVENT
+        );
+        assert!(
+            bus.subscriptions.lock().unwrap()[0].emitted_tips.is_empty(),
+            "only a compaction invalidation was delivered, not thread sequence 42"
         );
     }
 }

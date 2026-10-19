@@ -381,7 +381,44 @@ describe("compaction on the conversation's menu", () => {
     expect((await cachedAgent()).max_context_tokens).toBe(null);
   });
 
+  it("clears a legacy read-only setting with an inheritance command", async () => {
+    digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
+    await mountWorkspaceRail();
+    expect(selectedWord()).toBe("Setting from an older client");
+    await choose("compact:default");
+    expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
+    expect((await cachedAgent()).max_context_tokens).toBeNull();
+    expect(selectedWord()).toBe("Use inherited setting");
+  });
+
+  it("shows older-bridge copy and saves without unsupported timing claims", async () => {
+    await mountWorkspaceRail();
+    const group = panel().querySelector('[data-group="compact"]');
+    expect(group.textContent).toContain("Update the bridge to set compaction defaults by harness.");
+    expect(group.textContent).not.toContain("Running work keeps its current setting");
+    await choose("compact:150000");
+    expect(document.querySelector(".notice.success").textContent).toContain("Saved.");
+    expect(document.querySelector(".notice.success").textContent).not.toMatch(/next start|resume/i);
+    expect(group.textContent).not.toMatch(/next starts|resumes/i);
+  });
+
+  it("keeps compaction choices in the authoritative cache without changing localStorage", async () => {
+    await mountWorkspaceRail();
+    const before = { ...localStorage };
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      await choose("compact:150000");
+      expect((await cachedAgent()).max_context_tokens).toBe(150000);
+      // Existing rail preference repaints may rewrite their unchanged value.
+      for (const [key, value] of setItem.mock.calls) expect(value).toBe(before[key]);
+      expect({ ...localStorage }).toEqual(before);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
   it("announces a saved setting without implying running work changed", async () => {
+    digestCompaction.compaction = { active: null, inherited: { tokens: 200000, source: { kind: "device" } } };
     await mountWorkspaceRail();
     await choose("compact:150000");
     expect(document.querySelector(".notice.success").textContent).toContain("Saved. Applies on the next start or resume.");

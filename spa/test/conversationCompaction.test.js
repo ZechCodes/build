@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   compactionMenuOptions,
+  compactionMenuGroup,
   compactionLimitOfOptionId,
   compactionSettingsParams,
   createCompactionChoice,
@@ -14,7 +15,21 @@ const marked = (agent) => compactionMenuOptions(agent).filter((option) => option
 describe("the compaction rows", () => {
   it("offers inheritance and positive presets only", () => {
     expect(labels({ max_context_tokens: null })).toEqual(["Use inherited setting", "150k", "200k", "300k"]);
-    expect(marked({ max_context_tokens: 0 })).toEqual(["compact:default"]);
+    expect(marked({ max_context_tokens: null })).toEqual(["compact:default"]);
+  });
+
+  it("retains a legacy setting as a neutral read-only observation distinct from inheritance", () => {
+    const options = compactionMenuOptions({ max_context_tokens: 0 });
+    expect(options.find((option) => option.selected)).toEqual({
+      id: "compact:observed", label: "Setting from an older client", selected: true, disabled: true,
+    });
+    expect(options[0].selected).toBe(false);
+    expect(options.map((option) => option.label).join(" ")).not.toMatch(/never|off|zero|disable/i);
+  });
+
+  it("does not promise next-start timing for an older digest", () => {
+    const group = compactionMenuGroup({ max_context_tokens: 150000 });
+    expect(group.description).toBe("Update the bridge to set compaction defaults by harness.");
   });
 
   it("names inherited tokens and source even while an override stands", () => {
@@ -110,6 +125,16 @@ describe("writing what was answered", () => {
     expect(await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens })).toBe(false);
     expect(call).not.toHaveBeenCalled();
     expect(held.capture).not.toHaveBeenCalled();
+  });
+
+  it("sends null to clear a legacy setting instead of treating it as already inherited", async () => {
+    const agent = { ...AGENT, max_context_tokens: 0 };
+    const held = cacheHolding(agent);
+    const call = held.call({ max_context_tokens: null, compact_at_tokens: 200000 });
+    const choice = createCompactionChoice({ call, capture: held.capture, write: held.write });
+    expect(await choice.choose({ entityId: "run-7", agent, maxContextTokens: null })).toBe(true);
+    expect(call).toHaveBeenCalledWith("conversation.settings", { entity_id: "run-7", agent_id: "agent-2", max_context_tokens: null });
+    expect(held.cache.agent.max_context_tokens).toBeNull();
   });
 
   it("takes the row's write before asking and offers the answer against it", async () => {

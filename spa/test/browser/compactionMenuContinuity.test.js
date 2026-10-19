@@ -234,3 +234,23 @@ it("repaints inherited, pending and applied observations without replacing a foc
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
   });
 });
+
+it.each([1180, 320])("keeps older-bridge menu copy and saves honest at %spx", async (width) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, width === 320 ? "narrow" : "desktop", { theme: "dark", bigCounts: false, olderBridge: true });
+    await observeCompactionMenu(page);
+    const group = page.locator('[data-group="compact"]');
+    expect(await group.textContent()).toContain("Update the bridge to set compaction defaults by harness.");
+    expect(await group.textContent()).not.toContain("Running work keeps its current setting");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => window.__menuSettingsAnswered.length === 1);
+    await page.locator(".notice.success").waitFor();
+    expect(await page.locator(".notice.success").textContent()).not.toMatch(/next start|resume/i);
+    expect(await page.locator("#railinputgauge").getAttribute("data-measure")).toBe("1M");
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
+    const box = await page.locator(".rail-surface-menu .splitmenu").boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+  }, { width, height: 840 });
+});

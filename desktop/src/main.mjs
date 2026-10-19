@@ -56,15 +56,18 @@ function openOutsideElectron(url) {
 
 function loadInsideElectron(window, url) {
   const recovery = unauthorizedRecovery;
-  const generation = credentialGeneration;
   const navigation = windowNavigations.get(window);
-  const attempt = ++navigation.loadAttempt;
-  const load = { canceled: false };
+  const load = createDocumentLoad();
+  load.fulfilled = false;
   navigation.currentLoad = load;
-  void window.loadURL(url).catch((error) => {
+  navigation.pendingLoad = load;
+  void window.loadURL(url).then(() => {
+    load.fulfilled = true;
+    completeRecoveryLoad(window, navigation, load);
+  }).catch((error) => {
     if (isCanceledDocumentLoad(window, url, error.errno, error.code, load)) return;
-    if (attempt !== navigation.loadAttempt) return;
-    if (generation === credentialGeneration && failRecoveryLoad(window, recovery)) return;
+    if (navigation.currentLoad !== load) return;
+    if (load.generation === credentialGeneration && failRecoveryLoad(window, recovery, load)) return;
     console.error("could not load the Build web client", error);
   });
 }
@@ -266,10 +269,37 @@ function isCanceledDocumentLoad(window, url, errorCode, errorName, load) {
   return blocked && canceled;
 }
 
-function failRecoveryLoad(window, recovery = unauthorizedRecovery) {
-  if (!recovery || !recoveryIsCurrent(recovery) || window !== recovery.window) return false;
+function createDocumentLoad() {
+  return {
+    recovery: unauthorizedRecovery,
+    generation: credentialGeneration,
+    canceled: false,
+    failed: false,
+    committed: false,
+    finished: false,
+    fulfilled: true,
+  };
+}
+
+function documentLoadIsCurrent(window, load) {
+  if (!load?.recovery || !recoveryIsCurrent(load.recovery)) return false;
+  return windowNavigations.get(window).currentLoad === load && load.generation === credentialGeneration;
+}
+
+function failRecoveryLoad(window, recovery = unauthorizedRecovery, load = windowNavigations.get(window).currentLoad) {
+  if (!recovery || recovery !== load?.recovery || !documentLoadIsCurrent(window, load)) return false;
   if (!recovery.phase.startsWith("retry-")) return false;
-  void failRejectedAuthentication(recovery, "Build could not load the signed-in desktop. Please try again.");
+  if (load.failed) return true;
+  load.failed = true;
+  const phase = recovery.phase;
+  // Loading errors keep both credentials and the authentication budget. Only a
+  // subsequent 401 may consume the next refresh/OAuth recovery step.
+  void showNativeError(new Error("Build could not load the desktop app. Please try again."), {
+    title: "Build could not load",
+    message: "Build could not load the desktop app.",
+    retry: () => loadInsideElectron(window, APP_URL),
+    isCurrent: () => documentLoadIsCurrent(window, load) && recovery.phase === phase,
+  });
   return true;
 }
 
@@ -286,7 +316,14 @@ function didNavigateMainFrame(window, navigation, url, statusCode) {
     failRecoveryLoad(window, recovery);
     return;
   }
-  if (!(statusCode >= 200 && statusCode < 300)) return;
+  const load = navigation.currentLoad;
+  if (documentLoadIsCurrent(window, load)) load.committed = statusCode >= 200 && statusCode < 300;
+}
+
+function completeRecoveryLoad(window, navigation, load) {
+  if (!documentLoadIsCurrent(window, load) || load.failed || !load.committed) return;
+  if (!load.finished || !load.fulfilled) return;
+  if (!load.recovery.phase.startsWith("retry-")) return;
   unauthorizedRecovery = null;
   navigation.rejectedRequests.clear();
   navigation.canceledUrls.clear();
@@ -294,13 +331,24 @@ function didNavigateMainFrame(window, navigation, url, statusCode) {
 }
 
 function observeMainFrameNavigation(window) {
-  const navigation = { sequence: 0, loadAttempt: 0, rejectedRequests: new Set(), canceledUrls: new Set() };
+  const navigation = { sequence: 0, rejectedRequests: new Set(), canceledUrls: new Set() };
   windowNavigations.set(window, navigation);
-  window.webContents.on("did-start-navigation", (_event, _url, _inPlace, isMainFrame) => {
-    if (isMainFrame) navigation.sequence++;
+  window.webContents.on("did-start-navigation", (_event, _url, inPlace, isMainFrame) => {
+    // Hash/history navigation belongs to the same document and cannot replace
+    // the successful commit or failure recorded for its body.
+    if (!isMainFrame || inPlace) return;
+    navigation.sequence++;
+    navigation.currentLoad = navigation.pendingLoad || createDocumentLoad();
+    navigation.pendingLoad = null;
   });
   window.webContents.on("did-navigate", (_event, url, statusCode) => {
     didNavigateMainFrame(window, navigation, url, statusCode);
+  });
+  window.webContents.on("did-finish-load", () => {
+    const load = navigation.currentLoad;
+    if (!load) return;
+    load.finished = true;
+    completeRecoveryLoad(window, navigation, load);
   });
   window.webContents.on("did-fail-load", (_event, errorCode, _description, url, isMainFrame) => {
     if (!isMainFrame || isCanceledDocumentLoad(window, url, errorCode)) return;
@@ -387,20 +435,28 @@ async function signOut() {
   }
 }
 
-async function showAuthenticationError(error, retry = beginAuthentication) {
-  if (signingOut) return;
+async function showNativeError(error, { title, message, retry, isCurrent = () => true }) {
+  if (signingOut || !isCurrent()) return;
   const result = await dialog.showMessageBox({
     type: "error",
-    title: "Build sign-in failed",
-    message: "Build could not complete sign-in.",
+    title,
+    message,
     detail: error instanceof Error ? error.message : String(error),
     buttons: ["Try Again", "Quit"],
     defaultId: 0,
     cancelId: 1,
   });
-  if (signingOut) return;
+  if (signingOut || !isCurrent()) return;
   if (result.response === 0) await retry();
   else app.quit();
+}
+
+async function showAuthenticationError(error, retry = beginAuthentication) {
+  await showNativeError(error, {
+    title: "Build sign-in failed",
+    message: "Build could not complete sign-in.",
+    retry,
+  });
 }
 
 async function beginAuthentication() {

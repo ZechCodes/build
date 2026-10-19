@@ -239,7 +239,8 @@
         "git",
         "files",
         "terminals",
-        "tasks"
+        "tasks",
+        "compaction.changed"
       ],
       "items": "bodies",
       "batch_ms": {
@@ -287,11 +288,6 @@
   "harness_thresholds": {
     "since": "3.22.0",
     "capability": "compaction.harnessThresholds",
-    "optional_params": {
-      "capabilities": [
-        "compaction.harnessThresholds"
-      ]
-    },
-    "negotiation": "Send opt-in only after a current greeting announces compaction.harnessThresholds. Initial hello retains its legacy shape. Refresh authoritative records after opt-in."
+    "subscription_kind": "compaction.changed"
   }
 }

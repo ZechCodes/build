@@ -99,5 +99,115 @@
     "not_found",
     "invalid_params",
     "internal"
-  ]
+  ],
+  "examples": [
+    {
+      "params": {
+        "entity_id": "run-project",
+        "include_project_workers": true
+      },
+      "result": {
+        "entity_id": "run-project",
+        "pinned_agent_id": "project-1",
+        "agents": [
+          {
+            "id": "project-1",
+            "conversation_id": "project-1",
+            "ordinal": 1,
+            "provider": "claude_adk",
+            "model": "",
+            "effort": "",
+            "active_model": "",
+            "state": "idle",
+            "unread_count": 0,
+            "read_through_sequence": 12,
+            "working": false,
+            "choice_revision": 0,
+            "has_terminal": false,
+            "compact_at_tokens": 200000,
+            "can_interrupt": false,
+            "created_at": "2026-10-12T09:00:00Z",
+            "project_role": "coordinator",
+            "compaction": {
+              "configured": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "inherited": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "active": null,
+              "enforcement": "unsupported",
+              "reason": "active_policy_unknown",
+              "pending_change": null
+            }
+          },
+          {
+            "id": "project-2",
+            "conversation_id": "project-2",
+            "ordinal": 2,
+            "provider": "codex",
+            "model": "gpt-5",
+            "effort": "high",
+            "active_model": "gpt-5",
+            "state": "idle",
+            "unread_count": 0,
+            "read_through_sequence": 0,
+            "working": false,
+            "choice_revision": 0,
+            "has_terminal": true,
+            "compact_at_tokens": 200000,
+            "can_interrupt": false,
+            "created_at": "2026-10-12T09:05:00Z",
+            "name": "Rail scroll",
+            "project_role": "worker",
+            "compaction": {
+              "configured": {
+                "tokens": 150000,
+                "source": {
+                  "kind": "project",
+                  "id": "proj-1"
+                }
+              },
+              "inherited": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "active": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                },
+                "provider": "codex",
+                "evidence": "applied_at_start",
+                "qualification": {
+                  "version": "0.160.0",
+                  "evidence": "Pinned Codex native threshold qualification"
+                },
+                "translated_trigger": 200000
+              },
+              "enforcement": "native",
+              "reason": null,
+              "pending_change": true
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "fields": [
+      "agents[].compaction"
+    ],
+    "legacy": "compact_at_tokens retains the conversation override or last device scalar; compaction.configured resolves the per-harness scope chain. A pending save does not change active evidence."
+  }
 }

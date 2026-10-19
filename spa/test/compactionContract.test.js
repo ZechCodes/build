@@ -63,4 +63,14 @@ describe("compaction wire fixtures", () => {
     });
     expect(v1.parseResult("settings.get", example.result)).toEqual(example.result);
   });
+
+  it("represents a saved scope policy pending over the applied snapshot", () => {
+    const example = fixture("agent.list").examples[0];
+    const agent = example.result.agents[1];
+    expect(agent.compact_at_tokens).toBe(200000);
+    expect(agent.compaction.configured.tokens).toBe(150000);
+    expect(agent.compaction.active).toMatchObject({ tokens: 200000, evidence: "applied_at_start" });
+    expect(agent.compaction.pending_change).toBe(true);
+    expect(v1.parseResult("agent.list", example.result)).toEqual(example.result);
+  });
 });

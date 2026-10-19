@@ -24,3 +24,6 @@ fn read_response(mut reader: impl BufRead) -> Result<Value, String> {
         .map_err(|error| format!("could not read response: {error}"))?;
     serde_json::from_str(&response).map_err(|error| format!("invalid daemon response: {error}"))
 }
+
+#[cfg(test)]
+mod tests;

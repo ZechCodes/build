@@ -665,3 +665,24 @@ fn a_legacy_session_without_a_snapshot_stays_unknown() {
     agent.say(false);
     assert_eq!(agent.log.turns(), vec!["warm".to_string()]);
 }
+
+#[test]
+fn compaction_wire_saves_never_replace_the_applied_session_policy() {
+    let agent = CompactingAgent::new();
+    let before = agent.listed()["compaction"].clone();
+    assert_eq!(before["active"]["tokens"], 200000);
+    assert_eq!(before["active"]["evidence"], "applied_at_start");
+    assert_eq!(before["pending_change"], false);
+    let reply = agent.handle(
+        "settings.set",
+        json!({"compaction_thresholds":{"codex_app_server":150000}}),
+    );
+    assert_eq!(reply["ok"], true, "{reply}");
+    let after = agent.listed()["compaction"].clone();
+    assert_eq!(after["configured"]["tokens"], 150000);
+    assert_eq!(after["active"], before["active"]);
+    assert_eq!(after["enforcement"], before["enforcement"]);
+    assert_eq!(after["pending_change"], true);
+    assert!(agent.log.turns().is_empty());
+    assert!(!agent.log.ended());
+}

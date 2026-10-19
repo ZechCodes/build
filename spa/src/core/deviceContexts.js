@@ -18,6 +18,8 @@ import { disarmChangeEvents } from "./changeEvents.js";
 import { deviceAwayMark } from "./deviceAway.js";
 import { dropFeedDevice } from "./taskFeed.js";
 import { createDeviceLifecycles } from "./deviceLifecycle.js";
+import { needsCompactionSupport } from "./bridgeApi/v1/compactionParams.js";
+import { ApiError } from "./bridgeApi/v1/index.js";
 import { TASK_WAITING_ON_UPDATE } from "./taskWaitingOnSupport.js";
 
 const contexts = new Map(); // deviceId → context, in the order they were adopted
@@ -75,6 +77,7 @@ export const announceDeviceTransport = () => announceDeviceState();
  */
 const ownerRequests = new Set(["project.ensure_conversation", "workspace.ensure_conversation"]);
 const asking = (context, transport) => (...asked) => {
+  if (needsCompactionSupport(asked[0], asked[1])) return askCompaction(context, transport, asked);
   if (ownerRequests.has(asked[0])) return askOwner(context, transport, asked);
   if (needsTaskWaitingOn(asked[0], asked[1])) return askTaskWaitingOn(context, transport, asked);
   if (asked[0] === "tasks.update" && Object.hasOwn(asked[1] || {}, "expected_body_hash")) {
@@ -92,6 +95,18 @@ const needsProjectWorkerAssignment = (method, params) => method === "tasks.assig
 const needsTaskWaitingOn = (method, params = {}) => method.startsWith("tasks.waiting_on.")
   || method === "tasks.create" && Object.hasOwn(params, "waiting_on")
   || method === "tasks.assign" && Object.hasOwn(params, "retry_deferred_id");
+
+// Cached support paints controls; only the current greeting admits writes.
+async function askCompaction(context, transport, asked) {
+  const request = await whenGreeted(context, () => {
+    if (!context.adapter?.capabilities?.compaction?.harnessThresholds) {
+      throw new ApiError("unknown_method", "Update this device's bridge to configure harness compaction thresholds.");
+    }
+    return transport()(...asked);
+  });
+  if (!request) throw new Error(deviceAwayMark(context));
+  return request.sent;
+}
 
 // Unlike a legacy assignment, a prerequisite or retry request can be silently
 // misread by an older decoder. Wait for its current greeting before sending.

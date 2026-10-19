@@ -116,12 +116,13 @@ pub const CHANGES_EVENT: &str = "changes";
 /// The change events a browser session can be told about, announced in the
 /// `session.hello` greeting so a client knows what it may hear. `changes` is
 /// what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 5] = [
+pub const ANNOUNCED_EVENTS: [&str; 6] = [
     CHANGES_EVENT,
     "bridge.update_status",
     MODELS_CHANGED_EVENT,
     "rtc.diagnostics",
     HARNESSES_CHANGED_EVENT,
+    COMPACTION_CHANGED_EVENT,
 ];
 
 /// A CLI on this machine changed what it runs, so `models.list` would answer
@@ -141,6 +142,13 @@ pub const HARNESSES_CHANGED_EVENT: &str = "harnesses.changed";
 /// The whole of a [`HARNESSES_CHANGED_EVENT`] push.
 pub fn harnesses_changed_payload(revision: u64) -> serde_json::Value {
     serde_json::json!({ "type": HARNESSES_CHANGED_EVENT, "revision": revision })
+}
+
+/// Invalidate scoped policy and affected held agent observations.
+pub const COMPACTION_CHANGED_EVENT: &str = "compaction.changed";
+
+pub fn compaction_changed_payload(scope: &str, owner_id: Option<&str>) -> Value {
+    json!({"type": COMPACTION_CHANGED_EVENT, "scope": scope, "owner_id": owner_id})
 }
 
 // ------------------------------------------------------------ the wire ---
@@ -170,17 +178,20 @@ pub enum Kind {
     /// subscription scoped `all` receives it beside everything else; one
     /// scoped to a project entity receives only it.
     Tasks,
+    #[serde(rename = "compaction.changed")]
+    CompactionChanged,
 }
 
 impl Kind {
     /// Every kind, in wire order.
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::State,
         Kind::Thread,
         Kind::Git,
         Kind::Files,
         Kind::Terminals,
         Kind::Tasks,
+        Kind::CompactionChanged,
     ];
 
     /// How the wire spells it.
@@ -192,6 +203,7 @@ impl Kind {
             Kind::Files => "files",
             Kind::Terminals => "terminals",
             Kind::Tasks => "tasks",
+            Kind::CompactionChanged => COMPACTION_CHANGED_EVENT,
         }
     }
 
@@ -767,12 +779,40 @@ impl NameSet {
 /// One entity's un-flushed item, for one subscription.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PendingItem {
+    // The overflow fallback is a resynchronization obligation, not a requested kind.
+    overflow_resync: bool,
+    compaction: Vec<Value>,
     kinds: KindSet,
     files: NameSet,
     tasks: NameSet,
 }
 
 impl PendingItem {
+    /// A device invalidation subsumes every scoped invalidation. Keep the
+    /// union when old taken work is requeued beside newer pending edits.
+    fn merge_compaction(&mut self, payloads: &[Value], collapsed: bool) {
+        let device = compaction_changed_payload("device", None);
+        if collapsed
+            || self
+                .compaction
+                .iter()
+                .chain(payloads)
+                .any(|value| *value == device)
+        {
+            self.compaction = vec![device];
+            return;
+        }
+        for payload in payloads {
+            if !self.compaction.contains(payload) {
+                self.compaction.push(payload.clone());
+            }
+            if self.compaction.len() > PENDING_KEY_CAP {
+                self.compaction = vec![device];
+                return;
+            }
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.kinds.is_empty()
     }
@@ -785,7 +825,11 @@ impl PendingItem {
             tasks: self.tasks,
             ..PendingItem::default()
         };
-        let mut due = PendingItem::default();
+        let mut due = PendingItem {
+            overflow_resync: self.overflow_resync,
+            compaction: self.compaction,
+            ..PendingItem::default()
+        };
         for kind in self.kinds.iter() {
             if kind.is_worktree() {
                 held.kinds.insert(kind);
@@ -890,17 +934,48 @@ impl Subscription {
         }
     }
 
+    /// Revoking a device-event kind fences already taken frames as well as queued ones.
+    fn rekind(&mut self, kinds: &KindSet) {
+        if self.spec.kinds == *kinds {
+            return;
+        }
+        self.scope_epoch += 1;
+        self.pending.retain(|_, item| {
+            item.kinds.0.retain(|kind| {
+                kinds.contains(*kind) || (item.overflow_resync && *kind == Kind::State)
+            });
+            if !kinds.contains(Kind::CompactionChanged) {
+                item.compaction.clear();
+            }
+            !item.is_empty()
+        });
+        if self.pending.is_empty() {
+            self.first_pending_at = None;
+        }
+    }
+
     /// Take back a frame fenced by a re-scope: what the new scope still
     /// covers is noted again, and the board lists it was to carry stay owed.
     fn requeue(&mut self, frame: &DueFrame, now: Instant) {
         self.pending_lists.merge(frame.lists);
+        self.restore_departures(&frame.removed);
         let covered = frame
             .items
             .iter()
             .filter(|(id, _)| *id == BOARD_ITEM_ID || self.spec.scope.covers(id))
             .collect::<Vec<_>>();
         for (id, item) in covered {
-            for kind in item.kinds.iter() {
+            if item.overflow_resync {
+                self.first_pending_at.get_or_insert(now);
+                self.collapse();
+                continue;
+            }
+            for kind in item
+                .kinds
+                .iter()
+                .filter(|kind| *kind != Kind::CompactionChanged && self.spec.kinds.contains(*kind))
+                .collect::<Vec<_>>()
+            {
                 let names = match kind {
                     Kind::Files => &item.files,
                     Kind::Tasks => &item.tasks,
@@ -913,7 +988,40 @@ impl Subscription {
                 held.files.truncated |= item.files.truncated;
                 held.tasks.truncated |= item.tasks.truncated;
             }
+            if self.accepts_compaction() {
+                self.note_compaction(&item.compaction, now);
+            }
         }
+    }
+
+    /// Taking a board frame advances `covered_last` before delivery. Put its
+    /// unsent departures back so the next board frame still owes them. Compare
+    /// against current membership on retry: an entity that returned must not
+    /// be removed alongside its fresh upsert. Set union also makes repeated
+    /// requeue of a frame's separate payloads idempotent.
+    fn restore_departures(&mut self, removed: &[String]) {
+        if self.spec.scope == Scope::All {
+            if let Some(covered) = &mut self.covered_last {
+                covered.extend(removed.iter().cloned());
+            }
+        }
+    }
+
+    fn accepts_compaction(&self) -> bool {
+        self.spec.scope == Scope::All && self.spec.kinds.contains(Kind::CompactionChanged)
+    }
+
+    fn note_compaction(&mut self, payloads: &[Value], now: Instant) {
+        if payloads.is_empty() {
+            return;
+        }
+        self.note(COMPACTION_CHANGED_EVENT, Kind::CompactionChanged, &[], now);
+        let item = self
+            .pending
+            .entry(COMPACTION_CHANGED_EVENT.into())
+            .or_default();
+        item.kinds.insert(Kind::CompactionChanged);
+        item.merge_compaction(payloads, self.collapsed);
     }
 
     fn wants(&self, entity_id: &str, kind: Kind) -> bool {
@@ -945,9 +1053,23 @@ impl Subscription {
 
     /// Past the cap: one bare board item, which says refetch everything.
     fn collapse(&mut self) {
+        let compaction = self
+            .pending
+            .values()
+            .any(|item| !item.compaction.is_empty());
         self.collapsed = true;
         self.pending.clear();
-        let mut board = PendingItem::default();
+        if compaction {
+            let mut item = PendingItem::default();
+            item.kinds.insert(Kind::CompactionChanged);
+            item.compaction
+                .push(compaction_changed_payload("device", None));
+            self.pending.insert(COMPACTION_CHANGED_EVENT.into(), item);
+        }
+        let mut board = PendingItem {
+            overflow_resync: true,
+            ..PendingItem::default()
+        };
         board.kinds.insert(Kind::State);
         self.pending.insert(BOARD_ITEM_ID.to_string(), board);
     }
@@ -1182,6 +1304,14 @@ struct DueFrame {
 }
 
 impl DueFrame {
+    fn payloads(&self, facts: &BTreeMap<&str, &EntityFacts>, revision: u64) -> Vec<Value> {
+        self.items
+            .values()
+            .flat_map(|item| item.compaction.iter().cloned())
+            .chain(self.payload(facts, revision))
+            .collect()
+    }
+
     /// What this frame has already sent for ONE entity's conversations.
     fn cursors_for(&self, entity_id: &str) -> &[(String, u64)] {
         self.thread_after
@@ -1195,6 +1325,7 @@ impl DueFrame {
         let items: Vec<Value> = self
             .items
             .iter()
+            .filter(|(_, item)| !item.kinds.contains(Kind::CompactionChanged))
             .filter(|(id, _)| !facts.get(id.as_str()).is_some_and(|fact| fact.withdrawn))
             .map(|(id, item)| {
                 item_payload(
@@ -1567,6 +1698,7 @@ impl ChangeBus {
         {
             Some(existing) => {
                 existing.rescope(&sub.scope);
+                existing.rekind(&sub.kinds);
                 existing.spec = sub;
                 existing.session = session.clone();
             }
@@ -1687,6 +1819,22 @@ impl ChangeBus {
     /// These working-tree paths moved, relative to the worktree root.
     pub fn note_files(&self, entity_id: &str, paths: &[String]) {
         self.note_subscriptions(entity_id, Kind::Files, paths);
+    }
+
+    /// Queue a device invalidation only for subscriptions explicitly requesting it.
+    /// Encryption and delivery happen outside the application lock in `flush`.
+    pub fn note_compaction(&self, scope: &str, owner: Option<&str>) {
+        let now = Instant::now();
+        let payload = compaction_changed_payload(scope, owner);
+        let mut subscriptions = self.subscriptions.lock().unwrap();
+        for sub in subscriptions
+            .iter_mut()
+            .filter(|sub| sub.accepts_compaction())
+        {
+            sub.note_compaction(std::slice::from_ref(&payload), now);
+        }
+        drop(subscriptions);
+        self.wake.notify_one();
     }
 
     /// These tasks of this project moved (spec: Tasks → Push).
@@ -1857,10 +2005,13 @@ impl ChangeBus {
         let revision = self.board_revision();
         let mut dead: Vec<String> = Vec::new();
         let mut frames = 0;
-        for frame in &due.frames {
-            let Some(payload) = frame.payload(&by_entity, revision) else {
-                continue;
-            };
+        for (frame, payload) in due.frames.iter().flat_map(|frame| {
+            frame
+                .payloads(&by_entity, revision)
+                .into_iter()
+                .map(move |payload| (frame, payload))
+        }) {
+            let carries_changes = payload["type"] == CHANGES_EVENT;
             let sent = frame
                 .session
                 .seal(payload)
@@ -1872,8 +2023,7 @@ impl ChangeBus {
                     if let Some(observe) = self.delivered_test_threads.lock().unwrap().as_ref() {
                         let _ = observe.send(std::thread::current().name().map(str::to_owned));
                     }
-                    self.stamp_thread_tips(frame, &by_entity);
-                    self.rearm_unanswered_lists(frame, &by_entity);
+                    self.record_changes_delivery(frame, &by_entity, carries_changes);
                 }
                 Some(Sent::Stale) => {}
                 Some(Sent::Gone) | None => dead.push(frame.session.session_id().to_string()),
@@ -1883,6 +2033,20 @@ impl ChangeBus {
             self.unsubscribe(&session_id);
         }
         frames
+    }
+
+    /// Standalone invalidations carry no entity data and cannot acknowledge
+    /// the thread cursors or board lists of a not-yet-delivered changes frame.
+    fn record_changes_delivery(
+        &self,
+        frame: &DueFrame,
+        facts: &BTreeMap<&str, &EntityFacts>,
+        carries_changes: bool,
+    ) {
+        if carries_changes {
+            self.stamp_thread_tips(frame, facts);
+            self.rearm_unanswered_lists(frame, facts);
+        }
     }
 
     /// Send a sealed frame unless its subscription was re-scoped, dropped or
@@ -3051,7 +3215,13 @@ mod subscriptions {
         });
         let parsed: SubscriptionSpec = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(parsed.scope, Scope::Entity("run-7".into()));
-        assert_eq!(parsed.kinds, KindSet::all());
+        assert_eq!(
+            parsed.kinds,
+            Kind::ALL
+                .into_iter()
+                .filter(|kind| *kind != Kind::CompactionChanged)
+                .collect()
+        );
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
     }
 
@@ -4101,5 +4271,374 @@ mod subscriptions {
                 }],
             })]
         );
+    }
+}
+
+#[cfg(test)]
+mod compaction_events {
+    use super::*;
+
+    fn spec(kind: Kind) -> SubscriptionSpec {
+        SubscriptionSpec {
+            id: "compaction".into(),
+            scope: Scope::All,
+            kinds: [kind].into_iter().collect(),
+            mode: Mode::Realtime,
+            priority: Priority::Background,
+        }
+    }
+
+    #[test]
+    fn compaction_wire_delivery_is_opted_in_and_revoked_with_the_subscription() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (old, mut old_rx, _) = SessionSender::observable("old");
+        let (new, mut new_rx, key) = SessionSender::observable("new");
+        bus.subscribe(&old, spec(Kind::State));
+        bus.subscribe(&new, spec(Kind::CompactionChanged));
+        bus.note_compaction("project", Some("proj-1"));
+        assert_eq!(bus.flush(), 1);
+        assert!(old_rx.try_recv().is_err());
+        let frame = SessionSender::decrypt_push(&key, &new_rx.try_recv().unwrap());
+        assert_eq!(frame, compaction_changed_payload("project", Some("proj-1")));
+        bus.note_compaction("device", None);
+        bus.subscribe(&new, spec(Kind::State));
+        assert_eq!(
+            bus.flush(),
+            0,
+            "removing the kind revokes queued invalidations"
+        );
+        assert!(new_rx.try_recv().is_err());
+    }
+    #[test]
+    fn compaction_wire_survives_a_prior_pending_overflow() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("overflow");
+        let mut subscription = spec(Kind::CompactionChanged);
+        subscription.kinds.insert(Kind::State);
+        bus.subscribe(&sender, subscription);
+        for index in 0..=PENDING_KEY_CAP {
+            bus.note_kind(&format!("entity-{index}"), Kind::State);
+        }
+        bus.note_compaction("project", Some("proj-1"));
+        bus.flush();
+        let mut found = false;
+        while let Ok(message) = rx.try_recv() {
+            let frame = SessionSender::decrypt_push(&key, &message);
+            found |= frame["type"] == COMPACTION_CHANGED_EVENT;
+        }
+        assert!(
+            found,
+            "a state flood must not swallow a subsequent policy edit"
+        );
+    }
+
+    #[test]
+    fn compaction_wire_in_flight_event_is_fenced_by_kind_removal() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, _) = SessionSender::observable("in-flight");
+        bus.subscribe(&sender, spec(Kind::CompactionChanged));
+        bus.note_compaction("device", None);
+        let due = bus.take_due();
+        bus.subscribe(&sender, spec(Kind::State));
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(bus.flush(), 0);
+    }
+    fn requeued_events(collapse: bool) -> Vec<Value> {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("requeue");
+        let mut subscription = spec(Kind::CompactionChanged);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_compaction("project", Some("project-a"));
+        bus.note_compaction("conversation", Some("conversation-c"));
+        let due = bus.take_due();
+        subscription.kinds.insert(Kind::State);
+        bus.subscribe(&sender, subscription);
+        bus.note_compaction("workspace", Some("workspace-b"));
+        if collapse {
+            for index in 0..=PENDING_KEY_CAP {
+                bus.note_kind(&format!("entity-{index}"), Kind::State);
+            }
+        }
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        bus.flush();
+        let mut events = Vec::new();
+        while let Ok(message) = rx.try_recv() {
+            let frame = SessionSender::decrypt_push(&key, &message);
+            if frame["type"] == COMPACTION_CHANGED_EVENT {
+                events.push(frame);
+            }
+        }
+        events
+    }
+
+    #[test]
+    fn compaction_wire_requeue_merges_newer_scopes_without_duplicates() {
+        let events = requeued_events(false);
+        assert_eq!(
+            events.len(),
+            3,
+            "requeue each old frame only once: {events:?}"
+        );
+        for (scope, owner) in [
+            ("project", "project-a"),
+            ("workspace", "workspace-b"),
+            ("conversation", "conversation-c"),
+        ] {
+            assert!(
+                events.contains(&compaction_changed_payload(scope, Some(owner))),
+                "missing {scope}: {events:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_wire_requeue_preserves_a_collapsed_device_invalidation() {
+        assert_eq!(
+            requeued_events(true),
+            vec![compaction_changed_payload("device", None)]
+        );
+    }
+    #[test]
+    fn compaction_wire_requeue_invalidation_does_not_acknowledge_unsent_thread_data() {
+        let bus = ChangeBus::new(Duration::ZERO);
+        let (sender, mut rx, key) = SessionSender::observable("thread-bookkeeping");
+        let mut subscription = spec(Kind::CompactionChanged);
+        subscription.kinds.insert(Kind::Thread);
+        bus.subscribe(&sender, subscription);
+        bus.note_kind("run-1", Kind::Thread);
+        bus.note_compaction("device", None);
+        let due = bus.take_due();
+        let facts = vec![EntityFacts {
+            entity_id: "run-1".into(),
+            withdrawn: true,
+            threads: vec![ThreadTip {
+                agent_id: "agent-1".into(),
+                last_sequence: 42,
+                ..ThreadTip::default()
+            }],
+            ..EntityFacts::default()
+        }];
+        assert_eq!(bus.deliver(due, facts), 1);
+        assert_eq!(
+            SessionSender::decrypt_push(&key, &rx.try_recv().unwrap())["type"],
+            COMPACTION_CHANGED_EVENT
+        );
+        assert!(
+            bus.subscriptions.lock().unwrap()[0].emitted_tips.is_empty(),
+            "only a compaction invalidation was delivered, not thread sequence 42"
+        );
+    }
+    fn collapsed_subscription(
+        with_compaction: bool,
+    ) -> (
+        Arc<ChangeBus>,
+        SessionSender,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+        String,
+        SubscriptionSpec,
+    ) {
+        let listed = Arc::new(Mutex::new(vec!["run-old".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|_: &[FactsRequest]| Vec::new()),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("rekind-overflow");
+        let mut subscription = spec(Kind::State);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        rx.try_recv().unwrap();
+        listed.lock().unwrap().clear();
+        subscription.mode = Mode::Off;
+        subscription.kinds.insert(Kind::Thread);
+        if with_compaction {
+            subscription.kinds.insert(Kind::CompactionChanged);
+        }
+        bus.subscribe(&sender, subscription.clone());
+        if with_compaction {
+            bus.note_compaction("project", Some("project-a"));
+        }
+        for index in 0..=PENDING_KEY_CAP {
+            bus.note_kind(&format!("thread-{index}"), Kind::Thread);
+        }
+        assert!(bus.subscriptions.lock().unwrap()[0].collapsed);
+        (bus, sender, rx, key, subscription)
+    }
+
+    fn assert_overflow_then_live(
+        bus: &ChangeBus,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
+        key: &str,
+        with_compaction: bool,
+    ) {
+        assert_eq!(
+            bus.flush(),
+            if with_compaction { 2 } else { 1 },
+            "the overflow resync must still be delivered"
+        );
+        let mut board = false;
+        let mut device = false;
+        while let Ok(message) = rx.try_recv() {
+            let frame = SessionSender::decrypt_push(key, &message);
+            if let Some(item) = frame["items"]
+                .as_array()
+                .and_then(|items| items.iter().find(|item| item["entity_id"] == BOARD_ITEM_ID))
+            {
+                assert_eq!(item["state"]["removed"], json!(["run-old"]));
+                board = item["state"].get("revision").is_some();
+            }
+            device |= frame == compaction_changed_payload("device", None);
+        }
+        assert!(
+            board,
+            "missed thread events require a resync even without state subscription"
+        );
+        assert_eq!(device, with_compaction);
+        assert!(!bus.subscriptions.lock().unwrap()[0].collapsed);
+        bus.note_kind("thread-after-overflow", Kind::Thread);
+        assert_eq!(
+            bus.flush(),
+            1,
+            "future events must not remain permanently suppressed"
+        );
+        let frame = SessionSender::decrypt_push(key, &rx.try_recv().unwrap());
+        assert_eq!(frame["items"][0]["entity_id"], "thread-after-overflow");
+        assert!(frame["items"][0].get("thread").is_some());
+    }
+
+    #[test]
+    fn review_overflow_rekind_preserves_resync_and_resumes_thread_delivery() {
+        let (bus, sender, mut rx, key, mut subscription) = collapsed_subscription(false);
+        subscription.kinds = [Kind::Thread].into_iter().collect();
+        subscription.mode = Mode::Realtime;
+        bus.subscribe(&sender, subscription);
+        assert_overflow_then_live(&bus, &mut rx, &key, false);
+    }
+
+    #[test]
+    fn review_overflow_rekind_preserves_mixed_compaction_and_thread_resync() {
+        let (bus, sender, mut rx, key, mut subscription) = collapsed_subscription(true);
+        subscription.kinds = [Kind::Thread, Kind::CompactionChanged]
+            .into_iter()
+            .collect();
+        subscription.mode = Mode::Realtime;
+        bus.subscribe(&sender, subscription);
+        assert_overflow_then_live(&bus, &mut rx, &key, true);
+    }
+
+    #[test]
+    fn review_overflow_rekind_requeues_an_in_flight_resync() {
+        let (bus, sender, mut rx, key, mut subscription) = collapsed_subscription(true);
+        subscription.mode = Mode::Realtime;
+        bus.subscribe(&sender, subscription.clone());
+        let due = bus.take_due();
+        subscription.kinds = [Kind::Thread, Kind::CompactionChanged]
+            .into_iter()
+            .collect();
+        bus.subscribe(&sender, subscription);
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        assert_overflow_then_live(&bus, &mut rx, &key, true);
+    }
+
+    #[test]
+    fn review_requeue_preserves_departures_upserts_and_lists() {
+        let listed = Arc::new(Mutex::new(vec!["run-old".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|requests: &[FactsRequest]| {
+                requests
+                    .iter()
+                    .map(|request| EntityFacts {
+                        entity_id: request.entity_id.clone(),
+                        state: Some(if request.entity_id == BOARD_ITEM_ID {
+                            json!({"projects": [{"id": "project-new"}]})
+                        } else {
+                            json!({"status": "current"})
+                        }),
+                        ..EntityFacts::default()
+                    })
+                    .collect()
+            }),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("requeue-obligations");
+        let mut subscription = spec(Kind::State);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        rx.try_recv().unwrap();
+        *listed.lock().unwrap() = vec!["run-new".into()];
+        bus.note_entity("run-new");
+        bus.note_board_lists(BoardLists {
+            projects: true,
+            ..BoardLists::default()
+        });
+        let due = bus.take_due();
+        assert_eq!(due.frames[0].removed, vec!["run-old"]);
+        subscription.kinds.insert(Kind::Thread);
+        bus.subscribe(&sender, subscription.clone());
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        // A second interruption must not consume or duplicate the obligation.
+        let due = bus.take_due();
+        subscription.kinds.insert(Kind::CompactionChanged);
+        bus.subscribe(&sender, subscription);
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        assert_eq!(bus.flush(), 1);
+        let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        let items = frame["items"].as_array().unwrap();
+        let board = items
+            .iter()
+            .find(|item| item["entity_id"] == BOARD_ITEM_ID)
+            .unwrap();
+        assert_eq!(board["state"]["removed"], json!(["run-old"]));
+        assert_eq!(board["state"]["projects"], json!([{"id": "project-new"}]));
+        let upsert = items
+            .iter()
+            .find(|item| item["entity_id"] == "run-new")
+            .unwrap();
+        assert_eq!(upsert["state"]["status"], "current");
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        assert!(frame["items"][0]["state"].get("removed").is_none());
+    }
+
+    #[test]
+    fn review_requeue_does_not_remove_an_entity_that_returned_before_retry() {
+        let listed = Arc::new(Mutex::new(vec!["run-old".into()]));
+        let board = Arc::clone(&listed);
+        let bus = ChangeBus::with_sources(
+            Duration::ZERO,
+            Arc::new(move || board.lock().unwrap().clone()),
+            Arc::new(|_: &[FactsRequest]| Vec::new()),
+        );
+        let (sender, mut rx, key) = SessionSender::observable("requeue-returned");
+        let mut subscription = spec(Kind::State);
+        bus.subscribe(&sender, subscription.clone());
+        bus.note_board();
+        assert_eq!(bus.flush(), 1);
+        rx.try_recv().unwrap();
+        listed.lock().unwrap().clear();
+        bus.note_board();
+        let due = bus.take_due();
+        assert_eq!(due.frames[0].removed, vec!["run-old"]);
+        subscription.kinds.insert(Kind::Thread);
+        bus.subscribe(&sender, subscription);
+        assert_eq!(bus.deliver(due, Vec::new()), 0);
+        listed.lock().unwrap().push("run-old".into());
+        bus.note_entity("run-old");
+        assert_eq!(bus.flush(), 1);
+        let frame = SessionSender::decrypt_push(&key, &rx.try_recv().unwrap());
+        let items = frame["items"].as_array().unwrap();
+        let board = items
+            .iter()
+            .find(|item| item["entity_id"] == BOARD_ITEM_ID)
+            .unwrap();
+        assert!(board["state"].get("removed").is_none());
+        assert!(items.iter().any(|item| item["entity_id"] == "run-old"));
     }
 }

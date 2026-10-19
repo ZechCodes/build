@@ -104,6 +104,7 @@ pub(in crate::app) struct AgentSessionSnapshot {
 }
 
 pub(in crate::app) struct AgentDigestFacts {
+    pub compaction: Option<crate::harness::compaction::AppliedCompactionPolicy>,
     pub live: bool,
     pub working: bool,
     pub has_terminal: bool,
@@ -470,6 +471,7 @@ impl SessionRegistry {
             })
             .flatten();
         Some(AgentDigestFacts {
+            compaction: tab.session.compaction_policy().cloned(),
             live,
             working,
             has_terminal: tab.session.terminal().is_some(),

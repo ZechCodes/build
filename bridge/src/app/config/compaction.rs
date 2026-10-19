@@ -156,8 +156,11 @@ impl AppState {
             return Ok(());
         }
         let mut prospective = self.compaction_policies.clone();
-        prospective.set(scope, updated);
-        self.persist_compaction_policies(prospective)
+        prospective.set(scope.clone(), updated);
+        self.persist_compaction_policies(prospective)?;
+        let (kind, owner) = scope.event_address();
+        self.publish_compaction_changed(kind, owner);
+        Ok(())
     }
 
     fn persist_compaction_policies(
@@ -231,10 +234,37 @@ impl AppState {
         agent_id: &str,
         provider: crate::models::AgentProvider,
     ) -> Result<ResolvedCompactionPolicy, String> {
+        self.resolve_compaction_with_override(owner, agent_id, provider, true)
+    }
+
+    pub(in crate::app) fn inherited_compaction_policy(
+        &self,
+        owner: &str,
+        agent_id: &str,
+    ) -> Result<ResolvedCompactionPolicy, String> {
+        let provider = self
+            .entity_agents(owner)?
+            .resolve(Some(agent_id))?
+            .choice
+            .provider;
+        self.resolve_compaction_with_override(owner, agent_id, provider, false)
+    }
+
+    fn resolve_compaction_with_override(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        provider: crate::models::AgentProvider,
+        include_override: bool,
+    ) -> Result<ResolvedCompactionPolicy, String> {
         let address = self.resolve_conversation_address(owner, Some(agent_id))?;
         let canonical_owner = &address.conversation_entity_id;
         let mut candidates = vec![(
-            self.canonical_compaction_override(owner, agent_id)?,
+            if include_override {
+                self.canonical_compaction_override(owner, agent_id)?
+            } else {
+                None
+            },
             CompactionSource::Conversation(address.conversation_id),
         )];
         if !self.is_project_conversation_owner(canonical_owner) {

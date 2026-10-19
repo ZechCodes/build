@@ -160,3 +160,20 @@ pub(crate) fn deserialize_override<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Option<u64>, D::Error> {
     Ok(Option::<u64>::deserialize(deserializer)?.filter(|tokens| *tokens > 0))
 }
+
+impl CompactionScope {
+    pub(crate) fn source(&self) -> CompactionSource {
+        match self {
+            Self::Device => CompactionSource::Device,
+            Self::Project(id) => CompactionSource::Project(id.clone()),
+            Self::Workspace(id) => CompactionSource::Workspace(id.clone()),
+        }
+    }
+    pub(crate) fn event_address(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::Device => ("device", None),
+            Self::Project(id) => ("project", Some(id)),
+            Self::Workspace(id) => ("workspace", Some(id)),
+        }
+    }
+}

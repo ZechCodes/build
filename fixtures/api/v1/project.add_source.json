@@ -19,6 +19,73 @@
     "isolation_available": {
       "rift": false,
       "reason": "rift is not installed on this device"
+    },
+    "compaction_thresholds": {},
+    "compaction": {
+      "inherited": {
+        "claude": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "claude_adk": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex_app_server": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "pi": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        }
+      },
+      "effective": {
+        "claude": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "claude_adk": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex_app_server": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "pi": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        }
+      }
     }
   },
   "errors": [

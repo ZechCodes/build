@@ -1,7 +1,10 @@
 {
   "method": "agent.list",
   "since": "3.21.0",
-  "params": { "entity_id": "run-project", "include_project_workers": true },
+  "params": {
+    "entity_id": "run-project",
+    "include_project_workers": true
+  },
   "result": {
     "entity_id": "run-project",
     "pinned_agent_id": "project-1",
@@ -23,7 +26,25 @@
         "compact_at_tokens": 200000,
         "can_interrupt": false,
         "created_at": "2026-10-12T09:00:00Z",
-        "project_role": "coordinator"
+        "project_role": "coordinator",
+        "compaction": {
+          "configured": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "inherited": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "active": null,
+          "enforcement": "unsupported",
+          "reason": "active_policy_unknown",
+          "pending_change": null
+        }
       },
       {
         "id": "project-2",
@@ -43,7 +64,25 @@
         "can_interrupt": false,
         "created_at": "2026-10-12T09:05:00Z",
         "name": "Rail scroll",
-        "project_role": "worker"
+        "project_role": "worker",
+        "compaction": {
+          "configured": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "inherited": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "active": null,
+          "enforcement": "unsupported",
+          "reason": "active_policy_unknown",
+          "pending_change": null
+        }
       }
     ]
   },
@@ -51,7 +90,125 @@
     "since": "3.21.0",
     "capability": "agents.projectWorkers",
     "note": "A project's conversation owner has exactly one pinned coordinator, which only the bridge makes and only project deletion retires, and any number of workers below it. Without include_project_workers a project owner lists its pinned coordinator alone, the projection every roster read that predates workers carries (board rows, project conversations, agent.remove); every other owner lists all of its agents either way. pinned_agent_id is present only on a project owner.",
-    "fields": ["pinned_agent_id", "agents[].project_role"]
+    "fields": [
+      "pinned_agent_id",
+      "agents[].project_role"
+    ]
   },
-  "errors": ["not_found", "invalid_params", "internal"]
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "internal"
+  ],
+  "examples": [
+    {
+      "params": {
+        "entity_id": "run-project",
+        "include_project_workers": true
+      },
+      "result": {
+        "entity_id": "run-project",
+        "pinned_agent_id": "project-1",
+        "agents": [
+          {
+            "id": "project-1",
+            "conversation_id": "project-1",
+            "ordinal": 1,
+            "provider": "claude_adk",
+            "model": "",
+            "effort": "",
+            "active_model": "",
+            "state": "idle",
+            "unread_count": 0,
+            "read_through_sequence": 12,
+            "working": false,
+            "choice_revision": 0,
+            "has_terminal": false,
+            "compact_at_tokens": 200000,
+            "can_interrupt": false,
+            "created_at": "2026-10-12T09:00:00Z",
+            "project_role": "coordinator",
+            "compaction": {
+              "configured": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "inherited": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                }
+              },
+              "active": null,
+              "enforcement": "unsupported",
+              "reason": "active_policy_unknown",
+              "pending_change": null
+            }
+          },
+          {
+            "id": "project-2",
+            "conversation_id": "project-2",
+            "ordinal": 2,
+            "provider": "codex",
+            "model": "gpt-5",
+            "effort": "high",
+            "active_model": "gpt-5",
+            "state": "idle",
+            "unread_count": 0,
+            "read_through_sequence": 0,
+            "working": false,
+            "choice_revision": 0,
+            "has_terminal": true,
+            "compact_at_tokens": 200000,
+            "can_interrupt": false,
+            "created_at": "2026-10-12T09:05:00Z",
+            "name": "Rail scroll",
+            "project_role": "worker",
+            "compaction": {
+              "configured": {
+                "tokens": 150000,
+                "source": {
+                  "kind": "project",
+                  "id": "proj-1"
+                }
+              },
+              "inherited": {
+                "tokens": 150000,
+                "source": {
+                  "kind": "project",
+                  "id": "proj-1"
+                }
+              },
+              "active": {
+                "tokens": 200000,
+                "source": {
+                  "kind": "device"
+                },
+                "provider": "codex",
+                "evidence": "applied_at_start",
+                "qualification": {
+                  "version": "0.160.0",
+                  "evidence": "Codex total-token translation revision 1 (0.160.0); isolated compaction observed; effective model window, fallback buffer and selected-profile precedence unqualified"
+                },
+                "translated_trigger": null
+              },
+              "enforcement": "between_turn",
+              "reason": "codex_model_window_buffer_and_profile_unqualified",
+              "pending_change": true
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "fields": [
+      "agents[].compaction"
+    ],
+    "legacy": "compact_at_tokens retains the conversation override or last device scalar; compaction.configured resolves the per-harness scope chain. A pending save does not change active evidence."
+  }
 }

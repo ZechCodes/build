@@ -29,20 +29,49 @@
       "compact_at_tokens": 200000,
       "can_interrupt": false,
       "created_at": "2026-09-13T10:05:00Z",
-      "name": "Rail scroll"
+      "name": "Rail scroll",
+      "compaction": {
+        "configured": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "inherited": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "active": null,
+        "enforcement": "unsupported",
+        "reason": "active_policy_unknown",
+        "pending_change": null
+      }
     }
   },
   "created_by": {
     "since": "3.1.0",
     "note": "An agent made by another agent's Build MCP call (add_workspace_agent, or assign_task to a new agent or workspace) names that agent as created_by on its digest, wherever the digest is carried (#216). Absent for an agent the user made. agent.add itself cannot set it: the param is refused. Announced as agents.createdBy.",
-    "fields": ["created_by"]
+    "fields": [
+      "created_by"
+    ]
   },
   "project_workers": {
     "since": "3.21.0",
     "capability": "agents.projectWorkers",
     "note": "On a project's conversation owner agent.add makes a worker below the pinned coordinator, which the bridge makes itself first if the owner has none. project_role may only be \"worker\", and only on a project owner: \"coordinator\", any other word, or a purpose on any other owner is invalid_params. The added worker's digest carries project_role.",
-    "params": ["project_role"],
-    "fields": ["agent.project_role"]
+    "params": [
+      "project_role"
+    ],
+    "fields": [
+      "agent.project_role"
+    ]
   },
-  "errors": ["not_found", "invalid_params", "conflict", "internal"]
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
 }

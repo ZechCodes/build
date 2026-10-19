@@ -175,6 +175,11 @@ fn check(sub: &SubscriptionSpec) -> Result<(), ApiError> {
             "missing required param: subscription_id",
         ));
     }
+    if sub.kinds.contains(Kind::CompactionChanged) && sub.scope != Scope::All {
+        return Err(ApiError::invalid_params(
+            "compaction.changed requires all scope",
+        ));
+    }
     if sub.kinds.is_empty() {
         return Err(ApiError::invalid_params(
             "changes.subscribe: name at least one kind — state, thread, git, files, or terminals",
@@ -272,6 +277,7 @@ mod tests {
     fn a_board_scope_may_not_ask_for_worktree_kinds() {
         let refused = check(&SubscriptionSpec {
             scope: Scope::Board,
+            kinds: [Kind::Git].into_iter().collect(),
             ..focus()
         })
         .unwrap_err();
@@ -284,6 +290,23 @@ mod tests {
             ..focus()
         })
         .expect("state on the board is the tier the feed subscribes with");
+    }
+
+    #[test]
+    fn compaction_wire_subscription_requires_device_scope() {
+        let subscription = SubscriptionSpec {
+            scope: Scope::All,
+            kinds: [Kind::CompactionChanged].into_iter().collect(),
+            ..focus()
+        };
+        check(&subscription).expect("device invalidation subscription");
+        let refused = check(&SubscriptionSpec {
+            scope: Scope::Board,
+            ..subscription
+        })
+        .unwrap_err();
+        assert_eq!(refused.code(), "invalid_params");
+        assert!(refused.message().contains("requires all scope"));
     }
 
     #[test]

@@ -14,7 +14,8 @@ import { openProjectSettings } from "../sheets/projectSettings.js";
 import { App } from "../app.js";
 import { creationCall } from "../core/inboxDevices.js";
 import { deviceProjectsAddress, projectSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
-import { readCached, writeCached } from "../core/localCache.js";
+import { pushFence, pushedSince } from "../core/pushFence.js";
+import { readCached, mergeCachedAtomically } from "../core/localCache.js";
 
 export function deviceProjectsPanelHtml() {
   return `<div class="panel" data-device-projects>
@@ -45,6 +46,17 @@ const sourceCountText = (project) => {
   return count === 1 ? "1 source" : `${count} sources`;
 };
 
+// A pre-invalidation list response also loses authority over the detail
+// records it seeds; copying the held old list must not consume a refresh stamp.
+async function copyProjectSettings(deviceId, projects, fence) {
+  const list = deviceProjectsAddress(deviceId);
+  for (const project of projects) {
+    const detail = projectSettingsAddress(deviceId, project.project_id);
+    await mergeCachedAtomically(detail, () =>
+      !pushedSince(list, fence) && !pushedSince(detail, fence) ? project : null);
+  }
+}
+
 /**
  * Mount the panel on one machine's caller, and read what that machine holds.
  *
@@ -63,12 +75,13 @@ export async function mountDeviceProjects(host, { callRpc, deviceId, deviceName,
 
   const refresh = async () => {
     try {
+      const fence = pushFence();
       await record.pull(async () => {
         const { projects } = await callRpc("project.list");
         return projects;
       });
       const projects = (await readCached(deviceProjectsAddress(deviceId)))?.value || [];
-      for (const project of projects) await writeCached(projectSettingsAddress(deviceId, project.project_id), project);
+      await copyProjectSettings(deviceId, projects, fence);
     } catch (error) {
       if (list.textContent.includes("loading…")) list.innerHTML = `<div class="adderr">${esc(error.message)}</div>`;
     }

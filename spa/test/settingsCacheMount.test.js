@@ -61,7 +61,7 @@ describe("bridge settings cached mounts", () => {
       expect(control).toBeTruthy();
       expect(control.type === "checkbox" ? String(control.checked) : (control.value ?? control.textContent)).toContain(shown);
     });
-    expect(pending).toHaveBeenCalled();
+    await vi.waitFor(() => expect(pending).toHaveBeenCalled());
   });
 
   it("repaints from a real cache announcement and readback", async () => {

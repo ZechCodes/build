@@ -28,7 +28,13 @@ impl AppState {
             .iter()
             .map(|project| {
                 let conversation = self.project_conversation_run(&project.id);
+                let scope = crate::compaction::CompactionScope::Project(project.id.clone());
                 ProjectListRow {
+                    compaction_thresholds: self
+                        .compaction_thresholds(&scope)
+                        .unwrap_or_default()
+                        .read_value(),
+                    compaction: self.scope_compaction_observation(&scope),
                     project_id: project.id.clone(),
                     name: project.name.clone(),
                     repo_path: project.repo_path.clone(),
@@ -87,6 +93,8 @@ impl AppState {
             .collect::<Vec<_>>();
         json!({
             "project_id": p.id,
+            "compaction_thresholds": self.compaction_thresholds(&crate::compaction::CompactionScope::Project(p.id.clone())).unwrap_or_default().read_value(),
+            "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Project(p.id.clone())),
             "name": p.name,
             "path": p.repo_path.display().to_string(),
             "base_branch": p.base_branch,

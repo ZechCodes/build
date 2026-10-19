@@ -29,6 +29,12 @@ use std::collections::BTreeMap;
 /// The verbs this family serves.
 pub fn methods() -> &'static [(&'static str, Handler)] {
     v1_methods![
+        v1_method!(
+            "project.set_compaction",
+            set_compaction,
+            SetCompactionParams,
+            ProjectRow
+        ),
         v1_method!("board.list", board_list, NoParams, BoardListResult),
         v1_method!("archived.list", archived_list, NoParams, ArchivedListResult),
         v1_method!(
@@ -130,6 +136,12 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
 }
 
 // ---------------------------------------------------------------- params ---
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SetCompactionParams {
+    pub project_id: String,
+    pub compaction_thresholds: serde_json::Value,
+}
 
 /// What `user.present` answers: the user's session after the arrival, the
 /// same object `tasks.list` carries.
@@ -439,6 +451,12 @@ pub struct SettingsSetParams {
         skip_serializing_if = "Option::is_none"
     )]
     pub compact_above_tokens: Named<u64>,
+    #[serde(
+        default,
+        deserialize_with = "named",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compaction_thresholds: Named<serde_json::Value>,
     /// How long a workspace goes without activity before the project agent
     /// hears about it, in seconds above 0 (1.25.0,
     /// `settings.workspaceLifecycle`). `BRIDGE_WORKSPACE_IDLE_SECS`, where
@@ -550,6 +568,11 @@ pub struct ProjectConversation {
 /// isolation picture a control paints from.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ProjectRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_thresholds: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<serde_json::Value>,
+
     pub project_id: String,
     pub name: String,
     pub path: String,
@@ -945,6 +968,11 @@ pub struct AgentModesView {
 /// reply.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SettingsResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_thresholds: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<serde_json::Value>,
+
     pub projects_dir: String,
     pub default_harness: String,
     pub project_agent: ProjectAgentView,
@@ -1103,7 +1131,7 @@ const CONFLICTS: [&str; 13] = [
 /// one of the ones on offer, or a request that names nothing to do. The three
 /// harness names read alike because the two aliases and the harness itself
 /// are one setting.
-const INVALID: [&str; 14] = [
+const INVALID: [&str; 15] = [
     "each source must specify exactly one of path or remote",
     "duplicate source remote",
     "invalid project name",
@@ -1118,6 +1146,7 @@ const INVALID: [&str; 14] = [
     "unknown claude_mode",
     "unknown codex_mode",
     "unknown default_harness",
+    "unknown compaction provider",
 ];
 
 /// A refusal a client cannot act on and a retry cannot fix: the volume, not
@@ -1291,6 +1320,24 @@ fn models_list(
 
 fn user_present(app: &mut AppState, _params: NoParams) -> Result<Answer<UserPresent>, ApiError> {
     answer(Ok(app.user_present()))
+}
+
+fn set_compaction(
+    app: &mut AppState,
+    params: SetCompactionParams,
+) -> Result<Answer<ProjectRow>, ApiError> {
+    crate::compaction::CompactionThresholds::default()
+        .patched(&params.compaction_thresholds)
+        .map_err(ApiError::invalid_params)?;
+    answer(app.set_project_compaction(&params.project_id, &params.compaction_thresholds)).map_err(
+        |error| {
+            if error.message() == "unknown compaction policy owner" {
+                ApiError::not_found(error.message())
+            } else {
+                error
+            }
+        },
+    )
 }
 
 #[cfg(test)]

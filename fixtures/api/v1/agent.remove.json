@@ -1,7 +1,10 @@
 {
   "method": "agent.remove",
   "since": "1.0.0",
-  "params": { "entity_id": "run-7", "agent_id": "agent-2" },
+  "params": {
+    "entity_id": "run-7",
+    "agent_id": "agent-2"
+  },
   "result": {
     "entity_id": "run-7",
     "agent_id": "agent-2",
@@ -22,7 +25,25 @@
         "has_terminal": true,
         "compact_at_tokens": 200000,
         "can_interrupt": false,
-        "created_at": "2026-09-13T09:40:00Z"
+        "created_at": "2026-09-13T09:40:00Z",
+        "compaction": {
+          "configured": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "inherited": {
+            "tokens": 200000,
+            "source": {
+              "kind": "device"
+            }
+          },
+          "active": null,
+          "enforcement": "unsupported",
+          "reason": "active_policy_unknown",
+          "pending_change": null
+        }
       }
     ]
   },
@@ -31,5 +52,10 @@
     "capability": "agents.projectWorkers",
     "note": "A project's pinned coordinator is never removed: the refusal is conflict, \"Build keeps the project's agent for as long as the project exists. Delete the project to retire it.\" Removing one of its workers answers the pinned-only projection; agent.list with include_project_workers reads the rest."
   },
-  "errors": ["not_found", "invalid_params", "conflict", "internal"]
+  "errors": [
+    "not_found",
+    "invalid_params",
+    "conflict",
+    "internal"
+  ]
 }

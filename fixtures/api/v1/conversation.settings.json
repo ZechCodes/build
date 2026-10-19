@@ -9,11 +9,27 @@
   "result": {
     "agent_id": "agent-2",
     "max_context_tokens": 150000,
-    "compact_at_tokens": 150000
+    "compact_at_tokens": 150000,
+    "compaction": {
+      "inherited": {
+        "tokens": 200000,
+        "source": {
+          "kind": "device"
+        }
+      }
+    }
   },
   "errors": [
     "not_found",
     "invalid_params",
     "internal"
-  ]
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "fields": [
+      "compaction.inherited"
+    ],
+    "zero": "invalid_params"
+  }
 }

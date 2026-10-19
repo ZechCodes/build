@@ -18,6 +18,8 @@ impl AppState {
             "role_models": self.role_models,
             "watch_agent_filed_tasks": self.watch_agent_filed_tasks,
             "compact_above_tokens": self.compact_above_tokens,
+            "compaction_thresholds": self.compaction_policies.device.read_value(),
+            "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Device),
             "agent_modes": self.agent_modes,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
@@ -157,6 +159,17 @@ impl AppState {
         if let Some(tokens) = patch.compact_above_tokens {
             compaction_policies.device = crate::compaction::CompactionThresholds::broadcast(tokens);
         }
+        if let Some(map) = &patch.compaction_thresholds {
+            compaction_policies.device = compaction_policies.device.patched(map)?;
+        }
+        let compaction_changed = compaction_policies.device != self.compaction_policies.device
+            || compact_above_tokens != self.compact_above_tokens;
+        if params.as_object().is_some_and(|params| params.len() == 1)
+            && patch.compaction_thresholds.is_some()
+            && !compaction_changed
+        {
+            return Ok(self.settings_get());
+        }
         compaction_policies.write_config(&mut config);
         config["agent_modes"] = json!(agent_modes);
         config["project_agent"] = json!(project_agent);
@@ -180,6 +193,9 @@ impl AppState {
             // A sweep soon, so what was just chosen is what the workspaces
             // are next measured by.
             self.nudge_workspace_reclaim();
+        }
+        if compaction_changed {
+            self.publish_compaction_changed("device", None);
         }
         Ok(self.settings_get())
     }

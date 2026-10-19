@@ -5,6 +5,7 @@ use crate::models::{self, AgentProvider, ModelChoice, ProjectAgentChoice};
 use serde_json::Value;
 
 mod compaction;
+mod compaction_wire;
 mod persistence;
 mod settings;
 pub(in crate::app) use compaction::CompactionPolicies;
@@ -67,6 +68,7 @@ pub(in crate::app) struct SettingsPatch {
     pub(in crate::app) role_models: Option<crate::models::RoleModels>,
     pub(in crate::app) watch_agent_filed_tasks: Option<bool>,
     pub(in crate::app) compact_above_tokens: Option<u64>,
+    pub(in crate::app) compaction_thresholds: Option<Value>,
     pub(in crate::app) workspace_idle_secs: Option<u64>,
     pub(in crate::app) workspace_prune: Option<bool>,
 }
@@ -116,7 +118,7 @@ impl SettingsPatch {
     /// Read in this order, so a client that sends both `claude_mode` and
     /// `default_harness` is read by the newer word: they name one setting, and
     /// the later row lands on top of the earlier.
-    const FIELDS: [(&'static str, SettingsFieldParse); 12] = [
+    const FIELDS: [(&'static str, SettingsFieldParse); 13] = [
         ("projects_dir", |patch, value, _| {
             let named = value
                 .as_str()
@@ -178,6 +180,11 @@ impl SettingsPatch {
                     .as_bool()
                     .ok_or_else(|| "watch_agent_filed_tasks is true or false.".to_string())?,
             );
+            Ok(())
+        }),
+        ("compaction_thresholds", |patch, value, _| {
+            crate::compaction::CompactionThresholds::default().patched(value)?;
+            patch.compaction_thresholds = Some(value.clone());
             Ok(())
         }),
         ("compact_above_tokens", |patch, value, _| {

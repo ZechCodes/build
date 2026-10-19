@@ -3,8 +3,17 @@
   "since": "1.1.0",
   "params": {
     "subscription_id": "s-focus",
-    "scope": { "kind": "entity", "id": "run-7" },
-    "kinds": ["state", "thread", "git", "files", "terminals"],
+    "scope": {
+      "kind": "entity",
+      "id": "run-7"
+    },
+    "kinds": [
+      "state",
+      "thread",
+      "git",
+      "files",
+      "terminals"
+    ],
     "mode": "realtime",
     "priority": "foreground"
   },
@@ -16,8 +25,15 @@
     "since": "1.24.0",
     "params": {
       "subscription_id": "s-inbox",
-      "scope": { "kind": "all" },
-      "kinds": ["state", "thread", "reviews", "tasks"],
+      "scope": {
+        "kind": "all"
+      },
+      "kinds": [
+        "state",
+        "thread",
+        "reviews",
+        "tasks"
+      ],
       "mode": "realtime",
       "priority": "foreground"
     },
@@ -26,13 +42,21 @@
       "error": "Build cannot subscribe to reviews: this bridge does not know it.",
       "error_code": "invalid_params",
       "retryable": false,
-      "details": { "kinds": ["reviews"] }
+      "details": {
+        "kinds": [
+          "reviews"
+        ]
+      }
     }
   },
   "project_sources": {
     "since": "3.21.0",
     "capability": "changes.projectSources",
-    "kinds": ["git", "files", "terminals"],
+    "kinds": [
+      "git",
+      "files",
+      "terminals"
+    ],
     "params": {
       "subscription_id": "s-source-docs",
       "scope": {
@@ -41,16 +65,51 @@
         "source_id": "source-2",
         "source_path": "/home/me/src/docs"
       },
-      "kinds": ["git", "files", "terminals"],
+      "kinds": [
+        "git",
+        "files",
+        "terminals"
+      ],
       "mode": "realtime",
       "priority": "foreground"
     },
-    "refused_with": { "moved": "conflict", "unknown": "not_found", "plain_folder_git": "invalid_params" }
+    "refused_with": {
+      "moved": "conflict",
+      "unknown": "not_found",
+      "plain_folder_git": "invalid_params"
+    }
   },
   "errors": [
     "invalid_params",
     "not_found",
     "conflict",
     "unavailable"
-  ]
+  ],
+  "examples": [
+    {
+      "params": {
+        "subscription_id": "s-compaction",
+        "scope": {
+          "kind": "all"
+        },
+        "kinds": [
+          "compaction.changed"
+        ],
+        "mode": "realtime",
+        "priority": "foreground"
+      },
+      "result": {
+        "subscription_id": "s-compaction",
+        "watch": "live"
+      }
+    }
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "kinds": [
+      "compaction.changed"
+    ],
+    "note": "Subscribe only under the current greeting capability; refresh authoritative compaction caches after subscription acceptance."
+  }
 }

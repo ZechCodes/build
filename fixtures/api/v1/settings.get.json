@@ -55,7 +55,80 @@
     "workspace_prune": false,
     "workspace_pinned": [
       "workspace_prune"
-    ]
+    ],
+    "compaction_thresholds": {
+      "claude": 200000,
+      "claude_adk": 200000,
+      "codex": 200000,
+      "codex_app_server": 200000,
+      "pi": 200000
+    },
+    "compaction": {
+      "inherited": {
+        "claude": {
+          "tokens": 200000,
+          "source": {
+            "kind": "default"
+          }
+        },
+        "claude_adk": {
+          "tokens": 200000,
+          "source": {
+            "kind": "default"
+          }
+        },
+        "codex": {
+          "tokens": 200000,
+          "source": {
+            "kind": "default"
+          }
+        },
+        "codex_app_server": {
+          "tokens": 200000,
+          "source": {
+            "kind": "default"
+          }
+        },
+        "pi": {
+          "tokens": 200000,
+          "source": {
+            "kind": "default"
+          }
+        }
+      },
+      "effective": {
+        "claude": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "claude_adk": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "codex_app_server": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        },
+        "pi": {
+          "tokens": 200000,
+          "source": {
+            "kind": "device"
+          }
+        }
+      }
+    }
   },
   "workspace_lifecycle": {
     "since": "1.25.0",
@@ -67,5 +140,151 @@
   },
   "errors": [
     "internal"
+  ],
+  "harness_thresholds": {
+    "since": "3.22.0",
+    "capability": "compaction.harnessThresholds",
+    "fields": [
+      "compaction_thresholds",
+      "compaction"
+    ],
+    "patch": "Omitted provider is unchanged; null removes an override; a positive safe integer sets it; an empty map is a no-op. Legacy scalar and map together are refused."
+  },
+  "examples": [
+    {
+      "params": {},
+      "result": {
+        "projects_dir": "/home/ada/.build/projects",
+        "default_harness": "claude_adk",
+        "project_agent": {
+          "provider": "codex",
+          "model": "gpt-5.6-sol",
+          "effort": "high"
+        },
+        "agent_modes": {
+          "claude": "headless",
+          "codex": "tui"
+        },
+        "claude_mode": "headless",
+        "codex_mode": "tui",
+        "isolation": "worktree",
+        "isolation_available": {
+          "rift": false,
+          "reason": "rift is not installed on this device"
+        },
+        "role_models": [
+          {
+            "model": "claude-fable-5-1",
+            "roles": [
+              "planner",
+              "reviewer"
+            ],
+            "capability": "generalist"
+          },
+          {
+            "model": "claude-opus-5",
+            "roles": [
+              "planner",
+              "reviewer",
+              "implementer"
+            ],
+            "capability": "scoped"
+          },
+          {
+            "provider": "codex",
+            "model": "gpt-5",
+            "roles": [
+              "implementer",
+              "executor"
+            ],
+            "capability": "step_by_step"
+          }
+        ],
+        "watch_agent_filed_tasks": true,
+        "compact_above_tokens": 200000,
+        "workspace_idle_secs": 86400,
+        "workspace_prune": false,
+        "workspace_pinned": [
+          "workspace_prune"
+        ],
+        "compaction_thresholds": {
+          "claude": 200000,
+          "claude_adk": 200000,
+          "codex": {
+            "tokens_decimal": "18446744073709551615"
+          },
+          "codex_app_server": 200000,
+          "pi": 200000
+        },
+        "compaction": {
+          "inherited": {
+            "claude": {
+              "tokens": 200000,
+              "source": {
+                "kind": "default"
+              }
+            },
+            "claude_adk": {
+              "tokens": 200000,
+              "source": {
+                "kind": "default"
+              }
+            },
+            "codex": {
+              "tokens": 200000,
+              "source": {
+                "kind": "default"
+              }
+            },
+            "codex_app_server": {
+              "tokens": 200000,
+              "source": {
+                "kind": "default"
+              }
+            },
+            "pi": {
+              "tokens": 200000,
+              "source": {
+                "kind": "default"
+              }
+            }
+          },
+          "effective": {
+            "claude": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "claude_adk": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "codex": {
+              "tokens": null,
+              "tokens_decimal": "18446744073709551615",
+              "source": {
+                "kind": "device"
+              },
+              "reason": "unsupported_representation"
+            },
+            "codex_app_server": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            },
+            "pi": {
+              "tokens": 200000,
+              "source": {
+                "kind": "device"
+              }
+            }
+          }
+        }
+      }
+    }
   ]
 }

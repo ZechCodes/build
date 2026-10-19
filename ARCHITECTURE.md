@@ -237,7 +237,7 @@ subscription's scope is `board`, `entity`, `all` or, since 3.21.0,
 `project_source` (one original project source; see Projects and sources). The
 events the bridge announces are `ANNOUNCED_EVENTS` in the same file
 (`changes`, `bridge.update_status`, `models.changed`, `rtc.diagnostics`,
-`harnesses.changed`). Terminal output
+`harnesses.changed`, `compaction.changed`). Terminal output
 (`term.output`, `term.reset`, `term.closed`) comes from `bridge/src/screen.rs`.
 Example pushes are in `fixtures/api/v1/events.json`.
 
@@ -289,7 +289,7 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.21.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.22.0`. `fixtures/api/versions.json` (`"current"`) must match it.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -469,6 +469,16 @@ runtime that starts them.
   `bridge/src/app/runtime/terminals.rs`. The reply carries `api_version`,
   `capabilities`, `push_events`, `events` and the `changes` subscription settings.
   It also records what the client said it was (`bridge/src/api/clients.rs`).
+  Wire 3.22.0 adds `compaction.harnessThresholds`, the provider-map patch on
+  `settings.set`, and typed `project.set_compaction` / `workspace.set_compaction`.
+  Settings, project and workspace records carry raw `compaction_thresholds`
+  and per-provider `compaction.inherited` / `compaction.effective` observations.
+  Agent digests carry configured, inherited and active policy separately;
+  `conversation.settings` also returns inheritance while overridden. The new
+  `compaction.changed` device event carries only `scope` and `owner_id`.
+  A client opts in through `changes.subscribe`'s `compaction.changed` kind
+  only when the current greeting advertises the feature. Refreshing after
+  subscription acceptance closes the missed-invalidation gap.
 - `capabilities` comes from `capabilities()` in `bridge/src/api/mod.rs`: every
   registered v1 verb by its exact name, the legacy verbs (`LEGACY_METHODS`) and
   the named cross-verb features (`FEATURE_CAPABILITIES`, e.g. `agents.names`,
@@ -606,8 +616,19 @@ legacy integers exactly; internal read maps use `{tokens_decimal: "…"}`, and
 resolved observations use `tokens: null` with that exact decimal and an
 `unsupported_representation` reason. Those representations cannot be submitted
 as mutations. Older bridge binaries can discard the new maps when rewriting
-config; downgrade preservation is unsupported. These map APIs are internal;
-there are no per-harness wire setters or events yet.
+config; downgrade preservation is unsupported.
+
+Wire 3.22.0 exposes these maps through `settings.get/set`, project records and
+workspace records. `project.set_compaction` takes `project_id` and
+`compaction_thresholds`; `workspace.set_compaction` takes `workspace_id` and
+the same patch. Each returns its authoritative scoped record. Unknown params
+and providers are refused, as are zero and unsafe mutation values. Device
+settings reject mixing the legacy scalar and map. The legacy scalar read
+retains its compatibility limitation; new clients read the resolved maps.
+Successful policy changes emit `compaction.changed` as a scope/owner
+invalidation to opted-in clients. No settings replica travels in that event.
+The event causes authoritative scope and affected held roster reads; ordinary
+state invalidations continue to carry session-open policy changes.
 
 #### Compaction session policy
 
@@ -636,7 +657,13 @@ qualified. Native adapters remain unqualified. Claude and Codex carriers use
 the existing between-turn command path; Pi qualifies its extension-backed
 fallback only for 0.86.1. Unknown or failed version readings never infer
 native support. Unsafe legacy values remain exact and unsupported; zero is
-refused. These are internal observations; wire fields/events are a later step.
+refused. Wire agent `compaction` observations expose configured and inherited
+policy independently from the active snapshot. An unknown active policy stays
+null, with unsupported enforcement and an explicit reason; pending change is
+unknown until there is a snapshot to compare. A save never substitutes the
+configured policy for active evidence. Qualified active snapshots report the
+policy applied at start and its harness qualification, rather
+than claiming a live native readback.
 
 Both Claude carriers share `harness/claude_compaction.rs` (#656). Formula
 revision 1 targets the inspected 2.1.284 explicit window: reserve is the smaller
@@ -2651,6 +2678,18 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Compaction observations** (`compactionCache.js`, wire 3.22.0) refresh from
+  authoritative scope reads and `agent.list` after `compaction.changed` or
+  subscription acceptance. The invalidation names no replicated values.
+  Because held ownership lists can be partial, the service refreshes all held
+  compaction dependencies on that device and the invalidated settings scope
+  even when cold. A burst shares one pass and one trailing pass; a new session
+  bypasses an old stalled pass. Ordinary push fences and atomic record-write
+  comparisons protect newer cache data, and greeting authority is rechecked
+  inside the transaction. Agent updates merge only compaction observations,
+  retaining unrelated roster fields and clearing removed overrides. Rendering
+  support is the per-device `compaction-support` record from
+  `compactionSupport.js`; dispatch requires the current greeting separately.
 - **Waiting-on capability history** (#564). `taskWaitingOnSupport.js` keeps
   the per-device `task-waiting-on-support` cache record beside other capability
   flags. `waitingOn` describes the latest greeting for rendering Waiting on /
@@ -3142,6 +3181,12 @@ refuses when that device cannot answer.
   resumes that housekeeping when its device greets.
 - A flag that changes what a view draws is written to the cache at the
   greeting and read from there, so a cold mount draws what it will keep:
+  `compaction.harnessThresholds` is persisted per device for compaction
+  rendering. The adapter and cache service require the current greeting for
+  provider-map writes and the new scope setters, including after downgrade;
+  cached rendering support cannot authorize a request. A capable greeting
+  enables a change subscription before refreshing authoritative policy and
+  held agent records. Editors and menu changes belong to the next slice.
   `tasks.waitingOn` is persisted by `taskWaitingOnSupport.js` for task-page
   Waiting on and Blocks controls, together with the highest support seen on
   that device. `taskWaitingOnActions.js` waits for the current greeting before

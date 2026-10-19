@@ -1,10 +1,18 @@
-import { mergeCached, mergeCachedAtomically, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { pushFence, pushedSince } from "./pushFence.js";
+import { captureCachedRecord, mergeCached, mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 
 export const deviceSettingsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "settings" });
 export const deviceModelsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "models" });
 export const projectSettingsAddress = (deviceId = "", projectId) => ({ deviceId, entityId: projectId, kind: "project-settings" });
 export const deviceProjectsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "device-projects" });
 export const workspaceSettingsAddress = (deviceId = "", workspaceId) => ({ deviceId, entityId: workspaceId, kind: "workspace-settings" });
+// Compaction invalidations update these records independently of a mounted
+// settings reader, including from another tab before its announcement arrives.
+const compactionSettingsKinds = new Set(["settings", "project-settings", "workspace-settings"]);
+const captureSettingsRead = (address) => compactionSettingsKinds.has(address.kind) ? captureCachedRecord(address) : null;
+const unchangedSettingsRead = (before, held, address, fence) => !pushedSince(address, fence)
+  && (before === null || recordWriteOf(held) === recordWriteOf(before));
+
 export const downloadsAddress = { deviceId: "", entityId: "", kind: "downloads" };
 
 /** A project mutation answers its row. Keep the sheet's record and the device
@@ -70,15 +78,15 @@ export function watchSettingsRecord(address, paint, { owner } = {}) {
     // False asks its caller to fetch again under the new authority.
     pull: async (fetch, { accept } = {}) => {
       const began = revision;
+      const fence = pushFence();
+      const before = await captureSettingsRead(address);
       const value = await fetch();
       let accepted = true;
       if (active && began === revision) {
-        if (accept) {
-          await mergeCachedAtomically(address, () => {
-            accepted = accept();
-            return accepted && active && began === revision ? value : null;
-          });
-        } else await writeCached(address, value);
+        await mergeCachedRecordsTogether([address], ([held]) => {
+          accepted = accept ? accept() : true;
+          return accepted && active && began === revision && unchangedSettingsRead(before, held, address, fence) ? [value] : null;
+        });
       }
       await reads;
       return accepted;

@@ -13,9 +13,18 @@ pub(super) fn add(counter: &mut u64, amount: u64) {
 }
 
 pub(super) fn add_atomic(counter: &AtomicU64, amount: u64) {
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_add(amount))
-    });
+    let mut value = counter.load(Ordering::Relaxed);
+    loop {
+        match counter.compare_exchange_weak(
+            value,
+            value.saturating_add(amount),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(observed) => value = observed,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -58,7 +67,11 @@ pub(super) struct RoundDiagnostics {
     rejected: [u64; 4],
     unknown_arrival: u64,
     missing_arrival: u64,
+    // Round/subscriber errors and shared socket errors are separate observations.
+    // A fatal socket event delivered to the subscriber can increment both;
+    // these counters overlap and must not be summed into a total.
     pub receive_errors: u64,
+    pub shared_receive_errors: u64,
     pub receive_lagged: u64,
     pub shared_receiver: bool,
     pub stop: &'static str,
@@ -103,6 +116,7 @@ impl RoundDiagnostics {
             unknown_arrival: 0,
             missing_arrival: 0,
             receive_errors: 0,
+            shared_receive_errors: 0,
             receive_lagged: 0,
             shared_receiver: false,
             stop: "setup-failed",
@@ -234,14 +248,15 @@ impl RoundDiagnostics {
             .as_ref()
             .map_or_else(|failure| failure.code(), |_| "resolved");
         let mut summary = format!(
-            "mdns-round outcome={outcome} timeout_ms={} elapsed_ms={} stop={} eligible={} joined={} failed_joins={} sent={} failed_sends={} send_timeouts={} retries={} direct_sent={} direct_failed={} datagrams={} responses={} queries={} malformed={} unsupported={} wrong_name={} no_matching_a={} accepted={} off-subnet={} unqueried-interface={} nonlocal-address={} arrival-interface-unavailable={} unknown_arrival={} missing_arrival={} receive_errors={} receive_lagged={} shared_receiver={} omitted_interfaces={}",
+            "mdns-round outcome={outcome} timeout_ms={} elapsed_ms={} stop={} eligible={} joined={} failed_joins={} sent={} failed_sends={} send_timeouts={} retries={} direct_sent={} direct_failed={} datagrams={} responses={} queries={} malformed={} unsupported={} wrong_name={} no_matching_a={} accepted={} off-subnet={} unqueried-interface={} nonlocal-address={} arrival-interface-unavailable={} unknown_arrival={} missing_arrival={} receive_errors={} shared_receive_errors={} receive_lagged={} shared_receiver={} omitted_interfaces={}",
             self.timeout.as_millis(), self.started.elapsed().as_millis(), self.stop,
             self.eligible, self.joined, self.eligible.saturating_sub(self.joined as usize),
             self.sent, self.failed_sends, self.send_timeouts, self.retries, self.direct_sent,
             self.direct_failed, self.datagrams, self.responses, self.queries, self.malformed,
             self.unsupported, self.wrong_name, self.no_matching_a, self.accepted,
             self.rejected[0], self.rejected[1], self.rejected[2], self.rejected[3],
-            self.unknown_arrival, self.missing_arrival, self.receive_errors, self.receive_lagged,
+            self.unknown_arrival, self.missing_arrival, self.receive_errors, self.shared_receive_errors,
+            self.receive_lagged,
             self.shared_receiver, self.eligible.saturating_sub(MAX_INTERFACES),
         );
         // Ordinals and kernel ifindices identify local interfaces without emitting

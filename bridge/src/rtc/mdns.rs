@@ -968,7 +968,7 @@ async fn resolve_observed_with(
     .await;
     if let (Some(before), Some(after)) = (health, transport.receive_health()) {
         report.shared_receiver = true;
-        report.receive_errors = after.errors.saturating_sub(before.errors);
+        report.shared_receive_errors = after.errors.saturating_sub(before.errors);
         report.receive_lagged = after.lagged.saturating_sub(before.lagged);
     }
     (result, report)

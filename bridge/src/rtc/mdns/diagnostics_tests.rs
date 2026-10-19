@@ -224,14 +224,23 @@ fn diagnostic_counters_saturate_instead_of_wrapping_under_flood() {
     let mut count = u64::MAX;
     diagnostics::add(&mut count, 1);
     assert_eq!(count, u64::MAX);
-    let atomic = AtomicU64::new(u64::MAX);
-    diagnostics::add_atomic(&atomic, 1);
-    assert_eq!(atomic.load(Ordering::Relaxed), u64::MAX);
+    for (initial, amount, expected) in [
+        (0, 7, 7),
+        (u64::MAX - 2, 1, u64::MAX - 1),
+        (u64::MAX - 2, 10, u64::MAX),
+        (u64::MAX, 1, u64::MAX),
+        (u64::MAX, 0, u64::MAX),
+    ] {
+        let atomic = AtomicU64::new(initial);
+        diagnostics::add_atomic(&atomic, amount);
+        assert_eq!(atomic.load(Ordering::Relaxed), expected);
+    }
 }
 
 struct HealthTransport {
     inner: FakeTransport,
     health: Mutex<ReceiveHealth>,
+    shared_errors_per_receive: u64,
 }
 
 #[async_trait]
@@ -245,9 +254,7 @@ impl Transport for HealthTransport {
     async fn receive(&self) -> io::Result<Datagram> {
         let received = self.inner.receive().await;
         let mut health = self.health.lock().unwrap();
-        if received.is_err() {
-            health.errors += 1;
-        }
+        health.errors += self.shared_errors_per_receive;
         // Model messages discarded by a shared receiver during this lookup.
         health.lagged = 23;
         received
@@ -260,28 +267,56 @@ impl Transport for HealthTransport {
 #[tokio::test(start_paused = true)]
 async fn diagnostic_round_reports_shared_health_deltas_without_double_counting_errors() {
     let interfaces = vec![interface("eth0", "192.168.1.10")];
-    let inner = FakeTransport::new(HashMap::new());
-    inner.receive_errors.lock().unwrap().extend([
-        io::Error::from(io::ErrorKind::ConnectionReset),
-        socket_gone_error(),
-    ]);
-    let transport = HealthTransport {
-        inner,
-        health: Mutex::new(ReceiveHealth {
-            errors: 50,
-            lagged: 20,
-        }),
-    };
-    let (result, report) =
-        resolve_observed_with(NAME, &interfaces, &transport, RESOLVE_TIMEOUT, None).await;
-    let summary = report.summary(&result);
-    for expected in [
-        "receive_errors=2",
-        "receive_lagged=3",
-        "shared_receiver=true",
-        "stop=receive-failed",
-    ] {
-        assert!(summary.contains(expected), "missing {expected}: {summary}");
+    for (local_failure, shared_errors) in [(true, 0), (false, 3), (true, 1)] {
+        let replies = if local_failure {
+            HashMap::new()
+        } else {
+            HashMap::from([(interfaces[0].address, response(NAME, "192.168.1.50"))])
+        };
+        let inner = FakeTransport::new(replies);
+        if local_failure {
+            inner
+                .receive_errors
+                .lock()
+                .unwrap()
+                .push_back(socket_gone_error());
+        }
+        let transport = HealthTransport {
+            inner,
+            health: Mutex::new(ReceiveHealth {
+                errors: 50,
+                lagged: 20,
+            }),
+            shared_errors_per_receive: shared_errors,
+        };
+        let (result, report) =
+            resolve_observed_with(NAME, &interfaces, &transport, RESOLVE_TIMEOUT, None).await;
+        assert_eq!(result.is_err(), local_failure);
+        assert_eq!(
+            report.receive_errors,
+            u64::from(local_failure),
+            "round-local errors must survive shared health collection"
+        );
+        let summary = report.summary(&result);
+        for expected in [
+            format!("receive_errors={}", u64::from(local_failure)),
+            format!("shared_receive_errors={shared_errors}"),
+            "receive_lagged=3".to_string(),
+            "shared_receiver=true".to_string(),
+            format!(
+                "stop={}",
+                if local_failure {
+                    "receive-failed"
+                } else {
+                    "answer-grace"
+                }
+            ),
+        ] {
+            assert!(
+                summary.split_whitespace().any(|field| field == expected),
+                "missing {expected}: {summary}"
+            );
+        }
     }
 }
 

@@ -741,7 +741,7 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
   .toolbar { --tb-pinned-target:calc(var(--inbox-glyph-inset) + 18px); }
   body:not(.inbox-collapsed) .toolbar { padding-left:0;
     --tb-project-cap:min(96px, calc((100cqw + 44px - var(--tb-pinned-target) - 10px) / 4)); }
-  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(32px - 18px);
+  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(44px - 18px);
     transition:width 240ms cubic-bezier(.2,.8,.2,1), padding-left 240ms cubic-bezier(.2,.8,.2,1); }
   body:not(.inbox-collapsed) .tb-switch { width:var(--tb-pinned-target);
     padding-left:var(--inbox-glyph-inset); }
@@ -750,9 +750,9 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
   .toolbar, .toolbar .tb-switch { transition:none; }
 }
 .tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
-  width:32px; height:44px; padding:0; border:0; border-radius:6px;
+  width:44px; height:44px; padding:0; border:0; border-radius:6px;
   background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }
-/* Keep the full row height and the glyph close to its project link. */
+/* Keep the 44px target; align the glyph near the project instead of shrinking it. */
 .tb-switch > span { display:flex; }
 .tb-switch svg { width:18px; height:18px; }
 .tb-breadcrumbs { flex:0 1 auto; min-width:0; max-width:calc(100% - 96px); }
@@ -1167,7 +1167,7 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
 
 .rail-head { position:absolute; z-index:5; top:0; right:0; left:0;
   height:var(--surface-head); min-height:var(--surface-head);
-  display:flex; align-items:center; gap:8px; padding:8px 9px 8px var(--inbox-glyph-inset);
+  display:flex; align-items:center; gap:8px; padding:8px 9px 8px 16px;
   border:0; border-top-left-radius:inherit; border-top-right-radius:inherit;
   background:var(--panel); background:color-mix(in srgb, var(--panel) var(--chat-glass-opacity), transparent);
   -webkit-backdrop-filter:blur(var(--chat-glass-blur)); backdrop-filter:blur(var(--chat-glass-blur)); }
@@ -1611,10 +1611,13 @@ body.inbox-collapsed .toolbar:has(> .tb-switch) {
     top:var(--toolbar-h); bottom:calc(var(--console-space) + var(--agent-strip));
     z-index:30; width:auto; background:var(--panel); border-radius:10px;
     box-shadow:0 8px 24px var(--shadow-soft); }
-  /* With no directory column, the inbox follows the phone's safe area. The
-     conversation header below it follows the same left edge. */
+  /* Only on phones is the conversation below the inbox. With no directory
+     column, both follow the safe area; an unpinned card also costs 6px of
+     outer inset and a 1px border before its header begins. */
+  .rail-head { --rail-head-inset:var(--inbox-glyph-inset); padding-left:var(--rail-head-inset); }
   #view:not(:has(#dir-rail:not(:empty))) .rail-head {
-    padding-left:calc(var(--inbox-glyph-inset) + env(safe-area-inset-left, 0px)); }
+    --rail-head-inset:calc(var(--inbox-glyph-inset) + env(safe-area-inset-left, 0px)); }
+  #agent-rail.rail-popover .rail-head { padding-left:calc(var(--rail-head-inset) - 6px - 1px); }
   .rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
     transform:translateY(10px) scale(.985); }
   /* Unpinned, the same room read as a card: it sits ABOVE the strip and points
@@ -1727,6 +1730,11 @@ body.gated #inbox-rail { display:none; }
 
 /* ---- narrow viewports: the inbox overlays, as the project rail used to ---- */
 @media (max-width: 900px) {
+  /* A 44px phone hit area uses the blank margin left of the floating inbox,
+     ending exactly where the chevron's 44px target begins. Keep native window
+     control reservations intact when this width belongs to a desktop window. */
+  :root:not([data-window-controls-overlay]) #inbox-open::before {
+    content:""; position:absolute; inset:-8px 0 -8px -16px; }
   body { --inbox-space:0px; }
   #inbox-rail { position:absolute; left:0; top:var(--global-head);
     bottom:0; height:auto; margin:0; z-index:40;

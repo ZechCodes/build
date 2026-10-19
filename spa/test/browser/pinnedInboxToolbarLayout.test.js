@@ -110,7 +110,7 @@ function expectStableTransition({ frames, childChanges }, { animated = true } = 
     expect(frame.console).toBe(frame.barLeft);
     expect(frame.scroll).toBe(true);
     expect(frame.sizes[0].width).toBeGreaterThanOrEqual(29.5);
-    expect(frame.sizes[0].width).toBeLessThanOrEqual(32);
+    expect(frame.sizes[0].width).toBeLessThanOrEqual(44);
     for (const size of frame.sizes) {
       expect(size.width).toBeGreaterThan(0);
       expect(size.height).toBe(44);
@@ -142,9 +142,9 @@ for (const width of [901, 1280]) for (const theme of ["light", "dark"]) {
           crumbGap: box(".tb-project").left - glyph.right };
       });
       console.log(`Floating inbox chevron ${width}px ${theme}: ${JSON.stringify(floating)}`);
-      expect(floating.glyphX).toBe(48);
-      expect(floating.directoryGap).toBe(8);
-      expect(floating.targetWidth).toBe(32);
+      expect(floating.glyphX).toBe(60);
+      expect(floating.directoryGap).toBe(20);
+      expect(floating.targetWidth).toBe(44);
       expect(floating.targetHeight).toBe(44);
       expect(floating.toggleGap).toBeGreaterThanOrEqual(0);
       expect(floating.crumbGap).toBe(4);
@@ -178,7 +178,7 @@ for (const width of [901, 1280]) for (const theme of ["light", "dark"]) {
       const shift = unpinned.glyph - pinned.glyph;
       expect(unpinned.project - pinned.project).toBeCloseTo(shift, 1);
       expect(unpinned.workspaces - pinned.workspaces).toBeCloseTo(shift, 1);
-      expect(await page.locator(".tb-switch").evaluate((button) => button.getBoundingClientRect().width)).toBe(32);
+      expect(await page.locator(".tb-switch").evaluate((button) => button.getBoundingClientRect().width)).toBe(44);
       expect(pinned.height).toBe(44);
       expect(await toolbarGeometry(page)).toEqual(unpinned);
       expect(await page.locator("#inbox-open").isVisible()).toBe(true);
@@ -238,7 +238,7 @@ for (const width of [390, 900]) {
       await mountNavigationBreadcrumbs(page, basePath, { kind: "project", inboxHeader: true });
       await settle(page);
       const before = await toolbarGeometry(page);
-      expect(before.glyph).toBe(48);
+      expect(before.glyph).toBe(60);
       expect(await page.locator("#inbox-collapse").isVisible()).toBe(false);
       expect(await page.locator("#inbox-open").isVisible()).toBe(true);
       await page.locator("#inbox-open").tap();

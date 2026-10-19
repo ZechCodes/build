@@ -66,7 +66,7 @@ for (const width of [390, 1280]) for (const theme of ["light", "dark"]) {
   }, 45_000);
 }
 
-it("left chevron stays close to the project with a compact, full-height phone hit target", async () => {
+it("left chevron stays close to the project without shrinking its phone hit target", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountNavigationBreadcrumbs(page, basePath);
     const switcher = page.getByRole("button", { name: "Switch project or workspace", exact: true });
@@ -74,7 +74,7 @@ it("left chevron stays close to the project with a compact, full-height phone hi
     expect(await icon.count()).toBe(1);
     expect(await switcher.locator('[aria-hidden="true"]').count()).toBe(1);
     const target = await switcher.boundingBox();
-    expect(target.width).toBe(32);
+    expect(target.width).toBeGreaterThanOrEqual(44);
     expect(target.height).toBeGreaterThanOrEqual(44);
     const glyph = await icon.boundingBox();
     const project = await page.locator("[data-project-return]").boundingBox();

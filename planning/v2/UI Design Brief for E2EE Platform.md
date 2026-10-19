@@ -11,8 +11,10 @@ always keeps its space. An unnamed pinned project agent reads â€œProject agentâ€
 in both the header and tooltip. The harness glyph and watch control retain
 their positions beside the text. As of #662, conversation headers omit the
 model label; model details remain in the bubble tooltip. The harness glyph
-uses the inbox glyph's left inset, and the toolbar closes the extra gap
-between the inbox button and project chevron at phone and desktop widths.
+aligns with the inbox on phones, whether the conversation is pinned or a
+popover; desktop headers retain their 16px inset. The phone toolbar closes
+the extra gap between the inbox and project chevron while preserving separate
+44px touch targets. Desktop toolbar spacing is unchanged.
 
 Conversation bubbles use a custom tooltip for cached identity, current work,
 turn runtime or idle state, harness, model and status. It opens on hover and

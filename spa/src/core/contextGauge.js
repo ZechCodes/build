@@ -1,24 +1,6 @@
-// How full the agent's context is: the small figure beside the paperclip.
-//
-// The tokens are the digest's `last_context_tokens` (wire 1.10) — what the last
-// turn the agent's session reported held, null before one and again once a
-// compaction is asked for. What they are a share of is where the chat compacts:
-// the digest's `compact_at_tokens`, the threshold in effect. A chat that never
-// compacts (0) is measured against the model's window instead. The catalog
-// names that where it can (`context_window` on a model); until the bridge
-// carries one, the harness says it, and a harness with no known window shows no
-// figure rather than a guessed one.
-//
-// At rest the figure is the token total ("52k"); hover or focus expands it
-// leftward to "52k/200k 26%", the total against its measure and the share. The
-// node's text is only the total: the measure and the percent ride on `data-`
-// attributes the stylesheet appends after it, so the expansion writes nothing.
-//
-// The figure is written onto a node of its own, never through the composer's
-// markup: a push of the agent record lands while somebody is typing, and a
-// repaint of the box would take the caret with it.
-
+// Context usage is measured against observed enforcement, never configured intent.
 import { setAttr, setData, setHidden } from "../dom.js";
+import { compactionPendingLabel, positiveCompactionTokens } from "./compactionPresentation.js";
 import { composerPartIds } from "./composer.js";
 
 /** The windows the harnesses run at, by provider id. The Claude models all
@@ -53,8 +35,11 @@ const tokenWord = (tokens) =>
  *  compaction threshold while the chat compacts, the window when it never
  *  does. Null when there is neither. */
 function measureOf(agent, catalog) {
-  const threshold = agent.compact_at_tokens;
-  if (Number.isFinite(threshold) && threshold > 0) {
+  const observation = agent.compaction;
+  const active = observation?.active;
+  const threshold = observation?.enforcement === "native" ? active?.translated_trigger
+    : observation?.enforcement === "between_turn" ? active?.tokens : null;
+  if (positiveCompactionTokens(threshold)) {
     const word = tokenWord(threshold);
     return { tokens: threshold, words: `${word} tokens (compacts at ${word})` };
   }
@@ -84,7 +69,7 @@ export function contextGauge(agent, catalog) {
     measure: measureWord,
     expanded: `${text}/${measureWord} ${percent}%`,
     step: stepOf(percent),
-    title: `${text} of ${measure.words}, ${percent}% used, as of its last turn`,
+    title: [`${text} of ${measure.words}, ${percent}% used, as of its last turn`, compactionPendingLabel(agent.compaction)].filter(Boolean).join(". "),
   };
 }
 

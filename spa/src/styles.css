@@ -1275,6 +1275,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .menu-slider input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; border-radius:4px; }
 .menu-slider-stops { display:flex; justify-content:space-between; margin-top:-9px; padding:0 9px; pointer-events:none; }
 .menu-slider-stops span { width:2px; height:4px; background:var(--line3); }
+.menu-group-description { padding:4px 13px 10px; color:var(--dim); font-size:11px; line-height:1.5; white-space:normal; }
 .menu-slider-copy { display:flex; flex-direction:column; gap:1px; margin-top:8px; }
 .menu-slider-copy .mt { color:var(--accent); font-weight:550; font-size:13px; }
 /* A setting's rows are one radio set, and wear it: a ring before each value,

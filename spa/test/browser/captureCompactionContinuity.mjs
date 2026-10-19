@@ -101,11 +101,11 @@ try {
         for (let stop = 0; stop < 3; stop += 1) await page.keyboard.press("ArrowRight");
         await page.keyboard.press("Enter");
       } else if (gesture === "click") {
-        await page.mouse.click(box.x + box.width * 0.68, y);
+        await page.mouse.click(box.x + box.width * 0.96, y);
       } else {
         await page.mouse.move(box.x + 10, y);
         await page.mouse.down();
-        await page.mouse.move(box.x + box.width * 0.68, y, { steps: 20 });
+        await page.mouse.move(box.x + box.width * 0.96, y, { steps: 20 });
         await page.waitForTimeout(200);
         await page.mouse.up();
       }

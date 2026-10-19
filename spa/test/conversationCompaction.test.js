@@ -102,6 +102,15 @@ describe("writing what was answered", () => {
     return { cache, steps, capture, write, call };
   };
 
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])("refuses invalid threshold %s before calling or changing the cache", async (maxContextTokens) => {
+    const held = cacheHolding(AGENT);
+    const call = held.call(SAVED);
+    const choice = createCompactionChoice({ call, capture: held.capture, write: held.write });
+    expect(await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens })).toBe(false);
+    expect(call).not.toHaveBeenCalled();
+    expect(held.capture).not.toHaveBeenCalled();
+  });
+
   it("takes the row's write before asking and offers the answer against it", async () => {
     const held = cacheHolding(AGENT);
     const choice = createCompactionChoice({ call: held.call(SAVED), capture: held.capture, write: held.write });

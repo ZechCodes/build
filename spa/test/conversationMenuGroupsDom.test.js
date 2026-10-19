@@ -187,7 +187,7 @@ describe("the sections of the conversation's menu", () => {
     ]);
     expect(rowsOf(groupNamed("Detail")).map(rowLabel)).toEqual(["All", "All messages", "Agent only"]);
     expect(rowsOf(groupNamed("Compact at"))).toEqual([]);
-    expect([...groupNamed("Compact at").querySelectorAll(".mt")].map((each) => each.textContent)).toEqual(["Default (200k)"]);
+    expect([...groupNamed("Compact at").querySelectorAll(".mt")].map((each) => each.textContent)).toEqual(["Use inherited setting"]);
   });
 
   it("reads a surface as a thing to open and a setting as one answer of a set", async () => {

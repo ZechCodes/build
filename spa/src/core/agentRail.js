@@ -89,7 +89,8 @@ import { catalogForProvider, creatableCatalog, creationModelId, effortLevels, ef
 import { markSeen } from "./inboxView.js";
 import { createChatReadReporter, hasReadProgress } from "./chatReadReporter.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
-import { notifyError } from "./notify.js";
+import { notifyError, notifySuccess } from "./notify.js";
+import { COMPACTION_SAVED } from "./compactionPresentation.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog, followDeviceCatalog } from "./inboxDevices.js";
 import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
@@ -1090,6 +1091,7 @@ function mountRailOnContext(host, context, swap) {
     onFailure: (error) => {
       if (standing()) notifyCommandFailure(error, COMPACTION_REFUSED, COMPACTION_UNSUPPORTED);
     },
+    onSaved: () => { if (standing()) notifySuccess(COMPACTION_SAVED); },
   });
   let { projectAgent, standing: onProjectAgentRail } = projectAgentState(context);
   const { entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);

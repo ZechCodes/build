@@ -65,7 +65,7 @@ describe("contextGauge", () => {
     expect(gauge.title).toBe("190k of 200k tokens (compacts at 200k), 95% used, as of its last turn");
   });
 
-  it("measures against the model's window when the chat never compacts", () => {
+  it("measures against the model's window when an old digest has no active policy", () => {
     const gauge = contextGauge(claude(612000, { compact_at_tokens: 0 }), CATALOG);
     expect(gauge).toMatchObject({ text: "612k", expanded: "612k/1M 61%", step: "accent" });
     expect(gauge.title).toBe("612k of 1M window, 61% used, as of its last turn");

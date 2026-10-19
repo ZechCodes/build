@@ -31,14 +31,14 @@ describe("the compaction slider in a split menu", () => {
     expect(slider).not.toBeNull();
     expect(slider.type).toBe("range");
     expect(slider.tabIndex).toBe(0);
-    expect([slider.min, slider.max, slider.step, slider.value]).toEqual(["0", "4", "1", "0"]);
+    expect([slider.min, slider.max, slider.step, slider.value]).toEqual(["0", "3", "1", "0"]);
     expect(slider.getAttribute("aria-label")).toBe("Compact at");
-    expect(slider.getAttribute("aria-valuetext")).toBe("Default (200k)");
+    expect(slider.getAttribute("aria-valuetext")).toBe("Use inherited setting");
     const group = host.querySelector('[data-group="compact"]');
     expect(group.querySelectorAll(".mt")).toHaveLength(1);
-    expect(group.querySelector(".mt").textContent).toBe("Default (200k)");
+    expect(group.querySelector(".mt").textContent).toBe("Use inherited setting");
     expect(group.querySelector(".md")).toBeNull();
-    expect(group.querySelectorAll(".menu-slider-stops span")).toHaveLength(5);
+    expect(group.querySelectorAll(".menu-slider-stops span")).toHaveLength(4);
     expect(group.querySelectorAll('[role="menuitemradio"]')).toHaveLength(0);
     expect(slider.hasAttribute("aria-describedby")).toBe(false);
   });
@@ -53,12 +53,12 @@ describe("the compaction slider in a split menu", () => {
     expect(host.querySelector(".splitmenu").hidden).toBe(false);
     expect(host.querySelector('[data-group="compact"] .mt').textContent).toBe("200k");
     expect(slider.getAttribute("aria-valuetext")).toBe("200k");
-    slider.value = "4";
+    slider.value = "3";
     slider.dispatchEvent(new Event("input", { bubbles: true }));
     slider.dispatchEvent(new Event("change", { bubbles: true }));
     expect(onChoose).not.toHaveBeenCalled();
     pointer(slider, "pointerup");
-    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:off");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
     await motionBeat();
     expect(document.activeElement).toBe(slider);
     expect(caret.getAttribute("aria-expanded")).toBe("true");
@@ -67,9 +67,9 @@ describe("the compaction slider in a split menu", () => {
     expect(onChoose).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps a custom cached limit as its own stop ahead of Off", () => {
+  it("keeps a custom cached limit as its own stop after the presets", () => {
     const { slider } = mount({ max_context_tokens: 250000, compact_at_tokens: 250000 });
-    expect([slider.max, slider.value]).toEqual(["5", "4"]);
+    expect([slider.max, slider.value]).toEqual(["4", "4"]);
     expect(slider.getAttribute("aria-valuetext")).toBe("Custom (250k)");
     expect(slider.dataset.action).toBe("compact:250000");
   });
@@ -93,7 +93,7 @@ describe("the compaction slider in a split menu", () => {
   it("previews keyboard changes until Enter and cancels them on Escape", async () => {
     const { caret, slider, host, onChoose } = mount();
     keydown(caret, "ArrowUp");
-    for (const index of [1, 2, 3, 4]) {
+    for (const index of [1, 2, 3]) {
       keydown(slider, "ArrowRight");
       preview(slider, index);
       expect(onChoose).not.toHaveBeenCalled();
@@ -105,9 +105,9 @@ describe("the compaction slider in a split menu", () => {
     expect(onChoose).not.toHaveBeenCalled();
     expect(slider.value).toBe("0");
     keydown(caret, "ArrowUp");
-    preview(slider, 4);
+    preview(slider, 3);
     keydown(slider, "Enter");
-    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:off");
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
     await motionBeat();
     expect(document.activeElement).toBe(slider);
     expect(host.querySelector(".splitmenu").hidden).toBe(false);
@@ -264,13 +264,13 @@ describe("the compaction slider in a split menu", () => {
     keydown(slider, "Enter");
     mountMenuIfChanged(host, markup(300000), { onChoose });
     expect(host.querySelector('[role="slider"]')).toBe(slider);
-    expect(slider.max).toBe("4");
-    expect(host.querySelectorAll(".menu-slider-stops span")).toHaveLength(5);
+    expect(slider.max).toBe("3");
+    expect(host.querySelectorAll(".menu-slider-stops span")).toHaveLength(4);
     await motionBeat();
-    preview(slider, 4);
+    preview(slider, 2);
     pointer(slider, "pointerdown");
     pointer(slider, "pointerup");
-    expect(onChoose).toHaveBeenLastCalledWith("compact:off");
+    expect(onChoose).toHaveBeenLastCalledWith("compact:200000");
   });
 
   it("keeps a detached save's refusal from repainting a replacement slider", async () => {
@@ -363,14 +363,14 @@ describe("the compaction slider in a split menu", () => {
     preview(slider, 3);
     keydown(slider, "Enter");
     expect(slider.getAttribute("aria-valuetext")).toBe("150k");
-    preview(slider, 4);
+    preview(slider, 3);
     keydown(slider, "Escape");
     slider.blur();
     pointer(document.body, "pointerdown");
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
     refuse(new Error("refused"));
     await motionBeat();
-    expect(slider.getAttribute("aria-valuetext")).toBe("Default (200k)");
+    expect(slider.getAttribute("aria-valuetext")).toBe("Use inherited setting");
     expect(host.querySelector(".splitmenu").hidden).toBe(true);
   });
 
@@ -394,8 +394,8 @@ describe("the compaction slider in a split menu", () => {
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:150000");
     refuse();
     await motionBeat();
-    expect(document.activeElement.getAttribute("aria-valuetext")).toBe("Default (200k)");
-    expect(host.querySelector('.menu-slider .mt').textContent).toBe("Default (200k)");
+    expect(document.activeElement.getAttribute("aria-valuetext")).toBe("Use inherited setting");
+    expect(host.querySelector('.menu-slider .mt').textContent).toBe("Use inherited setting");
     expect(host.querySelector(".caret").getAttribute("aria-expanded")).toBe("true");
   });
 
@@ -409,12 +409,12 @@ describe("the compaction slider in a split menu", () => {
       keydown(slider, event);
       await motionBeat();
       if (event === "Escape") caret.click();
-      expect(slider.getAttribute("aria-valuetext")).toBe("Default (200k)");
+      expect(slider.getAttribute("aria-valuetext")).toBe("Use inherited setting");
       expect(slider.value).toBe("0");
       keydown(slider, "Escape");
       await motionBeat();
     }
     expect(onChoose).toHaveBeenCalledExactlyOnceWith("compact:300000");
-    expect(host.querySelector('[data-group="compact"] .mt').textContent).toBe("Default (200k)");
+    expect(host.querySelector('[data-group="compact"] .mt').textContent).toBe("Use inherited setting");
   });
 });

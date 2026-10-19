@@ -46,6 +46,10 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
     conversation_id: "conversation-menu-agent",
     ...(resetCapable ? { thread_id: "thread:conversation-menu-agent", thread_generation_revision: 0 } : {}),
     last_context_tokens: 120000, max_context_tokens: null, compact_at_tokens: 200000,
+    compaction: { inherited: { tokens: 200000, source: { kind: "device" } },
+      configured: { tokens: 200000, source: { kind: "device" } },
+      active: { tokens: 200000, source: { kind: "device" }, evidence: "applied_at_start" },
+      enforcement: "between_turn", pending_change: false },
     surface_session_generation: "session-one",
     surfaces: {
       shells,
@@ -91,7 +95,7 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
         });
         if (settingsDelayMs) await new Promise((resolve) => setTimeout(resolve, settingsDelayMs));
         window.__menuSettingsAnswered.push(params);
-        return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000 };
+        return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000, compaction: { inherited: agent.compaction.inherited } };
       }
       if (method === "models.list") return { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] };
       if (method === "conversation.reset" && resetCapable) {

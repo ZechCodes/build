@@ -491,13 +491,44 @@ impl AppState {
     /// the task wants recorded is the checkout that conversation works in.
     /// `None` for the project's own conversation, which has no workspace.
     pub(in crate::app) fn workspace_of_conversation(&self, entity_id: &str) -> Option<String> {
-        self.workspaces
-            .list(None)
-            .into_iter()
-            .find(|workspace| {
-                self.workspace_conversation_owner(workspace).as_deref() == Some(entity_id)
-            })
+        self.workspace_for_conversation(entity_id)
             .map(|workspace| workspace.id.clone())
+    }
+
+    /// Find the queried run's workspace before resolving a legacy owner.
+    /// Looking up every workspace's owner first nests a complete run scan
+    /// inside this scan, and a roots snapshot repeats both for every run.
+    /// Keep the name-ordered workspace precedence and resolve the fallback
+    /// winner only once for all aliases of this run's root.
+    fn workspace_for_conversation(&self, entity_id: &str) -> Option<&Workspace> {
+        let active = self.runs.get(entity_id)?;
+        if self.is_project_conversation_owner(entity_id) {
+            return None;
+        }
+        let project_id = self.projects.project_id_of(entity_id);
+        let fallback_owner = std::cell::OnceCell::new();
+        self.workspaces.list(None).into_iter().find(|workspace| {
+            if workspace.id == entity_id {
+                return true;
+            }
+            if active.run.state.is_terminal()
+                || project_id != Some(workspace.project_id.as_str())
+                || !same_path(&active.worktree.path, &workspace.root)
+            {
+                return false;
+            }
+            // A different direct owner takes precedence over the shared
+            // root's fallback, even when an earlier alias used it.
+            if self.runs.contains_key(&workspace.id)
+                && !self.is_project_conversation_owner(&workspace.id)
+            {
+                return false;
+            }
+            fallback_owner
+                .get_or_init(|| self.workspace_conversation_owner(workspace))
+                .as_deref()
+                == Some(entity_id)
+        })
     }
 
     /// A run about to lose its durable record must not leave an existing
@@ -527,12 +558,7 @@ impl AppState {
         if checkout.join(".git").exists() {
             return checkout.to_path_buf();
         }
-        self.workspaces
-            .list(None)
-            .into_iter()
-            .find(|workspace| {
-                self.workspace_conversation_owner(workspace).as_deref() == Some(run_id)
-            })
+        self.workspace_for_conversation(run_id)
             .and_then(|workspace| {
                 workspace
                     .directories
@@ -563,21 +589,15 @@ impl AppState {
         &self,
         run_id: &str,
     ) -> Option<(String, Vec<PathBuf>)> {
-        self.workspaces
-            .list(None)
-            .into_iter()
-            .find(|workspace| {
-                self.workspace_conversation_owner(workspace).as_deref() == Some(run_id)
-            })
-            .map(|workspace| {
-                let repositories = workspace
-                    .directories
-                    .iter()
-                    .filter(|directory| directory.is_git)
-                    .map(|directory| directory.path.clone())
-                    .collect();
-                (workspace.id.clone(), repositories)
-            })
+        self.workspace_for_conversation(run_id).map(|workspace| {
+            let repositories = workspace
+                .directories
+                .iter()
+                .filter(|directory| directory.is_git)
+                .map(|directory| directory.path.clone())
+                .collect();
+            (workspace.id.clone(), repositories)
+        })
     }
 
     /// Every workspace's summary membership — its id and repositories, as the

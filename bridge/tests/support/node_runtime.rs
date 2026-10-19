@@ -5,20 +5,11 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 const NODE_HINT: &str =
-    "Set BUILD_TEST_NODE to an absolute executable Node path outside mise/asdf shims";
+    "Set BUILD_TEST_NODE to an absolute executable Node path outside shims directories";
 
 fn is_shim(path: &Path) -> bool {
-    path.ancestors().any(|directory| {
-        directory.file_name() == Some(OsStr::new("shims"))
-            && directory
-                .parent()
-                .and_then(Path::file_name)
-                .is_some_and(|name| {
-                    ["mise", ".mise", "asdf", ".asdf"]
-                        .iter()
-                        .any(|manager| name == OsStr::new(manager))
-                })
-    })
+    path.ancestors()
+        .any(|directory| directory.file_name() == Some(OsStr::new("shims")))
 }
 
 fn executable_node(candidate: &Path) -> Option<PathBuf> {
@@ -44,9 +35,20 @@ fn resolve_node(path: &OsStr, override_path: Option<&OsStr>) -> Result<PathBuf, 
 fn resolve_node_with_probe(
     path: &OsStr,
     override_path: Option<&OsStr>,
-    _probe: impl FnOnce() -> std::io::Result<std::process::Output>,
+    probe: impl FnOnce() -> std::io::Result<std::process::Output>,
 ) -> Result<PathBuf, String> {
-    resolve_node(path, override_path)
+    let resolved = resolve_node(path, override_path);
+    if override_path.is_some() || resolved.is_ok() {
+        return resolved;
+    }
+    let failure = || format!("Node process.execPath discovery failed. {NODE_HINT}");
+    let output = probe().map_err(|_| failure())?;
+    if !output.status.success() {
+        return Err(failure());
+    }
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|_| failure())?;
+    executable_node(Path::new(stdout.trim()))
+        .ok_or_else(|| format!("Node process.execPath returned an invalid executable. {NODE_HINT}"))
 }
 
 fn command_with_node(home: &Path, node: &Path, path: &OsStr) -> Command {
@@ -73,8 +75,14 @@ pub fn isolated_node(home: &Path) -> Command {
     let (node, path) = RUNTIME.get_or_init(|| {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let requested = std::env::var_os("BUILD_TEST_NODE");
-        let node =
-            resolve_node(&path, requested.as_deref()).unwrap_or_else(|error| panic!("{error}"));
+        // A shim-only PATH needs its parent environment to locate Node. Probe
+        // once here, before constructing any env-cleared fixture children.
+        let node = resolve_node_with_probe(&path, requested.as_deref(), || {
+            Command::new("node")
+                .args(["-p", "process.execPath"])
+                .output()
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
         (node, path)
     });
     command_with_node(home, node, path)
@@ -96,10 +104,15 @@ mod tests {
         let calls = std::cell::Cell::new(0);
         let resolved = resolve_node_with_probe(path, None, || {
             calls.set(calls.get() + 1);
-            Command::new("node").args(["-p", "process.execPath"])
-                .env_clear().env("HOME", temp.path()).env("PATH", path)
-                .env("TEST_PARENT_NODE", &native).output()
-        }).unwrap();
+            Command::new("node")
+                .args(["-p", "process.execPath"])
+                .env_clear()
+                .env("HOME", temp.path())
+                .env("PATH", path)
+                .env("TEST_PARENT_NODE", &native)
+                .output()
+        })
+        .unwrap();
         assert_eq!(resolved, native);
         assert_eq!(calls.get(), 1);
         let child = command_with_node(temp.path(), &resolved, path);
@@ -114,17 +127,45 @@ mod tests {
         let alias = temp.path().join("alias-node");
         symlink(&shim, &alias).unwrap();
         let path = temp.path().join("missing");
-        for stdout in [b"relative/node\n".to_vec(), Vec::new(), vec![255], shim.as_os_str().as_encoded_bytes().to_vec(), alias.as_os_str().as_encoded_bytes().to_vec()] {
-            let error = resolve_node_with_probe(path.as_os_str(), None, || Ok(std::process::Output {
-                status: std::process::ExitStatus::from_raw(0), stdout, stderr: Vec::new(),
-            })).unwrap_err();
-            assert!(error.contains("process.execPath") && error.contains("BUILD_TEST_NODE"), "{error}");
+        for stdout in [
+            b"relative/node\n".to_vec(),
+            Vec::new(),
+            vec![255],
+            shim.as_os_str().as_encoded_bytes().to_vec(),
+            alias.as_os_str().as_encoded_bytes().to_vec(),
+        ] {
+            let error = resolve_node_with_probe(path.as_os_str(), None, || {
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::from_raw(0),
+                    stdout,
+                    stderr: Vec::new(),
+                })
+            })
+            .unwrap_err();
+            assert!(
+                error.contains("process.execPath") && error.contains("BUILD_TEST_NODE"),
+                "{error}"
+            );
         }
-        let error = resolve_node_with_probe(path.as_os_str(), None, || Ok(std::process::Output {
-            status: std::process::ExitStatus::from_raw(7 << 8), stdout: Vec::new(), stderr: b"private diagnostic".to_vec(),
-        })).unwrap_err();
-        assert!(error.contains("failed") && !error.contains("private diagnostic"), "{error}");
-        assert!(resolve_node_with_probe(path.as_os_str(), None, || Err(std::io::Error::other("spawn failed"))).unwrap_err().contains("process.execPath"));
+        let error = resolve_node_with_probe(path.as_os_str(), None, || {
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(7 << 8),
+                stdout: Vec::new(),
+                stderr: b"private diagnostic".to_vec(),
+            })
+        })
+        .unwrap_err();
+        assert!(
+            error.contains("failed") && !error.contains("private diagnostic"),
+            "{error}"
+        );
+        assert!(
+            resolve_node_with_probe(path.as_os_str(), None, || Err(std::io::Error::other(
+                "spawn failed"
+            )))
+            .unwrap_err()
+            .contains("process.execPath")
+        );
     }
 
     #[test]
@@ -134,7 +175,10 @@ mod tests {
         let path = native.parent().unwrap().as_os_str();
         let never = || panic!("fallback must not run");
         assert_eq!(resolve_node_with_probe(path, None, never).unwrap(), native);
-        assert_eq!(resolve_node_with_probe(OsStr::new(""), Some(native.as_os_str()), never).unwrap(), native);
+        assert_eq!(
+            resolve_node_with_probe(OsStr::new(""), Some(native.as_os_str()), never).unwrap(),
+            native
+        );
         assert!(resolve_node_with_probe(path, Some(OsStr::new("relative")), never).is_err());
     }
 

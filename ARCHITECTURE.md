@@ -293,9 +293,12 @@ board/project/workspace/agent views. Reads never return capacity refusals;
 an exhausted SQL read pool waits on its own connections, never the app lock or
 writer. Snapshot/control frames bypass SQL admission at intake; the SPA paces
 SQL sends with per-session credits while views keep rendering from cache.
-Excess unpaced reads may backpressure their ordered carrier, delaying later
-frames not yet admitted. The target releases app/domain guards for SQL and
-external work, uses
+Credits track the sending carrier and return once on reply, cancellation,
+carrier close, restored-path reset or opening end. Restore clears old SQL
+calls before resync; carrier release drops its queued SQL and discards running
+replies, preserving the existing opening-end conditions and usable replacements.
+Excess reads may backpressure their ordered carrier, delaying later frames not
+yet admitted. The target releases app/domain guards for SQL and external work, uses
 device → project → workspace write ownership, and orders successful writes
 commit → publish → stage changes → acknowledge. Failed saves cannot enter
 canonical views or emit their changes. The plan covers maintenance/autonomous

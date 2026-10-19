@@ -1,11 +1,9 @@
 # Bridge Concurrency Plan
 
-Task #681 — revision 2, 2026-10-19. **Planning only.** Source baseline:
+Task #681 — revision 3, 2026-10-19. **Planning only.** Source baseline:
 `8257cba8bc737b622978ccda3c20e43b7feb9222`; incorporates reviews #682/#683. Paths below start at
-`bridge/src/` unless stated otherwise; app-area paths start at `bridge/src/app/`. New
-modules/functions are marked proposed. The [architecture
-amendment](../../ARCHITECTURE.md#app-state-and-its-lock) separates current behavior from this
-design.
+`bridge/src/` unless stated otherwise; app-area paths start at `bridge/src/app/`. New modules/functions
+are marked proposed. The [architecture amendment](../../ARCHITECTURE.md#app-state-and-its-lock) distinguishes this design from current behavior.
 
 Ship the read speed-up before splitting all writers. The sequence is:
 
@@ -25,8 +23,7 @@ Ship the read speed-up before splitting all writers. The sequence is:
 
 SQLite reads never acquire an app/domain/writer lock or share write/Git workers. Snapshot reads
 load an immutable value without a reader lock. **Neither read kind returns `busy` for capacity.**
-SQL readers may wait briefly for their own read connection; they never wait on the app lock or
-writer. This is the reviewer's explicit capacity policy, not a claim of zero storage/CPU latency.
+SQL readers may wait for their own read connection, never the app lock or writer; storage/CPU still cost time.
 Independent workspace writes overlap except for short SQLite commits or a shared physical Git
 repository. A read issued after a successful write reply sees that write; an in-flight write may
 still yield the previous committed view.
@@ -35,8 +32,8 @@ Today `carrier.rs::FrameIntake::accept` feeds a per-wire admitter (1,024), then
 `carrier/dispatch.rs::Dispatcher` (two queues of 256, eight workers, at most two background).
 `run_handler` uses `spawn_blocking`; a deferred Git job frees the app mutex but keeps its dispatch
 worker. Terminal lanes, immediate signaling, MCP and services are separate paths.
-`app/rpc.rs::routed` takes `Mutex<AppState>` and `api/v1/mod.rs::Handler::call` receives `&mut
-AppState`. `Store` clones share one `Arc<Mutex<Connection>>`; WAL is enabled, but reads and writes
+`app/rpc.rs::routed` takes `Mutex<AppState>`; `api/v1/mod.rs::Handler::call` receives `&mut AppState`.
+`Store` clones share one `Arc<Mutex<Connection>>`; WAL is enabled, but reads and writes
 serialize on that connection. `runtime/off_the_workers.rs` protects Tokio workers; it does not
 remove either serialization point.
 
@@ -48,20 +45,17 @@ remove either serialization point.
 | `Store::connection`, `in_transaction` | No separate SQLite duration. SQL is included in app hold when invoked under the app lock; its share cannot be inferred by subtracting percentiles. |
 | Focused existing timing/dispatcher tests | Demonstrate synthetic queue and lock waits, ordering and folding, not production verb dominance. Folded served counts count computations, not callers. |
 
-Step 1 adds only per-verb queue-wait, lock-wait and hold counts/sums/histograms, using the
-existing clock and slow log. Carry the queue timestamp from intake through admission so
-before/after compares the same interval. Preserve stats keys; registered methods need separate
-bounded records (current 128-name cap is below the 138 v1 names). Unknown names collapse; no
-paths/content labels. Do not build a new fixture framework, ten-phase tracer, or scope metrics.
+Step 1 adds only per-verb queue-wait, lock-wait and hold counts/sums/histograms to the existing clock.
+Carry the intake timestamp through admission for comparable intervals; preserve stats keys and logs.
+Registered methods need bounded records (current cap 128 is below 138 v1 names); collapse unknowns.
+No paths/content labels, new fixture framework, ten-phase tracer or scope metrics.
 
-Use existing small timing/dispatcher tests plus a temporary file-backed Store fixture. Record
-revision, verb, request count and queue/wait/hold p50/p95/max and sums for isolated reads and
-reads during a gated write/Git job; compare the same requests again after steps 2/3. Extend these
-fixtures only as each step needs a deterministic interleaving. Rank this sample by count and
-summed wait/hold, then adjust follow-on priorities; ranking is not a gate on shipping.
-Thread/tasks first and board next follow the assignment, not measured frequency. SQLite cost and
-production-dominant verbs remain unknown without extra evidence; #672's reported 6 s → 0.4 s board
-improvement is context, not a reproduced result.
+Use existing timing/dispatcher tests plus a temporary file-backed Store fixture. Record revision,
+verb, count and queue/wait/hold p50/p95/max and sums, isolated and during gated write/Git work;
+compare after steps 2/3. Extend fixtures only for each step's deterministic interleavings.
+Rank counts/summed wait/hold to adjust later priorities, without delaying shipment. Thread/tasks
+then board follows the assignment, not measured frequency. SQLite cost and dominant production
+verbs remain unknown; #672's reported 6 s → 0.4 s board improvement is context, not reproduced here.
 
 ## 2. Read execution and publication
 
@@ -148,28 +142,36 @@ new greeting negotiation; test the method allowlist against bridge SQL routing. 
 clients use the safety net below.
 
 `spa/src/core/sessionRpc.js::createSessionRpc` reserves credit before send, independently of
-caller promises. Final/late replies return it once; receipts, local timeout/abandonment, `fail`
-and same-opening carrier changes do not. Keep at most N sent ledger entries until final reply or
-irreversible opening end. Cancel unsent entries immediately; no server cancellation acknowledgment
-exists today. Start wire deadlines after credit admission. Views still paint from cache while
-requests wait.
+caller promises, and records the actual sending carrier. Return it on the **first** final reply,
+cancellation, that carrier closing, `onRestored` (clear the whole ledger), or opening end. Keep at
+most N current reservations/sent entries; receipts, bare timeouts and a carrier switch alone do
+not release credit. Cancel unsent entries immediately. Local cancellation releases credit, not
+remote work: no server cancellation acknowledgment exists today. Late replies cannot release a
+replacement credit. Start wire deadlines after credit admission; cache rendering remains unchanged.
 
-If a client exceeds B, suspend its ordered intake on the excess SQL frame: transport backpressure
-is acceptable, with one parked intake/carrier and no read `busy`. Admitted snapshot/control frames
-remain independent; later unread frames on that carrier may wait (`rtc.rs::pump_channel_events`
-awaits `RidingChannel::accept`). Opening end cancels queued reads/parked intake via a close signal
-independent of blocked polling. If a lost carrier owns unresolved SQL, end that opening and
-irreversibly close its SPA RPC before discarding work: today's fixed `SessionSender` reply route
-cannot re-home results. Other same-opening carrier switches retain credits. Only writes retain
-capacity refusals.
+Carrier close/restore reject affected SQL promises via `uncertainDeliveryError` with `retryable: true`;
+API normalization/transient-read handling treats these like timeouts. In `connection.js::landSession`,
+authoritative `link.onRestored` rejects/clears old SQL entries before greeting/resync, fenced by
+`lifetime.current()`. Retain session identity/non-SQL calls; next pulls refresh cache. No reply rerouting.
+
+On carrier release, prune that carrier's not-started SQL callers/jobs and free their backlog slots;
+retain other carriers' callers in shared folds. Running SQL finishes on its connection, but its
+reply to the released carrier is discarded. B=16≥2N covers one old/new batch overlap, including
+`onRestored` without an actual process restart, so that recovery does not overflow the backlog.
+Repeated resets/cancellations before old work drains can still reach the bounded safety net below.
+
+Excess SQL suspends ordered intake: one parked intake/carrier, no read `busy`. Admitted snapshot/control
+frames stay independent; later unread frames on that carrier may wait (`rtc.rs::pump_channel_events`
+awaits `RidingChannel::accept`). Carrier release/opening end clears queued work/parked intake via a
+close signal independent of blocked polling. **Opening end conditions stay unchanged:** closing A
+after B attaches keeps B usable. Only writes retain capacity refusals.
 
 Order successful mutations **commit → publish affected canonical views → stage change events →
 final reply**. Prebuild the projection before committing; the in-process publish operation applies
 an owned delta without fallible I/O. Keep that short completion job alive after client disconnect.
-No generic failed-publication rebuild, universal replay identity, or new saga framework is
-proposed. Preserve existing operation receipts and recovery contracts. Lifecycle replies that mean
-durable acceptance show the pending record, not fictional completion. Transport receipts are not
-mutation acknowledgements.
+Preserve operation receipts and recovery contracts without generic failed-publication rebuild,
+universal replay identity or new sagas. Durable-acceptance replies show pending records, not fictional
+completion; transport receipts are not mutation acknowledgements.
 
 A post-ack snapshot load or fresh SQL transaction therefore sees the write without new client
 tokens. Fold only compatible queued reads; never attach a post-ack caller to an older running
@@ -238,63 +240,61 @@ Snapshot/read lanes can ship while writers still use this conservative gate.
 
 ## 4. Implementation steps and tests
 
-Each step is a reviewable release; write its tests first and observe failure. Every code step adds
-**no complexity-ratchet entries**: split new functions over clippy's cognitive-complexity cap 15,
-do not annotate them. Check `bridge/tests/complexity_ratchet.rs`, Clippy and fmt under `nice -n
-10`. Tests use temporary paths and injected services; no bridge executable, live daemon, protected
-homes/env, browser or install scripts. Audit fixture side effects before running wider suites;
-judge commands by actual exit status.
+Each step is a release; write tests first and observe failure. Add **no complexity-ratchet entries**:
+split new functions over Clippy's cognitive-complexity cap 15, never annotate them. Check
+`bridge/tests/complexity_ratchet.rs`, Clippy and fmt under `nice -n 10`; judge actual exit status.
+Tests use temporary paths/injected services; audit wider fixtures first. No bridge executable,
+live daemon, protected homes/env, browser or install scripts.
 
 ### Step 1 — Minimal comparable timings
 
 Change `timing.rs::{QueuedFrame,FrameTimer,MethodRecord,FrameClock,LockedFor}`,
 `carrier.rs::{FrameIntake::accept,admit_in_order}` and dispatch timer plumbing in
-`carrier/dispatch.rs::{run_handler,run_folded_read}`. Add the three phase aggregates and intake
-timestamp from §1; preserve the stats fixture contract. Tests: extend existing `timing::tests` and
-`dispatcher_tests` for known gated queue/lock waits, counts, registered-method coverage and
-unchanged slow logs. Capture the small before sample; no large fixture/benchmark prerequisite.
+`carrier/dispatch.rs::{run_handler,run_folded_read}`. Add §1's aggregates/intake timestamp;
+preserve stats. Extend `timing::tests`/`dispatcher_tests` for gated queue/lock waits, counts,
+registered-method coverage and unchanged slow logs. Capture the small before sample.
 
 ### Step 2 — Independent SQL reads, first user-visible improvement
 
-Add proposed `store/read_pool.rs::{ReadPool,with_read_transaction}` and `app/read_context.rs`;
-change `store.rs::new` and SQL helpers in
+Add proposed `store/read_pool.rs::{ReadPool,with_read_transaction}` and `app/read_context.rs`. Change `store.rs::new` and
 `store/{tracker,conversations,operations,conversation_reset}.rs` to accept explicit readonly
 transactions. Keep the existing single writer for now. Refactor
 `store/entities.rs::{read_agent_records,read_agents,run_census,materialize_agent_identity}` for
 readonly skeleton/metadata/legacy projection. Change `api/v1/mod.rs::{Handler,dispatch}`, v1
 tasks/thread tables, `app/rpc.rs::{AppState::handler,dispatch_frame,session_scoped,routed}` and
-`carrier{.rs,/dispatch.rs}` admission/executors, `FrameIntake::{close_carrier,close_ended}` and
-`rtc.rs::pump_channel_events` close signaling. Read dispatch owns its result check instead of
-mutating `deferred_result_check`; update/deletion checks use captured services. Proposed
-`api/effects.rs` covers all registry/legacy entries. Migrate
+`carrier{.rs,/dispatch.rs}` admission/executors: `SessionSender`/`Admitted` carry carrier identity;
+`FrameIntake::{close_carrier,close_session,close_ended}` prunes queued SQL/empty ready markers;
+the proposed SQL executor fences start/reply against carrier release. Preserve
+`SessionRegistry::{release_carrier,release_session}` end conditions; change
+`rtc.rs::pump_channel_events` close signaling. Read dispatch owns its result/update/deletion check
+through captured services, not `deferred_result_check`. Proposed `api/effects.rs` covers all entries. Migrate
 `tracker/mod.rs::{tasks_list,listed_rows,tasks_get,tracker_task,backfill_done_at}`,
 `tracker/identities.rs::{backfill_task_identities,task_with_read_identities}`, `tracker/pages.rs`,
 `tracker/waiting_on_api.rs::tasks_waiting_on_blocks`, `store/tracker.rs::tracker_list_key`,
-`conversations/read.rs::{thread_page,
-thread_activity,thread_page_at,thread_page_after,stored_thread_page,
+`conversations/read.rs::{thread_page,thread_activity,thread_page_at,thread_page_after,stored_thread_page,
 stored_thread_delta,lean_thread_page}` and `conversations/post.rs::thread_operation`. Update
 canonical identity publishers after save success and live availability after actual transitions;
 retain the agent-removal failure semantics above. Tests: SQL reads finish with app lock/write
 workers/WAL writer held; two readers overlap and a ninth waits for its own pool without refusal.
 Pin readonly enforcement, fresh transactions, zero read-path writes, cursor/backfill parity,
-owner/alias/reset isolation, bounded history and post-ack visibility across connections. Admission
-saturation and sender-credit tests follow.
+owner/alias/reset isolation, bounded history and post-ack visibility across connections; admission tests follow.
 
-SPA changes in this step:
-`spa/src/core/sessionRpc.js::{createSessionRpc,call,takeEnvelope,createDeadline,fail,close}` and
-`spa/src/core/session.js::{rawCall,severSession,close}`; a proposed `sqlReadCredits.js` helper
-keeps new functions within SPA's complexity cap 10, without ratchet entries. Preserve
-`readRequests.js::coordinatedRead` and cache scheduling; their lifetime/finally release is not
-server completion. Tests extend
-`spa/test/{sessionRpc,session,readRequests,cacheOutageSurface}.test.js` and bridge
-carrier/dispatcher/RTC tests:
+SPA: change `spa/src/core/sessionRpc.js::{createSessionRpc,call,takeEnvelope,createDeadline,
+readFrom,rideOn,close}` for carrier-tagged, exactly-once credit release; proposed `sqlReadCredits.js`
+and `resetSqlReads` keep functions within cap 10 without ratchet entries. Expose the reset via
+`spa/src/core/session.js::openSession`; invoke from `spa/src/connection.js::landSession`'s
+`link.onRestored` before `greetLiveBridge`/`syncRestoredDevice`. Preserve `sessionSwitch` end rules,
+`readRequests.js::coordinatedRead` and cache scheduling. Extend bridge carrier/dispatcher/RTC tests
+and `spa/test/{sessionRpc,session,sessionSwitch,connectionOffline,cacheSync,readRequests,
+transientRead,bridgeApi,cacheOutageSurface}.test.js`:
 
 | Saturation test | Required result |
 | --- | --- |
 | Hold all eight connections using other sessions; set fixture N=B, fill this opening's backlog, request extra SQL alongside snapshot/control traffic | Extra SQL waits unsent for credit; snapshot/control reach intake and answer before SQL releases. Default N=8, B=16 has additional headroom. |
 | Bypass credits and send excess SQL after full pool/backlog | Queue remains ≤B/opening plus eight global running jobs and one parked intake/carrier; no spawned excess waiters or `busy`. Admitted fast traffic/unaffected carriers progress; later unread same-carrier frames may wait. |
-| Cancel unsent/queued work; close with backlog and parked intake; reopen | Queued entries/markers/waits disappear; no canceled request starts or old completion changes the new opening. Losing the SQL carrier while another survives must explicitly end the opening/RPC, not strand credits. Local sent-call abandonment is not remote cancellation. |
-| SPA burst across carriers/priorities, receipts, timeout/late/duplicate replies and reconnect | Reserved/sent unanswered SQL never exceeds N; only final completion returns sent credit once, same-opening switches retain it, and new openings are isolated. No path probe from credit waiting; cached content stays painted. |
+| SQL queued/running on A; B attaches; A closes | Opening and B stay usable; A credits return once with transient errors and fresh SQL on B succeeds. A's queued callers/slots/empty markers disappear, B's shared-fold callers survive, and running A replies are discarded. Extend the existing reattachment test. |
+| `onRestored` with eight outstanding SQL, both with/without an actual restart | Ledger clears before greeting/pulls and a new SQL read sends/answers. Old/duplicate replies cannot release new credits; stale replaced-session restore callbacks do nothing. Pin B≥2N overlap and bounded repeated-reset fallback. |
+| Burst across carriers/priorities; cancel, timeout, late reply; close with parked intake; reopen | Current ledger never exceeds N; each release event wins once, receipts/bare switches do not release. Unsent cancellation cannot send later; close removes queued work/waits. Old completions cannot affect new openings. No path probe from credit waits; transport errors preserve cached paint. |
 
 ### Step 3 — Safe snapshots and push facts
 

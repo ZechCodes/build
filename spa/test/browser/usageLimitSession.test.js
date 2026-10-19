@@ -29,7 +29,7 @@ it("scopes cached Claude limits to the selected session in the production rail",
         call: async (method) => method === "models.list" ? { providers: [] } : { items: [] },
       });
     });
-    await page.waitForSelector(".rail-head .agent-model-badge");
+    await page.waitForSelector(".rail-head .rail-who-name");
     expect(await page.locator(".usage-limit-banner").count()).toBe(0);
     await captureLayout(page, "573-codex-no-claude-banner.png");
     await page.locator('[data-bubble="agent"][data-agent="claude-worker"]').click();

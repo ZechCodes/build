@@ -9,6 +9,7 @@ afterAll(async () => { await session?.close(); });
 async function appearance(control) {
   return control.evaluate((element) => {
     const style = getComputedStyle(element);
+    const focusStyle = element.matches(".tb-switch") ? getComputedStyle(element, "::before") : style;
     const { x, y, width, height } = element.getBoundingClientRect();
     const probe = document.createElement("span");
     probe.style.color = "var(--accent)";
@@ -16,7 +17,7 @@ async function appearance(control) {
     const accent = getComputedStyle(probe).color;
     probe.remove();
     return { colour: style.color, background: style.backgroundColor, shadow: style.boxShadow,
-      outline: style.outlineStyle, outlineWidth: parseFloat(style.outlineWidth), outlineColour: style.outlineColor,
+      outline: focusStyle.outlineStyle, outlineWidth: parseFloat(focusStyle.outlineWidth), outlineColour: focusStyle.outlineColor,
       accent, bounds: { x, y, width, height },
       icons: [...element.querySelectorAll("svg, .tb-caret")].map((icon) => getComputedStyle(icon).color) };
   });
@@ -66,7 +67,7 @@ for (const width of [390, 1280]) for (const theme of ["light", "dark"]) {
   }, 45_000);
 }
 
-it("left chevron stays close to the project without shrinking its phone hit target", async () => {
+it("left chevron stays close to the project with a 44px-tall phone hit target", async () => {
   await session.withPage(async ({ page, basePath }) => {
     await mountNavigationBreadcrumbs(page, basePath);
     const switcher = page.getByRole("button", { name: "Switch project or workspace", exact: true });
@@ -74,7 +75,7 @@ it("left chevron stays close to the project without shrinking its phone hit targ
     expect(await icon.count()).toBe(1);
     expect(await switcher.locator('[aria-hidden="true"]').count()).toBe(1);
     const target = await switcher.boundingBox();
-    expect(target.width).toBeGreaterThanOrEqual(44);
+    expect(target.width).toBe(24);
     expect(target.height).toBeGreaterThanOrEqual(44);
     const glyph = await icon.boundingBox();
     const project = await page.locator("[data-project-return]").boundingBox();

@@ -14,6 +14,7 @@
      icons, the same column at every width, so the work's left edge never
      moves between a phone and a desktop. */
   --dir-rail:40px;
+  --inbox-glyph-inset:calc((var(--dir-rail) - 17px) / 2);
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:44px;     /* the view column's top row — what a full console clears */
@@ -24,10 +25,11 @@
      styles.css and styles/surfaces.css both read it. */
   --surface-head:46px;
   --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
-  /* Default collapsed toolbar inset, including the safe area. Desktop chevrons
-     use the rail-aligned toggle's edge instead; its badge may cover empty
-     target padding visually, while pointer events pass through. */
+  /* Default collapsed toolbar inset, including the safe area. Project chevrons
+     split the space between the two rail-aligned glyphs instead. Badges
+     may cover target padding visually, while pointer events pass through. */
   --inbox-open-clear:calc(48px + env(safe-area-inset-left, 0px));
+  --inbox-chevron-gap:12px;
   --inbox-rest-fill:var(--panel); --inbox-row-fill:var(--panel);
   --inbox-row-inset-left:calc(10px + env(safe-area-inset-left, 0px)); --inbox-row-inset-right:10px;
   --inbox-hover-shade:color-mix(in srgb, var(--inbox-hover-ink) var(--inbox-hover-weight), transparent);
@@ -729,29 +731,46 @@ body:not(.inbox-collapsed):not(.gated) #inbox-open { display:none; }
   transition:padding-left 240ms cubic-bezier(.2,.8,.2,1); }
 body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   --tb-project-cap:min(96px, calc((100cqw - var(--inbox-open-clear) - 10px) / 4)); }
+/* Match the project/workspace text gap (4px gap + 8px button padding).
+   The targets meet halfway between the inbox and chevron glyphs. Follow the
+   floating inbox's safe-area policy, including its directory-column anchor. */
+body.inbox-collapsed .toolbar:has(> .tb-switch) {
+  --inbox-open-clear:calc(var(--global-controls-left) - var(--region-gap) + var(--inbox-glyph-inset) + 17px + var(--inbox-chevron-gap) / 2); }
+/* Retain the visual 28px inbox button and its 44px square hit extension.
+   Native window-control reservations and toolbars without a chevron keep
+   their existing layout. The badge never intercepts the adjacent target. */
+:root:not([data-window-controls-overlay]) #shell:has(.tb-switch) #inbox-open::before {
+  content:""; position:absolute; width:44px; top:-8px; bottom:-8px;
+  right:calc((var(--inbox-toggle) - 17px - var(--inbox-chevron-gap)) / 2); left:auto; }
 /* The pinned glyph takes the inbox glyph's offset above the directory column.
    Its target fills the room before the project, keeping the existing 4px gap.
    Left padding and width move together so the glyph and crumbs never jump. */
 @media (min-width: 901px) {
-  .toolbar { --tb-inbox-glyph-left:calc((var(--dir-rail) - 17px) / 2);
-    --tb-pinned-target:calc(var(--tb-inbox-glyph-left) + 18px); }
-  /* The floating target starts at the inbox button's right edge. */
-  body.inbox-collapsed .toolbar:has(> .tb-switch) {
-    --inbox-open-clear:calc((var(--dir-rail) + var(--inbox-toggle)) / 2 + env(safe-area-inset-left, 0px)); }
+  .toolbar { --tb-pinned-target:calc(var(--inbox-glyph-inset) + 18px); }
   body:not(.inbox-collapsed) .toolbar { padding-left:0;
     --tb-project-cap:min(96px, calc((100cqw + 44px - var(--tb-pinned-target) - 10px) / 4)); }
-  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(44px - 18px);
+  .toolbar .tb-switch { justify-content:flex-start; padding-left:calc(var(--inbox-chevron-gap) / 2);
     transition:width 240ms cubic-bezier(.2,.8,.2,1), padding-left 240ms cubic-bezier(.2,.8,.2,1); }
   body:not(.inbox-collapsed) .tb-switch { width:var(--tb-pinned-target);
-    padding-left:var(--tb-inbox-glyph-left); }
+    padding-left:var(--inbox-glyph-inset); }
 }
 @media (prefers-reduced-motion: reduce) {
   .toolbar, .toolbar .tb-switch { transition:none; }
 }
-.tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none;
-  width:44px; height:44px; padding:0; border:0; border-radius:6px;
+/* Own the last pixel row above the adjoining pinned panel (30), while
+   floating cards (36) and the inbox overlay (46) still cover the control. */
+.tb-switch { display:flex; align-items:center; justify-content:flex-end; flex:none; position:relative; z-index:31;
+  width:calc(18px + var(--inbox-chevron-gap) / 2); height:44px; padding:0; border:0; border-radius:0;
   background:none; font:inherit; font-size:18px; color:var(--dim); cursor:pointer; }
-/* Keep the 44px target; align the glyph near the project instead of shrinking it. */
+/* Keep the complete hit rectangle. Rounding belongs to the visual layer,
+   which cannot intercept a corner tap or clip the button's hit box. */
+.tb-switch::before { content:""; position:absolute; inset:0; z-index:-1;
+  border-radius:6px; background:inherit; pointer-events:none; transition-property:none; }
+.tb-switch:focus-visible { outline:none; }
+.tb-switch:focus-visible::before { outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
+body .toolbar button.tb-switch:active:not(:disabled, [aria-disabled="true"]) { box-shadow:none; }
+.tb-switch:active:not(:disabled, [aria-disabled="true"])::before {
+  box-shadow:inset 0 0 0 999px color-mix(in srgb, currentColor 18%, transparent); }
 .tb-switch > span { display:flex; }
 .tb-switch svg { width:18px; height:18px; }
 .tb-breadcrumbs { flex:0 1 auto; min-width:0; max-width:calc(100% - 96px); }
@@ -779,7 +798,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
   color:var(--accent); background:transparent; box-shadow:none; }
 .tb-sel:hover .tb-caret { color:inherit; }
 .tb-verb .btn:hover:not(:disabled) { border-color:var(--line); }
-#inbox-open:focus-visible, .tb-switch:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
+#inbox-open:focus-visible, .tb-sel:focus-visible, .tb-breadcrumbs a:focus-visible {
   outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
 /* Only the docked header shares the bar's row. Floating cards and phone
    overlays keep their own hover treatment below it. Selection keeps its fill. */
@@ -859,6 +878,10 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
 .tbmenu-head button { flex:none; min-height:44px; border:0; padding:0 8px;
   background:none; color:var(--accent); font:inherit; cursor:pointer; }
 @media (max-width:760px) {
+  /* Phone pages without a chevron also retain the 44px inbox hit area. */
+  :root:not([data-window-controls-overlay]) #inbox-open::before {
+    content:""; position:absolute; inset:-8px 0 -8px -16px; }
+
   .tbmenu { left:0!important; right:0; width:100%; border-radius:10px 10px 0 0;
     padding:6px max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left)); }
   .tbmenu .mi { min-height:44px; justify-content:center; }
@@ -1610,6 +1633,13 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear);
     top:var(--toolbar-h); bottom:calc(var(--console-space) + var(--agent-strip));
     z-index:30; width:auto; background:var(--panel); border-radius:10px;
     box-shadow:0 8px 24px var(--shadow-soft); }
+  /* Only on phones is the conversation below the inbox. With no directory
+     column, both follow the safe area; an unpinned card also costs 6px of
+     outer inset and a 1px border before its header begins. */
+  .rail-head:has(.rail-harness-icon) { --rail-head-inset:var(--inbox-glyph-inset); padding-left:var(--rail-head-inset); }
+  #view:not(:has(#dir-rail:not(:empty))) .rail-head:has(.rail-harness-icon) {
+    --rail-head-inset:calc(var(--inbox-glyph-inset) + env(safe-area-inset-left, 0px)); }
+  #agent-rail.rail-popover .rail-head:has(.rail-harness-icon) { padding-left:calc(var(--rail-head-inset) - 6px - 1px); }
   .rail-panel[aria-hidden="true"], .rail-panel.rail-panel-opening {
     transform:translateY(10px) scale(.985); }
   /* Unpinned, the same room read as a card: it sits ABOVE the strip and points

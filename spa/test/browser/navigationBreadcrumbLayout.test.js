@@ -166,7 +166,7 @@ it("B3 branch verb remains reachable beside the current branch breadcrumb", asyn
 }, 30_000);
 
 
-it("B4 constrained 280px toolbar wraps before controls overlap", async () => {
+it.each([280, 240])("B4 constrained %spx toolbar wraps only when controls need another row", async (width) => {
   await session.withPage(async ({ page, basePath }) => {
     await mountNavigationBreadcrumbs(page, basePath, { longNames: true });
     const dimensions = await page.evaluate(() => {
@@ -175,7 +175,8 @@ it("B4 constrained 280px toolbar wraps before controls overlap", async () => {
         controls: [...document.querySelectorAll(".tb-switch, .tb-project, .tb-workspace, [data-workspace-lock]")].map((control) => ({ selector: control.className, ...rect(control) })),
         scrollWidth: document.documentElement.scrollWidth };
     });
-    expect(dimensions.toolbar.height, JSON.stringify(dimensions)).toBeGreaterThan(44);
+    if (width === 280) expect(dimensions.toolbar.height, JSON.stringify(dimensions)).toBe(44);
+    else expect(dimensions.toolbar.height, JSON.stringify(dimensions)).toBeGreaterThan(44);
     for (const control of dimensions.controls) {
       expect(control.x, JSON.stringify(dimensions)).toBeGreaterThanOrEqual(dimensions.toolbar.x);
       expect(control.right, JSON.stringify(dimensions)).toBeLessThanOrEqual(dimensions.toolbar.right);
@@ -185,8 +186,8 @@ it("B4 constrained 280px toolbar wraps before controls overlap", async () => {
       const overlaps = left.right > right.x && right.right > left.x && left.bottom > right.y && right.bottom > left.y;
       expect(overlaps, JSON.stringify(dimensions)).toBe(false);
     }
-    expect(dimensions.scrollWidth).toBeLessThanOrEqual(280);
-  }, { width: 280, height: 740, hasTouch: true });
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(width);
+  }, { width, height: 740, hasTouch: true });
 }, 30_000);
 
 it.each(["light", "dark"])("B4 pinned_inbox_resize_keeps_ordinary_toolbar_one_row %s", async (theme) => {

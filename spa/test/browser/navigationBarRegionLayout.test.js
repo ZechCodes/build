@@ -68,7 +68,7 @@ for (const width of [390, 1280]) for (const theme of ["light", "dark"]) for (con
         await page.keyboard.press("Tab");
         await control.focus();
         const focus = await control.evaluate((element) => {
-          const style = getComputedStyle(element);
+          const style = getComputedStyle(element, element.matches(".tb-switch") ? "::before" : null);
           return { visible: element.matches(":focus-visible"), outline: style.outlineStyle,
             width: parseFloat(style.outlineWidth), colour: style.outlineColor };
         });

@@ -205,3 +205,13 @@ it("keeps a synchronously transplanted section subscribed", async () => {
   await controller.read();
   expect(input().value).toBe("250000");
 });
+
+it("declares numeric keyboard and autofill traits for each token field", async () => {
+  await mount();
+  for (const field of document.querySelectorAll("[data-compaction-tokens]")) {
+    expect(Object.fromEntries(["autocomplete", "autocorrect", "autocapitalize", "spellcheck", "inputmode", "enterkeyhint"]
+      .map((name) => [name, field.getAttribute(name)]))).toEqual({
+      autocomplete: "off", autocorrect: "off", autocapitalize: "off", spellcheck: "false", inputmode: "numeric", enterkeyhint: "done",
+    });
+  }
+});

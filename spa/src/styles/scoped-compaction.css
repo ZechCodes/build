@@ -4,12 +4,11 @@
 .scoped-compaction-row h4 { margin:0 0 8px; font-size:13px; }
 .scoped-compaction-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
 .scoped-compaction-controls label { margin:0; }
-.scoped-compaction-controls input { width:150px; max-width:100%; min-width:0; font-variant-numeric:tabular-nums; }
+.scoped-compaction-controls input { width:150px; max-width:100%; min-width:0; }
 .scoped-compaction-controls > span { color:var(--dim); font-size:12px; }
 .scoped-compaction-inherit { max-width:100%; white-space:normal; text-align:left; }
 .scoped-compaction-status:empty { display:none; }
 .scoped-compaction [data-compaction-effective] { overflow-wrap:anywhere; }
-.scoped-compaction input[aria-invalid="true"] { border-color:var(--warning); }
 @media (max-width:480px) {
   .scoped-compaction-controls { gap:6px; }
   .scoped-compaction-controls input { width:120px; }

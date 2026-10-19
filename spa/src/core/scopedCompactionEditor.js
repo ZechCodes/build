@@ -28,7 +28,7 @@ function rowHtml([provider, label], prefix) {
     <h4>${label}</h4>
     <div class="scoped-compaction-controls">
       <label for="${esc(id)}">Compact at</label>
-      <input id="${esc(id)}" data-compaction-tokens type="text" inputmode="numeric" autocomplete="off" aria-label="${label}: Compact at" aria-describedby="${esc(id)}-effective ${esc(id)}-status">
+      <input id="${esc(id)}" data-compaction-tokens type="text" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="done" aria-label="${label}: Compact at" aria-describedby="${esc(id)}-effective ${esc(id)}-status">
       <span>tokens</span>
       <button type="button" class="btn mini" data-compaction-save data-compaction-action="save" disabled>Save</button>
     </div>

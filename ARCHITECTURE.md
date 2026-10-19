@@ -2678,6 +2678,18 @@ In practice:
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Compaction observations** (`compactionCache.js`, wire 3.22.0) refresh from
+  authoritative scope reads and `agent.list` after `compaction.changed` or
+  subscription acceptance. The invalidation names no replicated values.
+  Because held ownership lists can be partial, the service refreshes all held
+  compaction dependencies on that device and the invalidated settings scope
+  even when cold. A burst shares one pass and one trailing pass; a new session
+  bypasses an old stalled pass. Ordinary push fences and atomic record-write
+  comparisons protect newer cache data, and greeting authority is rechecked
+  inside the transaction. Agent updates merge only compaction observations,
+  retaining unrelated roster fields and clearing removed overrides. Rendering
+  support is the per-device `compaction-support` record from
+  `compactionSupport.js`; dispatch requires the current greeting separately.
 - **Waiting-on capability history** (#564). `taskWaitingOnSupport.js` keeps
   the per-device `task-waiting-on-support` cache record beside other capability
   flags. `waitingOn` describes the latest greeting for rendering Waiting on /

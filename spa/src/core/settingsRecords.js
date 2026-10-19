@@ -5,6 +5,12 @@ export const deviceModelsAddress = (deviceId = "") => ({ deviceId, entityId: "",
 export const projectSettingsAddress = (deviceId = "", projectId) => ({ deviceId, entityId: projectId, kind: "project-settings" });
 export const deviceProjectsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "device-projects" });
 export const workspaceSettingsAddress = (deviceId = "", workspaceId) => ({ deviceId, entityId: workspaceId, kind: "workspace-settings" });
+// Compaction invalidations update these records independently of a mounted
+// settings reader, including from another tab before its announcement arrives.
+const compactionSettingsKinds = new Set(["settings", "project-settings", "workspace-settings"]);
+const captureSettingsRead = (address) => compactionSettingsKinds.has(address.kind) ? captureCachedRecord(address) : null;
+const unchangedSettingsRead = (before, held) => before === null || recordWriteOf(held) === recordWriteOf(before);
+
 export const downloadsAddress = { deviceId: "", entityId: "", kind: "downloads" };
 
 /** A project mutation answers its row. Keep the sheet's record and the device
@@ -70,13 +76,13 @@ export function watchSettingsRecord(address, paint, { owner } = {}) {
     // False asks its caller to fetch again under the new authority.
     pull: async (fetch, { accept } = {}) => {
       const began = revision;
-      const before = await captureCachedRecord(address);
+      const before = await captureSettingsRead(address);
       const value = await fetch();
       let accepted = true;
       if (active && began === revision) {
         await mergeCachedRecordsTogether([address], ([held]) => {
           accepted = accept ? accept() : true;
-          return accepted && active && began === revision && recordWriteOf(held) === recordWriteOf(before) ? [value] : null;
+          return accepted && active && began === revision && unchangedSettingsRead(before, held) ? [value] : null;
         });
       }
       await reads;

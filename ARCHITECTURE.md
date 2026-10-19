@@ -259,6 +259,15 @@ holds that line on a one-worker runtime. Parts that must not wait on the lock ha
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
 and `Store` wraps its own connection mutex (`bridge/src/store.rs`).
 
+Checkout-root refreshes use the reverse conversation lookup in
+`app/workspaces/mod.rs`. It filters candidates against the queried run before
+checking a matching workspace's owner, preserving the existing sorted workspace
+and run precedence. This avoids scanning every run for every workspace for
+every root, with repeated filesystem canonicalization under the app lock.
+Counting tests bound the path comparisons for a refresh as runs and workspaces
+grow; ownership tests retain direct IDs, terminal states, project conversations
+and symlink aliases.
+
 ### Liveness and signaling
 
 `DedicatedRuntime::liveness()` (`bridge/src/liveness.rs`) is a small, separate
@@ -1903,6 +1912,20 @@ Each agent gets Build's MCP server as `build-bridge mcp --task <owner>`.
 and forwards each call to the daemon's Unix socket (`BRIDGE_MCP_SOCKET`, default
 `<worktrees>/build-bridge-mcp.sock`). The daemon side is `spawn_done_socket` and
 the handlers in `bridge/src/app/mcp.rs`.
+
+The stdio adapter's `mcp/client.rs` sends an action once and keeps its connection
+and partial response through socket read timeouts. An absolute five-minute reply
+budget bounds the wait; reaching it reports that the call may have been applied
+and must be checked before retrying. It never automatically resends an action.
+Pi's owned stdio wrapper allows 310 seconds for `tools/call`, so the Rust
+adapter's five-minute result can arrive first. Its existing 30-second
+initialization and tool-discovery deadlines remain unchanged. If the outer
+tool-call deadline fires, it also warns to check the outcome before retrying.
+Control-frame slow logs account for semaphore admission (`permit_wait`), blocking
+pool scheduling (`pool_wait`) and every app-lock acquisition (`lock_wait`),
+including the update-admission check in MCP and ordinary RPC dispatch.
+Reacquiring a turn after deferred work is
+included in the permit wait; the deferred work itself is not pool queue time.
 
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see

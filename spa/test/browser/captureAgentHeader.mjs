@@ -16,7 +16,12 @@ try {
     await session.withPage(async ({ page, basePath }) => {
       await page.emulateMedia({ reducedMotion: "reduce" });
       await mountAgentHeader(page, basePath, { pinned });
-      for (const theme of ["light", "dark"]) {
+      for (const view of ["header", "overview"]) {
+        if (view === "overview") {
+          await page.locator('[data-bubble="overview"]').click();
+          await page.locator(".rail-overview-list").waitFor();
+        }
+        for (const theme of ["light", "dark"]) {
         await page.evaluate((theme) => {
           document.documentElement.dataset.theme = theme;
           document.querySelector("#inbox-open").classList.add("has-attention");
@@ -26,7 +31,8 @@ try {
           }
         }, theme);
         await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-        await page.screenshot({ path: join(directory, `agent-header-${name}-${theme}.png`) });
+        await page.screenshot({ path: join(directory, `agent-${view}-${name}-${theme}.png`) });
+        }
       }
     }, { width, height: 844 });
   }

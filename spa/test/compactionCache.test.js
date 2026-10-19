@@ -245,3 +245,85 @@ it("coalesces a burst into one trailing pass and retains every invalidated cold 
   expect((await readCached(address("project-settings", "cold-project"))).value.project_id).toBe("cold-project");
   expect((await readCached(address("workspace-settings", "cold-workspace"))).value.workspace_id).toBe("cold-workspace");
 });
+
+it.each([
+  ["settings", "", "device"],
+  ["project-settings", "project", "project"],
+  ["workspace-settings", "workspace", "workspace"],
+])("a pre-invalidation %s pull cannot consume the authoritative refresh's cache stamp", async (kind, owner, scope) => {
+  const { watchSettingsRecord } = await import("../src/core/settingsRecords.js");
+  const addr = address(kind, owner);
+  const value = (tokens) => ({ project_id: "project", workspace_id: "workspace", compaction_thresholds: { codex: tokens } });
+  await writeCached(addr, value(50));
+  const record = watchSettingsRecord(addr, () => {});
+  let finishOld;
+  let finishFresh;
+  try {
+    const old = record.pull(() => new Promise((resolve) => { finishOld = resolve; }));
+    await vi.waitFor(() => expect(finishOld).toBeTypeOf("function"));
+    const fresh = refreshCompactionCaches(context(() => new Promise((resolve) => { finishFresh = resolve; })),
+      { scope, owner_id: owner || null });
+    await vi.waitFor(() => expect(finishFresh).toBeTypeOf("function"));
+    finishOld(value(100));
+    await old;
+    finishFresh(scope === "project" ? { projects: [value(200)] } : value(200));
+    await fresh;
+    expect((await readCached(addr)).value.compaction_thresholds.codex).toBe(200);
+  } finally { record.dispose(); }
+});
+
+it("a pre-invalidation project roster cannot consume the authoritative agent refresh's cache stamp", async () => {
+  const { syncProjectAgents } = await import("../src/core/projectAgentsCache.js");
+  const addr = address("project-agents", "owner");
+  const roster = (tokens) => ({ entity_id: "owner", pinned_agent_id: "agent",
+    agents: [{ id: "agent", compaction: { configured: { tokens }, active: null, pending_change: null } }] });
+  await writeCached(addr, roster(50));
+  await writeCached(address("row", "owner"), roster(50));
+  let finishOld;
+  let finishFresh;
+  const old = syncProjectAgents({ deviceId: "device", entityId: "owner", capabilities,
+    call: () => new Promise((resolve) => { finishOld = resolve; }) });
+  await vi.waitFor(() => expect(finishOld).toBeTypeOf("function"));
+  const fresh = refreshCompactionCaches(context(() => new Promise((resolve) => { finishFresh = resolve; })),
+    { scope: "conversation", owner_id: "agent" });
+  await vi.waitFor(() => expect(finishFresh).toBeTypeOf("function"));
+  finishOld(roster(100));
+  await old;
+  finishFresh(roster(200));
+  await fresh;
+  expect((await readCached(addr)).value.agents[0].compaction.configured.tokens).toBe(200);
+  expect((await readCached(address("row", "owner"))).value.agents[0].compaction.configured.tokens).toBe(200);
+});
+
+it("an ordinary settings read begun after invalidation retains its newer answer", async () => {
+  const { watchSettingsRecord } = await import("../src/core/settingsRecords.js");
+  const addr = address("settings");
+  await writeCached(addr, { compaction_thresholds: { codex: 50 } });
+  let finishFresh;
+  const fresh = refreshCompactionCaches(context(() => new Promise((resolve) => { finishFresh = resolve; })),
+    { scope: "device", owner_id: null });
+  await vi.waitFor(() => expect(finishFresh).toBeTypeOf("function"));
+  const record = watchSettingsRecord(addr, () => {});
+  try {
+    await record.pull(async () => ({ compaction_thresholds: { codex: 300 } }));
+    finishFresh({ compaction_thresholds: { codex: 200 } });
+    await fresh;
+    expect((await readCached(addr)).value.compaction_thresholds.codex).toBe(300);
+  } finally { record.dispose(); }
+});
+
+it("an ordinary roster read begun after invalidation retains its newer observation", async () => {
+  const { syncProjectAgents } = await import("../src/core/projectAgentsCache.js");
+  const addr = address("project-agents", "owner");
+  const roster = (tokens) => ({ entity_id: "owner", pinned_agent_id: "agent",
+    agents: [{ id: "agent", compaction: { configured: { tokens }, active: null } }] });
+  await writeCached(addr, roster(50));
+  let finishFresh;
+  const fresh = refreshCompactionCaches(context(() => new Promise((resolve) => { finishFresh = resolve; })),
+    { scope: "conversation", owner_id: "agent" });
+  await vi.waitFor(() => expect(finishFresh).toBeTypeOf("function"));
+  await syncProjectAgents({ deviceId: "device", entityId: "owner", capabilities, call: async () => roster(300) });
+  finishFresh(roster(200));
+  await fresh;
+  expect((await readCached(addr)).value.agents[0].compaction.configured.tokens).toBe(300);
+});

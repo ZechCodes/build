@@ -1,3 +1,4 @@
+import { pushFence, pushedSince } from "./pushFence.js";
 import { cachedWriteOf, captureCachedRecord, isCachedWrite, mergeCachedAtomically, mergeCachedRecordsTogether, readCached, readCachedMany, recordWriteOf } from "./localCache.js";
 
 export const PROJECT_AGENTS_KIND = "project-agents";
@@ -49,6 +50,7 @@ export async function syncProjectAgents(options) {
   const key = JSON.stringify([deviceId, entityId]);
   const token = {};
   reads.set(key, token);
+  const fence = pushFence();
   const seen = await captureCachedRecord(address);
   if (!active() || !workerRosterAvailable(capabilities)) return;
   const roster = await call("agent.list", { entity_id: entityId, include_project_workers: true });
@@ -56,9 +58,10 @@ export async function syncProjectAgents(options) {
   const generations = await captureRosterGenerations(deviceId, entityId, roster);
   if (!generations.current) return;
   // A reset can replace a thread without touching an as-yet empty roster.
-  // Admit the roster only while every generation record is still the one read.
+  // Admit the roster only while every generation record is still the one read,
+  // and no invalidation has superseded this request before its reply lands.
   const written = await mergeCachedRecordsTogether([address, ...generations.addresses], ([held, ...threads]) =>
-    active() && reads.get(key) === token && isCachedWrite(held, cachedWriteOf(seen))
+    active() && reads.get(key) === token && !pushedSince(address, fence) && isCachedWrite(held, cachedWriteOf(seen))
       && generationsUnchanged(threads, generations.records) ? [roster] : null);
   if (written) await afterWrite(roster);
 }

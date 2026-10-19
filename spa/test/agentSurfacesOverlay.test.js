@@ -353,7 +353,7 @@ describe("the conversation header's menu", () => {
     expect(menuItems().map((item) => item.dataset.action)).toEqual([
       "detail:all", "detail:messages", "detail:agent",
     ]);
-    expect(panel().querySelector('.rail-surface-menu [role="slider"]').getAttribute("aria-valuetext")).toBe("Default");
+    expect(panel().querySelector('.rail-surface-menu [role="slider"]').getAttribute("aria-valuetext")).toBe("Use inherited setting");
     // The group of things to open is absent, not empty.
     expect(panel().querySelector('.rail-surface-menu [data-group="show"]')).toBe(null);
   });

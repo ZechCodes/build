@@ -14,12 +14,12 @@ async function choose300k(page, gesture) {
   const box = await page.locator(SLIDER).boundingBox();
   const y = box.y + box.height / 2;
   if (gesture === "click") {
-    await page.mouse.click(box.x + box.width * 0.68, y);
+    await page.mouse.click(box.x + box.width * 0.96, y);
     return;
   }
   await page.mouse.move(box.x + 10, y);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.68, y, { steps: 10 });
+  await page.mouse.move(box.x + box.width * 0.96, y, { steps: 10 });
   expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
   await page.mouse.up();
 }
@@ -65,12 +65,12 @@ it("keeps pointer capture and preview through a cache repaint in the middle of a
         element.addEventListener(type, (event) => window.__dragEvents.push({ type, pointerId: event.pointerId }));
       }
     });
-    await page.evaluate(() => window.__repaintMenuAgent({ compact_at_tokens: 220000 }));
-    await page.waitForFunction(() => document.querySelector('[data-group="compact"] .menu-slider').dataset.options.includes("Default (220k)"));
+    await page.evaluate(() => window.__repaintMenuAgent({ compaction: { inherited: { tokens: 220000, source: { kind: "workspace" } }, active: null } }));
+    await page.waitForFunction(() => document.querySelector('[data-group="compact"] .menu-slider').dataset.options.includes("Use inherited setting — 220k tokens from workspace"));
     expect(await compactionContinuity(page)).toEqual(uninterruptedMenu);
     expect(await page.evaluate(() => window.__dragEvents)).toEqual([]);
     expect(await slider.getAttribute("aria-valuetext")).toBe("150k");
-    await page.mouse.move(box.x + box.width * 0.68, box.y + box.height + 20, { steps: 5 });
+    await page.mouse.move(box.x + box.width * 0.96, box.y + box.height + 20, { steps: 5 });
     const dragEvents = await page.evaluate(() => window.__dragEvents);
     const pointerId = await page.evaluate(() => window.__dragPointerId);
     expect(dragEvents.length).toBeGreaterThan(0);
@@ -213,4 +213,44 @@ it("keeps the same focused menu inside its bound when Tasks arrive during its op
     expect(after.top).toBeGreaterThanOrEqual(7.5);
     expect(after.bottom).toBeLessThanOrEqual(after.bottomBound - 7.5);
   });
+});
+
+it("repaints inherited, pending and applied observations without replacing a focused menu", async () => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, "desktop", { theme: "light", bigCounts: false });
+    await observeCompactionMenu(page);
+    await page.evaluate(() => window.__repaintMenuAgent({ max_context_tokens: 300000, compaction: {
+      inherited: { tokens: 150000, source: { kind: "workspace", id: "ws" } }, configured: { tokens: 150000 },
+      active: { tokens: 200000, evidence: "applied_at_start" }, enforcement: "between_turn", pending_change: true,
+    } }));
+    await page.waitForFunction(() => document.querySelector('[data-group="compact"]').textContent.includes("Configured: 150k tokens · Applied at last start: 200k tokens"));
+    const group = page.locator('[data-group="compact"]');
+    expect(await group.locator(".menu-slider").getAttribute("data-options")).toContain("Use inherited setting — 150k tokens from workspace");
+    expect(await group.textContent()).toContain("This harness version checks the threshold between turns. A long turn can exceed it.");
+    expect(await page.locator("#railinputgauge").getAttribute("data-measure")).toBe("200k");
+    await page.evaluate(() => window.__repaintMenuAgent({ compaction: { active: null, configured: { tokens: 150000 }, pending_change: null } }));
+    await page.waitForFunction(() => document.querySelector("#railinputgauge").dataset.measure === "1M");
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
+    expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
+  });
+});
+
+it.each([1180, 320])("keeps older-bridge menu copy and saves honest at %spx", async (width) => {
+  await withLayoutPage(async ({ page, basePath }) => {
+    await openMenuOn(page, basePath, width === 320 ? "narrow" : "desktop", { theme: "dark", bigCounts: false, olderBridge: true });
+    await observeCompactionMenu(page);
+    const group = page.locator('[data-group="compact"]');
+    expect(await group.textContent()).toContain("Update the bridge to set compaction defaults by harness.");
+    expect(await group.textContent()).not.toContain("Running work keeps its current setting");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(() => window.__menuSettingsAnswered.length === 1);
+    await page.locator(".notice.success").waitFor();
+    expect(await page.locator(".notice.success").textContent()).not.toMatch(/next start|resume/i);
+    expect(await page.locator("#railinputgauge").getAttribute("data-measure")).toBe("1M");
+    expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
+    const box = await page.locator(".rail-surface-menu .splitmenu").boundingBox();
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(width);
+  }, { width, height: 840 });
 });

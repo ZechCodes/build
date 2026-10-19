@@ -2690,6 +2690,21 @@ In practice:
   retaining unrelated roster fields and clearing removed overrides. Rendering
   support is the per-device `compaction-support` record from
   `compactionSupport.js`; dispatch requires the current greeting separately.
+- **Compaction editors** (#661). `scopedCompactionEditor.js` mounts the same five
+  harness rows in device, project and workspace settings. It reads the scope's
+  settings record and `compaction-support`; existing readers and invalidations
+  own network refreshes. Drafts stay in the mounted editor, and project settings
+  retains its section across surrounding sheet paints, with stable action IDs for
+  the sheet’s keyboard focus restoration. Positive safe integers
+  set an override; Inherit sends null. Setters use the current adapter, and replies
+  publish only while the captured record and push fence still hold. No compaction
+  preferences are stored in localStorage. The conversation menu uses the digest's
+  inherited observation and preserves its existing scalar override. Legacy numeric
+  observations remain read-only and can be cleared separately; absent observations
+  show the older-bridge update copy without start/resume timing claims. The gauge
+  measures usage against applied policy (translated trigger for native enforcement),
+  labels applied-at-start evidence and pending settings separately, and falls back
+  to the model window when active policy or native trigger is unknown.
 - **Waiting-on capability history** (#564). `taskWaitingOnSupport.js` keeps
   the per-device `task-waiting-on-support` cache record beside other capability
   flags. `waitingOn` describes the latest greeting for rendering Waiting on /

@@ -1,91 +1,38 @@
-// When one conversation compacts, as the ⋮ on its head offers it.
-//
-// The bridge compacts an agent's session before its next turn once the last
-// turn's context reached a threshold (wire 1.10). The device holds a default
-// (`compact_above_tokens`); a conversation may carry a limit of its own, set
-// with `conversation.settings`. The agent digest says both: `max_context_tokens`
-// is the conversation's own limit (null or absent when it follows the device)
-// and `compact_at_tokens` the threshold in effect, 0 when it never compacts.
-//
-// The rows sit in the same menu as the detail levels, and are routed the same
-// way: by a prefix on their ids (core/conversationDetail.js). They stand as a
-// group of their own under the setting's name, so each row is the bare value.
+// Conversation settings paint configured intent separately from applied policy.
+import { compactionObservationCopy, compactionTokenLabel, inheritedCompactionLabel, positiveCompactionTokens } from "./compactionPresentation.js";
 
 export const COMPACT_OPTION_PREFIX = "compact:";
-
-/** What the rows ask for, in the order they stand. `null` is the device's
- *  default and 0 is never — the wire's own words for both. */
-const LIMITS = [null, 150000, 200000, 300000, 0];
-
-/** A limit of the conversation's own that none of the offered rows sends —
- *  set elsewhere, by another client or the bridge's own tooling. Any positive
- *  whole number the digest carries: the wire's u64 arrives as whatever Number
- *  the JSON parse made of it, and that same Number is what the row is checked
- *  against, so one past 2^53 is no less a limit. */
-const isCustomLimit = (limit) => Number.isInteger(limit) && limit > 0 && !LIMITS.includes(limit);
-
-/** A row's id, by the limit it sends. */
-const optionIdOf = (limit) => {
-  if (limit === null) return `${COMPACT_OPTION_PREFIX}default`;
-  if (limit === 0) return `${COMPACT_OPTION_PREFIX}off`;
-  return `${COMPACT_OPTION_PREFIX}${limit}`;
-};
-
-/** A threshold the way a person reads one: "200k", or "off" for never. */
-const thresholdWord = (tokens) => (tokens === 0 ? "off" : `${Math.round(tokens / 1000)}k`);
-
-/** The conversation's own limit off its digest, null when it follows the
- *  device — which is what a digest from before the field says too. */
+const LIMITS = [null, 150000, 200000, 300000];
+const isCustomLimit = (limit) => positiveCompactionTokens(limit) && !LIMITS.includes(limit);
+const optionIdOf = (limit) => `${COMPACT_OPTION_PREFIX}${limit === null ? "default" : limit}`;
 const ownLimitOf = (agent) => agent?.max_context_tokens ?? null;
+const thresholdWord = (tokens) => tokens % 1000 === 0 ? `${tokens / 1000}k` : compactionTokenLabel({ tokens });
 
-/** The default row names the threshold it would give, and it can only know
- *  that while no limit of the conversation's own stands in front of it. */
-function defaultRowLabel(agent) {
-  const threshold = agent?.compact_at_tokens;
-  if (ownLimitOf(agent) !== null || !Number.isFinite(threshold)) return "Default";
-  return `Default (${thresholdWord(threshold)})`;
-}
-
-const ROW_LABEL = {
-  default: defaultRowLabel,
-  off: () => "Off",
-  size: (_agent, limit) => thresholdWord(limit),
-  custom: (_agent, limit) => `Custom (${thresholdWord(limit)})`,
-};
-
-function copyKindOf(limit) {
-  if (limit === null) return "default";
-  if (limit === 0) return "off";
-  return isCustomLimit(limit) ? "custom" : "size";
-}
-
-/** The limits the rows stand for: the offered ones, and a limit set elsewhere
- *  on a row of its own ahead of never, so one row is always the checked one. */
-function limitsFor(agent) {
-  const standing = ownLimitOf(agent);
-  if (!isCustomLimit(standing)) return LIMITS;
-  const never = LIMITS.length - 1;
-  return [...LIMITS.slice(0, never), standing, ...LIMITS.slice(never)];
-}
-
-/** The menu's rows: one per limit, the standing one marked. */
 export function compactionMenuOptions(agent) {
   const standing = ownLimitOf(agent);
-  return limitsFor(agent).map((limit) => {
-    const label = ROW_LABEL[copyKindOf(limit)](agent, limit);
-    return { id: optionIdOf(limit), label, selected: limit === standing };
+  const limits = isCustomLimit(standing) ? [...LIMITS, standing] : LIMITS;
+  const options = limits.map((limit) => ({
+    id: optionIdOf(limit),
+    label: limit === null ? inheritedCompactionLabel(agent?.compaction?.inherited)
+      : isCustomLimit(limit) ? `Custom (${thresholdWord(limit)})` : thresholdWord(limit),
+    selected: limit === standing,
+  }));
+  if (standing !== null && !positiveCompactionTokens(standing)) options.push({
+    id: `${COMPACT_OPTION_PREFIX}observed`,
+    label: standing === 0 ? "Setting from an older client"
+      : `Saved (${compactionTokenLabel(agent?.compaction?.configured)}; unsupported value)`,
+    selected: true, disabled: true,
   });
+  return options;
 }
 
-/** The menu's group: discrete stops under the setting's name
- *  (core/splitButton.js `groupedMenuButtonMarkup`). */
 export function compactionMenuGroup(agent) {
-  return { id: "compact", label: "Compact at", control: "slider", options: compactionMenuOptions(agent) };
+  return { id: "compact", label: "Compact at", control: "slider", options: compactionMenuOptions(agent),
+    description: compactionObservationCopy(agent?.compaction) };
 }
 
 /** The limit a custom row's id stands for, or null for any other id. Read
- *  back only where the id is exactly what `optionIdOf` writes for it — which
- *  for a limit past 1e21 is the exponent form `String` gives a Number. */
+ *  back only safe integers written exactly as `optionIdOf` writes them. */
 function customLimitOfOptionId(id) {
   if (!id.startsWith(COMPACT_OPTION_PREFIX)) return null;
   const written = id.slice(COMPACT_OPTION_PREFIX.length);
@@ -136,7 +83,7 @@ export function compactionSettingsParams(entityId, agentId, maxContextTokens, th
  * `onFailure`'s. It resolves true for an accepted choice, false for a refusal
  * or an ignored choice during another save, so the slider can roll back.
  */
-export function createCompactionChoice({ call, capture, write, onFailure = () => {} }) {
+export function createCompactionChoice({ call, capture, write, onFailure = () => {}, onSaved = () => {} }) {
   let pending = false;
 
   const ask = async (entityId, agent, maxContextTokens) => {
@@ -150,13 +97,14 @@ export function createCompactionChoice({ call, capture, write, onFailure = () =>
 
   return {
     async choose({ entityId, agent, maxContextTokens }) {
-      if (pending) return false;
+      if (pending || (maxContextTokens !== null && !positiveCompactionTokens(maxContextTokens))) return false;
       if (ownLimitOf(agent) === maxContextTokens) return true;
       pending = true;
       try {
         const captured = await capture(entityId).catch(() => null);
         const reply = await ask(entityId, agent, maxContextTokens);
         if (!reply) return false;
+        onSaved(agent);
         if (!captured) return true;
         const fields = answeredFields(reply);
         // The bridge has it once it answers: a cache that cannot take the

@@ -490,3 +490,16 @@ describe("workspace directories", () => {
     expect($("#wsdirerr").textContent).toContain("still running");
   });
 });
+
+
+it("paints workspace compaction from cache while workspace.get remains pending", async () => {
+  await writeCached(workspaceSettingsAddress("dev-1", WORKSPACE.id), {
+    workspace_id: WORKSPACE.id, compaction_thresholds: { pi: 180000 },
+    compaction: { inherited: { pi: { tokens: 150000, source: { kind: "project", id: "p1" } } } },
+  });
+  await writeCached({ deviceId: "dev-1", entityId: "", kind: "compaction-support" }, { harnessThresholds: true });
+  open({ deviceId: "dev-1", callRpc: vi.fn(() => new Promise(() => {})) });
+  await vi.waitFor(() => expect(document.querySelector('[data-compaction-harness="pi"] input')?.value).toBe("180000"));
+  expect(document.querySelector("#sheet").textContent).toContain("Compaction defaults for this workspace");
+  expect(document.querySelector("#sheet").textContent).toContain("Inherit — 150k tokens from project");
+});

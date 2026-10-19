@@ -642,6 +642,6 @@ it("waits for current compaction support and refuses a cached capability after d
   const replacement = fakeSession("dev-a");
   adoptDeviceSession(replacement);
   adoptBridgeSelection(context, { version: "3.21.0" }, { capabilities: {} });
-  await expect(context.rpc("project.set_compaction", params)).rejects.toMatchObject({ code: "unknown_method" });
+  await expect(context.rpc("project.set_compaction", params)).rejects.toMatchObject({ code: "unknown_method", message: "Update the bridge to set compaction defaults by harness." });
   expect(replacement.call).not.toHaveBeenCalled();
 });

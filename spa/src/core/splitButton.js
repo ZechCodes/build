@@ -60,7 +60,7 @@ function menuGroupsHtml(groups) {
   return groups
     .map(
       (group) =>
-        `<div class="menu-group" role="group" aria-label="${esc(group.label)}" data-group="${esc(group.id)}"><div class="menu-group-title" aria-hidden="true">${esc(group.label)}</div>${menuGroupControl(group)}</div>`,
+        `<div class="menu-group" role="group" aria-label="${esc(group.label)}" data-group="${esc(group.id)}"><div class="menu-group-title" aria-hidden="true">${esc(group.label)}</div>${menuGroupControl(group)}${group.description ? `<div class="menu-group-description">${esc(group.description)}</div>` : ""}</div>`,
     )
     .join("");
 }

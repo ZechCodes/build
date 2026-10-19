@@ -100,7 +100,7 @@ const needsTaskWaitingOn = (method, params = {}) => method.startsWith("tasks.wai
 async function askCompaction(context, transport, asked) {
   const request = await whenGreeted(context, () => {
     if (!context.adapter?.capabilities?.compaction?.harnessThresholds) {
-      throw new ApiError("unknown_method", "Update this device's bridge to configure harness compaction thresholds.");
+      throw new ApiError("unknown_method", "Update the bridge to set compaction defaults by harness.");
     }
     return transport()(...asked);
   });

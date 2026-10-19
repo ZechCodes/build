@@ -2,8 +2,8 @@
 // How full the agent's context is, beside the paperclip.
 //
 // The figure comes off the agent's digest (`last_context_tokens`, wire 1.10)
-// against where the chat compacts (`compact_at_tokens`), or the window its
-// model has when it never does. It takes no space when either is missing,
+// against its observed applied threshold, or the model window when the active
+// policy is unknown. It takes no space when either usage or a measure is missing,
 // and it is written onto a node of its own: the textarea beside it is never
 // touched, so a push of the agent record mid-sentence keeps the caret.
 
@@ -19,7 +19,7 @@ const CATALOG = {
     { id: "codex", label: "Codex", models: [{ id: "gpt", label: "GPT" }], efforts: [] },
   ],
 };
-const claude = (tokens, extra = {}) => ({ id: "a1", provider: "claude_adk", last_context_tokens: tokens, ...extra });
+const claude = (tokens, extra = {}) => ({ id: "a1", provider: "claude_adk", last_context_tokens: tokens, ...extra, ...(extra.compact_at_tokens > 0 ? { compaction: { active: { tokens: extra.compact_at_tokens }, enforcement: "between_turn" } } : {}) });
 
 const gaugeNode = () => document.querySelector(`#${composerPartIds(IDS.input).gauge}`);
 const textarea = () => document.querySelector(`#${IDS.input}`);
@@ -43,13 +43,30 @@ describe("contextWindowOf", () => {
 });
 
 describe("contextGauge", () => {
+  it("never treats configured intent or a legacy scalar as an active threshold", () => {
+    for (const compaction of [undefined, { configured: { tokens: 150000 }, active: null }, { active: { tokens: 150000, translated_trigger: null }, enforcement: "native" }]) {
+      const gauge = contextGauge({ provider: "claude_adk", last_context_tokens: 120000, compact_at_tokens: 150000, compaction }, CATALOG);
+      expect(gauge.expanded).toBe("120k/1M 12%");
+      expect(gauge.title).not.toContain("compacts at");
+      if (compaction?.enforcement === "native") expect(gauge.title).toContain("Native trigger unknown.");
+    }
+  });
+
+  it("uses the native translated trigger and separates a pending configured value", () => {
+    const gauge = contextGauge({ provider: "claude_adk", last_context_tokens: 120000, compaction: {
+      configured: { tokens: 150000 }, active: { tokens: 200000, translated_trigger: 180000 }, enforcement: "native", pending_change: true,
+    } }, CATALOG);
+    expect(gauge.expanded).toBe("120k/180k 67%");
+    expect(gauge.title).toContain("Configured: 150k tokens · Applied at last start: 200k tokens");
+  });
+
   it("measures against the compaction threshold when the chat compacts", () => {
     const gauge = contextGauge(claude(190000, { compact_at_tokens: 200000 }), CATALOG);
     expect(gauge).toMatchObject({ text: "190k", expanded: "190k/200k 95%", percent: 95, step: "warning" });
-    expect(gauge.title).toBe("190k of 200k tokens (compacts at 200k), 95% used, as of its last turn");
+    expect(gauge.title).toBe("190k of 200k tokens (between-turn threshold), 95% used, as of its last turn. Applied at last start: 200k tokens. This harness version checks the threshold between turns. A long turn can exceed it.");
   });
 
-  it("measures against the model's window when the chat never compacts", () => {
+  it("measures against the model's window when an old digest has no active policy", () => {
     const gauge = contextGauge(claude(612000, { compact_at_tokens: 0 }), CATALOG);
     expect(gauge).toMatchObject({ text: "612k", expanded: "612k/1M 61%", step: "accent" });
     expect(gauge.title).toBe("612k of 1M window, 61% used, as of its last turn");
@@ -120,7 +137,7 @@ describe("the gauge on the composer", () => {
     expect(gaugeNode().hidden).toBe(false);
     expect(gaugeNode().textContent).toBe("130k");
     expect(gaugeNode().dataset.step).toBe("accent");
-    expect(gaugeNode().title).toBe("130k of 200k tokens (compacts at 200k), 65% used, as of its last turn");
+    expect(gaugeNode().title).toBe("130k of 200k tokens (between-turn threshold), 65% used, as of its last turn. Applied at last start: 200k tokens. This harness version checks the threshold between turns. A long turn can exceed it.");
     expect(gaugeNode().getAttribute("aria-label")).toBe(gaugeNode().title);
   });
 

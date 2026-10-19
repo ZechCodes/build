@@ -384,7 +384,7 @@ describe("the machine's own panels", () => {
 
     document.querySelector("#device-settings-retry").click();
     await vi.waitFor(() => expect(document.querySelector("#projlist").textContent).toContain("relaydb"));
-    expect(document.getElementById("defaultharness").value).toBe("claude");
+    await vi.waitFor(() => expect(document.getElementById("defaultharness").value).toBe("claude"));
   });
 
   it("refreshes that device's model catalog when a harness setting is saved", async () => {
@@ -657,7 +657,9 @@ describe("device settings", () => {
       };
       openSession.mockResolvedValueOnce(newSession);
       document.querySelector("#device-settings-retry").click();
-      await vi.waitFor(() => expect(document.querySelector("[data-isolation=select]").value).toBe("worktree"));
+      // The cached selection can already be worktree before the new read lands.
+      await vi.waitFor(() => expect(document.querySelector("[data-isolation=lock]").textContent).toContain("Rift is absent on the reconnected device"));
+      expect(document.querySelector("[data-isolation=select]").value).toBe("worktree");
       const callsBeforeLateSave = newSession.call.mock.calls.length;
 
       if (completion === "resolve") resolveSave({ isolation: "rift", isolation_available: { rift: true } });
@@ -776,4 +778,25 @@ it.each(["resolve", "reject"])("ignores a stale save that %ss after reconnect, w
   await staleSave;
   expect(document.querySelector("#device-projects-path").textContent).toBe("/latest");
   expect(document.querySelector("#device-settings-status").textContent).toBe("Saved. New projects will use this folder.");
+});
+
+
+it("paints cached compaction while the device greeting is pending and keeps its draft through greeting", async () => {
+  const address = deviceSettingsAddress("other");
+  await writeCached(address, { ...SETTINGS, compaction_thresholds: { claude: 150000 } });
+  await writeCached({ deviceId: "other", entityId: "", kind: "compaction-support" }, { harnessThresholds: true });
+  let greet;
+  openSession.mockReturnValueOnce(new Promise((resolve) => { greet = resolve; }));
+  const mounting = renderDeviceSettings();
+  await vi.waitFor(() => expect(document.querySelector('[data-compaction-harness="claude"] input')?.value).toBe("150000"));
+  const input = document.querySelector('[data-compaction-harness="claude"] input');
+  input.focus();
+  input.value = "175000";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  greet(session);
+  await mounting;
+  expect(document.querySelector('[data-compaction-harness="claude"] input')).toBe(input);
+  expect(document.activeElement).toBe(input);
+  expect(input.value).toBe("175000");
+  expect(document.querySelector("#root").textContent).toContain("Compaction defaults on this device");
 });

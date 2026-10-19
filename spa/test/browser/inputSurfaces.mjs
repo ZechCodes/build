@@ -21,6 +21,7 @@ export const INPUT_SOURCES = {
   "core/filterMenuControl.js": "filter menu / task composer",
   "core/inbox.js": "reroute",
   "core/projectChangesDrafts.js": "saved source draft",
+  "core/scopedCompactionEditor.js": "device settings / project settings / workspace settings",
   "core/taskComposer.js": "task composer",
   "core/taskReviewActions.js": "task review",
   "core/taskReviewControls.js": "task review",

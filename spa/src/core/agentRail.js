@@ -89,7 +89,8 @@ import { catalogForProvider, creatableCatalog, creationModelId, effortLevels, ef
 import { markSeen } from "./inboxView.js";
 import { createChatReadReporter, hasReadProgress } from "./chatReadReporter.js";
 import { onReaderReturns, readerIsHere } from "./readerPresence.js";
-import { notifyError } from "./notify.js";
+import { notifyError, notifySuccess } from "./notify.js";
+import { COMPACTION_SAVED } from "./compactionPresentation.js";
 import { deviceFeedView } from "./deviceContexts.js";
 import { deviceCatalog, followDeviceCatalog } from "./inboxDevices.js";
 import { createConversationCache, withdrawProvisionalMessage, writeProvisionalMessage } from "./conversationCache.js";
@@ -1090,6 +1091,7 @@ function mountRailOnContext(host, context, swap) {
     onFailure: (error) => {
       if (standing()) notifyCommandFailure(error, COMPACTION_REFUSED, COMPACTION_UNSUPPORTED);
     },
+    onSaved: (agent) => { if (standing()) notifySuccess(agent.compaction ? COMPACTION_SAVED : "Saved."); },
   });
   let { projectAgent, standing: onProjectAgentRail } = projectAgentState(context);
   const { entityId: knownOwner, name: knownName, projectId } = projectAgentState(context);
@@ -3443,7 +3445,7 @@ function mountRailOnContext(host, context, swap) {
         ${["all", "messages", "agent"].map((level) => `<option value="${level}"${level === reset.level ? " selected" : ""}>${level === "all" ? "All" : level === "messages" ? "Messages" : "Agent replies"}</option>`).join("")}
       </select></label>
       <label>Compact at <select data-clear-compact aria-label="Fresh conversation compact at">
-        ${compactionMenuOptions({ ...reset.agent, max_context_tokens: reset.maxContextTokens }).map((option) => `<option value="${esc(option.id)}"${option.selected ? " selected" : ""}>${esc(option.label)}</option>`).join("")}
+        ${compactionMenuOptions({ ...reset.agent, max_context_tokens: reset.maxContextTokens }).map((option) => `<option value="${esc(option.id)}"${option.selected ? " selected" : ""}${option.disabled ? " disabled" : ""}>${esc(option.label)}</option>`).join("")}
       </select></label>
       <p class="dim">Model and effort are selected below.</p>
       <div class="row"><button class="btn" data-clear-cancel>Cancel</button>

@@ -1,3 +1,4 @@
+import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 import { $ } from "../dom.js";
 import { notifyError } from "../core/notify.js";
 import { confirmAction } from "../core/confirm.js";
@@ -114,6 +115,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
   let frame = sheet.firstElementChild;
   let view = "settings";
   let painted = null;
+  let compactionEditor = null;
   let editsSources = false;
   let syncsBase = false;
   // Sources whose Sync now was pressed, by the last attempt their row showed
@@ -154,6 +156,7 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     repoAsk.stop();
     unsubscribeSupport();
     disposeRepoPickers(sheet);
+    compactionEditor?.dispose();
     record.dispose();
     draftRecord?.dispose();
     $("#scrim").classList.remove("show");
@@ -176,16 +179,26 @@ export function openProjectSettings(projectId, { callRpc, deviceId = "", onDelet
     const live = captureDraft(sheet, painted);
     const draft = combineDraft(live, cachedDraft, displayedDraft);
     const editing = sourceEditing(editsSources);
+    const compactionSection = sheet.querySelector('[data-compaction-editor="project-compaction"]');
     disposeRepoPickers(sheet);
     sheet.innerHTML = settingsSheetHtml({
       title: "Project settings",
       bodyHtml: `${generalHtml(project)}
       ${sourcesSectionHtml(project, { editing, editsSources, notices, sync: { syncsBase, syncing } })}
       ${isolationHtml()}
+      ${scopedCompactionEditorHtml({ scope: "project", prefix: "project-compaction" })}
       ${dangerHtml()}
       <div class="row"><button class="btn" id="pscancel" style="margin-left:auto">Close</button></div>`,
     });
     frame = sheet.firstElementChild;
+    if (compactionSection) {
+      sheet.querySelector('[data-compaction-editor="project-compaction"]').replaceWith(compactionSection);
+    } else {
+      compactionEditor?.dispose();
+      compactionEditor = mountScopedCompactionEditor(sheet, {
+        scope: "project", prefix: "project-compaction", ownerId: projectId, deviceId, callRpc,
+      });
+    }
     painted = project;
     mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project), deviceId, fromProjectRecord: true });
     mountSources(project, {

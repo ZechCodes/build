@@ -16,7 +16,7 @@ export const SHELL_STYLES = "#toolbar{padding:12px 20px} #root{padding:24px} #ro
 
 /** Runs in the page: `page.evaluate(seedChatMenu, { theme, bigCounts })`.
  *  `bigCounts` puts four-digit counts on the surface rows (the wrap check). */
-export async function seedChatMenu({ theme, bigCounts, resetCapable = false, holdSettings = false, settingsDelayMs = 0 }) {
+export async function seedChatMenu({ theme, bigCounts, resetCapable = false, holdSettings = false, settingsDelayMs = 0, olderBridge = false }) {
   document.documentElement.dataset.theme = theme;
   const { App } = window.__layoutModules.app;
   const { mountAgentRail } = window.__layoutModules.rail;
@@ -46,6 +46,10 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
     conversation_id: "conversation-menu-agent",
     ...(resetCapable ? { thread_id: "thread:conversation-menu-agent", thread_generation_revision: 0 } : {}),
     last_context_tokens: 120000, max_context_tokens: null, compact_at_tokens: 200000,
+    compaction: { inherited: { tokens: 200000, source: { kind: "device" } },
+      configured: { tokens: 200000, source: { kind: "device" } },
+      active: { tokens: 200000, source: { kind: "device" }, evidence: "applied_at_start" },
+      enforcement: "between_turn", pending_change: false },
     surface_session_generation: "session-one",
     surfaces: {
       shells,
@@ -56,6 +60,7 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
       checklist,
     },
   };
+  if (olderBridge) delete agent.compaction;
   await greetBridge(async () => ({ push_events: false, api_version: "2.0.0", capabilities: ["changes.subscriptions", "requests.priority", "errors.codes", "diffs.perFile", "tasks.context", "tasks.attachments", "tasks.watching", "conversations.settings", ...(resetCapable ? ["conversation.reset"] : [])] }), { deviceId });
   await writeCached({ deviceId, entityId: "menu-run", kind: "row", sub: "" }, {
     kind: "workspace", entity_id: "menu-run", project_id: projectId, workspace_id: "menu-workspace", agents: [agent],
@@ -91,7 +96,7 @@ export async function seedChatMenu({ theme, bigCounts, resetCapable = false, hol
         });
         if (settingsDelayMs) await new Promise((resolve) => setTimeout(resolve, settingsDelayMs));
         window.__menuSettingsAnswered.push(params);
-        return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000 };
+        return { agent_id: params.agent_id, max_context_tokens: params.max_context_tokens, compact_at_tokens: params.max_context_tokens ?? 200000, ...(agent.compaction ? { compaction: { inherited: agent.compaction.inherited } } : {}) };
       }
       if (method === "models.list") return { default_provider: "claude_adk", providers: [{ id: "claude_adk", label: "Claude Code", models: [], efforts: [] }] };
       if (method === "conversation.reset" && resetCapable) {

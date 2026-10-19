@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   compactionMenuOptions,
+  compactionMenuGroup,
   compactionLimitOfOptionId,
   compactionSettingsParams,
   createCompactionChoice,
@@ -12,73 +13,56 @@ const labels = (agent) => compactionMenuOptions(agent).map((option) => option.la
 const marked = (agent) => compactionMenuOptions(agent).filter((option) => option.selected).map((option) => option.id);
 
 describe("the compaction rows", () => {
-  it("offers the device's default, three sizes and never", () => {
-    expect(labels({ max_context_tokens: null, compact_at_tokens: 200000 })).toEqual([
-      "Default (200k)",
-      "150k",
-      "200k",
-      "300k",
-      "Off",
-    ]);
+  it("offers inheritance and positive presets only", () => {
+    expect(labels({ max_context_tokens: null })).toEqual(["Use inherited setting", "150k", "200k", "300k"]);
+    expect(marked({ max_context_tokens: null })).toEqual(["compact:default"]);
   });
 
-  it("marks the default for a conversation with no limit of its own", () => {
-    expect(marked({ max_context_tokens: null, compact_at_tokens: 200000 })).toEqual(["compact:default"]);
-    // A digest from before the field reads the same way.
-    expect(marked({ compact_at_tokens: 200000 })).toEqual(["compact:default"]);
+  it("retains a legacy setting as a neutral read-only observation distinct from inheritance", () => {
+    const options = compactionMenuOptions({ max_context_tokens: 0 });
+    expect(options.find((option) => option.selected)).toEqual({
+      id: "compact:observed", label: "Setting from an older client", selected: true, disabled: true,
+    });
+    expect(options[0].selected).toBe(false);
+    expect(options.map((option) => option.label).join(" ")).not.toMatch(/never|off|zero|disable/i);
   });
 
-  it("marks the conversation's own limit, and off for zero", () => {
-    expect(marked({ max_context_tokens: 150000, compact_at_tokens: 150000 })).toEqual(["compact:150000"]);
-    expect(marked({ max_context_tokens: 300000, compact_at_tokens: 300000 })).toEqual(["compact:300000"]);
-    expect(marked({ max_context_tokens: 0, compact_at_tokens: 0 })).toEqual(["compact:off"]);
+  it("does not promise next-start timing for an older digest", () => {
+    const group = compactionMenuGroup({ max_context_tokens: 150000 });
+    expect(group.description).toBe("Update the bridge to set compaction defaults by harness.");
   });
 
-  // A limit set elsewhere — another client, the bridge's own tooling — is
-  // none of the offered sizes, and still has to stand as the checked row.
-  it("marks a limit set elsewhere on a row of its own, ahead of off", () => {
-    const custom = { max_context_tokens: 250000, compact_at_tokens: 250000 };
-
-    expect(labels(custom)).toEqual(["Default", "150k", "200k", "300k", "Custom (250k)", "Off"]);
-    expect(marked(custom)).toEqual(["compact:250000"]);
-    expect(compactionMenuOptions(custom)[4]).toEqual({ id: "compact:250000", label: "Custom (250k)", selected: true });
+  it("names inherited tokens and source even while an override stands", () => {
+    const agent = { max_context_tokens: 300000, compaction: { inherited: { tokens: 150000, source: { kind: "workspace", id: "ws-1" } } } };
+    expect(labels(agent)[0]).toBe("Use inherited setting — 150k tokens from workspace");
+    expect(marked(agent)).toEqual(["compact:300000"]);
   });
 
-  // The wire's limit is a u64; 2^53 is the first one Number.isSafeInteger
-  // refuses, and past it the parse rounds — the row is checked against the
-  // same Number the digest holds either way.
-  it.each([2 ** 53, 2 ** 64, 1e21])("checks a custom row for a limit of %s and reads its id back", (limit) => {
-    const options = compactionMenuOptions({ max_context_tokens: limit, compact_at_tokens: limit });
-
-    expect(options.filter((option) => option.selected)).toEqual([expect.objectContaining({ id: `compact:${limit}` })]);
-    expect(compactionLimitOfOptionId(`compact:${limit}`)).toEqual({ maxContextTokens: limit });
+  it("keeps exact custom safe integers", () => {
+    expect(labels({ max_context_tokens: 150001 })).toContain("Custom (150,001 tokens)");
+    expect(marked({ max_context_tokens: 150001 })).toEqual(["compact:150001"]);
+    expect(compactionLimitOfOptionId("compact:150001")).toEqual({ maxContextTokens: 150001 });
   });
 
-  it("offers no custom row where the limit is one of the offered ones", () => {
-    for (const max_context_tokens of [null, 150000, 200000, 300000, 0]) {
-      expect(compactionMenuOptions({ max_context_tokens, compact_at_tokens: 200000 })).toHaveLength(5);
-    }
+  it.each([2 ** 53, 2 ** 64, 1e21])("never offers an unsafe custom threshold %s", (limit) => {
+    expect(compactionMenuOptions({ max_context_tokens: limit })).toHaveLength(5);
+    expect(compactionMenuOptions({ max_context_tokens: limit }).at(-1)).toMatchObject({ selected: true, disabled: true });
+    expect(compactionLimitOfOptionId(`compact:${limit}`)).toBeNull();
   });
 
-  it("names the default by the threshold in effect, which may be off", () => {
-    expect(labels({ max_context_tokens: null, compact_at_tokens: 0 })[0]).toBe("Default (off)");
-    expect(labels({ max_context_tokens: null, compact_at_tokens: 250000 })[0]).toBe("Default (250k)");
-  });
-
-  // With a limit of its own standing, the digest's threshold is that limit, not
-  // the device's — so the default row cannot say what it would be.
-  it("names the default without a number while an override stands", () => {
-    expect(labels({ max_context_tokens: 150000, compact_at_tokens: 150000 })[0]).toBe("Default");
+  it("keeps an unsafe inherited decimal exact without making it writable", () => {
+    expect(labels({ compaction: { inherited: { tokens: null, tokens_decimal: "18446744073709551615", source: { kind: "device" } } } })[0])
+      .toBe("Use inherited setting — 18446744073709551615 tokens from device");
   });
 });
 
 describe("reading a row back", () => {
   it("answers the limit each row sends", () => {
     expect(
-      ["compact:default", "compact:150000", "compact:200000", "compact:300000", "compact:off"].map((id) =>
+      ["compact:default", "compact:150000", "compact:200000", "compact:300000"].map((id) =>
         compactionLimitOfOptionId(id),
       ),
-    ).toEqual([{ maxContextTokens: null }, { maxContextTokens: 150000 }, { maxContextTokens: 200000 }, { maxContextTokens: 300000 }, { maxContextTokens: 0 }]);
+    ).toEqual([{ maxContextTokens: null }, { maxContextTokens: 150000 }, { maxContextTokens: 200000 }, { maxContextTokens: 300000 }]);
   });
 
   it("answers the limit a custom row stands for", () => {
@@ -89,6 +73,7 @@ describe("reading a row back", () => {
     expect(compactionLimitOfOptionId("detail:all")).toBe(null);
     expect(compactionLimitOfOptionId("compact:abc")).toBe(null);
     expect(compactionLimitOfOptionId("compact:-5")).toBe(null);
+    expect(compactionLimitOfOptionId("compact:off")).toBe(null);
     expect(compactionLimitOfOptionId("compact:0")).toBe(null);
     expect(compactionLimitOfOptionId("compact:1.5")).toBe(null);
     expect(compactionLimitOfOptionId("compact:0x10")).toBe(null);
@@ -109,7 +94,7 @@ describe("reading a row back", () => {
 
 describe("writing what was answered", () => {
   const AGENT = { id: "agent-2", max_context_tokens: null, compact_at_tokens: 200000 };
-  const OFF = { agent_id: "agent-2", max_context_tokens: 0, compact_at_tokens: 0 };
+  const SAVED = { agent_id: "agent-2", max_context_tokens: 300000, compact_at_tokens: 300000 };
 
   /** The row's write as a capture sees it, and a write that lays the rewrite
    *  over one held agent — the real cache's ordering is
@@ -133,23 +118,42 @@ describe("writing what was answered", () => {
     return { cache, steps, capture, write, call };
   };
 
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])("refuses invalid threshold %s before calling or changing the cache", async (maxContextTokens) => {
+    const held = cacheHolding(AGENT);
+    const call = held.call(SAVED);
+    const choice = createCompactionChoice({ call, capture: held.capture, write: held.write });
+    expect(await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens })).toBe(false);
+    expect(call).not.toHaveBeenCalled();
+    expect(held.capture).not.toHaveBeenCalled();
+  });
+
+  it("sends null to clear a legacy setting instead of treating it as already inherited", async () => {
+    const agent = { ...AGENT, max_context_tokens: 0 };
+    const held = cacheHolding(agent);
+    const call = held.call({ max_context_tokens: null, compact_at_tokens: 200000 });
+    const choice = createCompactionChoice({ call, capture: held.capture, write: held.write });
+    expect(await choice.choose({ entityId: "run-7", agent, maxContextTokens: null })).toBe(true);
+    expect(call).toHaveBeenCalledWith("conversation.settings", { entity_id: "run-7", agent_id: "agent-2", max_context_tokens: null });
+    expect(held.cache.agent.max_context_tokens).toBeNull();
+  });
+
   it("takes the row's write before asking and offers the answer against it", async () => {
     const held = cacheHolding(AGENT);
-    const choice = createCompactionChoice({ call: held.call(OFF), capture: held.capture, write: held.write });
+    const choice = createCompactionChoice({ call: held.call(SAVED), capture: held.capture, write: held.write });
 
-    await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 0 });
+    await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 300000 });
 
     expect(held.steps).toEqual(["capture", "call", "write"]);
     expect(held.write).toHaveBeenCalledWith({ entityId: "run-7", order: 1 }, "agent-2", expect.any(Function));
-    expect(held.cache.agent).toEqual({ id: "agent-2", max_context_tokens: 0, compact_at_tokens: 0 });
+    expect(held.cache.agent).toEqual({ id: "agent-2", max_context_tokens: 300000, compact_at_tokens: 300000 });
   });
 
   it("leaves an agent that already says the answer alone", async () => {
-    const pushed = { ...AGENT, max_context_tokens: 0, compact_at_tokens: 0 };
+    const pushed = { ...AGENT, max_context_tokens: 300000, compact_at_tokens: 300000 };
     const held = cacheHolding(pushed);
-    const choice = createCompactionChoice({ call: held.call(OFF), capture: held.capture, write: held.write });
+    const choice = createCompactionChoice({ call: held.call(SAVED), capture: held.capture, write: held.write });
 
-    await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 0 });
+    await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 300000 });
 
     expect(held.cache.agent).toBe(pushed);
   });
@@ -184,7 +188,7 @@ describe("writing what was answered", () => {
       onFailure,
     });
 
-    await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 0 });
+    await choice.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 300000 });
 
     expect(onFailure).toHaveBeenCalledTimes(1);
     expect(held.write).not.toHaveBeenCalled();
@@ -196,16 +200,16 @@ describe("writing what was answered", () => {
     const failing = async () => {
       throw new Error("cache unavailable");
     };
-    const unread = createCompactionChoice({ call: async () => OFF, capture: failing, write: vi.fn(), onFailure });
+    const unread = createCompactionChoice({ call: async () => SAVED, capture: failing, write: vi.fn(), onFailure });
     const unwritten = createCompactionChoice({
-      call: async () => OFF,
+      call: async () => SAVED,
       capture: async () => ({ order: 1 }),
       write: failing,
       onFailure,
     });
 
-    await unread.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 0 });
-    await unwritten.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 0 });
+    await unread.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 300000 });
+    await unwritten.choose({ entityId: "run-7", agent: AGENT, maxContextTokens: 300000 });
 
     expect(onFailure).not.toHaveBeenCalled();
   });

@@ -19,7 +19,7 @@ async function savedMenuOpen(page) {
     const last = window.__menuSettingsAsked.at(-1);
     if (!last) return true;
     const limit = last.max_context_tokens;
-    const id = limit === null ? "compact:default" : limit === 0 ? "compact:off" : `compact:${limit}`;
+    const id = limit === null ? "compact:default" : `compact:${limit}`;
     return document.querySelector('.rail-surface-menu [role="slider"]')?.dataset.action === id;
   });
   await settled(page);
@@ -45,7 +45,7 @@ it.each(["pointer", "Enter"])("keeps the chosen stop visible while a %s save is 
     await observeCompactionMenu(page);
     if (gesture === "pointer") {
       const box = await slider.boundingBox();
-      await page.mouse.click(box.x + box.width * 0.68, box.y + box.height / 2);
+      await page.mouse.click(box.x + box.width * 0.96, box.y + box.height / 2);
     } else {
       await slider.focus();
       for (let stop = 0; stop < 3; stop += 1) await page.keyboard.press("ArrowRight");
@@ -64,9 +64,9 @@ it.each(["pointer", "Enter"])("keeps the chosen stop visible while a %s save is 
       await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.dataset.action === "compact:300000");
     } else {
       await page.evaluate(() => window.__refuseMenuSettings());
-      await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.getAttribute("aria-valuetext") === "Default (200k)");
+      await page.waitForFunction(() => document.querySelector('.rail-surface-menu [role="slider"]')?.getAttribute("aria-valuetext") === "Use inherited setting — 200k tokens from device");
       expect(await slider.evaluate((element) => document.activeElement === element)).toBe(true);
-      expect(await page.locator('[data-group="compact"] .mt').textContent()).toBe("Default (200k)");
+      expect(await page.locator('[data-group="compact"] .mt').textContent()).toBe("Use inherited setting — 200k tokens from device");
       expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
       await page.keyboard.press("Escape");
     }
@@ -86,7 +86,7 @@ it("snaps pointer drags to stops on release, saves once, and shows one value at 
     const y = box.y + box.height / 2;
     await page.mouse.move(box.x + 10, y);
     await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.68, y, { steps: 10 });
+    await page.mouse.move(box.x + box.width * 0.96, y, { steps: 10 });
     expect(await word(page)).toBe("300k");
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
     await page.mouse.up();
@@ -99,7 +99,7 @@ it("snaps pointer drags to stops on release, saves once, and shows one value at 
     expect(await word(page)).toBe("300k");
     expect(await page.locator('[data-group="compact"] .mt').allTextContents()).toEqual(["300k"]);
     expect(await page.locator('[data-group="compact"] .md').count()).toBe(0);
-    expect(await page.locator('[data-group="compact"] .menu-slider-stops span').count()).toBe(5);
+    expect(await page.locator('[data-group="compact"] .menu-slider-stops span').count()).toBe(4);
     expect(await slider.getAttribute("aria-label")).toBe("Compact at");
     await captureLayout(page, "compaction-after-drag-320.png");
     const menuBox = await page.locator(".rail-surface-menu .splitmenu").boundingBox();
@@ -114,8 +114,8 @@ it("previews every stop in one open menu, writes once on Enter, and cancels on E
     const slider = page.locator(SLIDER);
     await slider.focus();
     await page.keyboard.press("ArrowLeft");
-    expect(await word(page)).toBe("Default (200k)");
-    for (const expected of ["150k", "200k", "300k", "Off", "Off"]) {
+    expect(await word(page)).toBe("Use inherited setting — 200k tokens from device");
+    for (const expected of ["150k", "200k", "300k", "300k"]) {
       await page.keyboard.press("ArrowRight");
       expect(await word(page)).toBe(expected);
       expect(await slider.evaluate((element) => document.activeElement === element)).toBe(true);
@@ -127,21 +127,21 @@ it("previews every stop in one open menu, writes once on Enter, and cancels on E
     expect(await page.locator(CARET).getAttribute("aria-expanded")).toBe("false");
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
     await reopen(page);
-    expect(await word(page)).toBe("Default (200k)");
+    expect(await word(page)).toBe("Use inherited setting — 200k tokens from device");
     await observeCompactionMenu(page);
     for (let stop = 0; stop < 4; stop += 1) await page.keyboard.press("ArrowRight");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([
-      { entity_id: "menu-run", agent_id: "menu-agent", max_context_tokens: 0 },
+      { entity_id: "menu-run", agent_id: "menu-agent", max_context_tokens: 300000 },
     ]);
     await savedMenuOpen(page);
     expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
-    expect(await word(page)).toBe("Off");
+    expect(await word(page)).toBe("300k");
     await captureLayout(page, "compaction-after-enter.png");
     await slider.focus();
     await page.keyboard.press("ArrowLeft");
-    expect(await word(page)).toBe("300k");
+    expect(await word(page)).toBe("200k");
     await page.keyboard.press("Escape");
     await settled(page);
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toHaveLength(1);
@@ -188,7 +188,7 @@ it("saves a clicked stop with slider focus, then saves a preview while walking d
     const slider = page.locator(SLIDER);
     await observeCompactionMenu(page);
     const box = await slider.boundingBox();
-    await page.mouse.click(box.x + box.width * 0.39, box.y + box.height / 2);
+    await page.mouse.click(box.x + box.width * 0.66, box.y + box.height / 2);
     await page.waitForFunction(() => window.__menuSettingsAsked.length === 1);
     await savedMenuOpen(page);
     expect(await compactionContinuity(page, { stop: true })).toEqual(uninterruptedMenu);
@@ -241,7 +241,7 @@ it("snaps a real touch drag to the nearest stop without scrolling the menu", asy
       type, touchPoints: type === "touchEnd" ? [] : [{ x, y }],
     });
     await touch("touchStart", box.x + 10);
-    await touch("touchMove", box.x + box.width * 0.39);
+    await touch("touchMove", box.x + box.width * 0.66);
     expect(await page.evaluate(() => window.__menuSettingsAsked)).toEqual([]);
     await touch("touchEnd");
     await page.waitForFunction(() => window.__menuSettingsAsked?.length === 1);

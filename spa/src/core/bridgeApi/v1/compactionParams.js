@@ -14,7 +14,7 @@ export function compactionWriteError(method, params, supported) {
     code: "invalid_params", message: "Compaction thresholds must be positive whole numbers, or null to inherit.",
   };
   if (!supported && needsCompactionSupport(method, params)) return {
-    code: "unknown_method", message: "Update this device's bridge to configure harness compaction thresholds.",
+    code: "unknown_method", message: "Update the bridge to set compaction defaults by harness.",
   };
   return null;
 }

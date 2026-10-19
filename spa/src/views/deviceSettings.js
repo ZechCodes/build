@@ -18,6 +18,7 @@ import { openBrowser } from "../sheets/browser.js";
 import { standUpDevicePanels } from "./devicePanels.js";
 import { deviceSettingsAddress, watchSettingsRecord } from "../core/settingsRecords.js";
 import { mountBridgeUpdatePanel } from "../core/bridgeUpdatePanel.js";
+import { scopedCompactionEditorHtml, mountScopedCompactionEditor } from "../core/scopedCompactionEditor.js";
 import { fieldTraits } from "../core/fieldTraits.js";
 
 export async function renderDeviceSettings({ root = $("#root"), deviceId = App.route.id, embedded = false, registerDispose = (dispose) => { App.viewDispose = dispose; }, onDeviceDeactivated } = {}) {
@@ -49,6 +50,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       <p id="device-settings-status" role="status" aria-live="polite"></p>
       <button class="btn mini" id="device-settings-retry" hidden>Retry</button>
     </div>
+    ${scopedCompactionEditorHtml({ scope: "device", prefix: "device-compaction" })}
     <div id="device-updates-panel"></div>
     <div id="device-bridge-panels"></div>
     <div class="panel danger-zone">
@@ -73,6 +75,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
   let session = null;
   let disposePanels = null;
   let disposeUpdates = null;
+  let compactionEditor;
   const disposeUpdatePanel = () => {
     disposeUpdates?.();
     disposeUpdates = null;
@@ -101,6 +104,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       disposePanels?.();
       disposePanels = null;
       disposeUpdatePanel();
+      compactionEditor?.dispose();
       settingsRecord.dispose();
       stopWatchingDevices();
       showDeactivated(root, onDeviceDeactivated, deviceId);
@@ -121,6 +125,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     closeBrowser();
     disposePanels?.();
     disposeUpdatePanel();
+    compactionEditor?.dispose();
     settingsRecord.dispose();
     session?.close();
   });
@@ -175,6 +180,7 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
       disposePanels?.();
       disposePanels = null;
       disposeUpdatePanel();
+      compactionEditor?.dispose();
       settingsRecord.dispose();
       retireDevice(device.id);
     } catch (error) {
@@ -192,6 +198,9 @@ export async function renderDeviceSettings({ root = $("#root"), deviceId = App.r
     if (!active || !session) return Promise.reject(new Error(deviceOfflineText(device.name)));
     return session.call(...asked);
   };
+  compactionEditor = mountScopedCompactionEditor(root, {
+    scope: "device", prefix: "device-compaction", deviceId, callRpc,
+  });
   // Every panel here is this machine's answer, so none of them exists until the
   // machine is answering: a page that cannot connect says that once, in its
   // status line, rather than standing up six panels that all say it again.

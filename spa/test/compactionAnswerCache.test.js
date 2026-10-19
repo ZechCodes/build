@@ -114,20 +114,32 @@ beforeEach(async () => {
 
 afterEach(() => unwatch());
 
+it("a settings reply updates inherited policy without inventing applied or pending evidence", async () => {
+  const active = { tokens: 200000, source: { kind: "device" }, evidence: "applied_at_start" };
+  const compaction = { active, configured: { tokens: 200000 }, inherited: { tokens: 200000, source: { kind: "device" } }, enforcement: "between_turn", pending_change: false };
+  await writeCached(ROW_ADDRESS, { kind: "branch", run_id: ENTITY, agents: [{ id: "agent-2", max_context_tokens: null, compaction }] });
+  const inherited = { tokens: 150000, source: { kind: "workspace", id: "ws-1" } };
+  const rail = observer({ answer: (params) => ({ ...answering(params), compaction: { inherited } }) });
+  await rail.choose(300000);
+  const held = (await readCached(ROW_ADDRESS)).value.agents[0];
+  expect(held.max_context_tokens).toBe(300000);
+  expect(held.compaction).toEqual({ ...compaction, inherited });
+});
+
 describe("the answer in the cached row", () => {
   it("lands on a row nothing has written since the ask", async () => {
     const rail = observer({ answer: answering });
 
-    await rail.choose(0);
+    await rail.choose(300000);
     await flush();
 
-    expect(await cachedLimit()).toBe(0);
-    expect((await readCached(ROW_ADDRESS)).value.agents[0].compact_at_tokens).toBe(0);
+    expect(await cachedLimit()).toBe(300000);
+    expect((await readCached(ROW_ADDRESS)).value.agents[0].compact_at_tokens).toBe(300000);
   });
 
   it("leaves a stale push that lands after it to the push the change itself causes", async () => {
     const rail = observer({ answer: answering });
-    await rail.choose(0);
+    await rail.choose(300000);
     await flush();
 
     // The bridge's sequence: the answer, then a row it read before the change
@@ -135,11 +147,11 @@ describe("the answer in the cached row", () => {
     // flushes. Pushes write the row whole; nothing re-writes the answer.
     await pushRow(null);
     await flush();
-    await pushRow(0);
+    await pushRow(300000);
     await flush();
 
-    expect(rowWrites).toEqual([0, null, 0]);
-    expect(await cachedLimit()).toBe(0);
+    expect(rowWrites).toEqual([300000, null, 300000]);
+    expect(await cachedLimit()).toBe(300000);
   });
 
   it("stands down for a push that lands while the verb is in flight", async () => {
@@ -153,21 +165,21 @@ describe("the answer in the cached row", () => {
       },
     });
 
-    await rail.choose(0);
+    await rail.choose(300000);
     await flush();
     expect(await cachedLimit()).toBe(null);
 
-    await pushRow(0);
+    await pushRow(300000);
     await flush();
-    expect(await cachedLimit()).toBe(0);
-    expect(rowWrites).toEqual([null, 0]);
+    expect(await cachedLimit()).toBe(300000);
+    expect(rowWrites).toEqual([null, 300000]);
   });
 
   it("keeps a change made elsewhere that lands after the answer and before its write", async () => {
     const shut = gate();
     const rail = observer({ answer: answering, before: shut });
 
-    const choosing = rail.choose(0);
+    const choosing = rail.choose(300000);
     await flush();
     // Another client sets 150k; its push lands while this rail's menu is
     // still shutting, with no push of the answer ahead of it.
@@ -184,7 +196,7 @@ describe("the answer in the cached row", () => {
     const shut = gate();
     const rail = observer({ answer: answering, before: shut });
 
-    const choosing = rail.choose(0);
+    const choosing = rail.choose(300000);
     await flush();
     await pushRow(null);
     shut.open();
@@ -215,7 +227,7 @@ describe("the answer in the cached row", () => {
         },
       });
 
-      await rail.choose(0);
+      await rail.choose(300000);
       await flush();
       expect(stamped).toBe(order);
     } finally {
@@ -244,7 +256,7 @@ describe("the answer in the cached row", () => {
         },
       });
 
-      await rail.choose(0);
+      await rail.choose(300000);
       expect(intervening.write).toBeUndefined();
       expect(intervening.order).toBe(captured.order);
       expect(await cachedLimit()).toBe(150000);
@@ -257,13 +269,13 @@ describe("the answer in the cached row", () => {
   it("writes each of two successive choices once, the later last", async () => {
     const rail = observer({ answer: answering });
 
-    await rail.choose(0);
+    await rail.choose(300000);
     await flush();
     await rail.choose(150000, 0);
     await flush();
 
-    expect(rail.asked).toEqual([0, 150000]);
-    expect(rowWrites).toEqual([0, 150000]);
+    expect(rail.asked).toEqual([300000, 150000]);
+    expect(rowWrites).toEqual([300000, 150000]);
     expect(await cachedLimit()).toBe(150000);
   });
 
@@ -271,15 +283,15 @@ describe("the answer in the cached row", () => {
     const shut = gate();
     const rail = observer({ answer: answering, before: shut });
 
-    const first = rail.choose(0);
+    const first = rail.choose(300000);
     await flush();
     await rail.choose(300000);
     shut.open();
     await first;
     await flush();
 
-    expect(rail.asked).toEqual([0]);
-    expect(await cachedLimit()).toBe(0);
+    expect(rail.asked).toEqual([300000]);
+    expect(await cachedLimit()).toBe(300000);
   });
 
   // Two rails holding different answers on one cache — two tabs, or the two
@@ -287,27 +299,27 @@ describe("the answer in the cached row", () => {
   // asked against: the first to land moves the row, so the second stands
   // down instead of answering the first's write with its own.
   it("lets two observers with different answers write once between them", async () => {
-    const shutOff = gate();
+    const shutHigh = gate();
     const shutSized = gate();
-    const off = observer({ answer: answering, before: shutOff });
+    const high = observer({ answer: answering, before: shutHigh });
     const sized = observer({ answer: answering, before: shutSized });
 
-    const choosingOff = off.choose(0);
+    const choosingHigh = high.choose(300000);
     const choosingSized = sized.choose(150000);
     await flush();
-    shutOff.open();
-    await choosingOff;
+    shutHigh.open();
+    await choosingHigh;
     shutSized.open();
     await choosingSized;
     await flush();
 
-    expect(rowWrites).toEqual([0]);
+    expect(rowWrites).toEqual([300000]);
 
     // The bridge ran both, in some order, and each change's note flushes the
     // row as it stands after both.
     await pushRow(150000);
     await flush();
-    expect(rowWrites).toEqual([0, 150000]);
+    expect(rowWrites).toEqual([300000, 150000]);
     expect(await cachedLimit()).toBe(150000);
   });
 });
@@ -333,9 +345,9 @@ describe("the answer on the board's runs", () => {
   it("lands on the run nothing has written since the ask, and on no other", async () => {
     const rail = observer({ answer: answering, kind: "workspace" });
 
-    await rail.choose(0);
+    await rail.choose(300000);
 
-    expect(await runsLimit()).toBe(0);
+    expect(await runsLimit()).toBe(300000);
     expect((await readCached(FEED_ADDRESS)).value.runs[0].agents[0].max_context_tokens).toBe(null);
   });
 
@@ -343,7 +355,7 @@ describe("the answer on the board's runs", () => {
     const shut = gate();
     const rail = observer({ answer: answering, kind: "workspace", before: shut });
 
-    const choosing = rail.choose(0);
+    const choosing = rail.choose(300000);
     await flush();
     await pushFeed(150000);
     shut.open();
@@ -370,7 +382,7 @@ describe("the answer on the board's runs", () => {
         },
       });
 
-      await rail.choose(0);
+      await rail.choose(300000);
       expect(stamped).toBe(order);
     } finally {
       tick.mockRestore();
@@ -390,7 +402,7 @@ describe("the answer on the board's runs", () => {
       },
     });
 
-    await rail.choose(0);
+    await rail.choose(300000);
 
     expect(await runsLimit()).toBe(null);
     expect(await readCached(FEED_ADDRESS)).toEqual(before);
@@ -417,7 +429,7 @@ describe("the answer on the board's runs", () => {
         },
       });
 
-      await rail.choose(0);
+      await rail.choose(300000);
       expect(intervening.write).toBeUndefined();
       expect(intervening.order).toBe(captured.order);
       expect(await runsLimit()).toBe(150000);

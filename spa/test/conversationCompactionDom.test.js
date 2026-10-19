@@ -172,17 +172,17 @@ afterEach(() => {
 describe("the context gauge beside the paperclip", () => {
   const gauge = () => panel().querySelector("#railinputgauge");
 
-  it("shows how near the chat is to compacting, off the digest", async () => {
+  it("uses the model window while the active policy is unknown", async () => {
     await mountWorkspaceRail();
 
     expect(gauge().hidden).toBe(false);
     expect(gauge().textContent).toBe("120k");
-    expect(gauge().dataset.step).toBe("accent");
-    expect(gauge().title).toBe("120k of 200k tokens (compacts at 200k), 60% used, as of its last turn");
+    expect(gauge().dataset.step).toBe("dim");
+    expect(gauge().title).toBe("120k of 1M window, 12% used, as of its last turn");
   });
 
-  it("measures a chat that never compacts against the model's window", async () => {
-    digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
+  it("does not mistake a configured override for an applied threshold", async () => {
+    digestCompaction = { max_context_tokens: 300000, compact_at_tokens: 300000 };
     await mountWorkspaceRail();
 
     expect(gauge().textContent).toBe("120k");
@@ -202,7 +202,7 @@ describe("the context gauge beside the paperclip", () => {
     await flush();
 
     expect(gauge().textContent).toBe("190k");
-    expect(gauge().dataset.step).toBe("warning");
+    expect(gauge().dataset.step).toBe("dim");
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(document.activeElement).toBe(input);
     expect(input.selectionStart).toBe(4);
@@ -285,13 +285,12 @@ describe("compaction on the conversation's menu", () => {
       "compact:150000",
       "compact:200000",
       "compact:300000",
-      "compact:off",
     ]);
-    expect(selectedWord()).toBe("Default (200k)");
+    expect(selectedWord()).toBe("Use inherited setting");
     // The group names the setting; the slider offers only its discrete stops.
     expect(slider().closest('[role="group"]').getAttribute("aria-label")).toBe("Compact at");
     expect(slider().getAttribute("role")).toBe("slider");
-    expect([slider().min, slider().max, slider().step]).toEqual(["0", "4", "1"]);
+    expect([slider().min, slider().max, slider().step]).toEqual(["0", "3", "1"]);
     expect(panel().querySelectorAll('[data-group="compact"] .mt')).toHaveLength(1);
   });
 
@@ -312,9 +311,8 @@ describe("compaction on the conversation's menu", () => {
       "compact:200000",
       "compact:300000",
       "compact:250000",
-      "compact:off",
     ]);
-    expect([slider().value, slider().max]).toEqual(["4", "5"]);
+    expect([slider().value, slider().max]).toEqual(["4", "4"]);
     expect(slider().dataset.action).toBe("compact:250000");
     expect(selectedWord()).toBe("Custom (250k)");
   });
@@ -345,14 +343,13 @@ describe("compaction on the conversation's menu", () => {
     await mountWorkspaceRail([]);
 
     expect(menuCaret()).not.toBe(null);
-    expect(compactionStops()).toHaveLength(5);
+    expect(compactionStops()).toHaveLength(4);
   });
 
   it.each([
     ["compact:150000", 150000],
     ["compact:200000", 200000],
     ["compact:300000", 300000],
-    ["compact:off", 0],
   ])("sends %s as max_context_tokens %s", async (optionId, tokens) => {
     await mountWorkspaceRail();
 
@@ -368,15 +365,71 @@ describe("compaction on the conversation's menu", () => {
     await choose("compact:default");
 
     expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
-    expect(selectedWord()).toBe("Default (200k)");
+    expect(selectedWord()).toBe("Use inherited setting");
+  });
+
+  it("shows an unsafe saved observation exactly and allows clearing it to inheritance", async () => {
+    digestCompaction = { max_context_tokens: 2 ** 64, compaction: {
+      configured: { tokens: null, tokens_decimal: "18446744073709551615", source: { kind: "conversation" } },
+      inherited: { tokens: 150000, source: { kind: "workspace" } }, active: null,
+    } };
+    await mountWorkspaceRail();
+    expect(selectedWord()).toContain("18446744073709551615 tokens");
+    expect(compactionStops().find((option) => option.selected)).toMatchObject({ disabled: true });
+    await choose("compact:default");
+    expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
+    expect((await cachedAgent()).max_context_tokens).toBe(null);
+  });
+
+  it("clears a legacy read-only setting with an inheritance command", async () => {
+    digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
+    await mountWorkspaceRail();
+    expect(selectedWord()).toBe("Setting from an older client");
+    await choose("compact:default");
+    expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
+    expect((await cachedAgent()).max_context_tokens).toBeNull();
+    expect(selectedWord()).toBe("Use inherited setting");
+  });
+
+  it("shows older-bridge copy and saves without unsupported timing claims", async () => {
+    await mountWorkspaceRail();
+    const group = panel().querySelector('[data-group="compact"]');
+    expect(group.textContent).toContain("Update the bridge to set compaction defaults by harness.");
+    expect(group.textContent).not.toContain("Running work keeps its current setting");
+    await choose("compact:150000");
+    expect(document.querySelector(".notice.success").textContent).toContain("Saved.");
+    expect(document.querySelector(".notice.success").textContent).not.toMatch(/next start|resume/i);
+    expect(group.textContent).not.toMatch(/next starts|resumes/i);
+  });
+
+  it("keeps compaction choices in the authoritative cache without changing localStorage", async () => {
+    await mountWorkspaceRail();
+    const before = { ...localStorage };
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    try {
+      await choose("compact:150000");
+      expect((await cachedAgent()).max_context_tokens).toBe(150000);
+      // Existing rail preference repaints may rewrite their unchanged value.
+      for (const [key, value] of setItem.mock.calls) expect(value).toBe(before[key]);
+      expect({ ...localStorage }).toEqual(before);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it("announces a saved setting without implying running work changed", async () => {
+    digestCompaction.compaction = { active: null, inherited: { tokens: 200000, source: { kind: "device" } } };
+    await mountWorkspaceRail();
+    await choose("compact:150000");
+    expect(document.querySelector(".notice.success").textContent).toContain("Saved. Applies on the next start or resume.");
   });
 
   it("marks what the bridge answered", async () => {
     await mountWorkspaceRail();
 
-    await choose("compact:off");
+    await choose("compact:300000");
 
-    expect(slider().dataset.action).toBe("compact:off");
+    expect(slider().dataset.action).toBe("compact:300000");
   });
 
   it("writes the answer into the cached row, which is what the tick is painted from", async () => {
@@ -402,7 +455,7 @@ describe("compaction on the conversation's menu", () => {
     const address = { deviceId: DEVICE_ID, entityId: WORKSPACE_OWNER, kind: "row", sub: "" };
     const before = await readCached(address);
 
-    await choose("compact:off");
+    await choose("compact:300000");
     await vi.waitFor(() => expect(settingsAsked).toHaveLength(1));
     const repository = contextFor(DEVICE_ID).chatRepository;
     retireDeviceContext(DEVICE_ID);
@@ -420,21 +473,21 @@ describe("compaction on the conversation's menu", () => {
   // the cache through all three; nothing writes the answer back.
   it("follows the pushes that come after the answer, stale one included", async () => {
     await mountWorkspaceRail();
-    await choose("compact:off");
+    await choose("compact:300000");
 
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
     expect(slider().dataset.action).toBe("compact:default");
 
-    digestCompaction = { max_context_tokens: 0, compact_at_tokens: 0 };
+    digestCompaction = { max_context_tokens: 300000, compact_at_tokens: 300000 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
-    expect(slider().dataset.action).toBe("compact:off");
+    expect(slider().dataset.action).toBe("compact:300000");
   });
 
   it("shows a change made elsewhere after the answer, with no echo of the answer first", async () => {
     await mountWorkspaceRail();
-    await choose("compact:off");
+    await choose("compact:300000");
 
     digestCompaction = { max_context_tokens: 150000, compact_at_tokens: 150000 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
@@ -448,19 +501,19 @@ describe("compaction on the conversation's menu", () => {
     answerSettings = async ({ agent_id, max_context_tokens }) => {
       digestCompaction = { ...digestCompaction, last_context_tokens: 130000 };
       await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
-      return { agent_id, max_context_tokens, compact_at_tokens: 0 };
+      return { agent_id, max_context_tokens, compact_at_tokens: 300000 };
     };
     await mountWorkspaceRail();
 
-    await choose("compact:off");
+    await choose("compact:300000");
 
     expect(await cachedAgent()).toMatchObject({ max_context_tokens: null, last_context_tokens: 130000 });
-    expect(slider().dataset.action).toBe("compact:off");
-    digestCompaction = { ...digestCompaction, max_context_tokens: 0, compact_at_tokens: 0 };
+    expect(slider().dataset.action).toBe("compact:300000");
+    digestCompaction = { ...digestCompaction, max_context_tokens: 300000, compact_at_tokens: 300000 };
     await writeRailWorkItem(workspacePayload(), { deviceId: DEVICE_ID });
     await flush();
-    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 0, last_context_tokens: 130000 });
-    expect(slider().dataset.action).toBe("compact:off");
+    expect(await cachedAgent()).toMatchObject({ max_context_tokens: 300000, last_context_tokens: 130000 });
+    expect(slider().dataset.action).toBe("compact:300000");
   });
 
   it("says a refusal in a sentence and leaves the choice where it was", async () => {

@@ -708,18 +708,41 @@ mod tests {
         assert_eq!(lines.len(), 1, "one line per slow frame: {lines:?}");
         let line = &lines[0];
         assert!(line.starts_with("slow frame workspace.create "), "{line}");
-        for label in [
-            "total=",
-            "queued=",
-            "lock_wait=",
-            "held=",
-            "permit_wait=",
-            "pool_wait=",
-            "waiting=",
-        ] {
+        for label in ["total=", "queued=", "lock_wait=", "held=", "waiting="] {
             assert!(line.contains(label), "{label} missing from {line}");
         }
         assert_eq!(clock.stats()["slow_frames"], 1);
+    }
+
+    #[test]
+    fn unmeasured_queue_waits_are_absent_from_slow_frame_lines() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("board.list");
+        let line = slow_frame_line("board.list", &timer.spent(), 0);
+        assert!(!line.contains("permit_wait="), "{line}");
+        assert!(!line.contains("pool_wait="), "{line}");
+    }
+
+    #[test]
+    fn measured_zero_queue_waits_remain_in_slow_frame_lines() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("mcp.control");
+        timer.record_permit_wait(Duration::ZERO);
+        timer.record_pool_wait(Duration::ZERO);
+        let line = slow_frame_line("mcp.control", &timer.spent(), 0);
+        assert!(line.contains("permit_wait=0.0ms"), "{line}");
+        assert!(line.contains("pool_wait=0.0ms"), "{line}");
+    }
+
+    #[test]
+    fn queue_wait_fields_are_reported_independently_and_accumulated() {
+        let (clock, _) = recording_clock();
+        let timer = clock.frame("mcp.control");
+        timer.record_permit_wait(Duration::from_millis(2));
+        timer.record_permit_wait(Duration::from_millis(3));
+        let line = slow_frame_line("mcp.control", &timer.spent(), 0);
+        assert!(line.contains("permit_wait=5.0ms"), "{line}");
+        assert!(!line.contains("pool_wait="), "{line}");
     }
 
     /// Under load the slow frames of one verb come by the thousand (#131).

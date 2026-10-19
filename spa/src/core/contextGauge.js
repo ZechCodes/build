@@ -1,6 +1,6 @@
 // Context usage is measured against observed enforcement, never configured intent.
 import { setAttr, setData, setHidden } from "../dom.js";
-import { compactionPendingLabel, positiveCompactionTokens } from "./compactionPresentation.js";
+import { COMPACTION_FALLBACK, compactionPendingLabel, compactionTokenLabel, positiveCompactionTokens } from "./compactionPresentation.js";
 import { composerPartIds } from "./composer.js";
 
 /** The windows the harnesses run at, by provider id. The Claude models all
@@ -31,20 +31,35 @@ export function contextWindowOf(agent, catalog) {
 const tokenWord = (tokens) =>
   tokens >= 1000000 ? `${Number((tokens / 1000000).toFixed(1))}M` : `${Math.round(tokens / 1000)}k`;
 
+function activeThreshold(compaction) {
+  if (compaction?.enforcement === "native") return compaction.active?.translated_trigger;
+  if (compaction?.enforcement === "between_turn") return compaction.active?.tokens;
+  return null;
+}
+
 /** What the tokens are measured against, and how the title says it: the
- *  compaction threshold while the chat compacts, the window when it never
- *  does. Null when there is neither. */
+ *  observed native trigger or between-turn threshold, otherwise the known
+ *  model window. Null when none of those observations is available. */
 function measureOf(agent, catalog) {
   const observation = agent.compaction;
-  const active = observation?.active;
-  const threshold = observation?.enforcement === "native" ? active?.translated_trigger
-    : observation?.enforcement === "between_turn" ? active?.tokens : null;
+  const threshold = activeThreshold(observation);
   if (positiveCompactionTokens(threshold)) {
     const word = tokenWord(threshold);
-    return { tokens: threshold, words: `${word} tokens (compacts at ${word})` };
+    const kind = observation.enforcement === "native" ? "native trigger" : "between-turn threshold";
+    return { tokens: threshold, words: `${word} tokens (${kind})` };
   }
   const window = contextWindowOf(agent, catalog);
   return window ? { tokens: window, words: `${tokenWord(window)} window` } : null;
+}
+
+function policyCopy(compaction) {
+  const active = compaction?.active;
+  const applied = active ? `Applied at last start: ${compactionTokenLabel(active)}` : "";
+  const pending = compactionPendingLabel(compaction);
+  const fallback = compaction?.enforcement === "between_turn" ? COMPACTION_FALLBACK : "";
+  const unknownTrigger = compaction?.enforcement === "native" && !positiveCompactionTokens(active?.translated_trigger)
+    ? "Native trigger unknown." : "";
+  return [pending || applied, fallback, unknownTrigger].filter(Boolean).map((text) => text.endsWith(".") ? text : `${text}.`).join(" ");
 }
 
 function stepOf(percent) {
@@ -69,7 +84,7 @@ export function contextGauge(agent, catalog) {
     measure: measureWord,
     expanded: `${text}/${measureWord} ${percent}%`,
     step: stepOf(percent),
-    title: [`${text} of ${measure.words}, ${percent}% used, as of its last turn`, compactionPendingLabel(agent.compaction)].filter(Boolean).join(". "),
+    title: [`${text} of ${measure.words}, ${percent}% used, as of its last turn`, policyCopy(agent.compaction)].filter(Boolean).join(". "),
   };
 }
 

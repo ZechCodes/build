@@ -11,12 +11,18 @@ const thresholdWord = (tokens) => tokens % 1000 === 0 ? `${tokens / 1000}k` : co
 export function compactionMenuOptions(agent) {
   const standing = ownLimitOf(agent);
   const limits = isCustomLimit(standing) ? [...LIMITS, standing] : LIMITS;
-  return limits.map((limit) => ({
+  const options = limits.map((limit) => ({
     id: optionIdOf(limit),
     label: limit === null ? inheritedCompactionLabel(agent?.compaction?.inherited)
       : isCustomLimit(limit) ? `Custom (${thresholdWord(limit)})` : thresholdWord(limit),
     selected: limit === standing,
   }));
+  if (standing !== null && !positiveCompactionTokens(standing)) options.push({
+    id: `${COMPACT_OPTION_PREFIX}observed`,
+    label: `Saved (${compactionTokenLabel(agent?.compaction?.configured)}; unsupported value)`,
+    selected: true, disabled: true,
+  });
+  return options;
 }
 
 export function compactionMenuGroup(agent) {

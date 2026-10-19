@@ -26,6 +26,22 @@ function mount(agent = { max_context_tokens: null, compact_at_tokens: 200000 }, 
 afterEach(() => { document.body.innerHTML = ""; });
 
 describe("the compaction slider in a split menu", () => {
+  it("never dispatches a read-only observation stop", () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const onChoose = vi.fn();
+    mountMenuIfChanged(host, groupedMenuButtonMarkup("⋮", [{ id: "compact", label: "Compact at", control: "slider", options: [
+      { id: "compact:default", label: "Use inherited setting", selected: true },
+      { id: "compact:observed", label: "18446744073709551615 tokens", selected: false, disabled: true },
+    ] }]), { onChoose });
+    keydown(host.querySelector(".caret"), "ArrowUp");
+    const slider = host.querySelector('[role="slider"]');
+    preview(slider, 1);
+    keydown(slider, "Enter");
+    expect(onChoose).not.toHaveBeenCalled();
+    expect(slider.dataset.action).toBe("compact:default");
+  });
+
   it("shows only the cached stop's word and ticks, with discrete accessible values", () => {
     const { host, slider } = mount();
     expect(slider).not.toBeNull();

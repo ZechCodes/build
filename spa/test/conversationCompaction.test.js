@@ -30,7 +30,8 @@ describe("the compaction rows", () => {
   });
 
   it.each([2 ** 53, 2 ** 64, 1e21])("never offers an unsafe custom threshold %s", (limit) => {
-    expect(compactionMenuOptions({ max_context_tokens: limit })).toHaveLength(4);
+    expect(compactionMenuOptions({ max_context_tokens: limit })).toHaveLength(5);
+    expect(compactionMenuOptions({ max_context_tokens: limit }).at(-1)).toMatchObject({ selected: true, disabled: true });
     expect(compactionLimitOfOptionId(`compact:${limit}`)).toBeNull();
   });
 

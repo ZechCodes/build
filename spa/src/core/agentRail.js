@@ -3445,7 +3445,7 @@ function mountRailOnContext(host, context, swap) {
         ${["all", "messages", "agent"].map((level) => `<option value="${level}"${level === reset.level ? " selected" : ""}>${level === "all" ? "All" : level === "messages" ? "Messages" : "Agent replies"}</option>`).join("")}
       </select></label>
       <label>Compact at <select data-clear-compact aria-label="Fresh conversation compact at">
-        ${compactionMenuOptions({ ...reset.agent, max_context_tokens: reset.maxContextTokens }).map((option) => `<option value="${esc(option.id)}"${option.selected ? " selected" : ""}>${esc(option.label)}</option>`).join("")}
+        ${compactionMenuOptions({ ...reset.agent, max_context_tokens: reset.maxContextTokens }).map((option) => `<option value="${esc(option.id)}"${option.selected ? " selected" : ""}${option.disabled ? " disabled" : ""}>${esc(option.label)}</option>`).join("")}
       </select></label>
       <p class="dim">Model and effort are selected below.</p>
       <div class="row"><button class="btn" data-clear-cancel>Cancel</button>

@@ -27,5 +27,6 @@ export function compactionPendingLabel(compaction) {
 export function compactionObservationCopy(compaction) {
   const applied = compaction?.active ? `Applied at last start: ${compactionTokenLabel(compaction.active)}.` : "Applied setting unknown.";
   const fallback = compaction?.enforcement === "between_turn" ? COMPACTION_FALLBACK : "";
-  return [compactionPendingLabel(compaction) || applied, fallback, COMPACTION_TIMING].filter(Boolean).join(" ");
+  const pending = compactionPendingLabel(compaction);
+  return [pending ? `${pending}.` : applied, fallback, COMPACTION_TIMING].filter(Boolean).join(" ");
 }

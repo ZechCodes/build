@@ -368,6 +368,19 @@ describe("compaction on the conversation's menu", () => {
     expect(selectedWord()).toBe("Use inherited setting");
   });
 
+  it("shows an unsafe saved observation exactly and allows clearing it to inheritance", async () => {
+    digestCompaction = { max_context_tokens: 2 ** 64, compaction: {
+      configured: { tokens: null, tokens_decimal: "18446744073709551615", source: { kind: "conversation" } },
+      inherited: { tokens: 150000, source: { kind: "workspace" } }, active: null,
+    } };
+    await mountWorkspaceRail();
+    expect(selectedWord()).toContain("18446744073709551615 tokens");
+    expect(compactionStops().find((option) => option.selected)).toMatchObject({ disabled: true });
+    await choose("compact:default");
+    expect(settingsAsked).toEqual([{ entity_id: WORKSPACE_OWNER, agent_id: "wa-1", max_context_tokens: null }]);
+    expect((await cachedAgent()).max_context_tokens).toBe(null);
+  });
+
   it("announces a saved setting without implying running work changed", async () => {
     await mountWorkspaceRail();
     await choose("compact:150000");

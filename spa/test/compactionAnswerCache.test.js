@@ -299,16 +299,16 @@ describe("the answer in the cached row", () => {
   // asked against: the first to land moves the row, so the second stands
   // down instead of answering the first's write with its own.
   it("lets two observers with different answers write once between them", async () => {
-    const shutOff = gate();
+    const shutHigh = gate();
     const shutSized = gate();
-    const off = observer({ answer: answering, before: shutOff });
+    const high = observer({ answer: answering, before: shutHigh });
     const sized = observer({ answer: answering, before: shutSized });
 
-    const choosingOff = off.choose(300000);
+    const choosingHigh = high.choose(300000);
     const choosingSized = sized.choose(150000);
     await flush();
-    shutOff.open();
-    await choosingOff;
+    shutHigh.open();
+    await choosingHigh;
     shutSized.open();
     await choosingSized;
     await flush();

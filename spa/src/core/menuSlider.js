@@ -48,7 +48,7 @@ function mountSlider(slider, { choose, onCommit }) {
   };
   const commit = async () => {
     paint();
-    if (state.pending || slider.dataset.action === state.committedAction) {
+    if (state.pending || options[Number(slider.value)].disabled || slider.dataset.action === state.committedAction) {
       reset();
       return;
     }

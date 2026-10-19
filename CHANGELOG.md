@@ -6,6 +6,22 @@ Notable changes to the bridge (`build-bridge`). The format follows
 protocol versions; see
 [Wire versioning and capabilities](ARCHITECTURE.md#wire-versioning-and-capabilities).
 
+## Desktop [0.1.4] - Unreleased
+
+### Fixed
+
+- Recover expired or revoked desktop sessions by refreshing credentials or
+  prompting for sign-in, then return to the authenticated app window (#665).
+- Sign-in links on signed-out error pages sign you into the desktop app;
+  delayed refresh responses cannot overwrite a new sign-in.
+- Sign out from the welcome screen or Settings clears saved credentials and
+  the desktop session before quitting, just like Account → Sign Out.
+
+### Changed
+
+- On macOS, place native window buttons inline with the app header, keeping
+  inbox controls clear of them while pinning and unpinning the inbox.
+
 ## Desktop [0.1.3] - Unreleased
 
 ### Fixed

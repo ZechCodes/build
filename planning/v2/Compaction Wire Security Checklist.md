@@ -5,7 +5,7 @@ harness qualification and session-policy checklists continue to govern actual
 enforcement. Editors and the conversation menu belong to step 7.
 
 Each control below is worth 10 points. **Score: 100/100.** All ten controls
-pass. The final bridge suite passes 5,118 tests (14 ignored), and the full SPA
+pass. The final bridge suite passes 5,120 tests (14 ignored), and the full SPA
 suite passes 10,825 tests across 702 files, including Chromium. Clippy, fmt,
 API/manifest contracts, vendor/Pi checks, lint, build, captures, Semgrep,
 gitleaks and diff checks pass; the #660 handoff carries the exit-code ledger.
@@ -18,7 +18,7 @@ gitleaks and diff checks pass; the #660 handoff carries the exit-code ledger.
 | 4 | Unsafe legacy values retain exact decimal read representations and cannot be submitted back as numeric mutations | Existing `compaction_policy_unsafe_legacy_values_read_exactly_without_rounding_or_clamping` extended through wire reads; `compactionContract.test.js`; adapter unsafe-integer test |
 | 5 | A save cannot invent active policy, restart work or send a turn; unknown active and pending state stay null | `compaction_wire_saves_never_replace_the_applied_session_policy`, unknown-active scope test, SPA save-preserves-active test |
 | 6 | The invalidation carries scope and owner only; delivery requires a current subscription, and queued/in-flight delivery is revoked with its kind | `compaction_wire_delivery_is_opted_in_and_revoked_with_the_subscription`, `compaction_wire_in_flight_event_is_fenced_by_kind_removal`, shared event fixtures |
-| 7 | Subscription coalescing cannot lose a compaction invalidation, and the accepted subscription triggers authoritative catch-up | `compaction_wire_survives_a_prior_pending_overflow`, both requeue race regressions, the unsent-thread cursor regression, and all three `review_overflow` regressions preserving resync through kind changes and in-flight requeue; SPA subscription acceptance, other-client invalidation and burst tests |
+| 7 | Subscription coalescing cannot lose a compaction invalidation, and the accepted subscription triggers authoritative catch-up | `compaction_wire_survives_a_prior_pending_overflow`, both requeue race regressions, the unsent-thread cursor regression, and all three `review_overflow` regressions preserving resync and entity removals through kind changes and in-flight requeue; `review_requeue` preserves departures, upserts and list updates through repeated interruptions and avoids stale removals for returning entities; SPA subscription acceptance, other-client invalidation and burst tests |
 | 8 | Current greeting authority gates new params and setters; cached support is rendering evidence only and downgrade clears it | `deviceContexts.test.js`, `compactionCache.test.js` capability/old-bridge/downgrade tests; no new hello params |
 | 9 | Cache writes are fenced against newer invalidations, records, generations and greetings, including inside delayed transactions; clearing an override clears stale cached values | `compactionCache.test.js` race/transaction/clear-override tests; ordinary settings/roster read push fences checked inside transactions, including project-list detail copies; `compactionSettingsRace.test.js` and newer-value-wins regressions |
 | 10 | The change adds no credentials, config-file destinations, subprocess launches or live harness operations; verification is isolated and complexity allowances do not increase | Throwaway HOME/TMPDIR gate runs, full bridge/SPA/contract suites, existing complexity-ratchet tests, Semgrep, gitleaks and diff checks |
@@ -48,3 +48,11 @@ and fixture observations matching production preparation. The pending Codex
 example uses the actual unqualified between-turn fallback; conversation-reset
 observations name the conversation override source. The full reruns and
 test-first failures are attached to the revised #660 gate ledger.
+
+Review round 2 restores unsent departure obligations when a taken frame is
+requeued, before its overflow sentinel or ordinary items are replayed. Retry
+compares those obligations with current board membership, so a returning entity
+is not deleted alongside its fresh upsert. The extended overflow regression and
+an ordinary requeue regression both failed against 845b19a5 before the fix;
+coverage also checks list updates, repeated interruptions and no repeated
+removal after delivery. The SPA and wire shapes are unchanged in this round.

@@ -386,7 +386,7 @@ async fn a_slow_workspace_operation_gives_its_turn_back_while_its_git_runs() {
         let (state, plane, clock) = (Arc::clone(&state), Arc::clone(&plane), Arc::clone(&clock));
         slow.push(tokio::spawn(async move {
             let timer = clock.frame(crate::app::mcp::MCP_CONTROL_METHOD);
-            let mut turn = Turn::take(&plane).await;
+            let mut turn = Turn::take(&plane, &timer).await;
             apply_off_the_socket(&state, &timer, &mut turn, job).await
         }));
     }

@@ -52,8 +52,8 @@ async fn finish_admitted_frame(
     let state = Arc::new(Mutex::new(app));
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
     let plane = ControlPlane::new(Arc::clone(&clock));
-    let mut turn = Turn::take(&plane).await;
     let timer = clock.frame(MCP_CONTROL_METHOD);
+    let mut turn = Turn::take(&plane, &timer).await;
     let AddressedSession::Coding(generation) = endpoint else {
         panic!("a coding endpoint")
     };

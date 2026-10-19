@@ -61,7 +61,7 @@ async fn mcp_initial_semaphore_wait_is_reported() {
 async fn mcp_reacquiring_a_turn_reports_only_the_permit_wait() {
     let (_dir, _state, plane, lines) = fixture();
     let timer = plane.clock.frame(MCP_CONTROL_METHOD);
-    let mut turn = Turn::take(&plane).await;
+    let mut turn = Turn::take(&plane, &timer).await;
     let (reserved, permits) = tokio::sync::oneshot::channel();
     let work = async {
         tokio::time::sleep(WAIT).await;
@@ -71,17 +71,19 @@ async fn mcp_reacquiring_a_turn_reports_only_the_permit_wait() {
             .unwrap();
         reserved.send(held).unwrap();
     };
-    let aside = turn.aside(work);
-    tokio::pin!(aside);
-    tokio::select! {
-        () = &mut aside => panic!("the reacquisition is blocked by the test"),
-        held = permits => {
-            let held = held.unwrap();
-            tokio::time::sleep(WAIT).await;
-            drop(held);
+    {
+        let aside = turn.aside(&timer, work);
+        tokio::pin!(aside);
+        tokio::select! {
+            () = &mut aside => panic!("the reacquisition is blocked by the test"),
+            held = permits => {
+                let held = held.unwrap();
+                tokio::time::sleep(WAIT).await;
+                drop(held);
+            }
         }
+        aside.await;
     }
-    aside.await;
     drop(timer);
     measured_wait(&lines, "permit_wait=");
     let lines = lines.lock().unwrap();
@@ -164,7 +166,7 @@ fn mcp_deferred_pool_wait_excludes_job_execution() {
     };
     runtime.block_on(async {
         let timer = plane.clock.frame(MCP_CONTROL_METHOD);
-        let mut turn = Turn::take(&plane).await;
+        let mut turn = Turn::take(&plane, &timer).await;
         let (started, running) = tokio::sync::oneshot::channel();
         let (release, released) = std::sync::mpsc::channel::<()>();
         let blocker = tokio::task::spawn_blocking(move || {

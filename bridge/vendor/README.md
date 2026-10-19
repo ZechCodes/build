@@ -488,7 +488,7 @@ Parser regressions cover identical repeats and differing pressure in either
 order. A deterministic multipart fixture mirrors the kernel's 15-then-1
 per-interface messages with repeated global config, completes with `NLMSG_DONE`,
 and feeds the parsed snapshot into the real sweep scheduler: its reachable /22
-LAN neighbor must receive a real-port probe, while an off-link neighbor remains
+LAN neighbor is selected for a real-port probe, while an off-link neighbor remains
 excluded. An informational benchmark exercises the same parser with 2 and 64
 parts, without timing assertions. From `bridge/`:
 

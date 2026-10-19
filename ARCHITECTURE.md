@@ -2039,7 +2039,14 @@ not the protocol, sessions or network behavior.
   LAN's subnet: Linux uses packet arrival metadata; other supported hosts use
   a conservative source/subnet check for private, link-local or CGNAT addresses.
   A shared wildcard receiver dispatches multicast and unicast replies to concurrent
-  queries. `rtc/remote.rs` defers names from offers and trickle without holding
+  queries. Each completed lookup logs one bounded, redacted round summary at
+  ordinary diagnostic level: up to eight local interface ordinals with kernel
+  ifindices, membership/send/arrival counts, retries, response and rejection
+  categories, shared-receiver errors/lag, and applied timeout/elapsed time.
+  Interface names, LAN addresses and queried names are omitted. A deadline with
+  no observed matching response does not establish whether the browser answered
+  or where a response was lost.
+  `rtc/remote.rs` defers names from offers and trickle without holding
   negotiation, validates names before starting discovery, and retries transient
   failures twice. Only live lookups count toward the discovery limit. Work is
   cancelled when remote ICE credentials change or the peer closes; same-credential
@@ -2125,6 +2132,8 @@ not the protocol, sessions or network behavior.
   unobserved reservations would exceed `min(256, gc_thresh2 / 2)`. A separate
   read-only `RTM_GETNEIGHTBL` guard admits no work at 75% of the actual global
   ARP table's `gc_thresh3`, including failed entries and other network namespaces.
+  Repeated global ARP configurations in multipart dumps are validated independently
+  and folded using the maximum entry count and minimum thresholds.
   Closing a socket does not erase kernel neighbor state; numeric admission
   accounting stays conservative until a fresh observation. Neighbor addresses
   are used only for active work, without a persistent cache.

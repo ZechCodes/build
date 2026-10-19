@@ -83,6 +83,8 @@ import { rememberProjectChangesSupport } from "./projectChangesSupport.js";
 import { rememberFileUploadSupport } from "./fileUploadSupport.js";
 import { rememberWorkspaceLockSupport } from "./workspaceLockSupport.js";
 import { rememberWorkspaceSizeSupport } from "./workspaceSizeSupport.js";
+import { rememberCompactionSupport } from "./compactionSupport.js";
+import { invalidateCompactionCaches } from "./compactionCache.js";
 
 /** The wire API majors this build of the SPA speaks, declared in every
  *  greeting so `bridge.stats` can count who is still on which. */
@@ -105,6 +107,7 @@ const NO_CAPABILITIES = Object.freeze({
     attachments: false, watching: false, context: false, doneSinceLeft: false, commentUserNotifies: false,
     listPaged: false, bodyPrecondition: false, waitingOn: false, assignProjectAgent: false,
   }),
+  compaction: Object.freeze({ harnessThresholds: false }),
   conversations: Object.freeze({ settings: false, reset: false }),
   github: Object.freeze({ repos: false }),
   messages: Object.freeze({ context: false }),
@@ -309,8 +312,13 @@ function specsOf(watcher) {
 }
 
 /** Everything the surfaces listening to this device want, right now. */
+const COMPACTION_SUBSCRIPTION = "compaction-observations";
 function desiredSubscriptions(deviceId) {
   const desired = new Map();
+  if (bridgeCapabilities(deviceId).compaction.harnessThresholds) desired.set(COMPACTION_SUBSCRIPTION, {
+    subscription_id: COMPACTION_SUBSCRIPTION, scope: { kind: "all" }, kinds: ["compaction.changed"],
+    mode: "realtime", priority: "background",
+  });
   for (const watcher of watchers) {
     if (!watcher.hears(deviceId)) continue;
     if (projectSourceScopeOf(watcher) && !bridgeCapabilities(deviceId).changes.projectSources) continue;
@@ -449,6 +457,7 @@ export function onSubscriptionHeld(listener) {
 }
 
 function announceHeld(deviceId, subscriptionId) {
+  if (subscriptionId === COMPACTION_SUBSCRIPTION) refreshCompactionOn(deviceId, { scope: "device", owner_id: null });
   for (const listener of [...heldListeners]) {
     try {
       listener(deviceId, subscriptionId);
@@ -798,7 +807,16 @@ const DEVICE_EVENTS = new Map([
   }],
   ["models.changed", (_payload, deviceId) => modelsChangedOn(deviceId)],
   ["harnesses.changed", ({ revision }, deviceId) => harnessesChangedOn(deviceId, revision)],
+  ["compaction.changed", (payload, deviceId) => refreshCompactionOn(deviceId, payload)],
 ]);
+
+function refreshCompactionOn(deviceId, event) {
+  const state = bridgeFor(deviceId);
+  const adapter = state?.adapter;
+  if (!adapter?.capabilities.compaction?.harnessThresholds) return;
+  void invalidateCompactionCaches({ deviceId, call: adapter.call, capabilities: adapter.capabilities,
+    active: () => state.current() && bridgeFor(deviceId)?.adapter === adapter }, event);
+}
 
 /** A change event off one device's session. Ignored entirely while that device
  *  is unarmed — an old bridge sends none, and a client that never greeted must
@@ -925,7 +943,7 @@ export async function greetBridge(
   // synchronously. That newer greeting now owns the shared bridge state too.
   if (!isCurrent()) return changeEventsArmed(deviceId);
   rememberGreetedReviews(deviceId, adapter, isCurrent);
-  return publishGreeting(call, deviceId, greeting, adapter, onGreeting);
+  return publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent);
 }
 
 function rememberGreetingHistory(deviceId, greeting, isCurrent, isHistoryCurrent) {
@@ -967,10 +985,12 @@ function announceGreeted(deviceId) {
 }
 
 /** Publish the current selection to capability readers and subscriptions. */
-function publishGreeting(call, deviceId, greeting, adapter, onGreeting) {
+function publishGreeting(call, deviceId, greeting, adapter, onGreeting, isCurrent) {
   const state = bridgeState(deviceId);
   state.apiVersion = greetingVersion(greeting);
   state.adapter = adapter || null;
+  state.current = isCurrent;
+  void rememberCompactionSupport(deviceId, adapter?.capabilities, () => isCurrent() && bridgeFor(deviceId)?.adapter === (adapter || null));
   announceGreeted(state.deviceId);
   if (!state.adapter) return abandonBridge(state);
   // Into the cache, where the views that draw Needs you read it (#144).

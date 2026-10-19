@@ -628,3 +628,20 @@ describe("one device's model catalog", () => {
     expect((await readopted.modelCatalog()).providers[0].id).toBe("landed-again");
   });
 });
+
+it("waits for current compaction support and refuses a cached capability after downgrade", async () => {
+  const session = fakeSession("dev-a");
+  const context = adoptDeviceSession(session);
+  const params = { project_id: "project", compaction_thresholds: { codex: 100 } };
+  const pending = context.rpc("project.set_compaction", params);
+  await Promise.resolve();
+  expect(session.call).not.toHaveBeenCalled();
+  adoptBridgeSelection(context, { version: "3.22.0" }, { capabilities: { compaction: { harnessThresholds: true } } });
+  await pending;
+  expect(session.call).toHaveBeenCalledWith("project.set_compaction", params);
+  const replacement = fakeSession("dev-a");
+  adoptDeviceSession(replacement);
+  adoptBridgeSelection(context, { version: "3.21.0" }, { capabilities: {} });
+  await expect(context.rpc("project.set_compaction", params)).rejects.toMatchObject({ code: "unknown_method" });
+  expect(replacement.call).not.toHaveBeenCalled();
+});

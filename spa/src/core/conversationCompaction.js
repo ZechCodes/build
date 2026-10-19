@@ -161,7 +161,7 @@ export function createCompactionChoice({ call, capture, write, onFailure = () =>
         const fields = answeredFields(reply);
         // The bridge has it once it answers: a cache that cannot take the
         // answer is not a refusal, and the push brings the same word.
-        await write(captured, agent.id, (held) => (sameCompaction(held, fields) ? null : { ...held, ...fields }))
+        await write(captured, agent.id, (held) => (sameCompaction(held, fields) ? null : mergeCompactionReply(held, fields)))
           .catch(() => {});
         return true;
       } finally {
@@ -175,8 +175,16 @@ export function createCompactionChoice({ call, capture, write, onFailure = () =>
 function answeredFields(reply) {
   const fields = { max_context_tokens: reply.max_context_tokens ?? null };
   if (reply.compact_at_tokens !== undefined) fields.compact_at_tokens = reply.compact_at_tokens;
+  if (reply.compaction !== undefined) fields.compaction = reply.compaction;
   return fields;
 }
 
 const sameCompaction = (agent, fields) =>
   Object.entries(fields).every(([field, value]) => (agent[field] ?? null) === value);
+
+// The settings reply describes inheritance, not a newly observed active turn.
+function mergeCompactionReply(held, fields) {
+  const next = { ...held, ...fields };
+  if (fields.compaction) next.compaction = { ...held.compaction, ...fields.compaction };
+  return next;
+}

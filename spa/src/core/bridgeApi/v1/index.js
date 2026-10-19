@@ -17,6 +17,7 @@
 
 import { satisfies } from "../semver.js";
 import { legacyThreadParams } from "./threadParams.js";
+import { compactionWriteError } from "./compactionParams.js";
 
 /** The range of bridge versions this adapter claims. */
 export const range = ">=2.0.0 <4.0.0";
@@ -69,6 +70,7 @@ export const EVENT_TYPES = Object.freeze([
   "bridge.update_status",
   "models.changed",
   "harnesses.changed",
+  "compaction.changed",
 ]);
 
 /** A refusal, whichever shape it arrived in. */
@@ -183,6 +185,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
       bodyPrecondition: names.has("tasks.bodyPrecondition"),
       waitingOn: names.has("tasks.waitingOn"),
     },
+    compaction: { harnessThresholds: names.has("compaction.harnessThresholds") },
     conversations: { settings: names.has("conversations.settings"), reset: names.has("conversation.reset") },
     github: { repos: names.has("github.repos") },
     messages: { context: names.has("messages.context") },
@@ -215,6 +218,8 @@ export function create(call, greeting) {
   // Keep arity and options intact: only the params added with conversation
   // reset need adapting when this greeting does not advertise it.
   const wrapped = async (...args) => {
+    const refusal = compactionWriteError(args[0], args[1], capabilities.compaction.harnessThresholds);
+    if (refusal) throw new ApiError(refusal.code, refusal.message);
     if (!capabilities.conversations.reset && args.length > 1) args[1] = legacyThreadParams(args[0], args[1]);
     let reply;
     try {

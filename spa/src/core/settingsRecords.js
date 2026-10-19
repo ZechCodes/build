@@ -1,4 +1,4 @@
-import { mergeCached, mergeCachedAtomically, readCached, subscribeCache, writeCached } from "./localCache.js";
+import { captureCachedRecord, mergeCached, mergeCachedRecordsTogether, readCached, recordWriteOf, subscribeCache, writeCached } from "./localCache.js";
 
 export const deviceSettingsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "settings" });
 export const deviceModelsAddress = (deviceId = "") => ({ deviceId, entityId: "", kind: "models" });
@@ -70,15 +70,14 @@ export function watchSettingsRecord(address, paint, { owner } = {}) {
     // False asks its caller to fetch again under the new authority.
     pull: async (fetch, { accept } = {}) => {
       const began = revision;
+      const before = await captureCachedRecord(address);
       const value = await fetch();
       let accepted = true;
       if (active && began === revision) {
-        if (accept) {
-          await mergeCachedAtomically(address, () => {
-            accepted = accept();
-            return accepted && active && began === revision ? value : null;
-          });
-        } else await writeCached(address, value);
+        await mergeCachedRecordsTogether([address], ([held]) => {
+          accepted = accept ? accept() : true;
+          return accepted && active && began === revision && recordWriteOf(held) === recordWriteOf(before) ? [value] : null;
+        });
       }
       await reads;
       return accepted;

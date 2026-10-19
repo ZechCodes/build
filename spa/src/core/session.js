@@ -15,6 +15,8 @@
 // session id and key: a session is minted once, not once per socket, and
 // re-keying under a live channel would strand every frame in flight on it.
 
+import { compactionWriteError } from "./bridgeApi/v1/compactionParams.js";
+import { ApiError } from "./bridgeApi/v1/index.js";
 import { createSessionRpc, DEFAULT_RPC_TIMEOUT_MS } from "./sessionRpc.js";
 import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 import { createPathProbe, PATH_PROBE_EVENT, PING_TIMEOUT_MS } from "./pathProbe.js";
@@ -224,6 +226,8 @@ export async function openSession({
     return rawCall(method, !greeted && supported ? params : legacy, options);
   };
   const call = (method, params = {}, options = {}) => {
+    const refusal = compactionWriteError(method, params, adapter?.capabilities.compaction?.harnessThresholds);
+    if (refusal) return Promise.reject(new ApiError(refusal.code, refusal.message));
     if (adapter) return adapter.call(method, params, options);
     const legacy = legacyThreadParams(method, params);
     if (greeted || legacy === params) return rawCall(method, legacy, options);

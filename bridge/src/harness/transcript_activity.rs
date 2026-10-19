@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 const MAX_TRANSCRIPT_READ: u64 = 2 * 1024 * 1024;
 
 #[derive(Clone, Copy, Default)]
-struct Cursor {
+pub(super) struct Cursor {
     offset: u64,
     skipping_oversized: bool,
     identity: Option<(u64, u64)>,
@@ -106,7 +106,11 @@ pub(crate) fn follow_sidecar(
     )
 }
 
-fn read_complete_lines(path: &PathBuf, cursor: Cursor, mut visit: impl FnMut(&Value)) -> Cursor {
+pub(super) fn read_complete_lines(
+    path: &PathBuf,
+    cursor: Cursor,
+    mut visit: impl FnMut(&Value),
+) -> Cursor {
     let Ok(mut file) = File::open(path) else {
         return cursor;
     };

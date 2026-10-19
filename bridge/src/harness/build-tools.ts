@@ -1,10 +1,264 @@
 import { spawn } from "node:child_process";
+import { appendFileSync, constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const CLOSE_GRACE_MS = 500;
 const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 const EMPTY_TOOL_ERROR = "Build tool failed without an error message";
+// Withdraw locally before the wrapper's ten-second lease can expire.
+const TELEMETRY_LEASE_MS = 8000;
+const OBSERVER_STARTUP_MS = 90000;
+
+/** @typedef {{tokens: number|null, contextWindow: number}|undefined} PiContextUsage */
+/** @typedef {{getContextUsage: () => PiContextUsage, isIdle: () => boolean, hasPendingMessages: () => boolean, sessionManager: {getSessionId: () => string}}} PiCompactionContext */
+/** @typedef {"session_shutdown"|"session_start"|"agent_start"|"tool_execution_start"|"tool_execution_end"|"turn_end"|"agent_end"|"agent_settled"|"session_before_compact"|"session_compact"|"session_compact_failed"} PiCompactionHook */
+/** @typedef {{reason?: string}} PiCompactionEvent */
+/** @typedef {(event: PiCompactionEvent, ctx: PiCompactionContext) => void|{cancel: boolean}} PiCompactionHandler */
+/** @typedef {{on: (name: PiCompactionHook, handler: PiCompactionHandler) => void}} PiCompactionApi */
+/** @typedef {{tokens: number|null, tokens_decimal?: string, enabled: boolean, owner: string, thread_id: string, launch_id: string, log?: string}} PiCompactionPolicy */
+/** @typedef {{type: "starting"|"heartbeat"|"shutdown"|"ready"|"working"|"settled"}|{type: "context", tokens: number|null, window: number|null}|{type: "compaction", completed: boolean, reason: string, failed?: boolean}|{type: "unsupported", reason: string}} PiTelemetryEvent */
+/** @typedef {PiTelemetryEvent & {owner: string, thread_id: string, launch_id: string, generation: number, sequence: number}} PiTelemetryRecord */
+
+function compactionConfiguration(owner) {
+  const encoded = process.env.BUILD_PI_COMPACTION_POLICY;
+  const log = process.env.BUILD_PI_TELEMETRY_LOG;
+  if (encoded === undefined && log === undefined) return undefined;
+  if (encoded === undefined) throw new Error("Build Pi telemetry requires a compaction policy");
+  const policy = JSON.parse(encoded);
+  return { ...policy, owner, log, ownerMismatch: policy?.owner !== owner };
+}
+
+function validateCompactionPolicy(policy) {
+  if (!isObject(policy)
+      || !validCompactionTokens(policy)
+      || typeof policy.enabled !== "boolean"
+      || ![policy.owner, policy.thread_id, policy.launch_id].every(isNonEmptyString)) {
+    throw new Error("Build Pi extension received invalid compaction policy");
+  }
+}
+
+function validCompactionTokens(policy) {
+  if (Number.isSafeInteger(policy.tokens) && policy.tokens > 0) return true;
+  return policy.enabled === false && policy.tokens === null
+    && typeof policy.tokens_decimal === "string" && /^[1-9][0-9]{0,19}$/.test(policy.tokens_decimal);
+}
+
+function telemetryFileSink(path) {
+  if (typeof path !== "string" || !isAbsolute(path)) {
+    throw new Error("Build Pi telemetry path must be absolute");
+  }
+  // Reopen only the private launch file; never follow a replaced symbolic link.
+  return (record) => {
+    const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600);
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || (info.mode & 0o077) !== 0) {
+        throw new Error("Build Pi telemetry file must be private");
+      }
+      appendFileSync(fd, `${JSON.stringify(record)}\n`);
+    } finally {
+      closeSync(fd);
+    }
+  };
+}
+
+function telemetryReceiptReader(log) {
+  if (typeof log !== "string" || !isAbsolute(log)) throw new Error("Build Pi telemetry receipt path must be absolute");
+  return () => {
+    let fd;
+    try { fd = openSync(`${log}.ack`, constants.O_RDONLY | constants.O_NOFOLLOW); }
+    catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+    try {
+      const info = fstatSync(fd);
+      if (!info.isFile() || (info.mode & 0o077) !== 0 || info.size > 4096) throw new Error("Build Pi telemetry receipt must be private and bounded");
+      return JSON.parse(readFileSync(fd, "utf8"));
+    } finally { closeSync(fd); }
+  };
+}
+
+function matchingReceipt(receipt, configuration, generation, emittedSequence) {
+  if (!isObject(receipt)) return false;
+  if (!["owner", "thread_id", "launch_id"].every((key) => receipt[key] === configuration[key])) return false;
+  return receipt.generation === generation && Number.isSafeInteger(receipt.sequence)
+    && receipt.sequence > 0 && receipt.sequence <= emittedSequence
+    && ["starting", "ready", "unsupported"].includes(receipt.status);
+}
+
+function compactionObserver(configuration, generation, readReceipt, emissionTimes) {
+  const startedAt = performance.now();
+  let lastReceiptAt;
+  let lastSequence = 0;
+  return (emittedSequence, readySequence) => {
+    const now = performance.now();
+    const deadline = lastReceiptAt === undefined ? startedAt + OBSERVER_STARTUP_MS : lastReceiptAt + TELEMETRY_LEASE_MS;
+    if (now > deadline) throw new Error("Build Pi telemetry observer lease expired");
+    const receipt = readReceipt();
+    if (!matchingReceipt(receipt, configuration, generation, emittedSequence)) return false;
+    if (receipt.sequence < lastSequence) return false;
+    if (receipt.status === "unsupported") throw new Error("Build Pi telemetry observer withdrew support");
+    const emittedAt = emissionTimes.get(receipt.sequence);
+    if (emittedAt === undefined) return false;
+    if (now - emittedAt > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry receipt is stale");
+    if (receipt.sequence > lastSequence) {
+      lastSequence = receipt.sequence;
+      lastReceiptAt = emittedAt;
+    }
+    return receipt.status === "ready" && readySequence !== undefined && receipt.sequence >= readySequence;
+  };
+}
+
+function contextValue(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function compactionReason(event) {
+  return ["manual", "threshold", "overflow"].includes(event.reason) ? event.reason : "unknown";
+}
+
+/** @param {PiCompactionPolicy} configuration @param {(record: PiTelemetryRecord) => void} [sink] @param {(reason: string) => void} [onFailure] @param {() => unknown} [receiptReader] */
+function compactionTelemetryChannel(configuration, sink, onFailure = () => {}, receiptReader) {
+  const { owner, thread_id, launch_id } = configuration;
+  const write = sink ?? telemetryFileSink(configuration.log);
+  const key = Symbol.for("build.pi.compaction.generations");
+  /** @type {Map<string, {generation: number, retire: () => void}>} */
+  const registry = globalThis[key] ??= new Map();
+  const previous = registry.get(launch_id);
+  previous?.retire();
+  const generation = (previous?.generation ?? 0) + 1;
+  if (!Number.isSafeInteger(generation)) throw new Error("Build Pi telemetry generation exhausted");
+  const emissionTimes = new Map();
+  const observed = compactionObserver({ owner, thread_id, launch_id }, generation, receiptReader ?? telemetryReceiptReader(configuration.log), emissionTimes);
+  let sequence = 0;
+  let readySequence;
+  let active = true;
+  let lastEmission = performance.now();
+  /** @type {ReturnType<typeof setInterval>|undefined} */
+  let heartbeat;
+  /** @param {PiTelemetryEvent} event */
+  const writeRecord = (event) => {
+    const emittedAt = performance.now();
+    write({ owner, thread_id, launch_id, generation, sequence: ++sequence, ...event });
+    emissionTimes.set(sequence, emittedAt);
+    if (emissionTimes.size > 512) emissionTimes.delete(emissionTimes.keys().next().value);
+  };
+  /** @param {PiTelemetryEvent} event */
+  const emit = (event) => {
+    if (performance.now() - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");
+    observed(sequence, readySequence);
+    writeRecord(event);
+    if (event.type === "ready") readySequence = sequence;
+    const now = performance.now();
+    if (now - lastEmission > TELEMETRY_LEASE_MS) throw new Error("Build Pi telemetry lease expired");
+    lastEmission = now;
+  };
+  const stop = () => { active = false; clearInterval(heartbeat); };
+  const unsupported = (reason) => {
+    if (!active) return;
+    stop();
+    const label = ["extension_failed", "session_identity_mismatch"].includes(reason) ? reason : "telemetry_failed";
+    try { writeRecord({ type: "unsupported", reason: label }); } catch { /* The independent heartbeat watchdog withdraws support. */ }
+    onFailure(label);
+  };
+  const shutdown = () => {
+    if (!active) return;
+    try { emit({ type: "shutdown" }); } catch { unsupported("telemetry_failed"); }
+    stop();
+  };
+  registry.set(launch_id, { generation, retire: shutdown });
+  try {
+    emit({ type: "starting" });
+    heartbeat = setInterval(() => {
+      try { emit({ type: "heartbeat" }); } catch { unsupported("telemetry_failed"); }
+    }, 1000);
+    heartbeat.unref?.();
+  } catch { unsupported("telemetry_failed"); }
+  return { emit, unsupported, shutdown, active: () => active, confirmed: () => observed(sequence, readySequence) };
+}
+
+// Pi 0.86.1's agent_end and turn_end precede retries/auto-compaction. Agent
+// work settles only at agent_settled; manual compaction has separate cleanup.
+/**
+ * @param {PiCompactionApi} pi
+ * @param {PiCompactionPolicy} configuration
+ * @param {(record: PiTelemetryRecord) => void} [sink]
+ * @param {(reason: string) => void} [onFailure]
+ * @param {() => unknown} [receiptReader]
+ */
+export function registerCompactionTelemetry(pi, configuration, sink, onFailure = () => {}, receiptReader) {
+  validateCompactionPolicy(configuration);
+  const { owner, enabled } = configuration;
+  const channel = compactionTelemetryChannel(configuration, sink, onFailure, receiptReader);
+  const { emit, unsupported } = channel;
+  let workGeneration = 0;
+  /** @param {PiCompactionContext} ctx */
+  const context = (ctx) => {
+    const usage = ctx.getContextUsage();
+    emit({ type: "context", tokens: contextValue(usage?.tokens), window: contextValue(usage?.contextWindow) });
+  };
+  /** @param {PiCompactionHook} name @param {PiCompactionHandler} handler */
+  const on = (name, handler) => pi.on(name, (event, ctx) => {
+    if (!channel.active()) return undefined;
+    try { return handler(event, ctx); } catch { unsupported("telemetry_failed"); }
+  });
+  /** @type {PiCompactionHandler} */
+  const working = (_event, ctx) => {
+    workGeneration += 1;
+    emit({ type: "working" });
+    context(ctx);
+  };
+  /** @param {PiCompactionContext} ctx */
+  const settle = (ctx) => {
+    context(ctx);
+    if (ctx.isIdle() && !ctx.hasPendingMessages()) emit({ type: "settled" });
+  };
+  /** @type {PiCompactionHandler} */
+  const manualSettled = (event, ctx) => {
+    if (event.reason !== "manual") return;
+    const generation = workGeneration;
+    // Native manual compact clears its compacting flag AFTER session_compact.
+    // A macrotask observes that cleanup, without authorizing pending work.
+    setTimeout(() => {
+      if (!channel.active() || generation !== workGeneration) return;
+      try { settle(ctx); } catch { unsupported("telemetry_failed"); }
+    }, 0);
+  };
+  try {
+    pi.on("session_shutdown", () => channel.shutdown());
+    on("session_start", (_event, ctx) => {
+      if (ctx.sessionManager.getSessionId() !== owner) {
+        unsupported("session_identity_mismatch");
+        return;
+      }
+      emit({ type: "ready" });
+      context(ctx);
+    });
+    on("agent_start", working);
+    on("tool_execution_start", working);
+    on("tool_execution_end", (_event, ctx) => context(ctx));
+    on("turn_end", (_event, ctx) => context(ctx));
+    on("agent_end", (_event, ctx) => context(ctx));
+    on("agent_settled", (_event, ctx) => settle(ctx));
+    on("session_before_compact", (event, ctx) => {
+      context(ctx);
+      if (enabled && event.reason === "threshold" && channel.confirmed()) return { cancel: true };
+      workGeneration += 1;
+      emit({ type: "working" });
+      emit({ type: "compaction", completed: false, reason: compactionReason(event) });
+    });
+    on("session_compact", (event, ctx) => {
+      emit({ type: "compaction", completed: true, reason: compactionReason(event) });
+      context(ctx);
+      manualSettled(event, ctx);
+    });
+    on("session_compact_failed", (event, ctx) => {
+      emit({ type: "compaction", completed: false, failed: true, reason: compactionReason(event) });
+      context(ctx);
+      manualSettled(event, ctx);
+    });
+  } catch { unsupported("extension_failed"); }
+  return channel;
+}
 
 function requiredEnvironment(name) {
   const value = process.env[name];
@@ -281,7 +535,8 @@ class McpStdioClient {
     this.failure = new Error(message);
     this.closing = true;
     this.#rejectPending(this.failure);
-    void this.stopChild().finally(() => process.kill(process.pid, "SIGTERM"));
+    this.closePromise = this.stopChild().finally(() => process.kill(process.pid, "SIGTERM"));
+    this.onTerminalFailure?.();
   }
 
   close() {
@@ -321,11 +576,28 @@ class McpStdioClient {
   }
 }
 
+function configureCompactionTelemetry(pi) {
+  try {
+    const policy = compactionConfiguration(process.env.BUILD_PI_MCP_OWNER);
+    if (!policy) return undefined;
+    const telemetry = registerCompactionTelemetry(pi, policy);
+    if (policy.ownerMismatch) telemetry.unsupported("extension_failed");
+    return telemetry;
+  } catch {
+    // A missing/broken telemetry path is observed through the wrapper deadline.
+    // Compaction qualification must never take healthy MCP tools down with it.
+    return undefined;
+  }
+}
+
 export default async function buildTools(pi) {
   let client;
+  const telemetry = configureCompactionTelemetry(pi);
+  const configured = process.env.BUILD_PI_COMPACTION_POLICY !== undefined || process.env.BUILD_PI_TELEMETRY_LOG !== undefined;
   try {
     const { command, owner, timeoutMs } = runtimeConfiguration();
     client = new McpStdioClient(command, owner, timeoutMs);
+    client.onTerminalFailure = () => telemetry?.unsupported("extension_failed");
     await client.start();
     const tools = await client.initialize();
     for (const tool of tools) {
@@ -346,7 +618,9 @@ export default async function buildTools(pi) {
     pi.on("session_before_fork", () => ({ cancel: true }));
     pi.on("session_shutdown", () => client.close());
   } catch (error) {
+    telemetry?.unsupported("extension_failed");
     if (client) await client.close();
+    if (configured) return;
     throw new Error(`Build Pi extension initialization failed: ${errorMessage(error)}`, {
       cause: error,
     });

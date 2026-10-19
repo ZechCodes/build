@@ -33,7 +33,8 @@ fn all_unqualified_versions_and_values_declare_fallback_or_unsupported() {
             assert!(!policy.capabilities.qualification.evidence.is_empty());
             assert!(policy.reason.is_some());
             assert_eq!(policy.translated_trigger, None);
-            let supported = harness_for(provider).compacts_on_command();
+            let supported =
+                harness_for(provider).compacts_on_command() && provider != AgentProvider::Pi;
             assert_eq!(policy.capabilities.between_turn_compact, supported);
             assert_eq!(
                 policy.enforcement,
@@ -162,4 +163,19 @@ fn native_model_changes_need_requalification_but_fallback_keeps_its_snapshot() {
         native.turn_choice_support(&changed),
         TurnChoiceSupport::RestartRequired
     );
+}
+
+#[test]
+fn pi_unsupported_policy_keeps_messages_but_refuses_unobservable_manual_compaction() {
+    use crate::harness::{AgentStatus, Turn};
+    use std::sync::{Arc, Mutex};
+    let policy = applied(AgentProvider::Pi, 150_000, None);
+    let session = PolicySession::attach(
+        Arc::new(OpeningSession(Arc::new(Mutex::new(AgentStatus::Waiting)))),
+        policy,
+    );
+    assert!(session.send_turn(&Turn::new("ordinary input")).is_ok());
+    assert!(session
+        .send_turn(&Turn::new("/compact keep the task"))
+        .is_err());
 }

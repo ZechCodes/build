@@ -6,6 +6,7 @@ const tools = new Map();
 const handlers = new Map();
 const scenario = process.env.PI_DRIVER_SCENARIO ?? "happy";
 const terminationSignals = [];
+const ownedProcessKill = process.kill;
 let toolRegistrations = 0;
 let hookRegistrations = 0;
 
@@ -49,17 +50,14 @@ function writeOutput(value) {
   return new Promise((resolve) => process.stdout.write(JSON.stringify(value), resolve));
 }
 
-async function waitForTermination() {
-  const deadline = Date.now() + 2000;
-  while (terminationSignals.length === 0 && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+async function waitForMcpExit() {
+  await failIfMcpChildLeaks();
 }
 
 function mcpChildIsRunning() {
   try {
     const childPid = Number(readFileSync(process.env.FAKE_MCP_PID, "utf8"));
-    process.kill(childPid, 0);
+    ownedProcessKill(childPid, 0);
     return true;
   } catch (error) {
     if (error.code === "ESRCH") return false;
@@ -74,7 +72,7 @@ async function failIfMcpChildLeaks() {
   }
   if (!mcpChildIsRunning()) return;
   const childPid = Number(readFileSync(process.env.FAKE_MCP_PID, "utf8"));
-  process.kill(childPid, "SIGKILL");
+  ownedProcessKill(childPid, "SIGKILL");
   process.exit(3);
 }
 
@@ -126,7 +124,7 @@ async function terminalScenario() {
 async function latchedScenario() {
   const pendingFailure = await caught({ kind: "child_exit" });
   const futureFailure = await caught({ kind: "after_exit" });
-  await waitForTermination();
+  await waitForMcpExit();
   await writeOutput({ pendingFailure, futureFailure, terminationSignals });
   process.exit(0);
 }
@@ -141,7 +139,7 @@ async function latchedMultipleScenario() {
     new Promise((resolve) => setTimeout(() => resolve(["unsettled", "unsettled"]), 500)),
   ]);
   const futureFailure = await caught({ kind: "after_invalid_error" });
-  await waitForTermination();
+  await waitForMcpExit();
   await writeOutput({ pendingFailures, futureFailure, terminationSignals });
   process.exit(0);
 }
@@ -170,7 +168,7 @@ async function latchedWriteScenario() {
   if (failure === "unexpected success") {
     await handlers.get("session_shutdown")();
   } else {
-    await waitForTermination();
+    await waitForMcpExit();
   }
   await writeOutput({ failure, futureFailure, terminationSignals });
   process.exit(0);

@@ -97,9 +97,15 @@ impl AppState {
                 "Build cannot compact {called}: its harness cannot compact."
             ));
         }
-        if self.live_agent_session(owner, agent_id).is_none() {
+        let session = self
+            .live_agent_session(owner, agent_id)
+            .ok_or_else(|| format!("Build cannot compact {called}: it has no running session."))?;
+        if session
+            .compaction_policy()
+            .is_some_and(|policy| !policy.capabilities.between_turn_compact)
+        {
             return Err(format!(
-                "Build cannot compact {called}: it has no running session."
+                "Build cannot compact {called}: its running session has no qualified compaction command."
             ));
         }
         Ok(())

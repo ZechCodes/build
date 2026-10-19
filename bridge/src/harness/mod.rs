@@ -43,6 +43,8 @@ pub mod inventory;
 #[cfg(test)]
 mod mcp_surface_tests;
 pub(crate) mod pi;
+pub mod pi_compaction;
+pub mod pi_telemetry;
 mod session;
 pub mod shell_tail;
 #[cfg(test)]

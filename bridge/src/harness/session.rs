@@ -170,6 +170,8 @@ pub struct SessionStatusSnapshot {
     /// The newest turn context the harness reported, carried across status
     /// changes; `None` until it reports one.
     pub context: Option<TurnContext>,
+    /// Cumulative explicit invalidations; survives coalesced watch updates.
+    pub context_reset_count: u64,
     /// Why this session is idle, when the reason is that its harness has run out
     /// of usage (task #58).
     ///
@@ -193,6 +195,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: 0,
             successful_response_count: 0,
             context: None,
+            context_reset_count: 0,
             usage_limit: None,
         }
     }
@@ -213,6 +216,7 @@ impl SessionStatusSnapshot {
                 usage_limit_count: self.usage_limit_count,
                 successful_response_count: self.successful_response_count,
                 context: self.context,
+                context_reset_count: self.context_reset_count,
                 usage_limit: self.usage_limit.clone(),
             }
         })
@@ -232,6 +236,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: self.usage_limit_count.saturating_add(1),
             successful_response_count: self.successful_response_count,
             context: self.context,
+            context_reset_count: self.context_reset_count,
             usage_limit: Some(limit),
         }
     }
@@ -246,6 +251,7 @@ impl SessionStatusSnapshot {
             usage_limit_count: self.usage_limit_count,
             successful_response_count: self.successful_response_count.saturating_add(1),
             context: self.context,
+            context_reset_count: self.context_reset_count,
             usage_limit: None,
         }
     }
@@ -289,6 +295,18 @@ pub trait AgentSession: Send + Sync {
     /// a current setting must never be manufactured into an active snapshot.
     fn compaction_policy(&self) -> Option<&super::compaction::AppliedCompactionPolicy> {
         None
+    }
+
+    /// A carrier's observed capability can withdraw its launch qualification
+    /// when an extension fails. Static policy decorators are not observations.
+    fn observed_compaction_policy(&self) -> Option<&super::compaction::AppliedCompactionPolicy> {
+        None
+    }
+
+    /// The activity stream reports compaction starts, including commands sent
+    /// by Build. Delivery must not synthesize a second start for those commands.
+    fn observes_compaction_start(&self) -> bool {
+        false
     }
 
     /// The wrapper owns the threshold decision; delivery owns eligibility,

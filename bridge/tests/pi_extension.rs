@@ -7,6 +7,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+#[path = "support/node_runtime.rs"]
+mod node_runtime;
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -27,6 +30,10 @@ fn fake_child(temp: &tempfile::TempDir) -> PathBuf {
     child
 }
 
+fn isolated_node(temp: &tempfile::TempDir) -> Command {
+    node_runtime::isolated_node(temp.path())
+}
+
 fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf, PathBuf) {
     let temp = tempfile::tempdir().unwrap();
     let extension = extension_copy(&temp);
@@ -34,13 +41,13 @@ fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf
     let log = temp.path().join("mcp.log");
     let pid = temp.path().join("mcp.pid");
     let session_started = temp.path().join("session.started");
-    let output = Command::new("node")
+    let output = isolated_node(&temp)
         .arg(fixture("pi-extension-driver.mjs"))
         .env("BUILD_PI_EXTENSION_PATH", extension)
         .env("BUILD_PI_MCP_COMMAND", child)
         .env("BUILD_PI_MCP_OWNER", "agent-01J")
-        .env("BRIDGE_MCP_SOCKET", "/tmp/build-mcp.sock")
-        .env("BRIDGE_MCP_TOKEN", "rotated-token")
+        .env("BRIDGE_MCP_SOCKET", temp.path().join("fake.sock"))
+        .env("BRIDGE_MCP_TOKEN", "fixture-dummy-token")
         .env("BUILD_PI_MCP_TIMEOUT_MS", "5000")
         .env("FAKE_MCP_MODE", mode)
         .env("FAKE_MCP_LOG", &log)
@@ -53,7 +60,7 @@ fn run_driver(mode: &str, scenario: &str) -> (Output, tempfile::TempDir, PathBuf
 }
 
 #[test]
-fn registration_failures_abort_pi_and_close_and_reap_the_mcp_child() {
+fn registration_failures_abort_extension_setup_and_reap_the_mcp_child() {
     for (scenario, expected_error) in [
         (
             "register_tool_failure",
@@ -74,7 +81,7 @@ fn registration_failures_abort_pi_and_close_and_reap_the_mcp_child() {
         );
         assert!(
             !temp.path().join("session.started").exists(),
-            "{scenario} allowed a tool-less Pi session to continue"
+            "{scenario} incorrectly completed extension initialization"
         );
         assert!(
             std::fs::read_to_string(log).unwrap().contains("stdin_end"),
@@ -90,7 +97,7 @@ fn registration_failures_abort_pi_and_close_and_reap_the_mcp_child() {
 }
 
 #[test]
-fn empty_discovered_tool_set_aborts_pi_and_closes_and_reaps_the_mcp_child() {
+fn empty_discovered_tool_set_aborts_extension_setup_and_reaps_the_mcp_child() {
     let (output, temp, log, pid) = run_driver("empty_tools", "empty_tools");
     assert_eq!(output.status.code(), Some(2), "{output:?}");
     assert!(
@@ -100,7 +107,7 @@ fn empty_discovered_tool_set_aborts_pi_and_closes_and_reaps_the_mcp_child() {
     );
     assert!(
         !temp.path().join("session.started").exists(),
-        "empty discovery allowed a tool-less Pi session to continue"
+        "empty discovery incorrectly completed extension initialization"
     );
     assert!(
         std::fs::read_to_string(log).unwrap().contains("stdin_end"),
@@ -117,7 +124,7 @@ fn empty_discovered_tool_set_aborts_pi_and_closes_and_reaps_the_mcp_child() {
 #[test]
 #[allow(clippy::cognitive_complexity)] // ratchet: extension_discovers_tools_forwards_calls_and_converts_only_text is at 30, threshold 15 — bring it under, then remove
 fn extension_discovers_tools_forwards_calls_and_converts_only_text() {
-    let (output, _temp, log, _pid) = run_driver("normal", "happy");
+    let (output, temp, log, _pid) = run_driver("normal", "happy");
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["tools"][0]["name"], "done");
@@ -157,8 +164,11 @@ fn extension_discovers_tools_forwards_calls_and_converts_only_text() {
         requests[0]["startup"]["argv"],
         serde_json::json!(["mcp", "--task", "agent-01J"])
     );
-    assert_eq!(requests[0]["startup"]["socket"], "/tmp/build-mcp.sock");
-    assert_eq!(requests[0]["startup"]["token"], "rotated-token");
+    assert_eq!(
+        requests[0]["startup"]["socket"],
+        temp.path().join("fake.sock").to_string_lossy().as_ref()
+    );
+    assert_eq!(requests[0]["startup"]["token"], "fixture-dummy-token");
     assert_eq!(requests[1]["method"], "initialize");
     assert_eq!(requests[2]["method"], "notifications/initialized");
     assert!(requests[2].get("id").is_none());
@@ -277,7 +287,7 @@ fn malformed_tool_list_fields_abort_initialization() {
 }
 
 #[test]
-fn framing_and_utf8_failures_are_terminal() {
+fn framing_and_utf8_failures_terminate_pi() {
     for mode in ["oversized_frame", "invalid_utf8"] {
         let (output, _temp, _log, _pid) = run_driver(mode, "terminal");
         assert_eq!(
@@ -289,14 +299,14 @@ fn framing_and_utf8_failures_are_terminal() {
 }
 
 #[test]
-fn write_failure_is_latched_and_terminates_pi() {
+fn write_failure_is_latched_and_signals_pi() {
     let (output, _temp, _log, _pid) = run_driver("write_failure", "latched_write");
     assert!(output.status.success(), "{output:?}");
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_latched_write_failure(&value);
 
     // A live MCP child is the control: the same assertion must reject a call
-    // that succeeds instead of latching a write failure and terminating Pi.
+    // that succeeds instead of latching a write failure.
     let (control, _temp, _log, _pid) = run_driver("normal", "latched_write");
     assert!(control.status.success(), "{control:?}");
     let control: Value = serde_json::from_slice(&control.stdout).unwrap();
@@ -332,13 +342,13 @@ fn request_timeout_terminates_pi() {
     let temp = tempfile::tempdir().unwrap();
     let extension = extension_copy(&temp);
     let child = fake_child(&temp);
-    let output = Command::new("node")
+    let output = isolated_node(&temp)
         .arg(fixture("pi-extension-driver.mjs"))
         .env("BUILD_PI_EXTENSION_PATH", extension)
         .env("BUILD_PI_MCP_COMMAND", child)
         .env("BUILD_PI_MCP_OWNER", "agent-timeout")
-        .env("BRIDGE_MCP_SOCKET", "/tmp/build-mcp.sock")
-        .env("BRIDGE_MCP_TOKEN", "rotated-token")
+        .env("BRIDGE_MCP_SOCKET", temp.path().join("fake.sock"))
+        .env("BRIDGE_MCP_TOKEN", "fixture-dummy-token")
         .env("BUILD_PI_MCP_TIMEOUT_MS", "30")
         .env("FAKE_MCP_MODE", "timeout")
         .env("PI_DRIVER_SCENARIO", "timeout")
@@ -359,13 +369,13 @@ fn missing_runtime_environment_aborts_before_spawning_mcp() {
         let extension = extension_copy(&temp);
         let child = fake_child(&temp);
         let pid = temp.path().join("mcp.pid");
-        let output = Command::new("node")
+        let output = isolated_node(&temp)
             .arg(fixture("pi-extension-driver.mjs"))
             .env("BUILD_PI_EXTENSION_PATH", extension)
             .env("BUILD_PI_MCP_COMMAND", child)
             .env("BUILD_PI_MCP_OWNER", "agent-01J")
-            .env("BRIDGE_MCP_SOCKET", "/tmp/build-mcp.sock")
-            .env("BRIDGE_MCP_TOKEN", "rotated-token")
+            .env("BRIDGE_MCP_SOCKET", temp.path().join("fake.sock"))
+            .env("BRIDGE_MCP_TOKEN", "fixture-dummy-token")
             .env("FAKE_MCP_PID", &pid)
             .env_remove(missing)
             .output()
@@ -423,7 +433,7 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
         }
         frames
     });
-    let output = Command::new("node")
+    let output = isolated_node(&temp)
         .arg(fixture("pi-extension-driver.mjs"))
         .env("BUILD_PI_EXTENSION_PATH", extension)
         .env("BUILD_PI_MCP_COMMAND", env!("CARGO_BIN_EXE_build-bridge"))
@@ -457,4 +467,16 @@ fn extension_uses_real_mcp_stdio_token_and_canonical_tool_errors() {
     assert_eq!(report["session_token"], "rotated-real-token");
     assert_eq!(report["report"]["status"], "blocked");
     assert_eq!(report["report"]["message_id"], "message-real-mcp");
+}
+
+#[test]
+fn compaction_hook_and_default_export_contracts_run_with_the_bridge_suite() {
+    let home = tempfile::tempdir().unwrap();
+    let output = isolated_node(&home)
+        .arg("--test")
+        .arg(fixture("pi-compaction-extension.test.mjs"))
+        .arg(fixture("pi-default-extension.test.mjs"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
 }

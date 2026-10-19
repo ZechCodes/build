@@ -10,6 +10,39 @@ use crate::app::tests::project_agent::{added_project, items, project_agent, root
 use crate::harness::{AgentActivity, TurnContext};
 use crate::mcp::BridgeAction;
 
+fn capture_policy(
+    app: &mut AppState,
+    root: &Path,
+    owner: &str,
+    agent_id: &str,
+    version: Option<&str>,
+) {
+    let choice = app
+        .entity_agents(owner)
+        .unwrap()
+        .by_id(agent_id)
+        .unwrap()
+        .choice
+        .clone();
+    let policy = crate::harness::harness_for(choice.provider)
+        .prepare_compaction_policy(
+            app.resolve_compaction_policy(owner, agent_id).unwrap(),
+            choice,
+            version.map(str::to_owned),
+            crate::harness::compaction::CompactionLaunchIdentity::new(
+                app.agent_conversation(owner, Some(agent_id))
+                    .unwrap()
+                    .id
+                    .clone(),
+            ),
+        )
+        .unwrap();
+    let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
+    let tab = app.session_registry.test_tab_mut(&key).unwrap();
+    tab.session =
+        crate::harness::compaction::PolicySession::attach(Arc::clone(&tab.session), policy);
+}
+
 fn context(context_tokens: u64) -> TurnContext {
     TurnContext {
         context_tokens,
@@ -47,6 +80,17 @@ fn the_harness_compacts(state: &Arc<Mutex<AppState>>, owner: &str, agent_id: &st
 }
 
 impl CompactingAgent {
+    fn with_captured_policy(self, version: Option<&str>) -> Self {
+        capture_policy(
+            &mut self.state.lock().unwrap(),
+            &self.root,
+            RUN,
+            &self.agent_id,
+            version,
+        );
+        self
+    }
+
     fn on(self, provider: AgentProvider) -> CompactingAgent {
         self.state
             .lock()
@@ -186,13 +230,54 @@ async fn a_newer_request_replaces_the_waiting_one() {
 
 #[test]
 fn compact_self_refuses_a_harness_that_cannot_compact() {
-    let agent = CompactingAgent::new().on(AgentProvider::Pi);
+    let agent = CompactingAgent::new()
+        .on(AgentProvider::Pi)
+        .with_captured_policy(None);
 
     let refused = agent.compact_self("anything").unwrap_err();
 
-    assert!(
-        refused.starts_with("Build cannot compact your session:"),
-        "{refused}"
+    assert_eq!(refused, "Build cannot compact your session: its running session has no qualified compaction command.");
+    assert!(agent
+        .state
+        .lock()
+        .unwrap()
+        .compactions
+        .withdraw(RUN, &agent.agent_id)
+        .is_none());
+    assert!(agent.log.turns().is_empty());
+}
+
+#[test]
+fn compact_self_uses_the_captured_capability_after_a_model_choice_edit() {
+    let agent = CompactingAgent::new()
+        .on(AgentProvider::Pi)
+        .with_captured_policy(None)
+        .on(AgentProvider::CodexAppServer);
+    assert!(agent.compact_self("anything").is_err());
+    assert!(agent
+        .state
+        .lock()
+        .unwrap()
+        .compactions
+        .withdraw(RUN, &agent.agent_id)
+        .is_none());
+}
+
+#[test]
+fn compact_self_accepts_a_qualified_pi_command() {
+    let agent = CompactingAgent::new()
+        .on(AgentProvider::Pi)
+        .with_captured_policy(Some("0.86.1"));
+    assert!(agent.compact_self("keep the notes").is_ok());
+    assert_eq!(
+        agent
+            .state
+            .lock()
+            .unwrap()
+            .compactions
+            .withdraw(RUN, &agent.agent_id)
+            .as_deref(),
+        Some("keep the notes")
     );
 }
 
@@ -226,6 +311,17 @@ struct ProjectWithWorker {
 }
 
 impl ProjectWithWorker {
+    fn with_captured_policy(self, version: Option<&str>) -> Self {
+        capture_policy(
+            &mut self.state.lock().unwrap(),
+            self._dir.path(),
+            &self.owner,
+            &self.worker,
+            version,
+        );
+        self
+    }
+
     fn new(provider: AgentProvider) -> ProjectWithWorker {
         let (home, repo) = init_repo();
         let repo = std::fs::canonicalize(&repo).unwrap();
@@ -362,14 +458,35 @@ fn compact_agent_refuses_an_agent_with_no_running_session() {
 
 #[test]
 fn compact_agent_refuses_a_harness_that_cannot_compact() {
-    let project = ProjectWithWorker::new(AgentProvider::Pi).with_session(AgentStatus::Waiting);
+    let project = ProjectWithWorker::new(AgentProvider::Pi)
+        .with_session(AgentStatus::Waiting)
+        .with_captured_policy(None);
 
-    let refused = project.compact("keep the API notes").unwrap_err();
+    let refused = project
+        .state
+        .lock()
+        .unwrap()
+        .agent_action(
+            &project.project_owner,
+            &project.project_agent,
+            BridgeAction::CompactAgent {
+                agent_id: project.worker.clone(),
+                instructions: "keep the API notes".into(),
+            },
+        )
+        .unwrap_err();
 
     assert_eq!(
         refused,
-        "Build cannot compact Rail scroll: its harness cannot compact."
+        "Build cannot compact Rail scroll: its running session has no qualified compaction command."
     );
+    assert!(project
+        .state
+        .lock()
+        .unwrap()
+        .compactions
+        .withdraw(&project.owner, &project.worker)
+        .is_none());
     assert!(project.log.turns().is_empty());
 }
 

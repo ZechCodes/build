@@ -63,12 +63,27 @@ impl Harness for PiHarness {
         args
     }
 
+    fn compacts_on_command(&self) -> bool {
+        true
+    }
+
+    fn prepare_compaction_policy(
+        &self,
+        requested: crate::compaction::ResolvedCompactionPolicy,
+        choice: ModelChoice,
+        version: Option<String>,
+        launch_identity: super::compaction::CompactionLaunchIdentity,
+    ) -> Result<super::compaction::AppliedCompactionPolicy, HarnessError> {
+        super::pi_compaction::prepare(self, requested, choice, version, launch_identity)
+    }
+
     fn spec(
         &self,
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
     ) -> Result<HarnessSpec, HarnessError> {
+        super::pi_compaction::validate(choice, options)?;
         ensure_pi_root_outside_checkout(&context.state_root, &options.cwd)?;
         let extension_path = BuildPiExtension::materialize(&context.state_root)?;
         let session_dir = private_session_dir(&context.state_root, &options.owner_id)?;
@@ -100,6 +115,7 @@ impl Harness for PiHarness {
                 context.bridge_exe.to_string_lossy().into_owned(),
             )
             .env("BUILD_PI_MCP_OWNER", &options.owner_id);
+        let spec = super::pi_compaction::apply(spec, options, &session_dir);
         // The extension spawns the MCP server with its own environment, so
         // the declaration reaches the server the way the token does.
         Ok(crate::harness::declare_mcp_surface(spec, options))

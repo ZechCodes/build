@@ -270,6 +270,14 @@ jobs:
       - name: Test
         working-directory: web
         run: npm test
+      # This job also runs for every bridge change. Keep the embedded Pi
+      # extension's executable and type contracts beside its Rust carrier gate.
+      - name: Install locked bridge extension test tools
+        run: nice -n 10 npm ci --prefix bridge/tests/fixtures --ignore-scripts --no-audit --no-fund
+      - name: Pi extension lifecycle tests
+        run: nice -n 10 npm run --prefix bridge/tests/fixtures test:compaction
+      - name: Pi extension scoped type check
+        run: nice -n 10 npm run --prefix bridge/tests/fixtures typecheck:compaction
 
   web-e2e:
     name: Browser client end-to-end

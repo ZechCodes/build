@@ -633,8 +633,8 @@ enforcement (`native`, `between_turn`, `unsupported`), the launch choice and
 identity, and version/evidence/reason. Capability descriptors include native
 threshold and between-turn command support plus the native unit/range when
 qualified. Native adapters remain unqualified. Claude and Codex carriers use
-the existing between-turn command path; Pi reports unsupported fallback until
-its command adapter lands. Unknown or failed version readings never infer
+the existing between-turn command path; Pi qualifies its extension-backed
+fallback only for 0.86.1. Unknown or failed version readings never infer
 native support. Unsafe legacy values remain exact and unsupported; zero is
 refused. These are internal observations; wire fields/events are a later step.
 
@@ -730,6 +730,79 @@ the session working and queued follow-up intact. After the turn ends the
 follow-up is delivered exactly once, without Build threshold compaction under
 Native. Fresh/resumed config fixtures independently preserve stale file bytes
 and isolate concurrent sessions' captured thresholds.
+
+Pi's adapter (`harness/pi_compaction.rs`, #659) passes the captured positive
+policy and exact owner/thread/launch identities only to its child extension.
+It leaves user and workspace settings alone. The existing private session
+directory and `--session-id <owner>` preserve exact continuation; each opening
+gets a new private telemetry file. Unknown versions remain unsupported with
+`pi_version_unqualified` and retain the existing terminal lifecycle without
+loading unqualified observation hooks. Native threshold injection remains unqualified
+(`pi_native_threshold_injection_unqualified`); it is not needed for the
+qualified between-turn fallback. `planning/v2/Pi Compaction Qualification.md`
+records the pinned 0.86.1 executable, documented hooks and credential-free
+synthetic-provider runs through the real TUI and unmodified default export,
+with a fake MCP endpoint in an isolated child environment. The supplemental
+RPC probe is hook evidence only. Promotion blockers remain for other Pi
+versions and native threshold injection; neither is claimed supported.
+Live-provider summary quality also remains unqualified: the carrier evidence
+uses a synthetic provider and does not promote any external provider.
+
+The extension cancels only native `threshold` attempts while fallback owns
+the threshold. Native `overflow` recovery and manual compaction remain
+available. Context and working observations use the private sidecar, never
+screen scraping or shared configuration. `PtySession` consumes these through
+`pi_telemetry.rs`; it retains the terminal escape hatch but stops inferring
+idle from silence while telemetry is healthy. The session exposes explicit
+unsupported states until the extension confirms its exact Pi session identity,
+and after extension or telemetry failure. Those failures never kill Pi or
+close a healthy MCP client: Build stops threshold compaction, clears stale
+context once per generation, and uses the ordinary terminal lifecycle for
+continued work. Build tools remain available. Actual MCP transport failure is
+different: the extension reaps its owned MCP child and signals Pi with SIGTERM
+so the normal tab-exit path can respawn it with working tools, including when
+no compaction policy exists. The shared policy decorator preserves the explicit
+unsupported reason for compaction observation failure.
+
+A startup record and one-second heartbeats are independent of MCP initialization.
+The initial observation budget is 90 seconds, covering both 30-second MCP
+requests; a ten-second heartbeat gap withdraws support even if a broken sink
+cannot report its own failure. Threshold cancellation requires a fresh receipt
+from the Rust observer in a private, atomically replaced `.ack` sidecar. The
+receipt binds owner, thread, launch, generation and the last sequence actually
+read; only a ready observer can authorize cancellation. Reading the same receipt
+again cannot renew its eight-second monotonic lease, which is bounded by the
+original record emission time rather than the receipt arrival time. Thus successful writes
+without a working reader cannot suppress native threshold compaction. Failure
+withdraws the receipt once; a valid new generation can requalify. The extension
+also rejects a stalled local writer, without closing healthy Build tools.
+Each extension reload advances a launch-scoped
+generation and restarts its sequence at one. The bridge requires a new starting
+record, resets context and readiness, and rejects records from retired
+generations. Foreign launch identities, replayed sequences and malformed or
+missing records cannot authorize fallback. Terminal EOF drains final complete
+records without publishing another idle boundary, then closes activity even
+while the ended session remains available in the terminal.
+
+Ordinary Pi work becomes idle only at `agent_settled`, after retries, tool work,
+automatic compaction and queued continuations. `agent_end` and `turn_end` only
+refresh context. Idle manual compaction does not emit `agent_settled` in
+0.86.1: its completion hook schedules a macrotask that verifies idle with no
+pending continuation before reporting settlement. A newer work event defeats
+that deferred check. Build rejects a `/compact` send without a confirmed idle
+boundary; the command itself immediately reserves that boundary as working.
+Pi owns the observed start row, so the shared send path does not append a
+second synthetic start. Only the observed `session_compact` boundary can
+complete an attempted compaction. Failure, abort and cancellation never do. Overflow compaction
+remains activity within the ongoing turn and is identified as overflow
+recovery, not enforcement of Build's configured threshold.
+
+Null context clears the session reading and advances a cumulative invalidation
+counter. The shared status pump clears the persisted reading and its dedup
+state even when watch updates coalesce; an identical later, fresh reading is
+then observable again. Pi additionally requires the persisted reading to match
+its current observation before declaring automatic compaction due. The common
+ledger and queue deliver deferred input once after compaction settles.
 
 Automatic delivery asks the live session policy whether its last trustworthy
 context reading reached the captured threshold (`>=`). Only an idle warm

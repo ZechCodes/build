@@ -6,6 +6,7 @@ install order and the actual image gate expressions against job outcomes.
 """
 
 import ast
+import json
 from pathlib import Path
 import re
 import unittest
@@ -160,6 +161,26 @@ class TransportWorkflow(unittest.TestCase):
         self.assertRegex(block, r"working-directory: web\n\s+run: npm test(?:\s|$)")
         self.assertIn("web", needs(self.job("build-relay")))
         self.assertIn("needs.web.result == 'success'", job_condition(self.job("build-relay")))
+
+    def test_web_requires_bridge_extension_tests_and_locked_typecheck(self):
+        block = self.job("web")
+        directory = "bridge/tests/fixtures"
+        install = f"nice -n 10 npm ci --prefix {directory} --ignore-scripts"
+        self.assertIn(install, block)
+        self.assertNotIn("continue-on-error", block)
+        self.assertNotIn("\n    defaults:", block, "these commands run from the repository root")
+        package = json.loads((WORKFLOW.parents[2] / directory / "package.json").read_text())
+        lock = json.loads((WORKFLOW.parents[2] / directory / "package-lock.json").read_text())
+        for script in ("test:compaction", "typecheck:compaction"):
+            command = f"nice -n 10 npm run --prefix {directory} {script}"
+            self.assertIn(command, block)
+            self.assertLess(block.index(install), block.index(command))
+            self.assertNotRegex(package["scripts"][script], r"[;&|]", "a failed checker must fail its CI step")
+        for dependency, version in package["devDependencies"].items():
+            self.assertRegex(version, r"^\d+\.\d+\.\d+$", "checker dependencies must be pinned")
+            self.assertEqual(lock["packages"][f"node_modules/{dependency}"]["version"], version)
+        self.assertEqual(package["scripts"]["test:compaction"], "node --test pi-compaction-extension.test.mjs pi-default-extension.test.mjs")
+        self.assertEqual(package["scripts"]["typecheck:compaction"], "node check-pi-compaction-types.mjs node_modules/typescript/bin/tsc node_modules/@types")
 
     def image_context(self, block, owed, result):
         return {

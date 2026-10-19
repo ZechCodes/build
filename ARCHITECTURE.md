@@ -291,7 +291,11 @@ the verb inventory, minimal timing comparison and staged tests. SQL history/task
 reads move first to an independent WAL read pool, followed by immutable
 board/project/workspace/agent views. Reads never return capacity refusals;
 an exhausted SQL read pool waits on its own connections, never the app lock or
-writer. The target releases app/domain guards for SQL and external work, uses
+writer. Snapshot/control frames bypass SQL admission at intake; the SPA paces
+SQL sends with per-session credits while views keep rendering from cache.
+Excess unpaced reads may backpressure their ordered carrier, delaying later
+frames not yet admitted. The target releases app/domain guards for SQL and
+external work, uses
 device → project → workspace write ownership, and orders successful writes
 commit → publish → stage changes → acknowledge. Failed saves cannot enter
 canonical views or emit their changes. The plan covers maintenance/autonomous

@@ -238,3 +238,17 @@ test("wrapped load completes after both successful finish and promise fulfillmen
   assert.equal(shown(window), 1);
   assert.deepEqual(calls.dialogs, []);
 });
+
+test("a finish before the current document commits cannot complete its later 200 response", async (t) => {
+  const body = deferred();
+  const { window } = await retrying(t, "refresh", {
+    loadURL: (target) => loads(target) === 2 ? body.promise : Promise.resolve(),
+  });
+  finish(window); // An outgoing document can finish while the replacement is starting.
+  commit(window);
+  body.resolve();
+  await flush();
+  assert.equal(shown(window), 0, "this document still needs its own finish after the successful commit");
+  finish(window);
+  assert.equal(shown(window), 1);
+});

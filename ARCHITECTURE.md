@@ -381,8 +381,8 @@ deferred writes. Dedicated I/O workers execute filesystem/Git observations,
 then validate source, owner and conversation fences against the latest
 publication before returning the existing typed reply. GitHub observations
 retain their service deadline and update admission spans the complete job.
-Writer routing and the later MCP concurrency migration retain their existing
-boundaries.
+Writer routing retains its existing mutation boundaries. MCP read scheduling
+is described below under MCP tools.
 
 Ordinary owner/global publication structurally shares unrelated observation
 families and rows. Touched owner rows may be recaptured even when their fields
@@ -397,7 +397,9 @@ producer maintenance remain separate work; this is not a claim that all
 publication is constant time.
 
 **Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
-`Arc<ReadView>` root with shared immutable response chunks. Versioned deltas
+`Arc<ReadView>` root with shared immutable response chunks. Chunk and history
+maps use persistent ordered trees, so retaining a root and applying a small
+delta copies bounded tree paths rather than every entry. Versioned deltas
 merge disjoint updates through compare-and-swap; stale overlapping updates
 are rejected as a unit, and deletion versions remain as tombstones. Producers
 warm required observations before admission, then publish committed values
@@ -493,7 +495,17 @@ session observations, and elapsed-time fields participate in each refresh.
 Registry identities use weak handles so a retained read root cannot keep a
 retired session or terminal screen alive. Attention changes for known owners
 use the same scoped publication; other board invalidations retain their full
-refresh path.
+refresh path. Layout reuse compares raw committed compaction policies with
+workspace and project topology rather than rendering every inherited policy to
+check for changes. Workspace detail refresh batches affected owners and aliases
+through one registry and dependency scan.
+
+Within `StatusPump::observe`, attention persistence and dirty metadata still
+update immediately, while their wire projection joins the final owner
+publication. A `working_since` roster save keeps its independent committed
+publication. Direct status APIs and end-of-stream handling keep immediate
+attention publication. Context, reset and usage helpers keep their existing
+save and failure behavior.
 
 `read_view/shared_json.rs` composes immutable JSON leaves without caching a
 materialized aggregate. Intake and push readers materialize their owned wire
@@ -2180,6 +2192,21 @@ app-lock acquisition (`lock_wait`), including the update-admission check.
 Reacquiring a turn after deferred work is included in the permit wait; the
 deferred work itself is not pool queue time.
 
+The two control turns bound mutation work. An exact allowlist of task, roster,
+list, history and review reads bypasses those turns; malformed actions and done
+reports retain their existing routing. Each read authenticates its token,
+surface, owner and thread generation under a brief blocking-pool app guard,
+then prepares owned work. SQL reads borrow the shared asynchronous reader pool
+and retain one transaction across related rows. Snapshot reads capture accepted
+immutable fragments and materialize them off-lock. Review reads release SQL
+capacity before external observation. A final brief guard rechecks admission,
+project bindings and target generations before returning the ordinary response.
+The update-admission lease survives caller cancellation until blocking work
+finishes. These reads do not drain deferred writer work or run legacy producer
+maintenance. Calls on one socket remain ordered; independent sockets can read
+while mutation turns are occupied. The brief app guards still contend with
+writers.
+
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see
 A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
@@ -2689,6 +2716,15 @@ nothing else
   binary, then runs `build-bridge pair` and `build-bridge install-service`.
 
 ### Bridge tests
+
+The busy lock fixture includes MCP permit admission, blocking-pool scheduling
+and all app guards in each frame, and separately times callers through replies
+or completed status observation. Its cohort includes 168 MCP calls, 40 encrypted
+RPC calls and 24 actual private `StatusPump` observations. All callers and
+queued deliveries must finish before assertions. The five-second maximum
+applies to all frame and caller totals, alongside the hold percentile and
+maximum gates. Status timing covers observation work, not watch-notification
+delivery latency.
 
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in

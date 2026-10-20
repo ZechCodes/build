@@ -1008,16 +1008,16 @@ async fn snapshot_generation_publication_and_clone_costs_are_reported() {
         let mut elapsed = Vec::new();
         for _ in 0..SAMPLE_COUNT {
             let started = Instant::now();
-            let cloned = value.clone();
+            let cloned = value.as_ref().clone();
             elapsed.push(started.elapsed());
-            assert_eq!(&cloned, value);
+            assert_eq!(&cloned, value.as_ref());
             std::hint::black_box(cloned);
         }
         clones.insert(
             method.into(),
             json!({
                 "value_clone": snapshot_duration_summary(&elapsed),
-                "serialized_bytes": serde_json::to_vec(value).unwrap().len(),
+                "serialized_bytes": serde_json::to_vec(value.as_ref()).unwrap().len(),
             }),
         );
     }

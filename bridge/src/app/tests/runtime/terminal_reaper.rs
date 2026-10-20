@@ -34,7 +34,7 @@ fn finishing_one_owner_preserves_an_unrelated_vanished_session(plan: bool) {
         (
             Arc::clone(&tab.session),
             tab.session_instance.clone(),
-            app.read_view.load().get("agent.list", "run-b").cloned(),
+            app.read_view.load().get_owned("agent.list", "run-b"),
         )
     };
     std::fs::remove_dir_all(&key.root).unwrap();
@@ -62,7 +62,7 @@ fn finishing_one_owner_preserves_an_unrelated_vanished_session(plan: bool) {
             "A's finisher must not close B's open turn"
         );
         assert_eq!(
-            app.read_view.load().get("agent.list", "run-b").cloned(),
+            app.read_view.load().get_owned("agent.list", "run-b"),
             before,
             "A's completion must not publish unrelated B cleanup"
         );
@@ -78,7 +78,7 @@ fn finishing_one_owner_preserves_an_unrelated_vanished_session(plan: bool) {
         "background cleanup closes B's turn after A has completed"
     );
     assert_ne!(
-        app.read_view.load().get("agent.list", "run-b").cloned(),
+        app.read_view.load().get_owned("agent.list", "run-b"),
         before,
         "cleanup publishes B's stopped session before returning"
     );
@@ -449,7 +449,7 @@ fn runtime_cleanup_publishes_without_a_successful_lineage_save(fail_save: bool) 
                 .session_instance = None;
         }
         (
-            app.read_view.load().get("agent.list", "run-b").cloned(),
+            app.read_view.load().get_owned("agent.list", "run-b"),
             app.runs["run-b"].agents.clone(),
         )
     };
@@ -465,7 +465,7 @@ fn runtime_cleanup_publishes_without_a_successful_lineage_save(fail_save: bool) 
         "a failed lineage save or absent lineage must not publish a candidate roster"
     );
     assert_ne!(
-        app.read_view.load().get("agent.list", "run-b").cloned(),
+        app.read_view.load().get_owned("agent.list", "run-b"),
         before,
         "the actual retired registration must be published before cleanup returns"
     );

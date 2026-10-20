@@ -73,10 +73,13 @@ const tableStarts = (lines, at) => {
   return Boolean(cells && alignments && cells.length === alignments.length);
 };
 
-// Preserve short labels and measurements as one unit; longer prose may wrap.
-// Only fixed renderer-owned attributes are emitted here.
-const cellAttributes = (text, tag) => tag === "th" ? ' scope="col"'
-  : text.length <= 40 ? ' class="md-cell-short"' : "";
+// Prose wraps regardless of character count. Numbers and measurements stay
+// together, as does a column the author explicitly marks as right-aligned.
+const CELL_NUMBER = String.raw`(?:\d+(?:,\d{3})*(?:\.\d+)?|\.\d+)(?:e[+-]?\d+)?`;
+const CELL_UNIT = String.raw`(?:%|ns|[µμu]s|ms|s|sec|min|h|hr|d|[KMGT]?i?B|px|em|rem|pt|[kMG]?Hz|°[CF]|K|m|cm|mm|km|kg|g|mg|m?V|m?A|k?W|k?J|k?Pa|bar|mol|rad|rpm|fps|req/s|ops/s|M?B/s)`;
+const MEASUREMENT = new RegExp(`^[+-]?${CELL_NUMBER}(?:\\s*(?:[-–—−]|to)\\s*[+-]?${CELL_NUMBER})?(?:\\s*${CELL_UNIT})?$`, "i");
+const cellAttributes = (text, tag, alignment) => tag === "th" ? ' scope="col"'
+  : alignment === "right" || MEASUREMENT.test(text) ? ' class="md-cell-short"' : "";
 
 /** A whole table, header row through its last body row.
  *
@@ -90,7 +93,7 @@ function readTable(lines, at, context) {
   const columns = tableCells(lines[at]).slice(0, alignments.length);
   const align = (index) => (alignments[index] ? ` style="text-align:${alignments[index]}"` : "");
   const cellsHtml = (cells, tag) =>
-    alignments.map((_, index) => `<${tag}${cellAttributes(cells[index] ?? "", tag)}${align(index)}>${context.inline(cells[index] ?? "")}</${tag}>`).join("");
+    alignments.map((_, index) => `<${tag}${cellAttributes(cells[index] ?? "", tag, alignments[index])}${align(index)}>${context.inline(cells[index] ?? "")}</${tag}>`).join("");
   let body = "";
   let next = at + 2; // the header and its delimiter row
   for (let cells = tableCells(lines[next] ?? ""); next < lines.length && cells; cells = tableCells(lines[next] ?? "")) {
@@ -98,7 +101,7 @@ function readTable(lines, at, context) {
     next += 1;
   }
   const head = `<thead><tr>${cellsHtml(columns, "th")}</tr></thead>`;
-  return { html: `<div class="mdtable" tabindex="0" role="region" aria-label="Table"><table>${head}${body ? `<tbody>${body}</tbody>` : ""}</table></div>`, next };
+  return { html: `<div class="mdtable" role="region" aria-label="Table"><table>${head}${body ? `<tbody>${body}</tbody>` : ""}</table></div>`, next };
 }
 
 // ─── Fences, headings, lists ─────────────────────────────────────────────────

@@ -902,12 +902,10 @@ main#root.surface { max-width:none;
    and still breaks a word that could not fit a line of its own. */
 .mdtable th, .mdtable td { padding:9px 16px 9px 0; text-align:left; vertical-align:top;
   border:0; white-space:normal; overflow-wrap:break-word; word-break:normal; }
-/* The header is the one row that names things, so it reads as ink and holds its
-   line: a wrapped header over a scrolling table is unreadable. */
-.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; }
+/* Headers use weight and ink; prose may wrap at the available column width. */
+.mdtable th { color:var(--ink); font-weight:650; }
 .mdtable tbody tr:nth-child(even) { background:color-mix(in srgb, var(--ink) 3%, transparent); }
 .mdtable td.md-cell-short { white-space:nowrap; }
-.mdtable td:not(.md-cell-short) { min-width:18ch; max-width:48ch; }
 .mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
 /* plan */
 /* The doc card sits INSIDE a panel, so it takes the inner step (--panel2) and

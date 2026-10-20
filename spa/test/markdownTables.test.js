@@ -7,18 +7,18 @@ const hostOf = (source) => {
   host.innerHTML = markdownHtml(source);
   return host;
 };
-it("keeps short prose and measurement cells whole, with long prose allowed to wrap", () => {
+it("lets prose wrap while keeping measurement cells whole", () => {
   const host = hostOf("| Condition | Timing | Details |\n| --- | ---: | --- |\n| A write holding the app lock | 100–149 ms | " + "A longer explanation. ".repeat(10) + " |");
   const cells = host.querySelectorAll("td");
-  expect(cells[0].className).toBe("md-cell-short");
+  expect(cells[0].className).toBe("");
   expect(cells[1].className).toBe("md-cell-short");
   expect(cells[1].style.textAlign).toBe("right");
   expect(cells[2].className).toBe("");
 });
-it("gives scrollable tables a keyboard stop and column headers", () => {
+it("defers table keyboard stops until measured overflow and names column headers", () => {
   const host = hostOf("| a | b |\n| --- | --- |\n| 1 | 2 |");
   const scroll = host.querySelector(".mdtable");
-  expect(scroll.tabIndex).toBe(0);
+  expect(scroll.hasAttribute("tabindex")).toBe(false);
   expect(scroll.getAttribute("role")).toBe("region");
   expect(scroll.getAttribute("aria-label")).toBe("Table");
   expect([...host.querySelectorAll("th")].map((th) => th.scope)).toEqual(["col", "col"]);
@@ -26,4 +26,12 @@ it("gives scrollable tables a keyboard stop and column headers", () => {
 it("requires equal header and delimiter column counts before recognizing a table", () => {
   for (const source of ["| a | b |\n| --- |", "| a |\n| --- | --- |"])
     expect(hostOf(source).querySelector("table")).toBeNull();
+});
+
+it.each(["42", "-3.5", "0.5–2.5 ms", "100–149 ms", "12%", "1.2 GiB", "3e-4 s"])("keeps numeric/measurement cell %s together", (value) => {
+  expect(hostOf(`| Value |\n| --- |\n| ${value} |`).querySelector("td").className).toBe("md-cell-short");
+});
+it("keeps right-aligned column contents whole without treating short prose as measurements", () => {
+  const host = hostOf("| Description | Status |\n| --- | ---: |\n| A short condition | Not measured |");
+  expect([...host.querySelectorAll("td")].map((cell) => cell.className)).toEqual(["", "md-cell-short"]);
 });

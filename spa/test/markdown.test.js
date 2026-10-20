@@ -80,8 +80,8 @@ describe("renderMarkdown pipe tables", () => {
     const html = markdownHtml(TABLE);
     expect(html).toContain("<table>");
     expect(html).toContain("<thead><tr><th scope=\"col\">Run</th><th scope=\"col\">Precision</th><th scope=\"col\">Violations</th></tr></thead>");
-    expect(html).toContain("<td class=\"md-cell-short\">mention-qa</td>");
-    expect(html).toContain("<td class=\"md-cell-short\">reply-chain-join</td>");
+    expect(html).toContain("<td>mention-qa</td>");
+    expect(html).toContain("<td>reply-chain-join</td>");
     expect(html).not.toContain("|---|");
     expect(html).not.toContain("<p>| Run");
   });
@@ -89,7 +89,7 @@ describe("renderMarkdown pipe tables", () => {
   it("scrolls a wide table inside its own box rather than widening the message", () => {
     // The thread panel is a narrow column; a table wider than it has to scroll
     // in place, or it takes the conversation's width with it.
-    expect(markdownHtml(TABLE)).toContain('<div class="mdtable" tabindex="0" role="region" aria-label="Table">');
+    expect(markdownHtml(TABLE)).toContain('<div class="mdtable" role="region" aria-label="Table">');
   });
 
   it("takes each column's alignment from the delimiter row", () => {
@@ -112,21 +112,21 @@ describe("renderMarkdown pipe tables", () => {
 
   it("renders inline markdown inside cells, and escapes their html", () => {
     const html = markdownHtml("| what | how |\n|---|---|\n| **bold** | `code` |\n| <img src=x> | plain |");
-    expect(html).toContain("<td class=\"md-cell-short\"><strong>bold</strong></td>");
-    expect(html).toContain("<td class=\"md-cell-short\"><code>code</code></td>");
+    expect(html).toContain("<td><strong>bold</strong></td>");
+    expect(html).toContain("<td><code>code</code></td>");
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img src=x&gt;");
   });
 
   it("keeps an escaped pipe inside its cell", () => {
     const html = markdownHtml("| pattern | note |\n|---|---|\n| a \\| b | alternation |");
-    expect(html).toContain("<td class=\"md-cell-short\">a | b</td>");
-    expect(html).toContain("<td class=\"md-cell-short\">alternation</td>");
+    expect(html).toContain("<td>a | b</td>");
+    expect(html).toContain("<td>alternation</td>");
   });
 
   it("pads a short row and drops what overflows the header", () => {
     const html = markdownHtml("| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |");
-    expect(html).toContain("<tr><td class=\"md-cell-short\">1</td><td class=\"md-cell-short\"></td><td class=\"md-cell-short\"></td></tr>");
+    expect(html).toContain("<tr><td class=\"md-cell-short\">1</td><td></td><td></td></tr>");
     expect(html).toContain("<tr><td class=\"md-cell-short\">1</td><td class=\"md-cell-short\">2</td><td class=\"md-cell-short\">3</td></tr>");
     expect(html).not.toContain("<td class=\"md-cell-short\">4</td>");
   });
@@ -282,7 +282,7 @@ describe("renderMarkdown paragraphs", () => {
 
   it("closes the paragraph before a table", () => {
     expect(markdownHtml("text\n| a |\n| - |\n| 1 |")).toBe(
-      '<p>text</p><div class="mdtable" tabindex="0" role="region" aria-label="Table"><table><thead><tr><th scope=\"col\">a</th></tr></thead><tbody><tr><td class=\"md-cell-short\">1</td></tr></tbody></table></div>',
+      '<p>text</p><div class="mdtable" role="region" aria-label="Table"><table><thead><tr><th scope=\"col\">a</th></tr></thead><tbody><tr><td class=\"md-cell-short\">1</td></tr></tbody></table></div>',
     );
   });
 

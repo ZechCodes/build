@@ -1,7 +1,7 @@
 # Markdown rendering security checklist
 
 **Status:** 100/100
-**Verified:** 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions and approved external-image consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
+**Verified:** 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions; #700 production-CSP image consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
 
 Checklist rendering re-verified 2026-10-03 (#347): checklist list items have the
 fixed `task-item` class and a native input with only fixed checkbox type/class,
@@ -33,7 +33,11 @@ share the eight-level nesting bound.
 Images require an HTTP(S) URL with a parsed host, no username/password and no
 credential delimiter in the authority. Data, blob, mailto, relative,
 protocol-relative and credential-bearing sources are refused. Existing web-link
-credential behavior is unchanged.
+credential behavior is unchanged. External images must use HTTPS. External HTTP
+image syntax renders as an ordinary policy-checked link, never an upgraded URL;
+image credential validation still precedes that fallback. A linked HTTP image
+uses its alt text as the enclosing link's label, without nesting anchors.
+Same-origin HTTP remains allowed for development under CSP's `'self'`.
 
 The approved external-image policy (#701) renders an inert native button:
 `type="button" class="md-image-load"` with escaped `data-md-image-src`,
@@ -47,6 +51,17 @@ attachments keep their own path. Image placeholders, images, anchors, keyboard
 and code output are protected from later emphasis, Build-reference and footnote
 expansion. `markdownImages.test.js` checks hostile latent sources, literal alt/title,
 per-instance activation, cached repaint reset, cleanup and existing attachments.
+
+The production, development, mail and preview CSP policies permit `https:` in
+`img-src`, but not `http:`. Desktop uses the app page's response policy. **CSP no
+longer blocks external HTTPS images: the renderer's no-`img`-before-click
+invariant is the only consent guard.** The 17 mutation controls below cover that
+boundary, including bypassing consent by treating an external image as
+same-origin, credential rejection, activation URL revalidation and no-referrer
+privacy. The controller also rejects a forged external HTTP placeholder. The
+`markdownImageCspLayout.test.js` Chromium regression serves the exact configured header and
+checks zero requests before activation, a decoded image with positive
+`naturalWidth` afterward, and no CSP violation.
 
 Linked images retain a policy-checked external anchor around the image or
 placeholder. Activating a placeholder cancels navigation and propagation in
@@ -84,13 +99,13 @@ Since #256 the renderer writes web links as well as Build routes (`spa/src/core/
 | 1 | One entry point: no module under `spa/src/` renders markdown, parses references or builds a resolver except through `markdownHtml`; the guard names no exceptions | 10/10 | `spa/test/markdownEntry.test.js` |
 | 2 | All source text is escaped before insertion into generated markup in every block and mode, including alert bodies, details summaries/bodies, image labels/titles, footnote definitions and highlighted source. Only the exact keyboard/details grammar is recognized as structure | 10/10 | `markdownSafety.test.js` hostile payload/context matrix and "keeps arbitrary HTML inert beside the exact keyboard and details productions"; positive control "accepts the exact generated rich vocabulary" |
 | 3 | Only renderer-owned tags, attributes and class values are emitted. No event handlers or arbitrary styles; table alignment is fixed, list starts have at most nine digits, code languages and Prism token names are constrained, and new image/details/footnote attributes use their precise grammar | 10/10 | `markdownSafety.test.js` browser-parsed `violations()` checks every payload/context; "rejects extra rich tags, classes, language names and attributes in the oracle" and checklist/image negative controls prove the oracle rejects forged output |
-| 4 | Every href is a Build route on `a.md-ref`, an external `a.md-link` with HTTP(S) host syntax or mailto plus `target="_blank" rel="noopener noreferrer nofollow"`, or an exact scoped footnote fragment pointing at one matching generated target. Unsafe schemes, protocol-relative and relative links remain text. Image sources are separately narrowed to parsed credential-free HTTP(S) URLs | 10/10 | `markdownSafety.test.js` unsafe links, opener checks, image policy, and forged/duplicated footnote fragments; `markdownWebLinks.test.js` unsafe schemes/whitespace/control probes and positive controls; `markdownNavigation.test.js` local footnote handling. Desktop navigation and credential evidence: `desktop/test/security-policy.test.mjs`, `desktop/test/main-auth.test.mjs`, `desktop/test/token-store.test.mjs` (#262, #615) Approved image policy: external sources remain an inert button until activation, same-origin images may load directly, activation revalidates the source and sets no-referrer before src. `markdownSafety.test.js` consent case failed the old emitter (exit 1), then safety/WebLinks/Images passed 68/68 (exit 0); raw `/tmp/build-markdown-695-review/security-image-policy-{red,green}.{log,exit}`. |
+| 4 | Every href is a Build route on `a.md-ref`, an external `a.md-link` with HTTP(S) host syntax or mailto plus `target="_blank" rel="noopener noreferrer nofollow"`, or an exact scoped footnote fragment pointing at one matching generated target. Unsafe schemes, protocol-relative and relative links remain text. Image sources are separately narrowed to parsed credential-free HTTP(S) URLs | 10/10 | `markdownSafety.test.js` unsafe links, opener checks, image policy, and forged/duplicated footnote fragments; `markdownWebLinks.test.js` unsafe schemes/whitespace/control probes and positive controls; `markdownNavigation.test.js` local footnote handling. Desktop navigation and credential evidence: `desktop/test/security-policy.test.mjs`, `desktop/test/main-auth.test.mjs`, `desktop/test/token-store.test.mjs` (#262, #615) Approved image policy: external HTTPS sources remain an inert button until activation, external HTTP image syntax becomes an ordinary link, and same-origin images may load directly. Activation revalidates the source and sets no-referrer before src. `markdownSafety.test.js` consent case failed the old emitter (exit 1), then safety/WebLinks/Images passed 68/68 (exit 0); raw `/tmp/build-markdown-695-review/security-image-policy-{red,green}.{log,exit}`. |
 | 5 | Reference labels/titles, URLs, image alt/title, fence labels and document scope values cannot leave their text or attribute context. Generated element contents and attributes are protected from later readers | 10/10 | `markdownSafety.test.js` hostile names/references, "escapes image text and protects literal and attribute contents from later syntax", and "encodes hostile footnote scopes and keeps independent documents separate"; `markdownWebLinks.test.js` escaped addresses/titles |
 | 6 | A reference that resolves to nothing is never a link; it is the typed text, escaped, with an escaped reason in `title` | 10/10 | `markdownLinks.test.js` "a reference that does not resolve"; `markdownInline.test.js` "protects entire generated unresolved-reference spans from emphasis" |
 | 7 | Code and keyboard contents remain literal; references, links, footnotes and emphasis are not expanded there. Highlighted fences may add only constrained Prism token spans inside known code classes; malformed/unknown labels do not create attributes | 10/10 | `markdownSafety.test.js` fenced-language adversarial matrix, including nested markdown fences, plus protected contents test; `markdownInline.test.js` exact backtick runs and keyboard grammar; `markdownRichBlocks.test.js` highlighted and unknown fence labels |
 | 8 | Quotes, lists and details share an eight-level bound. Long mixed documents, blank lines, link punctuation, unmatched rich delimiters and large fenced source finish within fixed regression budgets | 10/10 | `markdownSafety.test.js` "nesting that tries to exhaust the reader": 40,000 blank lines, 100,000-character link punctuation, 200 nested details, 10,000 unmatched details openers, malformed keyboard/footnote/emphasis/image delimiters, and a large known-language fence. #238 and #256 earlier regressions remain covered #700: `markdownInline.test.js` has 15 closer-before-unmatched-opener cases, each in a Node 22 child bounded to 2 seconds with SIGKILL. The original two keyboard cases timed out (red suite exit 1, 2 failed/22 passed); after validating closer position and enforcing forward progress, the five-suite focused check passed 108/108, exit 0. Raw logs/exits: `/tmp/build-markdown-695-review/inline-700-{red,green}.{log,exit}`. |
 | 9 | Plain mode answers text with no markup, and its callers escape it | 10/10 | `markdownSafety.test.js` "answers plain text with no markup in plain mode"; `agentOverview.js` writes the snippet through `esc` |
-| 10 | Repository scanners are clean on the change | 10/10 | #701 final-delta integration scan at code/test head `86a10c56786dbc6f03317c758b976a7777e5bb04`: Semgrep checked all 38 changed JS/MJS/CSS files with 200 rules, zero findings, exit 0; Gitleaks scanned `main..HEAD`, zero leaks, exit 0. Raw output and exit footers are attached to the task handoff (`semgrep.log`, `gitleaks.log`); Gitleaks runs again after this evidence-only update and before push. |
+| 10 | Repository scanners are clean on the change | 10/10 | #700/#701 final integration scan at code/test head `d47fdf98c1d8471092159592d9832ece75291502`: Semgrep checked all 45 changed JS/MJS/CSS/Python/YAML files with 476 rules, zero findings, exit 0; Gitleaks scanned `main..HEAD`, zero leaks, exit 0. Raw output and exit footers are attached to the task handoff (`semgrep.log`, `gitleaks.log`); Gitleaks runs again after this evidence-only update and before push. |
 
 Round-two actual mutation controls (#701) ran against a temporary copy of the production
 source, with each mutation applied separately and restored before the next run.
@@ -133,5 +148,19 @@ handoff. The initial `preventDefault` mutation survived because the old test
 only checked propagation; that first probe remains labeled `first-probe/`.
 Adding the explicit canceled-event assertion closed the coverage gap before
 the final full-suite run.
+
+The production-CSP delta at isolated source commit
+`c19912315e94104c0f059839113fb7abc8ac6e74` reran all 17 original mutations and
+two new controls: removing the controller's HTTPS-only activation check, and
+removing the renderer's external-HTTP link fallback. All 19 failed through
+assertions with exit 1; clean before/after baselines passed 96/96 with exit 0.
+Source, policy and unit-test hashes stayed unchanged during the batch.
+Raw commands, logs, exits and patches are retained under
+`/tmp/build-markdown-695-round3/csp-mutations/` and attached to the handoff.
+The exact-production-CSP browser case failed the old policy because image
+decoding was blocked (exit 1), then passed with a decoded image, one request
+only after activation, and no CSP violation (final browser recheck exit 0).
+The policy-copy audit confirms that all four headers differ only by adding
+`https:` to `img-src`; other directives and the absence of `http:` are pinned.
 
 **Total: 100/100.**

@@ -129,14 +129,17 @@ Fences show their language label; registered Prism grammars highlight up to
 4,096 characters, with longer/unknown code shown as escaped plain text to bound
 rendering work. No additional dependencies are needed.
 
-External images render as a keyboard-accessible “Load image from host” button
+External HTTPS images render as a keyboard-accessible “Load image from host” button
 with their alt text. No image element or request exists until that button is
 activated; only that instance loads, and a cached repaint resets consent.
 Same-origin HTTP(S) images and Build attachments keep loading directly.
+External HTTP image syntax renders as an ordinary link; it is never upgraded.
 All markdown images use `referrerpolicy="no-referrer"`. `markdownImages.js`
 delegates activation and revalidates the URL before creating the image.
 Images may be web-link labels: activating the load button does not follow the
 enclosing link, and following that link does not load its image.
+The CSP permits HTTPS images after activation. The renderer's absence of an
+image element before activation is the consent guard; CSP does not provide it.
 
 Table prose wraps; numeric/measurement cells and right-aligned columns keep
 their values together. `markdownTableFocus.js` measures rendered tables and

@@ -751,3 +751,6 @@ mod tests {
 
 #[cfg(test)]
 mod tail_tests;
+
+#[cfg(test)]
+mod sharing_tests;

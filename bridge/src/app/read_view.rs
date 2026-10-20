@@ -1,7 +1,7 @@
 //! Committed, immutable projections for intake reads and push facts.
 //!
-//! Projection work happens before publication. The CAS only copies the map of
-//! shared chunks, merging independent producers against the latest root.
+//! Projection work happens before publication. The CAS shares unchanged ordered
+//! map paths, merging independent producers against the latest root.
 
 pub(in crate::app) mod history;
 pub(in crate::app) mod shared_json;
@@ -66,8 +66,8 @@ impl Clone for VersionedHistory {
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct ReadView {
-    chunks: BTreeMap<ReadKey, VersionedChunk>,
-    histories: BTreeMap<String, VersionedHistory>,
+    chunks: imbl::OrdMap<ReadKey, VersionedChunk>,
+    histories: imbl::OrdMap<String, VersionedHistory>,
     pub facts: Arc<super::facts::PushFacts>,
     pub facts_version: u64,
     pub observations: Option<Arc<super::observation_reads::ObservationContext>>,

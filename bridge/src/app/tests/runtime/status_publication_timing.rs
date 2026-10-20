@@ -82,6 +82,14 @@ impl Fixture {
         assert_eq!(app.runs.len(), scale.runs);
         assert_eq!(app.workspaces.list(None).len(), scale.workspaces);
         assert_eq!(app.board.archived_values().count(), scale.archives);
+        assert_eq!(
+            app.require_store()
+                .unwrap()
+                .load_all_archived_worktrees()
+                .unwrap()
+                .len(),
+            scale.archives,
+        );
         assert!(
             !app.frame_clock.observes_requests(),
             "phase tracing remains off"
@@ -133,14 +141,31 @@ fn seed_plans(app: &mut AppState, count: usize) -> Vec<String> {
 }
 
 fn seed_workspaces(app: &mut AppState, directory: &Path, project: &str, count: usize) {
+    let repository = app.project_at(0).repo_path.clone();
+    let source = app.project_at(0).sources[0].id.clone();
     for index in 0..count {
         let id = format!("status-workspace-{index}");
         let root = directory.join(&id);
-        std::fs::create_dir_all(&root).unwrap();
+        let finished = index % 2 == 1;
+        if finished {
+            // Finished contents must be clean and published. These clones
+            // track only the temporary local source, never a network remote.
+            git_in(
+                directory,
+                &[
+                    "clone",
+                    "--local",
+                    repository.to_str().unwrap(),
+                    root.to_str().unwrap(),
+                ],
+            );
+        } else {
+            std::fs::create_dir_all(&root).unwrap();
+        }
         let mut workspace =
             app.workspaces
-                .adopt_root(project, id.clone(), id, root, "status-source".into(), false);
-        if index % 2 == 1 {
+                .adopt_root(project, id.clone(), id, root, source.clone(), finished);
+        if finished {
             app.workspaces.record_finished(&mut workspace).unwrap();
         }
     }
@@ -178,7 +203,7 @@ fn seed_runs(
 
 fn seed_archive(app: &mut AppState, repo: &Path, directory: &Path, count: usize) {
     use crate::store::{WorktreeFinishAction, WorktreeFinishStatus};
-    let records = (0..count)
+    let records: std::collections::HashMap<_, _> = (0..count)
         .map(|index| {
             let id = format!("status-archive-{index}");
             (
@@ -203,6 +228,12 @@ fn seed_archive(app: &mut AppState, repo: &Path, directory: &Path, count: usize)
             )
         })
         .collect();
+    for record in records.values() {
+        app.require_store()
+            .unwrap()
+            .save_archived_worktree(record)
+            .unwrap();
+    }
     app.board.replace_archived(records);
 }
 
@@ -230,7 +261,7 @@ fn status_event_application_guard_benchmark() {
         "trace":false,"path":"StatusPump::observe","status_sequence":"Working/Waiting alternating; no context/usage event or queued delivery",
         "guard_wait_endpoint":"immediately before app lock through acquisition","guard_hold_endpoint":"after acquisition through immediately after MutexGuard drop",
         "collector":"cfg(test) two guard timestamps; thread-local recording only after app guard release; same overlay before/fixed",
-        "fixture_semantics":"file-backed Store; approved legacy plans; persisted reattached retained runs in plain temporary directories; adopted plain workspace records half finished; retained archived worktree rows; no live process or Git checkout per retained row"}),
+        "fixture_semantics":"file-backed Store; approved legacy plans; persisted reattached retained runs in plain temporary directories; adopted workspaces half plain/ready and half clean tracked local Git clones/finished; persisted archived worktree rows; no live agent process or Git checkout per retained run/archive row"}),
     ];
     for scale in SCALES {
         let setup = Instant::now();

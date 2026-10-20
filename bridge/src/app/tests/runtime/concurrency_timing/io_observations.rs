@@ -22,10 +22,6 @@ impl IoSample {
     }
 
     fn new_with_clock(clock: Arc<FrameClock>) -> Self {
-        Self::new_with_clock_and_sql_startup(clock, false)
-    }
-
-    fn new_with_clock_and_sql_startup(clock: Arc<FrameClock>, eager_sql: bool) -> Self {
         let mut setup = Vec::new();
         let mut start = std::time::Instant::now();
         let mut sample = Sample::new_with_clock(1, None, clock);
@@ -55,22 +51,18 @@ impl IoSample {
         let sql_workers_before = sql_worker_starts.load(Ordering::Acquire);
         assert_eq!(sql_workers_before, 0);
         let sql_started = std::time::Instant::now();
-        let sql_duration = if eager_sql {
-            handler
-                .start_read_workers()
-                .expect("production preaccept SQL startup");
-            sql_started.elapsed()
-        } else {
-            std::time::Duration::ZERO
-        };
+        handler
+            .start_read_workers()
+            .expect("production preaccept SQL startup");
+        let sql_duration = sql_started.elapsed();
         let sql_workers_after = sql_worker_starts.load(Ordering::Acquire);
-        assert_eq!(sql_workers_after, if eager_sql { 8 } else { 0 });
+        assert_eq!(sql_workers_after, 8);
         let sql_preaccept_initialization = json!({
-            "called":eager_sql,"duration_ns":sql_duration.as_nanos(),
+            "called":true,"duration_ns":sql_duration.as_nanos(),
             "workers_before":sql_workers_before,"workers_after":sql_workers_after,
             "schema_plus_sql_ns":u128::from(read_pool_initialization["schema_total_ns"].as_u64().unwrap()) + sql_duration.as_nanos(),
             "reader_pool_plus_sql_ns":u128::from(read_pool_initialization["total_ns"].as_u64().unwrap()) + sql_duration.as_nanos(),
-            "semantics":"The production start_read_workers call runs before FrameIntake only in eager8. SQL duration is nested in production_handler; reader pool total is nested in helper seed. Schema+SQL and pool+SQL sums combine disjoint costs, not extra latency to add to enclosing setup totals. No warmup requests."
+            "semantics":"The production start_read_workers call always runs before FrameIntake; there is no selectable startup policy. SQL duration is nested in production_handler; reader pool total is nested in helper seed. Schema+SQL and pool+SQL sums combine disjoint costs, not extra latency to add to enclosing setup totals. No warmup requests."
         });
         let worker_starts = handler.observation_worker_starts();
         benchmark::setup_mark(&mut setup, "production_handler", &mut start);

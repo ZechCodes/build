@@ -25,18 +25,16 @@ struct Capture {
     phases: Arc<Mutex<Vec<Value>>>,
     records: Vec<Value>,
     trace: bool,
-    sql_startup_eager: bool,
     previous_stats: BTreeMap<usize, Value>,
 }
 
 impl Capture {
-    fn new(trace: bool, sql_startup_eager: bool) -> Self {
+    fn new(trace: bool) -> Self {
         Self {
             origin: Instant::now(),
             phases: Default::default(),
             records: Vec::new(),
             trace,
-            sql_startup_eager,
             previous_stats: BTreeMap::new(),
         }
     }
@@ -54,7 +52,7 @@ impl Capture {
         }
         let start = Instant::now();
         let threads_before = thread_count();
-        let mut sample = IoSample::new_with_clock_and_sql_startup(clock, self.sql_startup_eager);
+        let mut sample = IoSample::new_with_clock(clock);
         if let Some(first) = first_method {
             let position = sample
                 .requests
@@ -88,7 +86,7 @@ impl Capture {
             "sql_preaccept_initialization":sample.sql_preaccept_initialization,
             "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire),
             "sql_worker_starts":sample.sql_worker_starts.load(Ordering::Acquire),
-            "sql_startup_mode":if self.sql_startup_eager {"eager8"} else {"demand"}}));
+            "sql_startup_mode":"eager8"}));
         self.previous_stats
             .insert(fixture, sample.sample.clock.stats());
         sample
@@ -297,12 +295,6 @@ async fn paired_observation_benchmark() {
     let trace = std::env::var("BUILD_OBSERVATION_BENCH_TRACE").is_ok_and(|v| v == "1");
     let first_method = std::env::var("BUILD_OBSERVATION_BENCH_FIRST_METHOD").ok();
     let selected_scenario = std::env::var("BUILD_OBSERVATION_BENCH_SCENARIO").ok();
-    let requested_sql_startup = std::env::var("BUILD_OBSERVATION_BENCH_SQL_STARTUP").ok();
-    let sql_startup_mode = requested_sql_startup.as_deref().unwrap_or("demand");
-    assert!(
-        matches!(sql_startup_mode, "demand" | "eager8"),
-        "SQL_STARTUP must exactly name demand or eager8"
-    );
     let scenarios = selected_scenarios(selected_scenario.as_deref());
     let output =
         PathBuf::from(std::env::var("BUILD_OBSERVATION_BENCH_OUTPUT").expect("output path"));
@@ -310,12 +302,12 @@ async fn paired_observation_benchmark() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let mut capture = Capture::new(trace, sql_startup_mode == "eager8");
+    let mut capture = Capture::new(trace);
     capture.records.push(json!({"kind":"configuration","unix_ns":unix_ns,
         "samples":samples,"warmups":warmups,"cold_batches":cold,"trace":trace,
         "requested_first_method":first_method,"requested_scenario":selected_scenario,
-        "requested_sql_startup":requested_sql_startup,"sql_startup_mode":sql_startup_mode,
-        "sql_startup_semantics":"eager8 calls the production FrameHandler::start_read_workers before FrameIntake/session acceptance; demand skips that call and grows SQL workers from0 during requests. Both use natural production schema initialization. This supersedes older f210 timed-lazy-eager8 semantics; no benchmark warmup requests.",
+        "sql_startup_mode":"eager8","sql_startup_switch_available":false,
+        "sql_startup_semantics":"fixed production preaccept eager8: FrameHandler::start_read_workers always runs before FrameIntake/session acceptance, with natural production schema initialization. There is no benchmark startup-policy switch or additional warmup request.",
         "sql_preaccept_initialization_available":true,
         "sql_worker_starts_available":true,
         "read_pool_initialization_available":true,

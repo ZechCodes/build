@@ -1,5 +1,7 @@
 //! Step 4 paired observation measurements over real encrypted intake.
 //! All reads name real temporary resources; gh is an injected local script.
+mod benchmark;
+
 use super::*;
 use std::os::unix::fs::PermissionsExt;
 
@@ -7,11 +9,19 @@ struct IoSample {
     sample: Sample,
     requests: Vec<(&'static str, Value)>,
     pending: std::collections::BTreeMap<u64, &'static str>,
+    setup: Vec<Value>,
 }
 
 impl IoSample {
     fn new() -> Self {
-        let mut sample = Sample::new(1, None);
+        Self::new_with_clock(FrameClock::new())
+    }
+
+    fn new_with_clock(clock: Arc<FrameClock>) -> Self {
+        let mut setup = Vec::new();
+        let mut start = std::time::Instant::now();
+        let mut sample = Sample::new_with_clock(1, None, clock);
+        benchmark::setup_mark(&mut setup, "helper_fixture_and_unused_intake", &mut start);
         let requests = {
             let mut app = sample.state.lock().unwrap();
             let requests = fixture_requests(&mut app, &sample);
@@ -19,9 +29,12 @@ impl IoSample {
             app.publish_all_snapshot_projection();
             requests
         };
+        benchmark::setup_mark(&mut setup, "extra_fixture_seed", &mut start);
         let handler = AppState::handler(Arc::clone(&sample.state));
+        benchmark::setup_mark(&mut setup, "production_handler", &mut start);
         let transport = crate::transport::generate_transport_keypair();
         sample.intake = FrameIntake::with_pool(handler, transport.clone(), 128, 1);
+        benchmark::setup_mark(&mut setup, "production_intake", &mut start);
         sample.wire = ChannelWire::open();
         sample
             .wire
@@ -35,7 +48,9 @@ impl IoSample {
             sample.wire.outbound.try_recv(),
             Ok(OutboundEnvelope::SessionAccept { .. })
         ));
+        benchmark::setup_mark(&mut setup, "session_open", &mut start);
         Self {
+            setup,
             sample,
             requests,
             pending: Default::default(),

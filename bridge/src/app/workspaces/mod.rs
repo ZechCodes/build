@@ -1367,6 +1367,7 @@ pub(in crate::app) fn is_scratch_checkout(
 #[cfg(test)]
 thread_local! {
     static PATH_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PATH_CANONICALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1381,9 +1382,23 @@ pub(in crate::app) fn record_path_comparison() {
     PATH_COMPARISONS.with(|count| count.set(count.get() + 1));
 }
 
+#[cfg(test)]
+pub(in crate::app) fn count_path_canonicalizations<T>(read: impl FnOnce() -> T) -> (T, usize) {
+    let previous = PATH_CANONICALIZATIONS.replace(0);
+    let value = read();
+    (value, PATH_CANONICALIZATIONS.replace(previous))
+}
+
+#[cfg(test)]
+pub(in crate::app) fn record_path_canonicalizations(count: usize) {
+    PATH_CANONICALIZATIONS.with(|held| held.set(held.get() + count));
+}
+
 pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
     #[cfg(test)]
     record_path_comparison();
+    #[cfg(test)]
+    record_path_canonicalizations(2);
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,
@@ -1396,7 +1411,11 @@ pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
 /// fallback to the literal paths when either side cannot be: a workspace
 /// reached through a linked root has to read as the ground it is.
 pub(in crate::app) fn path_within(inner: &Path, outer: &Path) -> bool {
-    let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolve = |path: &Path| {
+        #[cfg(test)]
+        record_path_canonicalizations(1);
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    };
     resolve(inner).starts_with(resolve(outer))
 }
 

@@ -57,24 +57,53 @@ impl Fixture {
 #[test]
 fn task_observation_rendering_uses_captured_paths_for_unnamed_live_actors() {
     let fixture = Fixture::new();
-    let ((row, answer), comparisons) = crate::app::workspaces::count_path_comparisons(|| {
-        (
-            fixture
-                .app
-                .watched_task_observation_row(&fixture.project, &fixture.observation)
-                .unwrap(),
-            fixture
-                .app
-                .observed_task_json(&fixture.project, &fixture.observation),
-        )
-    });
+    let ((row, answer), canonicalizations) =
+        crate::app::workspaces::count_path_canonicalizations(|| {
+            (
+                fixture
+                    .app
+                    .watched_task_observation_row(&fixture.project, &fixture.observation)
+                    .unwrap(),
+                fixture
+                    .app
+                    .observed_task_json(&fixture.project, &fixture.observation),
+            )
+        });
 
     assert_eq!(
-        comparisons, 0,
+        canonicalizations, 0,
         "postcommit projection must not canonicalize paths"
     );
     assert_eq!(row["last_event"]["actor"], "the writer agent");
     assert_eq!(answer["identities"][&fixture.actor]["available"], true);
+}
+
+#[test]
+fn path_counters_distinguish_cached_comparisons_from_canonicalization() {
+    let fixture = Fixture::new();
+    let path = fixture.app.state_root.as_path();
+    let ((same, cached_io), cached_comparisons) =
+        crate::app::workspaces::count_path_comparisons(|| {
+            crate::app::workspaces::count_path_canonicalizations(|| {
+                fixture.app.observed_same_path(path, path)
+            })
+        });
+    assert!(same);
+    assert_eq!(cached_comparisons, 1);
+    assert_eq!(
+        cached_io, 0,
+        "a cached path equality does no filesystem work"
+    );
+
+    let ((same, live_io), live_comparisons) =
+        crate::app::workspaces::count_path_comparisons(|| {
+            crate::app::workspaces::count_path_canonicalizations(|| {
+                crate::app::workspaces::same_path(path, path)
+            })
+        });
+    assert!(same);
+    assert_eq!(live_comparisons, 1);
+    assert_eq!(live_io, 2, "a live equality canonicalizes both inputs");
 }
 
 #[test]

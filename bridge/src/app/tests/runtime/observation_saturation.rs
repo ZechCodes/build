@@ -131,45 +131,65 @@ async fn real_observation_saturation_probe(deadline: Duration) {
         let reply = result.expect("real pure reads finish while SQL connections remain held");
         assert_eq!(reply["id"], id, "{reply}");
         assert_eq!(reply["ok"], true, "{reply}");
-        let entries = if method == "fs.list" {
-            &reply["result"]["entries"]
-        } else {
-            &reply["result"]["files"]
-        };
-        let field = if method == "fs.list" { "name" } else { "path" };
-        let expected = if method == "fs.list" {
-            visible_directory
-        } else {
-            visible
-        };
-        assert!(
-            entries
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry[field] == expected),
-            "{reply}"
+        assert_scope_payload(
+            method,
+            &reply,
+            &canonical_repository,
+            visible,
+            visible_directory,
         );
-        if method == "fs.list" {
-            assert_eq!(
-                reply["result"]["path"],
-                canonical_repository.display().to_string()
-            );
-        } else {
-            // Validate the real wire contract, including StatusFile.path.
-            let status: crate::api::v1::git::StatusPayload =
-                serde_json::from_value(reply["result"].clone()).unwrap();
-            assert_eq!(status.branch, "main");
-            assert!(status.files.iter().any(|file| file.path == visible));
-        }
         assert!(
             elapsed <= deadline,
             "real {method} under SQL saturation took {elapsed:?}, exceeding {deadline:?}"
         );
     }
+    assert_mixed_replies(&mut wire, &key).await;
+}
+
+fn assert_scope_payload(
+    method: &str,
+    reply: &Value,
+    canonical_repository: &Path,
+    visible: &str,
+    visible_directory: &str,
+) {
+    let entries = if method == "fs.list" {
+        &reply["result"]["entries"]
+    } else {
+        &reply["result"]["files"]
+    };
+    let field = if method == "fs.list" { "name" } else { "path" };
+    let expected = if method == "fs.list" {
+        visible_directory
+    } else {
+        visible
+    };
+    assert!(
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry[field] == expected),
+        "{reply}"
+    );
+    if method == "fs.list" {
+        assert_eq!(
+            reply["result"]["path"],
+            canonical_repository.display().to_string()
+        );
+    } else {
+        // Validate the real wire contract, including StatusFile.path.
+        let status: crate::api::v1::git::StatusPayload =
+            serde_json::from_value(reply["result"].clone()).unwrap();
+        assert_eq!(status.branch, "main");
+        assert!(status.files.iter().any(|file| file.path == visible));
+    }
+}
+
+async fn assert_mixed_replies(wire: &mut ChannelWire, key: &str) {
     let mut completed = std::collections::BTreeSet::new();
     for _ in 0..READERS {
-        let reply = tokio::time::timeout(Duration::from_secs(5), answer(&mut wire, &key))
+        let reply = tokio::time::timeout(Duration::from_secs(5), answer(wire, key))
             .await
             .unwrap();
         assert_eq!(reply["ok"], true, "{reply}");

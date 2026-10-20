@@ -39,6 +39,18 @@ fn witnessed(drops: &Arc<AtomicUsize>) -> Execution {
     Box::new(move || drop(witness))
 }
 
+fn fill_metadata_backlog(queue: &ObservationQueue, sender: &SessionSender) {
+    for id in 2..SQL_BACKLOG {
+        assert!(enqueue(
+            queue,
+            sender,
+            id,
+            "tasks.review.get",
+            json!({"unique":id})
+        ));
+    }
+}
+
 #[test]
 fn preparing_and_ready_keep_every_folded_caller_charged_until_io_admission() {
     let queue = Arc::new(ObservationQueue::default());
@@ -48,15 +60,7 @@ fn preparing_and_ready_keep_every_folded_caller_charged_until_io_admission() {
     }
     let (work, preparing) = queue.take_metadata(&handler()).unwrap();
     assert_eq!(work.callers.len(), 2);
-    for id in 2..SQL_BACKLOG {
-        assert!(enqueue(
-            &queue,
-            &sender,
-            id,
-            "tasks.review.get",
-            json!({"unique":id})
-        ));
-    }
+    fill_metadata_backlog(&queue, &sender);
     assert_eq!(queue.depths(), (SQL_BACKLOG, 1));
     assert!(!enqueue(&queue, &sender, 99, "fs.list", json!({})));
     let drops = Arc::new(AtomicUsize::new(0));

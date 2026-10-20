@@ -16,6 +16,17 @@ pub struct ReadPool {
 struct Pool {
     available: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
+    #[cfg(test)]
+    initialization: ReadPoolInitialization,
+}
+
+/// Natural startup work, nested inside Store::new rather than any request.
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ReadPoolInitialization {
+    pub total: std::time::Duration,
+    pub schema_total: std::time::Duration,
+    pub schema_count: usize,
 }
 
 /// One exclusively borrowed connection; dropping it returns its capacity.
@@ -42,11 +53,37 @@ fn open_read_connection(path: &Path) -> Result<Connection, StoreError> {
 
 impl ReadPool {
     pub(super) fn open(path: &Path) -> Result<Self, StoreError> {
+        #[cfg(test)]
+        let started = std::time::Instant::now();
+        #[cfg(test)]
+        let mut initialization = ReadPoolInitialization::default();
         let mut available = Vec::with_capacity(READ_CONNECTIONS);
         for _ in 0..READ_CONNECTIONS {
-            available.push(open_read_connection(path)?);
+            let connection = open_read_connection(path)?;
+            #[cfg(test)]
+            let schema_started = std::time::Instant::now();
+            // Store startup precedes request acceptance. Load every reader's
+            // schema here so the ready pool never defers this work to a read.
+            // Preparing needs no application table, rows, or retained statement.
+            drop(connection.prepare("SELECT 1 FROM main.sqlite_schema LIMIT 0")?);
+            #[cfg(test)]
+            {
+                initialization.schema_total += schema_started.elapsed();
+                initialization.schema_count += 1;
+            }
+            available.push(connection);
         }
-        Ok(Self::from_connections(available))
+        let pool = Self::from_connections(available);
+        #[cfg(test)]
+        let pool = {
+            let mut pool = pool;
+            initialization.total = started.elapsed();
+            Arc::get_mut(&mut pool.inner)
+                .expect("startup pool has not been published")
+                .initialization = initialization;
+            pool
+        };
+        Ok(pool)
     }
 
     fn from_connections(available: Vec<Connection>) -> Self {
@@ -54,8 +91,15 @@ impl ReadPool {
             inner: Arc::new(Pool {
                 available: Mutex::new(available),
                 permits: Arc::new(Semaphore::new(READ_CONNECTIONS)),
+                #[cfg(test)]
+                initialization: ReadPoolInitialization::default(),
             }),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn initialization_timing(&self) -> ReadPoolInitialization {
+        self.inner.initialization
     }
 
     /// Tokio's semaphore queues borrowers fairly and removes cancelled waits.

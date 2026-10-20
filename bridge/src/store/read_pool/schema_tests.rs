@@ -59,6 +59,9 @@ async fn all_pooled_readers_have_loaded_schemas_before_first_table_prepare() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let pool = store.read_pool();
+    let initialization = pool.initialization_timing();
+    assert_eq!(initialization.schema_count, READ_CONNECTIONS);
+    assert!(initialization.total >= initialization.schema_total);
     let mut connections = Vec::with_capacity(READ_CONNECTIONS);
     for _ in 0..READ_CONNECTIONS {
         connections.push(pool.acquire().await);

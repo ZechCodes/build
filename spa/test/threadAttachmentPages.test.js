@@ -39,6 +39,8 @@ describe("thread attachment pages", () => {
   it.each([
     { label: "empty first page", first: { content_b64: "" } },
     { label: "wrong first offset", first: { offset: 1 } },
+    { label: "missing first ranged offset", first: { offset: undefined } },
+    { label: "missing first ranged size", first: { size: undefined } },
     { label: "extra bytes", first: { size: 1 } },
     { label: "negative size", first: { size: -1 } },
     { label: "noninteger size", first: { size: 1.5 } },

@@ -1,6 +1,7 @@
 use super::*;
 
 mod operations;
+mod work;
 
 #[test]
 fn store_free_thread_read_context_keeps_an_immutable_bounded_history() {

@@ -145,6 +145,62 @@ const CLAUDE_SIGNED_IN: &str = r#"{"claudeAiOauth": {"accessToken": "sk-ant-oat-
     "scopes": ["user:inference"]}}"#;
 
 #[test]
+fn inventory_snapshot_does_not_wait_for_observation_lock() {
+    let device = Device::new();
+    let inventory = device.inventory();
+    inventory.sweep();
+    let expected = inventory.snapshot();
+    let guard = inventory.lock();
+    let (sent, received) = std::sync::mpsc::channel();
+    let reading = Arc::clone(&inventory);
+    let reader = std::thread::spawn(move || sent.send(reading.snapshot()).unwrap());
+    let observed = received.recv_timeout(Duration::from_secs(1));
+    drop(guard);
+    reader.join().unwrap();
+    assert_eq!(
+        observed.expect("snapshot waited for observation lock"),
+        expected
+    );
+}
+
+#[test]
+fn refresh_publishes_progress_without_unfinished_observations() {
+    let device = Device::new();
+    let inventory = device.inventory();
+    let before = inventory.snapshot_arc();
+    // A sweep has applied a row but has not completed its publication yet.
+    inventory.lock().harnesses[0].installation.state = InstallationState::Installed;
+    let receipt = inventory.request_refresh();
+    let requested = inventory.snapshot_arc();
+    assert_eq!(requested.refresh.requested, receipt.request);
+    assert_eq!(requested.harnesses, before.harnesses);
+    inventory.finish(0, true);
+    assert_eq!(
+        inventory.snapshot_arc().harnesses[0].installation.state,
+        InstallationState::Installed
+    );
+    assert_eq!(
+        before.harnesses[0].installation.state,
+        InstallationState::Unknown
+    );
+}
+
+#[test]
+fn repeated_observations_publish_timestamps_without_revision_news() {
+    let device = Device::new();
+    let inventory = device.inventory();
+    inventory.sweep();
+    let before = inventory.snapshot_arc();
+    let changes = inventory.changes();
+    device.advance(AUTH_CHECK_INTERVAL);
+    inventory.sweep();
+    let after = inventory.snapshot_arc();
+    assert_eq!(before.revision, after.revision);
+    assert!(!changes.has_changed().unwrap());
+    assert!(after.auth_contexts[0].checked_at_ms > before.auth_contexts[0].checked_at_ms);
+}
+
+#[test]
 fn every_harness_is_listed_linked_to_its_shared_credential_context() {
     let device = Device::new();
     let snapshot = device.inventory().snapshot();
@@ -763,6 +819,7 @@ fn a_refresh_answers_at_once_and_completes_with_the_next_sweep() {
     let before = inventory.snapshot();
 
     let receipt = inventory.request_refresh();
+    assert_eq!(inventory.snapshot().refresh.requested, receipt.request);
     assert_eq!(
         receipt,
         RefreshReceipt {

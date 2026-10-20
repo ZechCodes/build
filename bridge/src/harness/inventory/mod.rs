@@ -5,7 +5,8 @@
 //! A daemon service, not an RPC: one thread sweeps every
 //! [`SWEEP_INTERVAL`] whether or not a client is connected, and
 //! `harnesses.list` reads the snapshot it keeps without waiting on any CLI.
-//! Its lock is its own, never `AppState`'s, and no probe runs under it.
+//! Readers load an immutable snapshot atomically. Its observation lock is its
+//! own, never `AppState`'s, and no probe runs under it.
 //!
 //! Each sweep looks for every harness's executable (a few `stat`s), takes the
 //! installed version from the CLI readings (`harness::installed`, on their own
@@ -23,6 +24,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+use arc_swap::ArcSwap;
 use tokio::sync::watch;
 
 use crate::harness::harness_for;
@@ -131,6 +133,7 @@ impl InventoryBuilder {
             state.restore(saved);
         }
         let inventory = Arc::new(Inventory {
+            snapshot: ArcSwap::from_pointee(state.snapshot(&self.running)),
             changed: watch::channel(state.revision).0,
             state: Mutex::new(state),
             wake: Condvar::new(),
@@ -147,6 +150,7 @@ impl InventoryBuilder {
 }
 
 pub struct Inventory {
+    snapshot: ArcSwap<HarnessesSnapshot>,
     state: Mutex<State>,
     wake: Condvar,
     changed: watch::Sender<u64>,
@@ -430,39 +434,45 @@ impl Inventory {
         self.state.lock().unwrap()
     }
 
-    /// Everything it holds now. Never waits on a CLI.
+    /// Everything it has published. Never waits on a probe or writer lock.
     pub fn snapshot(&self) -> HarnessesSnapshot {
-        let state = self.lock();
+        (*self.snapshot_arc()).clone()
+    }
+
+    pub fn snapshot_arc(&self) -> Arc<HarnessesSnapshot> {
+        self.snapshot.load_full()
+    }
+}
+
+impl State {
+    fn snapshot(&self, running: &RunningSessions) -> HarnessesSnapshot {
         HarnessesSnapshot {
-            revision: state.revision,
-            refresh: state.refresh,
-            harnesses: state
+            revision: self.revision,
+            refresh: self.refresh,
+            harnesses: self
                 .harnesses
                 .iter()
-                .map(|harness| self.harness_row(&state, harness))
+                .map(|harness| self.harness_row(harness, running))
                 .collect(),
-            auth_contexts: state.contexts.iter().map(ContextState::row).collect(),
+            auth_contexts: self.contexts.iter().map(ContextState::row).collect(),
         }
     }
 
-    fn harness_row(&self, state: &State, harness: &HarnessState) -> HarnessRow {
+    fn harness_row(&self, harness: &HarnessState, running: &RunningSessions) -> HarnessRow {
         let implementation = harness_for(harness.provider);
         let reported = implementation.reports_running_version();
         HarnessRow {
             id: harness.provider,
             label: implementation.label().to_string(),
             cli_name: implementation.cli_name().to_string(),
-            auth_context: state.contexts[harness.context]
-                .adapter
-                .context()
-                .to_string(),
+            auth_context: self.contexts[harness.context].adapter.context().to_string(),
             installation: harness.installation.clone(),
             version: VersionFacts {
                 installed: harness.installed_version.clone(),
                 running: RunningVersions {
                     reported,
                     versions: if reported {
-                        self.sources.running.versions_of(harness.provider)
+                        running.versions_of(harness.provider)
                     } else {
                         Vec::new()
                     },
@@ -470,7 +480,9 @@ impl Inventory {
             },
         }
     }
+}
 
+impl Inventory {
     /// Ask for every context to be observed again soon, and answer at once
     /// with the request to watch for. Never signs in or refreshes a token.
     pub fn request_refresh(&self) -> RefreshReceipt {
@@ -480,6 +492,10 @@ impl Inventory {
             context.forced = true;
         }
         state.pending = true;
+        // Only progress changes here: a sweep may still be observing rows.
+        let mut published = self.snapshot();
+        published.refresh = state.refresh;
+        self.snapshot.store(Arc::new(published));
         self.wake.notify_all();
         RefreshReceipt {
             request: state.refresh.requested,
@@ -570,14 +586,18 @@ impl Inventory {
             state.refresh.completed = refresh_target;
             changed = true;
         }
-        if !changed {
-            return;
+        if changed {
+            state.revision += 1;
+            if let Some(path) = &self.sources.persist {
+                persisted::save(path, &state.persisted());
+            }
         }
-        state.revision += 1;
-        if let Some(path) = &self.sources.persist {
-            persisted::save(path, &state.persisted());
+        // A check timestamp may advance without raising the revision.
+        self.snapshot
+            .store(Arc::new(state.snapshot(&self.sources.running)));
+        if changed {
+            self.changed.send_replace(state.revision);
         }
-        self.changed.send_replace(state.revision);
     }
 
     /// Until there is something to do: a nudge or refresh, a forced check

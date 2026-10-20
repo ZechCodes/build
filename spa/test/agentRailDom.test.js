@@ -105,7 +105,7 @@ const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
 const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
 const pinnedValue = async () => (await readUiRecord(pinnedAddress))?.value?.pinned;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
-const { visibleSyncThread, threadReaderIsHere } = await import("../src/core/syncVisibleScopes.js");
+const { visibleSyncThread, threadReaderIsHere, subscribeThreadReaders } = await import("../src/core/syncVisibleScopes.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { SURFACE_PILL_GRACE_MS } = await import("../src/core/agentSurfacesModel.js");
@@ -321,6 +321,16 @@ afterEach(async () => {
 });
 
 describe("shared mounted chat reader (#704)", () => {
+  const subscriptions = [];
+  const observeReader = (identity) => {
+    const states = [];
+    subscriptions.push(subscribeThreadReaders(() => states.push(threadReaderIsHere(identity))));
+    return states;
+  };
+  afterEach(() => {
+    for (const stop of subscriptions.splice(0)) stop();
+  });
+
   const selectedIdentity = () => {
     const identity = visibleSyncThread("dev-1");
     expect(identity).toMatchObject({ deviceId: "dev-1", entityId: "run-3", agentId: "ag-1" });
@@ -343,12 +353,14 @@ describe("shared mounted chat reader (#704)", () => {
       });
       await mount({ openAgentId: "ag-1", panelOpen: true });
       const identity = selectedIdentity();
+      const observed = observeReader(identity);
       expect(threadReaderIsHere(identity)).toBe(false);
       expect(markSeen).not.toHaveBeenCalled();
 
       focused.mockReturnValue(true);
       window.dispatchEvent(new Event("focus"));
       expect(threadReaderIsHere(identity)).toBe(true);
+      expect(observed.at(-1)).toBe(true);
       await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
       expect(reportsWhileReading).toEqual([true]);
       expect(threadReaderIsHere(identity)).toBe(true);
@@ -356,9 +368,11 @@ describe("shared mounted chat reader (#704)", () => {
       focused.mockReturnValue(false);
       window.dispatchEvent(new Event("blur"));
       expect(threadReaderIsHere(identity)).toBe(false);
+      expect(observed.at(-1)).toBe(false);
       focused.mockReturnValue(true);
       window.dispatchEvent(new Event("focus"));
       expect(threadReaderIsHere(identity)).toBe(true);
+      expect(observed.at(-1)).toBe(true);
       expect(markSeen).toHaveBeenCalledTimes(1);
     } finally {
       focused.mockRestore();
@@ -369,16 +383,20 @@ describe("shared mounted chat reader (#704)", () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     await mount({ openAgentId: "ag-1", panelOpen: true });
     const first = selectedIdentity();
+    const firstObserved = observeReader(first);
     expect(threadReaderIsHere(first)).toBe(true);
 
     railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+    expect(firstObserved.at(-1)).toBe(false);
     await flush();
     const second = visibleSyncThread("dev-1");
     expect(second).toMatchObject({ agentId: "ag-2" });
     expect(threadReaderIsHere(first)).toBe(false);
     expect(threadReaderIsHere(second)).toBe(true);
+    const secondObserved = observeReader(second);
 
     railHost().querySelector(".rail-overview-toggle").click();
+    expect(secondObserved.at(-1)).toBe(false);
     await flush();
     expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
     expect(threadReaderIsHere(second)).toBe(false);
@@ -391,13 +409,16 @@ describe("shared mounted chat reader (#704)", () => {
   it("stops reading in TUI and resumes for the same chat", async () => {
     await mount({ openAgentId: "ag-1", panelOpen: true });
     const identity = selectedIdentity();
+    const observed = observeReader(identity);
     expect(threadReaderIsHere(identity)).toBe(true);
     tuiToggle().click();
+    expect(observed.at(-1)).toBe(false);
     await flush();
     expect(panel().querySelector("#railinput")).toBeNull();
     expect(visibleSyncThread("dev-1")).toBeNull();
     expect(threadReaderIsHere(identity)).toBe(false);
     tuiToggle().click();
+    expect(observed.at(-1)).toBe(true);
     await flush();
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(threadReaderIsHere(identity)).toBe(true);
@@ -406,15 +427,19 @@ describe("shared mounted chat reader (#704)", () => {
   it("stops reading on collapse and unregisters the disposed rail", async () => {
     await mount({ openAgentId: "ag-1", panelOpen: true });
     const identity = selectedIdentity();
+    const observed = observeReader(identity);
     expect(threadReaderIsHere(identity)).toBe(true);
     rail.collapse();
+    expect(observed.at(-1)).toBe(false);
     await flush();
     expect(threadReaderIsHere(identity)).toBe(false);
     railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    expect(observed.at(-1)).toBe(true);
     await flush();
     expect(threadReaderIsHere(identity)).toBe(true);
     rail.dispose();
     rail = null;
+    expect(observed.at(-1)).toBe(false);
     expect(visibleSyncThread("dev-1")).toBeNull();
     expect(threadReaderIsHere(identity)).toBe(false);
   });
@@ -423,14 +448,17 @@ describe("shared mounted chat reader (#704)", () => {
     await writeCached({ deviceId: "dev-1", entityId: "", kind: "conversation-reset-support", sub: "" }, { supported: true });
     await mount({ openAgentId: "ag-1", panelOpen: true });
     const identity = selectedIdentity();
+    const observed = observeReader(identity);
     expect(threadReaderIsHere(identity)).toBe(true);
     panel().querySelector(".rail-surface-menu .caret").click();
     panel().querySelector('[data-action="conversation:clear"]').click();
     await vi.waitFor(() => expect(document.querySelector("[data-confirm-ok]")).toBeTruthy());
     document.querySelector("[data-confirm-ok]").click();
     await vi.waitFor(() => expect(panel().querySelector(".rail-reset-choice")).toBeTruthy());
+    expect(observed.at(-1)).toBe(false);
     expect(threadReaderIsHere(identity)).toBe(false);
     panel().querySelector("[data-clear-cancel]").click();
+    expect(observed.at(-1)).toBe(true);
     await flush();
     expect(panel().querySelector(".rail-reset-choice")).toBeNull();
     expect(threadReaderIsHere(identity)).toBe(true);

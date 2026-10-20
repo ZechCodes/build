@@ -3,6 +3,12 @@ use super::*;
 use std::path::Path;
 
 impl AppState {
+    #[cfg(test)]
+    pub(in crate::app) fn warm_snapshot_observations_for_test(&mut self) {
+        self.refresh_snapshot_observations();
+        self.snapshot_observations.ready = true;
+    }
+
     pub(super) fn warm_snapshot_board_observations(&mut self) {
         let run_ids = self.runs.keys().cloned().collect::<Vec<_>>();
         let project_ids = self

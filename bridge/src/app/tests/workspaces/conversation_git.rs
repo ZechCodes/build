@@ -148,12 +148,12 @@ fn snapshot_publication_counts_cached_ownership_lookups() {
     add_tip_agents(&mut state, 1);
     state.initialize_snapshot_projection();
     let before = state.read_view.load().facts_version;
-    let (_, comparisons) =
-        crate::app::workspaces::count_path_comparisons(|| state.publish_snapshot_projection());
+    let (_, work) =
+        crate::workspace::read_work_counts::measure(|| state.publish_snapshot_projection());
     assert!(state.read_view.load().facts_version > before);
     assert!(
-        comparisons > 0,
-        "the path comparison counter did not cover warmed snapshot publication"
+        work.observed_roots > 0,
+        "the input root counter did not cover warmed snapshot publication"
     );
 }
 

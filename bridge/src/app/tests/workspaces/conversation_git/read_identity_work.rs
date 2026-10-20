@@ -7,10 +7,16 @@ fn task_identity_capture_does_not_list_or_search_workspaces_per_agent() {
     for size in [16, 64, 200] {
         let (_tmp, mut state, _) = ownership_fixture(size, false);
         add_tip_agents(&mut state, 4);
-        state.initialize_snapshot_projection();
+        state.warm_snapshot_observations_for_test();
         let workspaces = state.workspaces.list(None).len();
         let _ownership = state.begin_snapshot_ownership();
-        let (_, counts) = read_work_counts::measure(|| state.task_read_context());
+        let ((_, canonicalizations), counts) = read_work_counts::measure(|| {
+            crate::app::workspaces::count_path_canonicalizations(|| state.task_read_context())
+        });
+        assert_eq!(
+            canonicalizations, 0,
+            "warmed identity roots must not probe paths"
+        );
         eprintln!("task identity {size} owners x4 agents: {counts:?}");
         measurements.push((workspaces, counts));
     }
@@ -48,17 +54,26 @@ fn ownership_capture_visits_and_normalizes_only_linear_inputs() {
                     );
                 }
             }
-            state.initialize_snapshot_projection();
+            state.warm_snapshot_observations_for_test();
             let workspaces = state.workspaces.list(None).len();
             let inputs = state.runs.len() + workspaces + state.projects.iter().count();
-            let (_, counts) = read_work_counts::measure(|| state.capture_snapshot_ownership());
+            let ((_, canonicalizations), counts) = read_work_counts::measure(|| {
+                crate::app::workspaces::count_path_canonicalizations(|| {
+                    state.capture_snapshot_ownership()
+                })
+            });
+            assert_eq!(
+                canonicalizations, 0,
+                "warmed capture roots must not probe paths"
+            );
             eprintln!("ownership capture {size} / {mode}: {counts:?}");
             measurements.push((size, mode, workspaces, inputs, counts));
         }
     }
     for (size, mode, workspaces, inputs, counts) in measurements {
         assert!(
-            counts.owner_candidates + counts.scope_candidates <= 8 * inputs,
+            counts.owner_candidates + counts.scope_candidates + counts.task_candidates
+                <= 8 * inputs,
             "ownership capture repeatedly visits source candidates ({size}/{mode}): {counts:?}"
         );
         assert!(
@@ -88,7 +103,7 @@ fn workspace_list_counter_includes_every_input_before_project_filtering() {
 fn task_identity_and_ownership_capture_have_separate_timed_phases() {
     let (_tmp, mut state, _) = ownership_fixture(2, false);
     add_tip_agents(&mut state, 2);
-    state.initialize_snapshot_projection();
+    state.warm_snapshot_observations_for_test();
     let clock = FrameClock::new();
     let samples = clock.capture_phases();
     let state = Arc::new(Mutex::new(state));

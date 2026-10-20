@@ -33,6 +33,9 @@ impl AppState {
         let _ownership = self.begin_snapshot_ownership();
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("read_context.task_identity");
+        let context = self
+            .snapshot_ownership_context()
+            .expect("ownership guard captures a context");
         let live = self
             .plans
             .iter()
@@ -40,52 +43,29 @@ impl AppState {
             .chain(self.runs.iter().map(|(owner, run)| (owner, &run.agents)))
             .flat_map(|(owner, roster)| roster.agents().iter().map(move |agent| (owner, agent)))
             .filter_map(|(owner, agent)| {
-                self.task_live_location(owner, &agent.id)
+                self.task_live_location(&context, owner, &agent.id)
                     .map(|location| (agent.id.clone(), location))
             })
             .collect();
-        let mut workspaces = HashMap::new();
-        for workspace in self.workspaces.list(None) {
-            workspaces
-                .entry(workspace.root.clone())
-                .or_insert_with(|| workspace.id.clone());
-            workspaces
-                .entry(self.snapshot_root(&workspace.root))
-                .or_insert_with(|| workspace.id.clone());
-        }
-        // Retain aliases known at publication. SQL readers only compare these
-        // immutable paths, even after the corresponding directory disappears.
-        for run in self.runs.values() {
-            let path = self.snapshot_root(&run.worktree.path);
-            if let Some(id) = workspaces.get(&path).cloned() {
-                workspaces.entry(run.worktree.path.clone()).or_insert(id);
-            }
-        }
+        let workspaces = context.task_paths().clone();
         TaskIdentityContext { live, workspaces }
     }
 
-    fn task_live_location(&self, owner: &str, agent: &str) -> Option<LiveTaskLocation> {
+    fn task_live_location(
+        &self,
+        context: &crate::app::workspaces::ProjectionOwnership,
+        owner: &str,
+        agent: &str,
+    ) -> Option<LiveTaskLocation> {
         let project_agent = crate::agent::is_project_agent(agent);
         let workspace = if project_agent {
             None
         } else {
-            let root = &self.runs.get(owner)?.worktree.path;
-            let project_id = self.projects.project_id_of(owner)?;
-            self.workspaces
-                .list(Some(project_id))
-                .into_iter()
-                .find(|workspace| {
-                    #[cfg(test)]
-                    crate::workspace::read_work_counts::task_candidate();
-                    self.observed_same_path(&workspace.root, root)
-                        && self
-                            .workspace_snapshot_conversation_owner(workspace)
-                            .as_deref()
-                            == Some(owner)
-                        && self.projects.get(project_id).is_some_and(|project| {
-                            !self.observed_same_path(&workspace.root, &project.repo_path)
-                        })
-                })
+            self.runs.get(owner)?;
+            self.projects.project_id_of(owner)?;
+            context
+                .task_workspace(owner)
+                .and_then(|id| self.workspaces.get(id))
         };
         Some(LiveTaskLocation {
             owner: owner.into(),
@@ -239,3 +219,6 @@ pub(super) fn unknown_identity(id: &str) -> TaskAgentIdentity {
         available: false,
     }
 }
+
+#[cfg(test)]
+mod tests;

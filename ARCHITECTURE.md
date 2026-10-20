@@ -397,7 +397,11 @@ Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
 Snapshot preparation captures one ephemeral ownership context shared by board,
-workspace, agent and push projections. It indexes agent ownership and preferred
+workspace, agent and push projections. It observes ordered workspace inputs and
+distinct roots once, preserving run-map fallback order and workspace name/ID
+precedence. Task live locations use a qualified owner index with the existing
+project/root checks and project-repository exclusion, so each agent resolves its
+location without repeating registry scans. It indexes agent ownership and preferred
 run outcomes in the existing precedence order, and reuses branch candidates and
 canonical agent digests for matching render inputs. Updated canonical histories
 are shared by unread projections and history staging; unread summaries are keyed

@@ -35,7 +35,7 @@ fn changed_run_stat_is_published_after_install_before_snapshot_reads() {
     state.store_run_stat(run.clone(), stat.clone(), std::time::Instant::now());
     assert_eq!(
         state.board.diff().run_stat(&run).unwrap().value,
-        stat,
+        &stat,
         "the producer installed its new observation"
     );
     assert_eq!(

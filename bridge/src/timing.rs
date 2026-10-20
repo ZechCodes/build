@@ -163,6 +163,11 @@ impl QueueRecord {
 /// the frames themselves (which record what they did). Answers `bridge.stats`
 /// on its own, holding nothing but its own leaves — a wedged daemon must still
 /// be able to say what is wedging it.
+#[cfg(test)]
+mod requests;
+#[cfg(test)]
+pub(crate) use requests::RequestObserver;
+
 pub struct FrameClock {
     methods: RwLock<HashMap<String, Arc<MethodRecord>>>,
     holder: Mutex<Option<Arc<MethodRecord>>>,
@@ -177,6 +182,10 @@ pub struct FrameClock {
     /// What each live session declared in its greeting — its own leaf, read
     /// by `bridge.stats` beside the counters.
     clients: ClientRegistry,
+    #[cfg(test)]
+    request_observer: RwLock<Option<Arc<RequestObserver>>>,
+    #[cfg(test)]
+    request_observed: AtomicBool,
 }
 
 impl FrameClock {
@@ -210,6 +219,10 @@ impl FrameClock {
             sink,
             slow_lines: throttle.map(|window| (Throttle::new(window), window)),
             clients: ClientRegistry::new(),
+            #[cfg(test)]
+            request_observer: RwLock::new(None),
+            #[cfg(test)]
+            request_observed: AtomicBool::new(false),
         })
     }
 
@@ -409,6 +422,8 @@ impl QueuedFrame {
             pool_wait_micros: AtomicU64::new(0),
             pool_wait_recorded: AtomicBool::new(false),
             held_micros: AtomicU64::new(0),
+            #[cfg(test)]
+            request: None,
         }
     }
 }
@@ -461,6 +476,8 @@ pub struct FrameTimer {
     pool_wait_micros: AtomicU64,
     pool_wait_recorded: AtomicBool,
     held_micros: AtomicU64,
+    #[cfg(test)]
+    request: Option<crate::transport::Frame>,
 }
 
 /// A wait whose endpoint may run on a different thread from its frame.
@@ -498,8 +515,14 @@ impl FrameTimer {
     /// The returned guard derefs to the state. While it lives, `bridge.stats`
     /// names this frame's method as the lock holder.
     pub fn lock<'a, T>(&'a self, state: &'a Arc<Mutex<T>>) -> LockedFor<'a, T> {
+        #[cfg(test)]
+        self.mark_request("app_wait_start");
         let asked_at = Instant::now();
         let guard = state.lock().unwrap();
+        #[cfg(test)]
+        self.mark_request("app_wait_end");
+        #[cfg(test)]
+        self.mark_request("app_hold_start");
         self.lock_wait_micros
             .fetch_add(micros(asked_at.elapsed()), Ordering::Relaxed);
         self.clock.hold_began(&self.method);
@@ -610,6 +633,8 @@ impl<T> Drop for LockedFor<'_, T> {
     fn drop(&mut self) {
         self.timer.clock.hold_ended();
         self.guard.take();
+        #[cfg(test)]
+        self.timer.mark_request("app_hold_end");
         self.timer
             .held_micros
             .fetch_add(micros(self.acquired_at.elapsed()), Ordering::Relaxed);

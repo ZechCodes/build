@@ -203,13 +203,29 @@ impl FrameHandler {
     }
 
     pub(super) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+        #[cfg(test)]
+        let worker_started = std::time::Instant::now();
         let method = frame
             .payload
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or(&frame.frame_type);
+        #[cfg(test)]
+        let observed = self.clock.request_frame(&frame);
         let timer = queued.start(method);
-        (self.dispatch)(sender, frame, timer)
+        #[cfg(test)]
+        let timer = {
+            let mut timer = timer;
+            timer.bind_request(&frame);
+            self.clock
+                .mark_request(&frame, "worker_start", worker_started);
+            timer
+        };
+        let answer = (self.dispatch)(sender, frame, timer);
+        #[cfg(test)]
+        self.clock
+            .mark_observed(&observed, "handler_complete", std::time::Instant::now());
+        answer
     }
 }
 
@@ -497,10 +513,18 @@ impl Dispatcher {
         frame: Frame,
         arrived: WaitTimer,
     ) {
-        self.observations
-            .get_or_init(|| super::sql::ReadDispatcher::new_observations(self.handler.clone()))
-            .dispatch(sender, frame, arrived)
-            .await;
+        #[cfg(test)]
+        self.handler
+            .clock
+            .mark_request(&frame, "executor_init_start", std::time::Instant::now());
+        let lane = self
+            .observations
+            .get_or_init(|| super::sql::ReadDispatcher::new_observations(self.handler.clone()));
+        #[cfg(test)]
+        self.handler
+            .clock
+            .mark_request(&frame, "executor_init_end", std::time::Instant::now());
+        lane.dispatch(sender, frame, arrived).await;
     }
 
     #[cfg(test)]
@@ -561,6 +585,10 @@ impl Dispatcher {
             self.dispatch_sql(sender, frame, arrived).await;
             return;
         }
+        #[cfg(test)]
+        self.handler
+            .clock
+            .mark_request(&frame, "admitted", std::time::Instant::now());
         match ordered_lane(&sender, &frame) {
             // A terminal's frames are scheduled by its lane and by nothing else:
             // its stream is the client's own typing, never a background pull, and
@@ -966,6 +994,12 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
         queued,
         priority: _,
     } = folded;
+    #[cfg(test)]
+    let observed = handler.clock.request_frame(&frame);
+    #[cfg(test)]
+    handler
+        .clock
+        .mark_request(&frame, "lane_pop", std::time::Instant::now());
     let answer = match run_handler(handler, &sender, frame, queued).await {
         None => return,
         Some(Ok(payload)) => payload,
@@ -981,7 +1015,18 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
             }
             None => continue,
         }
+        #[cfg(test)]
+        handler
+            .clock
+            .mark_observed(&observed, "reply_start", std::time::Instant::now());
+        #[cfg(test)]
+        caller.push_observed(for_caller, &handler.clock, &observed, false);
+        #[cfg(not(test))]
         caller.push(for_caller);
+        #[cfg(test)]
+        handler
+            .clock
+            .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
     }
 }
 
@@ -995,10 +1040,27 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         queued,
     } = job;
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+    #[cfg(test)]
+    let observed = handler.clock.request_frame(&frame);
+    #[cfg(test)]
+    handler
+        .clock
+        .mark_request(&frame, "lane_pop", std::time::Instant::now());
     match run_handler(handler, &sender, frame, queued).await {
         None => {}
         Some(Ok(payload)) => {
+            #[cfg(test)]
+            handler
+                .clock
+                .mark_observed(&observed, "reply_start", std::time::Instant::now());
+            #[cfg(test)]
+            sender.push_observed(payload, &handler.clock, &observed, false);
+            #[cfg(not(test))]
             sender.push(payload);
+            #[cfg(test)]
+            handler
+                .clock
+                .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
         }
         Some(Err(_)) => {
             sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));

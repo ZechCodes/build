@@ -139,6 +139,8 @@ impl ReadDispatcher {
             Some("background") => Priority::Background,
             _ => Priority::Foreground,
         };
+        #[cfg(test)]
+        let observed = self.handler.clock.request_frame(&frame);
         let mut job = Some(Job {
             sender,
             frame,
@@ -149,6 +151,10 @@ impl ReadDispatcher {
             tokio::pin!(changed);
             changed.as_mut().enable();
             if self.queue.admit(&mut job) {
+                #[cfg(test)]
+                self.handler
+                    .clock
+                    .mark_observed(&observed, "admitted", std::time::Instant::now());
                 self.queue.changed.notify_waiters();
                 return;
             }
@@ -344,6 +350,8 @@ impl Work {
         handler: &FrameHandler,
         connection: Option<ReadConnection>,
     ) -> Execution {
+        #[cfg(test)]
+        let worker_started = std::time::Instant::now();
         if handler.observations.is_none() {
             let handler = handler.clone();
             return Box::new(move || self.run_on(&handler, connection, ReadLane::Observation));
@@ -353,14 +361,40 @@ impl Work {
             return Box::new(|| {});
         };
         self.job.sender = sender.clone();
+        #[cfg(test)]
+        let observed = handler.clock.request_frame(&self.job.frame);
+        #[cfg(test)]
+        let clock = handler.clock.clone();
+        #[cfg(test)]
+        clock.mark_observed(&observed, "worker_start", worker_started);
         let timer = self
             .job
             .queued
             .start(self.job.frame.payload["method"].as_str().unwrap_or("other"));
+        #[cfg(test)]
+        let needs_metadata = crate::api::effects::observation_needs_sql(&self.job.frame.payload);
+        #[cfg(test)]
+        if needs_metadata {
+            handler
+                .clock
+                .mark_observed(&observed, "metadata_start", std::time::Instant::now());
+        }
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handler.prepare_observation(self.job.sender, self.job.frame, connection)
         }));
+        #[cfg(test)]
+        if needs_metadata {
+            handler
+                .clock
+                .mark_observed(&observed, "metadata_end", std::time::Instant::now());
+        }
         Box::new(move || {
+            #[cfg(test)]
+            clock.mark_observed(
+                &observed,
+                "external_worker_start",
+                std::time::Instant::now(),
+            );
             let _timer = timer;
             if !self.callers.iter().any(|(_, caller)| caller.read_is_live()) {
                 return;
@@ -369,11 +403,20 @@ impl Work {
                 .ok()
                 .and_then(|job| std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok())
                 .unwrap_or_else(|| json!({"ok":false,"error":"handler failed"}));
+            #[cfg(test)]
+            clock.mark_observed(&observed, "handler_complete", std::time::Instant::now());
             for (id, sender) in self.callers {
                 if sender.read_is_live() {
                     let mut answer = answer.clone();
                     answer["id"] = id;
+                    #[cfg(test)]
+                    clock.mark_observed(&observed, "reply_start", std::time::Instant::now());
+                    #[cfg(test)]
+                    sender.push_observed(answer, &clock, &observed, true);
+                    #[cfg(not(test))]
                     sender.push_read_reply(answer);
+                    #[cfg(test)]
+                    clock.mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
                 }
             }
         })
@@ -431,11 +474,28 @@ async fn coordinate_io(
     executor: std::sync::mpsc::Sender<(Execution, oneshot::Sender<()>)>,
 ) {
     while queue.work_available().await {
+        #[cfg(test)]
+        let queue_take_started = std::time::Instant::now();
         let Some(work) = queue.take() else { continue };
+        #[cfg(test)]
+        let observed = handler.clock.request_frame(&work.job.frame);
+        #[cfg(test)]
+        {
+            handler
+                .clock
+                .mark_observed(&observed, "queue_take_start", queue_take_started);
+            handler
+                .clock
+                .mark_observed(&observed, "lane_pop", std::time::Instant::now());
+        }
         let Some(execution) = prepare_io(&queue, &handler, work).await else {
             continue;
         };
         let (done, complete) = oneshot::channel();
+        #[cfg(test)]
+        handler
+            .clock
+            .mark_observed(&observed, "io_submitted", std::time::Instant::now());
         if executor.send((execution, done)).is_err() {
             return;
         }
@@ -452,15 +512,40 @@ async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option
         .read_executors
         .get()
         .expect("initialized SQL executors");
+    #[cfg(test)]
+    handler.clock.mark_request(
+        &work.job.frame,
+        "sql_permit_start",
+        std::time::Instant::now(),
+    );
     let permit = while_live(queue, Some(&work), executors.acquire()).await?;
+    #[cfg(test)]
+    handler
+        .clock
+        .mark_request(&work.job.frame, "sql_permit_end", std::time::Instant::now());
     let pool = handler
         .observations
         .as_ref()
         .and_then(|observations| observations.pool.as_ref());
+    #[cfg(test)]
+    handler.clock.mark_request(
+        &work.job.frame,
+        "sql_borrow_start",
+        std::time::Instant::now(),
+    );
     let connection = match pool {
         Some(pool) => Some(while_live(queue, Some(&work), pool.acquire()).await?),
         None => None,
     };
+    #[cfg(test)]
+    {
+        handler
+            .clock
+            .mark_request(&work.job.frame, "sql_borrow_end", std::time::Instant::now());
+        handler
+            .clock
+            .mark_request(&work.job.frame, "sql_submitted", std::time::Instant::now());
+    }
     let handler = handler.clone();
     executors
         .submit(permit, move || {

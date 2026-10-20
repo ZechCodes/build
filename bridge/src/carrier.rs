@@ -206,6 +206,38 @@ impl SessionSender {
         }
     }
 
+    /// Diagnostic equivalent of push/push_read_reply with an exact seal boundary.
+    /// With tracing disabled, use the original path without inspecting payloads.
+    #[cfg(test)]
+    fn push_observed(
+        &self,
+        payload: Value,
+        clock: &crate::timing::FrameClock,
+        observed: &Option<Frame>,
+        read_fenced: bool,
+    ) {
+        let Some(frame) = observed else {
+            if read_fenced {
+                self.push_read_reply(payload);
+            } else {
+                self.push(payload);
+            }
+            return;
+        };
+        let Some(sealed) = self.seal(payload) else {
+            return;
+        };
+        clock.mark_request(frame, "reply_sealed", std::time::Instant::now());
+        if read_fenced {
+            let _reply = self.reply_gate.lock().unwrap();
+            if self.read_is_live() {
+                self.send_sealed(sealed);
+            }
+        } else {
+            self.send_sealed(sealed);
+        }
+    }
+
     fn on_carrier(mut self, carrier: &CarrierHandle, binding: &CarrierBinding) -> Self {
         self.carrier_id = Some(carrier.id);
         self.carrier_open = binding.open.clone();
@@ -943,6 +975,12 @@ impl FrameIntake {
     ) -> Result<(), CarrierError> {
         let arrived = WaitTimer::start();
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
+        #[cfg(test)]
+        {
+            let clock = &self.dispatcher.handler().clock;
+            clock.mark_request(&frame, "intake", arrived.started_at());
+            clock.mark_request(&frame, "decrypted", std::time::Instant::now());
+        }
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");
             self.close_ended(self.registry.end(&envelope.session_id));
@@ -962,6 +1000,12 @@ impl FrameIntake {
         if let Some(receipt) = receipt_for(&frame) {
             sender.push(receipt);
         }
+        #[cfg(test)]
+        self.dispatcher.handler().clock.mark_request(
+            &frame,
+            "receipt_sent",
+            std::time::Instant::now(),
+        );
         if frame.payload["method"] == "bridge.stats" {
             self.answer_stats(sender, frame, arrived);
             return Ok(());

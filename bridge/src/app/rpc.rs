@@ -364,15 +364,28 @@ fn routed(
     // A verb whose git work must not run under the lock hands that work back
     // rather than doing it here; the drain below runs it with the mutex
     // released. See `AppState::deferred_work`.
+    #[cfg(test)]
+    timer.mark_request("dispatch_start");
     let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
+    #[cfg(test)]
+    timer.mark_request("dispatch_end");
     let dispatched = match deferred {
         // THE POINT OF ALL THIS: seconds to minutes of git — a status walk, a
         // fetch, a merge, a `git worktree remove` of a six-gigabyte checkout —
         // with every other frame, every terminal pump and the relay's own read
         // loop free to make progress meanwhile.
         Some(mut deferred) => loop {
+            #[cfg(test)]
+            timer.mark_request("external_start");
             let done = deferred.run();
-            match timer.lock(state).apply_deferred_stage(method, params, done) {
+            #[cfg(test)]
+            timer.mark_request("external_end");
+            #[cfg(test)]
+            timer.mark_request("apply_start");
+            let applied = timer.lock(state).apply_deferred_stage(method, params, done);
+            #[cfg(test)]
+            timer.mark_request("apply_end");
+            match applied {
                 DeferredNext::Answered(answer) => break answer.map_err(ApiError::classify),
                 DeferredNext::Again(next) => deferred = next,
             }
@@ -384,7 +397,11 @@ fn routed(
     // cold spawn blocks for seconds on the harness's readiness wait while the
     // browser gives up at twelve.
     if dispatched.is_ok() {
+        #[cfg(test)]
+        timer.mark_request("drain_start");
         DeliveryRunner::drain(state, timer);
+        #[cfg(test)]
+        timer.mark_request("drain_end");
     }
     dispatched
 }

@@ -420,6 +420,7 @@ describe("SQL admission under held work", () => {
     expect(wire.sent.some((entry) => payloadOf(entry).id === extraId)).toBe(false);
     await expect(ask(rpc, "ping")).resolves.toEqual({ method: "ping" });
     await expect(ask(rpc, "bridge.stats")).resolves.toEqual({ method: "bridge.stats" });
+    await expect(ask(rpc, "tasks.columns")).resolves.toEqual({ method: "tasks.columns" });
     expect(backlog).toHaveLength(16);
 
     const first = backlog.shift();

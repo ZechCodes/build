@@ -516,6 +516,8 @@ impl AppState {
 
     /// Render already observed board state without starting maintenance.
     pub(in crate::app) fn board_snapshot(&self) -> Value {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board");
         let runs: Vec<Value> = {
             let ids: Vec<String> = self
                 .runs

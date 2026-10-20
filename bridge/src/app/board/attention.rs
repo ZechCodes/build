@@ -650,6 +650,8 @@ impl AppState {
     /// (one small file) and done on every stamp, so a crash costs at most the
     /// action in flight rather than the day's ordering.
     pub(in crate::app) fn persist_attention(&mut self) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.attention");
         // The inbox is ordered and coloured by this map, so a stamp on it IS a
         // feed change — an interaction, a seen, a mute, a dismissal. Noted
         // ahead of the write, because the map moved whether or not there is a

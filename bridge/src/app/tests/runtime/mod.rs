@@ -17,4 +17,7 @@ mod snapshot_publication;
 mod sql_reads;
 pub(in crate::app::tests) mod start_refused;
 pub(in crate::app::tests) mod terminal_lifecycle;
+mod terminal_reaper;
 pub(in crate::app::tests) mod terminals;
+
+mod lock_hold_busy;

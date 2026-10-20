@@ -551,6 +551,8 @@ impl AppState {
     /// an agent whose owner is gone reports `done` into the unknown-entity log
     /// forever.
     pub(in crate::app) fn reap_orphaned_terminals(&mut self) -> Vec<String> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.reap");
         let vanished: Vec<TabKey> = self
             .session_registry
             .tab_keys()

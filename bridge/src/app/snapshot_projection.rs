@@ -211,6 +211,8 @@ impl AppState {
     }
 
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, delta: SnapshotDelta) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.install");
         self.read_view.publish_delta(delta);
         self.snapshot_observations
             .pending_owners
@@ -262,6 +264,8 @@ impl AppState {
         mut delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.global");
         let board = self.board_snapshot();
         let projects = self.snapshot_project_list();
         let workspaces = self

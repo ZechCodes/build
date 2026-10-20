@@ -48,6 +48,8 @@ impl AppState {
     /// Failed saves may remove live identities, but cannot install a candidate
     /// roster or change the Store-free fallback's committed fields.
     pub(in crate::app) fn publish_read_owner(&self, owner: &str, saved: bool) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("read_context.owner");
         let Some(previous) = self.read_context.load_full() else {
             return;
         };
@@ -80,6 +82,8 @@ impl AppState {
     /// Project/workspace links and user presence are published independently
     /// of roster admission. A board invalidation cannot expose a failed save.
     pub(in crate::app) fn publish_read_metadata(&self) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("read_context.metadata");
         self.publish_snapshot_projection();
         let Some(previous) = self.read_context.load_full() else {
             return;

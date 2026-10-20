@@ -411,6 +411,8 @@ pub(in crate::app) fn entity_facts(
 
 impl AppState {
     pub(in crate::app) fn push_facts_snapshot(&self, lists: Value) -> PushFacts {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.push_facts");
         let previous = self.read_view.load();
         let mut snapshot = PushFacts {
             lists,

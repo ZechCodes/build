@@ -46,6 +46,8 @@ impl AppState {
     }
 
     fn flush_committed_mutation_notices(&mut self) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.notices");
         let notices = self.committed_entities.take_notices();
         // Attention persistence prunes absent owners. All borrowed owners must
         // be back before writing, while their in-memory anchors were committed

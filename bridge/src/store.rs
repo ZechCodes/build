@@ -447,6 +447,8 @@ impl Store {
         work: impl FnOnce(&rusqlite::Transaction) -> Result<T, StoreError>,
     ) -> Result<T, StoreError> {
         #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("sql.write");
+        #[cfg(test)]
         if self
             .fail_next_write
             .swap(false, std::sync::atomic::Ordering::SeqCst)

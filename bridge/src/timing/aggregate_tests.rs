@@ -40,10 +40,13 @@ fn frames_without_app_lock_use_recorded_zero_wait_and_hold() {
     drop(clock.frame("bridge.stats"));
     let stats = clock.stats();
     for phase in ["lock_wait", "held"] {
-        assert_eq!(stats["methods"]["bridge.stats"][phase], json!({
-            "count": 1, "sum_ms": 0.0, "p50_ms": 0.0,
-            "p95_ms": 0.0, "max_ms": 0.0,
-        }));
+        assert_eq!(
+            stats["methods"]["bridge.stats"][phase],
+            json!({
+                "count": 1, "sum_ms": 0.0, "p50_ms": 0.0,
+                "p95_ms": 0.0, "max_ms": 0.0,
+            })
+        );
     }
 }
 
@@ -53,7 +56,9 @@ fn every_registered_method_keeps_its_record_after_unknown_name_flood() {
     for n in 0..1_000 {
         drop(clock.frame(&format!("unknown.{n}")));
     }
-    let registered = crate::api::v1::methods().iter().map(|(name, _)| *name)
+    let registered = crate::api::v1::methods()
+        .iter()
+        .map(|(name, _)| *name)
         .chain(crate::api::LEGACY_METHODS.iter().copied())
         .chain(crate::api::QA_METHODS.iter().copied());
     for name in registered {
@@ -62,9 +67,13 @@ fn every_registered_method_keeps_its_record_after_unknown_name_flood() {
     }
     let stats = clock.stats();
     assert_eq!(stats["methods"]["other"]["served"], 1_000);
-    assert_eq!(stats["methods"].as_object().unwrap().len(),
-        crate::api::v1::methods().len() + crate::api::LEGACY_METHODS.len()
-            + crate::api::QA_METHODS.len() + 1);
+    assert_eq!(
+        stats["methods"].as_object().unwrap().len(),
+        crate::api::v1::methods().len()
+            + crate::api::LEGACY_METHODS.len()
+            + crate::api::QA_METHODS.len()
+            + 1
+    );
 }
 
 #[test]

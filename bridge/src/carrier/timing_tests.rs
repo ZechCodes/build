@@ -16,7 +16,9 @@ fn blocked_handler(
     let released = Mutex::new(released);
     let handler = FrameHandler::new(clock, move |_sender, frame, _timer| {
         if frame.payload["id"] == 1 {
-            arrived.send(()).expect("the test is waiting for the worker");
+            arrived
+                .send(())
+                .expect("the test is waiting for the worker");
             released
                 .lock()
                 .unwrap()
@@ -169,9 +171,10 @@ fn an_immediate_frame_counts_waiting_for_a_blocking_thread() {
             .unwrap();
 
         let clock = FrameClock::new();
-        let handler = FrameHandler::new(clock.clone(), |_sender, frame, _timer| {
-            json!({ "id": frame.payload["id"], "ok": true })
-        });
+        let handler = FrameHandler::new(
+            clock.clone(),
+            |_sender, frame, _timer| json!({ "id": frame.payload["id"], "ok": true }),
+        );
         let (intake, carrier, mut outbound, key) = opened_intake(handler, 1);
         request(&intake, &carrier, &key, 1, "thread.attach").await;
         tokio::time::sleep(Duration::from_millis(50)).await;

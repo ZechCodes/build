@@ -7,10 +7,10 @@
 //! second because it queued behind seven others is a different daemon from one
 //! that took a second inside the lock.
 //!
-//! [`FrameClock`] is that place. The relay hands it a frame when it joins the
-//! dispatch queue; the worker starts the frame's [`FrameTimer`] when it picks it
-//! up; every acquisition of the app mutex on the frame path goes through
-//! [`FrameTimer::lock`], which is the only thing that knows a hold has begun.
+//! [`FrameClock`] is that place. Intake stamps a frame before admission, the
+//! dispatcher counts its queue slot, and the worker starts its [`FrameTimer`]
+//! when execution begins. Every acquisition of the app mutex on the frame path
+//! goes through [`FrameTimer::lock`], which knows when a hold has begun.
 //! When the timer drops, the frame's record is published: one histogram bucket
 //! per method, and — for a frame over [`SLOW_FRAME`] — one line saying where the
 //! time went.
@@ -222,10 +222,21 @@ impl FrameClock {
 
     /// The same, for a frame whose envelope named a queue.
     pub fn queued_at(self: &Arc<Self>, priority: Priority) -> QueuedFrame {
+        self.queued_since(priority, WaitTimer::start())
+    }
+
+    /// Count dispatch waiting from here, but time it from intake, including
+    /// any earlier wait in the per-wire admitter. A canceled ticket still
+    /// only releases depth; it never publishes a completed computation.
+    pub(crate) fn queued_since(
+        self: &Arc<Self>,
+        priority: Priority,
+        arrived: WaitTimer,
+    ) -> QueuedFrame {
         self.queue(priority).depth.fetch_add(1, Ordering::Relaxed);
         QueuedFrame {
             clock: Arc::clone(self),
-            since: Instant::now(),
+            since: arrived.0,
             counted: true,
             priority,
         }

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::SessionSender;
-use crate::timing::{FrameClock, FrameTimer, Priority, QueuedFrame};
+use crate::timing::{FrameClock, FrameTimer, Priority, QueuedFrame, WaitTimer};
 use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
 
 /// A frame's dispatcher and the clock shared by its queue and app-lock phases.
@@ -42,7 +42,22 @@ impl FrameHandler {
 
     /// Run a frame that never waited in the dispatcher, including session close.
     pub fn call(&self, sender: SessionSender, frame: Frame) -> Value {
-        self.run(self.clock.queued(), sender, frame)
+        self.call_since(sender, frame, WaitTimer::start())
+    }
+
+    /// Immediate handlers also wait for blocking-pool scheduling. Carry their
+    /// intake stamp into the closure without counting a dispatcher slot.
+    pub(super) fn call_since(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) -> Value {
+        self.run(
+            self.clock.queued_since(Priority::Foreground, arrived),
+            sender,
+            frame,
+        )
     }
 
     fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
@@ -144,6 +159,8 @@ struct FoldedRead {
     /// why none of them may simply be dropped, and a wire that closed while
     /// its read waited must not take the other wires' answers with it.
     callers: Vec<(Value, SessionSender)>,
+    /// One computation is timed from the first caller's intake; later callers
+    /// keep their replies but do not create additional timing samples.
     queued: QueuedFrame,
 }
 
@@ -324,7 +341,17 @@ impl Dispatcher {
 
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
+    #[cfg(test)]
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
+        self.dispatch_since(sender, frame, WaitTimer::start()).await;
+    }
+
+    pub(super) async fn dispatch_since(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) {
         // Refused here as well as at the handler (`run_handler`): a frame for
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
@@ -336,12 +363,15 @@ impl Dispatcher {
             // its stream is the client's own typing, never a background pull, and
             // a `priority` on one of them means nothing here.
             Some(key) => {
-                let queued = self.handler.clock.queued();
+                let queued = self
+                    .handler
+                    .clock
+                    .queued_since(Priority::Foreground, arrived);
                 self.dispatch_in_order(key, sender, frame, queued).await;
             }
             None => {
                 let priority = frame_priority(&frame);
-                let queued = self.handler.clock.queued_at(priority);
+                let queued = self.handler.clock.queued_since(priority, arrived);
                 self.dispatch_to_pool(priority, sender, frame, queued).await;
             }
         }
@@ -1974,7 +2004,10 @@ mod dispatcher_tests {
 
         let stats = clock.stats();
         assert!(
-            stats["methods"]["tasks.columns"]["max_ms"].as_f64().unwrap() >= 200.0,
+            stats["methods"]["tasks.columns"]["max_ms"]
+                .as_f64()
+                .unwrap()
+                >= 200.0,
             "the queue wait belongs to the frame that waited: {stats}"
         );
         let lines = lines.lock().unwrap();

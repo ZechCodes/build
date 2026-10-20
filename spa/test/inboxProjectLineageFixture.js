@@ -36,3 +36,12 @@ export async function writeProjectLineageFixture(cache, fixture) {
   for (const row of [fixture.owner, ...fixture.children]) await write("row", row, row.entity_id);
   await cache.writeCached(cache.DEVICES_ADDRESS, [{ id: deviceId, name: "Fixture device" }]);
 }
+
+export function spawnedProjectAliasFixture(repeated = false) {
+  const fixture = projectLineageFixture();
+  const worker = { id: "spawned-worker-a", conversation_id: "worker-history", created_by: pinId,
+    name: "Spawned worker", working: true, watched: false, unread_count: 0 };
+  return { ...fixture, children: [], workspaces: [], roster: { ...fixture.roster,
+    agents: [fixture.pin, worker, { ...worker, id: repeated ? worker.id : "spawned-worker-b" }],
+  } };
+}

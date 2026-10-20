@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
-import { deviceId, entityId, pinId, projectId, projectLineageFixture, topic, writeProjectLineageFixture } from "./inboxProjectLineageFixture.js";
+import { deviceId, entityId, pinId, projectId, projectLineageFixture, spawnedProjectAliasFixture, topic, writeProjectLineageFixture } from "./inboxProjectLineageFixture.js";
 
 let cache, feed, lineage, fixture, snapshot, model, stop;
 beforeEach(async () => {
@@ -47,7 +47,7 @@ describe("the inbox project agent and chat share cached descendant activity (#69
       await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
     }
     await vi.waitFor(() => expect(entry()).toMatchObject({ working: false, watchedWorking: false,
-      facts: "Getting started · 0 running" }));
+      facts: "0 running" }));
     expect(lineage.decorate(fixture.pin).agents_running || 0).toBe(0);
   });
 
@@ -89,6 +89,36 @@ describe("the inbox project agent and chat share cached descendant activity (#69
     await vi.waitFor(() => expect(entry().facts).toBe("1 running"));
   });
 
+  it.each([false, true])("counts a spawned canonical child once in inbox and chat (exact repeat: %s)", async (repeated) => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false, created_by: null }] });
+    }
+    const next = spawnedProjectAliasFixture(repeated);
+    await write("project-agents", entityId, next.roster);
+    await vi.waitFor(() => expect(snapshot.projects[0].projectRoster.agents[1].conversation_id).toBe("worker-history"));
+    await vi.waitFor(() => expect(lineage.buildAgentsFor(pinId)?.some((agent) => agent.id.startsWith("spawned-worker-"))).toBe(true));
+    expect.soft(entry().facts).toBe("1 running");
+    expect.soft(lineage.decorate(fixture.pin).agents_running).toBe(1);
+    expect.soft(lineage.buildAgentsFor(pinId)).toHaveLength(1);
+    expect((await cache.readCached({ deviceId, entityId, kind: "project-agents" })).value).toEqual(next.roster);
+  });
+
+  it("repaints chat when only a cached child's canonical conversation changes", async () => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false, created_by: null }] });
+    }
+    const next = spawnedProjectAliasFixture();
+    const agents = next.roster.agents.map((agent, index) => index === 2
+      ? { ...agent, conversation_id: "distinct-worker-history" } : agent);
+    await write("project-agents", entityId, { ...next.roster, agents });
+    await vi.waitFor(() => expect(lineage.buildAgentsFor(pinId)?.some((agent) => agent.id.startsWith("spawned-worker-"))).toBe(true));
+    await vi.waitFor(() => expect(lineage.decorate(fixture.pin).agents_running).toBe(2));
+    await write("project-agents", entityId, next.roster);
+    await vi.waitFor(() => expect(lineage.decorate(fixture.pin).agents_running).toBe(1));
+    expect(lineage.buildAgentsFor(pinId)).toHaveLength(1);
+    await vi.waitFor(() => expect(entry().facts).toBe("1 running"));
+  });
+
   it("counts the coordinator's own working loop alongside its three running panel entries", async () => {
     await write("project-agents", entityId, { ...fixture.roster, agents: [{ ...fixture.pin, working: true }] });
     await vi.waitFor(() => expect(entry()).toMatchObject({ working: true, watchedWorking: true, facts: "4 running" }));
@@ -116,7 +146,47 @@ describe("the inbox project agent and chat share cached descendant activity (#69
     await write("agent-lineage-support", "", { namesMakers: false });
     await vi.waitFor(() => expect(lineage.decorate(fixture.pin).agents_running || 0).toBe(0));
     await vi.waitFor(() => expect(entry()).toMatchObject({ working: false, watchedWorking: false,
-      facts: "Getting started · 0 running" }));
+      facts: "0 running" }));
+  });
+
+  it("shows zero running for an idle project with cached conversation history", async () => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
+    }
+    await cache.writeCached({ deviceId, entityId, kind: "thread", sub: fixture.pin.conversation_id }, {
+      items: [{ type: "message", data: { sequence: 1, role: "user", body: "Review the project" } }],
+      thread_total: 1, thread_last_sequence: 1,
+    });
+    await vi.waitFor(() => expect(entry().working).toBe(false));
+    expect(entry().facts).toBe("0 running");
+  });
+
+  it("keeps Getting started for a truly empty conversation despite project-wide activity", async () => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
+    }
+    await write("row", entityId, { ...fixture.owner, session_started_ms: null, last_activity_ms: null,
+      anchor: "2026-09-24T12:00:00Z", last_activity: "2026-09-24T12:00:00Z" });
+    await write("projects", "", [{ ...fixture.project, session_started_ms: 100, last_activity_ms: 200 }]);
+    await cache.writeCached({ deviceId, entityId, kind: "thread", sub: fixture.pin.conversation_id }, {
+      items: [], thread_total: 0, thread_last_sequence: 0,
+    });
+    await vi.waitFor(() => expect(snapshot.items.find((row) => row.entity_id === entityId).session_started_ms).toBe(null));
+    await vi.waitFor(() => expect(entry().working).toBe(false));
+    expect(entry().facts).toBe("Getting started · 0 running");
+  });
+
+  it("recognizes legacy own conversation activity without modern session fields", async () => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
+    }
+    const owner = { ...fixture.owner, last_activity: "2026-09-24T12:00:00Z" };
+    delete owner.session_started_ms;
+    delete owner.last_activity_ms;
+    await write("row", entityId, owner);
+    await vi.waitFor(() => expect(snapshot.items.find((row) => row.entity_id === entityId).last_activity).toBe(owner.last_activity));
+    await vi.waitFor(() => expect(entry().working).toBe(false));
+    expect(entry().facts).toBe("0 running");
   });
 
 });

@@ -2,7 +2,7 @@ import { loadBrowserModules, mountLayout } from "./layoutHarness.mjs";
 import { deviceId, entityId, pinId, projectId, projectLineageFixture } from "../inboxProjectLineageFixture.js";
 
 /** Production inbox and chat rail, backed entirely by IndexedDB fixtures. */
-export async function mountProjectLineageInbox(page, basePath) {
+export async function mountProjectLineageInbox(page, basePath, { fixture = projectLineageFixture() } = {}) {
   await mountLayout(page, `<div id="shell"><aside id="inbox-rail" aria-label="Inbox">
     <div class="inbox-head">Inbox</div><div id="inbox-list"></div></aside><div id="view">
     <header id="toolbar">Build</header><div id="view-body"><main id="root"></main>
@@ -25,10 +25,10 @@ export async function mountProjectLineageInbox(page, basePath) {
         ? { default_provider: "codex", providers: [{ id: "codex", label: "Codex", models: [], efforts: [] }] }
         : { items: [] },
     });
-  }, { fixture: projectLineageFixture(), deviceId, entityId, pinId, projectId });
+  }, { fixture, deviceId, entityId, pinId, projectId });
   await page.locator(".inbox-project-agent").waitFor();
   await page.locator(".rail-head").waitFor();
-  await page.waitForFunction(() => document.querySelector("#agent-rail .surface-pill-count")?.textContent === "3");
+  await page.waitForFunction(() => document.querySelector("#agent-rail .surface-pill-count")?.textContent);
   await page.evaluate(() => document.fonts.ready);
 }
 

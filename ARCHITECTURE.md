@@ -337,6 +337,11 @@ parameter normalization and result checks without deferred app state.
 `Arc<ReadView>` root with shared immutable response chunks. Versioned deltas
 merge disjoint updates through compare-and-swap; stale overlapping updates
 are rejected as a unit, and deletion versions remain as tombstones. Producers
+can compose response chunks from shared JSON rows. Snapshot intake materializes
+owned responses from a loaded root; published chunks retain no assembled JSON
+cache. Historical receipts share unchanged fragments and publish patched
+response chunks, push facts and accepted aggregate cache references together.
+Producers
 warm required observations before admission, then publish committed values
 before change events and successful replies. Agent rows use observed paths,
 compaction context and unread summaries. Workspace history shares immutable
@@ -421,6 +426,24 @@ Bounded push tail bodies are shared between publications while conversation
 identity, publication sequence and resident tail geometry match. Each publication
 still captures fresh tip metadata. Historical receipt rows retain their existing
 bounded floor and generation fences.
+
+Global board and list projections retain shared row fragments in the accepted
+`ReadView`, alongside the layout inputs that justify reusing them. Known-owner
+and committed task-observation publications replace affected rows; structural
+changes use the full producer. Alias and shared-root dependencies, active
+session observations, and elapsed-time fields participate in each refresh.
+Registry identities use weak handles so a retained read root cannot keep a
+retired session or terminal screen alive. Attention changes for known owners
+use the same scoped publication; other board invalidations retain their full
+refresh path.
+
+`read_view/shared_json.rs` composes immutable JSON leaves without caching a
+materialized aggregate. Intake and push readers materialize their owned wire
+answers after releasing the app guard. Historical receipt patches index exact
+thread identities and replace only advancing leaves, updating cached row
+fragments in the same atomic delta. Preparing or rejecting a candidate cannot
+change the accepted fragments, and direct aggregate replacements invalidate
+their reuse cache. Watched task observations retain unchanged payloads by `Arc`.
 
 ### Liveness and signaling
 

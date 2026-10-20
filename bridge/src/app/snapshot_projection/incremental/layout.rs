@@ -23,7 +23,7 @@ pub(super) struct Layout {
     render_mode: (bool, String),
     external_versions: Vec<(Option<Instant>, bool)>,
     project_versions: Vec<(String, u64)>,
-    workspace_compaction: Vec<Value>,
+    compaction_policies: crate::app::config::CompactionPolicies,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -61,18 +61,6 @@ impl Layout {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        let workspace_compaction = workspaces
-            .iter()
-            .map(|workspace| {
-                let scope = crate::compaction::CompactionScope::Workspace(workspace.id.clone());
-                json!([
-                    app.compaction_thresholds(&scope)
-                        .unwrap_or_default()
-                        .read_value(),
-                    app.scope_compaction_observation(&scope)
-                ])
-            })
-            .collect();
         #[cfg(test)]
         drop(_workspace_shape_phase);
         Self {
@@ -119,7 +107,7 @@ impl Layout {
                 .iter()
                 .map(|(id, observed)| (id.clone(), observed.version))
                 .collect(),
-            workspace_compaction,
+            compaction_policies: app.compaction_policies.clone(),
         }
     }
 

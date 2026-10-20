@@ -592,3 +592,101 @@ async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones(
         "mixed and ordinary SQL must reuse the preaccept executor"
     );
 }
+
+fn observation_sql_wait_clock(phase: &'static str) -> (Arc<FrameClock>, Arc<tokio::sync::Notify>) {
+    let clock = FrameClock::new();
+    let waiting = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let all_waiting = Arc::new(tokio::sync::Notify::new());
+    let arrived = all_waiting.clone();
+    clock.observe_requests(Arc::new(move |frame, observed_phase, _| {
+        if frame.payload["method"] == "tasks.review.get"
+            && observed_phase == phase
+            && waiting.fetch_add(1, Ordering::SeqCst) + 1 == sql::IO_WORKERS
+        {
+            arrived.notify_one();
+        }
+    }));
+    (clock, all_waiting)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_connections() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let pool = store.read_pool();
+    let mut held = Vec::new();
+    for _ in 0..sql::SQL_WORKERS {
+        held.push(pool.acquire().await);
+    }
+    let (clock, all_waiting) = observation_sql_wait_clock("sql_borrow_start");
+    let handler = FrameHandler::new(clock, |_, _, _| panic!("reads bypass app"))
+        .with_observation_reads(Some(pool), |frame, connection| {
+            assert_eq!(
+                connection.is_some(),
+                frame.payload["method"] == "tasks.review.get"
+            );
+            drop(connection);
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let mut client = Client::new(handler);
+    for id in 0..sql::IO_WORKERS {
+        client
+            .send(id, "tasks.review.get", json!({"unique":id}))
+            .await;
+    }
+    tokio::time::timeout(Duration::from_secs(5), all_waiting.notified())
+        .await
+        .expect("all eight mixed reads are waiting for unavailable SQL connections");
+    client.send(100, "fs.list", json!({})).await;
+    let pure = tokio::time::timeout(Duration::from_secs(2), client.reply()).await;
+    // Unblock every mixed request before asserting, including the RED path.
+    drop(held);
+    assert_eq!(
+        pure.expect("pure I/O must not wait behind SQL checkout")["id"],
+        100
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_execution_permits() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let pool = store.read_pool();
+    let (gate, held) = OffLockGate::new();
+    let (clock, all_waiting) = observation_sql_wait_clock("sql_permit_start");
+    let handler = FrameHandler::new(clock, |_, _, _| panic!("reads bypass app"))
+        .with_sql_reads(Some(pool.clone()), move |_, frame, _, connection| {
+            assert!(connection.is_some());
+            gate.arrive();
+            json!({"id":frame.payload["id"],"ok":true})
+        })
+        .with_observation_reads(Some(pool), |frame, connection| {
+            assert_eq!(
+                connection.is_some(),
+                frame.payload["method"] == "tasks.review.get"
+            );
+            drop(connection);
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let mut client = Client::new(handler);
+    for id in 0..sql::SQL_WORKERS {
+        client.send(id, "tasks.get", json!({"unique":id})).await;
+        held.wait_for_arrival();
+    }
+    for id in 20..20 + sql::IO_WORKERS {
+        client
+            .send(id, "tasks.review.get", json!({"unique":id}))
+            .await;
+    }
+    tokio::time::timeout(Duration::from_secs(5), all_waiting.notified())
+        .await
+        .expect("all eight mixed reads are waiting for unavailable SQL execution permits");
+    client.send(100, "git.status", json!({})).await;
+    let pure = tokio::time::timeout(Duration::from_secs(2), client.reply()).await;
+    // Disconnect the gate before asserting so all held SQL workers can exit.
+    drop(held);
+    assert_eq!(
+        pure.expect("pure I/O must not wait behind SQL execution capacity")["id"],
+        100
+    );
+}

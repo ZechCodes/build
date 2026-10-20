@@ -534,6 +534,7 @@ impl AppState {
                 since: Instant::now(),
             },
         );
+        self.publish_snapshot_projection();
     }
 
     #[cfg(test)]
@@ -547,7 +548,9 @@ impl AppState {
     }
 
     fn release_reservation(&mut self, workspace_id: &str) {
-        self.reclaim_reserved.remove(workspace_id);
+        if self.reclaim_reserved.remove(workspace_id).is_some() {
+            self.publish_snapshot_projection();
+        }
     }
 
     /// What keeps the service from dropping this workspace's build output right

@@ -68,16 +68,6 @@ impl AppState {
 }
 
 impl ThreadReadContext {
-    /// Resolve only identity and generation; attachment bytes need no history rows.
-    pub(in crate::app) fn attachment_binding(
-        &self,
-        transaction: Option<&ReadTransaction<'_>>,
-        owner: &str,
-        params: &Value,
-    ) -> Result<(ThreadReadFence, String), String> {
-        let (thread, fence) = self.resolve(transaction, owner, params)?;
-        Ok((fence, thread.id.clone()))
-    }
     /// Publish one completed owner without interpreting other temporarily
     /// borrowed owners as deletions.
     pub(in crate::app) fn update_owner(&mut self, app: &AppState, owner: &str) {

@@ -400,19 +400,15 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
     let params = json!({"entity_id":owner,"agent_id":agent,"path":attached["result"]["path"]});
     let state = app.shared();
     let handler = AppState::handler(state.clone());
-    let (service, pool, reset_params) = {
+    let (service, reset_params) = {
         let app = state.lock().unwrap();
         let record = app.entity_agents(&owner).unwrap().by_id(&agent).unwrap();
         (
             app.observation_service(),
-            app.require_store().unwrap().read_pool(),
             json!({"project_id":app.projects.project_id_of(&owner),"entity_id":owner,"agent_id":agent,"conversation_id":record.conversation_id(),"expected_thread_id":record.thread.id}),
         )
     };
-    let delayed = service.prepare(
-        req("thread.attachment", params.clone()),
-        Some(pool.acquire().await),
-    );
+    let delayed = service.prepare(req("thread.attachment", params.clone()), None);
     let reset = call(&handler, "conversation.reset", reset_params);
     assert_eq!(reset["ok"], true, "{reset}");
     let stale = delayed();
@@ -426,7 +422,7 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
     );
     let fresh = call(&handler, "thread.attachment", params.clone());
     assert_eq!(fresh["ok"], true, "{fresh}");
-    let delayed = service.prepare(req("thread.attachment", params), Some(pool.acquire().await));
+    let delayed = service.prepare(req("thread.attachment", params), None);
     let removed = call(
         &handler,
         "agent.remove",

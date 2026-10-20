@@ -110,7 +110,7 @@ pub(in crate::app) struct ArchiveReadInput {
     records: Vec<PersistedArchivedWorktree>,
     registry_root: PathBuf,
     current: Vec<crate::workspace::Workspace>,
-    projects: HashMap<String, (String, String)>,
+    projects: Vec<(String, (String, String))>,
 }
 
 impl ArchiveReadInput {
@@ -183,7 +183,7 @@ impl ArchiveReadInput {
         for workspace in finished {
             items.push(json!({
                 "kind":"workspace", "workspace_id":workspace.id, "project_id":workspace.project_id,
-                "project":self.projects.get(&workspace.project_id).map(|(name,_)| name), "title":workspace.name,
+                "project":self.projects.iter().find(|(id,_)| *id == workspace.project_id).map(|(_, (name,_))| name), "title":workspace.name,
                 "branch":Value::Null, "state":"finished", "action":"archive", "finished_at":workspace.archived_at,
                 "run_id":Value::Null, "task_id":Value::Null, "stages":Value::Null, "worktree_id":Value::Null,
                 "worktree_path":workspace.root.display().to_string(), "head_sha":Value::Null, "upstream":Value::Null,

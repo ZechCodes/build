@@ -45,16 +45,10 @@ impl AttachmentReadContext {
 
     pub(in crate::app) fn prepare(
         &self,
-        transaction: Option<&ReadTransaction<'_>>,
         owner: &str,
         params: &Value,
     ) -> Result<AttachmentReadFence, String> {
-        let (binding, generation) = match transaction {
-            Some(transaction) => self
-                .scope
-                .attachment_binding(Some(transaction), owner, params)?,
-            None => self.memory_binding(owner, params)?,
-        };
+        let (binding, generation) = self.memory_binding(owner, params)?;
         let fence = AttachmentReadFence {
             binding,
             generation,

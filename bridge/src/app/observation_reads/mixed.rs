@@ -86,7 +86,7 @@ impl MixedReadContext {
                     document.run().map_err(ApiError::classify)
                 }))
             }
-            "thread.attachment" => self.thread_attachment(transaction, params),
+            "thread.attachment" => self.thread_attachment(params),
             "tasks.attachment" | "tasks.review.get" | "tasks.review.diff" => {
                 self.task_read(transaction, method, params)
             }
@@ -107,16 +107,9 @@ impl MixedReadContext {
         }
     }
 
-    fn thread_attachment(
-        &self,
-        transaction: Option<&ReadTransaction<'_>>,
-        params: &Value,
-    ) -> Result<MixedJob, ApiError> {
+    fn thread_attachment(&self, params: &Value) -> Result<MixedJob, ApiError> {
         let owner = require_str(params, "entity_id").map_err(thread_error)?;
-        let fence = self
-            .threads
-            .prepare(transaction, &owner, params)
-            .map_err(thread_error)?;
+        let fence = self.threads.prepare(&owner, params).map_err(thread_error)?;
         require_str(params, "path").map_err(thread_error)?;
         let homes = self
             .homes

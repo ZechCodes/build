@@ -59,6 +59,25 @@ async fn merge_release_keeps_later_reads_notices_and_news_live() {
         "before release",
         "before release news",
     );
+    {
+        let app = state.lock().unwrap();
+        let facts = crate::app::facts::entity_facts(
+            &app.facts_handle,
+            &[crate::changes::FactsRequest {
+                entity_id: survivor.clone(),
+                state: true,
+                thread: true,
+                ..Default::default()
+            }],
+        );
+        eprintln!(
+            "release control facts: {}",
+            json!({
+                "facts": facts.iter().map(|fact| json!({"entity_id": fact.entity_id, "state": fact.state, "threads": fact.threads, "withdrawn": fact.withdrawn})).collect::<Vec<_>>(),
+                "pending": app.changes.has_pending(),
+            })
+        );
+    }
     let control = push::settled_pushes(&mut incoming, &key).await;
     assert_published(
         &handler,
@@ -304,5 +323,44 @@ async fn joined_dispatch_settlement_error_keeps_owner_and_later_publication_live
             .conversation_watermark(&tip.0)
             .previous,
         Some(tip.1)
+    );
+}
+
+#[test]
+fn merge_release_keeps_unrelated_routed_reads_live() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let released = adopted_run(&mut app, &repo, dir.path(), "release-read-owner");
+    let survivor = adopted_run(&mut app, &repo, dir.path(), "release-read-survivor");
+    let state = app.shared();
+    let handler = AppState::handler(Arc::clone(&state));
+    save_message(
+        &mut state.lock().unwrap(),
+        &survivor,
+        "read before release",
+        "before",
+    );
+    let before = routed(&handler, "board.list", json!({}));
+    assert!(
+        serde_json::to_string(&before)
+            .unwrap()
+            .contains("read before release"),
+        "{before}"
+    );
+    {
+        let mut app = state.lock().unwrap();
+        let project = app.project_of(&released).unwrap();
+        assert!(app.surviving_workspace_of_run(&released).is_none());
+        let worktree = app.runs[&released].worktree.clone();
+        app.apply_merge_cleanup(&released, &project, &worktree, MergeCleanup::Release);
+        assert!(!app.runs.contains_key(&released));
+        save_message(&mut app, &survivor, "read after release", "after");
+    }
+    let after = routed(&handler, "board.list", json!({}));
+    assert!(
+        serde_json::to_string(&after)
+            .unwrap()
+            .contains("read after release"),
+        "successful unrelated write did not reach routed read: {after}"
     );
 }

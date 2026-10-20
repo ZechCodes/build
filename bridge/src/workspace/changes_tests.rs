@@ -19,6 +19,22 @@ fn managed(registry: &mut WorkspaceRegistry, name: &str) -> Workspace {
     registry.begin("project", name, &[]).unwrap()
 }
 
+fn finishable_repository(root: &Path, name: &str) -> PathBuf {
+    let repository = crate::git_fixture::init_repo_named(root, name);
+    let origin = root.join(format!("{name}-origin.git"));
+    crate::git_fixture::git_in(
+        root,
+        &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
+    );
+    crate::git_fixture::configure_repo(&origin);
+    crate::git_fixture::git_in(
+        &repository,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    crate::git_fixture::git_in(&repository, &["push", "--set-upstream", "origin", "main"]);
+    repository
+}
+
 #[test]
 fn workspace_changes_keep_scoped_revisions_and_ignore_failed_or_identical_saves() {
     let temp = tempfile::tempdir().unwrap();
@@ -86,23 +102,22 @@ fn workspace_reload_marks_only_real_changes_and_preserves_rows_after_invalid_man
 fn adopted_finish_reopen_and_capability_refresh_mark_only_changed_workspaces() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = WorkspaceRegistry::empty(temp.path().join("workspaces"));
-    let adopted = temp.path().join("adopted");
+    let adopted = finishable_repository(temp.path(), "adopted");
     let untouched = temp.path().join("untouched");
-    fs::create_dir(&adopted).unwrap();
     fs::create_dir(&untouched).unwrap();
     let mut workspace = registry.adopt_root(
         "project",
         "adopted".into(),
         "adopted".into(),
-        adopted.clone(),
+        adopted,
         "source".into(),
-        false,
+        true,
     );
     registry.adopt_root(
         "project",
         "untouched".into(),
         "untouched".into(),
-        untouched,
+        untouched.clone(),
         "source".into(),
         false,
     );
@@ -125,10 +140,10 @@ fn adopted_finish_reopen_and_capability_refresh_mark_only_changed_workspaces() {
     registry.reopen(&workspace.id).unwrap();
     assert!(keys(&registry).is_empty());
 
-    git2::Repository::init(&adopted).unwrap();
+    git2::Repository::init(&untouched).unwrap();
     registry.refresh_local_capabilities();
-    assert_eq!(keys(&registry), BTreeSet::from([workspace.id.clone()]));
-    assert!(registry.get(&workspace.id).unwrap().directories[0].is_git);
+    assert_eq!(keys(&registry), BTreeSet::from(["untouched".into()]));
+    assert!(registry.get("untouched").unwrap().directories[0].is_git);
     acknowledge(&registry);
     registry.refresh_local_capabilities();
     assert!(keys(&registry).is_empty());
@@ -157,15 +172,14 @@ fn missing_registry_root_retires_managed_rows_and_keeps_adopted_legacy_state() {
     let temp = tempfile::tempdir().unwrap();
     let mut registry = WorkspaceRegistry::empty(temp.path().join("workspaces"));
     let managed = managed(&mut registry, "removed");
-    let external = temp.path().join("external");
-    fs::create_dir(&external).unwrap();
+    let external = finishable_repository(temp.path(), "external");
     let mut adopted = registry.adopt_root(
         "project",
         "adopted".into(),
         "adopted".into(),
         external,
         "source".into(),
-        false,
+        true,
     );
     registry.record_finished(&mut adopted).unwrap();
     registry.reload().unwrap();

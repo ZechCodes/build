@@ -895,6 +895,8 @@ async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
         .path;
     let key = insert_unmanaged_agent_tab(&state, &root, "run-in-the-worktree")
         .expect("the unmanaged agent fixture spawns");
+    // The fixture bypasses the managed session-open producer.
+    state.lock().unwrap().publish_snapshot_projection();
     assert_eq!(
         entry_of(&state)["agent_working"],
         true,
@@ -910,6 +912,8 @@ async fn the_board_reports_whether_an_agent_is_working_in_a_worktree() {
         .unwrap()
         .session
         .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+    // Publish the quiet observation as the idle producer would after time passes.
+    state.lock().unwrap().publish_snapshot_projection();
     assert_eq!(entry_of(&state)["agent_working"], false);
     assert_eq!(
         entry_of(&state)["can_finish"],

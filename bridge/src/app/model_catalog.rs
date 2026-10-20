@@ -19,6 +19,9 @@ impl AppState {
     /// than the process's own.
     pub fn with_cli_readings(mut self, readings: Arc<Readings>) -> Self {
         self.cli_readings = readings;
+        if self.snapshot_projection_initialized() {
+            self.cli_readings.warm();
+        }
         self
     }
 

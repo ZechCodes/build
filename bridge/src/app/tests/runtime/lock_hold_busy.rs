@@ -16,6 +16,7 @@ const CONVERSATIONS: usize = 200;
 const TASKS: usize = 700;
 const AGENTS: usize = 12;
 const ROUNDS: usize = 2;
+const STATUS_OBSERVATIONS_PER_AGENT: usize = 2;
 const HISTORY_ITEMS: usize = 32;
 const RPC_SAMPLES: usize = 8;
 const CONTROL_TOOLS: [&str; 7] = [
@@ -501,7 +502,10 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
         128,
         8,
     );
-    let start = Arc::new(tokio::sync::Barrier::new(AGENTS + 5 + 1));
+    // Each joined adapter drives the real private StatusPump::observe.
+    // No watch notification can coalesce an observation out of this cohort.
+    let start = Arc::new(tokio::sync::Barrier::new(AGENTS * 2 + 5 + 1));
+    let status_calls = status_observers(&busy, &start);
     let mut calls = Vec::new();
     for (i, ((owner, agent), task)) in busy.owners.iter().take(AGENTS).zip(&busy.tasks).enumerate()
     {
@@ -567,6 +571,11 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
             failures.push(error.to_string());
         }
     }
+    for status in status_calls {
+        if let Err(error) = status.await {
+            failures.push(error.to_string());
+        }
+    }
     for rpc in rpcs {
         if let Err(error) = rpc.await {
             failures.push(error.to_string());
@@ -628,13 +637,106 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
         overall_max_frame_sample(&measurements, "frame.queue_and_lock_wait");
     println!(
         "TASK709_BUSY_BASELINE {}",
-        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
+        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"status_observations":AGENTS*STATUS_OBSERVATIONS_PER_AGENT,"status_observer_path":"production StatusPump::observe via MeasuredStatusPump adapter","mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
     );
     assert!(
         failures.is_empty(),
         "all fixture calls completed: {failures:?}"
     );
     assert_expected_samples(&measurements);
+}
+
+// The adapter is owned by #694 and invokes exactly the production observer.
+// The async watch loop is deliberately bypassed so its coalescing cannot hide
+// a slow status guard. All twelve exact warm sessions remain installed.
+fn status_observers(
+    busy: &Busy,
+    start: &Arc<tokio::sync::Barrier>,
+) -> Vec<tokio::task::JoinHandle<()>> {
+    busy.sessions
+        .iter()
+        .map(|(key, session)| {
+            let instance = busy
+                .state
+                .lock()
+                .unwrap()
+                .session_registry
+                .test_tab(key)
+                .unwrap()
+                .session_instance
+                .clone()
+                .unwrap();
+            let mut pump = crate::app::runtime::pumps::status_timing::MeasuredStatusPump::new(
+                &busy.state,
+                key.clone(),
+                session,
+                instance,
+            );
+            let start = Arc::clone(start);
+            tokio::spawn(async move {
+                start.wait().await;
+                let mut previous = None;
+                for _ in 0..STATUS_OBSERVATIONS_PER_AGENT {
+                    let snapshot = crate::harness::SessionStatusSnapshot::new(AgentStatus::Working);
+                    assert_ne!(
+                        previous.as_ref(),
+                        Some(&snapshot.changed_at),
+                        "each ordinary Working observation has a fresh boundary"
+                    );
+                    previous = Some(snapshot.changed_at.clone());
+                    pump = tokio::task::spawn_blocking(move || {
+                        pump.observe(&snapshot);
+                        pump
+                    })
+                    .await
+                    .unwrap();
+                }
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn ordinary_status_observer_records_a_complete_named_frame() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let owner = "run-status-frame";
+    let root = insert_run(&mut app, &repo, dir.path(), owner, RunState::Building);
+    let agent = crate::agent::derived_agent_id(owner);
+    let key = insert_agent_tab(
+        &mut app,
+        &root,
+        owner,
+        &agent,
+        DictatedSession::reporting(AgentStatus::Working),
+    );
+    let tab = app.session_registry.test_tab(&key).unwrap();
+    let session = Arc::clone(&tab.session);
+    let instance = tab.session_instance.clone().unwrap();
+    let clock = crate::timing::FrameClock::reporting_to(Arc::new(|_| {}));
+    app.frame_clock = Arc::clone(&clock);
+    let state = app.shared();
+    let mut pump = crate::app::runtime::pumps::status_timing::MeasuredStatusPump::new(
+        &state, key, &session, instance,
+    );
+    let samples = clock.capture_phases();
+    pump.observe(&crate::harness::SessionStatusSnapshot::new(
+        AgentStatus::Working,
+    ));
+    assert_eq!(samples.active_frames(), 0);
+    let captured = samples.snapshot();
+    for phase in [
+        "frame.held",
+        "frame.lock_wait",
+        "frame.queued",
+        "frame.queue_and_lock_wait",
+    ] {
+        assert_eq!(
+            captured["agent.poll_status"][phase]["count"], 1,
+            "the actual status guard participates in the whole-frame cohort"
+        );
+    }
+    assert_eq!(captured["agent.poll_status"]["entered.lock"]["count"], 1);
 }
 
 fn assert_expected_samples(measurements: &Value) {
@@ -646,6 +748,10 @@ fn assert_expected_samples(measurements: &Value) {
                 .into_iter()
                 .map(|method| (method.into(), RPC_SAMPLES)),
         )
+        .chain([(
+            String::from("agent.poll_status"),
+            AGENTS * STATUS_OBSERVATIONS_PER_AGENT,
+        )])
         .collect::<Vec<_>>();
     for (method, count) in &expected {
         assert_eq!(

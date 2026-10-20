@@ -68,6 +68,8 @@ pub(in crate::app) fn spawn_status_pump(
         key,
         session: Arc::downgrade(&session),
         instance,
+        #[cfg(test)]
+        frame_clock: None,
         recorded_context: None,
         recorded_context_reset_count: 0,
         recorded_limit: super::usage_limits::UsageObservation::default(),
@@ -96,6 +98,8 @@ struct StatusPump {
     key: TabKey,
     session: std::sync::Weak<dyn AgentSession>,
     instance: SessionInstance,
+    #[cfg(test)]
+    frame_clock: Option<Arc<crate::timing::FrameClock>>,
     recorded_context: Option<crate::harness::TurnContext>,
     recorded_context_reset_count: u64,
     recorded_limit: super::usage_limits::UsageObservation,
@@ -109,11 +113,26 @@ impl StatusPump {
         let Some(state) = self.state.upgrade() else {
             return false;
         };
+        #[cfg(test)]
+        let status_timer = self
+            .frame_clock
+            .as_ref()
+            .map(|clock| clock.frame("agent.poll_status"));
         let (ended, retry_deferred, clock) = {
             // The optional benchmark span drops after the guard. It records
             // outside the critical section and is absent from production.
             #[cfg(test)]
             let mut timing = status_timing::GuardSpan::start();
+            #[cfg(test)]
+            let mut measured_guard = status_timer.as_ref().map(|timer| timer.lock(&state));
+            #[cfg(test)]
+            let mut plain_guard = status_timer.is_none().then(|| state.lock().unwrap());
+            #[cfg(test)]
+            let mut app: &mut AppState = match measured_guard.as_mut() {
+                Some(guard) => guard,
+                None => plain_guard.as_mut().unwrap(),
+            };
+            #[cfg(not(test))]
             let mut app = state.lock().unwrap();
             #[cfg(test)]
             if let Some(timing) = timing.as_mut() {
@@ -152,6 +171,8 @@ impl StatusPump {
             app.publish_owner_snapshot_projection(owner);
             (ended, retry_deferred, Arc::clone(&app.frame_clock))
         };
+        #[cfg(test)]
+        drop(status_timer);
         if retry_deferred {
             let timer = clock.frame(AGENT_DELIVERY_METHOD);
             DeliveryRunner::drain(&state, &timer);

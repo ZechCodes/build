@@ -6,6 +6,17 @@ let session;
 beforeAll(async () => { session = await openLayoutSession(); });
 afterAll(async () => { await session?.close(); });
 
+// openModal reveals the scrim's opacity and the dialog's height separately.
+// motion.js returns its borrowed inline styles when each reveal is settled.
+function lightboxIsSettled() {
+  const dialog = document.querySelector(".thread-lightbox");
+  const scrim = dialog?.closest(".modal-scrim");
+  return !!scrim && [scrim, dialog].every((element) => !element.hidden
+    && getComputedStyle(element).opacity === "1"
+    && element.style.opacity === "" && element.style.height === "" && element.style.overflow === ""
+    && element.getAnimations().length === 0);
+}
+
 it.each([
   { label: "desktop", width: 1024, height: 900 },
   { label: "mobile", width: 390, height: 844 },
@@ -22,6 +33,8 @@ it.each([
       const image = document.querySelector(".thread-lightbox img");
       return image?.complete && image.naturalWidth > 0;
     });
+    await page.waitForFunction(lightboxIsSettled);
+    expect(await page.evaluate(lightboxIsSettled)).toBe(true);
     await captureLayout(page, `task696-agent-attachments-lightbox-${label}.png`);
     await page.keyboard.press("Escape");
     await page.locator(".thread-lightbox").waitFor({ state: "detached" });

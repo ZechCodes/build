@@ -32,7 +32,7 @@ import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 import { feedReferenceIndex } from "./referenceIndexFeed.js";
 import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
 import { withFeedAgentRollups } from "./agentLineageFeedModel.js";
-import { subscribeThreadReaders, threadReaderIsHere } from "./syncVisibleScopes.js";
+import { snapshotThreadReaders, subscribeThreadReaders } from "./syncVisibleScopes.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
@@ -59,9 +59,10 @@ export function subscribeFeed(fn) {
 }
 
 const merged = () => {
+  const isBeingRead = snapshotThreadReaders();
   const displayed = new Map([...byDevice].map(([deviceId, snapshot]) => [deviceId,
     withFeedAgentRollups(snapshot, { namesMakers: lineageSupport.get(deviceId),
-      isBeingRead: (identity) => threadReaderIsHere({ ...identity, deviceId }) })]));
+      isBeingRead: (identity) => isBeingRead({ ...identity, deviceId }) })]));
   return mergeFeeds(displayed, App.devices.map((device) => device.id));
 };
 

@@ -195,6 +195,17 @@ it("restores unread when the document hides, without changing the cached count",
   expect(totals.at(-1)).toBe(0);
 });
 
+it("checks mounted visibility once per feed projection rather than once per roster agent", async () => {
+  const { registerSyncThread } = await import("../src/core/syncVisibleScopes.js");
+  const visible = vi.fn(() => true);
+  cleanups.push(registerSyncThread(() => selectedConversation(), visible));
+  await writeRow(owner([agent("pin"), ...Array.from({ length: 100 }, (_, i) => agent(`worker-${i}`))]));
+  await feed.startFeed();
+  visible.mockClear();
+  feed.deliverFeed();
+  expect(visible).toHaveBeenCalledTimes(1);
+});
+
 it("includes watched project workers from the complete roster without reviving stale board counts", async () => {
   await writeRow(owner([agent("pin", { unread_count: 9 })]));
   await cache.writeCached(address("project-agents-support"), { projectWorkers: true });

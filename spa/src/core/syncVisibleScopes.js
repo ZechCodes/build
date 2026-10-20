@@ -87,6 +87,12 @@ const sameConversation = (a, b) => {
 export const threadReaderIsHere = (identity) =>
   presentThreads().some((shown) => sameConversation(shown, identity));
 
+/** One visibility scan for an entire feed paint, regardless of roster size. */
+export function snapshotThreadReaders() {
+  const shown = presentThreads();
+  return (identity) => shown.some((reader) => sameConversation(reader, identity));
+}
+
 /** UI transitions repaint the held feed immediately, without rewriting the
  * bridge's unread count. Deduplication also prevents a feed repaint loop. */
 export function notifyThreadReaders() {

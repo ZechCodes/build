@@ -363,3 +363,102 @@ fn incremental_rows_refresh_clockless_owner_fallbacks() {
         "clockless owner rows have dynamic anchor/resume fallbacks"
     );
 }
+
+#[test]
+fn incremental_workspace_join_counts_the_actual_full_and_owner_producers() {
+    use crate::app::board_index::DiffCacheEntry;
+    use crate::app::snapshot_projection::summary_counts;
+    let mut measurements = Vec::new();
+    for size in [8, 32] {
+        let (_tmp, mut state, _) = ownership_fixture(size, false);
+        seed_clocks(&mut state);
+        let subjects = state
+            .workspaces
+            .list(None)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        for (number, workspace) in subjects.iter().enumerate() {
+            let repositories = workspace
+                .directories
+                .iter()
+                .filter(|directory| directory.is_git)
+                .map(|directory| directory.path.clone())
+                .collect();
+            state.board.diff_mut().store_entry_for_adapter(DiffCacheEntry::WorkspaceSummary {
+                workspace_id: workspace.id.clone(), repositories,
+                summary: json!({"pushes":number,"dirty":false,"payload":format!("summary-{number}")}),
+            }, std::time::Instant::now());
+        }
+        let projects = state
+            .capture_project_snapshot_observations()
+            .into_iter()
+            .map(|row| (row.project_id.clone(), row.render()))
+            .collect();
+        state.install_project_snapshot_observations(projects);
+        state.warm_snapshot_observations_for_test();
+        let (_, full) = summary_counts::measure(|| state.publish_all_snapshot_projection());
+        let (_, owner) =
+            summary_counts::measure(|| state.publish_owner_snapshot_projection("run-00"));
+        let view = state.read_view.load();
+        let board = view.get_owned("board.list", "").unwrap();
+        let workspaces = view.get_owned("workspace.list", "").unwrap();
+        // Retain the old linear consumer oracle, independently of the indexed
+        // producer: every field and every unmatched base field must survive.
+        let expected = workspaces["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workspace| {
+                let mut row = workspace.clone();
+                let summary = board["workspace_summaries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|summary| summary["workspace_id"] == row["workspace_id"])
+                    .unwrap();
+                for field in ["work_summary", "can_finish", "finish_blockers"] {
+                    row[field] = summary[field].clone();
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(published_workspace_facts(&view), Value::Array(expected));
+        measurements.push((size, full, owner));
+    }
+    for (size, full, owner) in measurements {
+        eprintln!("{size} actual summary sources: full={full:?} owner={owner:?}");
+        for count in [full, owner] {
+            assert!(
+                count.joins > 0,
+                "the real producer's summary iteration was not observed"
+            );
+            assert!(
+                count.joins <= size,
+                "actual publication rescanned summaries: {count:?}"
+            );
+        }
+    }
+}
+
+fn published_workspace_facts(view: &ReadView) -> Value {
+    use crate::app::read_view::ReadViewSlot;
+    let slot = ReadViewSlot::default();
+    slot.publish_delta(
+        SnapshotDelta::new(slot.next_version()).set_facts(std::sync::Arc::clone(&view.facts)),
+    );
+    let handle = crate::app::facts::FactsHandle::default();
+    assert!(handle
+        .set(crate::app::facts::FactsSource::new(
+            slot,
+            std::sync::Weak::new()
+        ))
+        .is_ok());
+    let request = crate::changes::FactsRequest {
+        entity_id: crate::changes::BOARD_ITEM_ID.into(),
+        lists: crate::changes::BoardLists::WORKSPACES,
+        ..Default::default()
+    };
+    let mut facts = crate::app::facts::entity_facts(&handle, &[request]);
+    facts.pop().unwrap().state.unwrap()["workspaces"].take()
+}

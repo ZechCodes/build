@@ -291,7 +291,7 @@ impl HistorySample {
             .edit_agent_conversation(&owner, &agent, |thread, _| {
                 let mut message_sequences = Vec::new();
                 for i in 0..SAMPLE_COUNT {
-                    thread.post_user(&format!("timing message {i}"), None, "2026-10-19T12:00:00Z");
+                    thread.post_user(format!("timing message {i}"), None, "2026-10-19T12:00:00Z");
                     message_sequences.push(thread.last_sequence());
                 }
                 let first_activity = thread.last_sequence() + 1;

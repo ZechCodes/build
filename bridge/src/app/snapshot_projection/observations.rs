@@ -224,6 +224,12 @@ impl AppState {
             .cloned()
             .collect()
     }
+    pub(in crate::app) fn snapshot_watched_task_shared_rows(&self) -> Vec<Arc<Value>> {
+        self.snapshot_watched_task_rows()
+            .into_iter()
+            .map(Arc::new)
+            .collect()
+    }
     pub(in crate::app) fn snapshot_run_branch(
         &self,
         owner: &str,

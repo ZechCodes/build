@@ -473,3 +473,5 @@ fn global_publication_unread_memo_expires_when_an_alias_rebinds() {
         1
     );
 }
+
+mod incremental_rows;

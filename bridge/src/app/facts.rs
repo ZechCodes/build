@@ -1,22 +1,24 @@
 //! What the push bus is built over (wire spec Part 1, step 1.3): the board's
 //! worktree entities, and the per-flush lookups that fill a `changes` item.
 //!
-//! [`ChangeBus`] knows nothing about [`AppState`]; it is handed two closures
-//! at construction. Both run off the app mutex — the entity list is a map
-//! snapshot the watchers hold, and the facts source takes the mutex for the
-//! thread tails and the state rows only, then runs the git status walks with
-//! it released.
+//! [`ChangeBus`] reads a committed immutable projection. Filesystem and Git
+//! observations run independently, and their cache updates belong to a separate
+//! producer which cannot delay a flush on the application mutex.
+
+mod observations;
+mod snapshot;
+pub(in crate::app) use snapshot::{entity_facts, FactsHandle, FactsSource, PushFacts};
 
 use super::git::{namespace_payload_keys, namespaced_key, project_source_namespace};
 use super::watchers::{WorktreeRoots, WorktreeWatchers};
 use super::{AppState, ReadSubject};
 use crate::changes::WORKING_TREE_DIFF_MAX_BYTES;
-use crate::changes::{ChangeBus, EntityFacts, FactsRequest, ThreadTip};
+use crate::changes::{ChangeBus, EntityFacts, ThreadTip};
 use crate::gitgui::{counted_status_shape, log_page, unpushed_summary, GIT_STATUS_MAX_FILES};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// What a flush reads one checkout with: where it is, the branch its
@@ -125,23 +127,22 @@ fn read_worktree_diff(diff: &ReadSubject) -> (Option<Value>, Option<u64>) {
     (body, Some(bytes as u64))
 }
 
-/// Where the facts source finds the state once it is shared. Filled by
-/// [`AppState::shared`]; before that, or after the state is gone, the source
-/// answers nothing and every item reads as "refetch".
-pub(in crate::app) type FactsHandle = Arc<OnceLock<Weak<Mutex<AppState>>>>;
-
-/// The daemon's bus: `{"kind":"all"}` resolves against the watchers' roots
-/// snapshot, and a flush's keys come from [`entity_facts`].
+/// The daemon's bus resolves entities and facts from the same committed view.
 pub(in crate::app) fn bus_with_sources(
     window: Duration,
-    watchers: &Arc<WorktreeWatchers>,
+    _watchers: &Arc<WorktreeWatchers>,
     handle: &FactsHandle,
 ) -> Arc<ChangeBus> {
-    let entities = Arc::clone(watchers);
+    let entities = Arc::clone(handle);
     let handle = Arc::clone(handle);
     ChangeBus::with_sources(
         window,
-        Arc::new(move || entities.entity_ids()),
+        Arc::new(move || {
+            entities
+                .get()
+                .map(|source| source.entity_ids())
+                .unwrap_or_default()
+        }),
         Arc::new(move |requests| entity_facts(&handle, requests)),
     )
 }
@@ -157,12 +158,14 @@ pub(in crate::app) fn bus_with_sources(
 /// unresponsive mount would stall every RPC and every push for as long as
 /// the subprocess took. So the rows are captured under the lock and
 /// rendered with it released.
+#[cfg(test)]
 pub(in crate::app) struct BoardListFacts {
     projects: Option<Vec<super::ProjectListRow>>,
     workspaces: Option<Value>,
     usage_limits: Option<Value>,
 }
 
+#[cfg(test)]
 impl BoardListFacts {
     /// The lists as the board item carries them, under the keys
     /// `project.list` and `workspace.list` answer under. MUST run with the
@@ -183,151 +186,6 @@ impl BoardListFacts {
     }
 }
 
-/// What one request needs read under the app mutex: the conversation tails,
-/// the row, and the tab list. The board item's whole lists are taken beside
-/// this, by [`AppState::board_lists`].
-fn locked_facts(
-    app: &mut AppState,
-    request: &FactsRequest,
-    subjects: &BTreeMap<String, CheckoutSubject>,
-) -> EntityFacts {
-    EntityFacts {
-        entity_id: request.entity_id.clone(),
-        threads: if request.thread {
-            app.thread_tips(&request.entity_id, &request.thread_after)
-        } else {
-            Vec::new()
-        },
-        state: request
-            .state
-            .then(|| app.entity_state_item(&request.entity_id))
-            .flatten(),
-        terminals: request
-            .terminals
-            .then(|| subjects.get(&request.entity_id))
-            .flatten()
-            .map(|subject| json!({ "tabs": app.shell_tabs_for(&subject.terminal_scope()) })),
-        ..EntityFacts::default()
-    }
-}
-
-/// Answer a flush's lookups. The mutex is held for the thread tails and the
-/// roots only; every status walk runs with it released.
-pub(in crate::app) fn entity_facts(
-    handle: &FactsHandle,
-    requests: &[FactsRequest],
-) -> Vec<EntityFacts> {
-    let Some(state) = handle.get().and_then(Weak::upgrade) else {
-        return Vec::new();
-    };
-    let (subjects, summary_subjects, mut facts, board_lists) = {
-        let mut app = state.lock().unwrap();
-        let subjects = app.checkout_subjects();
-        let summary_subjects = requests
-            .iter()
-            .filter(|request| request.git)
-            .filter_map(|request| app.workspace_summary_subject_of_run(&request.entity_id))
-            .collect::<Vec<_>>();
-        let facts = requests
-            .iter()
-            .map(|request| locked_facts(&mut app, request, &subjects))
-            .collect::<Vec<_>>();
-        let board_lists = requests
-            .iter()
-            .find(|request| !request.lists.is_empty())
-            .map(|request| app.board_lists(request.lists));
-        (subjects, summary_subjects, facts, board_lists)
-    };
-    if let Some(lists) = board_lists {
-        let board = facts
-            .iter_mut()
-            .find(|fact| fact.entity_id == crate::changes::BOARD_ITEM_ID);
-        if let Some(fact) = board {
-            fact.state = Some(lists.render());
-        }
-    }
-    let mut fresh_stats = Vec::new();
-    for (request, fact) in requests.iter().zip(facts.iter_mut()) {
-        let Some(subject) = subjects.get(&request.entity_id) else {
-            continue;
-        };
-        if let (true, Some(diff)) = (request.git, &subject.diff) {
-            read_git(subject, diff, fact);
-            if let Some(stat) = run_stat_of(subject) {
-                restat_row(fact, &stat);
-                fresh_stats.push((fact.entity_id.clone(), stat));
-            }
-        }
-        if request.files {
-            fact.root_listing = super::fs::directory_listing(&subject.root, "").ok();
-        }
-    }
-    withdraw_gone_sources(&state, &mut facts);
-    // A run whose git moved has a row whose stat moved with it, and a
-    // workspace conversation's workspace has a work summary that moved too.
-    // Both walks ran with the mutex released; what they found is stored here
-    // so the `state` item the bus notes after this flush — and the workspace
-    // list the board item carries — say what the checkout is, not what the
-    // board's last TTL read left it as.
-    let summaries = summary_subjects
-        .into_iter()
-        .map(|(workspace_id, repositories)| {
-            let summary = super::board::cache::workspace_work_summary(&repositories);
-            (workspace_id, repositories, summary)
-        })
-        .collect::<Vec<_>>();
-    if !fresh_stats.is_empty() || !summaries.is_empty() {
-        let mut app = state.lock().unwrap();
-        let now = std::time::Instant::now();
-        for (run_id, stat) in fresh_stats {
-            app.store_run_stat(run_id, stat, now);
-        }
-        let lists_moved = !summaries.is_empty();
-        if lists_moved {
-            // The cache keeps a summary only under a membership it knows, and
-            // a workspace made since the last board read has none yet.
-            let memberships = app.workspace_summary_memberships();
-            app.sync_workspace_summaries(&memberships);
-        }
-        for (workspace_id, repositories, summary) in summaries {
-            app.store_diff_entry(super::board::cache::DiffCacheEntry::WorkspaceSummary {
-                workspace_id,
-                repositories,
-                summary,
-            });
-        }
-        if lists_moved {
-            app.changes
-                .note_board_lists(crate::changes::BoardLists::WORKSPACES);
-        }
-    }
-    facts
-}
-
-/// Empty and mark withdrawn the facts of every project source that is no
-/// longer one — moved or removed in settings — now that the off-lock reads
-/// are done, so nothing they read of the old folder goes out under it.
-fn withdraw_gone_sources(state: &Mutex<AppState>, facts: &mut [EntityFacts]) {
-    let asks_sources = facts
-        .iter()
-        .any(|fact| crate::changes::is_project_source_entity(&fact.entity_id));
-    if !asks_sources {
-        return;
-    }
-    let live = state.lock().unwrap().project_source_entities();
-    for fact in facts
-        .iter_mut()
-        .filter(|fact| crate::changes::is_project_source_entity(&fact.entity_id))
-        .filter(|fact| !live.contains(&fact.entity_id))
-    {
-        *fact = EntityFacts {
-            entity_id: std::mem::take(&mut fact.entity_id),
-            withdrawn: true,
-            ..EntityFacts::default()
-        };
-    }
-}
-
 /// A run's diffstat, walked off the app lock; `None` for a subject that is
 /// no run, whose row carries no stat of this shape.
 fn run_stat_of(subject: &CheckoutSubject) -> Option<Value> {
@@ -341,18 +199,39 @@ fn run_stat_of(subject: &CheckoutSubject) -> Option<Value> {
     ))
 }
 
-/// The row this flush carries, with the stat it just walked in place of the
-/// one the board read under its TTL.
-fn restat_row(fact: &mut EntityFacts, stat: &Value) {
-    let Some(row) = fact.state.as_mut().and_then(Value::as_object_mut) else {
-        return;
-    };
-    if row.contains_key("stat") {
-        row.insert("stat".into(), stat.clone());
-    }
-}
-
 impl AppState {
+    /// Fence completed Build mutations against probes already running or
+    /// queued. A workspace aggregate depends on every directory it measured,
+    /// and aliases of the same checkout share the invalidation.
+    pub(in crate::app) fn invalidate_snapshot_checkout_observations(&self, root: &std::path::Path) {
+        let root = self.snapshot_root(root);
+        self.read_view.publish_current(|current, version| {
+            let entities =
+                current
+                    .facts
+                    .subjects
+                    .iter()
+                    .filter(|(entity, subject)| {
+                        self.snapshot_root(&subject.root) == root
+                            || current.facts.summaries.get(*entity).is_some_and(
+                                |(_, repositories)| {
+                                    repositories
+                                        .iter()
+                                        .any(|repository| self.snapshot_root(repository) == root)
+                                },
+                            )
+                    })
+                    .map(|(entity, _)| entity.clone())
+                    .collect::<Vec<_>>();
+            if entities.is_empty() {
+                return None;
+            }
+            let mut facts = (*current.facts).clone();
+            facts.invalidate_observations(&entities);
+            Some(super::read_view::SnapshotDelta::new(version).set_facts(Arc::new(facts)))
+        });
+    }
+
     /// Every entity with a checkout: a run's worktree, a project's primary
     /// checkout, each external worktree the last scan found, and each of a
     /// project's original sources, Git or plain.
@@ -402,12 +281,21 @@ impl AppState {
             .collect()
     }
 
-    /// The entity id of every original project source where it stands now.
-    fn project_source_entities(&self) -> std::collections::BTreeSet<String> {
-        self.project_source_subjects()
-            .into_iter()
-            .map(|(entity_id, _)| entity_id)
-            .collect()
+    /// The producer's cached path observations, with the same workspace
+    /// ownership rule as run_git_root and no filesystem probe after warm-up.
+    fn snapshot_run_git_root(&self, run_id: &str, checkout: &std::path::Path) -> PathBuf {
+        if self.snapshot_path_exists(&checkout.join(".git")) {
+            return checkout.to_path_buf();
+        }
+        self.workspace_snapshot_for_conversation(run_id, None)
+            .and_then(|workspace| {
+                workspace
+                    .directories
+                    .iter()
+                    .find(|directory| directory.is_git)
+            })
+            .map(|directory| directory.path.clone())
+            .unwrap_or_else(|| checkout.to_path_buf())
     }
 
     /// The board's own entities with a Git checkout.
@@ -417,7 +305,7 @@ impl AppState {
             if active.run.state == crate::run::RunState::Archived {
                 continue;
             }
-            let root = self.run_git_root(id, &active.worktree.path);
+            let root = self.snapshot_run_git_root(id, &active.worktree.path);
             let base_branch = self.run_base_branch(id, &active.worktree.base_branch);
             subjects.insert(
                 id.clone(),
@@ -549,6 +437,7 @@ impl AppState {
     /// the rows alone; a board item carries them the way `board.list` does, so
     /// a client re-stamping the list has the summary this flush re-read rather
     /// than the one it was holding.
+    #[cfg(test)]
     fn with_work_summaries(&mut self, workspaces: Value) -> Value {
         let summaries = self.workspace_summaries_json();
         let Some(rows) = workspaces.as_array() else {
@@ -572,6 +461,7 @@ impl AppState {
         )
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn board_lists(
         &mut self,
         lists: crate::changes::BoardLists,
@@ -616,8 +506,9 @@ impl AppState {
             return Vec::new();
         }
         let project_id = self.projects.project_id_of(entity_id).map(str::to_owned);
-        let workspace_id =
-            self.workspace_of_conversation_in_project(entity_id, project_id.as_deref());
+        let workspace_id = self
+            .workspace_snapshot_for_conversation(entity_id, project_id.as_deref())
+            .map(|workspace| workspace.id.clone());
         let workspace_session = workspace_id
             .as_deref()
             .map(|_| self.session_summary(entity_id));
@@ -647,7 +538,7 @@ impl AppState {
                     thread_id: Some(thread.id.clone()),
                     thread_generation_revision: Some(thread.generation_revision),
                     choice_revision: Some(agent.choice_revision),
-                    last_sequence: thread.last_sequence(),
+                    last_sequence: self.snapshot_thread_sequence(thread),
                     workspace_session,
                     project_session,
                     workspace_id: workspace_id.clone(),
@@ -657,5 +548,151 @@ impl AppState {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::changes::FactsRequest;
+
+    pub(super) fn test_app(root: &std::path::Path) -> AppState {
+        let context =
+            crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.into()).unwrap();
+        AppState::new_unrooted_configured(root.join("worktrees"), "main", true, context)
+    }
+
+    #[test]
+    fn git_and_file_facts_return_published_observations_while_the_producer_waits() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = crate::git_fixture::init_repo_named(dir.path(), "repo");
+        let mut app = test_app(dir.path());
+        let project = app.add_project(repo.clone(), "main".into());
+        let state = app.shared();
+        let held = state.lock().unwrap();
+        let handle = Arc::clone(&held.facts_handle);
+        let request = [FactsRequest {
+            entity_id: project,
+            git: true,
+            files: true,
+            ..FactsRequest::default()
+        }];
+        let first = entity_facts(&handle, &request);
+        let missing = first[0].status_key.is_none() && first[0].root_listing.is_none();
+        drop(held);
+        assert!(
+            missing,
+            "a facts reader probed Git/files instead of using the published cache"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let facts = entity_facts(&handle, &request);
+            if facts[0].status_key.is_some() && facts[0].root_listing.is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the producer did not publish its observation"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let held = state.lock().unwrap();
+        let observed = entity_facts(&handle, &request);
+        std::fs::write(repo.join("later.txt"), "changed").unwrap();
+        let cached = entity_facts(&handle, &request);
+        drop(held);
+        assert_eq!(
+            cached[0].root_listing, observed[0].root_listing,
+            "a reader refreshed filesystem observations while the producer was blocked"
+        );
+    }
+
+    #[test]
+    fn nonempty_push_facts_finish_with_application_and_store_writer_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = crate::git_fixture::init_repo_named(dir.path(), "repo");
+        let store = crate::store::Store::new(dir.path().join("records")).unwrap();
+        let mut app = test_app(dir.path());
+        app.store = Some(store.clone());
+        let project = app.add_project(repo, "main".into());
+        let ensured = app
+            .project_ensure_conversation(&json!({"project_id": project}))
+            .unwrap();
+        let owner = ensured["entity_id"].as_str().unwrap().to_owned();
+        let mut active = app.take_run(&owner).unwrap();
+        active
+            .agents
+            .sole_thread_mut()
+            .post_user("committed words", None, "2026-01-01T00:00:00Z");
+        app.finish_run_mutation(owner.clone(), active).unwrap();
+        let state = app.shared();
+        let mut writer = store.writer_for_test();
+        let transaction = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let held = state.lock().unwrap();
+        let handle = Arc::clone(&held.facts_handle);
+        let (sent, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            sent.send(entity_facts(
+                &handle,
+                &[
+                    FactsRequest {
+                        entity_id: owner,
+                        state: true,
+                        thread: true,
+                        terminals: true,
+                        ..FactsRequest::default()
+                    },
+                    FactsRequest {
+                        entity_id: crate::changes::BOARD_ITEM_ID.into(),
+                        lists: crate::changes::BoardLists::PROJECTS,
+                        ..FactsRequest::default()
+                    },
+                ],
+            ))
+            .unwrap();
+        });
+        let answer = received.recv_timeout(Duration::from_millis(100));
+        drop(held);
+        drop(transaction);
+        drop(writer);
+        reader.join().unwrap();
+        let facts = answer.expect("push facts waited for the app or store writer mutex");
+        assert!(!facts[0].threads.is_empty());
+        assert!(facts[0].threads[0].last_sequence > 0);
+        assert!(facts[0].state.is_some());
+        assert!(facts[0].terminals.is_some());
+        assert_eq!(
+            facts[1].state.as_ref().unwrap()["projects"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn push_facts_finish_while_application_state_is_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = test_app(dir.path()).shared();
+        let held = state.lock().unwrap();
+        let handle = held.facts_handle.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let facts = entity_facts(
+                &handle,
+                &[FactsRequest {
+                    entity_id: crate::changes::BOARD_ITEM_ID.into(),
+                    state: true,
+                    ..FactsRequest::default()
+                }],
+            );
+            sent.send(facts).unwrap();
+        });
+        let answer = received.recv_timeout(Duration::from_millis(100));
+        drop(held);
+        reader.join().unwrap();
+        assert!(answer.is_ok(), "push facts waited for the app mutex");
     }
 }

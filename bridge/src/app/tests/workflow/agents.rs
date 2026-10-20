@@ -1159,6 +1159,8 @@ fn workspace_get_resolves_an_external_workspace_to_its_run_by_exact_root() {
         true,
     );
 
+    state.refresh_workspace_snapshot_observation("stable-workspace-id");
+    state.publish_snapshot_projection();
     let detail = state.handle(req(
         "workspace.get",
         json!({"workspace_id": "stable-workspace-id"}),

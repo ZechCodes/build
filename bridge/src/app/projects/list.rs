@@ -27,7 +27,7 @@ impl AppState {
         self.projects
             .iter()
             .map(|project| {
-                let conversation = self.project_conversation_run(&project.id);
+                let conversation = self.project_snapshot_conversation_run(&project.id);
                 let scope = crate::compaction::CompactionScope::Project(project.id.clone());
                 ProjectListRow {
                     compaction_thresholds: self
@@ -91,7 +91,7 @@ impl AppState {
             .iter()
             .map(ProjectSource::wire)
             .collect::<Vec<_>>();
-        json!({
+        let value = json!({
             "project_id": p.id,
             "compaction_thresholds": self.compaction_thresholds(&crate::compaction::CompactionScope::Project(p.id.clone())).unwrap_or_default().read_value(),
             "compaction": self.scope_compaction_observation(&crate::compaction::CompactionScope::Project(p.id.clone())),
@@ -107,7 +107,9 @@ impl AppState {
             "isolation_available": available,
             "session_started_ms": self.session_summary(&p.id).session_started_ms,
             "last_activity_ms": self.session_summary(&p.id).last_activity_ms,
-        })
+        });
+        self.record_project_snapshot_observation(&p.id, &value);
+        value
     }
 }
 

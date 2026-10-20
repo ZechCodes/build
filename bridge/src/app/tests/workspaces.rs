@@ -933,7 +933,11 @@ fn a_legacy_repo_root_run_still_has_its_run_id_workspace_route() {
     let run_id = adopted_run(&mut state, &repo, tmp.path(), "was-a-worktree");
     // What a store written before workspaces holds: a run whose checkout is
     // the project's own repository.
+    state.workspaces.forget(&run_id);
     state.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
+    state.refresh_workspace_snapshot_observations();
+    state.refresh_snapshot_observations();
+    state.publish_snapshot_projection();
 
     let detail = state.handle(req("workspace.get", json!({"workspace_id": run_id})));
     assert_eq!(detail["ok"], true, "{detail:?}");
@@ -2143,5 +2147,39 @@ fn done_waits_for_a_directory_no_repository_publishes() {
     assert_eq!(
         done_row(&mut state, &bare_id),
         (false, vec!["plain_directory".to_string()])
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn live_workspace_working_guard_resolves_aliases_created_after_snapshot_warm() {
+    let temporary = tempfile::tempdir().unwrap();
+    let real = temporary.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let context = HarnessContext::resolved(
+        temporary.path().join("mcp.sock"),
+        temporary.path().to_owned(),
+    )
+    .unwrap();
+    let mut state = AppState::new_unrooted_configured(
+        temporary.path().join("worktrees"),
+        "main",
+        true,
+        context,
+    );
+    state.initialize_snapshot_projection();
+    let alias = temporary.path().join("new-alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    insert_agent_tab(
+        &mut state,
+        &alias,
+        "unmanaged-owner",
+        "agent-alias",
+        DictatedSession::reporting(AgentStatus::Working),
+    );
+    let canonical = std::fs::canonicalize(&real).unwrap();
+    assert!(
+        state.agent_working_at_root(&canonical),
+        "live deletion guards must canonicalize newly admitted session paths"
     );
 }

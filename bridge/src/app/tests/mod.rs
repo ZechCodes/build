@@ -14,6 +14,7 @@ use crate::timing::{recording_clock, SLOW_FRAME};
 use serde_json::Value;
 
 mod provider_recovery;
+mod review_publication;
 mod turn_failures;
 
 /// The frame path as a test that is not measuring a frame calls it.
@@ -253,6 +254,7 @@ mod tracker_identity_removal;
 mod tracker_inbox_wire;
 mod tracker_list_pages;
 mod tracker_list_reads;
+mod tracker_observation_purity;
 mod tracker_tools;
 mod tracker_tracking;
 mod tracker_unread_kinds;
@@ -260,6 +262,7 @@ mod tracker_waiting_attention;
 mod tracker_waiting_on;
 mod tracker_watch_baselines;
 mod tracker_watching;
+mod transactions;
 mod updates;
 mod usage_limits;
 mod user_session;

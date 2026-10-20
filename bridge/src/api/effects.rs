@@ -1,6 +1,6 @@
-//! Audited effects of every RPC entry. Only SqlRead and Control select a new
-//! intake lane in step 2; the remaining read families keep their existing
-//! execution until their hidden maintenance/observation effects are extracted.
+//! Audited effects of every RPC entry. Migrated immutable snapshots execute
+//! at intake; SQL reads use dedicated workers, and other observations keep
+//! their existing routing.
 
 use serde_json::Value;
 
@@ -23,9 +23,35 @@ pub const SQL_READ_METHODS: &[&str] = &[
     "tasks.waiting_on.blocks",
 ];
 
+/// Families whose hidden observation work is owned by publication producers.
+pub const INTAKE_SNAPSHOT_METHODS: &[&str] = &[
+    "board.list",
+    "project.list",
+    "workspace.list",
+    "workspace.get",
+    "agent.list",
+    "settings.get",
+    "models.list",
+    "harnesses.list",
+    "bridge.update_status",
+];
+
+pub(crate) fn is_snapshot_read(payload: &Value) -> bool {
+    payload
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| INTAKE_SNAPSHOT_METHODS.contains(&method))
+}
+
 const CONTROL_METHODS: &[&str] = &["ping", "bridge.stats", "rtc.offer", "rtc.ice", "rtc.close"];
 
 const SNAPSHOT_METHODS: &[&str] = &[
+    "agent.list",
+    "board.list",
+    "project.list",
+    "settings.get",
+    "workspace.list",
+    "workspace.get",
     "capture.get",
     "models.list",
     "harnesses.list",
@@ -61,17 +87,7 @@ const EXTERNAL_READ_METHODS: &[&str] = &[
     "workspace.git_init_options",
 ];
 
-const LEGACY_READ_METHODS: &[&str] = &[
-    "agent.list",
-    "archived.list",
-    "board.list",
-    "project.list",
-    "settings.get",
-    "task.get",
-    "workspace.list",
-    "workspace.get",
-    "term.list",
-];
+const LEGACY_READ_METHODS: &[&str] = &["archived.list", "task.get", "term.list"];
 
 const WRITE_METHODS: &[&str] = &[
     "agent.add",

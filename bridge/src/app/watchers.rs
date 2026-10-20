@@ -61,6 +61,7 @@ impl WorktreeWatchers {
     /// resolves to. The bus's [`crate::changes::BoardEntities`] source.
     /// Project sources are watched too, but only for the subscriptions that
     /// name them, so they are not the board's.
+    #[cfg(test)]
     pub(in crate::app) fn entity_ids(&self) -> Vec<String> {
         self.roots
             .lock()

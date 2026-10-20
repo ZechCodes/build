@@ -209,12 +209,15 @@ fn push_to_agent_conversation(
     agent_id: &str,
     write: impl FnOnce(&mut crate::thread::Thread),
 ) {
-    let run = state.runs.get_mut(run_id).expect("the run exists");
+    let mut run = state.take_run(run_id).expect("the run exists");
     let agent = run
         .agents
         .by_id_mut(agent_id)
         .expect("the agent is on the roster");
     write(&mut agent.thread);
+    state
+        .finish_run_mutation(run_id.to_string(), run)
+        .expect("fixture thread write is durable and published");
 }
 
 /// The regression: a row is cleared against every agent on it, not just the
@@ -321,6 +324,7 @@ fn an_old_style_dismissal_still_clears_a_single_agent_row() {
         .board
         .attention_mut()
         .set_legacy_dismissed_through(&run_id, line);
+    state.persist_attention();
     let row = work_item_row_for(&mut state, &run_id);
     assert_eq!(row["dismissed"], true, "{row:?}");
 
@@ -721,16 +725,22 @@ fn bare_row(state: &mut AppState, project_id: &str, branch: &str) -> Value {
 fn one_piece_of_news_reaches_the_push_funnel_once() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
-    let (task_id, run_id) = planned_run_in_review(&mut state, "one push");
-    push_to_task_conversation(&mut state, &task_id, |thread| {
-        thread.push_event(
+    let (_, run_id) = planned_run_in_review(&mut state, "one push");
+    // Exercise the news tail itself: leave this event unannounced until the
+    // explicit push_agent_news call below, rather than running a finisher.
+    state
+        .runs
+        .get_mut(&run_id)
+        .unwrap()
+        .agents
+        .sole_thread_mut()
+        .push_event(
             crate::thread::ThreadEventKind::Done,
             Some("Implemented the change".to_string()),
             None,
             None,
             now_rfc3339(),
         );
-    });
 
     let conversation = state.runs[&run_id].agents.sole_thread().clone();
     let news = state.conversation_news(&conversation);

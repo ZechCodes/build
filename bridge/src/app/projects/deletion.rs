@@ -265,6 +265,7 @@ impl AppState {
                 })?;
             }
             self.plans.remove(&id);
+            self.committed_entities.forget(&id);
             self.projects.unbind_entity(&id);
             self.board.attention_mut().remove_entity_clocks(&id);
             self.forget_live_roster_entity(&id);

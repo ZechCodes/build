@@ -144,7 +144,7 @@ impl LifecycleSettlement<AdoptionPrepared> for AdoptionSettlement {
         let adopted = result?;
         let run_id = adopted.run_id.clone();
         let active = state.open_adoption(&adopted)?;
-        let (view, persisted) = state.answer_run_mutation(run_id, active, self.detail);
+        let (view, persisted) = state.answer_adopted_run_mutation(run_id, active, self.detail);
         persisted?;
         Ok(view)
     }
@@ -241,19 +241,18 @@ impl LifecycleSettlement<InitializedRepository> for InitializeRepositorySettleme
         result: Result<InitializedRepository, String>,
     ) -> Result<Value, String> {
         let initialized = result?;
-        if !state.projects.mark_git(&initialized.project_id) {
-            return Err(format!("unknown project: {}", initialized.project_id));
-        }
+        let value = state.commit_project_configuration(&initialized.project_id, |projects| {
+            if !projects.mark_git(&initialized.project_id) {
+                return Err(format!("unknown project: {}", initialized.project_id));
+            }
+            Ok(())
+        })?;
         state
             .board
             .diff_mut()
-            .register_project(initialized.project_id.clone());
-        state.persist();
-        let project = state
-            .projects
-            .get(&initialized.project_id)
-            .expect("project was just marked");
-        Ok(state.project_json(project))
+            .register_project(initialized.project_id);
+        state.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(value)
     }
 }
 pub struct SetRemoteSettlement {

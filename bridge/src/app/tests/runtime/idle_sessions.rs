@@ -1021,9 +1021,14 @@ fn a_delivery_that_panics_gives_its_in_flight_marks_back() {
         "run-panicked",
         RunState::Building,
     );
-    let turn = unreachable_turn(&mut app, "run-panicked");
-    app.delivery_queue.enqueue(turn);
     let state = app.shared();
+    // Warming reconciles vanished checkouts before admission. Make this
+    // delivery unreachable afterwards so the test isolates unwind cleanup.
+    {
+        let mut app = state.lock().unwrap();
+        let turn = unreachable_turn(&mut app, "run-panicked");
+        app.delivery_queue.enqueue(turn);
+    }
     let turns = state.lock().unwrap().take_pending_turns();
     assert!(
         state

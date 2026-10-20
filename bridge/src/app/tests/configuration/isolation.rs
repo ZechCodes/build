@@ -340,6 +340,8 @@ fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
     let (dir, repo) = init_repo();
     let mut state = state_on_an_unclonable_project(dir.path(), &repo);
     state.isolation = Isolation::Rift;
+    // Seed a retained account preference before exercising the refused write.
+    state.publish_all_snapshot_projection();
     let project_id = state.project_at(0).id.clone();
 
     let refused = state.handle(req(

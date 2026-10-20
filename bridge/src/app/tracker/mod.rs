@@ -34,6 +34,7 @@ mod handoff;
 mod identities;
 mod inbox;
 mod notices;
+mod observed_identities;
 mod pages;
 mod push;
 mod read;
@@ -58,7 +59,6 @@ pub use agent_files::AGENT_ATTACHMENT_MAX_BYTES;
 pub use attachments::ATTACHMENT_READ_CHUNK_BYTES;
 
 pub(in crate::app) use dispatch::AssignTarget;
-use identities::StoredRosters;
 #[cfg(test)]
 pub(in crate::app) use inbox::unread_since_mark;
 pub(in crate::app) use views::columns_json;
@@ -148,19 +148,6 @@ impl AppState {
             .tasks_get(self.tracker_store()?, params)
     }
 
-    /// Inbox projections retain their synchronous adapter until their read
-    /// family migrates; both paths use the same lightweight review query.
-    fn extend_task_review_summary(&self, task_id: &str, row: &mut Value) -> Result<(), String> {
-        if let Some(summary) = self
-            .tracker_store()?
-            .load_review_summary(task_id)
-            .stored()?
-        {
-            row["review_summary"] = json!(summary);
-        }
-        Ok(())
-    }
-
     /// Give a task filed before `done_at` existed the one its timeline
     /// says, and keep it, so the next write carries it too.
     fn backfill_done_at(
@@ -237,20 +224,20 @@ impl AppState {
             &mut draft,
             &[crate::tracker::TimelineEntry::Event(created.clone())],
         );
-        let task = self
+        let publication = self
             .tracker_store()?
-            .create_tracker_task_waiting_on(draft, &[created], &waiting_on)
+            .create_tracker_task_waiting_on_observed(draft, &[created], &waiting_on)
             .stored()?;
-        self.note_tasks_changed(&project_id, &task.id);
+        self.note_observed_tasks_changed(&project_id, &publication);
         let Some(target) = target else {
             return Ok(json!({
-                "task": self.task_dependency_answer(&task.id)?["task"],
+                "task": self.observed_task_json(&project_id, &publication.current),
                 "dispatch": Value::Null,
             }));
         };
         self.assign_task_to(
             &project_id,
-            task,
+            publication.current.task,
             target,
             handoff::Handoff::noted(note),
             actor,
@@ -403,9 +390,9 @@ impl AppState {
                 crate::session_summary::message_millis(now).map(|ts| session.updated(ts));
         }
         self.capture_task_identities(&mut write.task, &timeline);
-        let (task, additional) = self
+        let (observation, additional) = self
             .tracker_store()?
-            .save_review_task_activity(
+            .save_review_task_activity_observed(
                 &write.task,
                 &write.comments,
                 &write.events,
@@ -414,19 +401,55 @@ impl AppState {
                 now,
             )
             .stored()?;
-        write.task = task;
-        timeline.extend(
-            additional
-                .iter()
-                .cloned()
-                .map(crate::tracker::TimelineEntry::Event),
-        );
+        write.task = observation.current.task.clone();
         write.events.extend(additional);
-        self.publish_task_write(project_id, &write);
-        let task = self.task_with_read_identities(write.task, &timeline, &StoredRosters::default());
-        let mut row = views::read_task_json(project_id, &task, &timeline);
-        self.extend_task_waiting_summary(&task, &mut row)?;
-        Ok(json!({ "task": row }))
+        self.publish_observed_task_write(project_id, &write, &observation);
+        Ok(json!({ "task": self.observed_task_json(project_id, &observation.current) }))
+    }
+
+    pub(in crate::app) fn observed_task_json(
+        &self,
+        project: &str,
+        observation: &crate::store::TrackerTaskObservation,
+    ) -> Value {
+        let task =
+            self.task_with_observed_identities(observation.task.clone(), &observation.timeline);
+        let mut row = views::read_task_json(project, &task, &observation.timeline);
+        inbox::extend_observed_waiting_summary(observation, &mut row);
+        if let Some(review) = &observation.review {
+            row["review_summary"] = json!(review);
+        }
+        row
+    }
+
+    fn publish_observed_task_write(
+        &mut self,
+        project: &str,
+        write: &TaskWrite,
+        publication: &crate::store::TrackerTaskPublication,
+    ) {
+        self.note_observed_tasks_changed(project, publication);
+        self.deliver_task_write(write);
+    }
+
+    fn note_observed_tasks_changed(
+        &self,
+        project: &str,
+        publication: &crate::store::TrackerTaskPublication,
+    ) {
+        let observations = std::iter::once(&publication.current).chain(publication.related.iter());
+        let mut changed = Vec::new();
+        for observation in observations {
+            changed.push(observation.task.id.clone());
+            if self.snapshot_projection_initialized() {
+                let row = self.watched_task_observation_row(project, observation);
+                self.install_snapshot_watched_task(project, &observation.task.id, row);
+            }
+        }
+        if self.snapshot_projection_initialized() {
+            self.publish_snapshot_projection();
+        }
+        self.changes.note_tasks(project, &changed);
     }
 
     /// Deliver side effects only after the task and its activity are durable.
@@ -434,6 +457,10 @@ impl AppState {
     /// reclaim when completion moved a linked task into Done.
     fn publish_task_write(&mut self, project_id: &str, write: &TaskWrite) {
         self.note_tasks_changed(project_id, &write.task.id);
+        self.deliver_task_write(write);
+    }
+
+    fn deliver_task_write(&mut self, write: &TaskWrite) {
         if write.finishes_a_workspace_task() {
             self.nudge_workspace_reclaim();
         }
@@ -626,6 +653,12 @@ impl AppState {
     /// Called after the write lands, never before: a subscriber told to refetch
     /// ahead of the commit would read the state the write is about to replace.
     pub(in crate::app) fn note_tasks_changed(&self, project_id: &str, task_id: &str) {
+        if self.snapshot_projection_initialized() {
+            if let Err(error) = self.refresh_project_snapshot_task_observations(project_id) {
+                eprintln!("watched task observation {project_id}: {error}");
+            }
+            self.publish_snapshot_projection();
+        }
         self.changes.note_tasks(project_id, &[task_id.to_string()]);
     }
 

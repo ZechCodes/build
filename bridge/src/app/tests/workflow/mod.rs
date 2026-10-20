@@ -6,6 +6,7 @@ mod archive_list;
 pub(in crate::app::tests) mod branch_feed;
 mod checkout_discard;
 mod dispatch;
+mod dispatch_publication;
 pub(in crate::app::tests) mod finish;
 pub(in crate::app::tests) mod lifecycle_offlock;
 pub(in crate::app::tests) mod recovery;

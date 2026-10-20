@@ -28,8 +28,9 @@ impl AppState {
                     .as_ref()
                     .map(|store| {
                         store
-                            .acknowledge_native_legacy_messages(
+                            .acknowledge_messages(
                                 &address.conversation_id,
+                                None,
                                 sequence,
                                 sequence,
                                 &now,
@@ -37,10 +38,13 @@ impl AppState {
                             .map_err(|error| format!("legacy message store: {error}"))
                     })
                     .transpose()?;
+                if let Some(committed) = &updated_sequence {
+                    self.apply_committed_thread_items(committed);
+                }
                 self.edit_agent_conversation(owner_id, agent_id, |thread, _| {
                     thread.read_native_legacy_messages(sequence, sequence, &now);
                     if let Some(updated_sequence) = updated_sequence {
-                        thread.advance_sequence_to(updated_sequence);
+                        thread.advance_sequence_to(updated_sequence.sequence);
                     }
                     Ok(serde_json::Value::Null)
                 })?;
@@ -158,8 +162,9 @@ impl AppState {
             .as_ref()
             .map(|store| {
                 store
-                    .set_legacy_delivery_status(
+                    .set_delivery_status(
                         conversation_id,
+                        None,
                         start_sequence,
                         end_sequence,
                         status,
@@ -167,10 +172,13 @@ impl AppState {
                     .map_err(|error| format!("legacy message store: {error}"))
             })
             .transpose()?;
+        if let Some(committed) = &sequence {
+            self.apply_committed_thread_items(committed);
+        }
         self.edit_agent_conversation(owner_id, agent_id, |thread, _| {
             thread.set_legacy_delivery_status(start_sequence, end_sequence, status);
             if let Some(sequence) = sequence {
-                thread.advance_sequence_to(sequence);
+                thread.advance_sequence_to(sequence.sequence);
             }
             Ok(serde_json::Value::Null)
         })?;

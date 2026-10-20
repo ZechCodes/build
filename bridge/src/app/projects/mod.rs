@@ -69,6 +69,10 @@ impl ProjectSource {
 
     /// The source as every project row carries it.
     pub(in crate::app) fn wire(&self) -> serde_json::Value {
+        self.wire_observed(serde_json::json!(self.origin()))
+    }
+
+    pub(in crate::app) fn wire_observed(&self, remote: Value) -> Value {
         serde_json::json!({
             "id": self.id,
             "name": self.name,
@@ -76,7 +80,7 @@ impl ProjectSource {
             "path": self.path.display().to_string(),
             "is_git": self.is_git,
             "base_branch": self.base_branch,
-            "remote": self.origin(),
+            "remote": remote,
             "sync_base": self.syncs_base(),
             "sync": self.sync_status,
         })
@@ -98,6 +102,7 @@ pub(crate) use coordinator::PINNED_AGENT_STAYS;
 mod deletion;
 mod lifecycle;
 mod list;
+mod persistence;
 pub(in crate::app) use list::primary_remote;
 mod parked;
 mod project_registry;
@@ -506,6 +511,12 @@ impl AppState {
         let id = self.projects.publish(project).into_string();
         if is_git {
             self.board.diff_mut().register_project(id.clone());
+        }
+        if self.snapshot_projection_initialized() {
+            let project = self.projects.get(&id).expect("project was published");
+            if !self.has_current_project_snapshot_observation(project) {
+                self.project_json(project);
+            }
         }
         // A project is a section of the feed; registering one adds every row
         // its checkouts stand behind, and the project list a client holds has

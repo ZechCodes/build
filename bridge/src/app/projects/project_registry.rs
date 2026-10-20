@@ -4,6 +4,40 @@ use std::path::{Path, PathBuf};
 
 use crate::isolation::Isolation;
 
+/// Only configuration-owned project fields; runtime orchestrators stay installed.
+pub(super) struct ProjectConfiguration {
+    base_branch: String,
+    is_git: bool,
+    sources: Vec<ProjectSource>,
+    next_source: u64,
+    isolation: Option<Isolation>,
+}
+
+impl ProjectConfiguration {
+    pub(super) fn capture(project: &Project) -> Self {
+        Self {
+            base_branch: project.base_branch.clone(),
+            is_git: project.is_git,
+            sources: project.sources.clone(),
+            next_source: project.next_source,
+            isolation: project.isolation,
+        }
+    }
+
+    pub(super) fn swap(&mut self, projects: &mut ProjectRegistry, id: &str) {
+        let project = projects
+            .projects
+            .iter_mut()
+            .find(|project| project.id == id)
+            .expect("staged project remains registered under the app lock");
+        std::mem::swap(&mut self.base_branch, &mut project.base_branch);
+        std::mem::swap(&mut self.is_git, &mut project.is_git);
+        std::mem::swap(&mut self.sources, &mut project.sources);
+        std::mem::swap(&mut self.next_source, &mut project.next_source);
+        std::mem::swap(&mut self.isolation, &mut project.isolation);
+    }
+}
+
 /// The stable id assigned to one registered project.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ProjectId(String);

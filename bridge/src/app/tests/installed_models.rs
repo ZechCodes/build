@@ -194,8 +194,13 @@ async fn a_greeted_session_hears_when_an_installed_cli_changes() {
         .contains(&json!("models.installedCli")));
     let first = handler.call(session.clone(), req("models.list", json!({})));
     assert_eq!(first["ok"], true, "{first}");
-    let first_news = next_models_changed(&mut rx, &key, Duration::from_secs(5)).await;
-    assert_eq!(first_news, Some(json!({ "type": "models.changed" })));
+    assert_eq!(provider(&first, "claude")["cli_version"], "2.1.280");
+    // Startup warmed the immutable catalog before the greeting. Reading it
+    // neither probes again nor announces a new observation.
+    assert_eq!(
+        next_models_changed(&mut rx, &key, Duration::from_millis(300)).await,
+        None
+    );
 
     // The same answer asked again is no news.
     readings.observe_version(

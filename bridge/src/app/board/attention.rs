@@ -346,6 +346,7 @@ impl AppState {
         self.board
             .attention_mut()
             .mark_seen(id, Some(&state_changed_at), &read_through);
+        self.mark_snapshot_owner_pending(id);
         self.persist_attention();
     }
 
@@ -597,6 +598,13 @@ impl AppState {
         thread: &crate::thread::Thread,
         cursor: u64,
     ) -> crate::thread::UnreadSummary {
+        if self.snapshot_projection_initialized() {
+            let mut summary = thread.unread_since(cursor);
+            if let Some(history) = self.read_view.load().history(agent_id) {
+                summary.count = history.updated(thread).unread_since(cursor).count;
+            }
+            return summary;
+        }
         let mut summary = thread.unread_since(cursor);
         let floor = thread.resident_from_sequence();
         if floor == 0 || floor <= cursor {
@@ -784,6 +792,7 @@ impl AppState {
             return Err(format!("entity.mute: unknown entity {entity_id}"));
         }
         self.board.attention_mut().set_muted(&entity_id, muted);
+        self.mark_snapshot_owner_pending(&entity_id);
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "muted": muted }))
     }
@@ -1040,25 +1049,6 @@ impl AppState {
             Some(attention) => attention.anchor(&created_at),
             None => created_at,
         }
-    }
-
-    /// Give a newly created entity its place in the inbox. Idempotent, so every
-    /// mutation can call it and only the first one does anything.
-    pub(in crate::app) fn seed_anchor(&mut self, entity_id: &str) {
-        let created_at = self
-            .board
-            .attention()
-            .clock(entity_id)
-            .created_at
-            .unwrap_or_else(now_rfc3339);
-        if !self
-            .board
-            .attention_mut()
-            .seed_anchor(entity_id, &created_at)
-        {
-            return;
-        }
-        self.persist_attention();
     }
 
     /// The user said something to this entity: move its anchor if they had gone

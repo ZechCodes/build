@@ -1430,6 +1430,12 @@ impl Thread {
             .unwrap_or(0)
             .max(self.stored_last_sequence)
     }
+    /// Producer ordering includes withdrawn drafts: deleting the newest item
+    /// can lower the wire tip while the allocator remains monotonic.
+    pub(crate) fn publication_sequence(&self) -> u64 {
+        self.next_sequence.max(self.last_sequence())
+    }
+
     /// Take a conversation's tail as it was read from the store, told how many
     /// older items were left there and how far the whole conversation's counter
     /// had got by the time it was read.

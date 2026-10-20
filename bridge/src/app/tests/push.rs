@@ -816,6 +816,9 @@ async fn a_state_item_finds_a_checkout_past_a_project_nothing_has_scanned() {
         .id
         .clone();
     let first_id = app.project_at(0).id.clone();
+    // Startup warms every live project. Explicitly invalidate this fixture's
+    // earlier project to retain the unreadable/unobserved lookup regression.
+    app.board.diff_mut().clear_external_scan(&first_id);
     assert!(
         app.external_scan_of(&first_id).is_none(),
         "the fixture is a project nothing has scanned"
@@ -941,7 +944,8 @@ async fn a_board_items_project_list_renders_with_the_app_lock_released() {
 /// A `files` item carries the worktree's root listing beside the paths that
 /// moved — the same body `fs.tree` answers for `path: ""` — so a client
 /// repaints its file tree's top level off the push and re-lists only the
-/// deeper directories it is holding open.
+/// deeper directories it is holding open. When the observation producer is
+/// still running, that listing follows the initial path invalidation.
 #[tokio::test]
 async fn a_files_item_carries_the_root_listing() {
     let (dir, repo) = init_repo();
@@ -968,16 +972,37 @@ async fn a_files_item_carries_the_root_listing() {
         .changes()
         .note_files(&project_id, &["listed.txt".to_string()]);
 
-    let pushes = settled_pushes(&mut rx, &key).await;
+    let has_root = |item: &Value| {
+        item["entity_id"] == project_id
+            && item["files"]["root"]["entries"]
+                .as_array()
+                .is_some_and(|entries| entries.iter().any(|entry| entry["name"] == "listed.txt"))
+    };
+    let names_path = |item: &Value| {
+        item["entity_id"] == project_id && item["files"]["paths"] == json!(["listed.txt"])
+    };
+    let pushes = pushes_until(&mut rx, &key, |pushes| {
+        let items = pushes
+            .iter()
+            .filter(|push| push["type"] == "changes")
+            .flat_map(|frame| frame["items"].as_array().into_iter().flatten())
+            .collect::<Vec<_>>();
+        items.iter().any(|item| has_root(item)) && items.iter().any(|item| names_path(item))
+    })
+    .await;
+    assert!(pushes
+        .iter()
+        .filter(|push| push["type"] == "changes")
+        .flat_map(|frame| frame["items"].as_array().into_iter().flatten())
+        .any(names_path));
     let files = pushes
         .iter()
         .filter(|push| push["type"] == "changes")
         .flat_map(|frame| frame["items"].as_array().cloned().unwrap_or_default())
-        .find(|item| item["entity_id"] == project_id && item.get("files").is_some())
+        .find(has_root)
         .map(|item| item["files"].clone())
         .unwrap_or_else(|| panic!("no files item: {pushes:?}"));
 
-    assert_eq!(files["paths"], json!(["listed.txt"]), "{files:?}");
     let listed = call(
         &handler,
         "fs.tree",

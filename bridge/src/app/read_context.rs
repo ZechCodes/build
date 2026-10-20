@@ -65,6 +65,7 @@ impl AppState {
     }
 
     pub(in crate::app) fn forget_read_owner(&self, owner: &str) {
+        self.publish_owner_snapshot_projection(owner);
         let Some(previous) = self.read_context.load_full() else {
             return;
         };
@@ -79,6 +80,7 @@ impl AppState {
     /// Project/workspace links and user presence are published independently
     /// of roster admission. A board invalidation cannot expose a failed save.
     pub(in crate::app) fn publish_read_metadata(&self) {
+        self.publish_snapshot_projection();
         let Some(previous) = self.read_context.load_full() else {
             return;
         };

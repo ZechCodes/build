@@ -83,6 +83,45 @@ fn version(raw: &str) -> Version {
 }
 
 #[test]
+fn catalog_snapshot_does_not_wait_for_probe_state_or_start_probes() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let readings = inline(HandClock::leaked());
+    readings.reading("claude", cli);
+    let guard = readings.entries.lock().unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    let reading = Arc::clone(&readings);
+    let reader = std::thread::spawn(move || sent.send(reading.catalog_snapshot()).unwrap());
+    let observed = received.recv_timeout(Duration::from_secs(1));
+    drop(guard);
+    reader.join().unwrap();
+    let snapshot = observed.expect("catalog waited for probe state");
+    assert_eq!(snapshot.len(), AgentProvider::ALL.len());
+    assert_eq!(cli.asked(), 1);
+}
+
+#[test]
+fn catalog_publication_precedes_notification_and_retains_previous_snapshot() {
+    let cli = ScriptedCli::leaked("2.1.280");
+    let clock = HandClock::leaked();
+    let readings = inline(clock);
+    let mut changes = readings.changes();
+    readings.reading("claude", cli);
+    let before = readings.catalog_snapshot();
+    changes.mark_unchanged();
+    cli.set("2.1.284");
+    clock.advance(READING_TTL);
+    readings.refresh();
+    assert!(changes.has_changed().unwrap());
+    let after = readings.catalog_snapshot();
+    for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+        let old = before.iter().find(|row| row.id == provider).unwrap();
+        let new = after.iter().find(|row| row.id == provider).unwrap();
+        assert_eq!(old.cli_version.as_deref(), Some("2.1.280"));
+        assert_eq!(new.cli_version.as_deref(), Some("2.1.284"));
+    }
+}
+
+#[test]
 fn a_first_ask_reads_the_cli() {
     let cli = ScriptedCli::leaked("2.1.280");
     let readings = inline(HandClock::leaked());

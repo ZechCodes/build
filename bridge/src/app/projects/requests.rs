@@ -496,18 +496,15 @@ impl AppState {
             .filter(|source| source.id != source_id)
             .cloned()
             .collect::<Vec<_>>();
-        assert!(
-            self.projects.set_sources(&project_id, sources),
-            "the project was just resolved"
-        );
-        self.persist();
-        // The source's watcher and subscriptions end with its membership.
+        let value = self.commit_project_configuration(&project_id, |projects| {
+            assert!(
+                projects.set_sources(&project_id, sources),
+                "project was resolved"
+            );
+            Ok(())
+        })?;
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
-        let project = self
-            .projects
-            .get(&project_id)
-            .expect("the project was just resolved");
-        Ok(self.project_json(project))
+        Ok(value)
     }
 
     /// `project.set_remote`, for clients that predate per-source remotes: a
@@ -553,15 +550,14 @@ impl AppState {
                 &project.orch.worktrees().availability(),
             )?),
         };
-        assert!(
-            self.projects.set_isolation(&project_id, isolation),
-            "the project was just resolved"
-        );
-        self.persist();
-        let project = self
-            .projects
-            .get(&project_id)
-            .expect("the project was just resolved");
-        Ok(self.project_json(project))
+        let value = self.commit_project_configuration(&project_id, |projects| {
+            assert!(
+                projects.set_isolation(&project_id, isolation),
+                "project was resolved"
+            );
+            Ok(())
+        })?;
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(value)
     }
 }

@@ -289,20 +289,11 @@ impl AppState {
             };
             active.publication_attempt = Some(attempt);
             if let Err(error) = self.persist_run_record(&run_id, &active) {
-                self.runs.insert(run_id, active);
+                self.restore_run_after_failed_save(&run_id, active);
                 return Err(error);
             }
         }
-        let result = {
-            let orch = self.orch_for(&project_id)?;
-            match action.as_str() {
-                "commit" => orch.run_commit(&active).map_err(err),
-                "push" => orch.run_push(&active).map_err(err),
-                "merge" => orch.run_approve_merge(&mut active).map_err(err),
-                "merge_push" => orch.run_merge_and_push(&mut active).map_err(err),
-                other => Err(format!("unknown git action: {other}")),
-            }
-        };
+        let result = self.perform_run_git_action(&project_id, &action, &mut active);
         if let Err(message) = &result {
             if message.starts_with("merge_failed:") {
                 active.last_error = Some(message.clone());
@@ -411,6 +402,24 @@ impl AppState {
         Ok(view)
     }
 
+    /// Keep orchestration refusals inside the action result, so the caller
+    /// settles its borrowed run through the same tail as every Git error.
+    fn perform_run_git_action(
+        &self,
+        project_id: &str,
+        action: &str,
+        active: &mut crate::orchestrator::ActiveRun,
+    ) -> Result<(), String> {
+        let orch = self.orch_for(project_id)?;
+        match action {
+            "commit" => orch.run_commit(active).map_err(err),
+            "push" => orch.run_push(active).map_err(err),
+            "merge" => orch.run_approve_merge(active).map_err(err),
+            "merge_push" => orch.run_merge_and_push(active).map_err(err),
+            other => Err(format!("unknown git action: {other}")),
+        }
+    }
+
     /// Validate destructive merge cleanup before committing or merging. Other
     /// Git actions and a merge that keeps its checkout remain available.
     fn refuse_locked_merge_cleanup(
@@ -462,11 +471,7 @@ impl AppState {
                     }
                 }
                 self.runs.remove(run_id);
-                self.projects.unbind_entity(run_id);
-                self.board.attention_mut().remove_entity_clocks(run_id);
-                self.board.diff_mut().remove_run_files_changed_at(run_id);
-                self.invalidate_run_stat(run_id);
-                self.forget_live_roster_entity(run_id);
+                self.forget_run(run_id);
                 self.rescan_external_worktrees(project_id);
             }
         }

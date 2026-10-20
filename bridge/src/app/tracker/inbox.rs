@@ -14,7 +14,7 @@
 use super::notices::{notice_line, NoticeVoice};
 use crate::app::AppState;
 use crate::session_summary::{message_millis, SessionSummary};
-use crate::store::TaskFilter;
+use crate::store::TrackerTaskObservation;
 use crate::tracker::{Assignee, Task, TimelineEntry};
 use serde_json::{json, Value};
 
@@ -24,53 +24,58 @@ impl AppState {
     /// Rows for tasks only: the conversations beside them are the board's own
     /// and are built where they always were. They land in the same list so the
     /// interleave by `anchor` costs nothing on either side.
-    pub(in crate::app) fn watched_task_rows(&mut self) -> Vec<Value> {
+    #[cfg(test)]
+    pub(in crate::app) fn watched_task_rows(&self) -> Vec<Value> {
         let projects: Vec<String> = self
             .projects
             .iter()
             .map(|project| project.id.clone())
             .collect();
-        let mut rows = Vec::new();
-        for project_id in projects {
-            let Ok(path) = self.tracker_project_path(&project_id) else {
-                continue;
-            };
-            let Ok(tasks) = self.tracker_store().and_then(|store| {
-                store
-                    .list_tracker_tasks(&path, TaskFilter::default())
-                    .map_err(|error| error.to_string())
-            }) else {
-                continue;
-            };
-            for task in tasks.into_iter().filter(|task| task.watched) {
-                if let Some(row) = self.watched_task_row(&project_id, &task) {
-                    rows.push(row);
-                }
-            }
-        }
-        rows
+        projects
+            .into_iter()
+            .flat_map(|project| {
+                self.watched_task_rows_for_project(&project)
+                    .expect("watched task fixture is readable")
+            })
+            .collect()
     }
 
-    /// One row, or `None` for a task whose timeline could not be read —
-    /// which is a row the inbox is better off without than wrong about.
-    fn watched_task_row(&mut self, project_id: &str, task: &Task) -> Option<Value> {
-        let timeline = self
-            .tracker_store()
-            .ok()?
-            .load_tracker_timeline(&task.id)
-            .ok()?;
+    pub(in crate::app) fn watched_task_rows_for_project(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<Value>, String> {
+        let Some(store) = &self.store else {
+            return Ok(Vec::new());
+        };
+        let path = self.tracker_project_path(project_id)?;
+        let observations = store
+            .watched_tracker_task_observations(&path)
+            .map_err(|error| error.to_string())?;
+        Ok(observations
+            .iter()
+            .filter_map(|observation| self.watched_task_observation_row(project_id, observation))
+            .collect())
+    }
+
+    /// Pure row construction from one committed transaction. An absent row
+    /// means unwatching or no meaningful activity, never a failed SQL read.
+    pub(in crate::app) fn watched_task_observation_row(
+        &self,
+        project_id: &str,
+        observation: &TrackerTaskObservation,
+    ) -> Option<Value> {
+        let task = &observation.task;
+        if !task.watched {
+            return None;
+        }
+        let timeline = &observation.timeline;
         let last = timeline
             .iter()
             .rev()
             .find(|entry| !attention_bookkeeping(entry))?;
         let at = entry_at(last).to_string();
-        let session = task_activity_session(task, &timeline);
-        let blocked = self
-            .tracker_store()
-            .ok()?
-            .waiting_on_summary(&task.project_path, &task.id)
-            .ok()?
-            .blocked;
+        let session = task_activity_session(task, timeline);
+        let blocked = observation.dependencies.blocked;
         let assigned_to_user = matches!(task.assignee, Some(Assignee::User)) && !blocked;
         let mut row = json!({
             "kind": "tracker_task",
@@ -83,7 +88,7 @@ impl AppState {
             "assigned_to_user": assigned_to_user,
             "last_event": {
                 "text": self.reader_line_for(task, last),
-                "actor": self.entry_actor_words(last).to_reader,
+                "actor": self.observed_task_actor_words(task, entry_actor(last)).to_reader,
                 "at": at,
             },
             // The two the inbox interleaves by. Both the same instant: a row's
@@ -92,14 +97,16 @@ impl AppState {
             "last_activity": at,
             "session_started_ms": session.session_started_ms,
             "last_activity_ms": session.last_activity_ms,
-            "unread": unread_since_mark(task, &timeline),
+            "unread": unread_since_mark(task, timeline),
             // Mute is unwatch here, so a row that exists is not muted — the
             // absence of the row is the whole of the answer.
             "muted": false,
-            "done_until_next": self.task_is_done_until_next(task, &timeline),
+            "done_until_next": self.task_is_done_until_next(task, timeline),
         });
-        self.extend_task_review_summary(&task.id, &mut row).ok()?;
-        self.extend_task_waiting_summary(task, &mut row).ok()?;
+        if let Some(summary) = &observation.review {
+            row["review_summary"] = json!(summary);
+        }
+        extend_observed_waiting_summary(observation, &mut row);
         Some(row)
     }
 
@@ -115,13 +122,9 @@ impl AppState {
         notice_line(
             &notice,
             task,
-            &self.entry_actor_words(entry),
+            &self.observed_task_actor_words(task, entry_actor(entry)),
             NoticeVoice::Reader,
         )
-    }
-
-    fn entry_actor_words(&self, entry: &TimelineEntry) -> super::notices::ActorWords {
-        self.actor_words(entry_actor(entry))
     }
 
     /// Whether the user cleared this row and nothing has happened since.
@@ -133,6 +136,30 @@ impl AppState {
             .iter()
             .filter(|entry| !attention_bookkeeping(entry))
             .any(|entry| after(Some(cleared), entry_id(entry)))
+    }
+}
+
+pub(super) fn extend_observed_waiting_summary(
+    observation: &TrackerTaskObservation,
+    row: &mut Value,
+) {
+    row["dependencies"] = json!(observation.dependencies);
+    row["dependencies"]["blocks"] = json!(observation.blocks.blocks);
+    if let Some(cursor) = &observation.blocks.next_cursor {
+        row["dependencies"]["blocks_next_cursor"] = json!(cursor);
+    }
+    if let Some(intent) = observation.delivery.as_ref().filter(|intent| {
+        matches!(
+            intent.state.as_str(),
+            "waiting" | "queued" | "provisioning" | "failed"
+        )
+    }) {
+        let state = match intent.state.as_str() {
+            "provisioning" => "queued",
+            state => state,
+        };
+        row["deferred_assignment"] =
+            json!({"id":intent.id,"target":intent.target,"state":state,"error":intent.error});
     }
 }
 

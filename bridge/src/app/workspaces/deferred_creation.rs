@@ -17,6 +17,7 @@ impl AppState {
         // edits and restart, just like explicit manifest retries. Prepare only
         // unfinished inputs, always pinning Git bases under their shared lock.
         let base_syncs = self.retry_sync_subjects(&workspace.project_id, &sources);
+        self.refresh_workspace_snapshot_observation(&workspace.id);
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(DeferredGit {
             call: Box::new(WorkspaceCreateWork {

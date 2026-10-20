@@ -5,6 +5,8 @@
 
 use super::*;
 
+mod projection_ownership;
+
 fn conversation_run(state: &mut AppState, workspace_id: &str) -> String {
     let conversation = state.handle(req(
         "workspace.ensure_conversation",
@@ -134,16 +136,77 @@ fn worktree_roots_resolves_workspace_ownership_without_cubic_scans() {
     }
 }
 
-/// The production push-facts lookup holds AppState while collecting thread
-/// tips. Adding agents to a roster must not repeat workspace ownership scans.
+/// Cached canonical paths still require ownership comparisons. Keep this
+/// positive control beside the bounds so moving comparisons out of the
+/// measured producer cannot silently turn every measurement into zero.
+#[test]
+fn snapshot_publication_counts_cached_ownership_lookups() {
+    let (_tmp, mut state, _) = ownership_fixture(16, true);
+    add_tip_agents(&mut state, 1);
+    state.initialize_snapshot_projection();
+    let before = state.read_view.load().facts_version;
+    let (_, comparisons) =
+        crate::app::workspaces::count_path_comparisons(|| state.publish_snapshot_projection());
+    assert!(state.read_view.load().facts_version > before);
+    assert!(
+        comparisons > 0,
+        "the path comparison counter did not cover warmed snapshot publication"
+    );
+}
+
+/// Ownership work belongs to the publication producer, while the immutable
+/// reader must do none. Bound the complete producer at both #672 sizes and
+/// retain the once-per-entity bound when the roster grows from one to four.
 #[test]
 fn thread_push_facts_resolve_ownership_once_per_entity() {
-    const ENTITIES: usize = 32;
-    let (_tmp, mut state, owners) = ownership_fixture(ENTITIES, true);
+    let mut measurements = Vec::new();
+    for shared_root in [false, true] {
+        for entities in [16, 64] {
+            measurements.push((
+                entities,
+                shared_root,
+                measure_thread_facts_publication(entities, shared_root),
+            ));
+        }
+    }
+    for (entities, shared_root, (one, four)) in &measurements {
+        assert_eq!(four, one, "ownership is shared by the whole roster");
+        assert!(
+            *one <= 8 * entities * entities,
+            "complete snapshot publication repeated nested ownership searches: {one} for {entities} entities, shared_root={shared_root}"
+        );
+    }
+    for (small_measurement, large_measurement) in measurements
+        .iter()
+        .step_by(2)
+        .zip(measurements.iter().skip(1).step_by(2))
+    {
+        let (_, shared_root, small) = *small_measurement;
+        let (_, _, large) = *large_measurement;
+        for (small, large) in [(small.0, large.0), (small.1, large.1)] {
+            assert!(
+                large <= 16 * small,
+                "publication exceeded quadratic growth: 16 owners={small}, 64 owners={large}, shared_root={shared_root}"
+            );
+        }
+    }
+}
+
+fn measure_thread_facts_publication(entities: usize, shared_root: bool) -> (usize, usize) {
+    let (_tmp, mut state, owners) = ownership_fixture(entities, shared_root);
     add_tip_agents(&mut state, 1);
     let state = Arc::new(Mutex::new(state));
     let handle = crate::app::facts::FactsHandle::default();
-    handle.set(Arc::downgrade(&state)).unwrap();
+    {
+        let mut app = state.lock().unwrap();
+        app.initialize_snapshot_projection();
+        assert!(handle
+            .set(crate::app::facts::FactsSource::new(
+                app.read_view.clone(),
+                Arc::downgrade(&state),
+            ))
+            .is_ok());
+    }
     let requests = owners
         .into_iter()
         .map(|(entity_id, _)| crate::changes::FactsRequest {
@@ -153,23 +216,28 @@ fn thread_push_facts_resolve_ownership_once_per_entity() {
         })
         .collect::<Vec<_>>();
     let (one, one_count) = crate::app::workspaces::count_path_comparisons(|| {
+        state.lock().unwrap().publish_snapshot_projection();
         crate::app::facts::entity_facts(&handle, &requests)
     });
-    add_tip_agents(&mut state.lock().unwrap(), 3);
+    {
+        let mut app = state.lock().unwrap();
+        add_tip_agents(&mut app, 3);
+    }
     let (four, four_count) = crate::app::workspaces::count_path_comparisons(|| {
+        state.lock().unwrap().publish_snapshot_projection();
         crate::app::facts::entity_facts(&handle, &requests)
     });
     assert!(one.iter().all(|fact| fact.threads.len() == 1));
     assert!(four.iter().all(|fact| fact.threads.len() == 4));
-    eprintln!("{ENTITIES} thread entities: one agent={one_count}, four agents={four_count} path comparisons");
+    let (_, read_count) = crate::app::workspaces::count_path_comparisons(|| {
+        crate::app::facts::entity_facts(&handle, &requests)
+    });
     assert_eq!(
-        four_count, one_count,
-        "ownership is shared by the whole roster"
+        read_count, 0,
+        "the immutable facts reader resolved ownership"
     );
-    assert!(
-        one_count <= 8 * ENTITIES * ENTITIES,
-        "push facts repeated nested ownership searches: {one_count}"
-    );
+    eprintln!("{entities} thread entities (shared_root={shared_root}): one agent={one_count}, four agents={four_count} publication path comparisons");
+    (one_count, four_count)
 }
 
 fn add_tip_agents(state: &mut AppState, count: usize) {
@@ -267,7 +335,13 @@ fn ownership_fixture(
     shared_root: bool,
 ) -> (tempfile::TempDir, AppState, Vec<(String, PathBuf)>) {
     let tmp = tempfile::tempdir().unwrap();
-    let mut state = app(tmp.path());
+    let context = crate::harness::HarnessContext::resolved(
+        tmp.path().join("mcp.sock"),
+        tmp.path().to_path_buf(),
+    )
+    .unwrap();
+    let mut state =
+        AppState::new_unrooted_configured(tmp.path().join("worktrees"), "main", true, context);
     let project_id = state.add_project(tmp.path().to_path_buf(), "main".into());
     let mut expected = Vec::new();
     for number in 0..count {

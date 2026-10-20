@@ -491,21 +491,25 @@ impl AppState {
             &mut draft,
             &[crate::tracker::TimelineEntry::Event(created.clone())],
         );
-        let task = self
+        let publication = self
             .tracker_store()?
-            .create_tracker_task_waiting_on(draft, std::slice::from_ref(&created), waiting_on)
+            .create_tracker_task_waiting_on_observed(
+                draft,
+                std::slice::from_ref(&created),
+                waiting_on,
+            )
             .stored()?;
-        self.note_tasks_changed(&scope.project_id, &task.id);
+        self.note_observed_tasks_changed(&scope.project_id, &publication);
         // A create does not pass through `commit_task_write` — the number is
         // minted inside the insert's own transaction — so what that funnel does
         // for an agent is done here by hand: the push when the filing asks the
         // user to read it (#189, #191), and the agent's own account of it.
-        let mut write = TaskWrite::by(scope.actor.clone(), task.clone());
+        let mut write = TaskWrite::by(scope.actor.clone(), publication.current.task.clone());
         write.events.push(created);
         self.push_task_news(&write);
         self.say_what_the_agent_did(&write);
         Ok(json!({
-            "task": self.task_dependency_answer(&task.id)?["task"],
+            "task": self.observed_task_json(&scope.project_id, &publication.current),
         }))
     }
 

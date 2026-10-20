@@ -19,12 +19,14 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use semver::Version;
 use tokio::sync::watch;
 
 use crate::harness::{harness_for, Harness};
 use crate::models::{AgentProvider, ModelChoice};
 
+mod catalog;
 pub mod executable;
 pub(crate) mod offer;
 pub(crate) mod probe;
@@ -172,6 +174,7 @@ impl Drop for PendingAsk {
 /// Every CLI's last usable answer, or its latest answer until one succeeds.
 pub struct Readings {
     entries: Mutex<HashMap<&'static str, Entry>>,
+    catalog: ArcSwap<Vec<crate::models::ProviderCatalog>>,
     ttl: Duration,
     schedule: Option<Scheduler>,
     now: Clock,
@@ -222,6 +225,7 @@ impl Readings {
     fn with(schedule: Option<Scheduler>, now: Clock, ttl: Duration) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(HashMap::new()),
+            catalog: ArcSwap::from_pointee(catalog::initial()),
             ttl,
             schedule,
             now,
@@ -340,6 +344,19 @@ impl Readings {
     /// per change, whoever it is.
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
+    }
+
+    /// Published catalogs without a probe, filesystem observation or reader lock.
+    pub fn catalog_snapshot(&self) -> Arc<Vec<crate::models::ProviderCatalog>> {
+        self.catalog.load_full()
+    }
+
+    /// Schedule initial observations before clients read the published catalog.
+    pub fn warm(self: &Arc<Self>) {
+        for provider in AgentProvider::ALL {
+            let harness = harness_for(provider);
+            self.reading(harness.binary(), harness.cli_probe());
+        }
     }
 
     #[cfg(test)]
@@ -478,7 +495,17 @@ impl Readings {
             if entry.generation != generation {
                 return false;
             }
-            entry.record_attempt(reading, retry, executable, (self.now)(), self.ttl)
+            let changed = entry.record_attempt(reading, retry, executable, (self.now)(), self.ttl);
+            let previous = self.catalog.load();
+            let installation_changed = previous.iter().any(|row| {
+                entries
+                    .get(row.binary)
+                    .filter(|entry| entry.read_at.is_some())
+                    .is_some_and(|entry| row.installed != entry.attempted_executable.is_some())
+            });
+            self.catalog
+                .store(Arc::new(catalog::observed(&entries, &previous)));
+            changed || installation_changed
         };
         if changed {
             self.changed.send_modify(|count| *count += 1);
@@ -566,10 +593,7 @@ pub fn observe_version(provider: AgentProvider, reported: &str) {
 /// Ask every harness's CLI once, so the first catalog a client reads is
 /// already the installed one.
 pub fn warm() {
-    for provider in AgentProvider::ALL {
-        let harness = harness_for(provider);
-        readings().reading(harness.binary(), harness.cli_probe());
-    }
+    readings().warm();
     static REFRESHING: OnceLock<()> = OnceLock::new();
     REFRESHING.get_or_init(|| readings().keep_fresh());
 }

@@ -15,7 +15,7 @@ use crate::store::Store;
 use crate::tracker::Actor;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 
 struct MergeWork {
     store: Store,
@@ -24,14 +24,13 @@ struct MergeWork {
     job: MergeJob,
     refresh: Option<ReviewMergeRequest>,
     changes: Arc<crate::changes::ChangeBus>,
+    state: Option<Weak<Mutex<AppState>>>,
 }
 
 impl DeferredGitWork for MergeWork {
     fn run(&self, _: &Value) -> Result<Value, String> {
         let review = crate::reviews::merge::merge_with_refresh(&self.store, &self.job, self.refresh.as_ref(), || {
-            self.changes.note_tasks(&self.project_id, std::slice::from_ref(&self.job.request.task_id));
-            self.changes.note_kind(&self.workspace_id, crate::changes::Kind::State);
-            self.changes.note_board_lists(crate::changes::BoardLists::WORKSPACES);
+            self.publish_progress();
         }).map_err(|message| errors::service(message, json!({
             "task_id":self.job.request.task_id,"snapshot_id":self.job.request.snapshot_id,
             "recovery":"Read tasks.review.get and retry the saved merge plan after resolving its reported failure."
@@ -50,6 +49,28 @@ impl DeferredGitWork for MergeWork {
 
     fn invalidates_on_error(&self) -> bool {
         true
+    }
+}
+
+impl MergeWork {
+    fn publish_progress(&self) {
+        if let Some(state) = self.state.as_ref().and_then(Weak::upgrade) {
+            let mut app = state.lock().unwrap();
+            app.publish_review_observation(
+                &self.project_id,
+                &self.job.request.task_id,
+                &self.workspace_id,
+            );
+        } else {
+            self.changes.note_tasks(
+                &self.project_id,
+                std::slice::from_ref(&self.job.request.task_id),
+            );
+        }
+        self.changes
+            .note_kind(&self.workspace_id, crate::changes::Kind::State);
+        self.changes
+            .note_board_lists(crate::changes::BoardLists::WORKSPACES);
     }
 }
 
@@ -79,6 +100,7 @@ impl AppState {
             },
             refresh,
             changes: self.changes.clone(),
+            state: self.review_progress_state(),
         };
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(work),
@@ -88,6 +110,16 @@ impl AppState {
             gate: None,
         })));
         Ok(Value::Null)
+    }
+
+    fn review_progress_state(&self) -> Option<Weak<Mutex<AppState>>> {
+        // The synchronous test adapter drains with its app guard held; its
+        // final invalidate publishes without reentering that guard.
+        #[cfg(test)]
+        if self.inline_deferred {
+            return None;
+        }
+        self.self_handle.clone()
     }
 }
 

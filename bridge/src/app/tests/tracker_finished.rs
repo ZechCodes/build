@@ -527,6 +527,225 @@ fn a_watched_task_moved_to_done_reads_as_the_move() {
     assert_eq!(row["last_event"]["actor"], "you", "{row}");
 }
 
+#[test]
+fn failed_watched_task_observation_keeps_the_published_rows() {
+    for corrupt in [
+        "UPDATE tracker_tasks SET record = '{' WHERE id = ?1",
+        "UPDATE tracker_events SET record = '{' WHERE task_id = ?1",
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+        let (_home, mut state, project_id) = tracked(&state_root);
+        let task = filed(
+            &mut state,
+            &project_id,
+            "retained after observation failure",
+        );
+        let id = task_id(&task);
+        state
+            .refresh_project_snapshot_task_observations(&project_id)
+            .unwrap();
+        let before = state.snapshot_watched_task_rows();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0]["task_id"], id);
+
+        state
+            .tracker_store()
+            .unwrap()
+            .writer_for_test()
+            .execute(corrupt, [&id])
+            .unwrap();
+        assert!(state
+            .refresh_project_snapshot_task_observations(&project_id)
+            .is_err());
+
+        assert_eq!(state.snapshot_watched_task_rows(), before, "{corrupt}");
+    }
+}
+
+#[test]
+fn task_write_rolls_back_when_its_watched_row_cannot_be_prepared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let task = filed(&mut state, &project_id, "committed title");
+    let id = task_id(&task);
+    state
+        .refresh_project_snapshot_task_observations(&project_id)
+        .unwrap();
+    let before = state.snapshot_watched_task_rows();
+    state
+        .tracker_store()
+        .unwrap()
+        .writer_for_test()
+        .execute_batch(
+            "CREATE TRIGGER corrupt_watched_timeline AFTER UPDATE ON tracker_tasks BEGIN
+            UPDATE tracker_events SET record = '{' WHERE task_id = NEW.id;
+         END;",
+        )
+        .unwrap();
+
+    let answer = state.handle(req(
+        "tasks.update",
+        json!({"task_id": id, "title": "candidate title"}),
+    ));
+
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_task(&id)
+            .unwrap()
+            .unwrap()
+            .title,
+        "committed title"
+    );
+    assert_eq!(state.snapshot_watched_task_rows(), before);
+    assert!(state
+        .tracker_store()
+        .unwrap()
+        .load_tracker_timeline(&id)
+        .is_ok());
+}
+
+#[test]
+fn a_task_write_publishes_its_owned_row_without_rereading_other_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let first = task_id(&filed(&mut state, &project_id, "before"));
+    let other = task_id(&filed(&mut state, &project_id, "other task"));
+    state.initialize_snapshot_projection();
+    state
+        .tracker_store()
+        .unwrap()
+        .writer_for_test()
+        .execute(
+            "UPDATE tracker_tasks SET record = '{' WHERE id = ?1",
+            [&other],
+        )
+        .unwrap();
+
+    let answer = state.handle(req(
+        "tasks.update",
+        json!({"task_id": first, "title": "after"}),
+    ));
+
+    assert_eq!(answer["ok"], true, "{answer}");
+    let view = state.read_view.load();
+    let rows = view.get("board.list", "").unwrap()["items"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        rows.iter().find(|row| row["task_id"] == first).unwrap()["title"],
+        "after"
+    );
+    assert_eq!(
+        rows.iter().find(|row| row["task_id"] == other).unwrap()["title"],
+        "other task"
+    );
+}
+
+#[test]
+fn a_task_write_publishes_dependency_digests_with_its_own_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let prerequisite = task_id(&filed(&mut state, &project_id, "original prerequisite"));
+    let dependent = task_id(&filed(&mut state, &project_id, "dependent"));
+    let linked = state.handle(req(
+        "tasks.waiting_on.add",
+        json!({"task_id":dependent,"waiting_on":[prerequisite]}),
+    ));
+    assert_eq!(linked["ok"], true, "{linked}");
+    state.initialize_snapshot_projection();
+
+    let answer = state.handle(req(
+        "tasks.update",
+        json!({"task_id":prerequisite,"title":"renamed prerequisite"}),
+    ));
+
+    assert_eq!(answer["ok"], true, "{answer}");
+    let view = state.read_view.load();
+    let rows = view.get("board.list", "").unwrap()["items"]
+        .as_array()
+        .unwrap();
+    let row = rows.iter().find(|row| row["task_id"] == dependent).unwrap();
+    assert_eq!(
+        row["dependencies"]["waiting_on"][0]["title"],
+        "renamed prerequisite"
+    );
+}
+
+#[test]
+fn task_creation_rolls_back_when_its_watched_row_cannot_be_prepared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    state.initialize_snapshot_projection();
+    state
+        .tracker_store()
+        .unwrap()
+        .writer_for_test()
+        .execute_batch(
+            "CREATE TRIGGER corrupt_created_timeline AFTER INSERT ON tracker_events BEGIN
+            UPDATE tracker_events SET record = '{' WHERE id = NEW.id;
+         END;",
+        )
+        .unwrap();
+
+    let answer = state.handle(req(
+        "tasks.create",
+        json!({"project_id":project_id,"title":"candidate"}),
+    ));
+
+    assert_eq!(answer["ok"], false, "{answer}");
+    let path = state.tracker_project_path(&project_id).unwrap();
+    let tasks = state
+        .tracker_store()
+        .unwrap()
+        .list_tracker_tasks(&path, crate::store::TaskFilter::default())
+        .unwrap();
+    assert!(
+        tasks.is_empty(),
+        "a projection refusal must roll back creation"
+    );
+    assert!(state.snapshot_watched_task_rows().is_empty());
+}
+
+#[test]
+fn dependency_edit_rolls_back_when_its_watched_row_cannot_be_prepared() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = std::fs::canonicalize(tmp.path()).unwrap();
+    let (_home, mut state, project_id) = tracked(&state_root);
+    let prerequisite = task_id(&filed(&mut state, &project_id, "prerequisite"));
+    let dependent = task_id(&filed(&mut state, &project_id, "dependent"));
+    state.initialize_snapshot_projection();
+    let before = state.snapshot_watched_task_rows();
+    state.tracker_store().unwrap().writer_for_test().execute_batch(
+        "CREATE TRIGGER corrupt_dependency_timeline AFTER INSERT ON tracker_task_dependencies BEGIN
+            UPDATE tracker_events SET record = '{' WHERE task_id = NEW.task_id;
+         END;",
+    ).unwrap();
+
+    let answer = state.handle(req(
+        "tasks.waiting_on.add",
+        json!({"task_id":dependent,"waiting_on":[prerequisite]}),
+    ));
+
+    assert_eq!(answer["ok"], false, "{answer}");
+    let path = state.tracker_project_path(&project_id).unwrap();
+    let store = state.tracker_store().unwrap();
+    assert!(store
+        .waiting_on_summary(&path, &dependent)
+        .unwrap()
+        .waiting_on
+        .is_empty());
+    assert!(store.load_tracker_timeline(&dependent).is_ok());
+    assert_eq!(state.snapshot_watched_task_rows(), before);
+}
+
 /// Done twice, and closed then Done, end nothing an agent tracked on purpose
 /// after the task first finished.
 #[test]

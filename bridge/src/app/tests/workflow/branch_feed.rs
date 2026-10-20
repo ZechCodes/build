@@ -2,15 +2,35 @@ use super::*;
 
 // ==== the branch as the wire-level work item ==============================
 
-/// The feed, with every poll cache cleared first. All three are 10s TTL, so
-/// a test that changes git state and re-polls would otherwise be answered
-/// from the poll before it.
-pub(in crate::app::tests) fn work_item_rows(state: &mut AppState) -> Vec<Value> {
+/// Observe fixture Git edits through the producer before polling its snapshot.
+pub(in crate::app::tests) fn observe_work_item_fixture(state: &mut AppState) {
     state.board.diff_mut().clear_run_stats();
     let project_ids = state.projects.ids().map(str::to_string).collect::<Vec<_>>();
-    for project_id in project_ids {
-        state.board.diff_mut().clear_external_scan(&project_id);
+    for project_id in &project_ids {
+        state.board.diff_mut().clear_external_scan(project_id);
     }
+    let mut refreshes = state
+        .runs
+        .keys()
+        .filter_map(|id| state.run_stat_refresh(id))
+        .collect::<Vec<_>>();
+    refreshes.extend(
+        project_ids
+            .iter()
+            .filter_map(|id| state.external_scan_refresh(id)),
+    );
+    for refresh in refreshes {
+        if let Some(entry) = refresh.compute(None) {
+            state.store_diff_entry(entry);
+        }
+    }
+    state.refresh_snapshot_observations();
+    state.publish_snapshot_projection();
+}
+
+/// The feed after the fixture's explicit filesystem observation completes.
+pub(in crate::app::tests) fn work_item_rows(state: &mut AppState) -> Vec<Value> {
+    observe_work_item_fixture(state);
     state.handle(req("board.list", json!({})))["result"]["items"]
         .as_array()
         .expect("the feed ships work items")

@@ -200,6 +200,7 @@ fn removing_an_agent(fail_persistence: bool) -> Value {
     let saved = read_task(&app, &fixture.open);
     assert_eq!(saved.updated_at, before_saved.updated_at);
     let identities = &after["get"]["task"]["identities"];
+    // Retirement is a live fact even when the durable roster save failed.
     assert_eq!(identities[&fixture.removed]["available"], false);
     assert_eq!(identities[&fixture.removed]["name"], "Historian");
     assert_eq!(identities[&fixture.removed]["provider"], "pi");
@@ -220,4 +221,138 @@ fn remote_agent_removal_invalidates_task_identities() {
 #[test]
 fn removed_live_agent_invalidates_tasks_even_if_saving_roster_fails() {
     removing_an_agent(true);
+}
+
+fn assert_routed_availability(state: &Arc<Mutex<AppState>>, fixture: &Fixture, available: bool) {
+    let (reads, pool) = {
+        let app = state.lock().unwrap();
+        (app.read_service(), app.tracker_store().unwrap().read_pool())
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let get = reads.call(
+        req("tasks.get", json!({"task_id": fixture.open})),
+        Some(runtime.block_on(pool.acquire())),
+    );
+    let list = reads.call(
+        req("tasks.list", json!({"project_id": fixture.project})),
+        Some(runtime.block_on(pool.acquire())),
+    );
+    assert_eq!(get["ok"], true, "{get}");
+    assert_eq!(list["ok"], true, "{list}");
+    let listed = list["result"]["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == fixture.open)
+        .unwrap();
+    for task in [&get["result"]["task"], listed] {
+        let identities = &task["identities"];
+        assert_eq!(identities[&fixture.removed]["available"], available);
+        assert_eq!(identities[&fixture.removed]["name"], "Historian");
+        assert_eq!(identities[&fixture.removed]["provider"], "pi");
+        assert_eq!(identities[&fixture.survivor]["available"], true);
+    }
+}
+
+#[test]
+fn configured_idle_agents_remain_available_in_routed_task_reads() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let fixture = seed(&mut app);
+    let root = app.entity_agent_root(&fixture.entity).unwrap();
+    for agent in [&fixture.removed, &fixture.survivor] {
+        assert!(!app.session_registry.contains(&TabKey::agent(&root, agent)));
+    }
+    let state = app.shared();
+    let _handler = AppState::handler(Arc::clone(&state));
+    assert_routed_availability(&state, &fixture, true);
+}
+
+fn queue_and_install_live_agent(app: &mut AppState, fixture: &Fixture) -> (TabKey, SessionLog) {
+    let posted = app.handle(req(
+        "thread.post",
+        json!({"entity_id":fixture.entity, "agent_id":fixture.removed, "body":"queued work"}),
+    ));
+    assert_eq!(posted["ok"], true, "{posted}");
+    assert!(app
+        .delivery_queue
+        .queued()
+        .any(|turn| turn.agent_id == fixture.removed));
+    let root = AppState::canonical_root(&app.entity_agent_root(&fixture.entity).unwrap());
+    let key = TabKey::agent(&root, &fixture.removed);
+    let log = SessionLog::default();
+    let tab = dictated_agent_tab(
+        &root,
+        &fixture.entity,
+        &fixture.removed,
+        DictatedSession::reporting(crate::harness::AgentStatus::Working).recording_into(&log),
+    );
+    app.session_registry.test_insert_tab(key.clone(), tab);
+    app.session_registry
+        .install_mcp_token(fixture.removed.clone(), "identity-test-token".into());
+    (key, log)
+}
+
+#[test]
+fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let fixture = seed(&mut app);
+    let state = app.shared();
+    let handler = AppState::handler(Arc::clone(&state));
+    assert_routed_availability(&state, &fixture, true);
+    let (tab, session) = queue_and_install_live_agent(&mut state.lock().unwrap(), &fixture);
+    rusqlite::Connection::open(dir.path().join("store/build.db"))
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER refuse_roster_save BEFORE UPDATE ON implementations
+             BEGIN SELECT RAISE(FAIL, 'roster save refused'); END;",
+        )
+        .unwrap();
+    let removal = handler.call(
+        SessionSender::detached("other-client"),
+        req(
+            "agent.remove",
+            json!({"entity_id":fixture.entity, "agent_id":fixture.removed}),
+        ),
+    );
+    assert_eq!(removal["ok"], false, "{removal}");
+    assert!(session.ended());
+    {
+        let app = state.lock().unwrap();
+        assert!(!app.session_registry.contains(&tab));
+        assert!(app.session_registry.test_token(&fixture.removed).is_none());
+        assert!(app
+            .delivery_queue
+            .queued()
+            .all(|turn| turn.agent_id != fixture.removed));
+        assert!(app
+            .entity_agents(&fixture.entity)
+            .unwrap()
+            .by_id(&fixture.removed)
+            .is_some());
+    }
+    assert_routed_availability(&state, &fixture, false);
+    let changed = handler.call(
+        SessionSender::detached("other-client"),
+        req(
+            "tasks.update",
+            json!({"task_id":fixture.open, "title":"Unrelated task metadata"}),
+        ),
+    );
+    assert_eq!(changed["ok"], true, "{changed}");
+    assert_eq!(
+        changed["result"]["task"]["identities"][&fixture.removed]["available"],
+        false
+    );
+    assert_routed_availability(&state, &fixture, false);
+    {
+        let mut app = state.lock().unwrap();
+        let fresh = terminal_free_agent_tab(&tab.root, &fixture.entity, &fixture.removed);
+        app.session_registry.insert_opened(tab, fresh);
+        app.publish_read_metadata();
+    }
+    assert_routed_availability(&state, &fixture, true);
 }

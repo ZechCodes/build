@@ -21,6 +21,7 @@ pub(in crate::app) struct OpenedImplementation {
     pub(in crate::app) project_id: String,
     pub(in crate::app) task_id: String,
     pub(in crate::app) active: ActiveRun,
+    pub(in crate::app) new_adoption: bool,
     pub(in crate::app) turn: AgentTurn,
     pub(in crate::app) agent_id: String,
     pub(in crate::app) checkout_event: crate::thread::ThreadEventKind,
@@ -98,6 +99,7 @@ impl AppState {
                 project_id,
                 task_id,
                 active,
+                new_adoption: false,
                 turn,
                 agent_id,
                 checkout_event: crate::thread::ThreadEventKind::WorktreeCreated,
@@ -110,6 +112,21 @@ impl AppState {
             self.open_implementation_run(opened)
         });
         opened
+    }
+
+    /// A newly adopted checkout publishes its compatibility workspace with
+    /// the owner; an existing owner retains its original workspace lifecycle.
+    fn finish_implementation_owner(
+        &mut self,
+        run_id: String,
+        active: ActiveRun,
+        new_adoption: bool,
+    ) -> Result<(), String> {
+        if new_adoption {
+            self.finish_adopted_run_mutation(run_id, active)
+        } else {
+            self.finish_run_mutation(run_id, active)
+        }
     }
 
     /// The same, on a checkout an existing run already owns: the run is taken
@@ -142,7 +159,8 @@ impl AppState {
                     // Nothing was handed over. The branch keeps the run it had
                     // — or, when this job earned it one, keeps the plain
                     // adopted run its checkout is now Build's under.
-                    let put_back = self.finish_run_mutation(run_id.clone(), active);
+                    let put_back =
+                        self.finish_implementation_owner(run_id.clone(), active, adopted.is_some());
                     return Err(match put_back {
                         Ok(()) => error,
                         Err(store) => format!("{error}; and the run could not be saved: {store}"),
@@ -156,6 +174,7 @@ impl AppState {
                 project_id,
                 task_id,
                 active,
+                new_adoption: adopted.is_some(),
                 turn,
                 agent_id,
                 checkout_event: crate::thread::ThreadEventKind::WorktreeReused,
@@ -179,6 +198,7 @@ impl AppState {
             project_id,
             task_id,
             mut active,
+            new_adoption,
             turn,
             agent_id,
             checkout_event,
@@ -191,16 +211,19 @@ impl AppState {
         self.delivery_queue.enqueue(PendingAgentTurn::for_run_agent(
             &run_id, &agent_id, &active, turn,
         ));
-        if self.qa_agent {
-            self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
+        if let Err(error) = self.qa_drive_run(&project_id, &mut active, &plan_docs) {
+            // The handover has not been saved. Keep any existing owner's
+            // committed fields and release the publication barrier on refusal.
+            self.restore_run_after_failed_save(&run_id, active);
+            self.settle_failed_mutation(&run_id);
+            return Err(error);
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         // The checkout belongs to a run from here on, so it leaves the unbound
         // list its mutation named it on. A checkout that was already bound was
         // never in that list, so this is routinely a no-op.
         let checkout = active.worktree.path.clone();
-        let persisted = self.finish_run_mutation(run_id.clone(), active);
-        persisted?;
+        self.finish_implementation_owner(run_id.clone(), active, new_adoption)?;
         self.note_worktree_gone(&project_id, &checkout);
         let mut plan = self.take_plan(&task_id)?;
         let implementation_link = crate::thread::ThreadLink::Implementation {
@@ -475,6 +498,7 @@ impl AppState {
     /// Forget every trace of a run whose record has been deleted. The map entry
     /// itself went in the decide phase; this is the bookkeeping beside it.
     pub(in crate::app) fn forget_run(&mut self, run_id: &str) {
+        self.committed_entities.forget(run_id);
         self.projects.unbind_entity(run_id);
         self.board.attention_mut().remove_entity_clocks(run_id);
         self.board.diff_mut().remove_run_files_changed_at(run_id);

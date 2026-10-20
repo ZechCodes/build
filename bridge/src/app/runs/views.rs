@@ -163,7 +163,7 @@ impl AppState {
             // silences a row that stays; this one is not in the list at all.
             "dismissed": self.is_dismissed(run_id),
             "attention": self.attention_json(run_id),
-            "branch": active.worktree.branch(),
+            "branch": self.snapshot_run_branch(run_id, &active.worktree),
             "base_branch": active.worktree.base_branch,
             "base_sha": active.base_sha,
             "worktree_path": active.worktree.path.display().to_string(),
@@ -176,7 +176,7 @@ impl AppState {
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
-                ThreadDetail::Digest => conversation.digest_value(),
+                ThreadDetail::Digest => self.snapshot_thread_digest(conversation),
                 ThreadDetail::Full => conversation.wire_value(),
                 ThreadDetail::Page(limit) => self.first_thread_page(conversation, limit),
             },
@@ -187,7 +187,7 @@ impl AppState {
             "current_stage_id": active.current_stage_id,
             "adopted": active.adopted,
             "can_finish": active.run.state == RunState::Merged
-                || (active.run.state == RunState::Review && active.worktree.path.exists()),
+                || (active.run.state == RunState::Review && self.snapshot_path_exists(&active.worktree.path)),
             "created_at": self.board.attention().clock(run_id).created_at,
             "updated_at": self.board.attention().clock(run_id).updated_at,
             "state_changed_at": self.board.attention().clock(run_id).state_changed_at,

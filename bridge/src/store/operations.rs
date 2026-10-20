@@ -6,11 +6,43 @@ use crate::agent::Agent;
 use crate::operation::OperationReceipt;
 use crate::operation::OperationStatus;
 use crate::store::ReadTransaction;
-use crate::thread::{MessageDeliveryStatus, ThreadItem};
+use crate::thread::{MessageDeliveryStatus, Thread, ThreadItem};
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
 use std::path::Path;
 use std::path::PathBuf;
+
+/// Exact rows returned by a committed native message mutation. Identity and
+/// generation travel with the rows so delayed publication cannot cross reset.
+pub(crate) struct CommittedThreadItems {
+    pub conversation_id: String,
+    pub thread_id: String,
+    pub generation_revision: u64,
+    pub sequence: u64,
+    pub items: Vec<ThreadItem>,
+}
+
+impl CommittedThreadItems {
+    /// Promote only rows already resident here. Historical membership and tail
+    /// floors stay unchanged, and failed later saves cannot reuse this counter.
+    pub(crate) fn apply_to(&self, thread: &mut Thread) {
+        if thread.agent.id != self.conversation_id
+            || thread.id != self.thread_id
+            || thread.generation_revision != self.generation_revision
+        {
+            return;
+        }
+        for item in &mut thread.items {
+            if let Some(committed) = self.items.iter().find(|committed| {
+                committed.sequence() == item.sequence()
+                    && committed.latest_sequence() > item.latest_sequence()
+            }) {
+                *item = committed.clone();
+            }
+        }
+        thread.advance_sequence_to(self.sequence);
+    }
+}
 
 impl Store {
     /// Copy the database to `destination` as a consistent snapshot.
@@ -83,6 +115,7 @@ impl Store {
             end_sequence,
             now,
         )
+        .map(|delta| delta.sequence)
     }
     pub fn acknowledge_native_legacy_messages(
         &self,
@@ -92,15 +125,16 @@ impl Store {
         now: &str,
     ) -> Result<u64, StoreError> {
         self.acknowledge_messages(conversation_id, None, start_sequence, end_sequence, now)
+            .map(|delta| delta.sequence)
     }
-    fn acknowledge_messages(
+    pub(crate) fn acknowledge_messages(
         &self,
         conversation_id: &str,
         operation_id: Option<&str>,
         start_sequence: u64,
         end_sequence: u64,
         now: &str,
-    ) -> Result<u64, StoreError> {
+    ) -> Result<CommittedThreadItems, StoreError> {
         self.in_transaction(|tx| {
             let raw_agent: String = tx.query_row(
                 "SELECT record FROM agents WHERE id = ?1",
@@ -170,7 +204,7 @@ impl Store {
                     ],
                 )?;
             }
-            agent.thread.items.clear();
+            let items = std::mem::take(&mut agent.thread.items);
             tx.execute(
                 "UPDATE agents SET record = ?2 WHERE id = ?1",
                 rusqlite::params![
@@ -178,7 +212,13 @@ impl Store {
                     serde_json::to_string(&agent).expect("an agent always serializes")
                 ],
             )?;
-            Ok(acknowledged_sequence)
+            Ok(CommittedThreadItems {
+                conversation_id: conversation_id.to_owned(),
+                thread_id: agent.thread.id,
+                generation_revision: agent.thread.generation_revision,
+                sequence: acknowledged_sequence,
+                items,
+            })
         })
     }
     /// Persist one delivery-state transition across a bounded operation span,
@@ -198,6 +238,7 @@ impl Store {
             end_sequence,
             status,
         )
+        .map(|delta| delta.sequence)
     }
     /// Persist a delivery transition for unmanaged reviewer messages only.
     pub fn set_legacy_delivery_status(
@@ -208,15 +249,16 @@ impl Store {
         status: MessageDeliveryStatus,
     ) -> Result<u64, StoreError> {
         self.set_delivery_status(conversation_id, None, start_sequence, end_sequence, status)
+            .map(|delta| delta.sequence)
     }
-    fn set_delivery_status(
+    pub(crate) fn set_delivery_status(
         &self,
         conversation_id: &str,
         operation_id: Option<&str>,
         start_sequence: u64,
         end_sequence: u64,
         status: MessageDeliveryStatus,
-    ) -> Result<u64, StoreError> {
+    ) -> Result<CommittedThreadItems, StoreError> {
         self.in_transaction(|tx| {
             let raw_agent: String = tx.query_row(
                 "SELECT record FROM agents WHERE id = ?1",
@@ -277,7 +319,7 @@ impl Store {
                     ],
                 )?;
             }
-            agent.thread.items.clear();
+            let items = std::mem::take(&mut agent.thread.items);
             tx.execute(
                 "UPDATE agents SET record = ?2 WHERE id = ?1",
                 rusqlite::params![
@@ -285,7 +327,13 @@ impl Store {
                     serde_json::to_string(&agent).expect("an agent always serializes")
                 ],
             )?;
-            Ok(resulting_sequence)
+            Ok(CommittedThreadItems {
+                conversation_id: conversation_id.to_owned(),
+                thread_id: agent.thread.id,
+                generation_revision: agent.thread.generation_revision,
+                sequence: resulting_sequence,
+                items,
+            })
         })
     }
     /// Boot recovery for provider delivery intents. A queued intent never left

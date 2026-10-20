@@ -20,6 +20,7 @@ pub struct FrameHandler {
     pub(super) clock: Arc<FrameClock>,
     pub(super) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
+    snapshot: Option<Arc<dyn Fn(Frame) -> Value + Send + Sync>>,
     pub(super) sql: Option<SqlHandler>,
     #[cfg(test)]
     pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
@@ -45,6 +46,7 @@ impl FrameHandler {
             dispatch: Arc::new(dispatch),
             session_end: Arc::new(|_| {}),
             sql: None,
+            snapshot: None,
             #[cfg(test)]
             sql_observer: None,
         }
@@ -57,6 +59,35 @@ impl FrameHandler {
     ) -> Self {
         self.sql_observer = Some(Arc::new(observer));
         self
+    }
+
+    /// Immutable reads execute synchronously at intake, before any capacity gate.
+    pub(crate) fn with_snapshot_reads(
+        mut self,
+        dispatch: impl Fn(Frame) -> Value + Send + Sync + 'static,
+    ) -> Self {
+        self.snapshot = Some(Arc::new(dispatch));
+        self
+    }
+
+    pub(super) fn snapshot_since(
+        &self,
+        frame: &Frame,
+        arrived: WaitTimer,
+    ) -> Result<Value, WaitTimer> {
+        let Some(dispatch) = self
+            .snapshot
+            .as_ref()
+            .filter(|_| crate::api::effects::is_snapshot_read(&frame.payload))
+        else {
+            return Err(arrived);
+        };
+        let method = frame.payload["method"].as_str().unwrap_or("other");
+        let _timer = self
+            .clock
+            .queued_since(Priority::Foreground, arrived)
+            .start(method);
+        Ok(dispatch(frame.clone()))
     }
 
     pub(crate) fn with_sql_reads(
@@ -110,6 +141,10 @@ impl FrameHandler {
         frame: Frame,
         arrived: WaitTimer,
     ) -> Value {
+        let arrived = match self.snapshot_since(&frame, arrived) {
+            Ok(answer) => return answer,
+            Err(arrived) => arrived,
+        };
         self.run(
             self.clock.queued_since(Priority::Foreground, arrived),
             sender,
@@ -938,6 +973,21 @@ mod dispatcher_tests {
             created_at: String::new(),
             payload: json!({ "id": id, "method": method, "params": params }),
         }
+    }
+
+    #[test]
+    fn direct_calls_use_the_snapshot_service() {
+        let handler = FrameHandler::new(FrameClock::new(), |_, _, _| {
+            panic!("snapshot must not enter the mutable application dispatcher")
+        })
+        .with_snapshot_reads(
+            |frame| json!({"id":frame.payload["id"], "ok":true, "result":{"snapshot":true}}),
+        );
+        let answer = handler.call(
+            SessionSender::detached("snapshot"),
+            request(1, "board.list", json!({})),
+        );
+        assert_eq!(answer["result"]["snapshot"], true);
     }
 
     /// Wait for the next push on an observable session, decoded.

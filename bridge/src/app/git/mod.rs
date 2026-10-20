@@ -1,6 +1,7 @@
 use crate::app::{DeferredGit, DeferredWork, GitCallScope, ScopedGitCall};
 use crate::store::now_rfc3339;
 pub(in crate::app) mod deferred;
+mod observations;
 
 use serde_json::{json, Value};
 
@@ -572,12 +573,15 @@ impl AppState {
         if !git.invalidates || (result.is_err() && !git.call.invalidates_on_error()) {
             return result;
         }
+        if let Ok(status) = &result {
+            self.record_git_snapshot_branches(status);
+        }
+        git.call.invalidate(self);
         if result.is_ok() && git.params.get("source_id").is_some() {
             if let Some(workspace_id) = git.params.get("workspace_id").and_then(Value::as_str) {
                 self.reopen_workspace(workspace_id)?;
             }
         }
-        git.call.invalidate(self);
         result
     }
 

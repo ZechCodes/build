@@ -29,6 +29,8 @@ use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionIn
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
+#[cfg(test)]
+mod snapshot_tests;
 mod sql;
 #[cfg(test)]
 mod sql_measurements;
@@ -961,6 +963,13 @@ impl FrameIntake {
             self.answer_stats(sender, frame, arrived);
             return Ok(());
         }
+        let arrived = match self.dispatcher.handler().snapshot_since(&frame, arrived) {
+            Ok(answer) => {
+                sender.push_read_reply(answer);
+                return Ok(());
+            }
+            Err(arrived) => arrived,
+        };
         // Signaling goes the same way as an attachment: an offer or a
         // candidate is answered from the peers alone, off the app lock
         // (`app/rpc.rs`), so nothing it could wait for in the queue is a wait

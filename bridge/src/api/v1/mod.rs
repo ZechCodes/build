@@ -405,6 +405,9 @@ pub fn dispatch(
     params: &Value,
 ) -> Option<Result<Value, ApiError>> {
     let handler = registry().get(method)?;
+    if let Some(answered) = app.snapshot_read(method, params) {
+        return Some(answered);
+    }
     let answered = (handler.call)(app, params);
     // A verb that handed its git to the drain answered `Value::Null` here, so
     // the check in `answer` had nothing to look at. Send the declared type

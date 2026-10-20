@@ -17,15 +17,16 @@ impl AppState {
                 let Some(state) = weak.upgrade() else {
                     return;
                 };
-                let app = state.lock().unwrap();
+                let mut app = state.lock().unwrap();
                 let Some(project) = app
                     .projects
                     .iter()
                     .find(|project| project.repo_path.to_string_lossy() == result.project_path)
+                    .map(|project| project.id.clone())
                 else {
                     return;
                 };
-                app.note_tasks_changed(&project.id, &result.task_id);
+                app.publish_review_observation(&project, &result.task_id, &result.workspace_id);
                 app.changes.note_kind(&result.workspace_id, Kind::State);
                 app.changes.note_board_lists(BoardLists::WORKSPACES);
             }),

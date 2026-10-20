@@ -124,6 +124,7 @@ impl AppState {
             );
         }
         let attention = self.reset_attention(&agents);
+        let summary_owners = self.reset_summary_owners(&agents);
         let summary_rows = self.reset_summary_rows(&agents)?;
         if let Some(store) = self.store.as_ref() {
             let exclusive = store
@@ -135,10 +136,12 @@ impl AppState {
                     &address.conversation_id,
                     &agents,
                     &attention,
-                    &self.reset_summary_owners(&agents),
+                    &summary_owners,
                 )
                 .map_err(|error| format!("conversation.reset store: {error}"))?;
         }
+        self.committed_entities
+            .apply_conversation_reset(&agents, &summary_owners);
         // Once the database commits, no later failure may restore resumable
         // history. Finalize every guard, retaining an unlink error until the
         // replacement generation has been published.

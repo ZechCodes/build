@@ -208,7 +208,7 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
-        if include_project_workers || !self.is_project_conversation_owner(entity_id) {
+        if include_project_workers || !self.is_project_snapshot_conversation_owner(entity_id) {
             return roster.iter().collect();
         }
         let pin = self.project_pin(entity_id);

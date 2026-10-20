@@ -249,7 +249,7 @@ impl DiffCache {
         }
     }
 
-    /// Commit only after the adapter has emitted EntitySettled for this run.
+    /// Install before the adapter publishes snapshots and emits EntitySettled.
     pub(in crate::app) fn commit_changed_run_stat(&mut self, pending: PendingRunStat) {
         self.run_files_changed_at
             .insert(pending.run_id.clone(), pending.files_changed_at);

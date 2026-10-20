@@ -42,6 +42,9 @@ pub(in crate::app) struct SessionRegistry {
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
     mcp_tokens: HashMap<String, String>,
+    /// A failed roster save cannot undo an agent binding's actual retirement.
+    /// Agent IDs are shared by aliases; owner IDs only support deletion cleanup.
+    retired_bindings: HashMap<String, String>,
     next_terminal: u64,
     /// Where the tabs' byte pumps paint: the daemon's push runtime, or — with
     /// none set, as in the tests — whatever runtime starts them.
@@ -143,6 +146,7 @@ impl SessionRegistry {
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
             mcp_tokens: HashMap::new(),
+            retired_bindings: HashMap::new(),
             next_terminal: 1,
             push_runtime: None,
         }
@@ -276,6 +280,22 @@ impl SessionRegistry {
 
     pub(in crate::app) fn revoke_mcp_token(&mut self, agent_id: &str) {
         self.mcp_tokens.remove(agent_id);
+    }
+
+    pub(in crate::app) fn retire_agent_binding(&mut self, owner: &str, agent: &str) {
+        self.retired_bindings.insert(agent.into(), owner.into());
+    }
+
+    pub(in crate::app) fn agent_binding_retired(&self, agent: &str) -> bool {
+        self.retired_bindings.contains_key(agent)
+    }
+
+    pub(in crate::app) fn forget_retired_agent(&mut self, agent: &str) {
+        self.retired_bindings.remove(agent);
+    }
+
+    pub(in crate::app) fn forget_retired_owner(&mut self, owner: &str) {
+        self.retired_bindings.retain(|_, saved| saved != owner);
     }
 
     pub(in crate::app) fn revoke_mcp_token_if_current(&mut self, lease: &McpTokenLease) {
@@ -692,6 +712,9 @@ impl SessionRegistry {
 
     /// Publication step 3. Existing insertion is intentionally infallible.
     pub(in crate::app) fn insert_opened(&mut self, key: TabKey, tab: Tab) {
+        if let Some((_, agent)) = tab.role.agent() {
+            self.forget_retired_agent(agent);
+        }
         self.tabs.insert(key, tab);
     }
 

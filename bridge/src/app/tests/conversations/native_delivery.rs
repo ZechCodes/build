@@ -1,4 +1,6 @@
 use super::*;
+
+mod history;
 use crate::operation::OperationPayload;
 use crate::thread::{MessageDeliveryStatus, ThreadItem, ThreadMessage};
 

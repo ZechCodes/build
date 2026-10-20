@@ -1,7 +1,18 @@
 use super::super::*;
 
-/// A QA state with a durable store for plans, runs, and their conversations.
+/// A QA state with the durable store and published reads used by clients.
 pub(in crate::app::tests) fn qa_state(repo: &std::path::Path, dir: &std::path::Path) -> AppState {
+    let mut app = qa_state_before_admission(repo, dir);
+    app.initialize_snapshot_projection();
+    app
+}
+
+/// Cold construction for tests of startup publication itself. Behavior tests
+/// use `qa_state`, whose ordinary RPC reads already route through snapshots.
+pub(in crate::app::tests) fn qa_state_before_admission(
+    repo: &std::path::Path,
+    dir: &std::path::Path,
+) -> AppState {
     let context = HarnessContext::resolved(dir.join("test-mcp.sock"), dir.to_path_buf())
         .expect("resolve QA harness context");
     AppState::new_configured(repo.to_path_buf(), dir.join("wt"), "main", true, context)

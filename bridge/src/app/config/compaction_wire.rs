@@ -94,8 +94,12 @@ impl AppState {
         agent: &str,
         applied: Option<&AppliedCompactionPolicy>,
     ) -> Value {
-        let configured = self.resolve_compaction_policy(owner, agent).ok();
-        let inherited = self.inherited_compaction_policy(owner, agent).ok();
+        let configured = self
+            .resolve_snapshot_compaction_policy(owner, agent, true)
+            .ok();
+        let inherited = self
+            .resolve_snapshot_compaction_policy(owner, agent, false)
+            .ok();
         let (enforcement, reason) = match applied {
             None => ("unsupported", Some("active_policy_unknown")),
             Some(policy) => (
@@ -130,7 +134,7 @@ impl AppState {
             "enforcement": enforcement, "reason": reason, "pending_change": pending})
     }
 
-    pub(in crate::app) fn publish_compaction_changed(&self, scope: &str, owner: Option<&str>) {
+    pub(in crate::app) fn note_compaction_changed(&self, scope: &str, owner: Option<&str>) {
         self.changes().note_compaction(scope, owner);
     }
 }

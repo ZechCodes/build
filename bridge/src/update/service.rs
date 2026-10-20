@@ -1,5 +1,6 @@
 use super::status::ErrorKind;
 use super::{AdmissionGate, HelperResult, InstallWhen, Release, UpdateState, UpdateStatus};
+use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
@@ -11,6 +12,9 @@ use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 use tokio::sync::{watch, Mutex};
+
+#[cfg(test)]
+mod tests;
 
 #[async_trait]
 pub trait UpdateBackend: Send + Sync {
@@ -131,6 +135,7 @@ pub struct UpdateService {
     staging: AtomicBool,
     working_agents_probe: OnceLock<BusyProbe>,
     admission: Arc<AdmissionGate>,
+    status: ArcSwap<UpdateStatus>,
     status_tx: watch::Sender<UpdateStatus>,
 }
 
@@ -183,6 +188,7 @@ impl UpdateService {
             || attempt.rollback_pending
             || !no_active_attempt;
         status.hold_installs_unless(!attempt.rollback_pending && no_active_attempt);
+        let snapshot = ArcSwap::from_pointee(status.clone());
         let (status_tx, _) = watch::channel(status);
         let admission = AdmissionGate::new(helper_may_own_bridge);
         Ok(Self {
@@ -193,12 +199,17 @@ impl UpdateService {
             staging: AtomicBool::new(false),
             working_agents_probe: OnceLock::new(),
             admission,
+            status: snapshot,
             status_tx,
         })
     }
 
     pub fn status(&self) -> UpdateStatus {
-        self.status_tx.borrow().clone()
+        (*self.status_arc()).clone()
+    }
+
+    pub fn status_arc(&self) -> Arc<UpdateStatus> {
+        self.status.load_full()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<UpdateStatus> {
@@ -856,6 +867,7 @@ impl UpdateService {
         status.refresh_computed();
         status.hold_installs_unless(self.helper_free(attempt));
         save_status(&self.config.status_path, &status, attempt)?;
+        self.status.store(Arc::new(status.clone()));
         self.status_tx.send_replace(status.clone());
         Ok(status)
     }

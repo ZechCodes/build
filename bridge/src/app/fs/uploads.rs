@@ -129,7 +129,7 @@ impl AppState {
             .remove(&params.upload_id)
             .expect("validated upload");
         let path = upload.staged.finish(upload.size)?;
-        self.finish_file_mutation(&upload.scope)?;
+        self.finish_file_mutation(&upload.scope, &upload.root)?;
         Ok(FsUploadFinishResult {
             path,
             size: upload.size,

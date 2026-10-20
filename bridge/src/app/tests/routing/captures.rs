@@ -174,13 +174,12 @@ fn a_capture_says_whether_the_router_has_it_or_gave_up() {
     let created = state.handle(req("capture.create", json!({ "text": "ship it" })));
     let capture_id = created["result"]["id"].as_str().unwrap().to_string();
 
-    state.captures.get_mut(&capture_id).unwrap().state = crate::capture::CaptureState::Routing;
     let routing = capture_rows(&mut state).remove(0);
     assert_eq!(routing["state"], "routing");
     assert_eq!(routing["working"], true);
     assert_eq!(routing["unread"], false);
 
-    state.captures.get_mut(&capture_id).unwrap().state = crate::capture::CaptureState::Failed;
+    state.mark_routing_failed(&capture_id);
     let failed = capture_rows(&mut state).remove(0);
     assert_eq!(failed["state"], "failed");
     assert_eq!(failed["working"], false);
@@ -200,8 +199,8 @@ fn a_routed_and_quiet_capture_leaves_the_feed() {
     let created = state.handle(req("capture.create", json!({ "text": "ship it" })));
     let capture_id = created["result"]["id"].as_str().unwrap().to_string();
 
+    let mut capture = state.captures[&capture_id].clone();
     {
-        let capture = state.captures.get_mut(&capture_id).unwrap();
         capture.state = crate::capture::CaptureState::Routed;
         capture.routing = Some(crate::capture::CaptureRouting {
             project_id: project_id.clone(),
@@ -211,11 +210,14 @@ fn a_routed_and_quiet_capture_leaves_the_feed() {
             rationale: Some("no branch names this work".to_string()),
         });
     }
+    state.save_capture(capture.clone()).unwrap();
     assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
 
-    state.captures.get_mut(&capture_id).unwrap().question = Some(
-        crate::capture::CaptureQuestion::new("which project is this?", now_rfc3339()),
-    );
+    capture.question = Some(crate::capture::CaptureQuestion::new(
+        "which project is this?",
+        now_rfc3339(),
+    ));
+    state.save_capture(capture.clone()).unwrap();
     let asking = capture_rows(&mut state).remove(0);
     assert_eq!(asking["unread"], true);
     assert_eq!(asking["unread_reason"], "router_question");
@@ -224,14 +226,8 @@ fn a_routed_and_quiet_capture_leaves_the_feed() {
     assert_eq!(asking["task_id"], "plan-7");
     assert_eq!(asking["routing"]["kind"], "task");
 
-    state
-        .captures
-        .get_mut(&capture_id)
-        .unwrap()
-        .question
-        .as_mut()
-        .unwrap()
-        .answer = Some("the bridge".to_string());
+    capture.question.as_mut().unwrap().answer = Some("the bridge".to_string());
+    state.save_capture(capture).unwrap();
     assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
 }
 

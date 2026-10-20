@@ -472,6 +472,7 @@ impl ReadSubject {
     }
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct ProjectListRow {
     pub(in crate::app) compaction_thresholds: Value,
     pub(in crate::app) compaction: Value,
@@ -495,8 +496,20 @@ pub(in crate::app) struct ProjectListRow {
 impl ProjectListRow {
     pub(in crate::app) fn render(&self) -> Value {
         let available = IsolationAvailability::of(&self.repo_path, &self.worktrees_root);
+        let observed = json!({"sources": self.sources.iter().map(crate::app::projects::ProjectSource::wire).collect::<Vec<_>>()});
+        self.render_observed(
+            serde_json::to_value(available).expect("isolation availability serializes"),
+            Some(&observed),
+        )
+    }
+
+    pub(in crate::app) fn render_observed(
+        &self,
+        available: Value,
+        observed: Option<&Value>,
+    ) -> Value {
         let requested = self.isolation.unwrap_or(self.isolation_default);
-        let effective = if available.lock_reason(requested).is_none() {
+        let effective = if requested != Isolation::Rift || available["rift"] == true {
             requested
         } else {
             Isolation::default()
@@ -504,7 +517,13 @@ impl ProjectListRow {
         let sources = self
             .sources
             .iter()
-            .map(crate::app::projects::ProjectSource::wire)
+            .map(|source| {
+                let remote = observed
+                    .and_then(|row| row["sources"].as_array())
+                    .and_then(|sources| sources.iter().find(|row| row["id"] == source.id))
+                    .map(|row| row["remote"].clone());
+                source.wire_observed(remote.unwrap_or(Value::Null))
+            })
             .collect::<Vec<_>>();
         json!({
             "project_id": self.project_id,
@@ -966,6 +985,7 @@ impl AppState {
     /// One entity's detail moved: its thread, stages, git state or diff. The
     /// feed shows a row for it, so this stales that too.
     pub(in crate::app) fn note_entity_changed(&self, entity_id: &str) {
+        self.publish_owner_snapshot_projection(entity_id);
         self.changes.note_entity(entity_id);
     }
 
@@ -981,6 +1001,7 @@ impl AppState {
     /// run's worktree and the external checkout it was adopted from, and a
     /// client watching either is looking at the same tab row.
     pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
+        self.publish_snapshot_projection();
         for entity_id in self.entities_rooted_at(root) {
             self.changes.note_terminals(&entity_id);
         }

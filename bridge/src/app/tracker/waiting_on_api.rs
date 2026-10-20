@@ -71,18 +71,24 @@ impl AppState {
         add: bool,
         actor: &Actor,
     ) -> Result<Value, String> {
-        self.tracker_store()?
-            .edit_waiting_on(
-                &task.project_path,
-                &task.id,
+        let timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&task.id)
+            .stored()?;
+        let mut prepared = task.clone();
+        self.capture_task_identities_and_actor(&mut prepared, &timeline, actor);
+        let publication = self
+            .tracker_store()?
+            .edit_waiting_on_observed(
+                &prepared,
                 if add { ids } else { &[] },
                 if add { &[] } else { ids },
                 actor,
                 &crate::store::now_rfc3339(),
             )
             .stored()?;
-        self.note_tasks_changed(project, &task.id);
-        self.task_dependency_answer(&task.id)
+        self.note_observed_tasks_changed(project, &publication);
+        Ok(json!({"task":self.observed_task_json(project, &publication.current)}))
     }
 
     pub(super) fn task_dependency_answer(&mut self, id: &str) -> Result<Value, String> {
@@ -103,17 +109,21 @@ impl AppState {
         now: &str,
     ) -> Result<Value, String> {
         write.task.updated_at = now.to_string();
-        self.capture_task_identities(
-            &mut write.task,
-            &write
+        let mut timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&write.task.id)
+            .stored()?;
+        timeline.extend(
+            write
                 .events
                 .iter()
                 .cloned()
-                .map(crate::tracker::TimelineEntry::Event)
-                .collect::<Vec<_>>(),
+                .map(crate::tracker::TimelineEntry::Event),
         );
-        self.tracker_store()?
-            .save_tracker_task_waiting_on(
+        self.capture_task_identities_and_actor(&mut write.task, &timeline, &write.actor);
+        let (publication, additional) = self
+            .tracker_store()?
+            .save_tracker_task_waiting_on_observed(
                 &write.task,
                 &write.comments,
                 &write.events,
@@ -122,8 +132,10 @@ impl AppState {
                 &write.actor,
             )
             .stored()?;
-        self.publish_task_write(project, &write);
-        self.task_dependency_answer(&write.task.id)
+        write.task = publication.current.task.clone();
+        write.events.extend(additional);
+        self.publish_observed_task_write(project, &write, &publication);
+        Ok(json!({"task":self.observed_task_json(project, &publication.current)}))
     }
 
     pub(super) fn retry_task_delivery_as(

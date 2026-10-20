@@ -44,14 +44,11 @@ pub(in crate::app::tests) fn push_to_task_conversation(
         .id
         .0
         .clone();
-    write(
-        state
-            .runs
-            .get_mut(&run_id)
-            .expect("the active run exists")
-            .agents
-            .sole_thread_mut(),
-    );
+    let mut active = state.take_run(&run_id).expect("the active run exists");
+    write(active.agents.sole_thread_mut());
+    state
+        .finish_run_mutation(run_id, active)
+        .expect("fixture thread write is durable and published");
 }
 
 /// The whole unread rule in one pass: an agent handing back makes the entry

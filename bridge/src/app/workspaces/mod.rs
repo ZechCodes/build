@@ -9,15 +9,19 @@ use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+mod adoption;
 mod branch_delete;
 mod deferred_creation;
 mod deletion;
 mod directories;
 mod git_initialization;
 mod lock;
+mod ownership;
 mod reclaim;
 mod sizes;
+mod snapshots;
 
+pub(in crate::app) use ownership::ProjectionOwnership;
 #[cfg(test)]
 pub(in crate::app) use reclaim::probe_reclaim_stop_for_test;
 #[cfg(test)]
@@ -136,6 +140,7 @@ impl DeferredGitWork for WorkspaceCreateWork {
             app.workspaces
                 .fail_if_still_provisioning(&self.workspace_id);
         }
+        app.refresh_workspace_snapshot_observation(&self.workspace_id);
         app.publish_read_metadata();
     }
 }
@@ -342,10 +347,18 @@ impl AppState {
     }
 
     pub(crate) fn workspace_list(&mut self, params: &Value) -> Result<Value, String> {
+        self.refresh_workspace_snapshot_observations();
+        self.workspace_list_snapshot(params)
+    }
+
+    pub(in crate::app) fn refresh_workspace_snapshot_observations(&mut self) {
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
         self.workspaces.refresh_finished_local();
         self.publish_read_metadata();
+    }
+
+    pub(in crate::app) fn workspace_list_snapshot(&self, params: &Value) -> Result<Value, String> {
         let project_id = params.get("project_id").and_then(Value::as_str);
         Ok(json!({
             "workspaces": self
@@ -357,7 +370,7 @@ impl AppState {
                     // The conversation entity, as `workspace.get` names it: a
                     // client standing on the list files the workspace's git
                     // under it without asking for the row.
-                    let owner = self.workspace_conversation_owner(workspace);
+                    let owner = self.workspace_snapshot_conversation_owner(workspace);
                     let mut value = workspace_json(workspace);
                     self.add_scope_compaction(&mut value, &crate::compaction::CompactionScope::Workspace(workspace.id.clone()));
                     let summary = owner
@@ -378,6 +391,22 @@ impl AppState {
         }))
     }
 
+    fn workspace_paths_match(&self, left: &Path, right: &Path, observed: bool) -> bool {
+        if observed {
+            self.observed_same_path(left, right)
+        } else {
+            same_path(left, right)
+        }
+    }
+
+    fn workspace_owner_is_project(&self, owner: &str, observed: bool) -> bool {
+        if observed {
+            self.is_project_snapshot_conversation_owner(owner)
+        } else {
+            self.is_project_conversation_owner(owner)
+        }
+    }
+
     /// Whether this workspace stands on the project's own checkout — the
     /// repository the project was registered at, which every workspace is cut
     /// FROM. It is adopted like any other checkout so the verbs that need a
@@ -390,7 +419,7 @@ impl AppState {
         }
         self.projects
             .get(&workspace.project_id)
-            .is_some_and(|project| same_path(&project.repo_path, &workspace.root))
+            .is_some_and(|project| self.observed_same_path(&project.repo_path, &workspace.root))
     }
 
     pub(crate) fn workspace_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -444,7 +473,19 @@ impl AppState {
         Ok(value)
     }
 
-    fn extend_workspace_review_summary(
+    pub(in crate::app) fn extend_workspace_review_summary(
+        &self,
+        workspace_id: &str,
+        row: &mut Value,
+    ) -> Result<(), String> {
+        if self.snapshot_projection_initialized() {
+            self.snapshot_workspace_review(workspace_id, row);
+            return Ok(());
+        }
+        self.load_workspace_review_summary(workspace_id, row)
+    }
+
+    pub(in crate::app) fn load_workspace_review_summary(
         &self,
         workspace_id: &str,
         row: &mut Value,
@@ -471,8 +512,28 @@ impl AppState {
         &self,
         workspace: &Workspace,
     ) -> Option<String> {
+        self.workspace_conversation_owner_using(workspace, false)
+    }
+
+    pub(in crate::app) fn workspace_snapshot_conversation_owner(
+        &self,
+        workspace: &Workspace,
+    ) -> Option<String> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            if let Some(owner) = context.workspace_owner(&workspace.id) {
+                return owner.cloned();
+            }
+        }
+        self.workspace_conversation_owner_using(workspace, true)
+    }
+
+    fn workspace_conversation_owner_using(
+        &self,
+        workspace: &Workspace,
+        observed: bool,
+    ) -> Option<String> {
         if self.runs.contains_key(&workspace.id)
-            && !self.is_project_conversation_owner(&workspace.id)
+            && !self.workspace_owner_is_project(&workspace.id, observed)
         {
             return Some(workspace.id.clone());
         }
@@ -480,9 +541,9 @@ impl AppState {
             .iter()
             .find(|(run_id, active)| {
                 !active.run.state.is_terminal()
-                    && !self.is_project_conversation_owner(run_id)
+                    && !self.workspace_owner_is_project(run_id, observed)
                     && self.projects.project_id_of(run_id) == Some(workspace.project_id.as_str())
-                    && same_path(&active.worktree.path, &workspace.root)
+                    && self.workspace_paths_match(&active.worktree.path, &workspace.root, observed)
             })
             .map(|(run_id, _)| run_id.clone())
     }
@@ -513,13 +574,35 @@ impl AppState {
     /// inside this scan, and a roots snapshot repeats both for every run.
     /// Keep the name-ordered workspace precedence and resolve the fallback
     /// winner only once for all aliases of this run's root.
-    fn workspace_for_conversation(
+    pub(in crate::app) fn workspace_for_conversation(
         &self,
         entity_id: &str,
         workspace_project: Option<&str>,
     ) -> Option<&Workspace> {
+        self.workspace_for_conversation_using(entity_id, workspace_project, false)
+    }
+
+    pub(in crate::app) fn workspace_snapshot_for_conversation(
+        &self,
+        entity_id: &str,
+        workspace_project: Option<&str>,
+    ) -> Option<&Workspace> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context
+                .workspace_for_owner(entity_id, workspace_project)
+                .and_then(|id| self.workspaces.get(id));
+        }
+        self.workspace_for_conversation_using(entity_id, workspace_project, true)
+    }
+
+    fn workspace_for_conversation_using(
+        &self,
+        entity_id: &str,
+        workspace_project: Option<&str>,
+        observed: bool,
+    ) -> Option<&Workspace> {
         let active = self.runs.get(entity_id)?;
-        if self.is_project_conversation_owner(entity_id) {
+        if self.workspace_owner_is_project(entity_id, observed) {
             return None;
         }
         let project_id = self.projects.project_id_of(entity_id);
@@ -533,19 +616,19 @@ impl AppState {
                 }
                 if active.run.state.is_terminal()
                     || project_id != Some(workspace.project_id.as_str())
-                    || !same_path(&active.worktree.path, &workspace.root)
+                    || !self.workspace_paths_match(&active.worktree.path, &workspace.root, observed)
                 {
                     return false;
                 }
                 // A different direct owner takes precedence over the shared
                 // root's fallback, even when an earlier alias used it.
                 if self.runs.contains_key(&workspace.id)
-                    && !self.is_project_conversation_owner(&workspace.id)
+                    && !self.workspace_owner_is_project(&workspace.id, observed)
                 {
                     return false;
                 }
                 fallback_owner
-                    .get_or_init(|| self.workspace_conversation_owner(workspace))
+                    .get_or_init(|| self.workspace_conversation_owner_using(workspace, observed))
                     .as_deref()
                     == Some(entity_id)
             })
@@ -556,6 +639,20 @@ impl AppState {
     /// ordinary owner lookup deliberately ignores terminal runs in its path
     /// fallback; deletion still needs to recognize one on that root.
     pub(in crate::app) fn surviving_workspace_of_run(&self, run_id: &str) -> Option<String> {
+        self.surviving_workspace_of_run_using(run_id, false)
+    }
+
+    pub(in crate::app) fn surviving_workspace_snapshot_of_run(
+        &self,
+        run_id: &str,
+    ) -> Option<String> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context.surviving_workspace(run_id).map(str::to_owned);
+        }
+        self.surviving_workspace_of_run_using(run_id, true)
+    }
+
+    fn surviving_workspace_of_run_using(&self, run_id: &str, observed: bool) -> Option<String> {
         let active = self.runs.get(run_id)?;
         let project_id = self.projects.project_id_of(run_id)?;
         self.workspaces
@@ -563,7 +660,12 @@ impl AppState {
             .into_iter()
             .find(|workspace| {
                 workspace.project_id == project_id
-                    && (workspace.id == run_id || same_path(&workspace.root, &active.worktree.path))
+                    && (workspace.id == run_id
+                        || self.workspace_paths_match(
+                            &workspace.root,
+                            &active.worktree.path,
+                            observed,
+                        ))
             })
             .map(|workspace| workspace.id.clone())
     }
@@ -605,6 +707,7 @@ impl AppState {
     /// The workspace a conversation's run stands on, as its work summary is
     /// keyed: the workspace id and its repositories, in the order the board
     /// reads them. `None` for a run that is no workspace conversation.
+    #[cfg(test)]
     pub(in crate::app) fn workspace_summary_subject_of_run(
         &self,
         run_id: &str,
@@ -714,6 +817,7 @@ impl AppState {
             gate: None,
         })));
         // The record exists from here, provisioning, and the list names it.
+        self.refresh_workspace_snapshot_observation(&workspace.id);
         self.note_board_lists_changed(crate::changes::BoardLists::WORKSPACES);
         Ok(json!({ "workspace_id": workspace.id, "pending": true }))
     }
@@ -729,6 +833,15 @@ impl AppState {
                 .agent_working_roots()
                 .into_iter()
                 .any(|(candidate, working)| working && Self::canonical_root(&candidate) == root)
+    }
+
+    pub(in crate::app) fn snapshot_agent_working_at_root(&self, root: &Path) -> bool {
+        self.delivery_queue.has_in_flight_at_root(root)
+            || self
+                .session_registry
+                .agent_working_roots()
+                .into_iter()
+                .any(|(candidate, working)| working && self.snapshot_root(&candidate) == root)
     }
 
     /// Done: the workspace's work is somewhere else, so the workspace goes.
@@ -795,10 +908,29 @@ impl AppState {
         root: &Path,
         workspace_id: Option<&str>,
     ) -> Option<crate::run::RunState> {
+        self.preferred_workspace_run_state_using(project_id, root, workspace_id, false)
+    }
+
+    pub(in crate::app) fn preferred_workspace_snapshot_run_state(
+        &self,
+        project_id: &str,
+        root: &Path,
+        workspace_id: Option<&str>,
+    ) -> Option<crate::run::RunState> {
+        self.preferred_workspace_run_state_using(project_id, root, workspace_id, true)
+    }
+
+    fn preferred_workspace_run_state_using(
+        &self,
+        project_id: &str,
+        root: &Path,
+        workspace_id: Option<&str>,
+        observed: bool,
+    ) -> Option<crate::run::RunState> {
         crate::branch::preferred_run_state(self.runs.iter().filter_map(|(run_id, active)| {
             let direct_owner = workspace_id == Some(run_id.as_str());
             let shares_root = self.projects.project_id_of(run_id) == Some(project_id)
-                && same_path(&active.worktree.path, root);
+                && self.workspace_paths_match(&active.worktree.path, root, observed);
             (direct_owner || shares_root).then_some((direct_owner, active.run.state))
         }))
     }
@@ -1235,6 +1367,7 @@ pub(in crate::app) fn is_scratch_checkout(
 #[cfg(test)]
 thread_local! {
     static PATH_COMPARISONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static PATH_CANONICALIZATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -1244,9 +1377,28 @@ pub(in crate::app) fn count_path_comparisons<T>(read: impl FnOnce() -> T) -> (T,
     (value, PATH_COMPARISONS.replace(previous))
 }
 
+#[cfg(test)]
+pub(in crate::app) fn record_path_comparison() {
+    PATH_COMPARISONS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(test)]
+pub(in crate::app) fn count_path_canonicalizations<T>(read: impl FnOnce() -> T) -> (T, usize) {
+    let previous = PATH_CANONICALIZATIONS.replace(0);
+    let value = read();
+    (value, PATH_CANONICALIZATIONS.replace(previous))
+}
+
+#[cfg(test)]
+pub(in crate::app) fn record_path_canonicalizations(count: usize) {
+    PATH_CANONICALIZATIONS.with(|held| held.set(held.get() + count));
+}
+
 pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
     #[cfg(test)]
-    PATH_COMPARISONS.with(|count| count.set(count.get() + 1));
+    record_path_comparison();
+    #[cfg(test)]
+    record_path_canonicalizations(2);
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,
@@ -1259,7 +1411,11 @@ pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
 /// fallback to the literal paths when either side cannot be: a workspace
 /// reached through a linked root has to read as the ground it is.
 pub(in crate::app) fn path_within(inner: &Path, outer: &Path) -> bool {
-    let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let resolve = |path: &Path| {
+        #[cfg(test)]
+        record_path_canonicalizations(1);
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    };
     resolve(inner).starts_with(resolve(outer))
 }
 

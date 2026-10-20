@@ -444,6 +444,8 @@ impl AppState {
     /// literal spellings. Falls back to the raw path when the directory is
     /// gone, so a vanished worktree still keys consistently for the reaper.
     pub(in crate::app) fn canonical_root(path: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(test)]
+        crate::app::workspaces::record_path_canonicalizations(1);
         crate::worktree::canonical_root(path)
     }
 }

@@ -7,8 +7,8 @@ use super::*;
 // churning 56k-file worktree that took seconds, the relay read loop stopped
 // draining behind it, and the relay called the device dead. These tests hold
 // the caches to the rule that follows from it: a poll is answered from the
-// last value the moment there is one, the recompute happens behind the
-// answer, several stale polls share one recompute, and no diff ever runs
+// published value, the producer refreshes behind it, several ticks and
+// stale polls share one recompute, and no diff ever runs
 // while the app mutex is held.
 
 /// One run's `stat` off a `board.list` poll, over the frame handler — the
@@ -32,8 +32,54 @@ async fn poll_board(handler: &FrameHandler) {
         .expect("the poll does not panic");
 }
 
-/// Poll until the refresh a first poll claimed has published its diffstat.
-/// No read computes any more, so this is what "the cache is seeded" means.
+/// Invoke the lifecycle/background producer explicitly. Snapshot polls never
+/// start cache work; this is the same maintenance tick the daemon schedules.
+async fn produce_board_observations(state: &Arc<Mutex<AppState>>) {
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || {
+        let mut app = state.lock().unwrap();
+        app.board_list();
+        app.publish_snapshot_projection();
+    })
+    .await
+    .expect("board observation producer does not panic");
+}
+
+async fn refresh_external_observations(state: &Arc<Mutex<AppState>>) {
+    let state = Arc::clone(state);
+    tokio::task::spawn_blocking(move || {
+        let mut app = state.lock().unwrap();
+        let project = app.project_at(0).id.clone();
+        app.rescan_external_worktrees(&project);
+    })
+    .await
+    .expect("external observation producer does not panic");
+}
+
+async fn board_with_branch(handler: &FrameHandler, branch: &str) -> Value {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let handler = handler.clone();
+            let board =
+                tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                    .await
+                    .unwrap();
+            if board["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["branch"] == branch)
+            {
+                return board;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("background observation publishes the external branch")
+}
+
+/// Wait until the lifecycle producer has published the run's first diffstat.
 async fn seeded_run_stat(handler: &FrameHandler, run_id: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -65,6 +111,7 @@ fn daemon_with_a_run_to_diff(
     };
     let worktree = state.lock().unwrap().runs[&run_id].worktree.path.clone();
     std::fs::write(worktree.join("first.txt"), "one\n").unwrap();
+    state.lock().unwrap().board_list();
     (state, handler, run_id, worktree)
 }
 
@@ -109,6 +156,7 @@ async fn a_stale_diffstat_answers_the_poll_while_it_refreshes_behind_it() {
     std::fs::write(worktree.join("second.txt"), "two\n").unwrap();
     watch_run_stat_computes(&state, Duration::from_millis(600));
     state.lock().unwrap().force_stale_diff_caches = true;
+    produce_board_observations(&state).await;
 
     let started = std::time::Instant::now();
     let stale = {
@@ -165,6 +213,7 @@ async fn concurrent_stale_polls_share_one_recompute() {
     seeded_run_stat(&handler, &run_id).await;
     let computes = watch_run_stat_computes(&state, Duration::from_millis(800));
     state.lock().unwrap().force_stale_diff_caches = true;
+    produce_board_observations(&state).await;
 
     let mut polls = Vec::new();
     for _ in 0..6 {
@@ -180,10 +229,17 @@ async fn concurrent_stale_polls_share_one_recompute() {
             .expect("no poll panics");
     }
 
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while computes.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the producer starts its shared recompute");
     assert_eq!(
         computes.load(std::sync::atomic::Ordering::SeqCst),
         1,
-        "six stale polls must share one recompute"
+        "six snapshot polls share the producer's one recompute"
     );
 }
 
@@ -200,6 +256,7 @@ async fn a_refresh_overtaken_by_a_mutation_publishes_nothing() {
     seeded_run_stat(&handler, &run_id).await;
     watch_run_stat_computes(&state, Duration::from_millis(600));
     state.lock().unwrap().force_stale_diff_caches = true;
+    produce_board_observations(&state).await;
     poll_board(&handler).await;
 
     // The mutation lands while that refresh is still walking the worktree.
@@ -241,14 +298,17 @@ async fn no_diff_is_computed_while_the_app_mutex_is_held() {
         recorded.lock().unwrap().push((key.clone(), free));
     }));
 
-    // The refreshes a first poll claims …
+    // The lifecycle producer claims every refresh; polls only read.
+    produce_board_observations(&state).await;
     poll_board(&handler).await;
     // … then background refreshes of what is now stale.
     state.lock().unwrap().force_stale_diff_caches = true;
+    produce_board_observations(&state).await;
     poll_board(&handler).await;
 
     tokio::time::timeout(Duration::from_secs(20), async {
         while observations.lock().unwrap().len() < 4 {
+            produce_board_observations(&state).await;
             poll_board(&handler).await;
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
@@ -265,10 +325,9 @@ async fn no_diff_is_computed_while_the_app_mutex_is_held() {
 
 // ==== a board read never computes ========================================
 //
-// The rule step 3 of the concurrency spec adds to stale-while-revalidate: a
-// read with NOTHING to serve answers anyway. It says what it does not know
-// yet, claims the scan, and the scan invalidates the browser when it lands.
-// Nothing waits under the app mutex for a first value ever again.
+// Step 3 warms the first observation before admission. Later reads retain
+// that immutable observation while independent producers refresh caches.
+// A read never claims work or waits under the app mutex.
 
 /// Hold every checkout scan open at the point its git work starts, so a
 /// test can look at the daemon while one is running.
@@ -315,11 +374,12 @@ async fn settled_board(handler: &FrameHandler) -> Value {
 /// mutex because there is no number to serve — is what made the first poll
 /// after a restart the slowest frame of the session.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn board_list_answers_scanning_when_nothing_has_ever_been_computed() {
+async fn board_list_answers_warmed_rows_while_the_refresh_producer_is_gated() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
     let gate = gate_scan_computes(&state);
+    refresh_external_observations(&state).await;
 
     let started = std::time::Instant::now();
     let board = {
@@ -341,13 +401,13 @@ async fn board_list_answers_scanning_when_nothing_has_ever_been_computed() {
     );
     assert_eq!(
         board["result"]["scanning"],
-        json!(true),
-        "an empty rail with no scan behind it is a board still looking: {board:?}"
+        json!(false),
+        "the authoritative startup observation remains visible during refresh: {board:?}"
     );
 
     gate.wait_for_arrival();
     gate.release();
-    let settled = settled_board(&handler).await;
+    let settled = board_with_branch(&handler, "feature-loose").await;
     let listed = settled["result"]["external_worktrees"]
         .as_array()
         .expect("the rail ships checkouts");
@@ -360,11 +420,12 @@ async fn board_list_answers_scanning_when_nothing_has_ever_been_computed() {
 /// And the scan it claimed runs with the mutex free: every other frame is
 /// served while the very first scan of a repository is still walking it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_first_scan_never_runs_under_the_app_mutex() {
+async fn a_refresh_scan_never_runs_under_the_app_mutex() {
     let (dir, repo) = init_repo();
     let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
     let gate = gate_scan_computes(&state);
+    refresh_external_observations(&state).await;
 
     poll_board(&handler).await;
     gate.wait_for_arrival();
@@ -381,8 +442,8 @@ async fn a_first_scan_never_runs_under_the_app_mutex() {
         assert_eq!(board["ok"], true, "{board:?}");
         assert_eq!(
             board["result"]["scanning"],
-            json!(true),
-            "the scan is still running, and no second one was started: {board:?}"
+            json!(false),
+            "snapshot polls retain the completed startup scan: {board:?}"
         );
     }
     let waited = started.elapsed();
@@ -392,7 +453,7 @@ async fn a_first_scan_never_runs_under_the_app_mutex() {
     );
 
     gate.release();
-    settled_board(&handler).await;
+    board_with_branch(&handler, "feature-loose").await;
 }
 
 /// The board said "scanning" and answered. What tells the browser to ask
@@ -405,6 +466,7 @@ async fn a_landed_first_scan_invalidates_the_browser() {
     watch_everything(&handler, &sender);
     add_external_worktree(&repo, dir.path(), "loose", "feature-loose");
     let gate = gate_scan_computes(&state);
+    refresh_external_observations(&state).await;
 
     poll_board(&handler).await;
     gate.wait_for_arrival();
@@ -446,6 +508,7 @@ async fn a_landed_first_diffstat_invalidates_the_browser() {
     state.lock().unwrap().invalidate_run_stat(&run_id);
     settled_pushes(&mut rx, &key).await;
 
+    produce_board_observations(&state).await;
     poll_board(&handler).await;
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
@@ -714,6 +777,9 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
+    // QA admission warms the first scan; this scenario starts before one
+    // has landed, rather than amending that already settled empty result.
+    state.clear_external_scan_for_test(&project_id);
     let path = add_external_worktree(&repo, dir.path(), "fresh", "feature-fresh");
     let described = crate::worktree::describe_checkout(&path, "main", crate::worktree::unix_now())
         .expect("it is a checkout");
@@ -846,6 +912,9 @@ fn a_scan_that_cannot_read_its_repository_settles_the_board() {
         }
     }));
     std::fs::remove_dir_all(&repo).unwrap();
+    // The external deletion happened after admission warmed this cache.
+    // Explicitly request the producer's next observation of the missing repo.
+    state.clear_external_scan_for_test(&project_id);
 
     let first = state.external_worktrees(&project_id);
     assert_eq!(computes.load(std::sync::atomic::Ordering::SeqCst), 1);

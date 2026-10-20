@@ -236,29 +236,26 @@ impl AppState {
                 })
             })
             .collect();
-        self.projects.update_source(
-            &address.project_id,
-            &address.source_id,
-            &address.path,
-            super::SourceRecord {
-                name: address.name,
-                path: updated.path,
-                is_git: updated.is_git,
-                base_branch: updated.base_branch,
-                sync_base: address.sync_base,
-            },
-        )?;
-        self.persist();
+        let mut row = self.commit_project_configuration(&address.project_id, |projects| {
+            projects.update_source(
+                &address.project_id,
+                &address.source_id,
+                &address.path,
+                super::SourceRecord {
+                    name: address.name,
+                    path: updated.path,
+                    is_git: updated.is_git,
+                    base_branch: updated.base_branch,
+                    sync_base: address.sync_base,
+                },
+            )
+        })?;
         if address.sync_base == Some(true) {
             self.request_source_sync(address.project_id.clone(), address.source_id.clone());
         }
-        let project = self
-            .projects
-            .get(&address.project_id)
-            .expect("the project was just updated");
-        let mut row = self.project_json(project);
         row["checkouts_updated"] = checkouts_updated.into();
         row["checkouts_failed"] = checkouts_failed.into();
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(row)
     }
 }
@@ -273,20 +270,19 @@ impl AppState {
         source_id: &str,
         sync_base: Option<bool>,
     ) -> Result<Value, String> {
-        let source = self
-            .projects
-            .source_mut(project_id, source_id)
-            .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
-        source.sync_base = sync_base;
-        self.persist();
+        let mut row = self.commit_project_configuration(project_id, |projects| {
+            let source = projects
+                .source_mut(project_id, source_id)
+                .ok_or_else(|| format!("unknown source_id {source_id} in project {project_id}"))?;
+            source.sync_base = sync_base;
+            Ok(())
+        })?;
         if sync_base == Some(true) {
             self.request_source_sync(project_id.to_string(), source_id.to_string());
         }
-        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
-        let project = self.project_for(project_id)?;
-        let mut row = self.project_json(project);
         row["checkouts_updated"] = 0.into();
         row["checkouts_failed"] = json!([]);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(row)
     }
 }

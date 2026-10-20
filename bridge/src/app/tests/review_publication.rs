@@ -243,3 +243,66 @@ async fn adopted_implementation_qa_error_keeps_owner_and_later_publication_live(
         Some(tip.1)
     );
 }
+
+#[tokio::test]
+async fn joined_dispatch_settlement_error_keeps_owner_and_later_publication_live() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut incoming, key) = push::greeted_push_session(&repo, dir.path());
+    push::watch_everything(&handler, &sender);
+    let (failed, survivor, project) = {
+        let mut app = state.lock().unwrap();
+        let failed = adopted_run(&mut app, &repo, dir.path(), "dispatch-failed-owner");
+        let survivor = adopted_run(&mut app, &repo, dir.path(), "after-dispatch-refusal");
+        let project = app.project_of(&failed).unwrap();
+        (failed, survivor, project)
+    };
+    push::settled_pushes(&mut incoming, &key).await;
+    state.lock().unwrap().dispatch_fault = Some(BranchDispatchStep::Settle);
+    let refused = handler.call(sender, req("branch.dispatch", json!({
+        "project_id": project, "branch": "dispatch-failed-owner", "instruction": "refused instruction"
+    })));
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("Settle"),
+        "{refused}"
+    );
+    let (retained, tip) = {
+        let mut app = state.lock().unwrap();
+        app.dispatch_fault = None;
+        let retained = app.runs.contains_key(&failed);
+        assert!(
+            app.delivery_queue.queued_is_empty(),
+            "a refused instruction must not be delivered"
+        );
+        let tip = save_message(
+            &mut app,
+            &survivor,
+            "after dispatch refusal",
+            "after dispatch refusal news",
+        );
+        (retained, tip)
+    };
+    let pushed = push::settled_pushes(&mut incoming, &key).await;
+    assert_published(
+        &handler,
+        &pushed,
+        &survivor,
+        "after dispatch refusal",
+        "after dispatch refusal news",
+        tip.1,
+    );
+    assert!(
+        retained,
+        "an injected settlement refusal must return the joined owner"
+    );
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .board
+            .attention()
+            .conversation_watermark(&tip.0)
+            .previous,
+        Some(tip.1)
+    );
+}

@@ -778,7 +778,7 @@ impl AgentRoster {
 const TASK_HOLDS_ITS_ONE_AGENT: &str = "a task always holds its one agent";
 
 /// What a read of an agentless entity is told.
-const NO_AGENT_YET: &str = "no agent here yet — send a message to create one";
+pub(crate) const NO_AGENT_YET: &str = "no agent here yet — send a message to create one";
 
 /// A fresh, time-ordered agent id. Two agents minted in the same millisecond
 /// still differ (80 bits of randomness), and ids minted later sort later.

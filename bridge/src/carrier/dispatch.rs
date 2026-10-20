@@ -255,8 +255,8 @@ enum Folded {
 
 /// What the shared queue carries.
 enum QueuedWork {
-    /// One frame, run on its own.
-    Frame(Job),
+    /// One frame, run on its own. Boxed so fold markers stay small in the queue.
+    Frame(Box<Job>),
     /// A place in line for a set of identical reads. The frames themselves wait
     /// in [`Dispatcher::folded_reads`] until a worker takes this marker, so a
     /// poll that arrives while its twin is still queued costs no queue slot.
@@ -502,11 +502,11 @@ impl Dispatcher {
         let Some(key) = read_key(&sender, &frame) else {
             let _ = self
                 .queue(priority)
-                .send(QueuedWork::Frame(Job {
+                .send(QueuedWork::Frame(Box::new(Job {
                     sender,
                     frame,
                     queued,
-                }))
+                })))
                 .await;
             return;
         };
@@ -568,7 +568,7 @@ impl Dispatcher {
         match self.fold_into_queued_read(key.clone(), priority, sender, frame, queued) {
             Folded::Joined => None,
             Folded::Heads | Folded::Promoted => Some(QueuedWork::FoldedRead(key)),
-            Folded::Overflowed(job) => Some(QueuedWork::Frame(*job)),
+            Folded::Overflowed(job) => Some(QueuedWork::Frame(job)),
         }
     }
 
@@ -748,7 +748,7 @@ async fn run_work(
     work: QueuedWork,
 ) {
     match work {
-        QueuedWork::Frame(job) => run_job(handler, job).await,
+        QueuedWork::Frame(job) => run_job(handler, *job).await,
         QueuedWork::FoldedRead(key) => {
             // Taking the entry out is what closes the fold: from here on, the
             // same read queues afresh behind us. A marker whose fold is already

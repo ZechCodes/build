@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { columns, task } from "./trackerWireFixture.js";
+import { holds, painted } from "./waits.js";
 
 let watchers = [];
 // The real module refuses a registration that names a cadence — nothing in
@@ -1022,6 +1023,8 @@ describe("moving a card", () => {
     await mount({ view: "board" });
     drop("task-12", "done");
     await vi.waitFor(() => expect(notifyError).toHaveBeenCalledWith("Could not move this task", "task is closed"));
+    // The refusal follows the rollback write; its subscribed repaint follows later.
+    await painted(holds(() => expect(cardsIn("backlog")).toEqual(["task-12"])), host);
     expect(cardsIn("backlog")).toEqual(["task-12"]);
   });
 

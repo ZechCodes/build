@@ -899,6 +899,8 @@ describe("the lifetime rules a pass applies", () => {
       branchItem({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", ...quiet }),
       branchItem({ branch: "b3", run_id: "run-3", worktree_id: "wt-3", ...quiet }),
     ]);
+    // A quiet wire does not imply that the pass's sweep and reads finished.
+    await passesSettled(sync, "dev-1");
 
     // run-2's data aged out, so it is cold and nothing was read for it.
     expect(await read("run-2", "status")).toBeUndefined();

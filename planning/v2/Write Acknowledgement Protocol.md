@@ -5,7 +5,8 @@ Task #710, amendment to [Bridge Concurrency Plan](<Bridge Concurrency Plan.md>),
 `82b5ce0c47b3016fb237cd0a2db5376384d019c2`, wire 3.23.0, Store schema 17.
 Names below are proposed unless identified as existing. This document does
 not describe shipped behavior. Implementation releases and gates are in the
-plan's steps 5–9.
+plan's steps 5–9. Zech accepted the three scope decisions in §8 on
+2026-10-20 at 19:08 UTC, recorded on #710; those decisions are settled.
 
 ## 1. Outcome and existing boundaries
 
@@ -54,11 +55,15 @@ An accepted record contains:
   execution/recovery policy, staged blob references where required, proposed
   cache effects and the eventual typed result or structured failure.
 
-Acceptance checks authentication, schema/size limits, authority, immutable
-scope, existing resource identity, input preconditions and admission quotas.
-It saves enough intent to execute or conclusively refuse after a restart.
-Mutable facts are rechecked at execution; admission is not a promise that a
-later Git ref, file permission or free-space check will succeed. Filesystem
+Admission checks authentication, schema/size limits, authority to the bound
+scope, existing **or durably reserved** resource identity, dependency validity
+and quotas. It saves enough intent to execute or conclusively refuse after a
+restart. Mutable preconditions are evaluated against the canonical state
+after all declared predecessors succeed; admission must not reject a valid
+chain because that state has not been applied yet. An independent command
+may reject an already-known mismatch at admission, but every mutable check
+still runs at execution. Admission is not a promise that a later Git ref,
+file permission or free-space check will succeed. Filesystem
 probes never hold an app lock. If a necessary admission probe is expensive,
 the ack is not called fast until that probe is removed or independently
 measured. No ack is sent on an in-memory queue insertion or failed commit.
@@ -71,6 +76,56 @@ most 128 nonterminal commands per principal and 4,096 per bridge, with
 separate byte quotas and reserved capacity for small presence/read-mark
 writes. These are proposed engineering bounds, to be tuned by measurement;
 write overload may return retryable `busy`, reads may not.
+
+### Admission of dependent writes
+
+The request envelope's `write.after` contains at most eight direct
+predecessor operation IDs. The SPA's persisted write service and the MCP
+control adapter both pass this field, outside the verb's `params`; expose
+`after` alongside `operation_id` in MCP write tool metadata. Dependencies are
+part of the normalized intent/hash and remain unchanged on retry. Owner
+queue order alone is insufficient: it serializes conflicts but does not
+express that a command requires a predecessor's successful result.
+
+In the admission transaction, resolve each predecessor to an already durable
+command of the same authenticated principal and journal incarnation, verify
+its scope and declared resource reservations, and persist all dependency
+edges with the dependent intent. Reject self/unknown/unauthorized dependencies
+and already-failed predecessors before ack. Edges only point to previously
+admitted commands, so new admission cannot form a cycle. Reservation records
+bind resource kind, canonical ID, owner/generation and creator command;
+guessing an ID or naming an unrelated predecessor does not authorize it.
+
+An absent canonical resource may resolve through a reservation owned by a
+declared predecessor. Validate its type, immutable scope and authority now;
+defer its existence/materialization and mutable body/ref/version checks to
+execution. Do not create a placeholder canonical task or weaken a
+precondition to make admission succeed. The dependent command can receive
+its durable ack while the predecessor's executor is held. It becomes
+eligible only after predecessors are applied and published successfully,
+independent of whether their confirmation pushes reached any caller.
+
+| Chain | SPA and MCP request | Execution rule |
+| --- | --- | --- |
+| Checklist tick A, then tick B | A is `tasks.update` from body B0 to B1 with `expected_body_hash = SHA256(B0)`. After A's ack, the effective cache contains B1. `taskChecklist.js`/the shared write service sends B as B1→B2 with `expected_body_hash = SHA256(B1)` and `write.after = [A.operation_id]`. An MCP caller passes the same predecessor via `after` using A's ack ID. | Admit B using task identity and A's durable command, without comparing its hash to still-canonical B0. After A publishes B1, compare B's hash to the then-current canonical body in B's mutation transaction. An intervening unrelated edit still causes a stale-body failure; no blind overwrite. |
+| Create task C, then comment D | C's ack reserves `result.task_id = T`. The SPA cache and MCP tool result retain T plus C's operation ID. Send `tasks.comment` with `params.task_id = T` and `write.after = [C.operation_id]`; MCP forwards `after` in the control envelope. | Resolve T through C's durable reservation even before a task row exists. After C publishes the task, recheck current existence, generation and authority before applying D. Missing T with no matching predecessor reservation remains an error. |
+
+If a predecessor fails after the dependent ack, settle the dependent as
+`failed`, `effect: "unapplied"`, `code: "dependency_failed"` without executing
+it. A partial/unknown predecessor does not authorize descendants: keep them
+ineligible until reconciliation, then either release them on proven success
+or fail them. Remove dependent optimistic layers in dependency order and
+retain their drafts; never replay them automatically on unrelated state.
+
+Held-executor tests cover **both RPC/SPA and MCP**: (1) hold A before apply,
+ack A then B, prove both acks arrive without releasing A and B has no effect;
+release and observe B0→B1→B2; (2) hold C, ack C then D against reserved T with
+no task row, release and observe exactly one task/comment; (3) fail each
+predecessor and assert dependent `dependency_failed`, zero dependent effects
+and correct overlay/draft recovery. Also race an unrelated body edit between
+ticks, retry both IDs across restart, and reject an unrelated/forged reserved
+ID. These are required step-6/7 implementation tests, not runtime results of
+this documentation change.
 
 ### Identity, retries and lifetime
 
@@ -94,17 +149,14 @@ Retain nonterminal records until reconciled. Retain full terminal results
 for 30 days; compact older records to durable identity/hash/outcome
 tombstones, retaining the non-reuse fence for the device database lifetime.
 An old retry returns `result_expired`, never executes again. Large bodies
-can be evicted after their result window. Persist a journal-incarnation ID
-in database metadata, paired with a store-generation manifest outside the
-database. Supported restore/reset tooling must advance that manifest and
-issue a new incarnation before clients are admitted; copying an old database
-also copies its old in-database ID and cannot itself detect rollback. Unknown
-commands from another incarnation require reconciliation. An operation the
-client already saw acknowledged but which is now absent is always quarantined
-as `outcome_unknown`, never resubmitted. Unmanaged raw rollback of both files
-is outside the recovery contract and cannot promise detection or exactly-once
-recovery of forgotten effects. The process-restart guarantee also does not
-cover commit loss after host power failure under WAL/NORMAL.
+can be evicted after their result window. A database-local journal-incarnation
+ID distinguishes a newly created database from the existing store; it does
+not detect restoring an older copy with the same ID. Unknown commands from
+another incarnation require reconciliation. An acknowledged command that
+is unexpectedly absent is quarantined as `outcome_unknown`, never resubmitted.
+Database restore/rollback detection and external manifests/tooling are
+deferred; this release promises process-restart recovery against the intact
+store, not recovery of lost database history or host-power-loss durability.
 
 ### Ordering and execution
 
@@ -145,8 +197,8 @@ per verb, not a generic replay callback:
 | Transcript/assignment/agent delivery | Link existing operations/delivery intents; accepted transcript is the mutation result. Provider execution is subsequent domain state, not write confirmation. Preserve claimed → uncertain. |
 | Git/reviews/workspace provisioning | Capture expected refs/versions and owned paths; use existing review locks/journals. Reconcile an ambiguous push/commit before any repeat. |
 | Files and uploads | Save bounded blobs and offsets/hashes; compare expected destination identity. Never overwrite a changed file on recovery. |
-| PTY input, interrupts and process starts | Bind exact session/instance. A claim whose effect cannot be proven becomes `outcome_unknown`; never replay into a replacement process. |
-| Session subscriptions/attachments | Bind opening + epoch; an ended opening terminates unapplied work as `scope_ended`. Re-establish desired subscriptions as new session commands, not replay of old handles. |
+| Agent interrupts/process starts and terminal create/close | Bind exact session/instance. A journaled claim whose effect cannot be proven becomes `outcome_unknown`; never replay into a replacement process. PTY input is exempt and follows §4's in-flight rule instead. |
+| Session-bound semantic writes (for example upload staging) | Bind opening + epoch; an ended opening terminates unapplied journaled work as `scope_ended`. Exempt subscriptions/terminal attachments use final replies and the in-flight rules in §4, without a journal. |
 | Bridge update | Confirm durable update-job admission with its stable job ID; later installation/restart outcome remains update-service state. Do not claim the new executable is running at ack. |
 
 The failed confirmation includes `effect: "unapplied" | "partial" | "unknown"`.
@@ -249,34 +301,36 @@ status/confirmation or an explicit command dependency; no read waits on an
 operation. This deliberately changes the old plan's use of “post-ack”:
 its canonical visibility guarantee now attaches to confirmation.
 
-### Every write, including already-fast/session work
+### Semantic writes and exempt real-time/session controls
 
 The plan's §5 policy table is exhaustive. “Already fast” is an execution
 target, not permission to emit an undurable ack: a short command can finish
 application before sending ack, then send the saved confirmation immediately.
-All opted-in domain/session write RPCs and MCP writes use the same envelope.
-Session-bound commands still record an intent/claim/outcome; their recovery
-can end in `scope_ended` or `outcome_unknown`, never replay of stale handles.
+All opted-in semantic write RPCs and MCP writes use the same envelope.
+Session-bound semantic commands such as uploads still record an
+intent/claim/outcome; their recovery can end in `scope_ended` or
+`outcome_unknown`, never replay of stale handles.
 
-For terminal high-rate input/flow control this literal all-writes rule adds
-durable writes. The initial proposal retains it, uses bounded batched journal
-commits with per-terminal order, and measures input/read latency under load.
-It supersedes the old plan's “no SQLite bookkeeping” terminal sentence only
-for negotiated journaled commands; SQL is still never acquired under an app
-or terminal guard. A recommended narrower exception is an explicit product
-decision in §8, not a silent exemption. `session.hello`/`rtc.*` needed to
-bootstrap negotiation keep their existing synchronous semantics; optional
-post-negotiation invocations can opt in. The close transport frame is
-cleanup, not a retryable write RPC.
+The settled exception covers signaling (`rtc.*`), `session.hello`,
+subscriptions (`changes.*` and `writes.subscribe`), QA `stream.start`, terminal attachment
+(`term.attach` and the screen attachment in `agent.attach`), terminal
+`input/resize/ack`, and transport close. They retain ordered session-bound
+final replies and epoch fences, with **no durable early ack, journal
+bookkeeping or automatic replay**, and never appear in `ack_confirm_methods`.
+This is the authoritative exempt set for both documents' policy tables.
+Re-establish desired subscriptions and
+attachments on a new opening; never replay uncertain input into a replacement
+terminal. Terminal creation/closure and all MCP semantic writes remain
+journaled. Any durable effect hidden in an attachment helper must be split
+into the semantic command path rather than hidden inside this exception.
 
 ## 4. Bridge epoch and restart recovery
 
 Generate one random `bridge_epoch` per daemon start; all sessions/carriers
 in that process share it. Separately persist `journal_incarnation`.
-`session.hello` returns both and the negotiated capabilities. Supported
-database restore/reset rotates the incarnation via the external store
-manifest described in §2; a boot epoch alone never proves journal integrity.
-Stamp every
+`session.hello` returns both and the negotiated capabilities. A boot epoch
+alone never proves journal integrity; restore tooling is outside this
+process-restart scope. Stamp every
 authenticated application reply, receipt, write ack, confirmation and push
 (including changes, terminal and service pushes) from the sending bridge
 instance. The transport envelope owns this, not every producer independently.
@@ -295,7 +349,19 @@ Compare epochs for the authenticated device and current connection lifetime:
 3. An old/different-epoch frame cannot change cache or a new pending request.
    Treat an unexpected epoch as a reason for an authoritative re-greeting,
    not proof that the uncorrelated frame is newer. UUID epochs have no order.
-4. New journal incarnation or incapable downgrade: retain pending records
+4. For exempt calls still in flight, settle old-opening caller promises and
+   release their ephemeral reservations once. Calls proven unsent end as
+   `scope_ended`; calls handed to the old carrier without a final reply end
+   with `uncertain_delivery`, because the effect may already have happened.
+   Mark declarative subscriptions/attachments retryable through fresh
+   current-opening reconciliation, but mark input/stream-start replay unsafe.
+   Discard their late replies. Do not journal, status-query or blindly resend
+   old calls. Current desired subscriptions,
+   attachments and size/flow-control state can be established by fresh calls
+   on the new opening, subject to its current terminal identity; input bytes
+   and QA stream starts are never replayed automatically. New hello/RTC
+   negotiation belongs to the new connection lifetime.
+5. New journal incarnation or incapable downgrade: retain pending records
    and do not replay them through legacy write APIs. Reconcile through a
    compatible bridge or expose an operation-specific unresolved result.
 
@@ -451,42 +517,53 @@ Test first, then implement each slice:
   before greeting, old-client/new-bridge and new-client/old-bridge combinations.
 - Full MCP action/report manifest, tool result at ack, sequential dependent
   calls, notification fallback, auth/thread replacement and internal delivery.
-- Terminal flow-control/input throughput with journal batching, session
-  teardown, uploads, Git/review ambiguity and no duplicate external effects.
+- Held-executor checklist and create-then-comment chains from §2, including
+  failed predecessors, reserved-ID authorization and mutable-state races.
+- Epoch change with each exempt call queued/handed off, no stranded caller
+  promise, exact-once reservation release, stale reply fencing, safe desired
+  subscription restoration and no input/stream-start replay.
+- Exempt controls never touch the command journal or SQL, are absent from
+  `ack_confirm_methods`, and preserve terminal input latency/order. Test
+  session teardown, uploads, Git/review ambiguity and no duplicate effects
+  separately for the semantic command paths.
 - Plan step-9 read budget under journal admission/execution load; separately
   report ack latency (target p99 ≤100 ms for hot bounded commands) and time
   to confirmation. Never use receipts as ack timing.
 
 Rollback disables **new** early-admission methods through the advertised
-allowlist. Keep status, recovery workers, confirmation outbox and pending
-cache support until every previously accepted command is terminal. A
-schema-unaware binary cannot be rolled over outstanding commands: use a
-forward-compatible build or drain first. A method can return to synchronous
-execution behind the same journal/protocol without changing identities.
-Never turn accepted operations into legacy retries or drop the journal to
-make a rollback appear clean.
+allowlist. The rollback build must understand the migrated schema and preserve
+status, idempotency, retained outcomes/tombstones and confirmation recovery
+for all previously accepted commands, including terminal ones. Draining
+execution is not sufficient: a caller may retry a completed operation whose
+confirmation was lost. Keep pending-cache reconciliation and applicable
+recovery workers; a schema-unaware binary is never an acceptable rollback
+onto the migrated database. A method can return to synchronous execution
+behind the same journal/protocol without changing identities. Never turn
+accepted operations into legacy retries or drop the journal.
 
-## 8. Decisions for Zech before the affected implementation slice
+Required rollback tests upgrade a temporary database, accept/apply commands,
+drain all execution, then open it with the candidate rollback build. Status
+and same-ID retries must return retained outcomes without new effects; a
+conflicting payload must still conflict. Lose a terminal confirmation before
+rollback and prove the reconnecting SPA/MCP recovers that outcome exactly
+once. Include a compacted tombstone and refuse schema-incompatible startup.
 
-1. **Real-time/session controls:** the literal all-writes plan above journals
-   negotiated terminal/subscription commands; bootstrap signaling stays
-   synchronous. Recommend an explicit exception for `rtc.*`, `session.hello`,
-   `changes.*`, terminal attach/input/resize/ack and transport close: keep
-   their ordered, session-bound final replies and epoch fences, with no
-   durable early ack or automatic replay. These effects cannot survive their
-   process/session and high-rate journaling adds avoidable latency. This is
-   a requested scope amendment, not an assumed approval; domain writes,
-   terminal creation/closure and all MCP semantic writes remain covered.
-2. **Meaning of ≤100 ms:** recommend p99 ≤100 ms for complete bounded local
-   read results in a declared load envelope, with max ≤100 ms in controlled
-   held-lock tests, reporting all outliers. New paged/cached observation
-   reads answer cold misses explicitly and refresh asynchronously. Arbitrary
-   fresh network/Git data and network transfer have no honest 100 ms maximum.
-   If the requirement is a universal end-to-end maximum, fresh unbounded
-   legacy reads must be retired in a major version; no current measurement
-   or timeout change can establish that promise.
-3. **Durability scope:** recommend bridge-process restart durability first,
-   matching the stated problem and existing WAL/NORMAL policy. If ack must
-   survive host power loss, require FULL/group-fsync admission plus durable
-   staged files before ack, and measure that cost before enabling the flag.
-   This is a release policy decision, not something to hide behind “saved.”
+## 8. Settled scope decisions
+
+Zech accepted these decisions on 2026-10-20 at 19:08 UTC; #710 records them.
+
+1. **Real-time/session controls are exempt from durable early ack.** Signaling,
+   hello, subscriptions, `agent.attach`, `stream.start`, terminal
+   attach/input/resize/ack and transport close
+   keep ordered final replies and epoch fences as specified in §3. Semantic
+   domain writes, terminal creation/closure and MCP semantic writes remain
+   covered by the durable protocol.
+2. **Read target: p99 ≤100 ms for bounded, complete results in the declared
+   workload**, with maximum ≤100 ms in controlled lock-isolation tests and
+   all outliers reported. Expensive reads use explicit cached/paged
+   observations; cold refresh completion is measured separately. This is
+   not a universal fresh-data/WAN maximum.
+3. **Ack durability covers bridge-process restart**, using the current WAL
+   with `synchronous=NORMAL`. Host-power-loss durability is not required.
+   Intent and staged data still must survive the promised process restart;
+   no in-memory acceptance counts as durable.

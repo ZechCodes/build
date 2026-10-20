@@ -7,6 +7,7 @@ fn global_publication_renders_each_branch_and_agent_scope_once() {
     add_tip_agents(&mut state, 4);
     state.initialize_snapshot_projection();
     let (_, counts) = work_counts::measure(|| state.publish_all_snapshot_projection());
+    eprintln!("16 owners / 4 agents publication work: {counts:?}");
     assert_eq!(counts.branches, state.runs.len(), "{counts:?}");
     assert_eq!(counts.agents, 2 * 4 * state.runs.len(), "{counts:?}");
     assert_eq!(
@@ -30,6 +31,7 @@ fn global_publication_outcome_lookup_reuses_the_captured_root_index() {
             })
             .collect::<Vec<_>>()
     });
+    eprintln!("32 indexed outcome lookups: {comparisons} path comparisons");
     assert!(outcomes.iter().all(Option::is_some));
     assert!(
         comparisons <= state.runs.len(),
@@ -127,6 +129,7 @@ fn global_publication_external_rows_visit_each_cached_checkout_once() {
             .collect::<Vec<_>>();
         (rows, states)
     });
+    eprintln!("32 external list rows plus 32 state lookups: {counts:?}");
     assert_eq!(actual.rows, expected);
     assert_eq!(states, expected);
     assert!(!actual.scanning);

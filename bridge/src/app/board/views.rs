@@ -2,7 +2,7 @@ use crate::app::{run_state_str, DigestScope, ExternalWorktreeRows, WORKSPACE_SUM
 use crate::run::RunState;
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{json, Value};
 
@@ -342,6 +342,12 @@ impl AppState {
     /// scanned here: a flush answers with what the board knows, and the walk
     /// that would make it newer is the board's own TTL to run.
     pub(in crate::app) fn external_worktree_row_of(&self, worktree_id: &str) -> Option<Value> {
+        if let Some(row) = self
+            .snapshot_ownership_context()
+            .and_then(|context| context.rendering.external_row(worktree_id))
+        {
+            return row;
+        }
         let projects = self.projects.iter().filter(|project| project.is_git);
         for project in projects {
             // A project whose walk has not landed is not an answer about the
@@ -456,15 +462,54 @@ impl AppState {
     }
 
     pub(in crate::app) fn cached_external_worktrees_json(&self) -> ExternalWorktreeRows {
+        let attention_of = self
+            .board
+            .attention()
+            .attention_ids()
+            .map(|id| (id.to_owned(), self.attention_json(id)))
+            .collect::<HashMap<_, _>>();
+        // The single-row reader uses the first matching registry entry, even
+        // when several agents share a root and report different statuses.
+        let agent_signals = self
+            .session_registry
+            .agent_working_roots()
+            .into_iter()
+            .fold(HashMap::new(), |mut signals, (root, working)| {
+                signals
+                    .entry(crate::worktree::external_worktree_id(&root))
+                    .or_insert((working, !working));
+                signals
+            });
         let mut rows = ExternalWorktreeRows::default();
+        let mut by_id = BTreeMap::new();
         for project in self.projects.iter().filter(|project| project.is_git) {
             let scan = self.board.diff().external_scan(&project.id);
             rows.scanning |= scan.settled_at.is_none();
-            rows.rows.extend(
-                scan.worktrees
-                    .iter()
-                    .filter_map(|worktree| self.external_worktree_row_of(&worktree.id)),
-            );
+            for worktree in scan.worktrees {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::external_candidate();
+                // Preserve the old single-row lookup's first project scope
+                // when two registered projects observed the same checkout id.
+                let row = by_id.entry(worktree.id.clone()).or_insert_with(|| {
+                    external_worktree_row(
+                        worktree,
+                        &ExternalRowScope {
+                            project_id: &project.id,
+                            project_name: &project.name,
+                            base_branch: &project.base_branch,
+                        },
+                        agent_signals
+                            .get(&worktree.id)
+                            .copied()
+                            .unwrap_or((false, false)),
+                        attention_of.get(&worktree.id).cloned(),
+                    )
+                });
+                rows.rows.push(row.clone());
+            }
+        }
+        if let Some(context) = self.snapshot_ownership_context() {
+            context.rendering.remember_external_rows(by_id);
         }
         rows
     }

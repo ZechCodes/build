@@ -16,6 +16,7 @@ pub(in crate::app) struct ProjectionRendering {
     root_states: BTreeMap<(String, PathBuf), RunState>,
     branches: Mutex<BTreeMap<String, (Value, WorkItemCandidate)>>,
     agents: Mutex<BTreeMap<AgentDigestKey, Value>>,
+    external_rows: Mutex<Option<BTreeMap<String, Value>>>,
 }
 
 impl ProjectionRendering {
@@ -102,5 +103,18 @@ impl ProjectionRendering {
 
     pub(in crate::app) fn remember_agent_digest(&self, key: AgentDigestKey, row: &Value) {
         self.agents.lock().unwrap().insert(key, row.clone());
+    }
+
+    /// Distinguish an uncaptured scan from a captured missing id.
+    pub(in crate::app) fn external_row(&self, id: &str) -> Option<Option<Value>> {
+        self.external_rows
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|rows| rows.get(id).cloned())
+    }
+
+    pub(in crate::app) fn remember_external_rows(&self, rows: BTreeMap<String, Value>) {
+        *self.external_rows.lock().unwrap() = Some(rows);
     }
 }

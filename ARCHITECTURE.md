@@ -397,11 +397,17 @@ Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
 Snapshot preparation captures one ephemeral ownership context shared by board,
-workspace, agent and push projections. It preserves project-scoped workspace
-filters and canonical conversation aliases without resolving paths per agent.
-The context ends before persistence or canonical mutation; it cannot retain a
-failed candidate's workspace mapping. Counting tests include the publication
-producer as well as the pure push reader.
+workspace, agent and push projections. It indexes agent ownership and preferred
+run outcomes in the existing precedence order, and reuses branch candidates and
+canonical agent digests for matching render inputs. Cached external checkout
+rows are rendered in one pass and reused by push states, retaining the first
+matching project and agent-root entry. Project-scoped workspace filters and
+canonical conversation aliases retain their existing behavior without resolving
+paths per agent. These candidate-local indexes and render memos end before
+persistence or canonical mutation; a failed candidate cannot seed a later
+publication. Complete local read-view deltas retain their atomic publication
+boundary before replies and change notices. Counting tests include the
+publication producer as well as the pure push reader.
 
 ### Liveness and signaling
 

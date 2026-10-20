@@ -79,7 +79,12 @@ fn active_detail_measurement(size: usize) -> (usize, usize, usize, detail_scans:
         "one changed owner with incidental active clocks"
     );
     assert_eq!(
-        actual.get_owned("workspace.get", "workspace-11").unwrap()["run"]["working_time"]
+        actual.get_owned("workspace.get", "workspace-11").unwrap()["agents"][0]["working_time"]
+            ["since"],
+        "2999-01-01T00:00:00Z"
+    );
+    assert_eq!(
+        actual.get_owned("workspace.get", "workspace-11").unwrap()["agents"][0]["working_time"]
             ["seconds"],
         0
     );

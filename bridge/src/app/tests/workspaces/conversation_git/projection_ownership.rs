@@ -164,6 +164,14 @@ fn compaction_fixture() -> (tempfile::TempDir, AppState, String, String) {
     (tmp, state, canonical, alias)
 }
 
+fn edit_alias(state: &mut AppState, alias: &str, edit: impl FnOnce(&mut crate::agent::Agent)) {
+    let mut candidate = state.take_run("run-01").unwrap();
+    edit(candidate.agents.by_id_mut(alias).unwrap());
+    state
+        .finish_run_mutation("run-01".into(), candidate)
+        .unwrap();
+}
+
 #[test]
 fn projection_compaction_follows_canonical_alias_binding_and_launch_provider_changes() {
     let (_tmp, mut state, canonical, alias) = compaction_fixture();
@@ -174,11 +182,9 @@ fn projection_compaction_follows_canonical_alias_binding_and_launch_provider_cha
         111_000,
         CompactionSource::Workspace("workspace-00".into()),
     );
-    state
-        .edit_agent_record_checked("change launch provider", "run-01", &alias, |agent| {
-            agent.choice.provider = crate::models::AgentProvider::CodexAppServer;
-        })
-        .unwrap();
+    edit_alias(&mut state, &alias, |agent| {
+        agent.choice.provider = crate::models::AgentProvider::CodexAppServer;
+    });
     assert_published_policy(
         &state,
         "run-01",
@@ -186,11 +192,9 @@ fn projection_compaction_follows_canonical_alias_binding_and_launch_provider_cha
         222_000,
         CompactionSource::Workspace("workspace-00".into()),
     );
-    state
-        .edit_agent_record_checked("change canonical binding", "run-01", &alias, |agent| {
-            agent.bind_conversation(&alias);
-        })
-        .unwrap();
+    edit_alias(&mut state, &alias, |agent| {
+        agent.bind_conversation(&alias);
+    });
     assert_published_policy(
         &state,
         "run-01",
@@ -198,11 +202,9 @@ fn projection_compaction_follows_canonical_alias_binding_and_launch_provider_cha
         444_000,
         CompactionSource::Workspace("workspace-01".into()),
     );
-    state
-        .edit_agent_record_checked("restore canonical binding", "run-01", &alias, |agent| {
-            agent.bind_conversation(&canonical);
-        })
-        .unwrap();
+    edit_alias(&mut state, &alias, |agent| {
+        agent.bind_conversation(&canonical);
+    });
     assert_published_policy(
         &state,
         "run-01",

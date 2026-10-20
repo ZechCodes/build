@@ -227,7 +227,11 @@ impl AppState {
         let mut active = self.take_run(&run_id)?;
         let agent = self.dispatch_to_run(&run_id, &mut active, instruction, choice, &branch, root);
         #[cfg(test)]
-        fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
+        if let Err(error) = fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle) {
+            self.restore_run_after_failed_save(&run_id, active);
+            self.settle_failed_mutation(&run_id);
+            return Err(error);
+        }
         self.finish_run_mutation(run_id.to_string(), active)?;
         // The human acting, or an agent handing work over: see
         // `open_dispatched_run`.

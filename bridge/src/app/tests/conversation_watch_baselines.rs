@@ -77,6 +77,108 @@ fn conversation_watch_baselines_exclude_unwatched_and_pre_watch_news() {
 }
 
 #[test]
+fn conversation_read_window_ignores_pre_watch_messages_below_its_floor() {
+    let (home, repo) = init_repo();
+    let mut state = rooted(home.path());
+    let owner = owner(&mut state, &repo);
+    let id = add(&mut state, &owner, false);
+    say(&mut state, &owner, &id);
+    watch(&mut state, &owner, &id, true);
+    say(&mut state, &owner, &id);
+    state.initialize_snapshot_projection();
+    let reached = state
+        .agent_conversation(&owner, Some(&id))
+        .unwrap()
+        .last_sequence();
+    assert_eq!(count(&state, &owner, &id), 1);
+
+    let seen = state.handle(req(
+        "entity.seen",
+        json!({
+            "entity_id": owner, "agent_id": id,
+            "read_from_sequence": reached, "read_through_sequence": reached,
+        }),
+    ));
+    assert_eq!(seen["ok"], true, "{seen}");
+    assert_eq!(
+        count(&state, &owner, &id),
+        0,
+        "excluded pre-watch history cannot prevent reading current news"
+    );
+    assert_eq!(state.read_cursor(&owner, &id), reached);
+}
+
+fn assert_read_window_preserves_unread_below_restarted_tail(published: bool) {
+    let (_repo_home, repo) = init_repo();
+    let home = tempfile::tempdir().unwrap();
+    let mut state = rooted(home.path())
+        .with_task_store(home.path().join("tasks"))
+        .unwrap();
+    let owner = owner(&mut state, &repo);
+    let id = add(&mut state, &owner, true);
+    say(&mut state, &owner, &id);
+    let unread_sequence = state
+        .agent_conversation(&owner, Some(&id))
+        .unwrap()
+        .last_sequence();
+    state
+        .edit_agent_conversation(&owner, &id, |thread, _| {
+            for index in 0..crate::store::RESIDENT_CONVERSATION_TAIL + 40 {
+                thread.post_user(format!("Follow-up {index}"), None, now_rfc3339());
+            }
+            Ok(())
+        })
+        .unwrap();
+    drop(state);
+
+    let mut restored = rooted(home.path())
+        .with_task_store(home.path().join("tasks"))
+        .unwrap();
+    if published {
+        restored.initialize_snapshot_projection();
+    }
+    let thread = restored.agent_conversation(&owner, Some(&id)).unwrap();
+    assert!(thread.resident_from_sequence() > unread_sequence);
+    let reached = thread.last_sequence();
+    assert_eq!(count(&restored, &owner, &id), 1);
+    let seen = restored.handle(req(
+        "entity.seen",
+        json!({
+            "entity_id": owner, "agent_id": id,
+            "read_from_sequence": reached, "read_through_sequence": reached,
+        }),
+    ));
+    assert_eq!(seen["ok"], true, "{seen}");
+    assert_eq!(
+        count(&restored, &owner, &id),
+        1,
+        "a window that never held the stored message cannot mark it read"
+    );
+    assert_eq!(restored.read_cursor(&owner, &id), 0);
+
+    let seen = restored.handle(req(
+        "entity.seen",
+        json!({
+            "entity_id": owner, "agent_id": id,
+            "read_from_sequence": unread_sequence, "read_through_sequence": reached,
+        }),
+    ));
+    assert_eq!(seen["ok"], true, "{seen}");
+    assert_eq!(count(&restored, &owner, &id), 0);
+    assert_eq!(restored.read_cursor(&owner, &id), reached);
+}
+
+#[test]
+fn conversation_read_window_preserves_unread_below_restarted_tail() {
+    assert_read_window_preserves_unread_below_restarted_tail(false);
+}
+
+#[test]
+fn conversation_read_window_preserves_unread_below_published_restarted_tail() {
+    assert_read_window_preserves_unread_below_restarted_tail(true);
+}
+
+#[test]
 fn conversation_watch_baselines_survive_restart_and_count_stored_history() {
     let (repo_home, repo) = init_repo();
     let home = tempfile::tempdir().unwrap();

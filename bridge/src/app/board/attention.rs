@@ -380,12 +380,47 @@ impl AppState {
                 let thread = self
                     .agent_conversation(entity_id, Some(&agent.id))
                     .unwrap_or(&agent.thread);
-                let hidden_below = report.window_floor.is_some_and(|floor| {
-                    thread.unread_attention_below(floor, self.read_cursor(entity_id, &agent.id))
-                });
+                let cursor = self
+                    .read_cursor(entity_id, &agent.id)
+                    .max(agent.watch_started_after);
+                let hidden_below = report
+                    .window_floor
+                    .is_some_and(|floor| self.unread_below_window(thread, cursor, floor));
                 (!hidden_below).then(|| (agent.id.clone(), report.reached(thread.last_sequence())))
             })
             .collect()
+    }
+
+    /// The same history and watch-scoped cursor that determine unread also
+    /// guard read progress. A restarted bridge's resident tail alone cannot
+    /// establish that the reader has reached every unread message.
+    fn unread_below_window(&self, thread: &crate::thread::Thread, cursor: u64, floor: u64) -> bool {
+        if floor <= cursor {
+            return false;
+        }
+        if self.snapshot_projection_initialized() {
+            if let Some(history) = self.read_view.load().history(&thread.agent.id) {
+                let history = history.updated(thread);
+                return history.unread_since(cursor).count > history.unread_since(floor - 1).count;
+            }
+        }
+        if thread.unread_attention_below(floor, cursor) {
+            return true;
+        }
+        let stored_floor = floor.min(thread.resident_from_sequence());
+        if stored_floor <= cursor {
+            return false;
+        }
+        let Some(store) = &self.store else {
+            return true;
+        };
+        match store.unread_attention_between(&thread.agent.id, cursor, stored_floor) {
+            Ok(count) => count > 0,
+            Err(error) => {
+                eprintln!("unread below read window for {}: {error}", thread.agent.id);
+                true
+            }
+        }
     }
 
     /// Where each of an entity's conversations stands, as

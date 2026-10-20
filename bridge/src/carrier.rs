@@ -24,12 +24,16 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use crate::api::ApiError;
+use crate::timing::WaitTimer;
 use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+#[cfg(test)]
+#[path = "carrier/timing_tests.rs"]
+mod timing_tests;
 
 use dispatch::Dispatcher;
 
@@ -849,6 +853,7 @@ impl FrameIntake {
         envelope: Envelope,
         carrier: &CarrierHandle,
     ) -> Result<(), CarrierError> {
+        let arrived = WaitTimer::start();
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");
@@ -875,10 +880,10 @@ impl FrameIntake {
         // worth having — and an ICE restart queued behind a stranger's
         // `tasks.list` was a phone giving up on the device (task #128).
         if writes_an_attachment(&frame) || is_signaling(&frame) {
-            self.answer_without_queueing(sender, frame);
+            self.answer_without_queueing(sender, frame, arrived);
             return Ok(());
         }
-        self.admit(carrier, sender, frame);
+        self.admit(carrier, sender, frame, arrived);
         Ok(())
     }
 
@@ -892,11 +897,21 @@ impl FrameIntake {
     /// the wait is somebody else's — one task per wire that feeds the
     /// dispatcher in arrival order — and the reader's queue is deeper than a
     /// convoy and refuses, with a retryable `busy`, past that.
-    fn admit(&self, carrier: &CarrierHandle, sender: SessionSender, frame: Frame) {
+    fn admit(
+        &self,
+        carrier: &CarrierHandle,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) {
         let admitter = self.admitter_for(carrier);
-        match admitter.try_send(Admitted { sender, frame }) {
+        match admitter.try_send(Admitted {
+            sender,
+            frame,
+            arrived,
+        }) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(Admitted { sender, frame })) => {
+            Err(mpsc::error::TrySendError::Full(Admitted { sender, frame, .. })) => {
                 self.refuse_as_behind(&sender, &frame);
             }
             // The wire closed under the frame: its session's end is the
@@ -956,7 +971,7 @@ impl FrameIntake {
     /// a phone. `spawn_blocking`, because the handler takes the app lock and
     /// writes to disk and this runs on the channel's own reader task — which
     /// has to go on reading, not least so the parts of the NEXT upload arrive.
-    fn answer_without_queueing(&self, sender: SessionSender, frame: Frame) {
+    fn answer_without_queueing(&self, sender: SessionSender, frame: Frame, arrived: WaitTimer) {
         let handler = self.dispatcher.handler();
         tokio::task::spawn_blocking(move || {
             // The rule the dispatcher keeps for every queued frame
@@ -967,7 +982,7 @@ impl FrameIntake {
             if !sender.session_is_open() {
                 return;
             }
-            let answer = handler.call(sender.clone(), frame);
+            let answer = handler.call_since(sender.clone(), frame, arrived);
             sender.push(answer);
         });
     }
@@ -1050,6 +1065,7 @@ struct Admitter {
 struct Admitted {
     sender: SessionSender,
     frame: Frame,
+    arrived: WaitTimer,
 }
 
 /// How many frames one wire may have waiting for the dispatcher before the
@@ -1062,7 +1078,12 @@ const ADMISSION_DEPTH: usize = 1024;
 /// Feed one wire's frames to the dispatcher in the order they arrived, waiting
 /// on its queue for each — the wait the wire's reader must never do.
 async fn admit_in_order(mut admitted: mpsc::Receiver<Admitted>, dispatcher: Arc<Dispatcher>) {
-    while let Some(Admitted { sender, frame }) = admitted.recv().await {
+    while let Some(Admitted {
+        sender,
+        frame,
+        arrived,
+    }) = admitted.recv().await
+    {
         // A frame whose opening ended while it waited here goes no further:
         // the dispatcher would refuse to run it, but not before giving it a
         // lane, and a lane opened for a session that is gone is a lane
@@ -1070,7 +1091,7 @@ async fn admit_in_order(mut admitted: mpsc::Receiver<Admitted>, dispatcher: Arc<
         if !sender.session_is_open() {
             continue;
         }
-        dispatcher.dispatch(sender, frame).await;
+        dispatcher.dispatch_since(sender, frame, arrived).await;
     }
 }
 

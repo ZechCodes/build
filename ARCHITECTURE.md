@@ -278,10 +278,25 @@ requires separating those effects first. The push bus owns separate locks,
 but its current `app/facts.rs::entity_facts` source still takes the app mutex
 for state/thread facts before doing Git work outside it.
 
-`timing.rs::FrameClock` exposes total and app-hold histograms through
-`bridge.stats`, with queue/lock waits in slow-frame logs. SQLite time and the
-per-wire admission wait are not separately measured. The priority queues'
-`p95_ms` fields describe total frame duration, not queue wait alone.
+`timing.rs::FrameClock` exposes per-method `queued`, `lock_wait` and `held`
+aggregates through `bridge.stats`: each has `count`, `sum_ms`, `p50_ms`,
+`p95_ms` and `max_ms`. Counts are completed computations (one for a folded
+read), including zero wait/hold when no app lock was taken. Wait and hold sum
+all app-lock acquisitions within a computation. Queue time starts at carrier
+intake and includes per-wire admission, dispatch and blocking-pool scheduling;
+a fold keeps the earliest caller intake, even when carriers reach dispatch out
+of order. Immediate signaling/attachment handlers include blocking-pool
+scheduling too. Intake-only pings/refusals and
+work dropped before a handler starts remain outside the served counts.
+Registered v1/legacy/QA methods and fixed internal work labels have bounded
+records; unknown names share `other`. Histograms use fixed buckets, so
+percentiles are estimates; sums/max retain microsecond resolution. Existing
+total/hold keys and slow-frame log formatting remain. SQLite time is not
+separately measured. The priority queues' `p95_ms` fields still describe total
+frame duration, and their depth counts dispatch waiting, not wire admission.
+Total duration, per-queue p95, slow-frame `total=`/`queued=` and the 200 ms
+slow-frame threshold now measure from intake, including decrypt and admission;
+compare them only against this change's baseline, not older logs.
 `bridge.stats` avoids the app lock in its handler but still queues for a
 dispatch worker.
 

@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 use super::SessionSender;
-use crate::timing::{FrameClock, FrameTimer, Priority, QueuedFrame};
+use crate::timing::{FrameClock, FrameTimer, Priority, QueuedFrame, WaitTimer};
 use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
 
 /// A frame's dispatcher and the clock shared by its queue and app-lock phases.
@@ -42,7 +42,22 @@ impl FrameHandler {
 
     /// Run a frame that never waited in the dispatcher, including session close.
     pub fn call(&self, sender: SessionSender, frame: Frame) -> Value {
-        self.run(self.clock.queued(), sender, frame)
+        self.call_since(sender, frame, WaitTimer::start())
+    }
+
+    /// Immediate handlers also wait for blocking-pool scheduling. Carry their
+    /// intake stamp into the closure without counting a dispatcher slot.
+    pub(super) fn call_since(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) -> Value {
+        self.run(
+            self.clock.queued_since(Priority::Foreground, arrived),
+            sender,
+            frame,
+        )
     }
 
     fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
@@ -144,6 +159,8 @@ struct FoldedRead {
     /// why none of them may simply be dropped, and a wire that closed while
     /// its read waited must not take the other wires' answers with it.
     callers: Vec<(Value, SessionSender)>,
+    /// One computation is timed from the earliest caller intake, regardless of
+    /// admission order; joined callers do not create additional timing samples.
     queued: QueuedFrame,
 }
 
@@ -159,7 +176,9 @@ impl FoldedRead {
         sender: SessionSender,
         frame: Frame,
         priority: Priority,
+        queued: QueuedFrame,
     ) -> Folded {
+        self.queued.fold_in(queued);
         self.callers.push((id, sender.clone()));
         self.sender = sender;
         self.frame = frame;
@@ -324,7 +343,17 @@ impl Dispatcher {
 
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
+    #[cfg(test)]
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
+        self.dispatch_since(sender, frame, WaitTimer::start()).await;
+    }
+
+    pub(super) async fn dispatch_since(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) {
         // Refused here as well as at the handler (`run_handler`): a frame for
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
@@ -336,12 +365,15 @@ impl Dispatcher {
             // its stream is the client's own typing, never a background pull, and
             // a `priority` on one of them means nothing here.
             Some(key) => {
-                let queued = self.handler.clock.queued();
+                let queued = self
+                    .handler
+                    .clock
+                    .queued_since(Priority::Foreground, arrived);
                 self.dispatch_in_order(key, sender, frame, queued).await;
             }
             None => {
                 let priority = frame_priority(&frame);
-                let queued = self.handler.clock.queued_at(priority);
+                let queued = self.handler.clock.queued_since(priority, arrived);
                 self.dispatch_to_pool(priority, sender, frame, queued).await;
             }
         }
@@ -438,7 +470,7 @@ impl Dispatcher {
                         && waiting.priority == Priority::Background) =>
             {
                 let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
-                let joined = waiting.join(id, sender, frame, priority);
+                let joined = waiting.join(id, sender, frame, priority, queued);
                 debug_assert!(matches!(joined, Folded::Joined));
                 None
             }
@@ -479,7 +511,7 @@ impl Dispatcher {
         let mut folded_reads = self.folded_reads.lock().unwrap();
         match folded_reads.get_mut(&key) {
             Some(waiting) if waiting.callers.len() < MAX_FOLDED_READS => {
-                waiting.join(id, sender, frame, priority)
+                waiting.join(id, sender, frame, priority, queued)
             }
             // A full fold: this read takes a queue slot of its own, which is what
             // puts the caller back under the queue's bound.
@@ -1962,9 +1994,9 @@ mod dispatcher_tests {
             .await;
         gate.wait_until_held();
         dispatcher
-            .dispatch(sender.clone(), request(2, "quick", json!({})))
+            .dispatch(sender.clone(), request(2, "tasks.columns", json!({})))
             .await;
-        // Longer than SLOW_FRAME, and spent entirely in the queue: the `quick`
+        // Longer than SLOW_FRAME, and spent entirely in the queue: the read's
         // handler itself does nothing but answer.
         tokio::time::sleep(SLOW_FRAME + Duration::from_millis(20)).await;
         gate.release();
@@ -1974,14 +2006,17 @@ mod dispatcher_tests {
 
         let stats = clock.stats();
         assert!(
-            stats["methods"]["quick"]["max_ms"].as_f64().unwrap() >= 200.0,
+            stats["methods"]["tasks.columns"]["max_ms"]
+                .as_f64()
+                .unwrap()
+                >= 200.0,
             "the queue wait belongs to the frame that waited: {stats}"
         );
         let lines = lines.lock().unwrap();
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("slow frame quick ")),
+                .any(|line| line.starts_with("slow frame tasks.columns ")),
             "the frame that waited logged its own line: {lines:?}"
         );
     }
@@ -2139,6 +2174,82 @@ mod dispatcher_tests {
         assert_eq!(
             on_two["id"], 3,
             "wire two hears the answer to the read it joined with"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fold_keeps_older_intake_from_another_carrier() {
+        reordered_carrier_intakes(Priority::Foreground).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_promoted_fold_keeps_older_intake_from_another_carrier() {
+        reordered_carrier_intakes(Priority::Background).await;
+    }
+
+    async fn reordered_carrier_intakes(creator_priority: Priority) {
+        let (gate, gated) = HandlerGate::new();
+        let clock = FrameClock::new();
+        let handler = FrameHandler::new(clock.clone(), move |_sender, frame, _timer| {
+            if frame.payload["id"] == 0 {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "computed_for": frame.payload["id"] })
+        });
+        let dispatcher = Dispatcher::with_capacity(handler, 8, 1);
+        let (older, mut older_rx, older_key) = SessionSender::observable("s-reordered");
+        let (newer, mut newer_rx, newer_key) = SessionSender::observable("s-reordered");
+        dispatcher
+            .dispatch(newer.clone(), request(0, "term.list", json!({})))
+            .await;
+        gate.wait_until_held();
+
+        // The two carriers have independent admission queues. Stamp the older
+        // intake first, but deliver it to dispatch only after the newer one
+        // has created a fold. Exercise both the slot-free and promotion joins.
+        let older_intake = WaitTimer::start();
+        let minimum_age = WaitTimer::start();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut creator = request(2, "board.list", json!({}));
+        creator.payload["priority"] = json!(creator_priority.label());
+        dispatcher.dispatch(newer, creator).await;
+        dispatcher
+            .dispatch_since(older, request(1, "board.list", json!({})), older_intake)
+            .await;
+        let waiting = clock.stats();
+        let minimum_ms = minimum_age.elapsed().as_secs_f64() * 1000.0;
+        gate.release();
+
+        assert_reordered_replies(&mut newer_rx, &newer_key, &mut older_rx, &older_key).await;
+        assert_fold_accounting(&waiting, &clock.stats(), minimum_ms);
+    }
+
+    async fn assert_reordered_replies(
+        newer_rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
+        newer_key: &str,
+        older_rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
+        older_key: &str,
+    ) {
+        assert_eq!(next_push(newer_rx, newer_key, PATIENTLY).await["id"], 0);
+        let new_answer = next_push(newer_rx, newer_key, PATIENTLY).await;
+        let old_answer = next_push(older_rx, older_key, PATIENTLY).await;
+        assert_eq!(new_answer["id"], 2);
+        assert_eq!(old_answer["id"], 1);
+        assert_eq!(new_answer["computed_for"], 1);
+        assert_eq!(old_answer["computed_for"], 1);
+    }
+
+    fn assert_fold_accounting(waiting: &Value, completed: &Value, minimum_ms: f64) {
+        assert_eq!(waiting["queue_depth"], 1);
+        assert_eq!(waiting["queues"]["foreground"]["depth"], 1);
+        assert_eq!(waiting["queues"]["background"]["depth"], 0);
+        assert_eq!(completed["queue_depth"], 0);
+        let method = &completed["methods"]["board.list"];
+        assert_eq!(method["served"], 1);
+        assert_eq!(method["queued"]["count"], 1);
+        assert!(
+            method["queued"]["sum_ms"].as_f64().unwrap() >= minimum_ms - 0.001,
+            "{method}; oldest intake had already waited {minimum_ms} ms before release"
         );
     }
 }

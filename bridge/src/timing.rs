@@ -7,17 +7,17 @@
 //! second because it queued behind seven others is a different daemon from one
 //! that took a second inside the lock.
 //!
-//! [`FrameClock`] is that place. The relay hands it a frame when it joins the
-//! dispatch queue; the worker starts the frame's [`FrameTimer`] when it picks it
-//! up; every acquisition of the app mutex on the frame path goes through
-//! [`FrameTimer::lock`], which is the only thing that knows a hold has begun.
+//! [`FrameClock`] is that place. Intake stamps a frame before admission, the
+//! dispatcher counts its queue slot, and the worker starts its [`FrameTimer`]
+//! when execution begins. Every acquisition of the app mutex on the frame path
+//! goes through [`FrameTimer::lock`], which knows when a hold has begun.
 //! When the timer drops, the frame's record is published: one histogram bucket
 //! per method, and — for a frame over [`SLOW_FRAME`] — one line saying where the
 //! time went.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -35,14 +35,41 @@ pub const SLOW_FRAME: Duration = Duration::from_millis(200);
 /// How often the daemon's clock writes a line for one method's slow frames.
 pub const SLOW_FRAME_LINES: Duration = Duration::from_secs(10);
 
-/// How many distinct methods keep a histogram of their own. The method name
-/// comes off the wire, so the map needs a bound; past it every further method
-/// is recorded together under [`OVERFLOW_METHOD`]. The bridge answers a few
-/// dozen verbs, so reaching this at all means a client is inventing names.
-const MAX_TRACKED_METHODS: usize = 128;
-
-/// Where the methods past [`MAX_TRACKED_METHODS`] are counted.
+/// Unknown wire names share one record; they cannot consume a registered
+/// method's slot or introduce paths/content as metric labels.
 const OVERFLOW_METHOD: &str = "other";
+
+/// Fixed internal work labels alongside the wire registry. The registry plus
+/// this list bounds memory without an arbitrary cap that can hide valid verbs.
+const INTERNAL_METHODS: &[&str] = &[
+    "close",
+    "mcp.control",
+    "agent.deliver",
+    "agent.settle_wake",
+    "agent.usage_limit_wake",
+    "bridge.resume",
+    "workspace.reclaim_sweep",
+    "tasks.delivery_service",
+    "update.admission_reopened",
+];
+
+fn tracked_method(method: &str) -> &str {
+    static NAMES: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        crate::api::v1::methods()
+            .iter()
+            .map(|(name, _)| *name)
+            .chain(crate::api::LEGACY_METHODS.iter().copied())
+            .chain(crate::api::QA_METHODS.iter().copied())
+            .chain(INTERNAL_METHODS.iter().copied())
+            .collect()
+    });
+    if names.contains(method) {
+        method
+    } else {
+        OVERFLOW_METHOD
+    }
+}
 
 /// The upper edge of each histogram bucket, in microseconds. Fixed and shared
 /// by every method, so a method's whole record is one array of counters
@@ -195,10 +222,21 @@ impl FrameClock {
 
     /// The same, for a frame whose envelope named a queue.
     pub fn queued_at(self: &Arc<Self>, priority: Priority) -> QueuedFrame {
+        self.queued_since(priority, WaitTimer::start())
+    }
+
+    /// Count dispatch waiting from here, but time it from intake, including
+    /// any earlier wait in the per-wire admitter. A canceled ticket still
+    /// only releases depth; it never publishes a completed computation.
+    pub(crate) fn queued_since(
+        self: &Arc<Self>,
+        priority: Priority,
+        arrived: WaitTimer,
+    ) -> QueuedFrame {
         self.queue(priority).depth.fetch_add(1, Ordering::Relaxed);
         QueuedFrame {
             clock: Arc::clone(self),
-            since: Instant::now(),
+            since: arrived.0,
             counted: true,
             priority,
         }
@@ -256,15 +294,11 @@ impl FrameClock {
     }
 
     fn record_of(&self, method: &str) -> Arc<MethodRecord> {
-        if let Some(record) = self.methods.read().unwrap().get(method) {
+        let name = tracked_method(method);
+        if let Some(record) = self.methods.read().unwrap().get(name) {
             return Arc::clone(record);
         }
         let mut methods = self.methods.write().unwrap();
-        let name = if methods.contains_key(method) || methods.len() < MAX_TRACKED_METHODS {
-            method
-        } else {
-            OVERFLOW_METHOD
-        };
         Arc::clone(
             methods
                 .entry(name.to_string())
@@ -348,6 +382,13 @@ pub struct QueuedFrame {
 }
 
 impl QueuedFrame {
+    /// Fold another caller into this one computation. Its intake may precede
+    /// ours even if its carrier reached dispatch later. Dropping its ticket
+    /// releases its depth count; this ticket keeps its priority until promoted.
+    pub(crate) fn fold_in(&mut self, other: QueuedFrame) {
+        self.since = self.since.min(other.since);
+    }
+
     /// A worker took the frame. The queue wait ends here and the frame's own
     /// record begins.
     pub fn start(mut self, method: &str) -> FrameTimer {
@@ -583,6 +624,7 @@ fn micros(duration: Duration) -> u64 {
 /// rest.
 struct Histogram {
     served: AtomicU64,
+    sum_micros: AtomicU64,
     max_micros: AtomicU64,
     buckets: [AtomicU64; BUCKET_CEILINGS_MICROS.len()],
 }
@@ -591,6 +633,7 @@ impl Histogram {
     fn new() -> Histogram {
         Histogram {
             served: AtomicU64::new(0),
+            sum_micros: AtomicU64::new(0),
             max_micros: AtomicU64::new(0),
             buckets: std::array::from_fn(|_| AtomicU64::new(0)),
         }
@@ -599,6 +642,7 @@ impl Histogram {
     fn record(&self, spent: Duration) {
         let spent = micros(spent);
         self.served.fetch_add(1, Ordering::Relaxed);
+        self.sum_micros.fetch_add(spent, Ordering::Relaxed);
         self.max_micros.fetch_max(spent, Ordering::Relaxed);
         let bucket = BUCKET_CEILINGS_MICROS
             .iter()
@@ -630,6 +674,18 @@ impl Histogram {
     fn max_micros(&self) -> u64 {
         self.max_micros.load(Ordering::Relaxed)
     }
+
+    /// One sample per completed computation, including zero for frames that
+    /// never acquire the app lock. Percentiles are fixed-bucket estimates.
+    fn stats(&self) -> Value {
+        json!({
+            "count": self.served.load(Ordering::Relaxed),
+            "sum_ms": as_millis(self.sum_micros.load(Ordering::Relaxed)),
+            "p50_ms": as_millis(self.quantile_micros(0.50)),
+            "p95_ms": as_millis(self.quantile_micros(0.95)),
+            "max_ms": as_millis(self.max_micros()),
+        })
+    }
 }
 
 /// One method's frames since boot: how long each took end to end, and how
@@ -637,6 +693,8 @@ impl Histogram {
 struct MethodRecord {
     method: String,
     total: Histogram,
+    queued: Histogram,
+    lock_wait: Histogram,
     held: Histogram,
 }
 
@@ -645,12 +703,16 @@ impl MethodRecord {
         MethodRecord {
             method: method.to_string(),
             total: Histogram::new(),
+            queued: Histogram::new(),
+            lock_wait: Histogram::new(),
             held: Histogram::new(),
         }
     }
 
     fn record(&self, spent: &Spent) {
         self.total.record(spent.total);
+        self.queued.record(spent.queued);
+        self.lock_wait.record(spent.lock_wait);
         self.held.record(spent.held);
     }
 
@@ -662,6 +724,9 @@ impl MethodRecord {
             "max_ms": as_millis(self.total.max_micros()),
             "held_p99_ms": as_millis(self.held.quantile_micros(0.99)),
             "held_max_ms": as_millis(self.held.max_micros()),
+            "queued": self.queued.stats(),
+            "lock_wait": self.lock_wait.stats(),
+            "held": self.held.stats(),
         })
     }
 }
@@ -681,6 +746,10 @@ pub(crate) fn recording_clock() -> (Arc<FrameClock>, Arc<Mutex<Vec<String>>>) {
     }));
     (clock, lines)
 }
+
+#[cfg(test)]
+#[path = "timing/aggregate_tests.rs"]
+mod aggregate_tests;
 
 #[cfg(test)]
 mod tests {
@@ -924,13 +993,13 @@ mod tests {
     #[test]
     fn a_flood_of_invented_methods_collapses_into_one_record() {
         let (clock, _) = recording_clock();
-        for n in 0..MAX_TRACKED_METHODS + 50 {
+        for n in 0..1_000 {
             drop(clock.frame(&format!("made.up.{n}")));
         }
         let stats = clock.stats();
         let methods = stats["methods"].as_object().unwrap();
-        assert_eq!(methods.len(), MAX_TRACKED_METHODS + 1);
-        assert_eq!(methods[OVERFLOW_METHOD]["served"], 50);
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[OVERFLOW_METHOD]["served"], 1_000);
     }
 
     #[test]

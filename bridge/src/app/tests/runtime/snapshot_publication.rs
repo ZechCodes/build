@@ -179,3 +179,102 @@ fn first_snapshot_keeps_seeded_workspace_rows_and_performs_no_path_lookups() {
         );
     }
 }
+
+struct BranchSnapshotFixture {
+    _directory: tempfile::TempDir,
+    handler: crate::carrier::FrameHandler,
+    snapshots: crate::app::read_view::SnapshotService,
+    owner: String,
+    workspace: String,
+    path: PathBuf,
+    recorded_branch: String,
+}
+
+impl BranchSnapshotFixture {
+    fn new() -> Self {
+        let (directory, repository) = init_repo();
+        let mut app = qa_state(&repository, directory.path());
+        let owner = adopted_run(&mut app, &repository, directory.path(), "snapshot-original");
+        let path = app.runs[&owner].worktree.path.clone();
+        let recorded_branch = app.runs[&owner].worktree.recorded_branch.clone();
+        git_in(&path, &["branch", "snapshot-next"]);
+        git_in(&path, &["tag", "snapshot-anchor"]);
+        let state = app.shared();
+        let (workspace, snapshots) = {
+            let app = state.lock().unwrap();
+            (
+                app.surviving_workspace_snapshot_of_run(&owner).unwrap(),
+                app.snapshot_service(),
+            )
+        };
+        let fixture = Self {
+            _directory: directory,
+            handler: AppState::handler(state),
+            snapshots,
+            owner,
+            workspace,
+            path,
+            recorded_branch,
+        };
+        fixture.assert_snapshot_branch(&fixture.recorded_branch);
+        fixture
+    }
+
+    fn checkout(&self, full_ref: &str) -> Value {
+        let reply = self.handler.call(
+            SessionSender::detached("snapshot-branch-writer"),
+            req(
+                "git.checkout_ref",
+                json!({"run_id": self.owner, "full_ref": full_ref}),
+            ),
+        );
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply
+    }
+
+    fn assert_snapshot_branch(&self, expected: &str) {
+        let board = self.snapshots.call(req("board.list", json!({})));
+        assert_eq!(board["ok"], true, "{board}");
+        let row = board["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["run_id"] == self.owner)
+            .unwrap_or_else(|| panic!("no adopted run in cached board: {board}"));
+        assert_eq!(row["branch"], expected, "{board}");
+        let workspace = self.snapshots.call(req(
+            "workspace.get",
+            json!({"workspace_id": self.workspace}),
+        ));
+        assert_eq!(workspace["ok"], true, "{workspace}");
+        assert_eq!(
+            workspace["result"]["run"]["branch"], expected,
+            "{workspace}"
+        );
+    }
+}
+
+#[test]
+fn successful_checkout_reply_publishes_branch_to_board_and_workspace_snapshots() {
+    let fixture = BranchSnapshotFixture::new();
+    let reply = fixture.checkout("refs/heads/snapshot-next");
+    let repository = git2::Repository::open(&fixture.path).unwrap();
+    let head = repository.head().unwrap();
+    assert!(head.is_branch());
+    assert_eq!(head.shorthand(), Some("snapshot-next"));
+    assert_eq!(reply["result"]["branch"], "snapshot-next", "{reply}");
+    fixture.assert_snapshot_branch("snapshot-next");
+}
+
+#[test]
+fn detached_checkout_publishes_the_recorded_branch_fallback() {
+    let fixture = BranchSnapshotFixture::new();
+    fixture.checkout("refs/heads/snapshot-next");
+    let reply = fixture.checkout("refs/tags/snapshot-anchor");
+    let repository = git2::Repository::open(&fixture.path).unwrap();
+    assert!(repository.head_detached().unwrap());
+    assert!(reply["result"]["branch"].is_null(), "{reply}");
+    // Worktree::branch has always answered its recorded branch for detached
+    // HEAD; retaining the last observed attached branch would change that.
+    fixture.assert_snapshot_branch(&fixture.recorded_branch);
+}

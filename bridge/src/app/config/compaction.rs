@@ -159,7 +159,7 @@ impl AppState {
         prospective.set(scope.clone(), updated);
         self.persist_compaction_policies(prospective)?;
         let (kind, owner) = scope.event_address();
-        self.publish_compaction_changed(kind, owner);
+        self.note_compaction_changed(kind, owner);
         Ok(())
     }
 
@@ -170,8 +170,14 @@ impl AppState {
         let mut config =
             self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         prospective.write_config(&mut config);
+        let committed = std::mem::replace(&mut self.compaction_policies, prospective);
+        let projection = self.prepare_all_snapshot_projection();
+        let prospective = std::mem::replace(&mut self.compaction_policies, committed);
         self.persist_config(&config)?;
         self.compaction_policies = prospective;
+        if let Some(projection) = projection {
+            self.publish_prepared_snapshot_projection(projection);
+        }
         Ok(())
     }
 
@@ -234,7 +240,7 @@ impl AppState {
         agent_id: &str,
         provider: crate::models::AgentProvider,
     ) -> Result<ResolvedCompactionPolicy, String> {
-        self.resolve_compaction_with_override(owner, agent_id, provider, true)
+        self.resolve_compaction_with_override(owner, agent_id, provider, true, false)
     }
 
     pub(in crate::app) fn inherited_compaction_policy(
@@ -247,7 +253,21 @@ impl AppState {
             .resolve(Some(agent_id))?
             .choice
             .provider;
-        self.resolve_compaction_with_override(owner, agent_id, provider, false)
+        self.resolve_compaction_with_override(owner, agent_id, provider, false, false)
+    }
+
+    pub(in crate::app) fn resolve_snapshot_compaction_policy(
+        &self,
+        owner: &str,
+        agent_id: &str,
+        include_override: bool,
+    ) -> Result<ResolvedCompactionPolicy, String> {
+        let provider = self
+            .entity_agents(owner)?
+            .resolve(Some(agent_id))?
+            .choice
+            .provider;
+        self.resolve_compaction_with_override(owner, agent_id, provider, include_override, true)
     }
 
     fn resolve_compaction_with_override(
@@ -256,6 +276,7 @@ impl AppState {
         agent_id: &str,
         provider: crate::models::AgentProvider,
         include_override: bool,
+        observed: bool,
     ) -> Result<ResolvedCompactionPolicy, String> {
         let address = self.resolve_conversation_address(owner, Some(agent_id))?;
         let canonical_owner = &address.conversation_entity_id;
@@ -267,8 +288,13 @@ impl AppState {
             },
             CompactionSource::Conversation(address.conversation_id),
         )];
-        if !self.is_project_conversation_owner(canonical_owner) {
-            if let Some(workspace) = self.compaction_workspace_of(canonical_owner) {
+        let project_owner = if observed {
+            self.is_project_snapshot_conversation_owner(canonical_owner)
+        } else {
+            self.is_project_conversation_owner(canonical_owner)
+        };
+        if !project_owner {
+            if let Some(workspace) = self.compaction_workspace_of(canonical_owner, observed) {
                 candidates.push((
                     self.compaction_policies
                         .get(&CompactionScope::Workspace(workspace.clone()))
@@ -315,9 +341,14 @@ impl AppState {
             .map(str::to_owned)
     }
 
-    fn compaction_workspace_of(&self, owner: &str) -> Option<String> {
-        if let Some(workspace) = self.workspace_of_conversation(owner) {
-            return Some(workspace);
+    fn compaction_workspace_of(&self, owner: &str, observed: bool) -> Option<String> {
+        let workspace = if observed {
+            self.workspace_snapshot_for_conversation(owner, None)
+        } else {
+            self.workspace_for_conversation(owner, None)
+        };
+        if let Some(workspace) = workspace {
+            return Some(workspace.id.clone());
         }
         if self.projects.project_id_of(owner).is_some() {
             return None;
@@ -333,7 +364,11 @@ impl AppState {
             .list(Some(&project))
             .into_iter()
             .find(|workspace| {
-                crate::app::workspaces::same_path(&workspace.root, &run.worktree.path)
+                if observed {
+                    self.observed_same_path(&workspace.root, &run.worktree.path)
+                } else {
+                    crate::app::workspaces::same_path(&workspace.root, &run.worktree.path)
+                }
             })
             .map(|workspace| workspace.id.clone())
     }

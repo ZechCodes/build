@@ -316,27 +316,34 @@ impl AppState {
         agent_id: &str,
         edit: impl FnOnce(&mut crate::agent::Agent),
     ) {
+        if let Err(error) = self.edit_agent_record_checked(owner, agent_id, edit) {
+            eprintln!("{context} {owner}: {error}");
+        }
+    }
+
+    /// User mutations must propagate the durable result before acknowledging
+    /// an edited record or staging any event for it.
+    fn edit_agent_record_checked(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        edit: impl FnOnce(&mut crate::agent::Agent),
+    ) -> Result<(), String> {
         if self.plans.contains_key(owner) {
-            let Ok(mut active) = self.take_plan(owner) else {
-                return;
-            };
+            let mut active = self.take_plan(owner)?;
             if let Some(agent) = active.agents.by_id_mut(agent_id) {
                 edit(agent);
             }
-            if let Err(error) = self.finish_plan_mutation(owner.to_string(), active) {
-                eprintln!("{context} {owner}: {error}");
-            }
-            return;
+            return self.finish_plan_mutation(owner.to_string(), active);
         }
-        let Ok(mut active) = self.take_run(owner) else {
-            return;
-        };
+        if !self.runs.contains_key(owner) {
+            return Ok(());
+        }
+        let mut active = self.take_run(owner)?;
         if let Some(agent) = active.agents.by_id_mut(agent_id) {
             edit(agent);
         }
-        if let Err(error) = self.finish_run_mutation(owner.to_string(), active) {
-            eprintln!("{context} {owner}: {error}");
-        }
+        self.finish_run_mutation(owner.to_string(), active)
     }
 
     /// The transcript-tree reads a spawn makes, taken together so the
@@ -542,10 +549,10 @@ impl AppState {
         topic: &str,
     ) -> Result<serde_json::Value, String> {
         let mut found = false;
-        self.edit_agent_record("set_topic", owner, agent_id, |agent| {
+        self.edit_agent_record_checked(owner, agent_id, |agent| {
             found = true;
             agent.topic = Some(topic.to_string());
-        });
+        })?;
         if !found {
             return Err(format!("agent {agent_id} is not on {owner}"));
         }
@@ -582,14 +589,14 @@ impl AppState {
             ));
         }
         let mut found = false;
-        self.edit_agent_record("set_name", owner, agent_id, |agent| {
+        self.edit_agent_record_checked(owner, agent_id, |agent| {
             found = true;
             agent.name = Some(name.to_string());
             // Named is named: the ask has nothing left to ask for, and a
             // record that still wanted it would ask an agent to name what it
             // just called itself.
             agent.name_asked = true;
-        });
+        })?;
         if !found {
             return Err(format!("agent {agent_id} is not on {owner}"));
         }
@@ -642,13 +649,13 @@ impl AppState {
         self.guard_conversation_reservation(&address)?;
         let baseline = self.conversation_at(&address)?.last_sequence();
         let mut found = false;
-        self.edit_agent_record("set_conversation_watched", owner, agent_id, |agent| {
+        self.edit_agent_record_checked(owner, agent_id, |agent| {
             found = true;
             if watching && !agent.watched {
                 agent.watch_started_after = baseline;
             }
             agent.watched = watching;
-        });
+        })?;
         if !found {
             return Err(format!("agent {agent_id} is not on {owner}"));
         }
@@ -672,20 +679,19 @@ impl AppState {
         self.guard_conversation_reservation(&address)?;
         let device_threshold = self.compact_above_tokens;
         let mut compact_at_tokens = None;
-        self.edit_agent_record(
-            "set_conversation_context_limit",
+        self.edit_agent_record_checked(
             &address.conversation_entity_id,
             &address.conversation_id,
             |agent| {
                 agent.max_context_tokens = max_context_tokens;
                 compact_at_tokens = Some(agent.compact_at_tokens(device_threshold));
             },
-        );
+        )?;
         let Some(compact_at_tokens) = compact_at_tokens else {
             return Err(format!("agent {agent_id} is not on {owner}"));
         };
         self.note_compaction_override_changed(&address.conversation_id);
-        self.publish_compaction_changed("conversation", Some(&address.conversation_id));
+        self.note_compaction_changed("conversation", Some(&address.conversation_id));
         Ok(serde_json::json!({
             "agent_id": agent_id,
             "max_context_tokens": max_context_tokens,

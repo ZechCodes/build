@@ -4,6 +4,9 @@ use crate::harness::harness_for;
 use crate::models::{self, AgentProvider, ProjectAgentChoice};
 use serde_json::{json, Value};
 
+mod values;
+use values::SettingsValues;
+
 impl AppState {
     /// Every account setting this bridge holds. `agent_modes` is independent;
     /// legacy mode aliases keep describing the concrete default harness for
@@ -11,6 +14,10 @@ impl AppState {
     /// `project_agent` is what a project's agent starts on, beside the harness
     /// every other agent falls back to.
     pub(crate) fn settings_get(&self) -> Value {
+        self.settings_get_observed(serde_json::json!(self.account_availability()))
+    }
+
+    pub(in crate::app) fn settings_get_observed(&self, availability: Value) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
@@ -24,7 +31,7 @@ impl AppState {
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::codex_mode_of_harness(self.default_harness),
             "isolation": self.isolation,
-            "isolation_available": self.account_availability(),
+            "isolation_available": availability,
             // What the reclaim service sweeps by now (#167), and which of the
             // two an environment variable holds, so a client can say why its
             // control does not move them.
@@ -49,6 +56,24 @@ impl AppState {
             // because every surface that offers a model already reads this,
             // and a second call for three lines would be a second call on
             // every rail that paints a new-agent picker.
+            "role_models": self.role_models,
+        })
+    }
+
+    /// Snapshot producers use the catalog service's completed observation;
+    /// rendering canonical config cannot schedule a new CLI probe.
+    pub(in crate::app) fn models_list_snapshot(&self) -> Value {
+        let catalogs = self.cli_readings.catalog_snapshot();
+        let selected = catalogs
+            .iter()
+            .find(|row| row.id == self.default_harness)
+            .expect("the installed catalog includes every provider");
+        json!({
+            "models": selected.models,
+            "efforts": selected.efforts,
+            "default_provider": self.default_harness,
+            "agent_modes": self.agent_modes,
+            "providers": *catalogs,
             "role_models": self.role_models,
         })
     }
@@ -111,92 +136,39 @@ impl AppState {
     /// repos land (creating the folder), which harness a new agent opens on,
     /// and how a new checkout is isolated.
     ///
-    /// Which settings those are is [`SettingsPatch`]'s table; putting an
-    /// accepted one to the account is [`AppState::apply_settings`].
+    /// Which settings those are is [`SettingsPatch`]'s table; accepted values
+    /// are staged together by [`SettingsValues`].
     pub(crate) fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
-        let patch = SettingsPatch::parse(params, &self.account_availability())?;
-        let agent_modes = patch
-            .agent_modes
-            .as_ref()
-            .map(|value| self.agent_modes.merge_wire(value))
-            .transpose()?
-            .unwrap_or(self.agent_modes);
-        // Every accepted field is put to a prospective config and written
-        // BEFORE any of it reaches the account, so a refused write leaves
-        // nothing applied. `projects_dir` is the one that touches the disk —
-        // the folder is made here or the set is refused.
-        let projects_dir = match patch.projects_dir {
-            Some(dir) => {
-                std::fs::create_dir_all(&dir)
-                    .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-                std::fs::canonicalize(&dir)
-                    .map_err(|error| format!("cannot resolve {}: {error}", dir.display()))?
-            }
-            None => self.projects_dir.clone(),
-        };
-        let default_harness = patch.default_harness.unwrap_or(self.default_harness);
-        let isolation = patch.isolation.unwrap_or(self.isolation);
-        let project_agent =
-            self.accepted_project_agent(patch.project_agent.as_ref(), default_harness)?;
-        let role_models = patch
-            .role_models
-            .clone()
-            .unwrap_or_else(|| self.role_models.clone());
-        let watch_agent_filed_tasks = patch
-            .watch_agent_filed_tasks
-            .unwrap_or(self.watch_agent_filed_tasks);
-        let compact_above_tokens = patch
-            .compact_above_tokens
-            .unwrap_or(self.compact_above_tokens);
-        let reclaim_settings = crate::reclaim::ReclaimSettings {
-            idle_after_secs: patch
-                .workspace_idle_secs
-                .or(self.reclaim_settings.idle_after_secs),
-            prune: patch.workspace_prune.or(self.reclaim_settings.prune),
-        };
-        let mut config = self.config_value(&projects_dir, default_harness, isolation);
-        let mut compaction_policies = self.compaction_policies.clone();
-        if let Some(tokens) = patch.compact_above_tokens {
-            compaction_policies.device = crate::compaction::CompactionThresholds::broadcast(tokens);
-        }
-        if let Some(map) = &patch.compaction_thresholds {
-            compaction_policies.device = compaction_policies.device.patched(map)?;
-        }
-        let compaction_changed = compaction_policies.device != self.compaction_policies.device
-            || compact_above_tokens != self.compact_above_tokens;
+        let availability = self.account_availability();
+        let patch = SettingsPatch::parse(params, &availability)?;
+        let mut prospective = SettingsValues::accepted(self, &patch)?;
+        let compaction_changed = prospective.compaction_changed(self);
         if params.as_object().is_some_and(|params| params.len() == 1)
             && patch.compaction_thresholds.is_some()
             && !compaction_changed
         {
-            return Ok(self.settings_get());
+            return Ok(self.settings_get_observed(json!(availability)));
         }
-        compaction_policies.write_config(&mut config);
-        config["agent_modes"] = json!(agent_modes);
-        config["project_agent"] = json!(project_agent);
-        config["role_models"] = json!(role_models);
-        config["watch_agent_filed_tasks"] = json!(watch_agent_filed_tasks);
-        config["compact_above_tokens"] = json!(compact_above_tokens);
-        config["workspace_idle_secs"] = json!(reclaim_settings.idle_after_secs);
-        config["workspace_prune"] = json!(reclaim_settings.prune);
+        let config = prospective.config(self);
+        let reclaim_changed = prospective.reclaim_changed(self);
+        // The app lock keeps this temporary candidate private. Restore the
+        // committed fields before persistence, retaining the fully owned delta
+        // and response for an infallible completion after the config commits.
+        prospective.swap(self);
+        let projection = self.prepare_all_snapshot_projection();
+        let response = self.settings_get_observed(json!(availability));
+        prospective.swap(self);
         self.persist_config(&config)?;
-        self.projects_dir = projects_dir;
-        self.default_harness = default_harness;
-        self.agent_modes = agent_modes;
-        self.isolation = isolation;
-        self.project_agent = project_agent;
-        self.role_models = role_models;
-        self.watch_agent_filed_tasks = watch_agent_filed_tasks;
-        self.compact_above_tokens = compact_above_tokens;
-        self.compaction_policies = compaction_policies;
-        if reclaim_settings != self.reclaim_settings {
-            self.reclaim_settings = reclaim_settings;
-            // A sweep soon, so what was just chosen is what the workspaces
-            // are next measured by.
+        prospective.swap(self);
+        if let Some(projection) = projection {
+            self.publish_prepared_snapshot_projection(projection);
+        }
+        if reclaim_changed {
             self.nudge_workspace_reclaim();
         }
         if compaction_changed {
-            self.publish_compaction_changed("device", None);
+            self.note_compaction_changed("device", None);
         }
-        Ok(self.settings_get())
+        Ok(response)
     }
 }

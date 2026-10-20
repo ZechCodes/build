@@ -337,11 +337,6 @@ parameter normalization and result checks without deferred app state.
 `Arc<ReadView>` root with shared immutable response chunks. Versioned deltas
 merge disjoint updates through compare-and-swap; stale overlapping updates
 are rejected as a unit, and deletion versions remain as tombstones. Producers
-can compose response chunks from shared JSON rows. Snapshot intake materializes
-owned responses from a loaded root; published chunks retain no assembled JSON
-cache. Historical receipts share unchanged fragments and publish patched
-response chunks, push facts and accepted aggregate cache references together.
-Producers
 warm required observations before admission, then publish committed values
 before change events and successful replies. Agent rows use observed paths,
 compaction context and unread summaries. Workspace history shares immutable

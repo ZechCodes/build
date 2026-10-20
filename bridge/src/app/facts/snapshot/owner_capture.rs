@@ -40,10 +40,31 @@ impl AppState {
                 );
             }
         }
+        self.refresh_push_thread_sessions(&mut snapshot);
         // Checkout facts carry their own identity and observation fences. Their
         // capture retains those generations while filling affected alias states.
         self.capture_push_checkouts(&mut snapshot, &previous.facts);
         self.capture_push_entities(&mut snapshot, &previous.facts);
         snapshot
+    }
+
+    fn refresh_push_thread_sessions(&self, snapshot: &mut PushFacts) {
+        // A message can advance the shared project summary for otherwise
+        // unchanged conversations. Refresh this small tip metadata while
+        // retaining their tail bodies, receipt patches and history floors.
+        for (owner, threads) in &mut snapshot.threads {
+            for thread in threads {
+                thread.tip.project_session = thread
+                    .tip
+                    .project_id
+                    .as_deref()
+                    .map(|id| self.session_summary(id));
+                thread.tip.workspace_session = thread
+                    .tip
+                    .workspace_id
+                    .as_ref()
+                    .map(|_| self.session_summary(owner));
+            }
+        }
     }
 }

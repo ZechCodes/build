@@ -116,26 +116,24 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return;
         }
-        if !self
+        let owners_pending = !self
             .snapshot_observations
             .pending_owners
             .lock()
             .unwrap()
-            .is_empty()
-        {
-            self.publish_snapshot_projection();
-            return;
-        }
+            .is_empty();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
-        if let Some(delta) = self.prepare_incremental_task_snapshot(
-            SnapshotDelta::new(self.read_view.next_version()),
-            &previous,
-        ) {
-            self.publish_prepared_snapshot_projection(delta);
+        let delta = if owners_pending {
+            None
         } else {
-            self.publish_snapshot_projection();
+            self.prepare_incremental_task_snapshot(
+                SnapshotDelta::new(self.read_view.next_version()),
+                &previous,
+            )
         }
+        .unwrap_or_else(|| self.prepare_fallback_snapshot_projection(&previous));
+        self.publish_prepared_snapshot_projection(delta);
     }
 
     pub(in crate::app) fn publish_all_snapshot_projection(&self) {
@@ -233,19 +231,36 @@ impl AppState {
             .lock()
             .unwrap()
             .clone();
-        let delta = self
-            .prepare_incremental_owner_snapshot(
+        Some(
+            match self.prepare_incremental_owner_snapshot(
                 SnapshotDelta::new(self.read_view.next_version()),
                 &previous,
                 &owners,
+            ) {
+                Some(delta) => self.prepare_snapshot_owner_rows(delta, &previous, &owners, true),
+                None => self.prepare_fallback_snapshot_projection(&previous),
+            },
+        )
+    }
+
+    fn prepare_fallback_snapshot_projection(&self, previous: &ReadView) -> SnapshotDelta {
+        // A changed layout can affect a different owner from the trigger,
+        // including one whose session or workspace has just disappeared.
+        let owners = self
+            .snapshot_owner_ids()
+            .into_iter()
+            .chain(
+                previous
+                    .keys()
+                    .filter(|key| key.method == "agent.list")
+                    .map(|key| key.owner.clone()),
             )
-            .unwrap_or_else(|| {
-                self.prepare_global_snapshot(
-                    SnapshotDelta::new(self.read_view.next_version()),
-                    &previous,
-                )
-            });
-        Some(self.prepare_snapshot_owner_rows(delta, &previous, &owners, true))
+            .collect();
+        let delta = self
+            .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), previous);
+        let delta = self.prepare_workspace_snapshot_details(delta, previous, None);
+        let delta = self.prepare_snapshot_agent_rows(delta, previous, &owners);
+        self.prepare_snapshot_histories(delta, None)
     }
 
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, delta: SnapshotDelta) {

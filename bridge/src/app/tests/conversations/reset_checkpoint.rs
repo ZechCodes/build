@@ -24,6 +24,14 @@ fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let plan = file_legacy_task(&mut app, "reset checkpoint plan");
+    let project = app.project_of(&plan).unwrap();
+    let orch = app.orch_for(&project).unwrap().clone();
+    let workspace = orch
+        .prepare_plan_workspace(&plan, app.store.as_ref().unwrap())
+        .unwrap();
+    let mut active = app.take_plan(&plan).unwrap();
+    orch.open_plan_drafting(&mut active, workspace).unwrap();
+    app.finish_plan_mutation(plan.clone(), active).unwrap();
     let run = adopted_run(&mut app, &repo, dir.path(), "reset-checkpoint-run");
     let plan_agent = primary_agent_id(&app, &plan);
     let run_agent = primary_agent_id(&app, &run);

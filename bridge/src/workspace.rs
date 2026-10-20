@@ -1371,6 +1371,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_workspace_reopen_keeps_the_committed_status_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources = vec![source(temp.path(), "one", "one")];
+        let mut registry = WorkspaceRegistry::load(temp.path().join("workspaces")).unwrap();
+        let workspace = registry.begin("project", "finished", &sources).unwrap();
+        let finished = registry.workspaces.get_mut(&workspace.id).unwrap();
+        finished.status = WorkspaceStatus::Finished;
+        persist(finished).unwrap();
+        let manifest = workspace.root.join(MANIFEST_FILE);
+        fs::remove_file(&manifest).unwrap();
+        fs::create_dir(&manifest).unwrap();
+
+        assert!(registry.reopen(&workspace.id).is_err());
+        assert_eq!(
+            registry.get(&workspace.id).unwrap().status,
+            WorkspaceStatus::Finished
+        );
+    }
+
+    #[test]
     fn free_form_workspace_name_is_preserved_while_its_path_is_safe_and_bounded() {
         let temp = tempfile::tempdir().unwrap();
         let sources = vec![source(temp.path(), "one", "one")];

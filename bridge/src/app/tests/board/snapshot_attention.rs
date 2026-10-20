@@ -188,3 +188,31 @@ fn dismissed_conversation_aliases_keep_unread_and_publish_the_dismissed_board_ro
     }
     assert_eq!(board_entry(&mut f.state, &f.owner)["dismissed"], true);
 }
+
+#[test]
+fn published_message_invalidates_dismissal_before_its_speaker_is_removed() {
+    let mut f = fixture();
+    mutate(
+        &mut f.state,
+        "entity.dismiss",
+        json!({"entity_id": f.owner}),
+    );
+    let mut run = f.state.take_run(&f.owner).unwrap();
+    run.agents
+        .by_id_mut(&f.agents[1])
+        .unwrap()
+        .thread
+        .post_agent("Another decision needs you", None, now_rfc3339());
+    f.state.finish_run_mutation(f.owner.clone(), run).unwrap();
+    assert_eq!(board_entry(&mut f.state, &f.owner)["dismissed"], false);
+    mutate(
+        &mut f.state,
+        "agent.remove",
+        json!({"entity_id": f.owner, "agent_id": f.agents[1]}),
+    );
+    assert_eq!(
+        board_entry(&mut f.state, &f.owner)["dismissed"],
+        false,
+        "removing the speaker must not restore a crossed dismissal line"
+    );
+}

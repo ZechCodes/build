@@ -29,6 +29,8 @@ pub struct FrameHandler {
     #[cfg(test)]
     pub(super) sql_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
+    pub(super) observation_sql_startup_eager: bool,
+    #[cfg(test)]
     pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
 }
 
@@ -69,6 +71,8 @@ impl FrameHandler {
             io_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             sql_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            observation_sql_startup_eager: false,
             snapshot: None,
             #[cfg(test)]
             sql_observer: None,
@@ -83,6 +87,16 @@ impl FrameHandler {
     #[cfg(test)]
     pub(crate) fn sql_worker_starts(&self) -> Arc<std::sync::atomic::AtomicUsize> {
         self.sql_thread_starts.clone()
+    }
+
+    /// Configure the experiment without creating threads before first use.
+    #[cfg(test)]
+    pub(crate) fn set_observation_sql_startup_eager(&mut self, eager: bool) {
+        assert!(
+            self.read_executors.get().is_none(),
+            "configure SQL startup before use"
+        );
+        self.observation_sql_startup_eager = eager;
     }
 
     #[cfg(test)]

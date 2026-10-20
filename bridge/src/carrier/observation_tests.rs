@@ -483,6 +483,8 @@ async fn mixed_sql_workers_grow_for_overlapping_preparation_and_share_eight_perm
     client.send(100, "tasks.get", json!({})).await;
     // Ordinary SQL admission has initialized its coordinators, but it cannot
     // borrow a ninth shared execution permit while all eight are held above.
+    // Its fake handler needs no SQLite connection, so this pins the semaphore
+    // independently of the eight borrowed metadata connections.
     assert_eq!(sql_calls.load(Ordering::SeqCst), 0);
     assert_eq!(client.intake.dispatcher.sql_depths(), (1, 1));
     assert_eq!(starts.load(Ordering::SeqCst), sql::SQL_WORKERS);
@@ -522,4 +524,28 @@ async fn ordinary_sql_keeps_eight_workers_after_mixed_first_initialization() {
         sql::SQL_WORKERS,
         "ordinary SQL must ensure eight workers even when mixed reads initialized first"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn eager_sql_startup_override_initializes_only_at_first_mixed_use() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let mut handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
+        .with_observation_reads(Some(store.read_pool()), |frame, connection| {
+            assert!(connection.is_some());
+            drop(connection);
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let starts = handler.sql_worker_starts();
+    handler.set_observation_sql_startup_eager(true);
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    let mut client = Client::new(handler);
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        0,
+        "the control must retain SQL startup cost inside first request"
+    );
+    client.send(1, "tasks.attachment", json!({})).await;
+    assert_eq!(client.reply().await["id"], 1);
+    assert_eq!(starts.load(Ordering::SeqCst), sql::SQL_WORKERS);
 }

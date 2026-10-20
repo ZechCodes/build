@@ -1,5 +1,5 @@
 //! Bounded read admission shared by the SQL and observation lanes. Each lane
-//! owns a fair per-opening queue; fixed SQL workers prepare owned metadata and
+//! owns a fair per-opening queue; dedicated SQL workers prepare owned metadata and
 //! independent I/O workers execute external observations.
 
 use std::collections::{HashMap, VecDeque};
@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 
-use super::io::{Execution, IoExecutors};
+use super::io::{DedicatedExecutors, Execution};
 use super::{FrameHandler, SessionSender};
 use crate::store::{ReadConnection, ReadPool};
 use crate::timing::{Priority, QueuedFrame, WaitTimer};
@@ -25,35 +25,44 @@ enum ReadLane {
 }
 
 /// Both ordinary SQL reads and observation metadata preparation share these
-/// fixed SQL workers. External filesystem/Git work never enters this executor.
+/// dedicated SQL workers, up to eight. Ordinary SQL initializes all eight;
+/// observation metadata grows on demand. External work never enters this executor.
 pub(super) struct ReadExecutors {
-    send: std::sync::mpsc::Sender<Execution>,
+    executor: DedicatedExecutors,
     slots: Arc<Semaphore>,
 }
 
 impl ReadExecutors {
     fn new(#[cfg(test)] starts: Arc<std::sync::atomic::AtomicUsize>) -> Self {
-        let (send, receive) = std::sync::mpsc::channel::<Execution>();
-        let receive = Arc::new(Mutex::new(receive));
-        for number in 0..SQL_WORKERS {
-            let receive = receive.clone();
-            std::thread::Builder::new()
-                .name(format!("bridge-sql-{number}"))
-                .spawn(move || loop {
-                    let execution = receive.lock().unwrap().recv();
-                    match execution {
-                        Ok(execution) => execution(),
-                        Err(_) => return,
-                    }
-                })
-                .expect("start SQL read worker");
-            #[cfg(test)]
-            starts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
         Self {
-            send,
+            executor: DedicatedExecutors::new(
+                "bridge-sql",
+                SQL_WORKERS,
+                #[cfg(test)]
+                starts,
+            ),
             slots: Arc::new(Semaphore::new(SQL_WORKERS)),
         }
+    }
+
+    fn for_handler(handler: &FrameHandler) -> &Self {
+        handler.read_executors.get_or_init(|| {
+            let executors = Self::new(
+                #[cfg(test)]
+                handler.sql_thread_starts.clone(),
+            );
+            #[cfg(test)]
+            if handler.observation_sql_startup_eager {
+                executors.ensure_workers();
+            }
+            executors
+        })
+    }
+
+    fn ensure_workers(&self) {
+        self.executor
+            .ensure_workers(SQL_WORKERS)
+            .expect("start SQL read workers");
     }
 
     async fn acquire(&self) -> OwnedSemaphorePermit {
@@ -70,8 +79,8 @@ impl ReadExecutors {
         work: impl FnOnce() -> T + Send + 'static,
     ) -> oneshot::Receiver<T> {
         let (done, complete) = oneshot::channel();
-        self.send
-            .send(Box::new(move || {
+        self.executor
+            .submit_detached(Box::new(move || {
                 let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
                 drop(permit);
                 if let Ok(answer) = answer {
@@ -121,18 +130,14 @@ impl ReadDispatcher {
         let queue = Arc::new(Queue::default());
         match lane {
             ReadLane::Sql => {
-                handler.read_executors.get_or_init(|| {
-                    ReadExecutors::new(
-                        #[cfg(test)]
-                        handler.sql_thread_starts.clone(),
-                    )
-                });
+                ReadExecutors::for_handler(&handler).ensure_workers();
                 for _ in 0..SQL_WORKERS {
                     tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
                 }
             }
             ReadLane::Observation => {
-                let executor = Arc::new(IoExecutors::new(
+                let executor = Arc::new(DedicatedExecutors::new(
+                    "bridge-io",
                     IO_WORKERS,
                     #[cfg(test)]
                     handler.io_thread_starts.clone(),
@@ -505,7 +510,11 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
     }
 }
 
-async fn coordinate_io(queue: Arc<Queue>, handler: FrameHandler, executor: Arc<IoExecutors>) {
+async fn coordinate_io(
+    queue: Arc<Queue>,
+    handler: FrameHandler,
+    executor: Arc<DedicatedExecutors>,
+) {
     while queue.work_available().await {
         #[cfg(test)]
         let queue_take_started = std::time::Instant::now();
@@ -546,12 +555,7 @@ async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option
         "sql_executor_init_start",
         std::time::Instant::now(),
     );
-    let executors = handler.read_executors.get_or_init(|| {
-        ReadExecutors::new(
-            #[cfg(test)]
-            handler.sql_thread_starts.clone(),
-        )
-    });
+    let executors = ReadExecutors::for_handler(handler);
     #[cfg(test)]
     handler.clock.mark_request(
         &work.job.frame,
@@ -648,7 +652,7 @@ async fn connection_while_waiting(queue: &Queue, pool: &ReadPool) -> Option<Read
 }
 
 /// Synchronous callers use their own I/O thread. Any SQL preparation still
-/// enters the same fixed SQL executor; no runtime is nested on a Tokio worker.
+/// enters the same dedicated SQL executor; no runtime is nested on a Tokio worker.
 pub(super) fn call_observation(
     handler: FrameHandler,
     sender: SessionSender,
@@ -670,12 +674,7 @@ pub(super) fn call_observation(
                 .build()
                 .expect("direct read checkout runtime");
             let prepared = runtime.block_on(async {
-                let executors = handler.read_executors.get_or_init(|| {
-                    ReadExecutors::new(
-                        #[cfg(test)]
-                        handler.sql_thread_starts.clone(),
-                    )
-                });
+                let executors = ReadExecutors::for_handler(&handler);
                 let permit = executors.acquire().await;
                 let connection = match handler
                     .observations

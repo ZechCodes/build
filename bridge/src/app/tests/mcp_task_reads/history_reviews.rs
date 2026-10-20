@@ -601,3 +601,89 @@ async fn mcp_history_store_free_search_keeps_existing_no_project_admission() {
     assert_no_drain(&fixture, &before);
     assert_eq!(turns.len(), 2);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_history_router_preserves_message_failure_tail_but_rejects_invalid_metadata() {
+    for corrupt_metadata in [false, true] {
+        let fixture = Fixture::new();
+        history(&fixture);
+        let (capture, router) = {
+            let mut app = fixture.state.lock().unwrap();
+            let pair = crate::app::tests::routing::router::captured(
+                &mut app,
+                "corruption boundary router",
+            );
+            app.session_registry
+                .test_install_token(pair.1.clone(), TOKEN.into());
+            pair
+        };
+        let action = BridgeAction::ReadConversation {
+            entity_id: fixture.owner.clone(),
+            agent_id: Some(fixture.agent.clone()),
+            limit: 300,
+        };
+        // Corrupt only this fixture's durable row, leaving its accepted
+        // immutable history and live canonical identity unchanged.
+        let connection =
+            rusqlite::Connection::open(fixture._root.path().join("store/build.db")).unwrap();
+        if corrupt_metadata {
+            assert_eq!(
+                connection
+                    .execute(
+                        "UPDATE agents SET record = '{' WHERE id = ?1",
+                        [&fixture.agent]
+                    )
+                    .unwrap(),
+                1
+            );
+        } else {
+            assert_eq!(connection.execute("UPDATE thread_items SET item = '{' WHERE agent_id = ?1 AND sequence = (SELECT MIN(sequence) FROM thread_items WHERE agent_id = ?1)", [&fixture.agent]).unwrap(), 1);
+        }
+        drop(connection);
+        let fallback = if corrupt_metadata {
+            None
+        } else {
+            let result = fixture
+                .state
+                .lock()
+                .unwrap()
+                .router_action(&capture, action.clone());
+            let answer = crate::app::mcp::mcp_action_response(result);
+            assert_eq!(answer["ok"], true, "{answer}");
+            assert!(!answer["result"]["transcript"]
+                .as_str()
+                .unwrap()
+                .contains("buried history witness"));
+            assert!(answer["result"]["transcript"]
+                .as_str()
+                .unwrap()
+                .contains("newer history 259"));
+            Some(answer)
+        };
+        sentry(&fixture);
+        let before = fixture.state.lock().unwrap().read_view.load();
+        let turns = fixture.held_turns().await;
+        let mut frame = fixture.frame(action);
+        frame["task_id"] = json!(router);
+        let answer = fixture.reply(frame).await;
+        if let Some(expected) = fallback {
+            assert_eq!(
+                answer, expected,
+                "message-page failure changed the resident fallback"
+            );
+        } else {
+            // Unlike the old live-identity path, SQL admission cannot certify
+            // corrupted canonical metadata. It fails closed without replay.
+            assert_eq!(answer["ok"], false, "{answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("conversation store:"),
+                "{answer}"
+            );
+        }
+        assert_no_drain(&fixture, &before);
+        assert_eq!(turns.len(), 2);
+    }
+}

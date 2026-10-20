@@ -25,6 +25,7 @@ fn schema_bytes(connection: &Connection) -> i32 {
 struct Witness {
     before_bytes: i32,
     after_bytes: i32,
+    repeated_bytes: i32,
     before_autocommit: bool,
     after_autocommit: bool,
 }
@@ -36,9 +37,15 @@ fn tracker_witness(connection: &Connection) -> Witness {
         .prepare("SELECT record FROM tracker_tasks WHERE id = ?1")
         .unwrap();
     drop(statement);
+    let after_bytes = schema_bytes(connection);
+    let statement = connection
+        .prepare("SELECT record FROM tracker_tasks WHERE id = ?1")
+        .unwrap();
+    drop(statement);
     Witness {
         before_bytes,
-        after_bytes: schema_bytes(connection),
+        after_bytes,
+        repeated_bytes: schema_bytes(connection),
         before_autocommit,
         after_autocommit: connection.is_autocommit(),
     }
@@ -51,13 +58,23 @@ fn raw_reader_negative_control_allocates_schema_on_first_table_prepare() {
     let connection = open_read_connection(&dir.path().join(DB_FILE)).unwrap();
     let witness = tracker_witness(&connection);
     assert!(witness.before_autocommit && witness.after_autocommit);
+    assert_eq!(witness.before_bytes, 0, "{witness:?}");
     assert!(witness.after_bytes > witness.before_bytes, "{witness:?}");
+    assert_eq!(witness.after_bytes, witness.repeated_bytes, "{witness:?}");
 }
 
 #[tokio::test]
 async fn all_pooled_readers_have_loaded_schemas_before_first_table_prepare() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
+    let reference = open_read_connection(&dir.path().join(DB_FILE)).unwrap();
+    drop(
+        reference
+            .prepare("SELECT 1 FROM main.sqlite_schema LIMIT 0")
+            .unwrap(),
+    );
+    let ready_schema_bytes = schema_bytes(&reference);
+    assert!(ready_schema_bytes > 0);
     let pool = store.read_pool();
     let initialization = pool.initialization_timing();
     assert_eq!(initialization.schema_count, READ_CONNECTIONS);
@@ -72,10 +89,14 @@ async fn all_pooled_readers_have_loaded_schemas_before_first_table_prepare() {
         .iter()
         .map(|connection| tracker_witness(connection.connection.as_ref().unwrap()))
         .collect();
+    // SQLite's sqlite3IndexAffinityStr lazily populates Index.zColAff on the
+    // first indexed prepare, and DBSTATUS_SCHEMA_USED counts that cache too.
+    // Compare initial schema bytes to an independent schema-only reference;
+    // the exact production query must then have stable first/repeat accounting.
     assert!(
         witnesses.iter().all(|witness| {
-            witness.before_bytes > 0
-                && witness.before_bytes == witness.after_bytes
+            witness.before_bytes == ready_schema_bytes
+                && witness.after_bytes == witness.repeated_bytes
                 && witness.before_autocommit
                 && witness.after_autocommit
         }),

@@ -34,6 +34,7 @@ mod handoff;
 mod identities;
 mod inbox;
 mod notices;
+mod observed_identities;
 mod pages;
 mod push;
 mod read;
@@ -58,7 +59,6 @@ pub use agent_files::AGENT_ATTACHMENT_MAX_BYTES;
 pub use attachments::ATTACHMENT_READ_CHUNK_BYTES;
 
 pub(in crate::app) use dispatch::AssignTarget;
-use identities::StoredRosters;
 #[cfg(test)]
 pub(in crate::app) use inbox::unread_since_mark;
 pub(in crate::app) use views::columns_json;
@@ -407,16 +407,13 @@ impl AppState {
         Ok(json!({ "task": self.observed_task_json(project_id, &observation.current) }))
     }
 
-    fn observed_task_json(
+    pub(in crate::app) fn observed_task_json(
         &self,
         project: &str,
         observation: &crate::store::TrackerTaskObservation,
     ) -> Value {
-        let task = self.task_with_read_identities(
-            observation.task.clone(),
-            &observation.timeline,
-            &StoredRosters::default(),
-        );
+        let task =
+            self.task_with_observed_identities(observation.task.clone(), &observation.timeline);
         let mut row = views::read_task_json(project, &task, &observation.timeline);
         inbox::extend_observed_waiting_summary(observation, &mut row);
         if let Some(review) = &observation.review {

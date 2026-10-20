@@ -59,7 +59,7 @@ impl AppState {
 
     /// Pure row construction from one committed transaction. An absent row
     /// means unwatching or no meaningful activity, never a failed SQL read.
-    pub(super) fn watched_task_observation_row(
+    pub(in crate::app) fn watched_task_observation_row(
         &self,
         project_id: &str,
         observation: &TrackerTaskObservation,
@@ -88,7 +88,7 @@ impl AppState {
             "assigned_to_user": assigned_to_user,
             "last_event": {
                 "text": self.reader_line_for(task, last),
-                "actor": self.entry_actor_words(last).to_reader,
+                "actor": self.observed_task_actor_words(task, entry_actor(last)).to_reader,
                 "at": at,
             },
             // The two the inbox interleaves by. Both the same instant: a row's
@@ -122,13 +122,9 @@ impl AppState {
         notice_line(
             &notice,
             task,
-            &self.entry_actor_words(entry),
+            &self.observed_task_actor_words(task, entry_actor(entry)),
             NoticeVoice::Reader,
         )
-    }
-
-    fn entry_actor_words(&self, entry: &TimelineEntry) -> super::notices::ActorWords {
-        self.actor_words(entry_actor(entry))
     }
 
     /// Whether the user cleared this row and nothing has happened since.

@@ -199,7 +199,7 @@ impl TaskIdentityContext {
     }
 }
 
-fn unknown_identity(id: &str) -> TaskAgentIdentity {
+pub(super) fn unknown_identity(id: &str) -> TaskAgentIdentity {
     TaskAgentIdentity {
         agent_id: id.to_string(),
         name: None,

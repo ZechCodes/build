@@ -110,6 +110,34 @@ impl AppState {
         self.publish_prepared_snapshot_projection(delta);
     }
 
+    /// A committed task observation changes the watched-task rows. Keep the
+    /// usual publication barrier and fall back when other owners are pending.
+    pub(in crate::app) fn publish_task_snapshot_projection(&self) {
+        if !self.can_publish_snapshot_projection() {
+            return;
+        }
+        if !self
+            .snapshot_observations
+            .pending_owners
+            .lock()
+            .unwrap()
+            .is_empty()
+        {
+            self.publish_snapshot_projection();
+            return;
+        }
+        let _ownership = self.begin_snapshot_ownership();
+        let previous = self.read_view.load();
+        if let Some(delta) = self.prepare_incremental_task_snapshot(
+            SnapshotDelta::new(self.read_view.next_version()),
+            &previous,
+        ) {
+            self.publish_prepared_snapshot_projection(delta);
+        } else {
+            self.publish_snapshot_projection();
+        }
+    }
+
     pub(in crate::app) fn publish_all_snapshot_projection(&self) {
         if let Some(delta) = self.prepare_all_snapshot_projection() {
             self.publish_prepared_snapshot_projection(delta);
@@ -199,14 +227,24 @@ impl AppState {
         }
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
-        let delta = self
-            .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
         let owners = self
             .snapshot_observations
             .pending_owners
             .lock()
             .unwrap()
             .clone();
+        let delta = self
+            .prepare_incremental_owner_snapshot(
+                SnapshotDelta::new(self.read_view.next_version()),
+                &previous,
+                &owners,
+            )
+            .unwrap_or_else(|| {
+                self.prepare_global_snapshot(
+                    SnapshotDelta::new(self.read_view.next_version()),
+                    &previous,
+                )
+            });
         Some(self.prepare_snapshot_owner_rows(delta, &previous, &owners, true))
     }
 
@@ -261,45 +299,12 @@ impl AppState {
 
     pub(in crate::app) fn prepare_global_snapshot(
         &self,
-        mut delta: SnapshotDelta,
+        delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.global");
-        let board = self.board_snapshot();
-        let projects = self.snapshot_project_list();
-        let workspaces = self
-            .workspace_list_snapshot(&json!({}))
-            .unwrap_or_else(|error| {
-                eprintln!("workspace snapshot: {error}");
-                previous
-                    .get("workspace.list", "")
-                    .cloned()
-                    .expect("workspace observations warmed before publication")
-            });
-        let mut lists =
-            json!({"projects": projects["projects"], "usage_limits": board["usage_limits"]});
-        lists["workspaces"] =
-            snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]);
-        delta = put_changed(delta, previous, "board.list", "", board);
-        delta = put_changed(delta, previous, "project.list", "", projects);
-        delta = self.prepare_workspace_lists(delta, previous, &workspaces);
-        delta = put_changed(delta, previous, "workspace.list", "", workspaces);
-        delta = put_changed(
-            delta,
-            previous,
-            "settings.get",
-            "",
-            self.settings_get_observed(self.snapshot_account_availability()),
-        );
-        delta = put_changed(
-            delta,
-            previous,
-            "models.list",
-            "",
-            self.models_list_snapshot(),
-        );
-        delta.set_facts(Arc::new(self.push_facts_snapshot(lists)))
+        self.prepare_full_global_snapshot(delta, previous)
     }
 
     fn prepare_workspace_lists(
@@ -379,7 +384,10 @@ fn put_changed(
     owner: &str,
     value: Value,
 ) -> SnapshotDelta {
-    if previous.get(method, owner) == Some(&value) {
+    if previous
+        .get_shared(method, owner)
+        .is_some_and(|previous| previous.equals_value(&value))
+    {
         delta
     } else {
         delta.put(method, owner, value)
@@ -387,6 +395,7 @@ fn put_changed(
 }
 
 mod history;
+pub(in crate::app) mod incremental;
 mod maintenance;
 mod observations;
 mod ownership;

@@ -204,6 +204,9 @@ fn legacy_requests(app: &mut AppState, sample: &Sample, repo: &Path) -> Vec<(&'s
         .ingest_plan_docs(&single, &source, &path)
         .unwrap();
     let (plan, run) = planned_run_in_review(app, "staged timing document");
+    // The scripted helper queues a legacy stage turn; observation fixtures
+    // retain its saved lineage without starting a background delivery.
+    app.delivery_queue.clear_queued();
     let stage = app.plans.get(&plan).unwrap().stages[0].id.clone();
     app.plans.get_mut(&single).unwrap().plan.archived_at = Some("2026-10-20T12:00:00Z".into());
     add_external_worktree(

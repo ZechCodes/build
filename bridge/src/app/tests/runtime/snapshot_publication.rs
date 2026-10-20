@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn qa_behavior_reads_use_the_published_snapshot() {
+    let (directory, repository) = init_repo();
+    let mut app = qa_state(&repository, directory.path());
+    let before = app.handle(req("settings.get", json!({})));
+    assert_eq!(before["ok"], true, "{before}");
+    let published = before["result"]["watch_agent_filed_tasks"].clone();
+
+    // A fixture-only uncommitted edit distinguishes the immutable route from
+    // the old live handler; normal writes must publish before acknowledging.
+    app.watch_agent_filed_tasks = !published.as_bool().unwrap();
+    let after = app.handle(req("settings.get", json!({})));
+    assert_eq!(
+        after["result"]["watch_agent_filed_tasks"], published,
+        "QA behavior tests must exercise the same published reads as intake"
+    );
+    assert!(app.snapshot_projection_initialized());
+}
+
+#[test]
 fn successful_settings_reply_publishes_the_value_read_by_other_clients() {
     let directory = tempfile::tempdir().unwrap();
     let app = AppState::new_unrooted(

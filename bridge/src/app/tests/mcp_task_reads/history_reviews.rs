@@ -1,6 +1,52 @@
 //! Read-only history/review tools retain their envelope without mutation turns.
 use super::*;
 
+struct PausedRead {
+    gate: Option<OffLockGateHandle>,
+    reading: Option<tokio::task::JoinHandle<Value>>,
+}
+
+impl PausedRead {
+    async fn finish(mut self) -> Value {
+        self.gate.take().unwrap().release();
+        self.reading.take().unwrap().await.unwrap()
+    }
+}
+
+impl Drop for PausedRead {
+    fn drop(&mut self) {
+        // Closing the permit sender also releases any blocking gate waiter.
+        // Abort the socket future on unwind rather than detaching test work.
+        self.gate.take();
+        if let Some(reading) = self.reading.take() {
+            reading.abort();
+        }
+    }
+}
+
+async fn pause_read(fixture: &Fixture, frame: Value, gate: OffLockGateHandle) -> PausedRead {
+    let paused = PausedRead {
+        gate: Some(gate),
+        reading: Some(tokio::spawn(socket_reply(
+            fixture.state.clone(),
+            fixture.plane.clone(),
+            frame,
+        ))),
+    };
+    tokio::time::timeout(WATCHDOG, async {
+        while !paused.gate.as_ref().unwrap().has_pending_arrival() {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("MCP read never reached admitted off-lock work");
+    // The query/job owns the captured gate now. A reset/lifecycle operation
+    // performed by this test must not borrow that same barrier and deadlock.
+    fixture.state.lock().unwrap().off_lock_gate = None;
+    assert!(fixture.state.try_lock().is_ok());
+    paused
+}
+
 fn comment(fixture: &Fixture) -> String {
     let reply = fixture.state.lock().unwrap().handle(req(
         "tasks.comment",
@@ -231,7 +277,7 @@ fn review_actions(fixture: &Fixture) -> Vec<BridgeAction> {
             range: Some(crate::body_page::FileRange {
                 offset: 0,
                 bytes: 4,
-                raw: Some(true),
+                raw: None,
             }),
         },
     ]
@@ -322,18 +368,7 @@ async fn mcp_review_external_work_releases_sql_and_app_with_both_turns_held() {
     sentry(&fixture);
     let before = fixture.state.lock().unwrap().read_view.load();
     let turns = fixture.held_turns().await;
-    let reading = tokio::spawn(socket_reply(
-        Arc::clone(&fixture.state),
-        Arc::clone(&fixture.plane),
-        fixture.frame(action),
-    ));
-    tokio::time::timeout(WATCHDOG, async {
-        while !external.has_pending_arrival() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("review never reached its owned external work without a writer turn");
+    let paused = pause_read(&fixture, fixture.frame(action), external).await;
     assert!(
         fixture.state.try_lock().is_ok(),
         "review external work retained app mutex"
@@ -347,8 +382,7 @@ async fn mcp_review_external_work_releases_sql_and_app_with_both_turns_held() {
     })
     .await
     .expect("review retained SQL connection during external work");
-    external.release();
-    assert_eq!(reading.await.unwrap(), expected);
+    assert_eq!(paused.finish().await, expected);
     assert_no_drain(&fixture, &before);
     assert_eq!(turns.len(), 2);
     drop(connections);
@@ -508,19 +542,7 @@ async fn mcp_history_router_query_rejects_target_reset_or_rebind_after_admission
         fixture.state.lock().unwrap().off_lock_gate = Some(gate);
         sentry(&fixture);
         let turns = fixture.held_turns().await;
-        let reading = tokio::spawn(socket_reply(
-            fixture.state.clone(),
-            fixture.plane.clone(),
-            frame,
-        ));
-        tokio::time::timeout(WATCHDOG, async {
-            while !paused.has_pending_arrival() {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .expect("history query never reached admitted off-lock work");
-        assert!(fixture.state.try_lock().is_ok());
+        let paused = pause_read(&fixture, frame, paused).await;
         let after_mutation = {
             let mut app = fixture.state.lock().unwrap();
             if reset {
@@ -543,8 +565,7 @@ async fn mcp_history_router_query_rejects_target_reset_or_rebind_after_admission
             }
             app.read_view.load()
         };
-        paused.release();
-        let answer = reading.await.unwrap();
+        let answer = paused.finish().await;
         assert_eq!(
             answer["ok"], false,
             "obsolete target payload escaped: {answer}"

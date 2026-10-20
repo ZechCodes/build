@@ -177,6 +177,9 @@ async fn task_read_publication_does_not_admit_a_failed_added_agent() {
         .save_tracker_task_activity(&updated, &[], &[])
         .unwrap();
 
+    state.publish_read_metadata();
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&candidate]["available"], false);
     state.publish_read_owner(&owner, false);
     let answer = published_task(&state, &task).await;
     assert_eq!(answer["identities"][&candidate]["available"], false);

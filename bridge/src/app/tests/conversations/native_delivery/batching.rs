@@ -8,6 +8,8 @@ struct LegacyBatch {
     owner: String,
     agent: String,
     payload: OperationPayload,
+    admitted_thread: String,
+    admitted_generation: u64,
 }
 
 impl LegacyBatch {
@@ -37,6 +39,9 @@ impl LegacyBatch {
             .messages
             .retain(|message| message.body.starts_with("selected "));
         assert_eq!(payload.messages.len(), 8);
+        let thread = app.agent_conversation(&owner, Some(&agent)).unwrap();
+        let admitted_thread = thread.id.clone();
+        let admitted_generation = thread.generation_revision;
         app.initialize_snapshot_projection();
         let clock = Arc::clone(&app.frame_clock);
         Self {
@@ -46,6 +51,8 @@ impl LegacyBatch {
             owner,
             agent,
             payload,
+            admitted_thread,
+            admitted_generation,
         }
     }
 
@@ -263,6 +270,11 @@ fn frozen_legacy_delivery_batch_cannot_change_messages_from_a_reset_generation()
         req("conversation.reset", params),
     );
     assert_eq!(reset["ok"], true, "{reset}");
+    assert_ne!(reset["result"]["thread_id"], fixture.admitted_thread);
+    assert_eq!(
+        reset["result"]["thread_generation_revision"],
+        fixture.admitted_generation + 1
+    );
     fixture
         .state
         .lock()
@@ -282,10 +294,17 @@ fn frozen_legacy_delivery_batch_cannot_change_messages_from_a_reset_generation()
     assert!(before
         .iter()
         .any(|message| message.sequence == fixture.payload.messages[0].sequence));
+    assert!(
+        before.iter().any(|message| {
+            message.sequence == fixture.payload.messages[0].sequence
+                && message.id == fixture.payload.messages[0].id
+        }),
+        "message IDs also repeat across reset generations"
+    );
     let _ = fixture.record(MessageDeliveryStatus::Sent);
     assert_eq!(
         fixture.messages(),
         before,
-        "frozen message IDs must fence sequence reuse after reset"
+        "the generation frozen with admission must fence reused IDs and sequences"
     );
 }

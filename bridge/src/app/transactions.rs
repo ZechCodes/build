@@ -10,6 +10,13 @@ mod staging;
 pub(in crate::app) use committed::CommittedEntities;
 use serde_json::Value;
 
+/// Adoption installs its compatibility workspace in the same publication as
+/// the durable owner. Ordinary mutations leave registry maintenance alone.
+enum RunMutationKind {
+    Existing,
+    Adoption,
+}
+
 impl AppState {
     /// Write a plan's durable core to the store (atomic replace). A no-op
     /// without a configured store (unit tests); an error surfaces to the caller
@@ -207,12 +214,28 @@ impl AppState {
         run_id: String,
         active: ActiveRun,
     ) -> Result<(), String> {
+        self.finish_run_mutation_kind(run_id, active, RunMutationKind::Existing)
+    }
+
+    fn finish_run_mutation_kind(
+        &mut self,
+        run_id: String,
+        active: ActiveRun,
+        kind: RunMutationKind,
+    ) -> Result<(), String> {
+        let staged_adoption = match kind {
+            RunMutationKind::Existing => None,
+            RunMutationKind::Adoption => self.stage_adoption_workspace(&run_id, &active),
+        };
         let now = now_rfc3339();
         let state = run_state_str(&active.run.state);
         let clock = self.board.attention().mutation_clock(&run_id, &state, &now);
         let (active, projection) =
             self.prepare_run_mutation_snapshot(&run_id, active, &state, &now);
         if let Err(error) = self.persist_run_record_at(&run_id, &active, clock) {
+            // Restore the alias before this failure can publish any deferred
+            // notices belonging to successful nested owner mutations.
+            self.rollback_adoption_workspace(staged_adoption);
             self.restore_run_after_failed_save(&run_id, active);
             self.settle_failed_mutation(&run_id);
             return Err(error);
@@ -234,13 +257,7 @@ impl AppState {
         thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
         let settled = self.finish_run_mutation(run_id.clone(), active);
-        let Some(active) = self.runs.get(&run_id) else {
-            return (Value::Null, settled);
-        };
-        (
-            self.run_view(&run_id, active, thread_detail, DigestScope::Detail),
-            settled,
-        )
+        self.run_mutation_answer(&run_id, thread_detail, settled)
     }
 
     /// Adoption's settlement boundary also owns its compatibility workspace.
@@ -250,7 +267,24 @@ impl AppState {
         active: ActiveRun,
         thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
-        self.answer_run_mutation(run_id, active, thread_detail)
+        let settled =
+            self.finish_run_mutation_kind(run_id.clone(), active, RunMutationKind::Adoption);
+        self.run_mutation_answer(&run_id, thread_detail, settled)
+    }
+
+    fn run_mutation_answer(
+        &self,
+        run_id: &str,
+        thread_detail: ThreadDetail,
+        settled: Result<(), String>,
+    ) -> (Value, Result<(), String>) {
+        let Some(active) = self.runs.get(run_id) else {
+            return (Value::Null, settled);
+        };
+        (
+            self.run_view(run_id, active, thread_detail, DigestScope::Detail),
+            settled,
+        )
     }
 
     fn commit_mutation_clock(&mut self, owner: &str, state: String, now: String) -> bool {

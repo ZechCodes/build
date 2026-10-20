@@ -660,7 +660,7 @@ impl AppState {
             // the scan that lands invalidates the board so the client asks
             // again.
             scanning: checkouts.scanning,
-            workspace_summaries,
+            workspace_summaries: Value::Array(workspace_summaries),
             // The harnesses out of usage on this device (task #58). The board
             // item carries the same list whole whenever it moves.
             usage_limits: self.usage_limits_json(),

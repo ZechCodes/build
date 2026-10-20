@@ -115,6 +115,118 @@ async fn task_read_identity_names_use_committed_rosters_and_live_availability() 
     assert_eq!(answer["task"]["identities"][&agent]["available"], false);
 }
 
+async fn published_task(state: &AppState, task: &Value) -> Value {
+    let connection = state.tracker_store().unwrap().read_pool().acquire().await;
+    let answer = state.read_service().call(
+        req("tasks.get", json!({"task_id":task["id"]})),
+        Some(connection),
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    answer["result"]["task"].clone()
+}
+
+#[tokio::test]
+async fn task_read_publication_preserves_another_checked_out_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (first, first_agent) = agent_on_checkout(&mut state, &project, "first");
+    let (second, second_agent) = agent_on_checkout(&mut state, &project, "second");
+    let task = filed(
+        &mut state,
+        &project,
+        &format!("@agent:{first_agent} @agent:{second_agent}"),
+    );
+    state.initialize_read_context();
+    let checked_out = state.runs.remove(&first).unwrap();
+
+    state.publish_read_owner(&second, true);
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&first_agent]["available"], true);
+    assert_eq!(answer["identities"][&second_agent]["available"], true);
+
+    state.publish_read_metadata();
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&first_agent]["available"], true);
+    state.forget_read_owner(&first);
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&first_agent]["available"], false);
+    state.runs.insert(first, checked_out);
+}
+
+#[tokio::test]
+async fn task_read_publication_does_not_admit_a_failed_added_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (owner, committed_agent) = agent_on_checkout(&mut state, &project, "committed");
+    let task = filed(&mut state, &project, &format!("@agent:{committed_agent}"));
+    state.initialize_read_context();
+    let active = state.runs.get_mut(&owner).unwrap();
+    let added = active.agents.add(
+        owner.as_str(),
+        active.model_choice.clone(),
+        &crate::store::now_rfc3339(),
+    );
+    let candidate = added.id.clone();
+    let store = state.tracker_store().unwrap();
+    let mut updated = store
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    updated.title = format!("@agent:{candidate} @agent:{committed_agent}");
+    store
+        .save_tracker_task_activity(&updated, &[], &[])
+        .unwrap();
+
+    state.publish_read_owner(&owner, false);
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&candidate]["available"], false);
+    assert_eq!(answer["identities"][&committed_agent]["available"], true);
+    state.publish_read_metadata();
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&candidate]["available"], false);
+}
+
+#[tokio::test]
+async fn workspace_reads_publish_reopened_task_identity_availability() {
+    for method in ["workspace.get", "workspace.list"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut state, project) = tracked_with_origin(tmp.path());
+        let (owner, agent) = agent_on_checkout(&mut state, &project, "finished");
+        let task = filed(&mut state, &project, &format!("@agent:{agent}"));
+        let root = &state.runs[&owner].worktree.path;
+        let workspace = state
+            .workspaces
+            .list(Some(&project))
+            .into_iter()
+            .find(|workspace| workspace.root == *root)
+            .unwrap()
+            .clone();
+        let manifest = workspace.root.join(crate::workspace::MANIFEST_FILE);
+        let mut saved: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        saved["status"] = json!("finished");
+        std::fs::write(&manifest, serde_json::to_vec(&saved).unwrap()).unwrap();
+        state.workspaces.reload().unwrap();
+        state.initialize_read_context();
+        let before = published_task(&state, &task).await;
+        assert_eq!(before["identities"][&agent]["available"], false);
+
+        let refreshed = state.handle(req(
+            method,
+            json!({"project_id":project,"workspace_id":workspace.id}),
+        ));
+        assert_eq!(refreshed["ok"], true, "{refreshed}");
+        assert_eq!(
+            state.workspaces.get(&workspace.id).unwrap().status,
+            crate::workspace::WorkspaceStatus::Ready
+        );
+        let after = published_task(&state, &task).await;
+        assert_eq!(
+            after["identities"][&agent]["available"], true,
+            "{method}: {after}"
+        );
+    }
+}
+
 /// An agent on a checkout of its own, named so its identity has something to
 /// carry.
 fn agent_on_checkout(state: &mut AppState, project_id: &str, name: &str) -> (String, String) {

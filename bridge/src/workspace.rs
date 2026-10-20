@@ -1351,6 +1351,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_workspace_rename_keeps_the_committed_label_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources = vec![source(temp.path(), "one", "one")];
+        let mut registry = WorkspaceRegistry::load(temp.path().join("workspaces")).unwrap();
+        let workspace = registry.begin("project", "committed", &sources).unwrap();
+        let manifest = workspace.root.join(MANIFEST_FILE);
+        let backup = workspace.root.join("manifest-backup");
+        fs::rename(&manifest, &backup).unwrap();
+        fs::create_dir(&manifest).unwrap();
+
+        assert!(registry.rename(&workspace.id, "failed candidate").is_err());
+        assert_eq!(registry.get(&workspace.id).unwrap().name, "committed");
+
+        fs::remove_dir(&manifest).unwrap();
+        fs::rename(&backup, &manifest).unwrap();
+        registry.reload().unwrap();
+        assert_eq!(registry.get(&workspace.id).unwrap().name, "committed");
+    }
+
+    #[test]
     fn free_form_workspace_name_is_preserved_while_its_path_is_safe_and_bounded() {
         let temp = tempfile::tempdir().unwrap();
         let sources = vec![source(temp.path(), "one", "one")];

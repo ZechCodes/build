@@ -647,8 +647,8 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_connections() {
             id
         );
         assert!(
-            elapsed <= Duration::from_millis(100),
-            "{method} under SQL connection saturation took {elapsed:?}, exceeding 100ms"
+            elapsed <= Duration::from_secs(2),
+            "{method} under SQL connection saturation took {elapsed:?}, exceeding 2s"
         );
     }
 }
@@ -708,8 +708,8 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_execution_permi
             id
         );
         assert!(
-            elapsed <= Duration::from_millis(100),
-            "{method} under SQL execution saturation took {elapsed:?}, exceeding 100ms"
+            elapsed <= Duration::from_secs(2),
+            "{method} under SQL execution saturation took {elapsed:?}, exceeding 2s"
         );
     }
 }

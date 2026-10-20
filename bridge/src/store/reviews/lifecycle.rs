@@ -67,6 +67,35 @@ impl Store {
         })
     }
 
+    /// Capture the actual saved task and every watched-row input in the write
+    /// transaction. Projection failures roll back the write rather than leaving
+    /// an acknowledged task absent from the published board.
+    pub(crate) fn save_review_task_activity_observed(
+        &self,
+        task: &Task,
+        comments: &[TaskComment],
+        events: &[TaskEvent],
+        actor: &Actor,
+        expected_review_version: Option<u64>,
+        now: &str,
+    ) -> Result<(crate::store::TrackerTaskPublication, Vec<TaskEvent>), StoreError> {
+        self.in_waiting_on_transaction(|tx| {
+            let (task, additional) = save_activity_in_tx(
+                tx,
+                task,
+                comments,
+                events,
+                actor,
+                expected_review_version,
+                now,
+            )?;
+            let task = require_task(tx, &task.id)?;
+            let observation =
+                crate::store::ReadTransaction::new(tx).tracker_task_publication(task, &[])?;
+            Ok((observation, additional))
+        })
+    }
+
     /// An explicit current-snapshot opinion has both snapshot and version
     /// preconditions; older-snapshot task comments remain historical context.
     pub fn record_review_opinion(

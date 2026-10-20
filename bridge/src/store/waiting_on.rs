@@ -2,6 +2,7 @@
 //! No assignment or delivery authority is inferred from task reads.
 
 mod graph;
+mod observed;
 mod reads;
 mod reconciliation;
 
@@ -67,21 +68,7 @@ impl Store {
         events: &[TaskEvent],
         waiting_on: &[String],
     ) -> Result<Task, StoreError> {
-        self.in_waiting_on_transaction(|tx| {
-            let number = super::tracker::next_task_number(tx, &draft.project_path)?;
-            let task = Task { number, ..draft };
-            super::tracker::write_tracker_task(tx, &task)?;
-            super::tracker::append_activity(tx, &[], events)?;
-            graph::edit(
-                tx,
-                &task,
-                waiting_on,
-                &[],
-                &task.created_by,
-                &task.created_at,
-            )?;
-            Ok(task)
-        })
+        self.in_waiting_on_transaction(|tx| create_task_in_tx(tx, draft, events, waiting_on))
     }
 
     pub fn edit_waiting_on(
@@ -111,18 +98,8 @@ impl Store {
         actor: &Actor,
     ) -> Result<(), StoreError> {
         self.in_waiting_on_transaction(|tx| {
-            require_task(tx, &task.project_path, &task.id)?;
-            super::reviews::lifecycle::save_activity_in_tx(
-                tx,
-                task,
-                comments,
-                events,
-                actor,
-                None,
-                &task.updated_at,
-            )?;
-            let current = require_task(tx, &task.project_path, &task.id)?;
-            graph::edit(tx, &current, add, remove, actor, &task.updated_at)
+            save_activity_and_dependencies(tx, task, comments, events, add, remove, actor)
+                .map(|_| ())
         })
     }
 
@@ -155,6 +132,50 @@ impl Store {
             Ok(changes)
         })
     }
+}
+
+fn create_task_in_tx(
+    tx: &rusqlite::Transaction,
+    draft: Task,
+    events: &[TaskEvent],
+    waiting_on: &[String],
+) -> Result<Task, StoreError> {
+    let number = super::tracker::next_task_number(tx, &draft.project_path)?;
+    let task = Task { number, ..draft };
+    super::tracker::write_tracker_task(tx, &task)?;
+    super::tracker::append_activity(tx, &[], events)?;
+    graph::edit(
+        tx,
+        &task,
+        waiting_on,
+        &[],
+        &task.created_by,
+        &task.created_at,
+    )?;
+    require_task(tx, &task.project_path, &task.id)
+}
+
+fn save_activity_and_dependencies(
+    tx: &rusqlite::Transaction,
+    task: &Task,
+    comments: &[TaskComment],
+    events: &[TaskEvent],
+    add: &[String],
+    remove: &[String],
+    actor: &Actor,
+) -> Result<(Task, Vec<TaskEvent>), StoreError> {
+    require_task(tx, &task.project_path, &task.id)?;
+    let (current, additional) = super::reviews::lifecycle::save_activity_in_tx(
+        tx,
+        task,
+        comments,
+        events,
+        actor,
+        None,
+        &task.updated_at,
+    )?;
+    graph::edit(tx, &current, add, remove, actor, &task.updated_at)?;
+    Ok((require_task(tx, &task.project_path, &task.id)?, additional))
 }
 
 fn invalid(message: &str) -> StoreError {

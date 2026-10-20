@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::conversations::FrozenLegacyDelivery;
 use crate::timing::FrameClock;
 
 struct LegacyBatch {
@@ -7,7 +8,7 @@ struct LegacyBatch {
     clock: Arc<FrameClock>,
     owner: String,
     agent: String,
-    payload: OperationPayload,
+    frozen: FrozenLegacyDelivery,
     admitted_thread: String,
     admitted_generation: u64,
 }
@@ -31,17 +32,14 @@ impl LegacyBatch {
             Ok(())
         })
         .unwrap();
-        let mut payload = app
-            .legacy_delivery_payload(&owner, &agent)
-            .unwrap()
-            .unwrap();
-        payload
+        let mut frozen = app.freeze_legacy_delivery(&owner, &agent).unwrap().unwrap();
+        frozen
+            .payload
             .messages
             .retain(|message| message.body.starts_with("selected "));
-        assert_eq!(payload.messages.len(), 8);
-        let thread = app.agent_conversation(&owner, Some(&agent)).unwrap();
-        let admitted_thread = thread.id.clone();
-        let admitted_generation = thread.generation_revision;
+        assert_eq!(frozen.payload.messages.len(), 8);
+        let admitted_thread = frozen.thread_id.clone();
+        let admitted_generation = frozen.generation_revision;
         app.initialize_snapshot_projection();
         let clock = Arc::clone(&app.frame_clock);
         Self {
@@ -50,7 +48,7 @@ impl LegacyBatch {
             clock,
             owner,
             agent,
-            payload,
+            frozen,
             admitted_thread,
             admitted_generation,
         }
@@ -62,7 +60,7 @@ impl LegacyBatch {
         let result = timer.lock(&self.state).record_legacy_delivery_status(
             &self.owner,
             &self.agent,
-            &self.payload,
+            &self.frozen,
             status,
         );
         drop(timer);
@@ -88,7 +86,7 @@ impl LegacyBatch {
 
     fn assert_selected_status(&self, status: MessageDeliveryStatus) {
         let messages = self.messages();
-        for expected in &self.payload.messages {
+        for expected in &self.frozen.payload.messages {
             let actual = messages
                 .iter()
                 .find(|message| message.id == expected.id)
@@ -145,8 +143,8 @@ impl LegacyBatch {
             .unwrap()
             .render(&json!({"thread_after_sequence":cursor}));
         let items = page["items"].as_array().unwrap();
-        assert_eq!(items.len(), self.payload.messages.len(), "{page}");
-        for expected in &self.payload.messages {
+        assert_eq!(items.len(), self.frozen.payload.messages.len(), "{page}");
+        for expected in &self.frozen.payload.messages {
             let row = items
                 .iter()
                 .find(|item| item["data"]["id"] == expected.id)
@@ -214,7 +212,7 @@ fn legacy_delivery_batch_rolls_back_all_selected_rows_when_one_status_write_fail
     let before = fixture.messages();
     let connection =
         rusqlite::Connection::open(fixture.directory.path().join("store/build.db")).unwrap();
-    let second = fixture.payload.messages[1].sequence;
+    let second = fixture.frozen.payload.messages[1].sequence;
     connection.execute_batch(&format!("CREATE TRIGGER refuse_second_batch_message BEFORE UPDATE ON thread_items WHEN NEW.sequence = {second} AND json_extract(NEW.item, '$.data.delivery_status') = 'submitted' BEGIN SELECT RAISE(ABORT, 'injected batch failure'); END;")).unwrap();
     assert!(fixture.record(MessageDeliveryStatus::Submitted).0.is_err());
     assert_eq!(
@@ -280,7 +278,7 @@ fn frozen_legacy_delivery_batch_cannot_change_messages_from_a_reset_generation()
         .lock()
         .unwrap()
         .edit_agent_conversation(&fixture.owner, &fixture.agent, |thread, _| {
-            for sequence in 0..=fixture.payload.end_sequence {
+            for sequence in 0..=fixture.frozen.payload.end_sequence {
                 thread.post_user(
                     format!("replacement {sequence}"),
                     None,
@@ -293,15 +291,20 @@ fn frozen_legacy_delivery_batch_cannot_change_messages_from_a_reset_generation()
     let before = fixture.messages();
     assert!(before
         .iter()
-        .any(|message| message.sequence == fixture.payload.messages[0].sequence));
+        .any(|message| message.sequence == fixture.frozen.payload.messages[0].sequence));
     assert!(
         before.iter().any(|message| {
-            message.sequence == fixture.payload.messages[0].sequence
-                && message.id == fixture.payload.messages[0].id
+            message.sequence == fixture.frozen.payload.messages[0].sequence
+                && message.id == fixture.frozen.payload.messages[0].id
         }),
         "message IDs also repeat across reset generations"
     );
-    let _ = fixture.record(MessageDeliveryStatus::Sent);
+    let (result, samples) = fixture.record(MessageDeliveryStatus::Sent);
+    result.unwrap();
+    assert!(samples["agent.deliver"].get("entered.sql.write").is_none());
+    assert!(samples["agent.deliver"]
+        .get("entered.finisher.save")
+        .is_none());
     assert_eq!(
         fixture.messages(),
         before,

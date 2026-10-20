@@ -3,6 +3,22 @@ use crate::store::Store;
 use std::time::Duration;
 
 #[tokio::test]
+async fn review_metadata_uses_one_readonly_snapshot_without_the_writer_connection() {
+    let fixture = crate::reviews::sync::reconcile::tests::Fixture::new();
+    fixture.sync();
+    let review = fixture.review();
+    let sync = fixture.store.load_review_sync_observations(&review.task_id).unwrap();
+    let intents = fixture.store.load_review_merge_intents(&review.task_id).unwrap();
+    let mut reader = fixture.store.read_pool().acquire().await;
+    let _writer = fixture.store.connection();
+    reader.read(|read| {
+        assert_eq!(read.load_review(&review.task_id).unwrap(), Some(review.clone()));
+        assert_eq!(read.load_review_sync_observations(&review.task_id).unwrap(), sync);
+        assert_eq!(read.load_review_merge_intents(&review.task_id).unwrap(), intents);
+    }).unwrap();
+}
+
+#[tokio::test]
 async fn eight_readers_are_independent_and_the_ninth_waits_fairly() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();

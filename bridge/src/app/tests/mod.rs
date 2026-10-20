@@ -215,6 +215,7 @@ mod conversations;
 mod filesystem;
 mod git;
 mod github;
+mod observation_mixed;
 mod harness_inventory;
 mod harness_models;
 mod installed_models;

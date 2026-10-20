@@ -15,6 +15,9 @@ async fn paused_read(fixture: &Fixture) -> (OffLockGateHandle, tokio::task::Join
     })
     .await
     .expect("task SQL read never reached its admitted lock-free phase");
+    // The admitted query owns its clone. Later reset/lifecycle work must not
+    // inherit this read-only pause and wait for the test's own release.
+    fixture.state.lock().unwrap().off_lock_gate = None;
     // Acquiring this guard while the read is paused proves it retained no app guard.
     assert!(fixture.state.try_lock().is_ok());
     (held, reading)

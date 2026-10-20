@@ -161,6 +161,17 @@ impl AppState {
         self.publish_snapshot_projection();
     }
 
+    /// Include this owner's agent rows in the next atomic metadata publication.
+    pub(in crate::app) fn mark_snapshot_owner_pending(&self, owner: &str) {
+        if self.snapshot_observations.ready {
+            self.snapshot_observations
+                .pending_owners
+                .lock()
+                .unwrap()
+                .insert(owner.to_owned());
+        }
+    }
+
     pub(in crate::app) fn publish_owner_snapshot_projection(&self, owner: &str) {
         if let Some(delta) = self.prepare_owner_snapshot_projection(owner) {
             self.publish_prepared_snapshot_projection(delta);

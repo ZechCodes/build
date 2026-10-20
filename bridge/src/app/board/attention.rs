@@ -346,6 +346,7 @@ impl AppState {
         self.board
             .attention_mut()
             .mark_seen(id, Some(&state_changed_at), &read_through);
+        self.mark_snapshot_owner_pending(id);
         self.persist_attention();
     }
 
@@ -791,6 +792,7 @@ impl AppState {
             return Err(format!("entity.mute: unknown entity {entity_id}"));
         }
         self.board.attention_mut().set_muted(&entity_id, muted);
+        self.mark_snapshot_owner_pending(&entity_id);
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "muted": muted }))
     }

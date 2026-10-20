@@ -7,6 +7,7 @@ mod projects;
 mod provider_defaults;
 mod remote_urls;
 mod settings;
+mod snapshot_publication;
 mod source_remotes;
 mod source_sync;
 mod source_update;

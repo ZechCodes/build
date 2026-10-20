@@ -940,8 +940,9 @@ fn snapshot_duration_summary(values: &[Duration]) -> Value {
 }
 
 /// Direct CPU/publication boundaries from the real producer. This measures
-/// steady-state global/fact projection with warmed observations; lifecycle
-/// filesystem/SQL observation and history warming are outside this interval.
+/// steady-state global/workspace/fact and owner-agent projection with warmed
+/// observations. Lifecycle I/O/history warming and service enrichment of a
+/// cloned base response are outside these intervals.
 #[tokio::test]
 async fn snapshot_generation_publication_and_clone_costs_are_reported() {
     use crate::app::read_view::SnapshotDelta;
@@ -1022,7 +1023,7 @@ async fn snapshot_generation_publication_and_clone_costs_are_reported() {
         "kind": "bridge_snapshot_costs",
         "git_revision": git_revision(Path::new(env!("CARGO_MANIFEST_DIR"))),
         "rust_toolchain": rust_toolchain(Path::new("rustc")),
-        "scope": "steady-state global/fact generation, root publication, Arc load and root-backed response clone",
+        "scope": "steady-state global/workspace/fact and owner-agent generation, root publication, Arc load and cached base Value clone before service enrichment",
         "fixture": { "projects": 1, "managed_workspaces": 1, "tasks": SAMPLE_COUNT, "history_messages": SAMPLE_COUNT, "history_activity_events": 64 },
         "phases": phases,
         "methods": clones,

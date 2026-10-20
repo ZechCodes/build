@@ -89,6 +89,14 @@ describe("footnotes", () => {
     expect(host.querySelector(".md-footnotes code").textContent).toBe("code\n");
     expect(host.querySelectorAll(".md-footnotes .md-footnote-backref")).toHaveLength(1);
   });
+  it.each([
+    "<details>\n    <summary>Optional explanation</summary>\n    Hidden note.\n    </details>",
+    "- First\n\n      Second paragraph.",
+  ])("keeps return links outside a final nested block: %s", (definition) => {
+    const host = render(`Text[^a].\n\n[^a]: ${definition}`);
+    const note = host.querySelector(".md-footnotes > ol > li");
+    expect(note.querySelector(".md-footnote-backref").parentElement).toBe(note);
+  });
   it("orders notes by reference and gives every reference a local accessible backlink", () => {
     const host = render("Second[^b], first[^a], again[^b].\n\n[^a]: First **note**\n[^b]: Other note\n\n    - nested item", { taskLabelScope: "comment:1" });
     expect([...host.querySelectorAll(".md-footnote-ref a")].map((ref) => ref.textContent)).toEqual(["1", "2", "1"]);

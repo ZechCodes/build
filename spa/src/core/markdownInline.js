@@ -8,7 +8,7 @@ import { webLinks } from "./markdownWebLinks.js";
 
 // Both readers share the same protected-element grammar. Generated missing
 // references are spans whose labels and titles must remain literal too.
-const COMPLETE = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<span\b[^>]*>[\s\S]*?<\/span>|<sup\b[^>]*>[\s\S]*?<\/sup>|<img\b[^>]*>/g;
+const COMPLETE = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<span\b[^>]*>[\s\S]*?<\/span>|<sup\b[^>]*>[\s\S]*?<\/sup>|<img\b[^>]*>|<button\b[^>]*>[\s\S]*?<\/button>/g;
 const INLINE_TOKEN = new RegExp(`${COMPLETE.source}|&(?:#\\d+|#x[\\da-f]+|[a-z]+);|\\[\\^[A-Za-z0-9_-]+\\]|\\*+|_+|~+`, "gi");
 const ESCAPABLE = /\\([!*_~`[\]<>])/g;
 const TAGS = { "*": ["em", "strong"], _: ["em", "strong"], "~": [null, "del"] };
@@ -147,8 +147,8 @@ function outsideComplete(html, transform) {
   return out + transform(html.slice(at));
 }
 
-export function inlineHtml(text, links, { footnote } = {}) {
-  const web = webLinks(literalsHtml(text), emphasisHtml);
+export function inlineHtml(text, links, { footnote, imageOrigin = globalThis.location?.origin } = {}) {
+  const web = webLinks(literalsHtml(text), emphasisHtml, imageOrigin);
   const notes = footnote ? outsideComplete(web, (run) => run.replace(/\[\^([A-Za-z0-9_-]+)\]/g, (raw, id) => footnote(id) || raw)) : web;
   const references = outsideComplete(notes, (prose) => expandReferences(prose, links));
   return emphasisHtml(references);

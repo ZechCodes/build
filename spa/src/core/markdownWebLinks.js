@@ -51,7 +51,7 @@ export function safeWebHref(raw) {
 
 /** Images share the web scheme policy, narrowed to real http(s) URLs
  * with a host and no URL credentials. */
-function safeImageSrc(raw) {
+export function safeImageSrc(raw) {
   const href = safeWebHref(raw);
   if (!href || !/^https?:/i.test(href)) return null;
   try {
@@ -62,10 +62,15 @@ function safeImageSrc(raw) {
   }
 }
 
-function image(src, label, title) {
+function image(src, label, title, imageOrigin) {
   const alt = unesc(label.replace(/<\/?(?:code|kbd)>/g, ""));
   const titleAttr = title ? ` title="${esc(title)}"` : "";
-  return `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer"${titleAttr}>`;
+  if (new URL(src).origin === imageOrigin) {
+    return `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer"${titleAttr}>`;
+  }
+  const titleData = title ? ` data-md-image-title="${esc(title)}"` : "";
+  const words = `Load image from ${new URL(src).hostname}${alt ? ` — ${alt}` : ""}`;
+  return `<button type="button" class="md-image-load" data-md-image-src="${esc(src)}" data-md-image-alt="${esc(alt)}"${titleData}>${esc(words)}</button>`;
 }
 
 /** One web link, from its already-escaped label. */
@@ -144,7 +149,7 @@ function writeLink(html, close, destination, state) {
   const start = state.opener - Number(isImage);
   const label = html.slice(state.opener + 1, close);
   const title = unesc(destination.title);
-  const markup = href ? (isImage ? image(href, label, title) : anchor(href, state.formatLabel(label), title)) : html.slice(start, destination.end);
+  const markup = href ? (isImage ? image(href, label, title, state.imageOrigin) : anchor(href, state.formatLabel(label), title)) : html.slice(start, destination.end);
   state.out += html.slice(state.copied, start) + markup;
   state.copied = destination.end;
 }
@@ -173,8 +178,8 @@ function readAt(html, index, state) {
 
 /** Every `[label](address)` in one line of escaped HTML made a link, and
  *  every refused one left as written. */
-function inlineLinks(html, formatLabel) {
-  const state = { out: "", copied: 0, opener: -1, formatLabel };
+function inlineLinks(html, formatLabel, imageOrigin) {
+  const state = { out: "", copied: 0, opener: -1, formatLabel, imageOrigin };
   for (let index = 0; index < html.length; ) index = readAt(html, index, state);
   return state.out + html.slice(state.copied);
 }
@@ -202,7 +207,7 @@ function withoutTrailing(url) {
 }
 
 /// Stretches a bare address is never read in: a code span, and a link.
-const LITERAL = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>|!?\[[^[\]]*\]\([^()[\]]*(?:\([^()[\]]*\)[^()[\]]*)*\)/g;
+const LITERAL = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>|<button\b[^>]*>[\s\S]*?<\/button>|!?\[[^[\]]*\]\([^()[\]]*(?:\([^()[\]]*\)[^()[\]]*)*\)/g;
 
 /** Every bare address in one stretch of prose made a link. */
 const bareLinksIn = (text) =>
@@ -239,6 +244,6 @@ function angleLinks(html) {
  * Web links in one line of escaped HTML: inline links first, so a bare address
  * that is an inline link's label or address is not linked again.
  */
-export function webLinks(html, formatLabel = (label) => label) {
-  return html ? bareLinks(outsideLiterals(inlineLinks(html, formatLabel), angleLinks)) : html;
+export function webLinks(html, formatLabel = (label) => label, imageOrigin) {
+  return html ? bareLinks(outsideLiterals(inlineLinks(html, formatLabel, imageOrigin), angleLinks)) : html;
 }

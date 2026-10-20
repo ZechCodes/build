@@ -6,9 +6,9 @@ import { pathToFileURL } from "node:url";
 import { markdownHtml } from "../src/core/markdown.js";
 import { inlineHtml } from "../src/core/markdownInline.js";
 
-const render = (source) => {
+const render = (source, options = {}) => {
   const host = document.createElement("div");
-  host.innerHTML = markdownHtml(source, { mode: "inline" });
+  host.innerHTML = markdownHtml(source, { mode: "inline", ...options });
   return host;
 };
 
@@ -67,7 +67,7 @@ describe("the shared inline vocabulary", () => {
   });
 
   it("renders image alt and title as escaped attributes with private loading defaults", () => {
-    const host = render('![a " <b> & #42](https://example.test/a.png "A title")');
+    const host = render('![a " <b> & #42](https://example.test/a.png "A title")', { imageOrigin: "https://example.test" });
     const image = host.querySelector("img");
     expect(image?.getAttribute("src")).toBe("https://example.test/a.png");
     expect(image?.getAttribute("alt")).toBe('a " <b> & #42');
@@ -78,11 +78,30 @@ describe("the shared inline vocabulary", () => {
     expect(host.querySelectorAll("a, b")).toHaveLength(0);
   });
 
+  it("keeps external images inert until their one-instance load button is activated", () => {
+    const host = render('![A "diagram" & <svg> #42](https://images.test/a.png "Image title")');
+    expect(host.querySelectorAll("img, [src]")).toHaveLength(0);
+    const button = host.querySelector("button.md-image-load");
+    expect(button?.getAttribute("type")).toBe("button");
+    expect(button?.dataset.mdImageSrc).toBe("https://images.test/a.png");
+    expect(button?.dataset.mdImageAlt).toBe('A "diagram" & <svg> #42');
+    expect(button?.dataset.mdImageTitle).toBe("Image title");
+    expect(button?.textContent).toBe('Load image from images.test — A "diagram" & <svg> #42');
+    expect(host.querySelectorAll("svg, a, em, strong")).toHaveLength(0);
+  });
+
+  it("autoloads only validated images from the browser's own origin", () => {
+    const src = new URL("/same-origin.png", location.href).href;
+    const host = render(`![Local diagram](${src})`);
+    expect(host.querySelector("img")?.getAttribute("src")).toBe(src);
+    expect(host.querySelectorAll("button")).toHaveLength(0);
+  });
+
   it("refuses unsafe images and credentials while preserving their literal text", () => {
     for (const destination of ["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "file:///tmp/a", "//a.test/a", "/a", "https://user:secret@a.test/a", "https://user%40name@a.test/a"]) {
       const source = `![alt](${destination})`;
       const host = render(source);
-      expect([destination, host.querySelectorAll("img").length]).toEqual([destination, 0]);
+      expect([destination, host.querySelectorAll("img, .md-image-load").length]).toEqual([destination, 0]);
       expect(host.textContent).toBe(source);
     }
   });

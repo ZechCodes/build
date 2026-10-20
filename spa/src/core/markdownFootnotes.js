@@ -69,10 +69,11 @@ export function collectFootnotes(lines, offsets, source, scope) {
 }
 
 function appendBacklinks(body, backlinks) {
-  // The body is renderer-owned HTML. Keep return links on the last paragraph's
-  // text line; a code-only definition still needs an accessible return path.
-  const paragraphEnd = body.lastIndexOf("</p>");
-  if (paragraphEnd < 0) return `${body} ${backlinks}`;
+  // Balanced renderer-owned blocks end in their own closing tag. Append inside
+  // a final top-level paragraph only: nested lists or closed details must not
+  // swallow the note's return path.
+  if (!body.endsWith("</p>")) return `${body} ${backlinks}`;
+  const paragraphEnd = body.length - 4;
   return `${body.slice(0, paragraphEnd)} ${backlinks}${body.slice(paragraphEnd)}`;
 }
 

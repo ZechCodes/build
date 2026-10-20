@@ -182,6 +182,8 @@ impl Waiting {
 struct Work {
     job: Job,
     callers: Vec<(Value, SessionSender)>,
+    #[cfg(test)]
+    measurement: super::sql_measurements::SqlSchedule,
 }
 
 impl Work {
@@ -190,7 +192,15 @@ impl Work {
         Self {
             job,
             callers: vec![caller],
+            #[cfg(test)]
+            measurement: super::sql_measurements::SqlSchedule::default(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_measurement(mut self, checkout: std::time::Duration) -> Self {
+        self.measurement = super::sql_measurements::SqlSchedule::new(checkout);
+        self
     }
 
     fn matches(&self, job: &Job) -> bool {
@@ -212,6 +222,8 @@ impl Work {
             return;
         };
         self.job.sender = sender.clone();
+        #[cfg(test)]
+        self.measurement.observe(handler, &self.job.frame);
         let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             handler.run_sql(self.job.queued, self.job.sender, self.job.frame, connection)
         }))
@@ -248,6 +260,8 @@ async fn coordinate(
     executor: std::sync::mpsc::Sender<Execution>,
 ) {
     while queue.work_available().await {
+        #[cfg(test)]
+        let checkout_started = std::time::Instant::now();
         let connection = match &pool {
             Some(pool) => match connection_while_waiting(&queue, pool).await {
                 Some(connection) => Some(connection),
@@ -255,7 +269,11 @@ async fn coordinate(
             },
             None => None,
         };
+        #[cfg(test)]
+        let checkout = checkout_started.elapsed();
         let Some(work) = queue.take() else { continue };
+        #[cfg(test)]
+        let work = work.with_measurement(checkout);
         let (done, complete) = oneshot::channel();
         if executor.send((work, connection, done)).is_err() {
             return;

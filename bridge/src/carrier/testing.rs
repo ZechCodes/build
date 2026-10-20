@@ -154,3 +154,9 @@ impl ChannelWire {
         intake.close_carrier(&self.carrier);
     }
 }
+
+/// The actual SQL worker width, exposed only to crate test fixtures.
+#[cfg(test)]
+pub(crate) fn sql_worker_count() -> usize {
+    super::sql::SQL_WORKERS
+}

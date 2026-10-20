@@ -7,9 +7,14 @@
 //! The fresh directory receives `bridge-concurrency-baseline.jsonl` and
 //! `bridge-concurrency-baseline.md`. Ordinary runs write only to fixture temps.
 
+mod measurements;
+
+use self::measurements::SqlMeasurements;
 use super::*;
 use crate::app::tests::tracker::{filed, tracked};
-use crate::carrier::testing::{client_request, session_init, within_patience, ChannelWire};
+use crate::carrier::testing::{
+    client_request, session_init, sql_worker_count, within_patience, ChannelWire,
+};
 use crate::carrier::{FrameHandler, FrameIntake, OutboundEnvelope, SessionSender};
 use crate::timing::FrameClock;
 use serde_json::{json, Value};
@@ -24,7 +29,6 @@ const GATE: Duration = Duration::from_millis(75);
 const PATIENCE: Duration = Duration::from_secs(5);
 const GATE_PATIENCE: Duration = Duration::from_secs(10);
 const SAMPLE_COUNT: usize = 8;
-const SQL_WORKERS: usize = 8;
 const READ_METHODS: [&str; 6] = [
     "tasks.list",
     "tasks.get",
@@ -131,6 +135,7 @@ fn emit_baseline(
     gate: &str,
     dispatch_workers: usize,
     methods: &Value,
+    sql_phases: &Value,
 ) -> Value {
     let record = json!({
         "kind": "bridge_concurrency_baseline",
@@ -140,7 +145,8 @@ fn emit_baseline(
         "git_revision": git_revision(Path::new(env!("CARGO_MANIFEST_DIR"))),
         "rust_toolchain": rust_toolchain(Path::new("rustc")),
         "dispatch_workers": dispatch_workers,
-        "sql_workers": SQL_WORKERS,
+        "sql_workers": sql_worker_count(),
+        "sql_phases": sql_phases,
         "methods": methods,
     });
     append_artifacts(output_dir, &record);
@@ -213,8 +219,46 @@ fn markdown_section(record: &Value) -> String {
             ));
         }
     }
+    section.push_str(&total_markdown(record));
+    section.push_str(&sql_markdown(record));
     section.push('\n');
     section
+}
+
+fn total_markdown(record: &Value) -> String {
+    let mut text = String::from("\n### Intake-to-handler total\n\n| Method | Count | Total p50 ms | Total p95 ms |\n| --- | ---: | ---: | ---: |\n");
+    for (method, stats) in record["methods"].as_object().unwrap() {
+        text.push_str(&format!(
+            "| {method} | {} | {} | {} |\n",
+            stats["served"], stats["p50_ms"], stats["p95_ms"]
+        ));
+    }
+    text
+}
+
+fn sql_markdown(record: &Value) -> String {
+    let mut text = String::from("\n### Test-only SQL boundaries\n\n| Method | Phase | Count | Sum ms | p50 ms | p95 ms | Max ms |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n");
+    for (method, phases) in record["sql_phases"].as_object().unwrap() {
+        for phase in [
+            "checkout",
+            "worker_handoff",
+            "service",
+            "transaction_setup",
+            "query",
+            "transaction_finish",
+        ] {
+            let metric = &phases[phase];
+            text.push_str(&format!(
+                "| {method} | {phase} | {} | {} | {} | {} | {} |\n",
+                metric["count"],
+                metric["sum_ms"],
+                metric["p50_ms"],
+                metric["p95_ms"],
+                metric["max_ms"]
+            ));
+        }
+    }
+    text
 }
 
 fn baseline_output_dir(fixture: &Path) -> PathBuf {
@@ -252,7 +296,7 @@ fn baseline_emitter_writes_self_describing_artifacts() {
         "p95_ms": 5.0, "max_ms": 6.0 });
     let methods = json!({ "tasks.list": { "served": 8, "queued": metric,
         "lock_wait": metric, "held": metric } });
-    let record = emit_baseline(dir.path(), "isolated", "none", 2, &methods);
+    let record = emit_baseline(dir.path(), "isolated", "none", 2, &methods, &json!({}));
     let revision = git_revision(Path::new(env!("CARGO_MANIFEST_DIR")));
     let toolchain = rust_toolchain(Path::new("rustc"));
     assert_eq!(record["git_revision"], revision);
@@ -379,6 +423,7 @@ struct Sample {
     history: HistorySample,
     next_id: u64,
     dispatch_workers: usize,
+    measurements: SqlMeasurements,
 }
 
 impl Sample {
@@ -407,6 +452,9 @@ impl Sample {
                 app.store.as_ref().map(crate::store::Store::read_pool),
             )
         };
+        let measurements = SqlMeasurements::default();
+        let query_measurements = measurements.clone();
+        let scheduled_measurements = measurements.clone();
         let dispatched = Arc::clone(&state);
         let handler = FrameHandler::new(Arc::clone(&clock), move |sender, frame, timer| {
             if frame.payload["method"].as_str() == Some("git.status")
@@ -420,7 +468,10 @@ impl Sample {
             crate::app::dispatch_frame(&dispatched, &peers, sender, frame, timer)
         })
         .with_sql_reads(read_pool, move |_sender, frame, _timer, connection| {
-            reads.call(frame, connection)
+            query_measurements.call(&reads, frame, connection)
+        })
+        .observe_sql(move |frame, checkout, handoff| {
+            scheduled_measurements.scheduled(frame, checkout, handoff);
         });
         let transport = crate::transport::generate_transport_keypair();
         let intake = FrameIntake::with_pool(handler, transport.clone(), 128, workers);
@@ -449,6 +500,7 @@ impl Sample {
             history,
             next_id: 1,
             dispatch_workers: workers,
+            measurements,
         }
     }
 
@@ -542,6 +594,7 @@ impl Sample {
             gate,
             self.dispatch_workers,
             methods,
+            &self.measurements.snapshot(),
         )
     }
 }
@@ -557,13 +610,39 @@ fn assert_no_app_lock(method: &str, stats: &Value) {
     }
 }
 
+fn assert_sql_measurements(record: &Value) {
+    for method in READ_METHODS {
+        for phase in [
+            "checkout",
+            "worker_handoff",
+            "service",
+            "transaction_setup",
+            "query",
+            "transaction_finish",
+        ] {
+            let measured = &record["sql_phases"][method][phase];
+            assert_eq!(
+                measured["count"], SAMPLE_COUNT,
+                "missing {method}.{phase}: {record}"
+            );
+            for field in ["sum_ms", "p50_ms", "p95_ms", "max_ms"] {
+                assert!(
+                    measured[field].as_f64().is_some(),
+                    "missing {method}.{phase}.{field}"
+                );
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn isolated_task_reads_publish_a_file_backed_baseline() {
     let mut sample = Sample::new(2, None);
     for i in 0..SAMPLE_COUNT {
         sample.reads(i, true).await;
     }
-    sample.baseline("isolated", "none");
+    let record = sample.baseline("isolated", "none");
+    assert_sql_measurements(&record);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -583,7 +662,8 @@ async fn task_reads_measure_wait_behind_an_app_held_write() {
     sample.read_all_while_held().await;
     release.assert_held();
     release.finish();
-    sample.baseline("app_held_write", "app mutex held for at least 75ms");
+    let record = sample.baseline("app_held_write", "app mutex held for at least 75ms");
+    assert_sql_measurements(&record);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -600,7 +680,8 @@ async fn task_reads_measure_queue_behind_off_lock_git_worker_work() {
     release.assert_held();
     release.finish();
     sample.answers(1).await;
-    sample.baseline("off_lock_git_worker", "Git worker held for at least 75ms");
+    let record = sample.baseline("off_lock_git_worker", "Git worker held for at least 75ms");
+    assert_sql_measurements(&record);
 }
 
 /// Measures the complete production list query, including row projections

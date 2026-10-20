@@ -23,6 +23,8 @@ pub struct ReadConnection {
     connection: Option<Connection>,
     pool: Arc<Pool>,
     permit: Option<OwnedSemaphorePermit>,
+    #[cfg(test)]
+    observer: Option<TransactionObserver>,
 }
 
 /// Typed query methods only. The underlying connection is never exposed to
@@ -69,11 +71,28 @@ impl ReadPool {
             connection: Some(connection),
             pool: self.inner.clone(),
             permit: Some(permit),
+            #[cfg(test)]
+            observer: None,
         }
     }
 }
 
+#[cfg(test)]
+type TransactionObserver =
+    Box<dyn Fn(std::time::Duration, std::time::Duration, std::time::Duration) + Send>;
+
 impl ReadConnection {
+    /// Test-only transaction boundaries; absent from the daemon and its stats.
+    #[cfg(test)]
+    pub(crate) fn observe_transactions(
+        &mut self,
+        observer: impl Fn(std::time::Duration, std::time::Duration, std::time::Duration)
+            + Send
+            + 'static,
+    ) {
+        self.observer = Some(Box::new(observer));
+    }
+
     /// One snapshot covers all rows the request needs. Results cannot borrow
     /// from the transaction, which ends before the connection becomes reusable.
     pub fn read<T>(
@@ -84,9 +103,19 @@ impl ReadConnection {
             .connection
             .as_mut()
             .expect("borrowed connection exists");
+        #[cfg(test)]
+        let started = std::time::Instant::now();
         let transaction = connection.transaction()?;
+        #[cfg(test)]
+        let began = std::time::Instant::now();
         let result = work(&ReadTransaction::new(&transaction));
+        #[cfg(test)]
+        let queried = std::time::Instant::now();
         transaction.commit()?;
+        #[cfg(test)]
+        if let Some(observer) = &self.observer {
+            observer(began - started, queried - began, queried.elapsed());
+        }
         Ok(result)
     }
 }

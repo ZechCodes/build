@@ -21,6 +21,8 @@ pub struct FrameHandler {
     pub(super) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
     pub(super) sql: Option<SqlHandler>,
+    #[cfg(test)]
+    pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
 }
 
 type SqlCall = dyn Fn(SessionSender, Frame, FrameTimer, Option<crate::store::ReadConnection>) -> Value
@@ -43,7 +45,18 @@ impl FrameHandler {
             dispatch: Arc::new(dispatch),
             session_end: Arc::new(|_| {}),
             sql: None,
+            #[cfg(test)]
+            sql_observer: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_sql(
+        mut self,
+        observer: impl Fn(&Frame, std::time::Duration, std::time::Duration) + Send + Sync + 'static,
+    ) -> Self {
+        self.sql_observer = Some(Arc::new(observer));
+        self
     }
 
     pub(crate) fn with_sql_reads(

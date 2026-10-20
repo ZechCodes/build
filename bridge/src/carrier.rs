@@ -31,6 +31,8 @@ use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 mod dispatch;
 mod sql;
 #[cfg(test)]
+mod sql_measurements;
+#[cfg(test)]
 mod sql_tests;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

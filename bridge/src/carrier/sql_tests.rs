@@ -217,9 +217,18 @@ async fn released_a_keeps_b(session_only: bool) {
     }
     assert_eq!(a.intake.dispatcher.sql_depths(), (1, 1));
     held.release();
+    assert_surviving_carrier_answers(&mut b).await;
+    assert_only_receipts(&mut a);
+    assert_reopened_session_answers(&a.intake, &b.carrier).await;
+}
+
+async fn assert_surviving_carrier_answers(b: &mut Client) {
     assert_eq!(b.reply().await["id"], 21);
     b.send(22, "thread.activity", json!({})).await;
     assert_eq!(b.reply().await["id"], 22);
+}
+
+fn assert_only_receipts(a: &mut Client) {
     // The original wire may retain receipts already sent, but never replies
     // computed after release. B is still the same open session.
     while let Ok(outbound) = a.rx.try_recv() {
@@ -227,9 +236,12 @@ async fn released_a_keeps_b(session_only: bool) {
             .get("ok")
             .is_none());
     }
-    a.intake.close_session("sql", &b.carrier);
-    assert_eq!(a.intake.dispatcher.sql_depths(), (0, 0));
-    let mut reopened = Client::attach(a.intake.clone(), transport::generate_session_key());
+}
+
+async fn assert_reopened_session_answers(intake: &Arc<FrameIntake>, carrier: &CarrierHandle) {
+    intake.close_session("sql", carrier);
+    assert_eq!(intake.dispatcher.sql_depths(), (0, 0));
+    let mut reopened = Client::attach(intake.clone(), transport::generate_session_key());
     reopened.send(23, "tasks.get", json!({})).await;
     assert_eq!(reopened.reply().await["id"], 23);
 }

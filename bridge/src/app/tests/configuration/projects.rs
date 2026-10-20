@@ -237,38 +237,60 @@ fn plain_folder_persists_and_remains_browsable_after_reload() {
 #[test]
 fn project_list_reads_metadata_off_lock_from_one_snapshot() {
     let (dir, repo) = init_repo();
-    let mut app = AppState::new(
-        repo,
-        dir.path().join("wt"),
-        "main",
-        true,
-        "/tmp/test-mcp.sock",
-    );
-    let expected = app.project_list();
-    let expected_id = app.project_at(0).id.clone();
+    let state = qa_state(&repo, dir.path()).shared();
+    let expected = frame_on_a_thread(&state, "s-before", "project.list", json!({}))
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the warmed project snapshot answers");
+    let expected_id = state.lock().unwrap().project_at(0).id.clone();
+    let captured = state.lock().unwrap().capture_project_snapshot_refresh();
     let (gate, gate_handle) = OffLockGate::new();
-    app.off_lock_project_list_gate = Some(gate);
-    let state = app.shared();
-
-    let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}));
+    let (completed, refreshed) = std::sync::mpsc::channel();
+    let observed_state = Arc::clone(&state);
+    let worker = std::thread::spawn(move || {
+        gate.arrive();
+        let lock_free = observed_state.try_lock().is_ok();
+        completed.send((captured.render(), lock_free)).unwrap();
+    });
     gate_handle.wait_for_arrival();
+
+    let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+        .recv_timeout(Duration::from_secs(10))
+        .expect("project.list reads the published snapshot while observation work is blocked");
+    assert_eq!(listed["ok"], true, "{listed:?}");
+    assert_eq!(listed["result"], expected["result"], "{listed:?}");
+    assert_eq!(listed["result"]["projects"][0]["project_id"], expected_id);
     let models = frame_on_a_thread(&state, "s-models", "models.list", json!({}))
         .recv_timeout(Duration::from_secs(10))
-        .expect("an unrelated foreground read answers while project metadata is blocked");
+        .expect("an unrelated read answers while project observations are blocked");
     assert_eq!(models["ok"], true, "{models:?}");
 
-    state.lock().unwrap().clear_projects_for_test();
+    {
+        let mut app = state.lock().unwrap();
+        app.clear_projects_for_test();
+        app.publish_snapshot_projection();
+    }
     gate_handle.release();
-    let listed = listed
+    let (observed, lock_free) = refreshed
         .recv_timeout(Duration::from_secs(30))
-        .expect("the project list answers once its metadata read is released");
-    assert_eq!(listed["ok"], true, "{listed:?}");
-    assert_eq!(listed["result"], expected, "{listed:?}");
-    assert_eq!(listed["result"]["projects"][0]["project_id"], expected_id);
+        .expect("the captured project observations finish after release");
+    worker.join().unwrap();
     assert!(
-        state.lock().unwrap().projects.is_empty(),
-        "the stale response must not restore a project removed while it ran"
+        lock_free,
+        "project metadata probes must run without the app lock"
     );
+    {
+        let app = state.lock().unwrap();
+        app.install_project_snapshot_refresh(observed);
+        app.publish_snapshot_projection();
+        assert!(
+            app.projects.is_empty(),
+            "stale observations cannot restore a removed project"
+        );
+    }
+    let after = frame_on_a_thread(&state, "s-after", "project.list", json!({}))
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the committed project removal remains published");
+    assert_eq!(after["result"]["projects"], json!([]), "{after:?}");
 }
 
 /// Registering a project opens the repository, shells out for its default

@@ -1,5 +1,6 @@
 use super::*;
 
+mod cache_publication;
 mod changeset;
 mod diff_cache;
 mod history;

@@ -412,6 +412,57 @@ fn busy_rpc(
     })
 }
 
+/// One ordinary owner mutation for phase diagnosis between full acceptance
+/// runs. This has no timing budget and is not part of the acceptance workload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "diagnostic only: one SetTopic against the full busy-state seed"]
+async fn diagnose_busy_topic_publication_phases() {
+    let mut busy = Busy::new();
+    let _ = wait_for_fixture_idle(&busy).await;
+    let clock = Arc::clone(&busy.state.lock().unwrap().frame_clock);
+    busy.samples = clock.capture_phases();
+    let (owner, agent) = busy.owners[0].clone();
+    let topic = "Diagnose topic publication";
+    let state = Arc::clone(&busy.state);
+    let acting_owner = owner.clone();
+    let acting_agent = agent.clone();
+    let response = tokio::task::spawn_blocking(move || {
+        let timer = clock.frame("mcp.control");
+        timer.sample_tool("set_topic");
+        let response = timer.lock(&state).on_agent_mcp_action(
+            &acting_owner,
+            &acting_agent,
+            BridgeAction::SetTopic {
+                topic: topic.into(),
+            },
+        );
+        drop(timer);
+        response
+    })
+    .await
+    .unwrap()
+    .expect("ordinary same-owner topic mutation succeeds");
+    assert_eq!(response["topic"], topic);
+    assert_acknowledged_snapshot(
+        &busy.view,
+        &owner,
+        &agent,
+        &BridgeAction::SetTopic {
+            topic: topic.into(),
+        },
+        &response,
+    );
+    let measurements = wait_for_fixture_idle(&busy).await;
+    assert_eq!(
+        measurements["mcp.control:set_topic"]["frame.held"]["count"],
+        1
+    );
+    println!(
+        "TASK709_TOPIC_DIAGNOSTIC {}",
+        json!({"diagnostic_only":true,"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"simulated_running_agents":AGENTS,"set_topic_mutations":1,"active_frames_at_capture":0,"phases_exclusive":true,"measurements":measurements})
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "realistic 200-conversation/190-worktree/700-task hold-time fixture"]
 async fn busy_writers_keep_app_lock_holds_below_budget() {

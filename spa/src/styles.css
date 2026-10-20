@@ -860,8 +860,8 @@ main#root.surface { max-width:none;
    hosting it.
    The scroller is the WRAPPER, not the table: a table wider than the column it
    sits in has to scroll in place, or a six-column run report takes the whole
-   conversation panel's width with it. Row separators only, no vertical rules —
-   the same flat, line-based surface every other list in the app is. */
+   conversation panel's width with it. Alignment, whitespace and subtle
+   alternating row shading keep the table readable without borders. */
 /* The one sign that a table runs wider than its column is a shadow on the edge
    there is still table to reach. A macOS scrollbar only shows itself
    mid-scroll, so a clipped last column reads as a rendering bug until the
@@ -901,14 +901,13 @@ main#root.surface { max-width:none;
    character per line. break-word keeps the column as wide as its longest word
    and still breaks a word that could not fit a line of its own. */
 .mdtable th, .mdtable td { padding:9px 16px 9px 0; text-align:left; vertical-align:top;
-  border-bottom:1px solid var(--line2); white-space:normal; overflow-wrap:break-word;
-  word-break:normal; }
+  border:0; white-space:normal; overflow-wrap:break-word; word-break:normal; }
 /* The header is the one row that names things, so it reads as ink and holds its
    line: a wrapped header over a scrolling table is unreadable. */
-.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; border-bottom:2px solid var(--line); }
+.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; }
+.mdtable tbody tr:nth-child(even) { background:color-mix(in srgb, var(--ink) 3%, transparent); }
 .mdtable td.md-cell-short { white-space:nowrap; }
 .mdtable td:not(.md-cell-short) { min-width:18ch; max-width:48ch; }
-.mdtable tr:last-child td { border-bottom:0; }
 .mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
 /* plan */
 /* The doc card sits INSIDE a panel, so it takes the inner step (--panel2) and

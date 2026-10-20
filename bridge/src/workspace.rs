@@ -13,6 +13,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 mod reservation;
 #[cfg(test)]
+pub(crate) mod read_work_counts;
+#[cfg(test)]
 use std::process::Command;
 
 pub const LOCKED_REFUSAL: &str = "Workspace is locked. Unlock it to delete it.";
@@ -459,6 +461,8 @@ impl WorkspaceRegistry {
     }
 
     pub fn list(&self, project_id: Option<&str>) -> Vec<&Workspace> {
+        #[cfg(test)]
+        read_work_counts::workspace_list(self.workspaces.len());
         let mut workspaces = self
             .workspaces
             .values()

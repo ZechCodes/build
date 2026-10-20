@@ -245,6 +245,8 @@ impl AppState {
         }
     }
     pub(in crate::app) fn snapshot_root(&self, path: &Path) -> PathBuf {
+        #[cfg(test)]
+        crate::workspace::read_work_counts::observed_root();
         if !self.snapshot_observations.ready {
             return Self::canonical_root(path);
         }

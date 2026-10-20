@@ -67,6 +67,8 @@ impl ProjectionOwnership {
         app.runs
             .iter()
             .find(|(owner, active)| {
+                #[cfg(test)]
+                crate::workspace::read_work_counts::owner_candidate();
                 !active.run.state.is_terminal()
                     && !self.is_project_owner(owner)
                     && app.projects.project_id_of(owner) == Some(workspace.project_id.as_str())
@@ -79,6 +81,8 @@ impl ProjectionOwnership {
         let active = &app.runs[owner];
         if let Some(project) = app.projects.project_id_of(owner) {
             if let Some(workspace) = workspaces.iter().find(|workspace| {
+                #[cfg(test)]
+                crate::workspace::read_work_counts::scope_candidate();
                 workspace.project_id == project
                     && (workspace.id == owner
                         || app.observed_same_path(&workspace.root, &active.worktree.path))
@@ -112,6 +116,8 @@ impl ProjectionOwnership {
             return;
         };
         if let Some(workspace) = workspaces.iter().find(|workspace| {
+            #[cfg(test)]
+            crate::workspace::read_work_counts::scope_candidate();
             workspace.project_id == project
                 && app.observed_same_path(&workspace.root, &active.worktree.path)
         }) {

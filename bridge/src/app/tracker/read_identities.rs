@@ -31,6 +31,8 @@ pub(super) struct ReadRosters {
 impl AppState {
     pub(super) fn task_identity_context(&self) -> TaskIdentityContext {
         let _ownership = self.begin_snapshot_ownership();
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("read_context.task_identity");
         let live = self
             .plans
             .iter()
@@ -73,6 +75,8 @@ impl AppState {
                 .list(Some(project_id))
                 .into_iter()
                 .find(|workspace| {
+                    #[cfg(test)]
+                    crate::workspace::read_work_counts::task_candidate();
                     self.observed_same_path(&workspace.root, root)
                         && self
                             .workspace_snapshot_conversation_owner(workspace)

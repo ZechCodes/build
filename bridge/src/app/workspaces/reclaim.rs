@@ -157,6 +157,18 @@ pub(in crate::app) fn probe_reclaim_stop_for_test() -> (
 }
 
 impl AppState {
+    /// Owned reservation facts for off-lock observational destination checks.
+    pub(in crate::app) fn read_reclaim_reservations(&self) -> Vec<(PathBuf, Instant)> {
+        self.reclaim_reserved
+            .values()
+            .map(|reservation| {
+                (
+                    reservation.root.clone(),
+                    reservation.since + RESERVATION_LIMIT,
+                )
+            })
+            .collect()
+    }
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
     ///
@@ -527,6 +539,11 @@ impl AppState {
     #[cfg(test)]
     pub(in crate::app) fn reserve_workspace_for_test(&mut self, workspace_id: &str) {
         self.reserve_workspace(workspace_id);
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn release_workspace_reservation_for_test(&mut self, workspace_id: &str) {
+        self.release_reservation(workspace_id);
     }
 
     fn release_reservation(&mut self, workspace_id: &str) {

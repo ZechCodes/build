@@ -226,6 +226,15 @@ impl AppState {
         if !self.snapshot_observations.ready {
             return worktree.branch();
         }
+        self.observed_run_branch(owner, worktree)
+    }
+
+    /// Pure producer input, including callers constructing the initial context.
+    pub(in crate::app) fn observed_run_branch(
+        &self,
+        owner: &str,
+        worktree: &crate::worktree::Worktree,
+    ) -> String {
         self.snapshot_observations
             .branches
             .get(owner)

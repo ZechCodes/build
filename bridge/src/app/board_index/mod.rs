@@ -9,6 +9,14 @@ use std::collections::HashMap;
 use crate::attention::Attention;
 use crate::store::PersistedArchivedWorktree;
 
+#[cfg(test)]
+thread_local! { static ARCHIVE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(in crate::app) fn take_archive_visits() -> usize {
+    ARCHIVE_VISITS.with(|count| count.replace(0))
+}
+
 pub(in crate::app) use attention::AttentionIndex;
 pub(in crate::app) use attention::EntityClock;
 pub(in crate::app) use cache::{
@@ -61,7 +69,10 @@ impl BoardIndex {
     pub(in crate::app) fn archived_values(
         &self,
     ) -> impl Iterator<Item = &PersistedArchivedWorktree> {
-        self.archived_worktrees.values()
+        let values = self.archived_worktrees.values();
+        #[cfg(test)]
+        let values = values.inspect(|_| ARCHIVE_VISITS.with(|count| count.set(count.get() + 1)));
+        values
     }
 
     /// Boot hydration replaces only the durable archive index, after Store has

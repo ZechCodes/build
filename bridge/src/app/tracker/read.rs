@@ -14,12 +14,31 @@ pub(in crate::app) struct TaskReadContext {
     user_session: UserSession,
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct TaskReadFence {
     project_id: String,
     project_path: String,
 }
 
+impl TaskReadFence {
+    pub(in crate::app) fn project_id(&self) -> &str {
+        &self.project_id
+    }
+}
+
 impl AppState {
+    /// Mixed observations need project admission only, without identity path probes.
+    pub(in crate::app) fn task_scope_read_context(&self) -> TaskReadContext {
+        TaskReadContext {
+            project_paths: self
+                .projects
+                .iter()
+                .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
+                .collect(),
+            identities: Default::default(),
+            user_session: self.user_session,
+        }
+    }
     /// Producer-only capture. Path aliases are resolved here, never by a read.
     pub(in crate::app) fn task_read_context(&self) -> TaskReadContext {
         TaskReadContext {

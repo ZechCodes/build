@@ -2,6 +2,7 @@ use super::testing::{client_request, session_init};
 use super::*;
 use crate::test_support::off_lock::OffLockGate;
 use crate::timing::FrameClock;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 #[test]
@@ -271,4 +272,216 @@ async fn callers_waiting_for_connections_still_count_against_backlog() {
         assert_eq!(client.reply().await["ok"], true);
     }
     assert_eq!(client.intake.dispatcher.sql_depths(), (0, 0));
+}
+
+fn spa_sql_read_limit() -> usize {
+    include_str!("../../../spa/src/core/sqlReadCredits.js")
+        .lines()
+        .find_map(|line| line.strip_prefix("export const SQL_READ_LIMIT = "))
+        .expect("the SPA exports its production SQL credit limit")
+        .trim_end_matches(';')
+        .parse()
+        .expect("the SPA credit limit is a numeric constant")
+}
+
+#[test]
+fn sql_backlog_covers_two_actual_spa_credit_batches() {
+    assert!(
+        sql::SQL_BACKLOG >= 2 * spa_sql_read_limit(),
+        "one restored opening must admit the old and new SPA credit batches"
+    );
+}
+
+struct HeldReadPool {
+    client: Client,
+    connections: Vec<crate::store::ReadConnection>,
+    _store: crate::store::Store,
+    _temporary: tempfile::TempDir,
+}
+
+impl HeldReadPool {
+    async fn new() -> Self {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = crate::store::Store::new(temporary.path()).unwrap();
+        let pool = store.read_pool();
+        let mut connections = Vec::new();
+        for _ in 0..sql::SQL_WORKERS {
+            connections.push(pool.acquire().await);
+        }
+        let handler = FrameHandler::new(
+            FrameClock::new(),
+            |_, frame, _| json!({"id":frame.payload["id"],"ok":true}),
+        )
+        .with_sql_reads(Some(pool), |_, frame, _, connection| {
+            assert!(connection.is_some());
+            json!({"id":frame.payload["id"],"ok":true})
+        });
+        Self {
+            client: Client::new(handler),
+            connections,
+            _store: store,
+            _temporary: temporary,
+        }
+    }
+}
+
+async fn send_sql_batch(client: &Client, first_id: usize, count: usize) {
+    for id in first_id..first_id + count {
+        // Different queries cannot fold: every caller must occupy a B slot.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            client.send(id, "tasks.get", json!({"id":id})),
+        )
+        .await
+        .expect("each request within B is admitted while the pool is held");
+    }
+}
+
+async fn admit_restored_batches(client: &Client) {
+    let limit = spa_sql_read_limit();
+    assert!(sql::SQL_BACKLOG >= 2 * limit);
+    send_sql_batch(client, 0, limit).await;
+    assert_eq!(client.intake.dispatcher.sql_depths(), (limit, 1));
+    // Restore resets the sender credits only. The bridge sees the same carrier,
+    // key and opening, with its old requests still waiting for a connection.
+    send_sql_batch(client, limit, limit).await;
+    assert_eq!(client.intake.dispatcher.sql_depths(), (2 * limit, 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_opening_accepts_old_and_restored_credit_batches_with_all_connections_held() {
+    let mut fixture = HeldReadPool::new().await;
+    admit_restored_batches(&fixture.client).await;
+    assert_only_receipts(&mut fixture.client);
+    fixture.connections.pop();
+    let mut replies = std::collections::HashSet::new();
+    for _ in 0..2 * spa_sql_read_limit() {
+        let reply = fixture.client.reply().await;
+        assert_eq!(reply["ok"], true);
+        replies.insert(reply["id"].as_u64().unwrap() as usize);
+    }
+    assert_eq!(
+        replies,
+        (0..2 * spa_sql_read_limit()).collect::<std::collections::HashSet<_>>()
+    );
+    assert_eq!(fixture.client.intake.dispatcher.sql_depths(), (0, 0));
+}
+
+fn park_ordered_reset_batch(client: &Client) -> (Arc<AtomicUsize>, tokio::task::JoinHandle<()>) {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let observed = attempts.clone();
+    let intake = client.intake.clone();
+    let carrier = client.carrier.clone();
+    let key = client.key.clone();
+    let parked = tokio::spawn(async move {
+        for id in sql::SQL_BACKLOG..sql::SQL_BACKLOG + spa_sql_read_limit() {
+            let frame = client_request(
+                &key,
+                "sql",
+                "data",
+                json!({"id":id,"method":"tasks.get","params":{"id":id}}),
+            );
+            observed.fetch_add(1, Ordering::SeqCst);
+            if intake.accept(frame, &carrier).await.is_err() {
+                break;
+            }
+        }
+    });
+    (attempts, parked)
+}
+
+async fn assert_control_and_snapshot_progress(client: &mut Client) {
+    for (id, method) in [(100, "ping"), (101, "bridge.stats"), (102, "tasks.columns")] {
+        client.send(id, method, json!({})).await;
+        let reply = client.reply().await;
+        assert_eq!(reply["id"], id);
+        assert_eq!(reply["ok"], true);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn repeated_restore_parks_one_intake_without_busy_and_close_releases_its_backlog() {
+    let mut fixture = HeldReadPool::new().await;
+    admit_restored_batches(&fixture.client).await;
+    // Keep the regression valid if B later grows beyond the required 2N.
+    send_sql_batch(
+        &fixture.client,
+        2 * spa_sql_read_limit(),
+        sql::SQL_BACKLOG - 2 * spa_sql_read_limit(),
+    )
+    .await;
+    let (attempts, mut parked) = park_ordered_reset_batch(&fixture.client);
+    assert!(tokio::time::timeout(Duration::from_millis(40), &mut parked)
+        .await
+        .is_err());
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.client.intake.dispatcher.sql_depths(),
+        (sql::SQL_BACKLOG, 1)
+    );
+    assert_only_receipts(&mut fixture.client);
+    let mut other = Client::attach(fixture.client.intake.clone(), fixture.client.key.clone());
+    assert_control_and_snapshot_progress(&mut other).await;
+    fixture.client.intake.close_carrier(&fixture.client.carrier);
+    tokio::time::timeout(Duration::from_secs(1), parked)
+        .await
+        .expect("close wakes the parked carrier intake")
+        .unwrap();
+    assert_eq!(fixture.client.intake.dispatcher.sql_depths(), (0, 0));
+    assert_only_receipts(&mut fixture.client);
+    other.send(200, "tasks.get", json!({})).await;
+    assert_eq!(other.intake.dispatcher.sql_depths(), (1, 1));
+    fixture.connections.pop();
+    assert_eq!(other.reply().await["id"], 200);
+}
+
+async fn send_gated_generation(client: &Client, generation: &str) {
+    for id in 0..sql::SQL_WORKERS {
+        client
+            .send(id, "tasks.get", json!({"id":id,"generation":generation}))
+            .await;
+    }
+}
+
+fn release_generation(held: &crate::test_support::off_lock::OffLockGateHandle) {
+    for _ in 0..sql::SQL_WORKERS {
+        held.release();
+    }
+}
+
+fn wait_for_generation(held: &crate::test_support::off_lock::OffLockGateHandle) {
+    for _ in 0..sql::SQL_WORKERS {
+        held.wait_for_arrival();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn old_opening_completions_are_fenced_after_reopening_with_reused_request_ids() {
+    let (old_gate, old_held) = OffLockGate::new();
+    let (new_gate, new_held) = OffLockGate::new();
+    let handler = FrameHandler::new(FrameClock::new(), move |_, frame, _| {
+        let generation = &frame.payload["params"]["generation"];
+        match generation.as_str() {
+            Some("old") => old_gate.arrive(),
+            Some("new") => new_gate.arrive(),
+            _ => {}
+        }
+        json!({"id":frame.payload["id"],"ok":true,"generation":generation})
+    });
+    let mut old = Client::new(handler);
+    send_gated_generation(&old, "old").await;
+    wait_for_generation(&old_held);
+    old.intake.close_carrier(&old.carrier);
+    let mut new = Client::attach(old.intake.clone(), transport::generate_session_key());
+    send_gated_generation(&new, "new").await;
+    release_generation(&old_held);
+    // All workers reaching the new barrier proves every old callback finished
+    // its reply path after the replacement opening was already active.
+    wait_for_generation(&new_held);
+    assert_only_receipts(&mut old);
+    assert_only_receipts(&mut new);
+    release_generation(&new_held);
+    for _ in 0..sql::SQL_WORKERS {
+        assert_eq!(new.reply().await["generation"], "new");
+    }
 }

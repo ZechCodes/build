@@ -38,11 +38,16 @@ impl Fixture {
         app.session_registry
             .test_install_token(agent.clone(), TOKEN.into());
         app.initialize_read_context();
-        let plane = ControlPlane::new(Arc::clone(&app.frame_clock));
+        app.initialize_snapshot_projection();
+        // Exercise the real initialized producers and control socket without
+        // app.shared()'s background delivery services. Those services would
+        // independently consume the no-drain sentinel and retire fake routers.
+        let state = Arc::new(Mutex::new(app));
+        let plane = ControlPlane::new(Arc::clone(&state.lock().unwrap().frame_clock));
         Self {
             _root: root,
             _repo: repo,
-            state: app.shared(),
+            state,
             plane,
             project,
             owner,

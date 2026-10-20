@@ -20,12 +20,9 @@ impl AppState {
         let _phase = crate::timing::phase_samples::phase("publication.global");
         let (cache, owners) = previous.global.as_ref()?.refresh(self, requested)?;
         let mut delta = cache.publish(self, delta, previous);
-        // The owner publisher already refreshes requested detail rows. Other
-        // clock, alias and shared-root dependents need the same incidental
-        // refresh that a full metadata publication would have supplied.
-        for owner in owners.difference(requested) {
-            delta = self.prepare_workspace_snapshot_details(delta, previous, Some(owner));
-        }
+        // Refresh requested and incidental clock/alias/root dependencies in
+        // one pass. The owner publisher only adds named agent rows and history.
+        delta = self.prepare_workspace_snapshot_details_for_owners(delta, previous, &owners);
         let facts = self.push_facts_incremental_snapshot(cache.lists(), &owners);
         let delta = self.prepare_observation_inputs(delta, previous);
         Some(delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache)))

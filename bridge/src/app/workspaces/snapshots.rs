@@ -14,15 +14,39 @@ use crate::app::snapshot_projection::work_counts::detail_scans;
 impl AppState {
     pub(in crate::app) fn prepare_workspace_snapshot_details(
         &self,
-        mut delta: SnapshotDelta,
+        delta: SnapshotDelta,
         previous: &ReadView,
         owner: Option<&str>,
     ) -> SnapshotDelta {
+        let owners = owner.map(|owner| BTreeSet::from([owner.to_owned()]));
+        self.prepare_workspace_snapshot_details_scoped(delta, previous, owners.as_ref())
+    }
+
+    pub(in crate::app) fn prepare_workspace_snapshot_details_for_owners(
+        &self,
+        delta: SnapshotDelta,
+        previous: &ReadView,
+        owners: &BTreeSet<String>,
+    ) -> SnapshotDelta {
+        self.prepare_workspace_snapshot_details_scoped(delta, previous, Some(owners))
+    }
+
+    fn prepare_workspace_snapshot_details_scoped(
+        &self,
+        mut delta: SnapshotDelta,
+        previous: &ReadView,
+        owners: Option<&BTreeSet<String>>,
+    ) -> SnapshotDelta {
+        if owners.is_some_and(BTreeSet::is_empty) {
+            return delta;
+        }
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.workspace_details");
         #[cfg(test)]
-        crate::app::snapshot_projection::work_counts::workspace_details(owner.is_none());
-        let changed = self.snapshot_changed_agent_ids(previous, owner);
+        crate::app::snapshot_projection::work_counts::workspace_details(owners.is_none());
+        #[cfg(test)]
+        let scan_phase = crate::timing::phase_samples::phase("publication.workspace_details.scan");
+        let changed = self.snapshot_changed_agent_ids(previous, owners);
         let mut affected = BTreeSet::new();
         let mut retained = BTreeSet::new();
         for key in previous
@@ -33,22 +57,31 @@ impl AppState {
             detail_scans::previous_base();
             if previous
                 .get(key.method, &key.owner)
-                .is_some_and(|row| depends_on_owner(&row, owner, &changed))
+                .is_some_and(|row| depends_on_owners(&row, owners, &changed))
             {
                 affected.insert(key.owner.clone());
             }
         }
         #[cfg(test)]
         detail_scans::registry_scan();
+        let mut selected = Vec::new();
         for workspace in self.workspaces.list(None) {
             #[cfg(test)]
             detail_scans::registry_row();
             if !affected.contains(&workspace.id)
-                && !self.workspace_snapshot_depends(workspace, owner, &changed)
+                && !self.workspace_snapshot_depends(workspace, owners, &changed)
             {
                 continue;
             }
             affected.insert(workspace.id.clone());
+            selected.push(workspace);
+        }
+        #[cfg(test)]
+        drop(scan_phase);
+        #[cfg(test)]
+        let render_phase =
+            crate::timing::phase_samples::phase("publication.workspace_details.render");
+        for workspace in selected {
             #[cfg(test)]
             detail_scans::base_render();
             let value = self.workspace_snapshot_base(workspace);
@@ -67,6 +100,11 @@ impl AppState {
                 &mut retained,
             );
         }
+        #[cfg(test)]
+        drop(render_phase);
+        #[cfg(test)]
+        let _tombstone_phase =
+            crate::timing::phase_samples::phase("publication.workspace_details.tombstones");
         for key in previous.keys().filter(|key| key.method == "workspace.get") {
             #[cfg(test)]
             detail_scans::tombstone_key();
@@ -116,38 +154,42 @@ impl AppState {
     fn snapshot_changed_agent_ids(
         &self,
         previous: &ReadView,
-        owner: Option<&str>,
+        owners: Option<&BTreeSet<String>>,
     ) -> BTreeSet<String> {
-        let Some(owner) = owner else {
+        let Some(owners) = owners else {
             return BTreeSet::new();
         };
-        let current = self
-            .entity_agents(owner)
-            .ok()
-            .into_iter()
-            .flat_map(|roster| roster.iter().map(|agent| agent.id.clone()));
-        let previous_row = previous.get("agent.list", owner);
-        let previous = previous_row
-            .as_deref()
-            .into_iter()
-            .flat_map(|row| row["agents"].as_array().into_iter().flatten())
-            .filter_map(|agent| agent["id"].as_str().map(str::to_owned));
-        current.chain(previous).collect()
+        let mut changed = BTreeSet::new();
+        for owner in owners {
+            if let Ok(roster) = self.entity_agents(owner) {
+                changed.extend(roster.iter().map(|agent| agent.id.clone()));
+            }
+            if let Some(row) = previous.get("agent.list", owner) {
+                changed.extend(
+                    row["agents"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|agent| agent["id"].as_str().map(str::to_owned)),
+                );
+            }
+        }
+        changed
     }
 
     fn workspace_snapshot_depends(
         &self,
         workspace: &Workspace,
-        owner: Option<&str>,
+        owners: Option<&BTreeSet<String>>,
         changed: &BTreeSet<String>,
     ) -> bool {
-        let Some(owner) = owner else {
+        let Some(owners) = owners else {
             return true;
         };
         let Some(workspace_owner) = self.workspace_snapshot_conversation_owner(workspace) else {
             return false;
         };
-        workspace_owner == owner
+        owners.contains(&workspace_owner)
             || self
                 .entity_agents(&workspace_owner)
                 .ok()
@@ -193,11 +235,17 @@ impl AppState {
     }
 }
 
-fn depends_on_owner(row: &Value, owner: Option<&str>, changed: &BTreeSet<String>) -> bool {
-    let Some(owner) = owner else {
+fn depends_on_owners(
+    row: &Value,
+    owners: Option<&BTreeSet<String>>,
+    changed: &BTreeSet<String>,
+) -> bool {
+    let Some(owners) = owners else {
         return true;
     };
-    row["entity_id"].as_str() == Some(owner)
+    row["entity_id"]
+        .as_str()
+        .is_some_and(|owner| owners.contains(owner))
         || row["thread"]["agent"]["id"]
             .as_str()
             .is_some_and(|id| changed.contains(id))
@@ -207,6 +255,12 @@ fn depends_on_owner(row: &Value, owner: Option<&str>, changed: &BTreeSet<String>
             .flatten()
             .filter_map(|agent| agent["conversation_id"].as_str())
             .any(|id| changed.contains(id))
+}
+
+#[cfg(test)]
+fn depends_on_owner(row: &Value, owner: Option<&str>, changed: &BTreeSet<String>) -> bool {
+    let owners = owner.map(|owner| BTreeSet::from([owner.to_owned()]));
+    depends_on_owners(row, owners.as_ref(), changed)
 }
 
 #[cfg(test)]

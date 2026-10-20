@@ -240,7 +240,7 @@ impl AppState {
                 &previous,
                 &owners,
             ) {
-                Some(delta) => self.prepare_snapshot_owner_rows(delta, &previous, &owners, true),
+                Some(delta) => self.prepare_snapshot_owner_rows(delta, &previous, &owners, false),
                 None => self.prepare_fallback_snapshot_projection(&previous),
             },
         )

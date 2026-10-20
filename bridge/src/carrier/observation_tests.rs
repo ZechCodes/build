@@ -151,6 +151,7 @@ async fn mixed_observation_prepares_on_sql_and_releases_all_connections_before_i
         })
     });
     let handler = handler.with_snapshot_reads(|frame| json!({"id":frame.payload["id"],"ok":true}));
+    let worker_starts = handler.observation_worker_starts();
     let mut client = Client::new(handler);
     for id in 0..sql::IO_WORKERS {
         client
@@ -178,9 +179,26 @@ async fn mixed_observation_prepares_on_sql_and_releases_all_connections_before_i
     assert_eq!(client.reply().await["id"], 100);
     client.send(101, "ping", json!({})).await;
     assert_eq!(client.reply().await["id"], 101);
+    client
+        .send(102, "tasks.review.get", json!({"unique":102}))
+        .await;
+    assert_eq!(
+        client.intake.dispatcher.observation_depths(),
+        (1, 1),
+        "the ninth mixed job stays in admission until physical I/O completes"
+    );
+    assert_eq!(worker_starts.load(Ordering::SeqCst), sql::IO_WORKERS);
+    held.release();
+    held.wait_for_arrival();
     for _ in 0..sql::IO_WORKERS {
         held.release();
     }
+    let mut answers = std::collections::BTreeSet::new();
+    for _ in 0..=sql::IO_WORKERS {
+        answers.insert(client.reply().await["id"].as_u64().unwrap());
+    }
+    assert_eq!(answers, (0..8).chain([102]).collect());
+    assert_eq!(worker_starts.load(Ordering::SeqCst), sql::IO_WORKERS);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -572,4 +590,51 @@ async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones(
         sql::SQL_WORKERS,
         "mixed and ordinary SQL must reuse the preaccept executor"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_mixed_io_starts_without_waking_the_coordinator_runtime() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let (sql_gate, sql_held) = OffLockGate::new();
+    let (io_gate, io_held) = OffLockGate::new();
+    let prepared = Arc::new(tokio::sync::Notify::new());
+    let preparing = prepared.clone();
+    let (io_arrived, io_arrivals) = std::sync::mpsc::channel();
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
+        .with_observation_reads(Some(store.read_pool()), move |frame, connection| {
+            assert!(connection.is_some());
+            assert!(std::thread::current()
+                .name()
+                .unwrap()
+                .starts_with("bridge-sql-"));
+            preparing.notify_one();
+            sql_gate.arrive();
+            drop(connection);
+            let io_gate = io_gate.clone();
+            let io_arrived = io_arrived.clone();
+            Box::new(move || {
+                let worker = std::thread::current().name().unwrap().to_owned();
+                let _ = io_arrived.send(worker);
+                io_gate.arrive();
+                json!({"id":frame.payload["id"],"ok":true})
+            })
+        });
+    handler.start_read_workers().unwrap();
+    let mut client = Client::new(handler);
+    client.send(1, "tasks.review.diff", json!({})).await;
+    tokio::time::timeout(Duration::from_secs(5), prepared.notified())
+        .await
+        .expect("SQL preparation reaches its gate");
+    // There is exactly one Tokio thread. Once SQL is released, synchronously
+    // waiting here prevents the coordinator from receiving any runtime wake.
+    // A SQL-to-I/O handoff must proceed on the dedicated physical workers.
+    drop(sql_held);
+    let arrived = io_arrivals.recv_timeout(Duration::from_secs(2));
+    // Disconnect every gate before asserting, including the expected RED path.
+    // If the old runtime hop resumes after timeout, its I/O cannot stay blocked.
+    drop(io_held);
+    let worker = arrived.expect("prepared I/O starts without a coordinator runtime wake");
+    assert!(worker.starts_with("bridge-io-"));
+    assert_eq!(client.reply().await["id"], 1);
 }

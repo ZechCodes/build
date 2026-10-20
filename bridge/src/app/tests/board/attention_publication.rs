@@ -1,6 +1,8 @@
 use super::*;
 use crate::app::snapshot_projection::work_counts;
 
+mod status;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     state: Arc<Mutex<AppState>>,

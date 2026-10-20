@@ -1,6 +1,8 @@
 //! Read-only history/review tools retain their envelope without mutation turns.
 use super::*;
 
+mod fallback;
+
 struct PausedRead {
     gate: Option<OffLockGateHandle>,
     reading: Option<tokio::task::JoinHandle<Value>>,

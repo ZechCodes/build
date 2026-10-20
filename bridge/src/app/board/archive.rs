@@ -9,6 +9,8 @@ use std::path::PathBuf;
 impl AppState {
     /// Capture bounded metadata per retained archive row, without joining or rendering.
     pub(in crate::app) fn archive_read_input(&self) -> ArchiveReadInput {
+        #[cfg(test)]
+        crate::app::observation_reads::capture_metrics::record("archive_scan", "");
         let plans = self
             .plans
             .iter()

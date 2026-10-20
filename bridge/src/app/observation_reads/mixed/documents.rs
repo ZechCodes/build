@@ -19,6 +19,8 @@ impl Documents {
             app.plans
                 .iter()
                 .map(|(id, active)| {
+                    #[cfg(test)]
+                    crate::app::observation_reads::capture_metrics::record("document", id);
                     (
                         id.clone(),
                         Document {

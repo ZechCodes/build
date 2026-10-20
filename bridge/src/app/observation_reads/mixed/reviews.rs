@@ -18,6 +18,11 @@ impl ReviewSources {
     pub(super) fn capture(app: &AppState) -> Self {
         let mut checkouts: HashMap<String, Vec<(String, PathBuf)>> = HashMap::new();
         for workspace in app.workspaces.list(None) {
+            #[cfg(test)]
+            crate::app::observation_reads::capture_metrics::record(
+                "review_workspace",
+                &workspace.id,
+            );
             checkouts
                 .entry(workspace.project_id.clone())
                 .or_default()
@@ -28,11 +33,20 @@ impl ReviewSources {
                         .map(|directory| (directory.source_id.clone(), directory.path.clone())),
                 );
         }
+        #[cfg(test)]
+        crate::app::observation_reads::capture_metrics::record("reservation_scan", "");
         Self {
             projects: app
                 .projects
                 .iter()
-                .map(|project| (project.id.clone(), project.sources.clone()))
+                .map(|project| {
+                    #[cfg(test)]
+                    crate::app::observation_reads::capture_metrics::record(
+                        "review_project",
+                        &project.id,
+                    );
+                    (project.id.clone(), project.sources.clone())
+                })
                 .collect(),
             checkouts,
             reservations: app.read_reclaim_reservations(),

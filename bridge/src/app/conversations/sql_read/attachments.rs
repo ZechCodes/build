@@ -21,6 +21,8 @@ impl AttachmentReadContext {
             generations: HashMap::new(),
         };
         for owner in app.plans.keys().chain(app.runs.keys()) {
+            #[cfg(test)]
+            crate::app::observation_reads::capture_metrics::record("thread_owner", owner);
             let Ok(roster) = app.entity_agents(owner) else {
                 continue;
             };

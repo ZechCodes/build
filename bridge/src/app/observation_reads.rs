@@ -4,6 +4,9 @@
 pub(in crate::app) mod mixed;
 pub(in crate::app) mod scopes;
 
+#[cfg(test)]
+pub(in crate::app) mod capture_metrics;
+
 use super::read_view::ReadViewSlot;
 use super::AppState;
 use crate::api::{self, ApiError};
@@ -43,6 +46,8 @@ pub(in crate::app) struct ObservationContext {
 
 impl ObservationContext {
     pub fn capture(app: &AppState) -> Self {
+        #[cfg(test)]
+        capture_metrics::record("full", "");
         #[cfg(test)]
         let observed = app.frame_clock.observes_requests().then(|| Frame {
             session_id: "observation-diagnostic".into(),

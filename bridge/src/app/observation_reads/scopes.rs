@@ -144,6 +144,8 @@ impl ScopeReadContext {
             .projects
             .iter()
             .map(|project| {
+                #[cfg(test)]
+                super::capture_metrics::record("scope_project", &project.id);
                 let scan = app.board.diff().external_scan(&project.id);
                 (
                     project.id.clone(),
@@ -162,12 +164,18 @@ impl ScopeReadContext {
             .workspaces
             .list(None)
             .into_iter()
-            .map(|workspace| (workspace.id.clone(), workspace.clone()))
+            .map(|workspace| {
+                #[cfg(test)]
+                super::capture_metrics::record("scope_workspace", &workspace.id);
+                (workspace.id.clone(), workspace.clone())
+            })
             .collect();
         let runs = app
             .runs
             .iter()
             .map(|(id, run)| {
+                #[cfg(test)]
+                super::capture_metrics::record("scope_run", id);
                 let git_root = if !app.snapshot_projection_initialized() {
                     // No observation is admitted before warming. Cold test roots
                     // can still carry empty, entirely in-memory contexts.
@@ -210,6 +218,8 @@ impl ScopeReadContext {
         });
         let mut lineages = BTreeMap::<String, Vec<String>>::new();
         for run in ordered {
+            #[cfg(test)]
+            super::capture_metrics::record("scope_lineage", &run.run.id.0);
             if let Some(task) = &run.run.plan_id {
                 lineages
                     .entry(task.0.clone())

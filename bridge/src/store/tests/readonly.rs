@@ -2,7 +2,7 @@ use super::support::*;
 use super::*;
 
 #[tokio::test]
-async fn readonly_history_matches_bounded_pages_and_restores_skeleton_metadata() {
+async fn readonly_history_matches_bounded_pages_and_reads_indexed_counters() {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::new(dir.path()).unwrap();
     let mut record = run_record("run-readonly", None, NOW);
@@ -29,11 +29,11 @@ async fn readonly_history_matches_bounded_pages_and_restores_skeleton_metadata()
     let mut connection = store.read_pool().acquire().await;
     connection
         .read(|read| {
-            let (owner, skeleton) = read.load_agent_skeleton(&id).unwrap().unwrap();
+            let (owner, skeleton) = read.load_agent_record(&id).unwrap().unwrap();
             assert_eq!(owner, record.id);
             assert!(skeleton.thread.items.is_empty());
-            assert_eq!(skeleton.thread.total_item_count(), count);
-            assert_eq!(skeleton.thread.last_sequence(), last);
+            assert_eq!(read.thread_item_count(&id).unwrap(), count);
+            assert_eq!(read.thread_last_sequence(&id).unwrap(), last);
             let actual = read
                 .thread_conversation_page_newest_activity(&id, None, None, 3, false)
                 .unwrap();
@@ -63,14 +63,14 @@ async fn readonly_binding_and_rows_stay_on_one_generation_through_reset() {
     let mut reader = pool.acquire().await;
     reader
         .read(|read| {
-            let original = read.load_agent_skeleton(&id).unwrap().unwrap().1.thread;
+            let original = read.load_agent_record(&id).unwrap().unwrap().1.thread;
             record.agents[0].thread.generation_revision += 1;
             record.agents[0].thread.items.clear();
             store
                 .reset_conversation(&id, &record.agents, &HashMap::new(), &HashSet::new())
                 .unwrap();
             assert_eq!(
-                read.load_agent_skeleton(&id)
+                read.load_agent_record(&id)
                     .unwrap()
                     .unwrap()
                     .1
@@ -83,9 +83,10 @@ async fn readonly_binding_and_rows_stay_on_one_generation_through_reset() {
         .unwrap();
     reader
         .read(|read| {
-            let fresh = read.load_agent_skeleton(&id).unwrap().unwrap().1.thread;
+            let fresh = read.load_agent_record(&id).unwrap().unwrap().1.thread;
             assert_eq!(fresh.generation_revision, 1);
-            assert_eq!(fresh.total_item_count(), 0);
+            assert_eq!(read.thread_item_count(&id).unwrap(), 0);
+            assert_eq!(read.thread_last_sequence(&id).unwrap(), 0);
             assert!(read.thread_page(&id, None, 10).unwrap().is_empty());
         })
         .unwrap();
@@ -202,7 +203,7 @@ async fn readonly_legacy_thread_identity_matches_roster_restore() {
     let mut reader = pool.acquire().await;
     reader
         .read(|read| {
-            let (_, restored) = read.load_agent_skeleton(&id).unwrap().unwrap();
+            let (_, restored) = read.load_agent_record(&id).unwrap().unwrap();
             assert_eq!(restored.thread.agent.id, id);
             assert_eq!(restored.thread.id, format!("thread:{id}"));
             assert_eq!(
@@ -222,7 +223,7 @@ async fn readonly_legacy_thread_identity_matches_roster_restore() {
     let writes = store.total_changes();
     reader
         .read(|read| {
-            let (_, restored) = read.load_agent_skeleton(&id).unwrap().unwrap();
+            let (_, restored) = read.load_agent_record(&id).unwrap().unwrap();
             assert_eq!(restored.thread.agent.id, id);
             assert_eq!(restored.thread.id, reset_id);
             assert_eq!(restored.thread.generation_revision, 2);

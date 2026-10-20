@@ -1,9 +1,7 @@
 //! Conversation identity and metadata from the same request snapshot as pages.
 use super::entities::primary_agent_id;
 use super::{
-    stored_conversation_summary, PersistedPlan, PersistedRun, ReadTransaction, Store, StoreError,
-    THREAD_FIRST_ATTENTION_AFTER_SQL, THREAD_ITEM_COUNT_SQL, THREAD_LAST_ATTENTION_SQL,
-    THREAD_LAST_MESSAGE_SQL, THREAD_LAST_OWN_MESSAGE_SQL, THREAD_LAST_SEQUENCE_SQL,
+    PersistedPlan, PersistedRun, ReadTransaction, Store, StoreError, THREAD_LAST_SEQUENCE_SQL,
 };
 use crate::agent::Agent;
 use crate::models::ModelChoice;
@@ -17,13 +15,9 @@ impl ReadTransaction<'_> {
         Store::read_agent_records(self.connection(), owner_id, &choice, shared.as_deref())
     }
 
-    /// The durable skeleton plus count/sequence fields omitted by serialization.
-    /// History stays in SQLite; only indexed summary rows are decoded before
-    /// a bounded page explicitly asks for items.
-    pub fn load_agent_skeleton(
-        &self,
-        agent_id: &str,
-    ) -> Result<Option<(String, Agent)>, StoreError> {
+    /// The durable identity, binding and generation, without reading history.
+    /// A caller asks separately for the counters its response actually uses.
+    pub fn load_agent_record(&self, agent_id: &str) -> Result<Option<(String, Agent)>, StoreError> {
         let owner: Option<String> = self
             .connection()
             .query_row(
@@ -41,8 +35,15 @@ impl ReadTransaction<'_> {
             return Ok(None);
         };
         agent.thread.rekey_to_agent(&agent.id);
-        self.restore_thread_metadata(&mut agent)?;
         Ok(Some((owner, agent)))
+    }
+
+    /// The indexed high-water mark includes mutations outside a resident tail.
+    pub fn thread_last_sequence(&self, agent_id: &str) -> Result<u64, StoreError> {
+        let sequence: i64 =
+            self.connection()
+                .query_row(THREAD_LAST_SEQUENCE_SQL, [agent_id], |row| row.get(0))?;
+        Ok(sequence as u64)
     }
 
     fn owner_choice(&self, owner: &str) -> Result<(ModelChoice, Option<String>), StoreError> {
@@ -78,30 +79,5 @@ impl ReadTransaction<'_> {
             .transpose()?
             .unwrap_or_default();
         Ok((choice, None))
-    }
-
-    fn restore_thread_metadata(&self, agent: &mut Agent) -> Result<(), StoreError> {
-        let conn = self.connection();
-        let count = |sql| conn.query_row(sql, [&agent.id], |row| row.get::<_, i64>(0));
-        let held = count(THREAD_ITEM_COUNT_SQL)? as u64;
-        let last_sequence = count(THREAD_LAST_SEQUENCE_SQL)? as u64;
-        let last_own = count(THREAD_LAST_OWN_MESSAGE_SQL)? as u64;
-        let last_attention = count(THREAD_LAST_ATTENTION_SQL)? as u64;
-        let summary = stored_conversation_summary(
-            &mut conn.prepare(THREAD_LAST_MESSAGE_SQL)?,
-            &mut conn.prepare(THREAD_FIRST_ATTENTION_AFTER_SQL)?,
-            &agent.id,
-        )?;
-        agent
-            .thread
-            .adopt_stored_tail(Vec::new(), held, last_sequence);
-        agent.thread.adopt_conversation_summary(
-            summary.last_message_sequence,
-            last_own,
-            last_attention,
-            summary.activity_at,
-            summary.working,
-        );
-        Ok(())
     }
 }

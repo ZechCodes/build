@@ -203,9 +203,7 @@ async fn sql_thread_generation_history_and_operation_share_one_snapshot() {
     let mut reader = store.read_pool().acquire().await;
     reader
         .read(|tx| {
-            tx.load_agent_skeleton(&record.agents[0].id)
-                .unwrap()
-                .unwrap();
+            tx.load_agent_record(&record.agents[0].id).unwrap().unwrap();
             let mut replacement = record.agents[0].clone();
             replacement.thread = crate::thread::Thread::for_agent(&replacement.id);
             replacement.thread.id = "thread:after-reset".into();

@@ -162,7 +162,10 @@ impl ThreadReadContext {
         } else {
             conversation_owner_param(params)?
         };
-        let (thread, fence) = self.resolve(transaction, &owner, params)?;
+        let (mut thread, fence) = self.resolve(transaction, &owner, params)?;
+        if let Some(transaction) = transaction {
+            restore_read_counters(transaction, thread.to_mut(), method)?;
+        }
         let value = match method {
             "thread.page" => page(transaction, &thread, params),
             "thread.activity" => activity(transaction, &thread, params),
@@ -202,31 +205,29 @@ impl ThreadReadContext {
         named: Option<&str>,
     ) -> Result<(ReadAddress, String, Cow<'static, Thread>), String> {
         let admitted = &self.admitted[owner];
-        let agent = transaction
-            .agents(owner)
-            .map_err(conversation_error)?
-            .into_iter()
-            .filter(|agent| admitted.contains(&agent.id))
-            .find(|agent| match named {
-                Some(named) => agent.id == named,
-                None => true,
+        let mut roster = transaction.agents(owner).map_err(conversation_error)?;
+        let index = roster
+            .iter()
+            .position(|agent| {
+                admitted.contains(&agent.id)
+                    && match named {
+                        Some(named) => agent.id == named,
+                        None => true,
+                    }
             })
             .ok_or_else(|| missing_agent(named))?;
-        let (conversation_owner, canonical) = transaction
-            .load_agent_skeleton(agent.conversation_id())
-            .map_err(conversation_error)?
-            .ok_or_else(|| missing_conversation(&agent))?;
+        let agent = roster.remove(index);
+        let address = ReadAddress::from(&agent);
+        let (conversation_owner, mut canonical) =
+            canonical_stored_agent(transaction, owner, agent, roster)?;
         if self
-            .admit_agent(&conversation_owner, agent.conversation_id())
+            .admit_agent(&conversation_owner, &address.conversation)
             .is_err()
         {
-            return Err(missing_conversation(&agent));
+            return Err(missing_conversation(&address));
         }
-        Ok((
-            ReadAddress::from(&agent),
-            conversation_owner,
-            Cow::Owned(canonical.thread),
-        ))
+        canonical.thread.rekey_to_agent(&canonical.id);
+        Ok((address, conversation_owner, Cow::Owned(canonical.thread)))
     }
 
     fn resolve_memory(
@@ -251,7 +252,7 @@ impl ThreadReadContext {
                     .by_id(agent.conversation_id())
                     .map(|agent| (owner, agent))
             })
-            .ok_or_else(|| missing_conversation(agent))?;
+            .ok_or_else(|| missing_conversation(&ReadAddress::from(agent)))?;
         Ok((
             ReadAddress::from(agent),
             canonical_owner.clone(),
@@ -287,6 +288,46 @@ impl ThreadReadContext {
     }
 }
 
+fn canonical_stored_agent(
+    transaction: &ReadTransaction<'_>,
+    owner: &str,
+    agent: Agent,
+    roster: Vec<Agent>,
+) -> Result<(String, Agent), String> {
+    if agent.conversation_id() == agent.id {
+        return Ok((owner.to_string(), agent));
+    }
+    if let Some(canonical) = roster
+        .into_iter()
+        .find(|candidate| candidate.id == agent.conversation_id())
+    {
+        return Ok((owner.to_string(), canonical));
+    }
+    transaction
+        .load_agent_record(agent.conversation_id())
+        .map_err(conversation_error)?
+        .ok_or_else(|| missing_conversation(&ReadAddress::from(&agent)))
+}
+
+fn restore_read_counters(
+    transaction: &ReadTransaction<'_>,
+    thread: &mut Thread,
+    method: &str,
+) -> Result<(), String> {
+    let count = match method {
+        "thread.page" => transaction
+            .thread_item_count(&thread.agent.id)
+            .map_err(conversation_error)?,
+        "thread.activity" => 0,
+        _ => return Ok(()),
+    };
+    let sequence = transaction
+        .thread_last_sequence(&thread.agent.id)
+        .map_err(conversation_error)?;
+    thread.adopt_stored_tail(Vec::new(), count, sequence);
+    Ok(())
+}
+
 fn missing_agent(named: Option<&str>) -> String {
     named.map_or_else(
         || "no agent here yet — send a message to create one".into(),
@@ -294,11 +335,10 @@ fn missing_agent(named: Option<&str>) -> String {
     )
 }
 
-fn missing_conversation(agent: &Agent) -> String {
+fn missing_conversation(agent: &ReadAddress) -> String {
     format!(
         "agent {} is bound to missing conversation {}",
-        agent.id,
-        agent.conversation_id()
+        agent.agent, agent.conversation
     )
 }
 

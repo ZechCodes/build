@@ -276,6 +276,7 @@ fn mixed_plan_documents_retain_committed_paths_after_failed_save_and_unrelated_p
     let root = app.require_store().unwrap().plan_docs_dir(&single);
     std::fs::create_dir_all(root.join(".build")).unwrap();
     std::fs::write(root.join(".build/single.md"), "committed text").unwrap();
+    app.delivery_queue.clear_queued();
     let state = app.shared();
     let handler = AppState::handler(state.clone());
     let cases = [
@@ -393,6 +394,7 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let (_, owner) = planned_run_in_review(&mut app, "delayed attachment publication");
+    app.delivery_queue.clear_queued();
     let added = app.agent_add(&json!({"entity_id":owner})).unwrap();
     let agent = added["agent"]["id"].as_str().unwrap().to_string();
     let attached = app.handle(req("thread.attach", json!({"entity_id":owner,"agent_id":agent,"filename":"a.txt","content_b64":b64encode(b"old attachment")})));
@@ -411,6 +413,15 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
     let delayed = service.prepare(req("thread.attachment", params.clone()), None);
     let reset = call(&handler, "conversation.reset", reset_params);
     assert_eq!(reset["ok"], true, "{reset}");
+    // Reset removes old attachment files. Restore the same content-addressed
+    // bytes so the delayed answer is refused by its generation fence.
+    let attached_again = call(
+        &handler,
+        "thread.attach",
+        json!({"entity_id":owner,"agent_id":agent,"filename":"a.txt","content_b64":b64encode(b"old attachment")}),
+    );
+    assert_eq!(attached_again["ok"], true, "{attached_again}");
+    assert_eq!(attached_again["result"]["path"], params["path"]);
     let stale = delayed();
     assert_eq!(stale["ok"], false, "{stale}");
     assert!(

@@ -351,6 +351,14 @@ impl Readings {
         self.catalog.load_full()
     }
 
+    /// Schedule initial observations before clients read the published catalog.
+    pub fn warm(self: &Arc<Self>) {
+        for provider in AgentProvider::ALL {
+            let harness = harness_for(provider);
+            self.reading(harness.binary(), harness.cli_probe());
+        }
+    }
+
     #[cfg(test)]
     fn held(&self, binary: &'static str) -> Option<Arc<CliReading>> {
         let entries = self.entries.lock().unwrap();
@@ -585,10 +593,7 @@ pub fn observe_version(provider: AgentProvider, reported: &str) {
 /// Ask every harness's CLI once, so the first catalog a client reads is
 /// already the installed one.
 pub fn warm() {
-    for provider in AgentProvider::ALL {
-        let harness = harness_for(provider);
-        readings().reading(harness.binary(), harness.cli_probe());
-    }
+    readings().warm();
     static REFRESHING: OnceLock<()> = OnceLock::new();
     REFRESHING.get_or_init(|| readings().keep_fresh());
 }

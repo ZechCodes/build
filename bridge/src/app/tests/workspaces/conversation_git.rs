@@ -154,6 +154,21 @@ fn snapshot_publication_counts_cached_ownership_lookups() {
     );
 }
 
+#[test]
+fn task_identity_publication_reuses_observed_paths() {
+    for shared_root in [false, true] {
+        let (_tmp, mut state, _) = ownership_fixture(16, shared_root);
+        add_tip_agents(&mut state, 4);
+        state.initialize_snapshot_projection();
+        let (_, canonicalizations) =
+            crate::app::workspaces::count_path_canonicalizations(|| state.task_read_context());
+        assert_eq!(
+            canonicalizations, 0,
+            "task identity publication probed warmed paths (shared_root={shared_root})"
+        );
+    }
+}
+
 /// Ownership work belongs to the publication producer, while the immutable
 /// reader must do none. Bound the complete producer at both #672 sizes and
 /// retain the once-per-entity bound when the roster grows from one to four.

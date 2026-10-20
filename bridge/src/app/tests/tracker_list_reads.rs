@@ -126,6 +126,33 @@ async fn published_task(state: &AppState, task: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn user_activity_publishes_task_session_without_rebuilding_snapshots() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    state.initialize_snapshot_projection();
+    state.initialize_read_context();
+    let previous = state.read_view.load();
+    let activity = state.user_session.last_activity_ms.unwrap_or(0) + 1;
+
+    state.note_user_activity(activity);
+
+    assert!(
+        Arc::ptr_eq(&previous, &state.read_view.load()),
+        "user presence rebuilt the board/workspace/push projection"
+    );
+    let connection = state.tracker_store().unwrap().read_pool().acquire().await;
+    let answer = state.read_service().call(
+        req("tasks.list", json!({"project_id":project})),
+        Some(connection),
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(
+        answer["result"]["user_session"]["last_activity_ms"],
+        activity
+    );
+}
+
+#[tokio::test]
 async fn task_read_publication_preserves_another_checked_out_owner() {
     let tmp = tempfile::tempdir().unwrap();
     let (mut state, project) = tracked_with_origin(tmp.path());

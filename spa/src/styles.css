@@ -5,6 +5,7 @@
 @import "./styles/shell.css";
 @import "./styles/surfaces.css";
 @import "./styles/markdownTasks.css";
+@import "./styles/markdown.css";
 @import "./styles/interactions.css";
 @import "./styles/window-controls.css";
 
@@ -882,7 +883,7 @@ main#root.surface { max-width:none;
   4%, 96% { --mdtable-shade-left:14px; --mdtable-shade-right:14px; }
   100% { --mdtable-shade-left:14px; --mdtable-shade-right:0px; }
 }
-.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto;
+.mdtable { margin:12px 0 16px; max-width:100%; overflow-x:auto;
   --mdtable-shade:color-mix(in srgb, var(--line) 85%, transparent);
   background:
     linear-gradient(to right, var(--mdtable-shade), transparent) 0 0 / var(--mdtable-shade-left) 100% no-repeat,
@@ -899,23 +900,21 @@ main#root.surface { max-width:none;
    that has no minimum width at all: the column shrinks until its text runs one
    character per line. break-word keeps the column as wide as its longest word
    and still breaks a word that could not fit a line of its own. */
-.mdtable th, .mdtable td { padding:5px 14px 5px 0; text-align:left; vertical-align:top;
+.mdtable th, .mdtable td { padding:9px 16px 9px 0; text-align:left; vertical-align:top;
   border-bottom:1px solid var(--line2); white-space:normal; overflow-wrap:break-word;
   word-break:normal; }
 /* The header is the one row that names things, so it reads as ink and holds its
    line: a wrapped header over a scrolling table is unreadable. */
-.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; border-bottom-color:var(--line); }
+.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; border-bottom:2px solid var(--line); }
+.mdtable td.md-cell-short { white-space:nowrap; }
+.mdtable td:not(.md-cell-short) { min-width:18ch; max-width:48ch; }
 .mdtable tr:last-child td { border-bottom:0; }
 .mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
 /* plan */
 /* The doc card sits INSIDE a panel, so it takes the inner step (--panel2) and
    no outline at all; the tone is the whole boundary. */
 .plan { background:var(--panel2); border:0; border-radius:12px; padding:26px 30px; margin-bottom:14px; }
-.plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }
-.plan h3 { font-size:13.5px; margin:14px 0 5px; } .plan :is(h4, h5, h6) { font-size:13px; margin:12px 0 4px; } .plan p { margin:8px 0; color:var(--ink); }
-.plan ul,.plan ol { margin:6px 0; padding-left:22px; } .plan li { margin:3px 0; }
-.plan code { font-family:var(--mono); font-size:12.5px; background:var(--line2); padding:1px 5px; border-radius:5px; }
-.plan pre { background:var(--code-bg); padding:12px 14px; border-radius:8px; overflow:auto; } .plan pre code { background:none; padding:0; }
+.plan p { color:var(--ink); }
 .plan-loading { color:var(--dim); min-height:240px; padding:30px; display:flex; align-items:center;
   justify-content:center; gap:9px; text-align:center; font-family:var(--mono); font-size:12.5px; }
 .plan-loading::before { content:"⠋"; color:var(--accent); font-size:18px; line-height:1;
@@ -1918,7 +1917,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .delivery-status.uncertain { color:var(--amber); }
 .delivery-status.failed { color:var(--red); }
 .thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
-.thread-body { padding:12px; min-width:0; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.thread-body { padding:12px; min-width:0; color:var(--ink2); font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
 /* ---- a fenced code block, wherever markdown is rendered (#50) -------------
    The maintainer, from the task page: "Code blocks across the board need to
    scroll horizontally rather than over flow. I've seen it in chat too, would
@@ -1940,6 +1939,8 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
   overflow-x:auto; -webkit-overflow-scrolling:touch;
   white-space:pre;
   tab-size:2;
+  margin:1em 0; padding:12px 14px; border-radius:8px;
+  background:var(--code-bg); color:var(--ink); font:12px/1.65 var(--mono);
 }
 /* ---- quotes and references, wherever markdown is rendered (#229) ----------
    Stamped by the renderer like .md-code, so every surface draws them alike.
@@ -1949,7 +1950,7 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
    its own prose. A reference that names nothing is still the words the agent
    typed, in their own colour, only underlined with dots — enough to tell a
    broken reference from a sentence, and the hover says why. */
-.md-quote { margin:6px 0; padding:0 0 0 12px; border-left:3px solid var(--line3); color:var(--ink2); }
+.md-quote { margin:1em 0; padding:0 0 0 12px; border-left:3px solid var(--line3); color:var(--ink2); }
 .md-quote > :first-child { margin-top:0; }
 .md-quote > :last-child { margin-bottom:0; }
 /* A thematic break (#253) is the app's own divider: one hairline in the token
@@ -1970,12 +1971,10 @@ a.md-link:hover { text-decoration:underline; }
 a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opacity:.7; }
 /* Inline code in prose still wraps with the sentence around it: only a fenced
    block scrolls. */
-.md-code code { white-space:inherit; }
+.md-code code { white-space:inherit; font:inherit; background:none; padding:0; }
 
 .thread-body > :first-child { margin-top:0; }
 .thread-body > :last-child { margin-bottom:0; }
-.thread-body p { margin:0 0 10px; }
-.thread-body ul { margin:6px 0 10px; padding-left:20px; }
 /* The 12px gutter is the message's, not its table's: a table takes the card
    edge to edge — 24px more column in the narrowest place a table is read —
    and carries the gutter inside as padding so the text still clears the edge
@@ -2263,7 +2262,7 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 .thread-message { margin-left:0; }
 .thread-avatar { display:none; }
 .thread-comment-card { min-width:0; overflow:visible; border-radius:0; background:transparent; }
-.thread-body { padding:0; min-width:0; color:var(--ink); font-size:13.5px; line-height:1.55; }
+.thread-body { padding:0; min-width:0; color:var(--ink); font-size:13.5px; line-height:1.65; }
 .thread-message.user { align-self:flex-end; }
 /* The reader's words use the green bubble; words arriving from another agent
    use the old neutral reader surface. This agent's own words stay inline in

@@ -107,3 +107,45 @@ image/deploy pipeline.
 CSP needs: `script-src 'self'`, `style-src 'self' 'unsafe-inline'` (inline
 style attributes), `connect-src 'self' data: <relay ws(s) origin>` (`data:`
 because ghostty-web instantiates its wasm from a data: URL), `font-src 'self'`.
+
+## Markdown rendering
+
+All surfaces use `markdownHtml` in `src/core/markdown.js`. The renderer supports
+aligned pipe tables, nested/ordered/task lists, ATX/setext headings, rules,
+blockquotes, emphasis/strikethrough, literal code spans, backtick/tilde fences,
+web links and Build references. GitHub-style additions include the five alerts,
+footnotes, HTTP(S) images, angle autolinks, text-only `<kbd>` and native details.
+`src/styles/markdown.css` shares typography and feature styling across chat,
+tasks and document previews, using the light/dark theme tokens.
+
+This is an intentionally safe subset, not a full CommonMark/HTML interpreter.
+Footnote definitions are top-level, with four-space/tab continuation; identifiers
+use letters, digits, underscores or hyphens. Details requires standalone exact
+`<details>`/`</details>` lines and an immediate single-line `<summary>…</summary>`.
+Keyboard notation accepts only exact attribute-free `<kbd>text</kbd>` with no
+nested tags. Other HTML stays text. Relative/data URLs are refused; image URLs
+also reject credentials. Existing link-title parsing refuses bracket characters.
+Fences show their language label; registered Prism grammars highlight up to
+4,096 characters, with longer/unknown code shown as escaped plain text to bound
+rendering work. No additional dependencies are needed.
+
+Pass a stable `taskLabelScope` for each document rendered alongside others;
+this scopes checkbox labels and footnotes. Chat messages and task bodies/comments
+do so. `markdownNavigation.js`, installed once by `main.js`, handles footnote
+activation without replacing the SPA's hash route. It resolves within the
+nearest document and moves keyboard focus as well as scroll position.
+
+The fixture in `test/browser/markdownPolishFixture.mjs` covers every feature.
+Capture it with headless Chromium (from `spa/`):
+
+```bash
+nice -n 10 node test/browser/captureMarkdownPolish.mjs /tmp/markdown-review after
+# Optional fourth argument reads the original renderer/CSS from a Git commit:
+nice -n 10 node test/browser/captureMarkdownPolish.mjs /tmp/markdown-review before 54e8e1d79
+```
+
+Both commands produce desktop/phone captures in light/dark. The before mode
+uses Vite's loader and `git show`; it does not change the checkout. Layout tests
+add a 320px narrow-screen check, verify whole timing values and local table/code
+scrolling, and keep images inside the message. See the Markdown Rendering
+Security Checklist for the fixed output vocabulary and adversarial evidence.

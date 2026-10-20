@@ -39,9 +39,9 @@ const MODES = {
  * unless `taskItems` is true. `taskMarkers` collects their original source
  * offsets for the source-edit helper; it follows the same block traversal.
  * `taskLabelScope` is a stable, unique name for this rendered document. Task
- * bodies and comments supply one to label checkboxes from their rendered text
- * without changing ids during a cached repaint. Other callers keep stable,
- * id-free markup with accessible names derived from the rendered inline text.
+ * bodies, comments and chat messages supply one to scope checkbox labels and
+ * footnote destinations without changing ids during a cached repaint. Unscoped
+ * callers derive checkbox names from their text and footnote ids from source.
  *
  * Answers HTML for `block` and `inline`, and plain text for `plain`.
  */

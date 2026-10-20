@@ -1,0 +1,68 @@
+/* One reading rhythm for messages, task bodies/comments and document previews.
+   Only markdown hosts are targeted; application headings and source views keep
+   their own density. Block-only features also carry renderer-owned classes. */
+:is(.markdown, .thread-body, .task-comment-body, .plan) {
+  line-height:1.65;
+  overflow-wrap:anywhere;
+}
+:is(.markdown, .thread-body, .task-comment-body, .plan) :is(h1, h2, h3, h4, h5, h6) {
+  color:var(--ink); font-weight:650; line-height:1.3;
+  margin:1.6em 0 .6em; letter-spacing:-.015em;
+}
+:is(.markdown, .thread-body, .task-comment-body, .plan) h1 { font-size:1.65em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) h2 { font-size:1.35em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) h3 { font-size:1.16em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) h4 { font-size:1.05em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) :is(h5, h6) { font-size:1em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) p { margin:0 0 .85em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) :is(ul, ol) { margin:.6em 0 1em; padding-left:1.65em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) li + li { margin-top:.3em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) li > :is(ul, ol) { margin:.35em 0; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) > :first-child { margin-top:0; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) > :last-child { margin-bottom:0; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) :not(pre) > code {
+  font-family:var(--mono); font-size:.9em; padding:.12em .35em;
+  background:var(--code-bg); color:var(--ink); border-radius:4px;
+  box-decoration-break:clone; -webkit-box-decoration-break:clone;
+}
+:is(.markdown, .thread-body, .task-comment-body, .plan) del { text-decoration-color:var(--dim); }
+:is(.markdown, .thread-body, .task-comment-body, .plan) kbd {
+  display:inline-block; padding:.08em .4em; border:1px solid var(--line3);
+  border-radius:4px; box-shadow:0 2px 0 var(--line2); background:var(--panel);
+  color:var(--ink); font:.85em/1.45 var(--mono); vertical-align:baseline;
+}
+:is(.markdown, .thread-body, .task-comment-body, .plan) img { display:block; max-width:100%; height:auto; margin:.75em 0; border-radius:6px; }
+.md-alert {
+  --md-alert-color:var(--accent);
+  margin:1em 0; padding:.8em 1em; border-left:3px solid var(--md-alert-color);
+  border-radius:0 6px 6px 0; background:color-mix(in srgb, var(--md-alert-color) 6%, transparent);
+  color:var(--ink);
+}
+.md-alert-note { --md-alert-color:var(--ink2); }
+.md-alert-important { --md-alert-color:var(--violet); }
+.md-alert-warning { --md-alert-color:var(--amber); }
+.md-alert-caution { --md-alert-color:var(--red); }
+.md-alert .md-alert-title { color:var(--md-alert-color); font-weight:650; margin:0 0 .4em; }
+.md-alert > :last-child { margin-bottom:0; }
+.md-code-block { margin:1em 0; max-width:100%; min-width:0; border:1px solid var(--line2); border-radius:8px; overflow:hidden; background:var(--code-bg); }
+.md-code-label { padding:6px 12px; background:var(--panel2); border-bottom:1px solid var(--line2); color:var(--dim); font:500 11px/1.5 var(--mono); }
+.md-code-block .md-code { margin:0; border-radius:0; }
+.md-code :is(.token.comment, .token.prolog, .token.doctype, .token.cdata) { color:var(--dim); font-style:italic; }
+.md-code :is(.token.keyword, .token.atrule, .token.selector, .token.tag) { color:var(--accent); }
+.md-code :is(.token.string, .token.char, .token.attr-value, .token.regex) { color:var(--green); }
+.md-code :is(.token.number, .token.boolean, .token.constant) { color:var(--amber); }
+.md-code :is(.token.function, .token.class-name) { color:var(--violet); }
+.md-code :is(.token.punctuation, .token.operator) { color:var(--ink2); }
+.md-details { margin:1em 0; padding:.8em 1em; border:1px solid var(--line); border-radius:6px; }
+.md-details > summary { color:var(--ink); font-weight:600; cursor:pointer; }
+.md-details[open] > summary { margin-bottom:.75em; }
+.md-details > :last-child { margin-bottom:0; }
+.md-details > summary:focus-visible, .md-footnote-ref a:focus-visible, .md-footnote-backref:focus-visible {
+  outline:2px solid var(--accent); outline-offset:3px; border-radius:2px;
+}
+.md-footnotes { margin-top:1.75em; padding-top:.75em; border-top:1px solid var(--line2); color:var(--ink2); font-size:.9em; }
+.md-footnote-ref a, .md-footnote-backref { color:var(--accent); text-decoration:none; }
+.md-footnote-ref a:hover, .md-footnote-backref:hover { text-decoration:underline; }
+.md-footnotes li { scroll-margin-block:24px; }
+
+.mdtable:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }

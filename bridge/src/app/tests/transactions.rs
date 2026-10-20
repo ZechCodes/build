@@ -1,5 +1,6 @@
 use super::*;
 
+mod adoption;
 mod projections;
 
 #[test]

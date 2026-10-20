@@ -144,7 +144,7 @@ impl LifecycleSettlement<AdoptionPrepared> for AdoptionSettlement {
         let adopted = result?;
         let run_id = adopted.run_id.clone();
         let active = state.open_adoption(&adopted)?;
-        let (view, persisted) = state.answer_run_mutation(run_id, active, self.detail);
+        let (view, persisted) = state.answer_adopted_run_mutation(run_id, active, self.detail);
         persisted?;
         // The compatibility workspace route belongs to adoption, so a read
         // after its acknowledgement never has to adopt or probe the checkout.

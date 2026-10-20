@@ -127,7 +127,7 @@ impl DiffCache {
         &self.observation_projects
     }
     pub(in crate::app) fn register_project(&mut self, project_id: String) {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(&project_id);
         self.project_cache.entry(project_id).or_default();
     }
 
@@ -312,7 +312,7 @@ impl DiffCache {
 
     #[cfg(test)]
     pub(in crate::app) fn clear_external_scan(&mut self, project_id: &str) {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(project_id);
         self.project_cache
             .get_mut(project_id)
             .expect("registered project cache")

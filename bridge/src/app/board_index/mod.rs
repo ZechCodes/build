@@ -69,10 +69,16 @@ impl BoardIndex {
     pub(in crate::app) fn archived_values(
         &self,
     ) -> impl Iterator<Item = &PersistedArchivedWorktree> {
-        let values = self.archived_worktrees.values();
         #[cfg(test)]
-        let values = values.inspect(|_| ARCHIVE_VISITS.with(|count| count.set(count.get() + 1)));
-        values
+        {
+            self.archived_worktrees
+                .values()
+                .inspect(|_| ARCHIVE_VISITS.with(|count| count.set(count.get() + 1)))
+        }
+        #[cfg(not(test))]
+        {
+            self.archived_worktrees.values()
+        }
     }
 
     /// Boot hydration replaces only the durable archive index, after Store has

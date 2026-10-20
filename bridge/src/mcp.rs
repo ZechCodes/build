@@ -2976,9 +2976,10 @@ mod tests {
     }
 
     /// The whole coding schema: what the agent says, how its turn stands, and
-    /// the choices it offers. Nothing about phases, outputs, anchors or links.
+    /// the choices it offers and the files it carries. Nothing about phases,
+    /// outputs, anchors or links.
     #[test]
-    fn the_message_schema_carries_status_body_and_options_only() {
+    fn the_message_schema_carries_status_body_options_and_attachments() {
         let h = server().handle_message(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         let v = parse(&h.reply.unwrap());
         let schema = &v["result"]["tools"][0]["inputSchema"];
@@ -2989,7 +2990,7 @@ mod tests {
             .map(String::as_str)
             .collect();
         fields.sort_unstable();
-        assert_eq!(fields, ["body", "options", "status"]);
+        assert_eq!(fields, ["attachments", "body", "options", "status"]);
         assert_eq!(schema["required"], json!(["status", "body"]));
     }
 

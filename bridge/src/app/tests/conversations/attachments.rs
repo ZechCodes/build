@@ -304,15 +304,16 @@ fn thread_attachment_pages_are_bounded_and_cover_the_last_byte() {
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     std::fs::write(&target, &bytes).unwrap();
 
-    let legacy = state.handle(req(
+    let unranged = state.handle(req(
         "thread.attachment",
         json!({ "entity_id": run_id, "path": path }),
     ));
-    assert_eq!(legacy["ok"], true, "{legacy:?}");
-    assert_eq!(
-        b64decode(legacy["result"]["content_b64"].as_str().unwrap()).unwrap(),
-        bytes
-    );
+    assert_eq!(unranged["ok"], true);
+    assert_eq!(unranged["result"]["size"], bytes.len());
+    assert_eq!(unranged["result"]["offset"], 0);
+    let unranged_bytes = b64decode(unranged["result"]["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(unranged_bytes.len() as u64, ATTACHMENT_MAX_BYTES);
+    assert!(unranged_bytes == bytes[..ATTACHMENT_MAX_BYTES as usize]);
 
     let read = |state: &mut AppState, offset: u64, length: Option<u64>| {
         let mut params = json!({ "entity_id": run_id, "path": path, "offset": offset });
@@ -340,9 +341,11 @@ fn thread_attachment_pages_are_bounded_and_cover_the_last_byte() {
     let last = read(&mut state, ATTACHMENT_MAX_BYTES, Some(u64::MAX));
     assert_eq!(last["ok"], true, "{last:?}");
     assert_eq!(last["result"]["offset"], ATTACHMENT_MAX_BYTES);
-    assert_eq!(
-        b64decode(last["result"]["content_b64"].as_str().unwrap()).unwrap(),
-        bytes[ATTACHMENT_MAX_BYTES as usize..]
+    let last_bytes = b64decode(last["result"]["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(last_bytes, bytes[ATTACHMENT_MAX_BYTES as usize..]);
+    assert!(
+        [unranged_bytes, last_bytes].concat() == bytes,
+        "the default piece and ranged continuation cover every byte"
     );
     let short = read(&mut state, 7, Some(3));
     assert_eq!(

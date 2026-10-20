@@ -22,7 +22,7 @@ import { referenceResolver } from "./referenceIndex.js";
  *  `plain` is text, not HTML: one line with the marks taken off and each
  *  reference read as its words (core/previewText.js), cut at `limit`. */
 const MODES = {
-  block: (text, links, limit, options) => blocksHtml(text, (line, inlineOptions) => inlineHtml(line, links, { ...inlineOptions, imageOrigin: options.imageOrigin }), options),
+  block: (text, links, limit, options) => blocksHtml(text, (line, inlineOptions) => inlineHtml(line, links, inlineOptions), options),
   inline: (text, links, limit, options) => inlineHtml(text.trim().replace(/\s*\n\s*/g, " "), links, options),
   plain: (text, links, limit) => plainPreview(plainReferences(text, links), limit),
 };
@@ -43,13 +43,12 @@ const MODES = {
  * footnote destinations without changing ids during a cached repaint. Unscoped
  * callers derive checkbox names from their text and footnote ids from source.
  *
- * External images wait for activation; same-origin images may load directly.
- * `imageOrigin` defaults to this browser origin (or no automatic loading in
- * environments without one).
+ * Every HTTP(S) image waits for activation, including same-origin sources
+ * which may redirect elsewhere. Trusted attachments use their own renderer.
  *
  * Answers HTML for `block` and `inline`, and plain text for `plain`.
  */
-export function markdownHtml(text, { place = null, identities = null, mode = "block", limit, taskItems = false, taskMarkers, taskLabelScope, imageOrigin } = {}) {
+export function markdownHtml(text, { place = null, identities = null, mode = "block", limit, taskItems = false, taskMarkers, taskLabelScope } = {}) {
   const links = referenceResolver({ place, identities: identities || {} });
-  return (MODES[mode] || MODES.block)(String(text || ""), links, limit, { taskItems, taskMarkers, taskLabelScope, imageOrigin });
+  return (MODES[mode] || MODES.block)(String(text || ""), links, limit, { taskItems, taskMarkers, taskLabelScope });
 }

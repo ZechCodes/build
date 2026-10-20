@@ -231,11 +231,10 @@ describe("linked Markdown images", () => {
     expect(host.textContent).toBe("Load image from img.shields.io — badge");
   });
 
-  it("keeps a same-origin image directly inside its working link", () => {
-    const host = rendered("[![badge](https://local.test/x.svg)](https://example.com)", { imageOrigin: "https://local.test" });
-    expect(host.querySelector("a.md-link > img")?.getAttribute("src")).toBe("https://local.test/x.svg");
-    expect(host.querySelectorAll("button")).toHaveLength(0);
-    expect(host.textContent).toBe("");
+  it("keeps a same-origin placeholder inside its working link", () => {
+    const host = rendered("[![badge](https://local.test/x.svg)](https://example.com)");
+    expect(host.querySelector("a.md-link > button")?.dataset.mdImageSrc).toBe("https://local.test/x.svg");
+    expect(host.querySelectorAll("img, [src]")).toHaveLength(0);
   });
 
   it("consumes the whole outer destination without overlapping adjacent links", () => {
@@ -266,32 +265,24 @@ describe("linked Markdown images", () => {
   });
 });
 
-describe("image transports admitted by production CSP", () => {
-  it("renders an external HTTP image as an ordinary link without a latent image request", () => {
-    const host = rendered('![Legacy badge](http://images.test/badge.png "Legacy title")', { imageOrigin: "https://app.test" });
-    expect(host.querySelectorAll("img, button.md-image-load, [src]")).toHaveLength(0);
-    const link = host.querySelector("a.md-link");
-    expect(link?.getAttribute("href")).toBe("http://images.test/badge.png");
-    expect(link?.textContent).toBe("Legacy badge");
-    expect(link?.getAttribute("title")).toBe("Legacy title");
+describe("universal Markdown image consent", () => {
+  it.each(["http://images.test/badge.png", "https://images.test/badge.png", new URL("/app/downloads/SHA256SUMS", location.href).href])("keeps every HTTP(S) image inert: %s", (src) => {
+    const host = rendered(`![Legacy badge](${src} "Legacy title")`);
+    expect(host.querySelectorAll("img, a, [src]")).toHaveLength(0);
+    expect(host.querySelector("button")?.dataset.mdImageSrc).toBe(src);
+    expect(host.querySelector("button")?.dataset.mdImageTitle).toBe("Legacy title");
   });
 
-  it("keeps the outer link and a plain label when a linked image uses external HTTP", () => {
-    const host = rendered("[![Legacy badge](http://images.test/badge.png)](https://target.test)", { imageOrigin: "https://app.test" });
-    expect(host.querySelectorAll("img, button.md-image-load, a a")).toHaveLength(0);
+  it("keeps an HTTP image placeholder inside its sole outer link", () => {
+    const host = rendered("[![Legacy badge](http://images.test/badge.png)](https://target.test)");
+    expect(host.querySelectorAll("img, [src], a a")).toHaveLength(0);
     expect(host.querySelectorAll("a.md-link")).toHaveLength(1);
     expect(host.querySelector("a")?.getAttribute("href")).toBe("https://target.test");
-    expect(host.textContent).toBe("Legacy badge");
+    expect(host.querySelector("a > button")?.dataset.mdImageSrc).toBe("http://images.test/badge.png");
   });
 
-  it("keeps same-origin HTTP image loading available for local development", () => {
-    const host = rendered("![Local](http://dev.test/diagram.png)", { imageOrigin: "http://dev.test" });
-    expect(host.querySelector("img")?.getAttribute("src")).toBe("http://dev.test/diagram.png");
-    expect(host.querySelectorAll("button, a")).toHaveLength(0);
-  });
-
-  it.each(["http://user:secret@images.test/badge.png", "http://user@images.test/badge.png", "http://@images.test/badge.png"])("checks HTTP image credentials before any link fallback: %s", (src) => {
-    const host = rendered(`![Legacy](${src})`, { imageOrigin: "https://app.test" });
+  it.each(["http://user:secret@images.test/badge.png", "http://user@images.test/badge.png", "http://@images.test/badge.png"])("refuses HTTP image credentials before placeholder creation: %s", (src) => {
+    const host = rendered(`![Legacy](${src})`);
     expect(host.querySelectorAll("img, button.md-image-load, a")).toHaveLength(0);
     expect(host.textContent).toBe(`![Legacy](${src})`);
   });

@@ -1,4 +1,4 @@
-// External markdown images load only for this button activation. Nothing is
+// Markdown images load only for this button activation. Nothing is
 // remembered across instances or cached repaints. Build attachments have their
 // own renderer and never pass through this controller.
 import { safeImageSrc } from "./markdownWebLinks.js";
@@ -29,9 +29,9 @@ export function installMarkdownImages(root = document) {
     event.stopPropagation();
     if (loaded.has(button)) return;
     const src = safeImageSrc(button.dataset.mdImageSrc);
-    // This controller activates remote placeholders only. Same-origin HTTP
-    // development images are rendered directly; remote HTTP stays a link.
-    if (!src || new URL(src).protocol !== "https:") return;
+    // HTTP is usable after consent in local development; the page CSP still
+    // controls which transports may fetch in production. No origin is trusted.
+    if (!src) return;
     loaded.add(button);
     button.replaceWith(activatedImage(button, src));
   };

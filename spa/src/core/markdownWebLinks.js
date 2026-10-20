@@ -62,19 +62,8 @@ export function safeImageSrc(raw) {
   }
 }
 
-function image(src, label, title, imageOrigin) {
+function image(src, label, title) {
   const alt = unesc(label.replace(/<\/?(?:code|kbd)>/g, ""));
-  const titleAttr = title ? ` title="${esc(title)}"` : "";
-  const url = new URL(src);
-  if (url.origin === imageOrigin) {
-    return { markup: `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer"${titleAttr}>` };
-  }
-  // Production CSP admits remote HTTPS images. HTTP keeps its ordinary link
-  // affordance after image-specific credential validation has already passed.
-  if (url.protocol === "http:") {
-    const linkLabel = esc(alt) || esc(src);
-    return { markup: anchor(src, linkLabel, title), linkLabel };
-  }
   const titleData = title ? ` data-md-image-title="${esc(title)}"` : "";
   const words = `Load image from ${new URL(src).hostname}${alt ? ` — ${alt}` : ""}`;
   return { markup: `<button type="button" class="md-image-load" data-md-image-src="${esc(src)}" data-md-image-alt="${esc(alt)}"${titleData}>${esc(words)}</button>` };
@@ -156,7 +145,7 @@ function enclosingImageLink(html, span, copied) {
   if (start < copied || html[start] !== "[" || !html.startsWith("](", span.end)) return span;
   const destination = readDestination(html, span.end + 2);
   const href = destination && safeWebHref(unesc(destination.url));
-  return href ? { start, end: destination.end, markup: anchor(href, span.linkLabel ?? span.markup, unesc(destination.title)) } : span;
+  return href ? { start, end: destination.end, markup: anchor(href, span.markup, unesc(destination.title)) } : span;
 }
 
 /** The link whose label closes at `close`, written to `state` — or nothing,
@@ -167,7 +156,7 @@ function writeLink(html, close, destination, state) {
   const start = state.opener - Number(isImage);
   const label = html.slice(state.opener + 1, close);
   const title = unesc(destination.title);
-  const content = href ? (isImage ? image(href, label, title, state.imageOrigin)
+  const content = href ? (isImage ? image(href, label, title)
     : { markup: anchor(href, state.formatLabel(label), title) }) : { markup: html.slice(start, destination.end) };
   const imageSpan = { start, end: destination.end, ...content };
   const span = isImage ? enclosingImageLink(html, imageSpan, state.copied) : imageSpan;
@@ -200,8 +189,8 @@ function readAt(html, index, state) {
 
 /** Every `[label](address)` in one line of escaped HTML made a link, and
  *  every refused one left as written. */
-function inlineLinks(html, formatLabel, imageOrigin) {
-  const state = { out: "", copied: 0, opener: -1, formatLabel, imageOrigin };
+function inlineLinks(html, formatLabel) {
+  const state = { out: "", copied: 0, opener: -1, formatLabel };
   for (let index = 0; index < html.length; ) index = readAt(html, index, state);
   return state.out + html.slice(state.copied);
 }
@@ -266,6 +255,6 @@ function angleLinks(html) {
  * Web links in one line of escaped HTML: inline links first, so a bare address
  * that is an inline link's label or address is not linked again.
  */
-export function webLinks(html, formatLabel = (label) => label, imageOrigin) {
-  return html ? bareLinks(outsideLiterals(inlineLinks(html, formatLabel, imageOrigin), angleLinks)) : html;
+export function webLinks(html, formatLabel = (label) => label) {
+  return html ? bareLinks(outsideLiterals(inlineLinks(html, formatLabel), angleLinks)) : html;
 }

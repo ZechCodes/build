@@ -2,6 +2,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { markdownHtml } from "../src/core/markdown.js";
 import { installMarkdownImages } from "../src/core/markdownImages.js";
+import { attachmentListHtml } from "../src/core/attachmentTiles.js";
+import { createThreadState, wireThreadAttachments } from "../src/core/thread.js";
+import { composerHtml, mountComposerAttachments } from "../src/core/composer.js";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { painted } from "./waits.js";
 
 let dispose;
 afterEach(() => { dispose?.(); document.body.replaceChildren(); });
@@ -12,7 +17,7 @@ function mount(source = '![Diagram](https://images.test/a.png "A title")', hostC
   return document.querySelector(`.${hostClass}`);
 }
 
-describe("external markdown image activation", () => {
+describe("markdown image activation", () => {
   it.each(["markdown", "thread-body", "task-comment-body", "plan", "thread-event-detail", "cc-body"])("activates images in the actual %s renderer host", (hostClass) => {
     const host = mount(undefined, hostClass);
     expect(host.querySelectorAll("img")).toHaveLength(0);
@@ -69,13 +74,21 @@ describe("external markdown image activation", () => {
     expect(image.getAttributeNames().sort()).toEqual(["alt", "loading", "referrerpolicy", "src", "title"]);
   });
 
-  it.each(["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "http://external.test/image.png", "//evil.test/x", "/x", "https://user:secret@evil.test/x", "https://@evil.test/x", "https://evil.test:bad/x"])("revalidates hostile latent sources: %s", (src) => {
+  it.each(["javascript:alert(1)", "data:image/svg+xml,x", "blob:https://images.test/id", "mailto:a@b.test", "//evil.test/x", "/x", "https://user:secret@evil.test/x", "https://@evil.test/x", "https://evil.test:bad/x"])("revalidates hostile latent sources: %s", (src) => {
     const host = mount();
     const button = host.querySelector("button");
     button.dataset.mdImageSrc = src;
     button.click();
     expect(host.querySelectorAll("img")).toHaveLength(0);
     expect(button.isConnected).toBe(true);
+  });
+
+  it.each(["http://dev.test/image.png", new URL("/app/downloads/SHA256SUMS", location.href).href])("requires activation and permits a validated development HTTP source: %s", (src) => {
+    const host = mount(`![Local](${src})`);
+    expect(host.querySelectorAll("img, [src]")).toHaveLength(0);
+    host.querySelector("button").click();
+    expect(host.querySelector("img")?.getAttribute("src")).toBe(src);
+    expect(host.querySelector("img")?.getAttribute("referrerpolicy")).toBe("no-referrer");
   });
 
   it("keeps hostile alt and title data as text attributes", () => {
@@ -126,5 +139,61 @@ describe("external markdown image activation", () => {
     expect(outside.isConnected).toBe(true);
     expect(attachment.getAttribute("src")).toBe("blob:build-attachment");
     expect(document.querySelectorAll("img")).toHaveLength(1);
+  });
+});
+
+
+describe("trusted attachment images alongside Markdown consent", () => {
+  it("loads attachments through the task byte cache into direct Blob previews without activating Markdown", async () => {
+    vi.resetModules();
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+    const { createTaskAttachmentBodies } = await import("../src/core/taskAttachmentBodies.js");
+    const call = vi.fn(async () => ({ mime: "image/png", size: 3, content_b64: btoa("png") }));
+    const options = { deviceId: "image-consent-device", taskId: "image-consent-task" };
+    const descriptor = { path: "/attachments/trusted.png", name: "trusted.png", mime: "image/png", size: 3 };
+    const host = mount("![Redirectable](https://build.test/app/downloads/SHA256SUMS)");
+    const markdown = host.innerHTML;
+    const paint = () => { host.innerHTML = markdown + attachmentListHtml([descriptor]); };
+    const attach = async (loader) => {
+      const state = createThreadState();
+      try {
+        wireThreadAttachments(host, (path) => loader.load(path), state);
+        await painted(() => host.querySelector("img.thread-attachment-image")?.getAttribute("src")?.startsWith("blob:"), host);
+        expect(host.querySelectorAll(".md-image-load")).toHaveLength(1);
+        expect(host.querySelectorAll("img")).toHaveLength(1);
+      } finally {
+        state.dispose();
+        loader.dispose();
+      }
+    };
+    try {
+      paint();
+      await attach(createTaskAttachmentBodies({ ...options, call }));
+      expect(call).toHaveBeenCalledTimes(1);
+      const offline = vi.fn(async () => { throw new Error("attachment transport must not be needed on revisit"); });
+      paint();
+      await attach(createTaskAttachmentBodies({ ...options, call: offline }));
+      expect(offline).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a selected local file's production composer Data URL preview direct", async () => {
+    const host = mount();
+    const composer = document.createElement("div");
+    composer.innerHTML = composerHtml({ inputId: "image-input", sendId: "image-send", hintId: "image-hint", attachable: true });
+    host.append(composer);
+    const upload = vi.fn(async (file) => ({ path: "/attachments/local.png", name: file.name, mime: file.type, size: file.size }));
+    const controller = mountComposerAttachments(composer, { ids: { input: "image-input", send: "image-send", hint: "image-hint" }, upload });
+    controller.addFiles([new File(["png"], "local.png", { type: "image/png" })]);
+    await painted(() => !controller.busy() && composer.querySelector("img.composer-chip-thumb"), composer);
+    const thumbnail = composer.querySelector("img.composer-chip-thumb");
+    expect(thumbnail?.getAttribute("src")).toBe(`data:image/png;base64,${btoa("png")}`);
+    expect(upload).toHaveBeenCalledTimes(1);
+    expect(host.querySelectorAll("button.md-image-load")).toHaveLength(1);
+    expect(composer.querySelector("button.md-image-load")).toBeNull();
+    controller.clear();
   });
 });

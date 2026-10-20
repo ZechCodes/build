@@ -48,7 +48,7 @@ for (const theme of ["light", "dark"]) {
   }
 }
 
-it("requests a validated same-origin image without asking for activation", async () => {
+it("requires activation before requesting a same-origin development HTTP image", async () => {
   await session.withPage(async ({ page, basePath }) => {
     const origin = new URL(page.url()).origin;
     let requests = 0;
@@ -56,12 +56,16 @@ it("requests a validated same-origin image without asking for activation", async
       requests += 1;
       return route.fulfill({ contentType: "image/svg+xml", body: IMAGE });
     });
-    await loadBrowserModules(page, { markdown: "src/core/markdown.js" }, basePath);
+    await loadBrowserModules(page, { markdown: "src/core/markdown.js", images: "src/core/markdownImages.js" }, basePath);
     const html = await page.evaluate((src) => window.__layoutModules.markdown.markdownHtml(`![Local](${src})`), `${origin}/local-image.svg`);
     await mountLayout(page, `<div class="markdown">${html}</div>`, { basePath });
-    expect(await page.locator(".md-image-load").count()).toBe(0);
+    await page.evaluate(() => { window.__disposeImages = window.__layoutModules.images.installMarkdownImages(document); });
+    expect(requests).toBe(0);
+    expect(await page.locator("img").count()).toBe(0);
+    await page.locator(".md-image-load").click();
     await page.locator("img").evaluate(async (image) => { image.loading = "eager"; await image.decode(); });
     expect(requests).toBe(1);
+    await page.evaluate(() => window.__disposeImages());
   });
 });
 

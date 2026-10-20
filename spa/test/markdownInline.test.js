@@ -66,16 +66,13 @@ describe("the shared inline vocabulary", () => {
     expect(host.textContent).toContain("<kbd><img src=x></kbd>");
   });
 
-  it("renders image alt and title as escaped attributes with private loading defaults", () => {
-    const host = render('![a " <b> & #42](https://example.test/a.png "A title")', { imageOrigin: "https://example.test" });
-    const image = host.querySelector("img");
-    expect(image?.getAttribute("src")).toBe("https://example.test/a.png");
-    expect(image?.getAttribute("alt")).toBe('a " <b> & #42');
-    expect(image?.getAttribute("title")).toBe("A title");
-    expect(image?.getAttribute("loading")).toBe("lazy");
-    expect(image?.getAttribute("referrerpolicy")).toBe("no-referrer");
-    expect(image?.getAttributeNames().sort()).toEqual(["alt", "loading", "referrerpolicy", "src", "title"]);
-    expect(host.querySelectorAll("a, b")).toHaveLength(0);
+  it("renders escaped image metadata without a request-bearing attribute", () => {
+    const host = render('![a " <b> & #42](https://example.test/a.png "A title")');
+    const button = host.querySelector("button");
+    expect(button?.dataset.mdImageSrc).toBe("https://example.test/a.png");
+    expect(button?.dataset.mdImageAlt).toBe('a " <b> & #42');
+    expect(button?.dataset.mdImageTitle).toBe("A title");
+    expect(host.querySelectorAll("img, [src], a, b")).toHaveLength(0);
   });
 
   it("keeps external images inert until their one-instance load button is activated", () => {
@@ -90,15 +87,15 @@ describe("the shared inline vocabulary", () => {
     expect(host.querySelectorAll("svg, a, em, strong")).toHaveLength(0);
   });
 
-  it("autoloads only validated images from the browser's own origin", () => {
+  it("requires consent even for the browser's own origin", () => {
     const src = new URL("/same-origin.png", location.href).href;
     const host = render(`![Local diagram](${src})`);
-    expect(host.querySelector("img")?.getAttribute("src")).toBe(src);
-    expect(host.querySelectorAll("button")).toHaveLength(0);
+    expect(host.querySelector("button")?.dataset.mdImageSrc).toBe(src);
+    expect(host.querySelectorAll("img, [src]")).toHaveLength(0);
   });
 
   it("refuses unsafe images and credentials while preserving their literal text", () => {
-    for (const destination of ["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "file:///tmp/a", "//a.test/a", "/a", "https://user:secret@a.test/a", "https://user%40name@a.test/a"]) {
+    for (const destination of ["javascript:alert(1)", "data:image/svg+xml,x", "blob:https://a.test/id", "mailto:a@b.test", "file:///tmp/a", "//a.test/a", "/a", "https://user:secret@a.test/a", "https://user%40name@a.test/a"]) {
       const source = `![alt](${destination})`;
       const host = render(source);
       expect([destination, host.querySelectorAll("img, .md-image-load").length]).toEqual([destination, 0]);

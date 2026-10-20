@@ -147,8 +147,8 @@ function outsideComplete(html, transform) {
   return out + transform(html.slice(at));
 }
 
-export function inlineHtml(text, links, { footnote, imageOrigin = globalThis.location?.origin } = {}) {
-  const web = webLinks(literalsHtml(text), emphasisHtml, imageOrigin);
+export function inlineHtml(text, links, { footnote } = {}) {
+  const web = webLinks(literalsHtml(text), emphasisHtml);
   const notes = footnote ? outsideComplete(web, (run) => run.replace(/\[\^([A-Za-z0-9_-]+)\]/g, (raw, id) => footnote(id) || raw)) : web;
   const references = outsideComplete(notes, (prose) => expandReferences(prose, links));
   return emphasisHtml(references);

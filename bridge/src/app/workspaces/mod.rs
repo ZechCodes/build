@@ -1360,9 +1360,14 @@ pub(in crate::app) fn count_path_comparisons<T>(read: impl FnOnce() -> T) -> (T,
     (value, PATH_COMPARISONS.replace(previous))
 }
 
+#[cfg(test)]
+pub(in crate::app) fn record_path_comparison() {
+    PATH_COMPARISONS.with(|count| count.set(count.get() + 1));
+}
+
 pub(in crate::app) fn same_path(left: &Path, right: &Path) -> bool {
     #[cfg(test)]
-    PATH_COMPARISONS.with(|count| count.set(count.get() + 1));
+    record_path_comparison();
     match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,

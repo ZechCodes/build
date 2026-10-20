@@ -258,6 +258,8 @@ impl AppState {
         if !self.snapshot_observations.ready {
             return crate::app::workspaces::same_path(left, right);
         }
+        #[cfg(test)]
+        crate::app::workspaces::record_path_comparison();
         self.snapshot_root(left) == self.snapshot_root(right)
     }
     fn snapshot_paths(&self) -> BTreeSet<PathBuf> {

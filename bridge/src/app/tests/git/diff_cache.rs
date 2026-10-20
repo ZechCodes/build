@@ -777,6 +777,9 @@ fn a_create_before_the_first_scan_leaves_the_running_scan_alone() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let project_id = state.project_at(0).id.clone();
+    // QA admission warms the first scan; this scenario starts before one
+    // has landed, rather than amending that already settled empty result.
+    state.clear_external_scan_for_test(&project_id);
     let path = add_external_worktree(&repo, dir.path(), "fresh", "feature-fresh");
     let described = crate::worktree::describe_checkout(&path, "main", crate::worktree::unix_now())
         .expect("it is a checkout");
@@ -909,6 +912,9 @@ fn a_scan_that_cannot_read_its_repository_settles_the_board() {
         }
     }));
     std::fs::remove_dir_all(&repo).unwrap();
+    // The external deletion happened after admission warmed this cache.
+    // Explicitly request the producer's next observation of the missing repo.
+    state.clear_external_scan_for_test(&project_id);
 
     let first = state.external_worktrees(&project_id);
     assert_eq!(computes.load(std::sync::atomic::Ordering::SeqCst), 1);

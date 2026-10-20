@@ -28,6 +28,9 @@ use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionIn
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
+#[cfg(test)]
+#[path = "carrier/timing_tests.rs"]
+mod timing_tests;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 

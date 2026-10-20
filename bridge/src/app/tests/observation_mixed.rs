@@ -77,6 +77,47 @@ async fn mixed_thread_attachment_keeps_homes_ranges_and_reset_removal_fences() {
     assert!(MixedReadContext::capture(&state).validate(&fence).is_err());
 }
 
+#[test]
+fn mixed_thread_attachment_service_caps_unranged_reads_and_covers_large_files() {
+    use crate::app::conversations::ATTACHMENT_MAX_BYTES;
+
+    let (directory, repository) = init_repo();
+    let mut app = qa_state(&repository, directory.path());
+    let (_, owner) = planned_run_in_review(&mut app, "page an agent recording");
+    app.delivery_queue.clear_queued();
+    let path = ".build/attachments/large-recording.webm";
+    let bytes: Vec<u8> = (0..ATTACHMENT_MAX_BYTES as usize + 13)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    let target = app.runs[&owner].worktree.path.join(path);
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(target, &bytes).unwrap();
+
+    // Exercise the initialized handler's ObservationService path.
+    let handler = app.into_handler();
+    let read = |params| {
+        let reply = call(&handler, "thread.attachment", params);
+        assert_eq!(reply["ok"], true, "{}", reply["error"]);
+        assert_eq!(reply["result"]["path"], path);
+        assert_eq!(reply["result"]["mime"], "video/webm");
+        assert_eq!(reply["result"]["size"], bytes.len());
+        reply["result"].clone()
+    };
+    let first = read(json!({"entity_id":owner,"path":path}));
+    assert_eq!(first["offset"], 0);
+    let first_bytes = b64decode(first["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(first_bytes.len() as u64, ATTACHMENT_MAX_BYTES);
+    assert!(first_bytes == bytes[..ATTACHMENT_MAX_BYTES as usize]);
+
+    let last = read(json!({
+        "entity_id":owner,"path":path,"offset":first_bytes.len(),"length":u64::MAX
+    }));
+    assert_eq!(last["offset"], ATTACHMENT_MAX_BYTES);
+    let last_bytes = b64decode(last["content_b64"].as_str().unwrap()).unwrap();
+    assert_eq!(last_bytes.len(), 13);
+    assert!([first_bytes, last_bytes].concat() == bytes);
+}
+
 #[tokio::test]
 async fn mixed_plan_document_keeps_canonical_store_and_error_parity() {
     let (dir, repo) = init_repo();

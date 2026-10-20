@@ -10,6 +10,8 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 
 #[cfg(test)]
+pub(in crate::app) mod status_publication_probe;
+#[cfg(test)]
 pub(in crate::app) mod status_timing;
 
 /// Start whichever pump this tab's session needs: the byte pump for a terminal,

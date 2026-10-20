@@ -12,6 +12,7 @@ struct IoSample {
     setup: Vec<Value>,
     worker_starts: Arc<std::sync::atomic::AtomicUsize>,
     sql_worker_starts: Arc<std::sync::atomic::AtomicUsize>,
+    read_pool_initialization: Value,
 }
 
 impl IoSample {
@@ -28,12 +29,24 @@ impl IoSample {
         let mut start = std::time::Instant::now();
         let mut sample = Sample::new_with_clock(1, None, clock);
         benchmark::setup_mark(&mut setup, "helper_fixture_and_unused_intake", &mut start);
-        let requests = {
+        let (requests, read_pool_initialization) = {
             let mut app = sample.state.lock().unwrap();
             let requests = fixture_requests(&mut app, &sample);
             app.refresh_snapshot_observations();
             app.publish_all_snapshot_projection();
-            requests
+            let initialization = app
+                .store
+                .as_ref()
+                .unwrap()
+                .read_pool()
+                .initialization_timing();
+            let read_pool_initialization = json!({
+                "total_ns":initialization.total.as_nanos(),
+                "schema_total_ns":initialization.schema_total.as_nanos(),
+                "schema_count":initialization.schema_count,
+                "semantics":"natural ReadPool::open total is nested inside helper_fixture_and_unused_intake; schema subtotal is nested inside that total. Neither is additional client latency. No benchmark warmup query."
+            });
+            (requests, read_pool_initialization)
         };
         benchmark::setup_mark(&mut setup, "extra_fixture_seed", &mut start);
         let mut handler = AppState::handler(Arc::clone(&sample.state));
@@ -60,6 +73,7 @@ impl IoSample {
         ));
         benchmark::setup_mark(&mut setup, "session_open", &mut start);
         Self {
+            read_pool_initialization,
             sql_worker_starts,
             worker_starts,
             setup,

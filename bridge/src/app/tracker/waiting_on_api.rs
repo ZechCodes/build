@@ -109,15 +109,18 @@ impl AppState {
         now: &str,
     ) -> Result<Value, String> {
         write.task.updated_at = now.to_string();
-        self.capture_task_identities(
-            &mut write.task,
-            &write
+        let mut timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&write.task.id)
+            .stored()?;
+        timeline.extend(
+            write
                 .events
                 .iter()
                 .cloned()
-                .map(crate::tracker::TimelineEntry::Event)
-                .collect::<Vec<_>>(),
+                .map(crate::tracker::TimelineEntry::Event),
         );
+        self.capture_task_identities_and_actor(&mut write.task, &timeline, &write.actor);
         let (publication, additional) = self
             .tracker_store()?
             .save_tracker_task_waiting_on_observed(

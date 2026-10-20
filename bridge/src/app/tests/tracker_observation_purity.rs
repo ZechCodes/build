@@ -118,32 +118,33 @@ fn dependency_edit_captures_a_new_actor_before_publishing_its_reply() {
     let (_repository, mut app, project) = tracked(root.path());
     let dependent = filed(&mut app, &project, "dependent");
     let prerequisite = filed(&mut app, &project, "prerequisite");
-    let actor = coding_agent(&mut app, &project, "dependency author");
-    app.set_agent_name(&actor.0, &actor.1, "Dependency author")
-        .unwrap();
-    app.initialize_snapshot_projection();
-    let action = crate::mcp::DoneServer::new("test")
-        .handle_message(
-            &json!({
-                "jsonrpc":"2.0", "id":1, "method":"tools/call",
-                "params":{"name":"link_task", "arguments":{
-                    "task_id":dependent["id"], "waiting_on":[prerequisite["id"]]
-                }}
-            })
-            .to_string(),
-        )
-        .action
-        .unwrap();
+    for (name, tool) in [
+        ("Link author", "link_task"),
+        ("Unlink author", "unlink_task"),
+    ] {
+        let actor = coding_agent(&mut app, &project, name);
+        app.set_agent_name(&actor.0, &actor.1, name).unwrap();
+        app.initialize_snapshot_projection();
+        let action = crate::mcp::DoneServer::new("test")
+            .handle_message(
+                &json!({
+                    "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                    "params":{"name":tool, "arguments":{
+                        "task_id":dependent["id"], "waiting_on":[prerequisite["id"]]
+                    }}
+                })
+                .to_string(),
+            )
+            .action
+            .unwrap();
 
-    let answer = call(&mut app, &actor, action).unwrap();
-    let identity = &answer["task"]["identities"][&actor.1];
-    assert_eq!(identity["name"], "Dependency author");
-    assert!(identity["ordinal"].is_number(), "{identity}");
-    assert!(identity["provider"].is_string(), "{identity}");
-    assert_eq!(identity["available"], true);
-    let (_, saved) = app.tracker_task(dependent["id"].as_str().unwrap()).unwrap();
-    assert_eq!(
-        saved.identities[&actor.1].name.as_deref(),
-        Some("Dependency author")
-    );
+        let answer = call(&mut app, &actor, action).unwrap();
+        let identity = &answer["task"]["identities"][&actor.1];
+        assert_eq!(identity["name"], name);
+        assert!(identity["ordinal"].is_number(), "{identity}");
+        assert!(identity["provider"].is_string(), "{identity}");
+        assert_eq!(identity["available"], true);
+        let (_, saved) = app.tracker_task(dependent["id"].as_str().unwrap()).unwrap();
+        assert_eq!(saved.identities[&actor.1].name.as_deref(), Some(name));
+    }
 }

@@ -2,6 +2,7 @@
 //! are captured by lifecycle work; publication consumes only owned observations.
 
 use super::read_view::{ReadView, SnapshotDelta};
+use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +13,7 @@ use std::sync::{Arc, Mutex};
 pub(in crate::app) struct SnapshotObservations {
     ready: bool,
     pending_owners: Mutex<BTreeSet<String>>,
+    ownership: Mutex<Option<Arc<ProjectionOwnership>>>,
     paths: BTreeMap<PathBuf, PathBuf>,
     existing_paths: BTreeSet<PathBuf>,
     branches: BTreeMap<String, String>,
@@ -93,6 +95,7 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return;
         }
+        let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
@@ -131,6 +134,7 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return None;
         }
+        let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
@@ -193,6 +197,7 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return None;
         }
+        let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
@@ -369,6 +374,7 @@ fn put_changed(
 mod history;
 mod maintenance;
 mod observations;
+mod ownership;
 mod projects;
 
 #[cfg(test)]

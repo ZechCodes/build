@@ -29,6 +29,7 @@ use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionIn
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
+mod io;
 #[cfg(test)]
 mod observation_tests;
 #[cfg(test)]

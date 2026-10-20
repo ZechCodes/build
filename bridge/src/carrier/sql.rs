@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 
+use super::io::{Execution, IoExecutors};
 use super::{FrameHandler, SessionSender};
 use crate::store::{ReadConnection, ReadPool};
 use crate::timing::{Priority, QueuedFrame, WaitTimer};
@@ -22,8 +23,6 @@ enum ReadLane {
     Sql,
     Observation,
 }
-
-type Execution = Box<dyn FnOnce() + Send>;
 
 /// Both ordinary SQL reads and observation metadata preparation share these
 /// fixed SQL workers. External filesystem/Git work never enters this executor.
@@ -126,13 +125,17 @@ impl ReadDispatcher {
                 }
             }
             ReadLane::Observation => {
-                for number in 0..IO_WORKERS {
-                    let executor = spawn_io_executor(
-                        number,
-                        #[cfg(test)]
-                        &handler.io_thread_starts,
-                    );
-                    tokio::spawn(coordinate_io(queue.clone(), handler.clone(), executor));
+                let executor = Arc::new(IoExecutors::new(
+                    IO_WORKERS,
+                    #[cfg(test)]
+                    handler.io_thread_starts.clone(),
+                ));
+                for _ in 0..IO_WORKERS {
+                    tokio::spawn(coordinate_io(
+                        queue.clone(),
+                        handler.clone(),
+                        executor.clone(),
+                    ));
                 }
             }
         }
@@ -464,25 +467,6 @@ impl Work {
     }
 }
 
-fn spawn_io_executor(
-    number: usize,
-    #[cfg(test)] starts: &std::sync::atomic::AtomicUsize,
-) -> std::sync::mpsc::Sender<(Execution, oneshot::Sender<()>)> {
-    let (send, receive) = std::sync::mpsc::channel::<(Execution, oneshot::Sender<()>)>();
-    std::thread::Builder::new()
-        .name(format!("bridge-io-{number}"))
-        .spawn(move || {
-            while let Ok((execution, done)) = receive.recv() {
-                execution();
-                let _ = done.send(());
-            }
-        })
-        .expect("start observation read worker");
-    #[cfg(test)]
-    starts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    send
-}
-
 async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
     let pool = handler.sql.as_ref().and_then(|sql| sql.pool.clone());
     let executors = handler
@@ -514,11 +498,7 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
     }
 }
 
-async fn coordinate_io(
-    queue: Arc<Queue>,
-    handler: FrameHandler,
-    executor: std::sync::mpsc::Sender<(Execution, oneshot::Sender<()>)>,
-) {
+async fn coordinate_io(queue: Arc<Queue>, handler: FrameHandler, executor: Arc<IoExecutors>) {
     while queue.work_available().await {
         #[cfg(test)]
         let queue_take_started = std::time::Instant::now();
@@ -537,14 +517,13 @@ async fn coordinate_io(
         let Some(execution) = prepare_io(&queue, &handler, work).await else {
             continue;
         };
-        let (done, complete) = oneshot::channel();
         #[cfg(test)]
         handler
             .clock
             .mark_observed(&observed, "io_submitted", std::time::Instant::now());
-        if executor.send((execution, done)).is_err() {
+        let Ok(complete) = executor.submit(execution) else {
             return;
-        }
+        };
         let _ = complete.await;
     }
 }

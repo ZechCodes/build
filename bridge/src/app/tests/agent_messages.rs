@@ -25,6 +25,7 @@ fn workspace_agent(state: &mut AppState, workspace_id: &str) -> (String, String)
 
 fn message_agent(agent_id: &str, body: &str) -> BridgeAction {
     BridgeAction::MessageAgent {
+        attachments: Vec::new(),
         agent_id: agent_id.to_string(),
         body: body.to_string(),
     }
@@ -183,6 +184,7 @@ fn an_agent_reaches_no_agent_outside_its_own_project() {
 #[test]
 fn message_agent_is_on_the_coding_and_project_surfaces() {
     let action = BridgeAction::MessageAgent {
+        attachments: Vec::new(),
         agent_id: "agent-2".to_string(),
         body: "hello".to_string(),
     };

@@ -324,13 +324,13 @@ pub enum ThreadLink {
     Recovery { recovery_id: String },
 }
 
-/// A file the reviewer sent with a message, already written to disk by
-/// `thread.attach`. The message carries only the reference: the bytes live
+/// A file sent with a message, already stored by `thread.attach` or agent
+/// file intake. The message carries only the reference: the bytes live
 /// where the agent's own tools can open them, and where a re-render costs a
 /// read rather than another trip through the thread record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageAttachment {
-    /// What the reviewer called it, for display.
+    /// What the sender called it, for display.
     pub name: String,
     /// Where the agent opens it: worktree-relative under `.build/attachments/`
     /// when the conversation has a checkout, absolute when it does not.

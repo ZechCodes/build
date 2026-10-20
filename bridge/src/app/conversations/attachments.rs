@@ -298,21 +298,35 @@ impl AppState {
         if content.is_empty() {
             return Err("attachment is empty".to_string());
         }
-        let homes = self.attachment_homes(&entity_id)?;
+        let name = sanitize_attachment_name(&filename);
+        let stored = format!("{}-{name}", &sha256_hex(&content)[..12]);
+        let wire_path = self.store_conversation_attachment(&address, &stored, &content)?;
+        let head = &content[..content.len().min(8192)];
+        Ok(json!({
+            "name": name,
+            "path": wire_path,
+            "mime": mime_hint(std::path::Path::new(&stored), head),
+            "size": content.len(),
+        }))
+    }
+
+    /// Put verified bytes in the conversation's durable store and in the
+    /// checkout its recipient can read. Uploads and agent files use the same
+    /// homes, reservation guard, ignored directory and generation registration.
+    fn store_conversation_attachment(
+        &self,
+        address: &super::ConversationAddress,
+        stored: &str,
+        content: &[u8],
+    ) -> Result<String, String> {
+        let homes = self.attachment_homes(&address.entity_id)?;
         if let Some(worktree_home) = &homes.worktree {
             self.refuse_writers_while_reserved(worktree_home)?;
         }
-        let name = sanitize_attachment_name(&filename);
-        // Content-addressed, so re-sending the same screenshot costs one copy
-        // rather than one per send, and the two homes agree on the leaf name —
-        // which is what lets a read fall back to the durable copy after a
-        // worktree is swept.
-        let stored = format!("{}-{name}", &sha256_hex(&content)[..12]);
-
-        write_attachment(&homes.local, &stored, &content)?;
+        write_attachment(&homes.local, stored, content)?;
         let wire_path = match &homes.worktree {
             Some(worktree_home) => {
-                write_attachment(worktree_home, &stored, &content)?;
+                write_attachment(worktree_home, stored, content)?;
                 // The agent's own `git add -A` runs in this tree, and so does
                 // the diff the human reviews. Conversation is neither.
                 ensure_attachments_ignored(
@@ -322,34 +336,73 @@ impl AppState {
                 )
                 .map_err(|e| format!("cannot keep attachments out of git: {e}"))?;
                 if self
-                    .attachments_root_for_reader_elsewhere(&entity_id)
+                    .attachments_root_for_reader_elsewhere(&address.entity_id)
                     .is_some()
                 {
                     // Its agents stand somewhere else, so a worktree-relative
                     // path would be read from the wrong directory.
-                    worktree_home.join(&stored).display().to_string()
+                    worktree_home.join(stored).display().to_string()
                 } else {
                     format!("{ATTACHMENTS_DIR}/{stored}")
                 }
             }
-            None => homes.local.join(&stored).display().to_string(),
+            None => homes.local.join(stored).display().to_string(),
         };
         if let Some(store) = self.store.as_ref() {
             store
                 .register_conversation_attachment(
                     &address.conversation_id,
-                    &self.conversation_at(&address)?.id,
+                    &self.conversation_at(address)?.id,
                     &wire_path,
                 )
                 .map_err(|error| format!("attachment store: {error}"))?;
         }
-        let head = &content[..content.len().min(8192)];
-        Ok(json!({
-            "name": name,
-            "path": wire_path,
-            "mime": mime_hint(std::path::Path::new(&stored), head),
-            "size": content.len(),
-        }))
+        Ok(wire_path)
+    }
+
+    /// Copy agent-authored files using task evidence's intake policy, then
+    /// give this conversation paths its harness can open. Preserve the stored
+    /// leaf so forwarding and reset retain one shared durable object.
+    pub(in crate::app) fn take_in_agent_message_files(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+        listed: &[Value],
+    ) -> Result<Vec<crate::thread::MessageAttachment>, String> {
+        if listed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let address = self.agent_message_attachment_destination(entity_id, agent_id)?;
+        let taken = self.take_in_agent_files(listed)?;
+        let files = self.parse_task_attachments(&json!({ "attachments": taken }))?;
+        files
+            .into_iter()
+            .map(|mut attachment| {
+                let source = self.resolve_task_attachment(&attachment.path)?;
+                let stored = source
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or("attachment has no stored filename")?;
+                let content = std::fs::read(&source)
+                    .map_err(|error| format!("cannot read the attachment: {error}"))?;
+                attachment.path = self.store_conversation_attachment(&address, stored, &content)?;
+                Ok(attachment)
+            })
+            .collect()
+    }
+
+    /// Preflight a conversation file destination before copying any sources.
+    pub(in crate::app) fn agent_message_attachment_destination(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+    ) -> Result<super::ConversationAddress, String> {
+        let address = self.resolve_conversation_address(entity_id, Some(agent_id))?;
+        self.guard_conversation_reservation(&address)?;
+        if let Some(home) = self.attachment_homes(entity_id)?.worktree {
+            self.refuse_writers_while_reserved(&home)?;
+        }
+        Ok(address)
     }
 
     /// Hand an attachment's bytes back to the surface that sent it. The browser
@@ -375,7 +428,7 @@ impl AppState {
                 .unwrap_or(ATTACHMENT_MAX_BYTES)
                 .min(ATTACHMENT_MAX_BYTES)
         } else {
-            size
+            size.min(ATTACHMENT_MAX_BYTES)
         };
         let mut head = Vec::new();
         (&mut file)

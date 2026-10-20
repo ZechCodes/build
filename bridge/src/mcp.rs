@@ -140,6 +140,8 @@ pub enum BridgeAction {
         body: String,
         /// Actions suggested beside the message, already numbered.
         options: Vec<crate::thread::MessageOption>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Value>,
     },
     /// Ask the agent's own conversation history a question. Read-only, and
     /// scoped by the daemon to what this agent may read.
@@ -266,6 +268,8 @@ pub enum BridgeAction {
     MessageAgent {
         agent_id: String,
         body: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Value>,
     },
     /// Say something to an agent on one of this project's workspaces. Project
     /// only. Naming no agent is that workspace's primary one. A thin alias for
@@ -926,9 +930,27 @@ impl DoneServer {
             "type": "object",
             "properties": {
                 "agent_id": { "type": "string", "description": "The agent to write to. A message from an agent carries the id to answer it on; list_workspace_agents answers the ids on a workspace. An agent outside your project, an id that names nobody, and your own id are refused." },
+                "attachments": Self::agent_attachments_input_schema(),
                 "body": { "type": "string", "description": concat!("What to say, in full. The other agent has none of your conversation, so say what it needs rather than pointing at what you were told.", reference_shapes_note!()) }
             },
             "required": ["agent_id", "body"]
+        })
+    }
+
+    /// Shared file policy for task evidence and agent chat messages.
+    fn agent_attachments_input_schema() -> Value {
+        json!({
+            "type": "array",
+            "maxItems": 10,
+            "description": "Files shown with this message or task, including on a phone. Attach screenshots, recordings and logs instead of listing paths in the body. Pass an attachment's path through unchanged, or give the full path of a file you made on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "An attachment's path exactly as you received it, or the full (absolute) path of a file you made." },
+                    "name": { "type": "string", "description": "What to call it. Optional; the stored name is used otherwise." }
+                },
+                "required": ["path"]
+            }
         })
     }
 
@@ -1082,23 +1104,7 @@ impl DoneServer {
             "type": "boolean",
             "description": "And follow this task from now on: every later change to it arrives as a message here. Defaults to false; asking twice is not two trackers."
         });
-        // Two kinds of file: one the user already sent you, passed back by the
-        // `path` it arrived on, and one you made yourself, named by its full
-        // path on this machine and copied into the store when the call lands
-        // (#116). Either way the task holds the bytes, not a pointer.
-        let attachments = json!({
-            "type": "array",
-            "maxItems": 10,
-            "description": "Files to file with this task, shown on it to anyone reading, phone included. Use this for the screenshots, recordings and logs that prove a claim — a before/after, a failing run, a UI you changed — instead of listing their paths in the text, which nobody reading the task can open. Two kinds: an attachment you were sent (pass its `path` through unchanged), or a file you made, by its full path on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "An attachment's path exactly as you received it, or the full (absolute) path of a file you made." },
-                    "name": { "type": "string", "description": "What to call it. Optional; the stored name is used otherwise." }
-                },
-                "required": ["path"]
-            }
-        });
+        let attachments = Self::agent_attachments_input_schema();
         let mut tools = vec![
             json!({
                 "name": "list_tasks",
@@ -1502,6 +1508,7 @@ impl DoneServer {
             "type": "object",
             "properties": {
                 "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
+                "attachments": Self::agent_attachments_input_schema(),
                 "body": { "type": "string", "description": concat!("What you have to say, in the user's terms. Complete for an outcome or an answer, Waiting when the next step is their call, Working only while a long read on their question is still going, never as a progress report.", reference_shapes_note!()) }
             },
             "required": ["status", "body"]
@@ -1731,6 +1738,7 @@ impl DoneServer {
             "type": "object",
             "properties": {
                 "status": { "type": "string", "enum": ["Complete", "Blocked", "Waiting", "Working"] },
+                "attachments": Self::agent_attachments_input_schema(),
                 "body": { "type": "string", "description": SUMMARY_DESCRIPTION },
                 "options": {
                     "type": "array", "maxItems": crate::thread::MAX_MESSAGE_OPTIONS,
@@ -1940,6 +1948,10 @@ impl DoneServer {
                     }
                 }
             };
+            let attachments = match message_attachment_arguments(&arguments) {
+                Ok(attachments) => attachments,
+                Err(error) => return refused(id, error),
+            };
             let report = status
                 .report()
                 .map(|status| DoneReport::new(status, body.to_string()));
@@ -1947,6 +1959,7 @@ impl DoneServer {
                 action: Some(BridgeAction::PostThreadMessage {
                     body: body.to_string(),
                     options,
+                    attachments,
                     still_working: status == MessageStatus::Working,
                 }),
                 action_id: Some(id),
@@ -2510,12 +2523,45 @@ fn search_action(id: Value, params: Option<&Value>) -> Handled {
 
 /// `message_agent`, on every surface that has a conversation.
 fn message_agent_action(id: Value, params: Option<&Value>) -> Handled {
-    match required_argument(params, "agent_id")
-        .and_then(|agent_id| Ok((agent_id, required_argument(params, "body")?)))
-    {
-        Ok((agent_id, body)) => acted(id, BridgeAction::MessageAgent { agent_id, body }),
+    let parsed: Result<BridgeAction, String> = (|| {
+        let agent_id = required_argument(params, "agent_id")?;
+        let body = required_argument(params, "body")?;
+        let arguments = params
+            .and_then(|params| params.get("arguments"))
+            .unwrap_or(&Value::Null);
+        let attachments = message_attachment_arguments(arguments)?;
+        Ok(BridgeAction::MessageAgent {
+            agent_id,
+            body,
+            attachments,
+        })
+    })();
+    match parsed {
+        Ok(action) => acted(id, action),
         Err(message) => refused(id, message),
     }
+}
+
+/// A malformed file list must never silently become a text-only message.
+fn message_attachment_arguments(arguments: &Value) -> Result<Vec<Value>, String> {
+    let Some(value) = arguments
+        .get("attachments")
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(Vec::new());
+    };
+    let listed = value.as_array().ok_or("attachments must be an array")?;
+    for entry in listed {
+        entry
+            .get("path")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .ok_or("each attachment needs a path")?;
+        if entry.get("name").is_some_and(|name| !name.is_string()) {
+            return Err("attachment name must be a string".into());
+        }
+    }
+    Ok(listed.clone())
 }
 
 /// `set_topic`, on every surface that has a conversation.
@@ -2571,12 +2617,17 @@ fn project_message(id: Value, params: Option<&Value>) -> Handled {
     let Some(body) = body else {
         return refused(id, "body is required");
     };
+    let attachments = match message_attachment_arguments(&arguments) {
+        Ok(attachments) => attachments,
+        Err(error) => return refused(id, error),
+    };
     acted(
         id,
         BridgeAction::PostThreadMessage {
             still_working: status == MessageStatus::Working,
             body: body.to_string(),
             options: Vec::new(),
+            attachments,
         },
     )
 }

@@ -266,6 +266,7 @@ async fn a_process_that_exits_after_handing_back_records_no_interruption() {
             "run-handback",
             &agent_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 body: "here is what I did".to_string(),
                 still_working: false,
                 options: Vec::new(),

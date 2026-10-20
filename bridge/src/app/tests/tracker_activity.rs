@@ -1307,6 +1307,7 @@ fn nothing_an_agent_says_lands_on_the_task_as_a_comment() {
             &entity_id,
             &agent_id,
             crate::mcp::BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: colleague.clone(),
                 body: "Fixed the drop handler race on #1; nothing is blocked on me.".into(),
             },

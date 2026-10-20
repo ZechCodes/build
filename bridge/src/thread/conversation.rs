@@ -328,6 +328,14 @@ impl Thread {
         self.unclaim_own_message_line();
     }
 
+    /// Attach verified files to the message just posted, on either side of
+    /// the conversation. The descriptors persist with the message itself.
+    pub fn wear_attachments(&mut self, attachments: Vec<MessageAttachment>) {
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.attachments = attachments;
+        }
+    }
+
     /// Say which task the message just posted handed over, set the same way
     /// the sender is and for the same reason: the post paths that carry an
     /// anchor or a viewing context cannot take one more argument each.

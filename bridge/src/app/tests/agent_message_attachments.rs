@@ -401,4 +401,112 @@ fn a_large_agent_chat_recording_reads_in_transport_sized_pieces() {
     ));
     let tail = crate::encoding::b64decode(rest["result"]["content_b64"].as_str().unwrap()).unwrap();
     assert_eq!([head, tail].concat(), bytes);
+    let target = coding_agent(&mut scene.state, &scene.project, "large-recording");
+    let sent = scene.call("message_agent", json!({"agent_id":target.1,"body":"Full recording.","attachments":[outgoing["data"]["attachments"][0]]})).unwrap();
+    let receipt = scene
+        .state
+        .operation_receipt(sent["operation_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    let file = &receipt.delivery.unwrap().payload.unwrap().messages[0].attachments[0];
+    assert_eq!(file.size, bytes.len() as u64);
+    assert_eq!(
+        std::fs::read(scene.state.runs[&target.0].worktree.path.join(&file.path)).unwrap(),
+        bytes
+    );
+}
+
+#[test]
+fn malformed_chat_file_arguments_never_reach_the_daemon_on_either_surface() {
+    for owner in ["agent-attachment", "project-attachment"] {
+        for tool in ["post_thread_message", "message_agent"] {
+            for attachments in [
+                json!({"path":"/tmp/x"}),
+                json!([null]),
+                json!(["x"]),
+                json!([{}]),
+                json!([{"path":42}]),
+                json!([{"path":""}]),
+                json!([{"path":"/tmp/x","name":42}]),
+            ] {
+                let parsed = DoneServer::for_owner(owner).handle_message(&json!({
+                    "jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":tool,"arguments":{"status":"Complete","agent_id":"other","body":"Completed.","attachments":attachments}}
+                }).to_string());
+                assert!(parsed.action.is_none(), "{owner} {tool}: {attachments}");
+                assert!(parsed.report.is_none(), "a refused post must not complete");
+                let reply: Value = serde_json::from_str(&parsed.reply.unwrap()).unwrap();
+                assert_eq!(reply["result"]["isError"], true, "{reply}");
+            }
+        }
+    }
+}
+
+/// Real MCP intake and RPC replies consumed by the SPA wire integration test.
+#[test]
+fn agent_attachment_chat_wire_probe() {
+    let mut scene = scene();
+    let size = ATTACHMENT_MAX_BYTES as usize + 123_123;
+    let bytes: Vec<u8> = b"Build attachment probe: complete log evidence.\n"
+        .iter()
+        .copied()
+        .cycle()
+        .take(size)
+        .collect();
+    let source = scene.made("complete-run.log", &bytes);
+    scene.post(json!([{ "path":source }])).unwrap();
+    let target = coding_agent(&mut scene.state, &scene.project, "wire-recipient");
+    scene.call("message_agent", json!({"agent_id":target.1,"body":"Full log for review.","attachments":[{"path":source}]})).unwrap();
+    std::fs::remove_file(source).unwrap();
+    scene.state = boot(scene._root.path());
+    let thread = scene.state.handle(req(
+        "thread.page",
+        json!({"entity_id":scene.who.0,"agent_id":scene.who.1}),
+    ));
+    assert_eq!(thread["ok"], true, "{thread}");
+    let recipient_thread = scene.state.handle(req(
+        "thread.page",
+        json!({"entity_id":target.0,"agent_id":target.1}),
+    ));
+    assert_eq!(recipient_thread["ok"], true, "{recipient_thread}");
+    let file = &thread["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["data"]["body"] == "Screenshot and log.")
+        .unwrap()["data"]["attachments"][0];
+    let path = file["path"].clone();
+    let default_reply = scene.state.handle(req(
+        "thread.attachment",
+        json!({"entity_id":scene.who.0,"agent_id":scene.who.1,"path":path}),
+    ));
+    assert_eq!(default_reply["ok"], true, "{default_reply}");
+    assert_eq!(default_reply["result"]["size"], size);
+    assert_eq!(
+        crate::encoding::b64decode(default_reply["result"]["content_b64"].as_str().unwrap())
+            .unwrap()
+            .len() as u64,
+        ATTACHMENT_MAX_BYTES
+    );
+    let mut ranged_replies = Vec::new();
+    let mut reconstructed = Vec::new();
+    for offset in (0..size).step_by(1_048_576) {
+        let reply = scene.state.handle(req("thread.attachment", json!({"entity_id":scene.who.0,"agent_id":scene.who.1,"path":path,"offset":offset,"length":1_048_576})));
+        assert_eq!(reply["ok"], true);
+        reconstructed.extend(
+            crate::encoding::b64decode(reply["result"]["content_b64"].as_str().unwrap()).unwrap(),
+        );
+        ranged_replies.push(reply);
+    }
+    assert_eq!(reconstructed, bytes);
+    println!(
+        "AGENT_ATTACHMENT_WIRE={}",
+        json!({
+            "thread":thread["result"], "recipient_thread":recipient_thread["result"],
+            "entity_id":scene.who.0, "agent_id":scene.who.1,
+            "path":path, "name":file["name"], "mime":file["mime"],
+            "size":size, "sha256":crate::app::sha256_hex(&bytes),
+            "default_reply":default_reply, "ranged_replies":ranged_replies,
+        })
+    );
 }

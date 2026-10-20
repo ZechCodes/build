@@ -133,6 +133,8 @@ pub(super) fn put(
 
 pub(super) fn push_workspaces(workspaces: &[Row], summaries: &[Row]) -> SharedJson {
     let summaries = summaries.iter().fold(HashMap::new(), |mut index, row| {
+        #[cfg(test)]
+        crate::app::snapshot_projection::summary_counts::join_visit();
         index.entry(row.id.as_str()).or_insert(row);
         index
     });

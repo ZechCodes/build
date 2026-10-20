@@ -47,7 +47,7 @@ An accepted record contains:
 - A caller-generated UUID `operation_id`, authenticated principal/device or
   MCP agent identity, semantic method/action, canonical normalized payload
   and hash, resolved target IDs, source/thread/owner generations and actor.
-- A complete conflict-owner set, durable per-owner order, explicit bounded
+- A complete conflict-owner set, durable per-owner order, bounded resolved
   predecessor IDs, and stable IDs allocated for created resources and child
   delivery/assignment operations. No task ID, actor, authority or owner is
   trusted simply because it came from an envelope.
@@ -59,7 +59,7 @@ Admission checks authentication, schema/size limits, authority to the bound
 scope, existing **or durably reserved** resource identity, dependency validity
 and quotas. It saves enough intent to execute or conclusively refuse after a
 restart. Mutable preconditions are evaluated against the canonical state
-after all declared predecessors succeed; admission must not reject a valid
+after all recorded predecessors succeed; admission must not reject a valid
 chain because that state has not been applied yet. An independent command
 may reject an already-known mismatch at admission, but every mutable check
 still runs at execution. Admission is not a promise that a later Git ref,
@@ -79,13 +79,43 @@ write overload may return retryable `busy`, reads may not.
 
 ### Admission of dependent writes
 
-The request envelope's `write.after` contains at most eight direct
-predecessor operation IDs. The SPA's persisted write service and the MCP
-control adapter both pass this field, outside the verb's `params`; expose
-`after` alongside `operation_id` in MCP write tool metadata. Dependencies are
-part of the normalized intent/hash and remain unchanged on retry. Owner
-queue order alone is insufficient: it serializes conflicts but does not
-express that a command requires a predecessor's successful result.
+The request envelope's optional `write.after` contains at most eight direct
+predecessor operation IDs, outside the verb's `params`; expose optional
+`after` alongside `operation_id` in MCP write tool metadata. **Omitting it
+means infer dependencies, not declare independence.** Existing MCP callers
+must be able to create a task and then comment on or update the returned ID
+without learning a new argument or waiting for confirmation.
+
+The SPA's persisted write service automatically records the producers of
+any unconfirmed overlay or reserved ID used to build a write, and supplies
+their operation IDs as `write.after`. This is a general rule for all writes,
+not checklist-specific caller logic. Persist those dependencies with the
+outgoing operation before sending it; reload must not lose the provenance.
+Do not add dependencies merely because unrelated writes share an owner.
+
+For MCP, use **bridge-side inference**: when `after` is omitted, the admission
+transaction looks up each typed resource ID in the request against durable
+reservations of the same authenticated principal and journal incarnation.
+If a matching creator is not yet successfully applied and published, add its
+operation ID to the resolved predecessors. Apply this fallback to SPA/RPC
+requests too; it must work without an adapter-local history or model-supplied
+metadata. Check reservations even if the canonical row is already committed
+but publication is incomplete. The existing immutable scope/generation and
+authorization checks still apply; another principal's reservation is not a
+dependency or authority grant.
+
+An explicit `after` overrides inference and selects the predecessor set,
+subject to the same validity checks. It cannot omit a still-required creator
+for a reserved resource or bypass a mutable precondition; an incomplete
+override is refused before ack. Deduplicate the resolved set and enforce the
+eight-predecessor bound without silently dropping an edge. Resolved
+dependencies are part of the normalized intent/hash and remain unchanged on
+retry. Resolve an existing operation ID before inference: a retry that again
+omits `after` reuses its saved resolved set, even if the creator has since
+finished, and still compares the semantic payload. An explicit changed set
+conflicts with that saved intent. Owner queue order alone is insufficient:
+it serializes conflicts but does not express that a command requires a
+predecessor's successful result.
 
 In the admission transaction, resolve each predecessor to an already durable
 command of the same authenticated principal and journal incarnation, verify
@@ -96,19 +126,19 @@ admitted commands, so new admission cannot form a cycle. Reservation records
 bind resource kind, canonical ID, owner/generation and creator command;
 guessing an ID or naming an unrelated predecessor does not authorize it.
 
-An absent canonical resource may resolve through a reservation owned by a
-declared predecessor. Validate its type, immutable scope and authority now;
-defer its existence/materialization and mutable body/ref/version checks to
-execution. Do not create a placeholder canonical task or weaken a
-precondition to make admission succeed. The dependent command can receive
+An absent canonical resource may resolve through a reservation owned by an
+inferred or explicitly supplied predecessor. Validate its type, immutable
+scope and authority now; defer its existence/materialization and mutable
+body/ref/version checks to execution. Do not create a placeholder canonical
+task or weaken a precondition to make admission succeed. The dependent command can receive
 its durable ack while the predecessor's executor is held. It becomes
 eligible only after predecessors are applied and published successfully,
 independent of whether their confirmation pushes reached any caller.
 
 | Chain | SPA and MCP request | Execution rule |
 | --- | --- | --- |
-| Checklist tick A, then tick B | A is `tasks.update` from body B0 to B1 with `expected_body_hash = SHA256(B0)`. After A's ack, the effective cache contains B1. `taskChecklist.js`/the shared write service sends B as B1→B2 with `expected_body_hash = SHA256(B1)` and `write.after = [A.operation_id]`. An MCP caller passes the same predecessor via `after` using A's ack ID. | Admit B using task identity and A's durable command, without comparing its hash to still-canonical B0. After A publishes B1, compare B's hash to the then-current canonical body in B's mutation transaction. An intervening unrelated edit still causes a stale-body failure; no blind overwrite. |
-| Create task C, then comment D | C's ack reserves `result.task_id = T`. The SPA cache and MCP tool result retain T plus C's operation ID. Send `tasks.comment` with `params.task_id = T` and `write.after = [C.operation_id]`; MCP forwards `after` in the control envelope. | Resolve T through C's durable reservation even before a task row exists. After C publishes the task, recheck current existence, generation and authority before applying D. Missing T with no matching predecessor reservation remains an error. |
+| Checklist tick A, then tick B | A is `tasks.update` from body B0 to B1 with `expected_body_hash = SHA256(B0)`. After A's ack, the effective cache contains B1. The shared SPA write service automatically sends B as B1→B2 with `expected_body_hash = SHA256(B1)` and `write.after = [A.operation_id]`, using the overlay's provenance; `taskChecklist.js` need not supply `after`. An MCP caller constructing the same speculative body can use the explicit `after` override with A's ack ID. | Admit B using task identity and A's durable command, without comparing its hash to still-canonical B0. After A publishes B1, compare B's hash to the then-current canonical body in B's mutation transaction. An intervening unrelated edit still causes a stale-body failure; no blind overwrite. |
+| Create task C, then comment D | C's ack reserves `result.task_id = T`. The SPA cache and MCP tool result retain T plus C's operation ID. The caller submits the comment with `params.task_id = T` and no explicit `after`. The SPA write service automatically supplies C from the reservation provenance; for MCP (or an omitted RPC field), bridge admission finds T's same-principal reservation and persists C as D's predecessor. | Resolve T through C's durable reservation even before a task row exists. After C publishes the task, recheck current existence, generation and authority before applying D. Missing T with no authorized matching reservation remains an error; omitting `after` alone is never that error. |
 
 If a predecessor fails after the dependent ack, settle the dependent as
 `failed`, `effect: "unapplied"`, `code: "dependency_failed"` without executing
@@ -118,14 +148,21 @@ or fail them. Remove dependent optimistic layers in dependency order and
 retain their drafts; never replay them automatically on unrelated state.
 
 Held-executor tests cover **both RPC/SPA and MCP**: (1) hold A before apply,
-ack A then B, prove both acks arrive without releasing A and B has no effect;
-release and observe B0→B1→B2; (2) hold C, ack C then D against reserved T with
-no task row, release and observe exactly one task/comment; (3) fail each
+ack A then B, prove the SPA service derives B's dependency from the overlay
+without caller-supplied `after`, both acks arrive without releasing A and B
+has no effect; release and observe B0→B1→B2; (2) hold C, ack C then submit D
+against reserved T with no task row and **no explicit `after`**. Exercise the
+actual MCP create/comment tools with no adapter-local history, the SPA service
+with reservation provenance, and a raw RPC omitting the field. Assert D's
+durable dependency is C, both acks arrive while C is held, and D has no effect
+until release; then observe exactly one task/comment; (3) fail each
 predecessor and assert dependent `dependency_failed`, zero dependent effects
 and correct overlay/draft recovery. Also race an unrelated body edit between
-ticks, retry both IDs across restart, and reject an unrelated/forged reserved
-ID. These are required step-6/7 implementation tests, not runtime results of
-this documentation change.
+ticks, retry both IDs across restart and after the creator finishes (still
+omitting `after`), validate explicit overrides and reject an incomplete one,
+and reject an unrelated/forged or other-principal reserved ID. These are
+required step-6/7 implementation tests, not runtime results of this
+documentation change.
 
 ### Identity, retries and lifetime
 
@@ -175,15 +212,16 @@ Ancestor intentions allow sibling workspaces to overlap; reserving a device
 counter must not serialize every device command. Exclusive project deletion
 fences descendants. No upgrades/partial-set waits; discovered additional
 owners require a new validated reservation before effect. An earlier failure
-unblocks a later independent command after reconciliation; explicit dependent
+unblocks a later independent command after reconciliation; dependent
 commands fail `dependency_failed` when their prerequisite failed.
 
-MCP preserves caller order for conflicting commands after ack, plus explicit
+MCP preserves caller order for conflicting commands after ack, plus automatic
 dependencies when a command uses a resource just reserved by an earlier
-ack. A caller cannot read a reserved workspace path as though provisioning
-had finished. Terminal input/resize/close retain exact per-terminal stream
-ordering across the new command service. Reset, deletion, reclaim and source
-movement retain the existing generation fences.
+ack, with explicit overrides as defined above. A caller cannot read a reserved
+workspace path as though provisioning had finished. Terminal input/resize/close
+retain exact per-terminal stream ordering across the new command service.
+Reset, deletion, reclaim and source movement retain the existing generation
+fences.
 
 For external effects, durably claim the step before crossing the filesystem,
 Git, PTY, process or provider boundary. Use operation-owned staging paths,
@@ -501,7 +539,8 @@ event fixtures, announced capabilities and SPA capability adapters together.
 Test first, then implement each slice:
 
 - Duplicate same ID, conflicting payload, another actor, renamed alias,
-  deleted/reset owner, stable reserved/child IDs and explicit dependencies.
+  deleted/reset owner, stable reserved/child IDs, inferred dependencies and
+  explicit overrides.
 - Terminate a disposable test worker at each acceptance/claim/effect/commit/
   publication/outbox boundary; reopen its temporary Store and prove the
   documented recovery. No installed bridge or real provider/Git remote.
@@ -518,7 +557,8 @@ Test first, then implement each slice:
 - Full MCP action/report manifest, tool result at ack, sequential dependent
   calls, notification fallback, auth/thread replacement and internal delivery.
 - Held-executor checklist and create-then-comment chains from §2, including
-  failed predecessors, reserved-ID authorization and mutable-state races.
+  no-explicit-`after` SPA/MCP callers, failed predecessors, reserved-ID
+  authorization and mutable-state races.
 - Epoch change with each exempt call queued/handed off, no stranded caller
   promise, exact-once reservation release, stale reply fencing, safe desired
   subscription restoration and no input/stream-start replay.

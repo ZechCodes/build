@@ -28,7 +28,7 @@ impl AppState {
         {
             if previous
                 .get(key.method, &key.owner)
-                .is_some_and(|row| depends_on_owner(row, owner, &changed))
+                .is_some_and(|row| depends_on_owner(&row, owner, &changed))
             {
                 affected.insert(key.owner.clone());
             }
@@ -42,7 +42,10 @@ impl AppState {
             affected.insert(workspace.id.clone());
             let value = self.workspace_snapshot_base(workspace);
             retained.insert(workspace.id.clone());
-            if previous.get("workspace.get", &workspace.id) != Some(&value) {
+            if !previous
+                .get_shared("workspace.get", &workspace.id)
+                .is_some_and(|old| old.equals_value(&value))
+            {
                 delta = delta.put("workspace.get", &workspace.id, value.clone());
             }
             delta = self.prepare_workspace_agent_variants(
@@ -85,7 +88,10 @@ impl AppState {
             variant["thread"] = self.snapshot_thread_digest(thread);
             variant["run"]["thread"] = variant["thread"].clone();
             retained.insert(key.clone());
-            if previous.get("workspace.get", &key) != Some(&variant) {
+            if !previous
+                .get_shared("workspace.get", &key)
+                .is_some_and(|old| old.equals_value(&variant))
+            {
                 delta = delta.put("workspace.get", key, variant);
             }
         }
@@ -105,8 +111,9 @@ impl AppState {
             .ok()
             .into_iter()
             .flat_map(|roster| roster.iter().map(|agent| agent.id.clone()));
-        let previous = previous
-            .get("agent.list", owner)
+        let previous_row = previous.get("agent.list", owner);
+        let previous = previous_row
+            .as_deref()
             .into_iter()
             .flat_map(|row| row["agents"].as_array().into_iter().flatten())
             .filter_map(|agent| agent["id"].as_str().map(str::to_owned));

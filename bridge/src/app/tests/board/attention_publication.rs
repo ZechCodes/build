@@ -55,6 +55,12 @@ impl Fixture {
             .find(|row| row.branch.as_deref() == Some("attention-external"))
             .unwrap()
             .id;
+        let created = "2026-10-20T12:00:00Z";
+        app.board
+            .attention_mut()
+            .record_created_if_absent(&external, created.into());
+        app.board.attention_mut().seed_anchor(&external, created);
+        app.persist_attention();
         app.initialize_snapshot_projection();
         app.publish_all_snapshot_projection();
         Self {

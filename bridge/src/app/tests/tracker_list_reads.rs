@@ -223,6 +223,7 @@ async fn successful_attention_touch_cannot_admit_a_failed_added_agent() {
     let (owner, committed_agent) = agent_on_checkout(&mut state, &project, "committed");
     let task = filed(&mut state, &project, &format!("@agent:{committed_agent}"));
     state.initialize_snapshot_projection();
+    state.initialize_read_context();
     let mut candidate = state.take_run(&owner).unwrap();
     let added = candidate
         .agents

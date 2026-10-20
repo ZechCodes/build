@@ -224,3 +224,103 @@ async fn unwinding_a_query_rolls_back_its_snapshot_before_the_connection_returns
         .read(|read| assert!(!read.connection().is_autocommit()))
         .unwrap();
 }
+
+fn store_with_close_marker(path: &Path) -> Store {
+    let store = Store::new(path).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO meta (key, value) VALUES ('close-marker', 'committed')",
+            [],
+        )
+        .unwrap();
+    store
+}
+
+fn assert_close_marker_in_database_file_alone(path: &Path) {
+    let copy = path.join("file-only-copy.db");
+    std::fs::copy(path.join(crate::store::DB_FILE), &copy).unwrap();
+    let connection = Connection::open_with_flags(copy, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let value: String = connection
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'close-marker'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("closing the final reader checkpoints schema and saved data into build.db");
+    assert_eq!(value, "committed");
+    assert!(!path.join("build.db-wal").exists());
+    assert!(!path.join("build.db-shm").exists());
+}
+
+#[tokio::test]
+async fn a_cloned_read_pool_keeps_the_writer_until_its_readers_close() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_close_marker(dir.path());
+    let writer = Arc::downgrade(&store.conn);
+    let pool = store.read_pool();
+    let retained = pool.clone();
+    drop(store);
+    drop(pool);
+    let writer_lived_with_pool = writer.strong_count() > 0;
+    let mut reader = retained.acquire().await;
+    reader
+        .read(|read| {
+            let value: String = read
+                .connection()
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'close-marker'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(value, "committed");
+        })
+        .unwrap();
+    drop(reader);
+    drop(retained);
+    assert_close_marker_in_database_file_alone(dir.path());
+    assert!(
+        writer_lived_with_pool,
+        "a read-only pool retains the writer lifetime for final checkpoint"
+    );
+    assert!(
+        writer.upgrade().is_none(),
+        "closing the pool releases the writer"
+    );
+}
+
+#[tokio::test]
+async fn a_borrowed_reader_keeps_the_writer_until_the_final_pool_owner_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_with_close_marker(dir.path());
+    let writer = Arc::downgrade(&store.conn);
+    let pool = store.read_pool();
+    let mut reader = pool.acquire().await;
+    drop(store);
+    drop(pool);
+    let writer_lived_with_reader = writer.strong_count() > 0;
+    reader
+        .read(|read| {
+            let value: String = read
+                .connection()
+                .query_row(
+                    "SELECT value FROM meta WHERE key = 'close-marker'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(value, "committed");
+        })
+        .unwrap();
+    drop(reader);
+    assert_close_marker_in_database_file_alone(dir.path());
+    assert!(
+        writer_lived_with_reader,
+        "an outstanding read keeps the final writer alive"
+    );
+    assert!(
+        writer.upgrade().is_none(),
+        "returning the last reader releases the writer"
+    );
+}

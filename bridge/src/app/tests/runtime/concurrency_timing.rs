@@ -602,3 +602,70 @@ async fn task_reads_measure_queue_behind_off_lock_git_worker_work() {
     sample.answers(1).await;
     sample.baseline("off_lock_git_worker", "Git worker held for at least 75ms");
 }
+
+/// Measures the complete production list query, including row projections
+/// and per-task review, dependency and delivery reads, in one transaction.
+/// Request validation and response validation follow the service boundaries
+/// but stay outside the transaction timer; this is not whole-RPC latency.
+#[tokio::test]
+async fn unbounded_task_list_reports_full_query_transaction_duration() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_repo_home, mut app, project) = tracked(dir.path());
+    for number in 0..501 {
+        filed(
+            &mut app,
+            &project,
+            &format!("unbounded timing task {number}"),
+        );
+    }
+    let context = app.task_read_context();
+    let store = app.tracker_store().unwrap().clone();
+    drop(app);
+    let params =
+        crate::api::v1::normalize_read_params("tasks.list", &json!({ "project_id": project }))
+            .unwrap();
+    assert!(
+        params.get("limit").is_none(),
+        "the wire request has no limit"
+    );
+    let writes_before = store.total_changes();
+    let pool = store.read_pool();
+    let checkout_started = std::time::Instant::now();
+    let mut connection = pool.acquire().await;
+    let checkout_us = checkout_started.elapsed().as_micros();
+    let transaction_started = std::time::Instant::now();
+    let (answer, fence) = connection
+        .read(|read| {
+            let fence = context.validate_scope(read, "tasks.list", &params)?;
+            let answer = context.tasks_list(read, &params)?;
+            Ok::<_, String>((answer, fence))
+        })
+        .unwrap()
+        .unwrap();
+    let transaction_us = transaction_started.elapsed().as_micros();
+    context.validate_fence(&fence).unwrap();
+    let answer = crate::api::v1::check_read_result("tasks.list", answer).unwrap();
+    let count = answer["tasks"].as_array().unwrap().len();
+    assert_eq!(
+        count, 501,
+        "omitting the wire limit preserves the whole list"
+    );
+    assert!(answer.get("next_cursor").is_none());
+    assert_eq!(
+        store.total_changes(),
+        writes_before,
+        "the query performs no writes"
+    );
+    let record = json!({
+        "kind": "bridge_sql_read_sizing",
+        "scope": "TaskReadContext::tasks_list transaction including scope validation",
+        "git_revision": git_revision(Path::new(env!("CARGO_MANIFEST_DIR"))),
+        "rust_toolchain": rust_toolchain(Path::new("rustc")),
+        "method": "tasks.list",
+        "wire_limit": null,
+        "task_count": count,
+        "checkout_us": checkout_us,
+        "transaction_us": transaction_us,
+    });
+    eprintln!("{record}");
+}

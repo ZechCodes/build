@@ -1,5 +1,8 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { markdownHtml } from "../src/core/markdown.js";
 import { inlineHtml } from "../src/core/markdownInline.js";
 
@@ -8,6 +11,34 @@ const render = (source) => {
   host.innerHTML = markdownHtml(source, { mode: "inline" });
   return host;
 };
+
+// An infinite scanner loop must fail in an expendable child rather than
+// blocking the Vitest worker and preventing its own timeout from running.
+const renderInChild = (source) => {
+  const module = pathToFileURL(resolve("src/core/markdownInline.js")).href;
+  const script = `import { inlineHtml } from ${JSON.stringify(module)}; process.stdout.write(inlineHtml(${JSON.stringify(source)}, {}, { footnote: () => null }));`;
+  return spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+    encoding: "utf8", timeout: 2000, killSignal: "SIGKILL",
+  });
+};
+
+const CLOSER_BEFORE_OPENER = [
+  ["keyboard adjacent", "</kbd><kbd>"],
+  ["keyboard separated", "</kbd> text <kbd>tail"],
+  ["single backticks", "` text ``tail"],
+  ["multiple backticks", "`` text `tail"],
+  ["star emphasis", "* text *tail"],
+  ["underscore emphasis", "_ text _tail"],
+  ["star strong", "** text **tail"],
+  ["underscore strong", "__ text __tail"],
+  ["strikethrough", "~~ text ~~tail"],
+  ["web link", "](closed) [tail"],
+  ["image", "](closed) ![tail"],
+  ["angle URL", "> text <https://tail.test"],
+  ["angle email", "> text <someone@tail.test"],
+  ["Build reference", "]] text [[board:tail"],
+  ["footnote", "] text [^tail"],
+];
 
 describe("the shared inline vocabulary", () => {
   it("renders nested emphasis, underscore strong and strikethrough", () => {
@@ -84,6 +115,21 @@ describe("the shared inline vocabulary", () => {
     ]);
     expect(host.querySelectorAll("em, .md-ref-missing strong, .md-ref-missing del")).toHaveLength(0);
     expect(host.querySelector("strong")?.textContent).toBe("real");
+  });
+
+  it.each(CLOSER_BEFORE_OPENER)("always advances past a closer before an unmatched %s opener", (_kind, source) => {
+    const child = renderInChild(source);
+    expect(child.error, `${source}: child must finish before its bounded timeout`).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.signal).toBeNull();
+    // Only enter the public API in this worker after the same inline scanner
+    // has returned successfully in the bounded child.
+    const html = markdownHtml(source, { mode: "inline" });
+    expect(html).toBe(child.stdout);
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    expect(host.textContent).toBe(source);
+    expect(host.querySelectorAll("kbd, code, em, strong, del, img")).toHaveLength(0);
   });
 
   it("handles long unclosed marks in bounded time", () => {

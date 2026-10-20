@@ -44,7 +44,8 @@ function escapedProse(source) {
 function literalAt(source, match, closers) {
   if (match[0] === "<kbd>") {
     const end = source.indexOf("<", match.index + 5);
-    return source.startsWith("</kbd>", end) ? { end: end + 6, html: `<kbd>${esc(source.slice(match.index + 5, end))}</kbd>` } : null;
+    return end >= match.index + 5 && source.startsWith("</kbd>", end)
+      ? { end: end + 6, html: `<kbd>${esc(source.slice(match.index + 5, end))}</kbd>` } : null;
   }
   const close = closers.get(match.index);
   return close === undefined ? null : { end: close + match[0].length, html: `<code>${esc(source.slice(match.index + match[0].length, close))}</code>` };
@@ -59,7 +60,9 @@ function literalsHtml(source) {
   for (let match = marks.exec(source); match; match = marks.exec(source)) {
     if (match[0][0] === "\\") continue;
     const literal = literalAt(source, match, closers);
-    if (!literal) continue;
+    // A rejected production leaves the regex at its already advanced cursor.
+    // No paired-syntax reader may rewind it, even if it returns a bad end.
+    if (!(literal?.end > marks.lastIndex)) continue;
     out += escapedProse(source.slice(at, match.index)) + literal.html;
     at = marks.lastIndex = literal.end;
   }

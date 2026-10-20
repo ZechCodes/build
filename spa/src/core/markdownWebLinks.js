@@ -65,12 +65,19 @@ export function safeImageSrc(raw) {
 function image(src, label, title, imageOrigin) {
   const alt = unesc(label.replace(/<\/?(?:code|kbd)>/g, ""));
   const titleAttr = title ? ` title="${esc(title)}"` : "";
-  if (new URL(src).origin === imageOrigin) {
-    return `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer"${titleAttr}>`;
+  const url = new URL(src);
+  if (url.origin === imageOrigin) {
+    return { markup: `<img src="${esc(src)}" alt="${esc(alt)}" loading="lazy" referrerpolicy="no-referrer"${titleAttr}>` };
+  }
+  // Production CSP admits remote HTTPS images. HTTP keeps its ordinary link
+  // affordance after image-specific credential validation has already passed.
+  if (url.protocol === "http:") {
+    const linkLabel = esc(alt) || esc(src);
+    return { markup: anchor(src, linkLabel, title), linkLabel };
   }
   const titleData = title ? ` data-md-image-title="${esc(title)}"` : "";
   const words = `Load image from ${new URL(src).hostname}${alt ? ` — ${alt}` : ""}`;
-  return `<button type="button" class="md-image-load" data-md-image-src="${esc(src)}" data-md-image-alt="${esc(alt)}"${titleData}>${esc(words)}</button>`;
+  return { markup: `<button type="button" class="md-image-load" data-md-image-src="${esc(src)}" data-md-image-alt="${esc(alt)}"${titleData}>${esc(words)}</button>` };
 }
 
 /** One web link, from its already-escaped label. */
@@ -149,7 +156,7 @@ function enclosingImageLink(html, span, copied) {
   if (start < copied || html[start] !== "[" || !html.startsWith("](", span.end)) return span;
   const destination = readDestination(html, span.end + 2);
   const href = destination && safeWebHref(unesc(destination.url));
-  return href ? { start, end: destination.end, markup: anchor(href, span.markup, unesc(destination.title)) } : span;
+  return href ? { start, end: destination.end, markup: anchor(href, span.linkLabel ?? span.markup, unesc(destination.title)) } : span;
 }
 
 /** The link whose label closes at `close`, written to `state` — or nothing,
@@ -160,8 +167,9 @@ function writeLink(html, close, destination, state) {
   const start = state.opener - Number(isImage);
   const label = html.slice(state.opener + 1, close);
   const title = unesc(destination.title);
-  const markup = href ? (isImage ? image(href, label, title, state.imageOrigin) : anchor(href, state.formatLabel(label), title)) : html.slice(start, destination.end);
-  const imageSpan = { start, end: destination.end, markup };
+  const content = href ? (isImage ? image(href, label, title, state.imageOrigin)
+    : { markup: anchor(href, state.formatLabel(label), title) }) : { markup: html.slice(start, destination.end) };
+  const imageSpan = { start, end: destination.end, ...content };
   const span = isImage ? enclosingImageLink(html, imageSpan, state.copied) : imageSpan;
   state.out += html.slice(state.copied, span.start) + span.markup;
   state.copied = span.end;

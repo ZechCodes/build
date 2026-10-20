@@ -31,7 +31,7 @@ from buildapp.waitlist_controller import JOIN_ROUTE_PATH  # noqa: E402
 
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; "
-    "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; "
     "font-src 'self'; connect-src 'self' data:; worker-src 'self' blob:; "
     "frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
 )

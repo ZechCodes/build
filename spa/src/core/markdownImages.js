@@ -29,7 +29,9 @@ export function installMarkdownImages(root = document) {
     event.stopPropagation();
     if (loaded.has(button)) return;
     const src = safeImageSrc(button.dataset.mdImageSrc);
-    if (!src) return;
+    // This controller activates remote placeholders only. Same-origin HTTP
+    // development images are rendered directly; remote HTTP stays a link.
+    if (!src || new URL(src).protocol !== "https:") return;
     loaded.add(button);
     button.replaceWith(activatedImage(button, src));
   };

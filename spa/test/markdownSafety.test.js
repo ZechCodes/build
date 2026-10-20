@@ -78,13 +78,16 @@ function imageAddressAllowed(value) {
 }
 
 function imageAllowed(element) {
-  return imageAddressAllowed(element.getAttribute("src")) && element.hasAttribute("alt")
+  const src = element.getAttribute("src");
+  const transport = imageAddressAllowed(src)
+    && (new URL(src).protocol === "https:" || new URL(src).origin === location.origin);
+  return transport && element.hasAttribute("alt")
     && element.getAttribute("loading") === "lazy" && element.getAttribute("referrerpolicy") === "no-referrer";
 }
 
 function imagePlaceholderAllowed(element) {
   const source = element.dataset.mdImageSrc;
-  if (!imageAddressAllowed(source) || element.getAttribute("type") !== "button" || element.className !== "md-image-load"
+  if (!imageAddressAllowed(source) || new URL(source).protocol !== "https:" || element.getAttribute("type") !== "button" || element.className !== "md-image-load"
     || !element.hasAttribute("data-md-image-alt") || element.children.length) return false;
   const alt = element.dataset.mdImageAlt;
   return element.textContent === `Load image from ${new URL(source).hostname}${alt ? ` — ${alt}` : ""}`;
@@ -346,6 +349,8 @@ describe("hostile input through the one renderer", () => {
   it("rejects image sources and attributes outside the generated image policy", () => {
     const image = (src, extra = '') => `<img src="${src}" alt="x" loading="lazy" referrerpolicy="no-referrer"${extra}>`;
     expect(violations(image("https://a.test/x.png"))).toEqual([]);
+    expect(violations(image("http://external.test/x.png"))).toContain("invalid image");
+    expect(violations(image(new URL("/local.png", location.href).href))).toEqual([]);
     for (const src of ["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "//a.test/x", "file:///etc/passwd", "https://user:secret@a.test/x", "https://@a.test/x", "https:///"]) {
       expect(violations(image(src)), src).toContain("invalid image");
       expect(markdownHtml(`![x](${src})`), src).not.toContain("<img ");
@@ -387,6 +392,8 @@ describe("hostile input through the one renderer", () => {
     host.innerHTML = local;
     expect(host.querySelector("img").getAttribute("src")).toBe("https://build.test/local.png");
     expect(violations(local)).toEqual([]);
+    expect(violations(html.replace('data-md-image-src="https://external.test/pixel.png"', 'data-md-image-src="http://external.test/pixel.png"')))
+      .toContain("invalid image placeholder");
     expect(violations(html.replace('type="button"', 'type="submit"'))).toContain("invalid image placeholder");
     expect(violations(html.replace('data-md-image-src="https://external.test/pixel.png"', 'data-md-image-src="javascript:evil()"')))
       .toContain("invalid image placeholder");

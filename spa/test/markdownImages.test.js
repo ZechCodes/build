@@ -69,7 +69,7 @@ describe("external markdown image activation", () => {
     expect(image.getAttributeNames().sort()).toEqual(["alt", "loading", "referrerpolicy", "src", "title"]);
   });
 
-  it.each(["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "//evil.test/x", "/x", "https://user:secret@evil.test/x", "https://@evil.test/x", "https://evil.test:bad/x"])("revalidates hostile latent sources: %s", (src) => {
+  it.each(["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "http://external.test/image.png", "//evil.test/x", "/x", "https://user:secret@evil.test/x", "https://@evil.test/x", "https://evil.test:bad/x"])("revalidates hostile latent sources: %s", (src) => {
     const host = mount();
     const button = host.querySelector("button");
     button.dataset.mdImageSrc = src;

@@ -136,3 +136,49 @@ async fn readonly_tasks_timeline_dependencies_and_cursor_key_use_one_snapshot() 
         })
         .unwrap();
 }
+
+#[tokio::test]
+async fn readonly_unbounded_task_list_reports_checkout_and_transaction_duration() {
+    use crate::tracker::{Actor, Task, TaskEvent, TaskEventKind};
+    use std::time::Instant;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    for number in 0..501 {
+        let task = Task::drafted("/repo", &format!("task {number}"), Actor::User, NOW);
+        let event = TaskEvent::new(
+            &task.id,
+            Actor::User,
+            TaskEventKind::Created,
+            serde_json::json!({}),
+            NOW,
+        );
+        store.create_tracker_task(task, &[event]).unwrap();
+    }
+    let writes_before = store.total_changes();
+    let pool = store.read_pool();
+    let checkout_started = Instant::now();
+    let mut reader = pool.acquire().await;
+    let checkout_us = checkout_started.elapsed().as_micros();
+    let transaction_started = Instant::now();
+    let (count, timeline_rows, dependency_rows) = reader
+        .read(|read| -> Result<_, StoreError> {
+            let tasks = read.list_tracker_tasks("/repo", TaskFilter::default())?;
+            let ids: Vec<_> = tasks.iter().map(|task| task.id.clone()).collect();
+            let timelines = read.load_tracker_timelines(&ids)?;
+            let dependencies = read.waiting_on_summaries("/repo", &ids)?;
+            Ok((
+                tasks.len(),
+                timelines.values().map(Vec::len).sum::<usize>(),
+                dependencies.len(),
+            ))
+        })
+        .unwrap()
+        .unwrap();
+    let transaction_us = transaction_started.elapsed().as_micros();
+    assert_eq!((count, timeline_rows, dependency_rows), (501, 501, 501));
+    assert_eq!(store.total_changes(), writes_before);
+    println!(
+        "sql_read_sizing verb=tasks.list count={count} checkout_us={checkout_us} transaction_us={transaction_us}"
+    );
+}

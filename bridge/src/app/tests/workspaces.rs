@@ -2152,12 +2152,30 @@ fn live_workspace_working_guard_resolves_aliases_created_after_snapshot_warm() {
     let temporary = tempfile::tempdir().unwrap();
     let real = temporary.path().join("real");
     std::fs::create_dir(&real).unwrap();
-    let context = HarnessContext::resolved(temporary.path().join("mcp.sock"), temporary.path().to_owned()).unwrap();
-    let mut state = AppState::new_unrooted_configured(temporary.path().join("worktrees"), "main", true, context);
+    let context = HarnessContext::resolved(
+        temporary.path().join("mcp.sock"),
+        temporary.path().to_owned(),
+    )
+    .unwrap();
+    let mut state = AppState::new_unrooted_configured(
+        temporary.path().join("worktrees"),
+        "main",
+        true,
+        context,
+    );
     state.initialize_snapshot_projection();
     let alias = temporary.path().join("new-alias");
     std::os::unix::fs::symlink(&real, &alias).unwrap();
-    insert_agent_tab(&mut state, &alias, "unmanaged-owner", "agent-alias", DictatedSession::reporting(AgentStatus::Working));
+    insert_agent_tab(
+        &mut state,
+        &alias,
+        "unmanaged-owner",
+        "agent-alias",
+        DictatedSession::reporting(AgentStatus::Working),
+    );
     let canonical = std::fs::canonicalize(&real).unwrap();
-    assert!(state.agent_working_at_root(&canonical), "live deletion guards must canonicalize newly admitted session paths");
+    assert!(
+        state.agent_working_at_root(&canonical),
+        "live deletion guards must canonicalize newly admitted session paths"
+    );
 }

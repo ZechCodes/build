@@ -508,7 +508,9 @@ impl AppState {
         self.workspace_summaries_json();
         self.observe_conversationless_rows(&checkouts.rows);
         self.reconcile_crossed_dismissal_lines();
-        self.refresh_snapshot_task_observations();
+        if let Err(error) = self.refresh_snapshot_task_observations() {
+            eprintln!("board task observation refresh: {error}; retaining committed rows");
+        }
         self.board_snapshot()
     }
 

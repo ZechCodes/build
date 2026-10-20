@@ -40,7 +40,9 @@ async fn produce_board_observations(state: &Arc<Mutex<AppState>>) {
         let mut app = state.lock().unwrap();
         app.board_list();
         app.publish_snapshot_projection();
-    }).await.expect("board observation producer does not panic");
+    })
+    .await
+    .expect("board observation producer does not panic");
 }
 
 async fn refresh_external_observations(state: &Arc<Mutex<AppState>>) {
@@ -49,18 +51,32 @@ async fn refresh_external_observations(state: &Arc<Mutex<AppState>>) {
         let mut app = state.lock().unwrap();
         let project = app.project_at(0).id.clone();
         app.rescan_external_worktrees(&project);
-    }).await.expect("external observation producer does not panic");
+    })
+    .await
+    .expect("external observation producer does not panic");
 }
 
 async fn board_with_branch(handler: &FrameHandler, branch: &str) -> Value {
     tokio::time::timeout(Duration::from_secs(20), async {
         loop {
             let handler = handler.clone();
-            let board = tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({}))).await.unwrap();
-            if board["result"]["external_worktrees"].as_array().unwrap().iter().any(|row| row["branch"] == branch) { return board; }
+            let board =
+                tokio::task::spawn_blocking(move || call(&handler, "board.list", json!({})))
+                    .await
+                    .unwrap();
+            if board["result"]["external_worktrees"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["branch"] == branch)
+            {
+                return board;
+            }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-    }).await.expect("background observation publishes the external branch")
+    })
+    .await
+    .expect("background observation publishes the external branch")
 }
 
 /// Wait until the lifecycle producer has published the run's first diffstat.
@@ -217,8 +233,14 @@ async fn concurrent_stale_polls_share_one_recompute() {
         while computes.load(std::sync::atomic::Ordering::SeqCst) == 0 {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }).await.expect("the producer starts its shared recompute");
-    assert_eq!(computes.load(std::sync::atomic::Ordering::SeqCst), 1, "six snapshot polls share the producer's one recompute");
+    })
+    .await
+    .expect("the producer starts its shared recompute");
+    assert_eq!(
+        computes.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "six snapshot polls share the producer's one recompute"
+    );
 }
 
 /// A mutation that lands while a refresh is computing takes the refresh's

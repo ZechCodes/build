@@ -527,25 +527,43 @@ async fn ordinary_sql_keeps_eight_workers_after_mixed_first_initialization() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn eager_sql_startup_override_initializes_only_at_first_mixed_use() {
+async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones() {
     let root = tempfile::tempdir().unwrap();
     let store = crate::store::Store::new(root.path()).unwrap();
     let mut handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
+        .with_sql_reads(Some(store.read_pool()), |_, frame, _, connection| {
+            assert!(connection.is_some());
+            json!({"id":frame.payload["id"],"ok":true})
+        })
         .with_observation_reads(Some(store.read_pool()), |frame, connection| {
             assert!(connection.is_some());
             drop(connection);
             Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
         });
     let starts = handler.sql_worker_starts();
-    handler.set_observation_sql_startup_eager(true);
     assert_eq!(starts.load(Ordering::SeqCst), 0);
+    handler.set_observation_sql_startup_eager(true);
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        sql::SQL_WORKERS,
+        "eager startup must create all SQL threads before accepting requests"
+    );
+    let clone = handler.clone();
+    assert!(Arc::ptr_eq(&handler.read_executors, &clone.read_executors));
     let mut client = Client::new(handler);
     assert_eq!(
         starts.load(Ordering::SeqCst),
-        0,
-        "the control must retain SQL startup cost inside first request"
+        sql::SQL_WORKERS,
+        "intake construction must reuse workers started before acceptance"
     );
     client.send(1, "tasks.attachment", json!({})).await;
     assert_eq!(client.reply().await["id"], 1);
     assert_eq!(starts.load(Ordering::SeqCst), sql::SQL_WORKERS);
+    client.send(2, "tasks.get", json!({})).await;
+    assert_eq!(client.reply().await["id"], 2);
+    assert_eq!(
+        clone.sql_worker_starts().load(Ordering::SeqCst),
+        sql::SQL_WORKERS,
+        "mixed and ordinary SQL must reuse the preaccept executor"
+    );
 }

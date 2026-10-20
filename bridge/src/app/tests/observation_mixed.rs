@@ -561,3 +561,166 @@ fn mixed_capture_indexes_repeated_lineages_and_workspaces_once_with_legacy_home_
         assert_eq!(actual, expected, "{params}");
     }
 }
+
+struct StableDocumentFixture {
+    _dir: tempfile::TempDir,
+    state: Arc<Mutex<AppState>>,
+    handler: FrameHandler,
+    plan: String,
+    unrelated: String,
+}
+
+fn stable_document_fixture() -> StableDocumentFixture {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let plan = file_legacy_task(&mut app, "stable-layout document input");
+    let mut candidate = app.take_plan(&plan).unwrap();
+    candidate.stages.clear();
+    candidate.plan_path = ".build/old.md".into();
+    app.finish_plan_mutation(plan.clone(), candidate).unwrap();
+    let root = app.require_store().unwrap().plan_docs_dir(&plan);
+    std::fs::create_dir_all(root.join(".build")).unwrap();
+    std::fs::write(root.join(".build/old.md"), "old committed document").unwrap();
+    std::fs::write(root.join(".build/new.md"), "new committed document").unwrap();
+    let unrelated = adopted_run(&mut app, &repo, dir.path(), "document-unrelated-fast");
+    app.delivery_queue.clear_queued();
+    let state = app.shared();
+    let handler = AppState::handler(state.clone());
+    super::observation_publication::initialize_observation_test_baseline(&state.lock().unwrap());
+    StableDocumentFixture {
+        _dir: dir,
+        state,
+        handler,
+        plan,
+        unrelated,
+    }
+}
+
+fn document_from_root(root: &crate::app::read_view::ReadView, plan: &str) -> Value {
+    root.observations
+        .as_ref()
+        .unwrap()
+        .mixed
+        .prepare("task.doc", &json!({"plan_id":plan}), None)
+        .unwrap()
+        .run()
+        .unwrap()
+}
+
+fn assert_document_capture(
+    captures: &std::collections::BTreeMap<(&'static str, String), usize>,
+    plan: &str,
+) {
+    assert!(
+        captures
+            .get(&("document", plan.to_owned()))
+            .copied()
+            .unwrap_or(0)
+            > 0,
+        "path-only publication omitted its document input: {captures:?}"
+    );
+    assert!(
+        !captures.keys().any(|(family, _)| *family == "full"),
+        "stable-layout edit recaptured all inputs: {captures:?}"
+    );
+}
+
+#[test]
+fn mixed_plan_path_only_success_refreshes_same_handler_and_retains_old_root() {
+    use crate::app::observation_reads::capture_metrics;
+    use crate::app::snapshot_projection::work_counts;
+    let fixture = stable_document_fixture();
+    let params = json!({"task_id":fixture.plan});
+    let before = call(&fixture.handler, "task.doc", params.clone());
+    assert_eq!(before["ok"], true, "{before}");
+    assert_eq!(before["result"]["plan_path"], ".build/old.md");
+    assert_eq!(before["result"]["contents"], "old committed document");
+    let old = fixture.state.lock().unwrap().read_view.load();
+    {
+        let mut app = fixture.state.lock().unwrap();
+        // Probe the actual edited layout, then reset metrics before the
+        // production durable finisher. The two document paths both exist.
+        app.plans.get_mut(&fixture.plan).unwrap().plan_path = ".build/new.md".into();
+        super::observation_publication::assert_observation_fast_owner(&app, &fixture.plan);
+        let candidate = app.take_plan(&fixture.plan).unwrap();
+        capture_metrics::take();
+        capture_metrics::start();
+        let (saved, counts) =
+            work_counts::measure(|| app.finish_plan_mutation(fixture.plan.clone(), candidate));
+        saved.unwrap();
+        let captures = capture_metrics::take();
+        assert_eq!(
+            counts.workspace_details_full, 0,
+            "path edit used full fallback: {counts:?}"
+        );
+        assert_document_capture(&captures, &fixture.plan);
+    }
+    let after = call(&fixture.handler, "task.doc", params);
+    assert_eq!(after["ok"], true, "{after}");
+    assert_eq!(after["result"]["plan_path"], ".build/new.md");
+    assert_eq!(after["result"]["contents"], "new committed document");
+    assert_eq!(document_from_root(&old, &fixture.plan), before["result"]);
+}
+
+#[test]
+fn mixed_plan_path_only_failed_save_cannot_leak_through_unrelated_fast_success() {
+    use crate::app::observation_reads::capture_metrics;
+    use crate::app::snapshot_projection::work_counts;
+    let fixture = stable_document_fixture();
+    let params = json!({"task_id":fixture.plan});
+    let before = call(&fixture.handler, "task.doc", params.clone());
+    assert_eq!(before["ok"], true, "{before}");
+    assert_eq!(before["result"]["contents"], "old committed document");
+    let old = fixture.state.lock().unwrap().read_view.load();
+    {
+        let mut app = fixture.state.lock().unwrap();
+        app.plans.get_mut(&fixture.plan).unwrap().plan_path = ".build/new.md".into();
+        super::observation_publication::assert_observation_fast_owner(&app, &fixture.plan);
+        let candidate = app.take_plan(&fixture.plan).unwrap();
+        app.require_store().unwrap().fail_next_write();
+        capture_metrics::take();
+        capture_metrics::start();
+        let (saved, counts) =
+            work_counts::measure(|| app.finish_plan_mutation(fixture.plan.clone(), candidate));
+        assert!(
+            saved.is_err(),
+            "fixture must reach injected durable save failure"
+        );
+        capture_metrics::take();
+        assert_eq!(counts.workspace_details_full, 0);
+        assert_eq!(app.plans[&fixture.plan].plan_path, ".build/old.md");
+        assert!(Arc::ptr_eq(
+            old.observations.as_ref().unwrap(),
+            app.read_view.load().observations.as_ref().unwrap()
+        ));
+        app.runs.get_mut(&fixture.unrelated).unwrap().last_summary =
+            Some("unrelated committed summary".into());
+        super::observation_publication::assert_observation_fast_owner(&app, &fixture.unrelated);
+        let candidate = app.take_run(&fixture.unrelated).unwrap();
+        capture_metrics::take();
+        capture_metrics::start();
+        let (saved, counts) =
+            work_counts::measure(|| app.finish_run_mutation(fixture.unrelated.clone(), candidate));
+        saved.unwrap();
+        let captures = capture_metrics::take();
+        assert_eq!(
+            counts.workspace_details_full, 0,
+            "unrelated edit used full fallback: {counts:?}"
+        );
+        for family in ["scope_run", "thread_owner"] {
+            assert!(
+                captures
+                    .get(&(family, fixture.unrelated.clone()))
+                    .copied()
+                    .unwrap_or(0)
+                    > 0,
+                "unrelated retry did not capture its real {family} input: {captures:?}"
+            );
+        }
+        assert!(!captures.keys().any(|(family, _)| *family == "full"));
+    }
+    assert_eq!(call(&fixture.handler, "task.doc", params), before);
+    assert_eq!(document_from_root(&old, &fixture.plan), before["result"]);
+    let latest = fixture.state.lock().unwrap().read_view.load();
+    assert_eq!(document_from_root(&latest, &fixture.plan), before["result"]);
+}

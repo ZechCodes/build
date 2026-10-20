@@ -570,6 +570,11 @@ async fn run_daemon(
         .with_push_runtime(push.handle())
         .shared();
     let handler = AppState::handler(app.clone());
+    // Start all shared SQL workers before either relay or peer transport can
+    // accept requests. Both read lanes reuse this handler's executor.
+    if let Err(error) = handler.start_read_workers() {
+        exit_startup(format!("cannot start SQL read workers: {error}"));
+    }
     // Every session's transport events go two places: this daemon's stderr —
     // the record of truth on the device — and, best effort, the api, which
     // keeps one row per session for the admin's transport page. Both are

@@ -163,7 +163,10 @@ Queued compatible callers may fold, but a new caller never joins a running
 query. Carrier release prunes its queued callers and fences running replies;
 a replacement carrier keeps its opening usable. Close signaling wakes a
 parked intake independently of the channel event pump. Stats and the existing
-ping/signaling fast paths bypass this lane.
+ping/signaling fast paths bypass this lane. The daemon calls
+`FrameHandler::start_read_workers` after creating its shared handler and before
+constructing intake or accepting relay/client work, so all eight SQL workers
+are ready before the first read. Handler clones share that executor.
 
 The nine published reads (`board.list`, `project.list`, `workspace.list`,
 `workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`
@@ -171,14 +174,34 @@ and `bridge.update_status`) answer at intake from immutable snapshots. They
 take no SQL permit, dispatch slot or app lock, including when those lanes are
 full. Typed parameter normalization and result validation still apply.
 
+The 22 remaining observation reads (filesystem/Git, stage documents, review
+reads, attachments, archives, GitHub repositories and Git initialization
+options) enter an independent fair I/O lane before write admission. It reuses
+the SQL lane's bounded per-opening queue and queued-only folding, with its own
+16-caller backlog and up to eight dedicated I/O threads. I/O threads start on
+demand and are reused; they are not all started before the first read. Excess
+intake waits without capacity refusals. Review and task-attachment metadata preparation runs on the
+same fixed SQL executor as ordinary SQL reads; its transaction and connection
+are released before any filesystem/Git work. Pure I/O reads take no SQL slot or
+connection. Carrier closure cancels preparation waits and suppresses replies
+from released carriers; compatible callers on surviving carriers remain live.
+
+Mixed jobs remain counted in the same 16-caller opening backlog while pending,
+preparing metadata or ready for I/O. Separate asynchronous metadata coordinators
+wait for the shared SQL executor and connection pool; physical I/O coordinators
+select only pure jobs or fully prepared jobs. Already admitted pure jobs can
+advance within that opening or on other openings while metadata waits for SQL.
+A full opening still parks its subsequent ordered intake. Queued-only folding,
+carrier cancellation and the eight-worker physical-I/O bound remain in force.
+
 Other queued work uses the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
 arrival order; its overflow answers retryable `busy`. The pool has eight
 workers and separate foreground/background queues, with at most two workers
 running background frames. Terminal lanes and immediate handlers run outside
-that eight-worker bound. A deferred handler releases the app lock during its
-external work, but retains its dispatch worker until it finishes.
+that eight-worker bound. Deferred writers release the app lock during external
+work and retain their dispatch worker until they finish.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -292,6 +315,15 @@ callers still serialize on the writer connection. Routed v1 handlers receive
 `off_the_workers` protects runtime workers from blocking; it does not remove
 these serialization points.
 
+Before publishing its eight readers, `ReadPool::open` initializes each SQLite
+schema by preparing and dropping `SELECT 1 FROM main.sqlite_schema LIMIT 0`.
+This is startup work, without an application-row/result cache or a retained
+statement. The pool also retains the private writer connection until its last
+reader closes, including cloned pools and outstanding borrowers. Closing the
+readers before the final writer permits SQLite's final WAL checkpoint and
+preserves database-file-only backups. Read paths do not acquire the retained
+writer's mutex.
+
 Task identity/done-at backfills and cursor key creation happen before reader
 admission; task reads retain pure derived fallbacks for older records.
 Parked-project revival, legacy workspace adoption, manifest refresh, board
@@ -319,6 +351,13 @@ slow-frame threshold now measure from intake, including decrypt and admission;
 compare them only against this change's baseline, not older logs.
 `bridge.stats` answers at intake without an app lock or dispatch worker.
 
+Fine-grained request-phase tracing is test-only: `timing/requests.rs`, its
+observer fields and its call sites compile under `cfg(test)`. The non-test
+`observation_reads::trace_phase!` expansion contains only the measured work.
+Diagnostic test binaries retain that tracer; production retains the ordinary
+FrameClock queue/wait/hold aggregates without request-phase observer locks,
+frame clones or diagnostic timestamps.
+
 **Independent SQL reads (#681 step 2).** `AppState::handler` captures the
 read pool, update-admission service and an atomic immutable `ReadContext` slot.
 Producer hooks publish project/path mappings, live owner admission, task
@@ -332,6 +371,30 @@ The Store-free fallback is an immutable snapshot. Task timeline, dependency,
 review-summary and durable-identity rows share one transaction, with live
 availability supplied by the published overlay. Read replies retain typed
 parameter normalization and result checks without deferred app state.
+
+**Independent observations (#681 step 4).** `app/observation_reads.rs`
+prepares owned jobs from a typed immutable identity context published with the
+versioned `ReadView` delta. The context is staged under the existing committed
+publication boundary, so failed saves and stale refreshes cannot publish
+candidate identities. Preparation never reacquires the app lock or drains
+deferred writes. Dedicated I/O workers execute filesystem/Git observations,
+then validate source, owner and conversation fences against the latest
+publication before returning the existing typed reply. GitHub observations
+retain their service deadline and update admission spans the complete job.
+Writer routing and the later MCP concurrency migration retain their existing
+boundaries.
+
+Ordinary owner/global publication structurally shares unrelated observation
+families and rows. Touched owner rows may be recaptured even when their fields
+compare equal. Producer mutations identify affected inputs and stage their
+family/key values under the committed publication boundary; dirty-key receipts
+are acknowledged only after an accepted delta, so failed or stale candidates
+retain pending work. Legitimate topology changes may rebuild thin owner/run
+order indexes to preserve legacy tie precedence. An unrelated status publication
+does not rebuild the complete observation graph or enumerate all retained
+lineages, attachment homes and archive rows. Existing board rendering and legacy
+producer maintenance remain separate work; this is not a claim that all
+publication is constant time.
 
 **Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
 `Arc<ReadView>` root with shared immutable response chunks. Versioned deltas

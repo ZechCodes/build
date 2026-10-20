@@ -1,19 +1,113 @@
-//! SQL admission counts callers until a connection is in hand. One ready marker
-//! per opening feeds a fixed set of coordinators and dedicated blocking threads.
+//! Bounded read admission shared by the SQL and observation lanes. Each lane
+//! owns a fair per-opening queue; dedicated SQL workers prepare owned metadata and
+//! independent I/O workers execute external observations.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
-use tokio::sync::{oneshot, Notify};
+use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
 
+use super::io::{DedicatedExecutors, Execution};
 use super::{FrameHandler, SessionSender};
 use crate::store::{ReadConnection, ReadPool};
 use crate::timing::{Priority, QueuedFrame, WaitTimer};
 use crate::transport::Frame;
 
+mod observations;
+
 pub(super) const SQL_WORKERS: usize = 8;
 pub(super) const SQL_BACKLOG: usize = 16;
+pub(super) const IO_WORKERS: usize = 8;
+
+#[derive(Clone, Copy)]
+enum ReadLane {
+    Sql,
+    Observation,
+}
+
+/// Both ordinary SQL reads and observation metadata preparation share these
+/// eight dedicated SQL workers. The daemon starts them before accepting reads;
+/// callers outside daemon bootstrap initialize the same full set on first use.
+/// External work never enters this executor.
+pub(super) struct ReadExecutors {
+    executor: DedicatedExecutors,
+    ready: OnceLock<()>,
+    slots: Arc<Semaphore>,
+}
+
+impl ReadExecutors {
+    fn new(#[cfg(test)] starts: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        Self {
+            executor: DedicatedExecutors::new(
+                "bridge-sql",
+                SQL_WORKERS,
+                #[cfg(test)]
+                starts,
+            ),
+            ready: OnceLock::new(),
+            slots: Arc::new(Semaphore::new(SQL_WORKERS)),
+        }
+    }
+
+    fn for_handler(handler: &FrameHandler) -> &Self {
+        handler.read_executors.get_or_init(|| {
+            Self::new(
+                #[cfg(test)]
+                handler.sql_thread_starts.clone(),
+            )
+        })
+    }
+
+    fn ready_for_handler(handler: &FrameHandler) -> &Self {
+        let executors = Self::for_handler(handler);
+        executors.ensure_workers().expect("start SQL read workers");
+        executors
+    }
+
+    fn ensure_workers(&self) -> std::io::Result<()> {
+        if self.ready.get().is_some() {
+            return Ok(());
+        }
+        // The executor serializes concurrent initializers and retains partial
+        // successful starts if a spawn fails. Publish readiness only at eight.
+        self.executor.ensure_workers(SQL_WORKERS)?;
+        let _ = self.ready.set(());
+        Ok(())
+    }
+
+    async fn acquire(&self) -> OwnedSemaphorePermit {
+        self.slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("read executor stays open")
+    }
+
+    fn submit<T: Send + 'static>(
+        &self,
+        permit: OwnedSemaphorePermit,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> oneshot::Receiver<T> {
+        let (done, complete) = oneshot::channel();
+        self.executor
+            .submit_detached(Box::new(move || {
+                let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+                drop(permit);
+                if let Ok(answer) = answer {
+                    let _ = done.send(answer);
+                }
+            }))
+            .expect("SQL executors stay open");
+        complete
+    }
+}
+
+/// Each successful spawn has created its OS thread before this returns. No
+/// request or SQL query is needed to initialize the dedicated executor.
+pub(super) fn start_read_workers(handler: &FrameHandler) -> std::io::Result<()> {
+    ReadExecutors::for_handler(handler).ensure_workers()
+}
 
 struct Job {
     sender: SessionSender,
@@ -31,41 +125,78 @@ struct Waiting {
 #[derive(Default)]
 struct Queue {
     waiting: Mutex<Waiting>,
+    ready: Notify,
     changed: Notify,
 }
 
-pub(super) struct SqlDispatcher {
-    queue: Arc<Queue>,
+enum ReadQueue {
+    Sql(Arc<Queue>),
+    Observation(Arc<observations::ObservationQueue>),
+}
+
+pub(super) struct ReadDispatcher {
+    queue: ReadQueue,
     handler: FrameHandler,
 }
 
-impl SqlDispatcher {
+impl ReadDispatcher {
     pub(super) fn new(handler: FrameHandler) -> Self {
         let queue = Arc::new(Queue::default());
-        for number in 0..SQL_WORKERS {
-            let executor = spawn_executor(number, handler.clone());
-            let pool = handler.sql.as_ref().and_then(|sql| sql.pool.clone());
-            tokio::spawn(coordinate(queue.clone(), pool, executor));
+        ReadExecutors::ready_for_handler(&handler);
+        for _ in 0..SQL_WORKERS {
+            tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
         }
-        Self { queue, handler }
+        Self {
+            queue: ReadQueue::Sql(queue),
+            handler,
+        }
+    }
+
+    pub(super) fn new_observations(handler: FrameHandler) -> Self {
+        let queue = observations::ObservationQueue::start(handler.clone());
+        Self {
+            queue: ReadQueue::Observation(queue),
+            handler,
+        }
     }
 
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame, arrived: WaitTimer) {
+        let queue = match &self.queue {
+            ReadQueue::Sql(queue) => queue,
+            ReadQueue::Observation(queue) => {
+                queue.dispatch(&self.handler, sender, frame, arrived).await;
+                return;
+            }
+        };
         let priority = match frame.payload["priority"].as_str() {
             Some("background") => Priority::Background,
             _ => Priority::Foreground,
         };
+        #[cfg(test)]
+        let observed = self.handler.clock.request_frame(&frame);
         let mut job = Some(Job {
             sender,
             frame,
             queued: self.handler.clock.queued_since(priority, arrived),
         });
         loop {
-            let changed = self.queue.changed.notified();
+            let changed = queue.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if self.queue.admit(&mut job) {
-                self.queue.changed.notify_waiters();
+            #[cfg(test)]
+            let mut admitted_at = None;
+            if queue.admit(
+                &mut job,
+                #[cfg(test)]
+                &mut admitted_at,
+            ) {
+                #[cfg(test)]
+                if let Some(admitted_at) = admitted_at {
+                    self.handler
+                        .clock
+                        .mark_observed(&observed, "admitted", admitted_at);
+                }
+                queue.notify_admitted();
                 return;
             }
             changed.await;
@@ -73,34 +204,58 @@ impl SqlDispatcher {
     }
 
     pub(super) fn prune(&self) {
-        self.queue.waiting.lock().unwrap().prune();
-        self.queue.changed.notify_waiters();
+        match &self.queue {
+            ReadQueue::Sql(queue) => {
+                queue.waiting.lock().unwrap().prune();
+                queue.changed.notify_waiters();
+            }
+            ReadQueue::Observation(queue) => queue.prune(),
+        }
     }
 
     #[cfg(test)]
     pub(super) fn depths(&self) -> (usize, usize) {
-        let waiting = self.queue.waiting.lock().unwrap();
-        (
-            waiting.openings.values().map(VecDeque::len).sum(),
-            waiting.ready.len(),
-        )
+        match &self.queue {
+            ReadQueue::Sql(queue) => {
+                let waiting = queue.waiting.lock().unwrap();
+                (
+                    waiting.openings.values().map(VecDeque::len).sum(),
+                    waiting.ready.len(),
+                )
+            }
+            ReadQueue::Observation(queue) => queue.depths(),
+        }
     }
 }
 
-impl Drop for SqlDispatcher {
+impl Drop for ReadDispatcher {
     fn drop(&mut self) {
-        let mut waiting = self.queue.waiting.lock().unwrap();
-        waiting.closed = true;
-        waiting.openings.clear();
-        waiting.ready.clear();
-        self.queue.changed.notify_waiters();
+        match &self.queue {
+            ReadQueue::Sql(queue) => {
+                let mut waiting = queue.waiting.lock().unwrap();
+                waiting.closed = true;
+                waiting.openings.clear();
+                waiting.ready.clear();
+                queue.ready.notify_waiters();
+                queue.changed.notify_waiters();
+            }
+            ReadQueue::Observation(queue) => queue.close(),
+        }
     }
 }
 
 impl Queue {
+    fn notify_admitted(&self) {
+        self.ready.notify_one();
+    }
+
     /// A full queue keeps exactly the carrier's current intake future parked.
     /// Nothing has been moved into a worker or another internal queue yet.
-    fn admit(&self, incoming: &mut Option<Job>) -> bool {
+    fn admit(
+        &self,
+        incoming: &mut Option<Job>,
+        #[cfg(test)] admitted_at: &mut Option<std::time::Instant>,
+    ) -> bool {
         let mut waiting = self.waiting.lock().unwrap();
         let job = incoming.as_ref().unwrap();
         if waiting.closed || !job.sender.read_is_live() {
@@ -116,12 +271,18 @@ impl Queue {
         if was_empty {
             waiting.ready.push_back(opening);
         }
+        // Save the diagnostic timestamp before another coordinator can pop.
+        // Emit its observer callback after releasing this queue mutex.
+        #[cfg(test)]
+        {
+            *admitted_at = Some(std::time::Instant::now());
+        }
         true
     }
 
     async fn work_available(&self) -> bool {
         loop {
-            let changed = self.changed.notified();
+            let changed = self.ready.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             {
@@ -138,7 +299,17 @@ impl Queue {
     }
 
     fn take(&self) -> Option<Work> {
-        let work = self.waiting.lock().unwrap().take();
+        let (work, more_ready) = {
+            let mut waiting = self.waiting.lock().unwrap();
+            let work = waiting.take();
+            (work, !waiting.ready.is_empty())
+        };
+        // Pass a single wakeup along the backlog. Notify's stored permit may
+        // coalesce admissions while all workers are busy; the baton ensures
+        // the available workers still fan out without waking every idle one.
+        if more_ready {
+            self.ready.notify_one();
+        }
         self.changed.notify_waiters();
         work
     }
@@ -216,16 +387,30 @@ impl Work {
         self.job.frame = job.frame;
     }
 
-    fn run(mut self, handler: &FrameHandler, connection: Option<ReadConnection>) {
+    fn run(self, handler: &FrameHandler, connection: Option<ReadConnection>) {
+        self.run_on(handler, connection, ReadLane::Sql);
+    }
+
+    fn run_on(
+        mut self,
+        handler: &FrameHandler,
+        connection: Option<ReadConnection>,
+        lane: ReadLane,
+    ) {
         self.callers.retain(|(_, caller)| caller.read_is_live());
         let Some((_, sender)) = self.callers.last() else {
             return;
         };
         self.job.sender = sender.clone();
         #[cfg(test)]
-        self.measurement.observe(handler, &self.job.frame);
-        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handler.run_sql(self.job.queued, self.job.sender, self.job.frame, connection)
+        if matches!(lane, ReadLane::Sql) {
+            self.measurement.observe(handler, &self.job.frame);
+        }
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match lane {
+            ReadLane::Sql => {
+                handler.run_sql(self.job.queued, self.job.sender, self.job.frame, connection)
+            }
+            ReadLane::Observation => handler.run(self.job.queued, self.job.sender, self.job.frame),
         }))
         .unwrap_or_else(|_| json!({"ok":false,"error":"handler failed"}));
         for (id, sender) in self.callers {
@@ -238,28 +423,100 @@ impl Work {
     }
 }
 
-type Execution = (Work, Option<ReadConnection>, oneshot::Sender<()>);
-
-fn spawn_executor(number: usize, handler: FrameHandler) -> std::sync::mpsc::Sender<Execution> {
-    let (send, receive) = std::sync::mpsc::channel::<Execution>();
-    std::thread::Builder::new()
-        .name(format!("bridge-sql-{number}"))
-        .spawn(move || {
-            while let Ok((work, connection, done)) = receive.recv() {
-                work.run(&handler, connection);
-                let _ = done.send(());
+/// Prepare on the caller's executor and return only owned I/O work. The timer
+/// spans both stages, while connection capacity is released before the job runs.
+impl Work {
+    fn prepare_observation(
+        mut self,
+        handler: &FrameHandler,
+        connection: Option<ReadConnection>,
+    ) -> Execution {
+        #[cfg(test)]
+        let worker_started = std::time::Instant::now();
+        if handler.observations.is_none() {
+            let handler = handler.clone();
+            return Box::new(move || self.run_on(&handler, connection, ReadLane::Observation));
+        }
+        self.callers.retain(|(_, caller)| caller.read_is_live());
+        let Some((_, sender)) = self.callers.last() else {
+            return Box::new(|| {});
+        };
+        self.job.sender = sender.clone();
+        #[cfg(test)]
+        let observed = handler.clock.request_frame(&self.job.frame);
+        #[cfg(test)]
+        let clock = handler.clock.clone();
+        #[cfg(test)]
+        clock.mark_observed(&observed, "worker_start", worker_started);
+        let timer = self
+            .job
+            .queued
+            .start(self.job.frame.payload["method"].as_str().unwrap_or("other"));
+        #[cfg(test)]
+        let needs_metadata = crate::api::effects::observation_needs_sql(&self.job.frame.payload);
+        #[cfg(test)]
+        if needs_metadata {
+            handler
+                .clock
+                .mark_observed(&observed, "metadata_start", std::time::Instant::now());
+        }
+        let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handler.prepare_observation(self.job.sender, self.job.frame, connection)
+        }));
+        #[cfg(test)]
+        if needs_metadata {
+            handler
+                .clock
+                .mark_observed(&observed, "metadata_end", std::time::Instant::now());
+        }
+        Box::new(move || {
+            #[cfg(test)]
+            clock.mark_observed(
+                &observed,
+                "external_worker_start",
+                std::time::Instant::now(),
+            );
+            if !self.callers.iter().any(|(_, caller)| caller.read_is_live()) {
+                return;
+            }
+            let answer = prepared
+                .ok()
+                .and_then(|job| std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok())
+                .unwrap_or_else(|| json!({"ok":false,"error":"handler failed"}));
+            // Match the ordinary handler boundary. Reply cloning, encryption
+            // and carrier enqueue are measured separately by the diagnostic
+            // hooks and remain included in client-observed acceptance timing.
+            drop(timer);
+            #[cfg(test)]
+            clock.mark_observed(&observed, "handler_complete", std::time::Instant::now());
+            for (id, sender) in self.callers {
+                if sender.read_is_live() {
+                    let mut answer = answer.clone();
+                    answer["id"] = id;
+                    #[cfg(test)]
+                    clock.mark_observed(&observed, "reply_start", std::time::Instant::now());
+                    #[cfg(test)]
+                    sender.push_observed(answer, &clock, &observed, true);
+                    #[cfg(not(test))]
+                    sender.push_read_reply(answer);
+                    #[cfg(test)]
+                    clock.mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
+                }
             }
         })
-        .expect("start SQL read worker");
-    send
+    }
 }
 
-async fn coordinate(
-    queue: Arc<Queue>,
-    pool: Option<ReadPool>,
-    executor: std::sync::mpsc::Sender<Execution>,
-) {
+async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
+    let pool = handler.sql.as_ref().and_then(|sql| sql.pool.clone());
+    let executors = handler
+        .read_executors
+        .get()
+        .expect("initialized SQL executors");
     while queue.work_available().await {
+        let Some(permit) = while_live(&queue, None, executors.acquire()).await else {
+            continue;
+        };
         #[cfg(test)]
         let checkout_started = std::time::Instant::now();
         let connection = match &pool {
@@ -274,11 +531,35 @@ async fn coordinate(
         let Some(work) = queue.take() else { continue };
         #[cfg(test)]
         let work = work.with_measurement(checkout);
-        let (done, complete) = oneshot::channel();
-        if executor.send((work, connection, done)).is_err() {
-            return;
+        let handler = handler.clone();
+        let _ = executors
+            .submit(permit, move || work.run(&handler, connection))
+            .await;
+    }
+}
+
+/// Ordinary SQL resource waits end when the queue closes or empties.
+async fn while_live<T>(
+    queue: &Queue,
+    work: Option<&Work>,
+    future: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    tokio::pin!(future);
+    loop {
+        let changed = queue.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        {
+            let waiting = queue.waiting.lock().unwrap();
+            let live = work.map_or_else(
+                || !waiting.ready.is_empty(),
+                |work| work.callers.iter().any(|(_, sender)| sender.read_is_live()),
+            );
+            if waiting.closed || !live {
+                return None;
+            }
         }
-        let _ = complete.await;
+        tokio::select! { result = &mut future => return Some(result), _ = changed => {} }
     }
 }
 
@@ -299,5 +580,93 @@ async fn connection_while_waiting(queue: &Queue, pool: &ReadPool) -> Option<Read
             connection = &mut acquiring => return Some(connection),
             _ = changed => {},
         }
+    }
+}
+
+/// Synchronous callers use their own I/O thread. Any SQL preparation still
+/// enters the same dedicated SQL executor; no runtime is nested on a Tokio worker.
+pub(super) fn call_observation(
+    handler: FrameHandler,
+    sender: SessionSender,
+    frame: Frame,
+    arrived: WaitTimer,
+) -> Value {
+    std::thread::Builder::new()
+        .name("bridge-io-direct".into())
+        .spawn(move || {
+            let _timer = handler
+                .clock
+                .queued_since(Priority::Foreground, arrived)
+                .start(frame.payload["method"].as_str().unwrap_or("other"));
+            let needs_sql = crate::api::effects::observation_needs_sql(&frame.payload);
+            if !needs_sql {
+                return handler.prepare_observation(sender, frame, None)();
+            }
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("direct read checkout runtime");
+            let prepared = runtime.block_on(async {
+                let executors = ReadExecutors::ready_for_handler(&handler);
+                let permit = executors.acquire().await;
+                let connection = match handler
+                    .observations
+                    .as_ref()
+                    .and_then(|observations| observations.pool.as_ref())
+                {
+                    Some(pool) => Some(pool.acquire().await),
+                    None => None,
+                };
+                let prepare = handler.clone();
+                executors
+                    .submit(permit, move || {
+                        prepare.prepare_observation(sender, frame, connection)
+                    })
+                    .await
+            });
+            prepared
+                .map(|job| job())
+                .unwrap_or_else(|_| json!({"ok":false,"error":"handler failed"}))
+        })
+        .expect("start direct observation read")
+        .join()
+        .unwrap_or_else(|_| json!({"ok":false,"error":"handler failed"}))
+}
+
+#[cfg(test)]
+mod queue_wakeup_tests {
+    use super::*;
+    use std::future::Future;
+    use std::task::Poll;
+
+    #[tokio::test]
+    async fn one_queued_read_wakes_one_idle_execution_coordinator() {
+        let queue = Queue::default();
+        let mut waiters = (0..IO_WORKERS)
+            .map(|_| Box::pin(queue.work_available()))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            let pending =
+                std::future::poll_fn(|cx| Poll::Ready(waiter.as_mut().poll(cx).is_pending())).await;
+            assert!(pending, "every coordinator is idle before admission");
+        }
+        let frame: Frame = serde_json::from_value(json!({"session_id":"s","message_id":"m","frame_type":"data","sender":"client","created_at":"","payload":{"id":1,"method":"fs.list"}})).unwrap();
+        let mut job = Some(Job {
+            sender: SessionSender::detached("s"),
+            frame,
+            queued: crate::timing::FrameClock::new().queued(),
+        });
+        let mut admitted_at = None;
+        assert!(queue.admit(&mut job, &mut admitted_at));
+        queue.notify_admitted();
+        let mut awakened = 0;
+        for waiter in &mut waiters {
+            awakened += usize::from(
+                std::future::poll_fn(|cx| Poll::Ready(waiter.as_mut().poll(cx).is_ready())).await,
+            );
+        }
+        assert_eq!(
+            awakened, 1,
+            "one queued read must not wake all idle execution coordinators"
+        );
     }
 }

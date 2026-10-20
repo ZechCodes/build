@@ -108,28 +108,9 @@ impl AppState {
     /// exactly as it did before ranges.
     pub(crate) fn tasks_attachment(&mut self, params: &Value) -> Result<Value, String> {
         let task_id = require_str(params, "task_id")?;
-        let path = require_str(params, "path")?;
-        // The task has to exist and be one this bridge serves before any of
-        // its bytes are read: a read fenced only by the store would answer for
-        // a task that is not there.
+        require_str(params, "path")?;
         self.tracker_task(&task_id)?;
-        let target = self.resolve_task_attachment(&path)?;
-        let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
-        let length = params
-            .get("length")
-            .and_then(Value::as_u64)
-            .unwrap_or(ATTACHMENT_READ_CHUNK_BYTES)
-            .min(ATTACHMENT_READ_CHUNK_BYTES);
-        let (size, piece) = read_range(&target, offset, length)
-            .map_err(|e| format!("cannot read the attachment: {e}"))?;
-        let head = read_head(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
-        Ok(json!({
-            "path": path,
-            "size": size,
-            "mime": mime_hint(&target, &head),
-            "offset": offset,
-            "content_b64": b64encode(&piece),
-        }))
+        read_task_attachment(&self.local_attachments_dir(), params)
     }
 
     /// Resolve a client-supplied path to a real file, refusing anything that is
@@ -141,25 +122,7 @@ impl AppState {
         &self,
         path: &str,
     ) -> Result<std::path::PathBuf, String> {
-        let home = self.local_attachments_dir();
-        let canonical_home = std::fs::canonicalize(&home)
-            .map_err(|_| format!("not an attachment on this task: {path}"))?;
-        let candidate = std::path::Path::new(path);
-        let attempts = [
-            candidate.is_absolute().then(|| candidate.to_path_buf()),
-            // An agent attaches what the user sent IT, and its copy is named
-            // relative to a checkout. Both homes store the same leaf.
-            candidate.file_name().map(|leaf| home.join(leaf)),
-        ];
-        for attempt in attempts.into_iter().flatten() {
-            let Ok(resolved) = std::fs::canonicalize(&attempt) else {
-                continue;
-            };
-            if resolved.starts_with(&canonical_home) && resolved.is_file() {
-                return Ok(resolved);
-            }
-        }
-        Err(format!("not an attachment on this task: {path}"))
+        resolve_task_attachment(&self.local_attachments_dir(), path)
     }
 
     /// The files an `tasks.create` or `tasks.comment` says it is filing.
@@ -236,4 +199,53 @@ fn read_range(path: &std::path::Path, offset: u64, length: u64) -> std::io::Resu
     file.seek(SeekFrom::Start(offset.min(size)))?;
     file.take(length).read_to_end(&mut piece)?;
     Ok((size, piece))
+}
+
+/// Task admission is completed before this filesystem-only phase.
+pub(in crate::app) fn read_task_attachment(
+    home: &std::path::Path,
+    params: &Value,
+) -> Result<Value, String> {
+    let path = require_str(params, "path")?;
+    let target = resolve_task_attachment(home, &path)?;
+    let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let length = params
+        .get("length")
+        .and_then(Value::as_u64)
+        .unwrap_or(ATTACHMENT_READ_CHUNK_BYTES)
+        .min(ATTACHMENT_READ_CHUNK_BYTES);
+    let (size, piece) = read_range(&target, offset, length)
+        .map_err(|e| format!("cannot read the attachment: {e}"))?;
+    let head = read_head(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
+    Ok(json!({
+        "path": path,
+        "size": size,
+        "mime": mime_hint(&target, &head),
+        "offset": offset,
+        "content_b64": b64encode(&piece),
+    }))
+}
+
+fn resolve_task_attachment(
+    home: &std::path::Path,
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
+    let canonical_home = std::fs::canonicalize(home)
+        .map_err(|_| format!("not an attachment on this task: {path}"))?;
+    let candidate = std::path::Path::new(path);
+    let attempts = [
+        candidate.is_absolute().then(|| candidate.to_path_buf()),
+        // An agent attaches what the user sent IT, and its copy is named
+        // relative to a checkout. Both homes store the same leaf.
+        candidate.file_name().map(|leaf| home.join(leaf)),
+    ];
+    for attempt in attempts.into_iter().flatten() {
+        let Ok(resolved) = std::fs::canonicalize(&attempt) else {
+            continue;
+        };
+        if resolved.starts_with(&canonical_home) && resolved.is_file() {
+            return Ok(resolved);
+        }
+    }
+    Err(format!("not an attachment on this task: {path}"))
 }

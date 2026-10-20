@@ -247,9 +247,9 @@ fn a_path_that_escapes_the_checkout_is_refused() {
 #[test]
 fn a_workspace_source_narrows_its_unpublished_changeset() {
     let (dir, repo) = init_repo();
-    let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-    let project_id = state.lock().unwrap().project_at(0).id.clone();
-    state.lock().unwrap().workspaces.adopt_root(
+    let mut state = qa_state_before_admission(&repo, dir.path());
+    let project_id = state.project_at(0).id.clone();
+    state.workspaces.adopt_root(
         &project_id,
         "workspace-a".to_string(),
         "A".to_string(),
@@ -257,6 +257,9 @@ fn a_workspace_source_narrows_its_unpublished_changeset() {
         "source-1".to_string(),
         true,
     );
+    // Fixture-only registry seeding belongs before the first committed view.
+    // Production workspace lifecycle writes publish before their replies.
+    let handler = state.into_handler();
     std::fs::write(repo.join("opened.txt"), "what the reader opened\n").unwrap();
     std::fs::write(repo.join("unopened.txt"), "unread\n".repeat(200)).unwrap();
 

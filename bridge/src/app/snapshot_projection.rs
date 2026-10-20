@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 #[derive(Default)]
 pub(in crate::app) struct SnapshotObservations {
     ready: bool,
+    pub(in crate::app) observation_owners: crate::observation_changes::ChangeKeys,
+    pub(in crate::app) observation_reservations: crate::observation_changes::ChangeKeys,
     pending_owners: Mutex<BTreeSet<String>>,
     ownership: Mutex<Option<Arc<ProjectionOwnership>>>,
     paths: BTreeMap<PathBuf, PathBuf>,
@@ -189,6 +191,7 @@ impl AppState {
         if !self.snapshot_observations.ready {
             return None;
         }
+        self.mark_observation_owner_changed(owner);
         self.snapshot_observations
             .pending_owners
             .lock()
@@ -210,15 +213,20 @@ impl AppState {
         Some(self.prepare_snapshot_owner_rows(delta, &previous, &owners, true))
     }
 
-    pub(in crate::app) fn publish_prepared_snapshot_projection(&self, delta: SnapshotDelta) {
+    pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.install");
-        self.read_view.publish_delta(delta);
-        self.snapshot_observations
-            .pending_owners
-            .lock()
-            .unwrap()
-            .clear();
+        let receipts = delta.take_observation_receipts();
+        if self.read_view.publish_delta(delta) {
+            if let Some(receipts) = receipts {
+                receipts.acknowledge(self);
+            }
+            self.snapshot_observations
+                .pending_owners
+                .lock()
+                .unwrap()
+                .clear();
+        }
     }
 
     fn can_publish_snapshot_projection(&self) -> bool {
@@ -299,7 +307,8 @@ impl AppState {
             "",
             self.models_list_snapshot(),
         );
-        delta.set_facts(Arc::new(self.push_facts_snapshot(lists)))
+        self.prepare_observation_inputs(delta, previous)
+            .set_facts(Arc::new(self.push_facts_snapshot(lists)))
     }
 
     fn prepare_workspace_lists(

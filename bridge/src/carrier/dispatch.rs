@@ -22,8 +22,25 @@ pub struct FrameHandler {
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
     snapshot: Option<Arc<dyn Fn(Frame) -> Value + Send + Sync>>,
     pub(super) sql: Option<SqlHandler>,
+    pub(super) observations: Option<ObservationHandler>,
+    pub(super) read_executors: Arc<OnceLock<super::sql::ReadExecutors>>,
+    #[cfg(test)]
+    pub(super) io_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    pub(super) sql_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
+}
+
+pub(crate) type PreparedObservation = Box<dyn FnOnce() -> Value + Send>;
+
+type ObservationPrepare =
+    dyn Fn(Frame, Option<crate::store::ReadConnection>) -> PreparedObservation + Send + Sync;
+
+#[derive(Clone)]
+pub(super) struct ObservationHandler {
+    pub(super) pool: Option<crate::store::ReadPool>,
+    prepare: Arc<ObservationPrepare>,
 }
 
 type SqlCall = dyn Fn(SessionSender, Frame, FrameTimer, Option<crate::store::ReadConnection>) -> Value
@@ -46,10 +63,32 @@ impl FrameHandler {
             dispatch: Arc::new(dispatch),
             session_end: Arc::new(|_| {}),
             sql: None,
+            observations: None,
+            read_executors: Arc::new(OnceLock::new()),
+            #[cfg(test)]
+            io_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            sql_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             snapshot: None,
             #[cfg(test)]
             sql_observer: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observation_worker_starts(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.io_thread_starts.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sql_worker_starts(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.sql_thread_starts.clone()
+    }
+
+    /// Start the shared SQL workers before making the bridge reachable.
+    /// Handler clones and both read lanes reuse this executor.
+    pub fn start_read_workers(&self) -> std::io::Result<()> {
+        super::sql::start_read_workers(self)
     }
 
     #[cfg(test)]
@@ -105,6 +144,38 @@ impl FrameHandler {
         self
     }
 
+    pub(crate) fn with_observation_reads(
+        mut self,
+        pool: Option<crate::store::ReadPool>,
+        prepare: impl Fn(Frame, Option<crate::store::ReadConnection>) -> PreparedObservation
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.observations = Some(ObservationHandler {
+            pool,
+            prepare: Arc::new(prepare),
+        });
+        self
+    }
+
+    pub(super) fn prepare_observation(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        connection: Option<crate::store::ReadConnection>,
+    ) -> PreparedObservation {
+        match &self.observations {
+            Some(observations) => (observations.prepare)(frame, connection),
+            None => {
+                let handler = self.clone();
+                Box::new(move || {
+                    handler.run(handler.clock.queued_at(Priority::Foreground), sender, frame)
+                })
+            }
+        }
+    }
+
     pub(super) fn run_sql(
         &self,
         queued: QueuedFrame,
@@ -145,6 +216,9 @@ impl FrameHandler {
             Ok(answer) => return answer,
             Err(arrived) => arrived,
         };
+        if self.observations.is_some() && crate::api::effects::is_observation_read(&frame.payload) {
+            return super::sql::call_observation(self.clone(), sender, frame, arrived);
+        }
         self.run(
             self.clock.queued_since(Priority::Foreground, arrived),
             sender,
@@ -152,14 +226,30 @@ impl FrameHandler {
         )
     }
 
-    fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+    pub(super) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+        #[cfg(test)]
+        let worker_started = std::time::Instant::now();
         let method = frame
             .payload
             .get("method")
             .and_then(Value::as_str)
             .unwrap_or(&frame.frame_type);
+        #[cfg(test)]
+        let observed = self.clock.request_frame(&frame);
         let timer = queued.start(method);
-        (self.dispatch)(sender, frame, timer)
+        #[cfg(test)]
+        let timer = {
+            let mut timer = timer;
+            timer.bind_request(&frame);
+            self.clock
+                .mark_request(&frame, "worker_start", worker_started);
+            timer
+        };
+        let answer = (self.dispatch)(sender, frame, timer);
+        #[cfg(test)]
+        self.clock
+            .mark_observed(&observed, "handler_complete", std::time::Instant::now());
+        answer
     }
 }
 
@@ -364,7 +454,8 @@ enum LaneMessage {
 /// stale and stays stale.
 pub(super) struct Dispatcher {
     handler: FrameHandler,
-    sql: OnceLock<super::sql::SqlDispatcher>,
+    sql: OnceLock<super::sql::ReadDispatcher>,
+    observations: OnceLock<super::sql::ReadDispatcher>,
     /// The two shared pool queues, foreground and background. Both bounded: a
     /// full queue makes the read loop wait, and it waits per queue, so a flood
     /// of background pulls cannot fill the slot a foreground frame needs.
@@ -415,6 +506,7 @@ impl Dispatcher {
         Dispatcher {
             handler,
             sql: OnceLock::new(),
+            observations: OnceLock::new(),
             jobs: [foreground, background],
             lanes: Mutex::new(HashMap::new()),
             folded_reads,
@@ -434,12 +526,42 @@ impl Dispatcher {
         arrived: WaitTimer,
     ) {
         self.sql
-            .get_or_init(|| super::sql::SqlDispatcher::new(self.handler.clone()))
+            .get_or_init(|| super::sql::ReadDispatcher::new(self.handler.clone()))
             .dispatch(sender, frame, arrived)
             .await;
     }
 
+    pub(super) async fn dispatch_observation(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) {
+        #[cfg(test)]
+        self.handler
+            .clock
+            .mark_request(&frame, "executor_init_start", std::time::Instant::now());
+        let lane = self
+            .observations
+            .get_or_init(|| super::sql::ReadDispatcher::new_observations(self.handler.clone()));
+        #[cfg(test)]
+        self.handler
+            .clock
+            .mark_request(&frame, "executor_init_end", std::time::Instant::now());
+        lane.dispatch(sender, frame, arrived).await;
+    }
+
+    #[cfg(test)]
+    pub(super) fn observation_depths(&self) -> (usize, usize) {
+        self.observations
+            .get()
+            .map_or((0, 0), super::sql::ReadDispatcher::depths)
+    }
+
     pub(super) fn prune_sql(&self) {
+        if let Some(observations) = self.observations.get() {
+            observations.prune();
+        }
         if let Some(sql) = self.sql.get() {
             sql.prune();
         }
@@ -449,7 +571,7 @@ impl Dispatcher {
     pub(super) fn sql_depths(&self) -> (usize, usize) {
         self.sql
             .get()
-            .map_or((0, 0), super::sql::SqlDispatcher::depths)
+            .map_or((0, 0), super::sql::ReadDispatcher::depths)
     }
 
     /// The queue a frame of this priority joins.
@@ -479,10 +601,18 @@ impl Dispatcher {
         if !sender.session_is_open() {
             return;
         }
+        if crate::api::effects::is_observation_read(&frame.payload) {
+            self.dispatch_observation(sender, frame, arrived).await;
+            return;
+        }
         if crate::api::effects::is_sql_read(&frame.payload) {
             self.dispatch_sql(sender, frame, arrived).await;
             return;
         }
+        #[cfg(test)]
+        self.handler
+            .clock
+            .mark_request(&frame, "admitted", std::time::Instant::now());
         match ordered_lane(&sender, &frame) {
             // A terminal's frames are scheduled by its lane and by nothing else:
             // its stream is the client's own typing, never a background pull, and
@@ -888,6 +1018,12 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
         queued,
         priority: _,
     } = folded;
+    #[cfg(test)]
+    let observed = handler.clock.request_frame(&frame);
+    #[cfg(test)]
+    handler
+        .clock
+        .mark_request(&frame, "lane_pop", std::time::Instant::now());
     let answer = match run_handler(handler, &sender, frame, queued).await {
         None => return,
         Some(Ok(payload)) => payload,
@@ -903,7 +1039,18 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
             }
             None => continue,
         }
+        #[cfg(test)]
+        handler
+            .clock
+            .mark_observed(&observed, "reply_start", std::time::Instant::now());
+        #[cfg(test)]
+        caller.push_observed(for_caller, &handler.clock, &observed, false);
+        #[cfg(not(test))]
         caller.push(for_caller);
+        #[cfg(test)]
+        handler
+            .clock
+            .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
     }
 }
 
@@ -917,10 +1064,27 @@ async fn run_job(handler: &FrameHandler, job: Job) {
         queued,
     } = job;
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
+    #[cfg(test)]
+    let observed = handler.clock.request_frame(&frame);
+    #[cfg(test)]
+    handler
+        .clock
+        .mark_request(&frame, "lane_pop", std::time::Instant::now());
     match run_handler(handler, &sender, frame, queued).await {
         None => {}
         Some(Ok(payload)) => {
+            #[cfg(test)]
+            handler
+                .clock
+                .mark_observed(&observed, "reply_start", std::time::Instant::now());
+            #[cfg(test)]
+            sender.push_observed(payload, &handler.clock, &observed, false);
+            #[cfg(not(test))]
             sender.push(payload);
+            #[cfg(test)]
+            handler
+                .clock
+                .mark_observed(&observed, "reply_enqueued", std::time::Instant::now());
         }
         Some(Err(_)) => {
             sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));
@@ -1593,6 +1757,7 @@ mod dispatcher_tests {
         let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let (started, mut started_rx) = mpsc::unbounded_channel();
         let handler = counting_handler(gate.clone(), computed.clone(), started);
+        // Exercise the held ordinary pool; Git observations have an independent lane.
         let dispatcher = Dispatcher::with_capacity(handler, 256, 1);
         let (one, mut one_rx, one_key) = SessionSender::observable("s-one");
         let (two, mut two_rx, two_key) = SessionSender::observable("s-two");
@@ -1607,13 +1772,16 @@ mod dispatcher_tests {
         for id in 1..=3u64 {
             // Same client, same params: one compute.
             dispatcher
-                .dispatch(one.clone(), request(id, "git.log", json!({ "p": "a" })))
+                .dispatch(
+                    one.clone(),
+                    request(id, "project.list", json!({ "p": "a" })),
+                )
                 .await;
             // Same client, different params: a different answer, its own compute.
             dispatcher
                 .dispatch(
                     one.clone(),
-                    request(id + 10, "git.log", json!({ "p": "b" })),
+                    request(id + 10, "project.list", json!({ "p": "b" })),
                 )
                 .await;
             // A different client asking the same thing: its own compute, because a
@@ -1621,7 +1789,7 @@ mod dispatcher_tests {
             dispatcher
                 .dispatch(
                     two.clone(),
-                    request(id + 20, "git.log", json!({ "p": "a" })),
+                    request(id + 20, "project.list", json!({ "p": "a" })),
                 )
                 .await;
         }
@@ -1656,9 +1824,9 @@ mod dispatcher_tests {
         assert_eq!(
             ran,
             vec![
-                "git.log {\"p\":\"a\"}".to_string(),
-                "git.log {\"p\":\"a\"}".to_string(),
-                "git.log {\"p\":\"b\"}".to_string(),
+                "project.list {\"p\":\"a\"}".to_string(),
+                "project.list {\"p\":\"a\"}".to_string(),
+                "project.list {\"p\":\"b\"}".to_string(),
             ],
             "three distinct answers, three computes — one per (client, method, params)"
         );
@@ -2009,6 +2177,7 @@ mod dispatcher_tests {
         let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let (started, mut started_rx) = mpsc::unbounded_channel();
         let handler = counting_handler(gate.clone(), computed.clone(), started);
+        // Exercise the held ordinary pool; Git observations have an independent lane.
         let dispatcher = Dispatcher::with_capacity(handler, 256, 1);
         let (sender, mut rx, key) = SessionSender::observable("s-cross-fold");
 
@@ -2020,12 +2189,12 @@ mod dispatcher_tests {
             .expect("the only worker is busy");
 
         dispatcher
-            .dispatch(sender.clone(), request(1, "git.status", json!({})))
+            .dispatch(sender.clone(), request(1, "board.list", json!({})))
             .await;
         dispatcher
             .dispatch(
                 sender.clone(),
-                background_request(2, "git.status", json!({})),
+                background_request(2, "board.list", json!({})),
             )
             .await;
         gate.store(false, Ordering::SeqCst);
@@ -2035,7 +2204,7 @@ mod dispatcher_tests {
         assert_eq!(ids, vec![json!(0), json!(1), json!(2)]);
         assert_eq!(
             *computed.lock().unwrap(),
-            vec![("git.status".to_string(), json!({}))],
+            vec![("board.list".to_string(), json!({}))],
             "the background pull cost no second compute"
         );
     }

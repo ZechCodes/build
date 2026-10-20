@@ -15,7 +15,9 @@ use crate::thread::Thread;
 use super::inputs::required_operation_id;
 use super::read::conversation_owner_param;
 
+mod attachments;
 mod pages;
+pub(in crate::app) use attachments::{AttachmentOwner, AttachmentReadContext, AttachmentReadFence};
 use pages::{activity, page};
 
 #[derive(Clone, Default)]
@@ -44,6 +46,7 @@ impl From<&Agent> for ReadAddress {
     }
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct ThreadReadFence {
     owner: String,
     agent: String,
@@ -347,6 +350,14 @@ fn conversation_error(error: crate::store::StoreError) -> String {
 }
 
 fn guard_binding(agent: &ReadAddress, thread: &Thread, params: &Value) -> Result<(), String> {
+    guard_binding_values(agent, &thread.id, params)
+}
+
+fn guard_binding_values(
+    agent: &ReadAddress,
+    thread_id: &str,
+    params: &Value,
+) -> Result<(), String> {
     if let Some(expected) = optional_nonempty_string(params, "conversation_id")? {
         if expected != agent.conversation {
             return Err(format!(
@@ -360,10 +371,10 @@ fn guard_binding(agent: &ReadAddress, thread: &Thread, params: &Value) -> Result
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or("invalid thread_id: expected a non-empty string")?;
-        if expected != thread.id {
+        if expected != thread_id {
             return Err(format!(
                 "stale thread_id {expected}; current thread is {}",
-                thread.id
+                thread_id
             ));
         }
     }

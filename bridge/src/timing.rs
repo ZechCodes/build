@@ -166,6 +166,11 @@ impl QueueRecord {
 /// the frames themselves (which record what they did). Answers `bridge.stats`
 /// on its own, holding nothing but its own leaves — a wedged daemon must still
 /// be able to say what is wedging it.
+#[cfg(test)]
+mod requests;
+#[cfg(test)]
+pub(crate) use requests::RequestObserver;
+
 pub struct FrameClock {
     methods: RwLock<HashMap<String, Arc<MethodRecord>>>,
     holder: Mutex<Option<Arc<MethodRecord>>>,
@@ -182,6 +187,10 @@ pub struct FrameClock {
     clients: ClientRegistry,
     #[cfg(test)]
     phase_samples: Mutex<Option<phase_samples::PhaseSamples>>,
+    #[cfg(test)]
+    request_observer: RwLock<Option<Arc<RequestObserver>>>,
+    #[cfg(test)]
+    request_observed: AtomicBool,
 }
 
 impl FrameClock {
@@ -217,6 +226,10 @@ impl FrameClock {
             clients: ClientRegistry::new(),
             #[cfg(test)]
             phase_samples: Mutex::new(None),
+            #[cfg(test)]
+            request_observer: RwLock::new(None),
+            #[cfg(test)]
+            request_observed: AtomicBool::new(false),
         })
     }
 
@@ -420,6 +433,8 @@ impl QueuedFrame {
             sample_tool: Mutex::new(None),
             #[cfg(test)]
             phase_capture: phase_samples::start_frame(&self.clock),
+            #[cfg(test)]
+            request: None,
         }
     }
 }
@@ -476,6 +491,8 @@ pub struct FrameTimer {
     sample_tool: Mutex<Option<String>>,
     #[cfg(test)]
     phase_capture: Option<phase_samples::PhaseSamples>,
+    #[cfg(test)]
+    request: Option<crate::transport::Frame>,
 }
 
 /// A wait whose endpoint may run on a different thread from its frame.
@@ -513,8 +530,14 @@ impl FrameTimer {
     /// The returned guard derefs to the state. While it lives, `bridge.stats`
     /// names this frame's method as the lock holder.
     pub fn lock<'a, T>(&'a self, state: &'a Arc<Mutex<T>>) -> LockedFor<'a, T> {
+        #[cfg(test)]
+        self.mark_request("app_wait_start");
         let asked_at = Instant::now();
         let guard = state.lock().unwrap();
+        #[cfg(test)]
+        self.mark_request("app_wait_end");
+        #[cfg(test)]
+        self.mark_request("app_hold_start");
         self.lock_wait_micros
             .fetch_add(micros(asked_at.elapsed()), Ordering::Relaxed);
         self.clock.hold_began(&self.method);
@@ -639,6 +662,8 @@ impl<T> Drop for LockedFor<'_, T> {
         self.phase_sample.take();
         self.timer.clock.hold_ended();
         self.guard.take();
+        #[cfg(test)]
+        self.timer.mark_request("app_hold_end");
         self.timer
             .held_micros
             .fetch_add(micros(self.acquired_at.elapsed()), Ordering::Relaxed);

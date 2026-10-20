@@ -360,11 +360,12 @@ impl Store {
             )?;
         }
         tracker::initialize_list_key(&conn)?;
-        let read_pool = ReadPool::open(&dir.join(DB_FILE))?;
+        let conn = Arc::new(Mutex::new(conn));
+        let read_pool = ReadPool::open(&dir.join(DB_FILE), conn.clone())?;
         Ok(Store {
             dir,
             read_pool,
-            conn: Arc::new(Mutex::new(conn)),
+            conn,
             waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             fail_next_write: Arc::new(std::sync::atomic::AtomicBool::new(false)),

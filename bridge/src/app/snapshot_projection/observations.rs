@@ -60,6 +60,8 @@ impl AppState {
     /// Lifecycle/background producer work. This is never called by a snapshot
     /// read. Project repository/volume probes have a separate off-lock phase.
     pub(in crate::app) fn refresh_snapshot_observations(&mut self) {
+        let previous_inputs = self.read_view.load();
+        let previous_branches = std::mem::take(&mut self.snapshot_observations.branches);
         let mut paths = self.snapshot_paths();
         paths.extend(
             paths
@@ -81,6 +83,16 @@ impl AppState {
                 (path, canonical)
             })
             .collect();
+        if let Some(context) = &previous_inputs.observations {
+            for owner in self.runs.keys() {
+                if context.scopes.physical_changed(self, owner)
+                    || previous_branches.get(owner)
+                        != self.snapshot_observations.branches.get(owner)
+                {
+                    self.mark_observation_owner_changed(owner);
+                }
+            }
+        }
         let workspaces = self
             .workspaces
             .list(None)
@@ -91,6 +103,13 @@ impl AppState {
             .workspace_reviews
             .retain(|id, _| workspaces.contains(id));
         for id in workspaces {
+            if previous_inputs
+                .observations
+                .as_ref()
+                .is_some_and(|context| context.scopes.workspace_physical_changed(self, &id))
+            {
+                self.workspaces.observation_changes().mark(&id);
+            }
             self.refresh_workspace_review_observation(&id);
         }
     }
@@ -110,6 +129,7 @@ impl AppState {
         for path in paths {
             self.observe_snapshot_path(path);
         }
+        self.workspaces.observation_changes().mark(id);
         self.refresh_workspace_review_observation(id);
     }
     fn observe_snapshot_path(&mut self, path: PathBuf) {
@@ -124,6 +144,7 @@ impl AppState {
         self.snapshot_observations.paths.insert(path, canonical);
     }
     pub(in crate::app) fn refresh_owner_snapshot_observations(&mut self, owner: &str) {
+        self.mark_observation_owner_changed(owner);
         if let Some(active) = self.runs.get(owner) {
             self.snapshot_observations
                 .branches
@@ -232,6 +253,15 @@ impl AppState {
         if !self.snapshot_observations.ready {
             return worktree.branch();
         }
+        self.observed_run_branch(owner, worktree)
+    }
+
+    /// Pure producer input, including callers constructing the initial context.
+    pub(in crate::app) fn observed_run_branch(
+        &self,
+        owner: &str,
+        worktree: &crate::worktree::Worktree,
+    ) -> String {
         self.snapshot_observations
             .branches
             .get(owner)
@@ -239,6 +269,7 @@ impl AppState {
             .unwrap_or_else(|| worktree.recorded_branch.clone())
     }
     pub(in crate::app) fn record_snapshot_run_branch(&mut self, owner: &str, branch: String) {
+        self.mark_observation_owner_changed(owner);
         self.snapshot_observations
             .branches
             .insert(owner.to_owned(), branch);

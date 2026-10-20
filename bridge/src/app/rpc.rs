@@ -364,15 +364,28 @@ fn routed(
     // A verb whose git work must not run under the lock hands that work back
     // rather than doing it here; the drain below runs it with the mutex
     // released. See `AppState::deferred_work`.
+    #[cfg(test)]
+    timer.mark_request("dispatch_start");
     let (dispatched, deferred) = timer.lock(state).dispatch_deferring(method, params);
+    #[cfg(test)]
+    timer.mark_request("dispatch_end");
     let dispatched = match deferred {
         // THE POINT OF ALL THIS: seconds to minutes of git — a status walk, a
         // fetch, a merge, a `git worktree remove` of a six-gigabyte checkout —
         // with every other frame, every terminal pump and the relay's own read
         // loop free to make progress meanwhile.
         Some(mut deferred) => loop {
+            #[cfg(test)]
+            timer.mark_request("external_start");
             let done = deferred.run();
-            match timer.lock(state).apply_deferred_stage(method, params, done) {
+            #[cfg(test)]
+            timer.mark_request("external_end");
+            #[cfg(test)]
+            timer.mark_request("apply_start");
+            let applied = timer.lock(state).apply_deferred_stage(method, params, done);
+            #[cfg(test)]
+            timer.mark_request("apply_end");
+            match applied {
                 DeferredNext::Answered(answer) => break answer.map_err(ApiError::classify),
                 DeferredNext::Again(next) => deferred = next,
             }
@@ -384,7 +397,11 @@ fn routed(
     // cold spawn blocks for seconds on the harness's readiness wait while the
     // browser gives up at twelve.
     if dispatched.is_ok() {
+        #[cfg(test)]
+        timer.mark_request("drain_start");
         DeliveryRunner::drain(state, timer);
+        #[cfg(test)]
+        timer.mark_request("drain_end");
     }
     dispatched
 }
@@ -446,7 +463,7 @@ fn pause_terminal_create_after_admission(state: &Arc<Mutex<AppState>>, timer: &F
 
 /// Keep observations and session subscriptions available during filesystem cleanup.
 /// New verbs default to blocked until their read-only behavior is established.
-fn allowed_during_project_deletion(method: &str) -> bool {
+pub(in crate::app) fn allowed_during_project_deletion(method: &str) -> bool {
     matches!(
         method,
         "ping"
@@ -540,7 +557,7 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers, pool, reads, snapshots) = {
+        let (clock, peers, pool, reads, snapshots, observations) = {
             let mut app = state.lock().unwrap();
             app.initialize_snapshot_projection();
             app.initialize_read_context();
@@ -550,11 +567,15 @@ impl AppState {
                 app.store.as_ref().map(crate::store::Store::read_pool),
                 app.read_service(),
                 app.snapshot_service(),
+                app.observation_service(),
             )
         };
         let ending = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, &peers, sender, frame, timer)
+        })
+        .with_observation_reads(pool.clone(), move |frame, connection| {
+            observations.prepare(frame, connection)
         })
         .with_sql_reads(pool, move |_sender, frame, _timer, connection| {
             reads.call(frame, connection)

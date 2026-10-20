@@ -5,7 +5,7 @@
 //! the carrier boundary's questions, one module up.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
@@ -20,6 +20,17 @@ pub struct FrameHandler {
     pub(super) clock: Arc<FrameClock>,
     pub(super) dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>,
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
+    pub(super) sql: Option<SqlHandler>,
+}
+
+type SqlCall = dyn Fn(SessionSender, Frame, FrameTimer, Option<crate::store::ReadConnection>) -> Value
+    + Send
+    + Sync;
+
+#[derive(Clone)]
+pub(super) struct SqlHandler {
+    pub(super) pool: Option<crate::store::ReadPool>,
+    dispatch: Arc<SqlCall>,
 }
 
 impl FrameHandler {
@@ -31,6 +42,39 @@ impl FrameHandler {
             clock,
             dispatch: Arc::new(dispatch),
             session_end: Arc::new(|_| {}),
+            sql: None,
+        }
+    }
+
+    pub(crate) fn with_sql_reads(
+        mut self,
+        pool: Option<crate::store::ReadPool>,
+        dispatch: impl Fn(SessionSender, Frame, FrameTimer, Option<crate::store::ReadConnection>) -> Value
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.sql = Some(SqlHandler {
+            pool,
+            dispatch: Arc::new(dispatch),
+        });
+        self
+    }
+
+    pub(super) fn run_sql(
+        &self,
+        queued: QueuedFrame,
+        sender: SessionSender,
+        frame: Frame,
+        connection: Option<crate::store::ReadConnection>,
+    ) -> Value {
+        match &self.sql {
+            Some(sql) => {
+                let method = frame.payload["method"].as_str().unwrap_or("other");
+                let timer = queued.start(method);
+                (sql.dispatch)(sender, frame, timer, connection)
+            }
+            None => self.run(queued, sender, frame),
         }
     }
 
@@ -239,8 +283,8 @@ enum LaneMessage {
 /// `board.list` diff on a churning 56k-file worktree took seconds, and the frames
 /// behind it piled up in the kernel until the relay called the device dead.
 ///
-/// Frames that mean something as a stream keep their order: anything naming a
-/// `term_id` goes to a serial lane keyed by that terminal and that session, so a
+/// Frames that mean something as a stream keep their order: terminal methods naming a
+/// `term_id` go to a serial lane keyed by that terminal and that session, so a
 /// client's input and acks are handled in the order it sent them. Everything else
 /// is an independent request and runs concurrently.
 ///
@@ -272,6 +316,7 @@ enum LaneMessage {
 /// stale and stays stale.
 pub(super) struct Dispatcher {
     handler: FrameHandler,
+    sql: OnceLock<super::sql::SqlDispatcher>,
     /// The two shared pool queues, foreground and background. Both bounded: a
     /// full queue makes the read loop wait, and it waits per queue, so a flood
     /// of background pulls cannot fill the slot a foreground frame needs.
@@ -321,6 +366,7 @@ impl Dispatcher {
         }
         Dispatcher {
             handler,
+            sql: OnceLock::new(),
             jobs: [foreground, background],
             lanes: Mutex::new(HashMap::new()),
             folded_reads,
@@ -331,6 +377,31 @@ impl Dispatcher {
     /// without queueing at all (`FrameIntake::accept`).
     pub(super) fn handler(&self) -> FrameHandler {
         self.handler.clone()
+    }
+
+    pub(super) async fn dispatch_sql(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) {
+        self.sql
+            .get_or_init(|| super::sql::SqlDispatcher::new(self.handler.clone()))
+            .dispatch(sender, frame, arrived)
+            .await;
+    }
+
+    pub(super) fn prune_sql(&self) {
+        if let Some(sql) = self.sql.get() {
+            sql.prune();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn sql_depths(&self) -> (usize, usize) {
+        self.sql
+            .get()
+            .map_or((0, 0), super::sql::SqlDispatcher::depths)
     }
 
     /// The queue a frame of this priority joins.
@@ -358,6 +429,10 @@ impl Dispatcher {
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
         if !sender.session_is_open() {
+            return;
+        }
+        if crate::api::effects::is_sql_read(&frame.payload) {
+            self.dispatch_sql(sender, frame, arrived).await;
             return;
         }
         match ordered_lane(&sender, &frame) {
@@ -570,6 +645,7 @@ impl Dispatcher {
         session_id: &str,
         still_ended: impl FnOnce() -> bool + Send + 'static,
     ) {
+        self.prune_sql();
         let session_lanes: Vec<mpsc::Sender<LaneMessage>> = {
             let mut lanes = self.lanes.lock().unwrap();
             let keys: Vec<(String, String)> = lanes
@@ -706,6 +782,12 @@ fn spawn_lane(handler: FrameHandler) -> mpsc::Sender<LaneMessage> {
 /// Terminal traffic — input, acks, resizes, attach and close — is a stream per
 /// terminal per client; everything else is an independent request.
 fn ordered_lane(sender: &SessionSender, frame: &Frame) -> Option<(String, String)> {
+    if !matches!(
+        frame.payload["method"].as_str(),
+        Some("term.input" | "term.resize" | "term.ack" | "term.attach" | "term.close")
+    ) {
+        return None;
+    }
     let term_id = frame
         .payload
         .get("params")
@@ -724,8 +806,8 @@ fn frame_priority(frame: &Frame) -> Priority {
 }
 
 /// What this frame asks, if it is a read whose answer can serve another caller
-/// asking the same thing. `None` for every other frame — including any read that
-/// names a `term_id`, which never reaches here (terminal traffic is a lane).
+/// asking the same thing. `None` for every other frame; the explicit terminal
+/// method allowlist alone decides which requests belong to a lane.
 ///
 /// The params go into the key as their JSON text. `serde_json` orders object keys
 /// (its map is a `BTreeMap`), so two frames carrying the same params produce the

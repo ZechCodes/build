@@ -148,6 +148,19 @@ impl AppState {
             .tasks_get(self.tracker_store()?, params)
     }
 
+    /// Inbox projections retain their synchronous adapter until their read
+    /// family migrates; both paths use the same lightweight review query.
+    fn extend_task_review_summary(&self, task_id: &str, row: &mut Value) -> Result<(), String> {
+        if let Some(summary) = self
+            .tracker_store()?
+            .load_review_summary(task_id)
+            .stored()?
+        {
+            row["review_summary"] = json!(summary);
+        }
+        Ok(())
+    }
+
     /// Give a task filed before `done_at` existed the one its timeline
     /// says, and keep it, so the next write carries it too.
     fn backfill_done_at(

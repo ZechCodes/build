@@ -53,6 +53,8 @@ pub(crate) fn diagnostic_debug(session_id: &str, event: &str) {
     log::debug!(target: "build_bridge::rtc", "session={session_id:?} {event}");
 }
 
+#[cfg(test)]
+mod backpressure_tests;
 mod checks;
 pub(crate) mod chunk;
 pub(crate) mod client_hint;

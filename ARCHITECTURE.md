@@ -350,6 +350,11 @@ actual retirement remains observable separately. A failed durable candidate
 cannot be exposed by an unrelated later publication. Nested owner mutations
 wait until their shared projection can be published coherently.
 
+Task creation, updates and dependency edits capture their watched board rows
+and affected neighbors inside the SQL transaction. A failed projection read
+rolls back the write. Background observation failures retain the previous
+rows; initial admission requires an authoritative first observation.
+
 The push bus reads committed state, thread tails, terminal rows and whole
 lists from the same immutable view. Git/filesystem observations belong to a
 bounded independent producer; a flush does not wait for the app or Store

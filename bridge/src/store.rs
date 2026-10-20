@@ -53,6 +53,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+pub(crate) use operations::CommittedThreadItems;
 pub(crate) use reviews::TrackingExpectation;
 
 mod conversation_reset;
@@ -71,8 +72,10 @@ pub mod push_keys;
 mod reviews;
 mod schema;
 mod source_sync;
+mod task_observation;
 mod task_rename;
 mod tracker;
+pub(crate) use task_observation::{TrackerTaskObservation, TrackerTaskPublication};
 mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
 mod user_session;
@@ -401,6 +404,13 @@ impl Store {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+    /// Fixture access to the actual writer mutex; production readers cannot
+    /// obtain this guard.
+    #[cfg(test)]
+    pub(crate) fn writer_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.connection()
+    }
+
     /// Only task/graph/delivery writes can make reconciliation work available.
     /// Empty polling transactions must not consume their own wakeup while a
     /// provisioning job is running outside the app lock.

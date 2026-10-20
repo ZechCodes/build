@@ -224,8 +224,12 @@ impl AppState {
     }
 
     pub(in crate::app) fn project_snapshot_scratch_path(&self, owner: &str) -> Option<PathBuf> {
-        let path = self.projects.project_id_of(owner).and_then(|id| self.projects.get(id))
-            .map(|project| project.repo_path.clone()).unwrap_or_else(|| PathBuf::from(self.projects.project_path_for(owner)));
+        let path = self
+            .projects
+            .project_id_of(owner)
+            .and_then(|id| self.projects.get(id))
+            .map(|project| project.repo_path.clone())
+            .unwrap_or_else(|| PathBuf::from(self.projects.project_path_for(owner)));
         (!path.as_os_str().is_empty()).then(|| scratch_dir(&self.state_root, &path))
     }
 

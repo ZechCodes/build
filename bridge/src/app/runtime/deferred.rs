@@ -497,10 +497,17 @@ impl ProjectListRow {
     pub(in crate::app) fn render(&self) -> Value {
         let available = IsolationAvailability::of(&self.repo_path, &self.worktrees_root);
         let observed = json!({"sources": self.sources.iter().map(crate::app::projects::ProjectSource::wire).collect::<Vec<_>>()});
-        self.render_observed(serde_json::to_value(available).expect("isolation availability serializes"), Some(&observed))
+        self.render_observed(
+            serde_json::to_value(available).expect("isolation availability serializes"),
+            Some(&observed),
+        )
     }
 
-    pub(in crate::app) fn render_observed(&self, available: Value, observed: Option<&Value>) -> Value {
+    pub(in crate::app) fn render_observed(
+        &self,
+        available: Value,
+        observed: Option<&Value>,
+    ) -> Value {
         let requested = self.isolation.unwrap_or(self.isolation_default);
         let effective = if requested != Isolation::Rift || available["rift"] == true {
             requested
@@ -511,7 +518,8 @@ impl ProjectListRow {
             .sources
             .iter()
             .map(|source| {
-                let remote = observed.and_then(|row| row["sources"].as_array())
+                let remote = observed
+                    .and_then(|row| row["sources"].as_array())
                     .and_then(|sources| sources.iter().find(|row| row["id"] == source.id))
                     .map(|row| row["remote"].clone());
                 source.wire_observed(remote.unwrap_or(Value::Null))

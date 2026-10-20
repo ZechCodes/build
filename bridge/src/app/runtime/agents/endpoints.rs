@@ -458,10 +458,19 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
-    pub(in crate::app) fn entity_agent_snapshot_root(&self, entity_id: &str) -> Option<std::path::PathBuf> {
-        self.plans.get(entity_id).and_then(|plan| plan.workspace.as_ref())
+    pub(in crate::app) fn entity_agent_snapshot_root(
+        &self,
+        entity_id: &str,
+    ) -> Option<std::path::PathBuf> {
+        self.plans
+            .get(entity_id)
+            .and_then(|plan| plan.workspace.as_ref())
             .map(|workspace| self.snapshot_root(&workspace.checkout))
-            .or_else(|| self.runs.get(entity_id).map(|run| self.snapshot_root(&run.worktree.path)))
+            .or_else(|| {
+                self.runs
+                    .get(entity_id)
+                    .map(|run| self.snapshot_root(&run.worktree.path))
+            })
     }
 
     /// An entity's agents, whichever kind of entity it is.

@@ -867,7 +867,8 @@ impl AppState {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
             let _ = app.facts_handle.set(facts::FactsSource::new(
-                app.read_view.clone(), Arc::downgrade(&state),
+                app.read_view.clone(),
+                Arc::downgrade(&state),
             ));
             app.watchers.set_roots(app.worktree_roots());
             (

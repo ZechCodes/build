@@ -146,9 +146,12 @@ fn thread_push_facts_resolve_ownership_once_per_entity() {
     {
         let mut app = state.lock().unwrap();
         app.initialize_snapshot_projection();
-        assert!(handle.set(crate::app::facts::FactsSource::new(
-            app.read_view.clone(), Arc::downgrade(&state),
-        )).is_ok());
+        assert!(handle
+            .set(crate::app::facts::FactsSource::new(
+                app.read_view.clone(),
+                Arc::downgrade(&state),
+            ))
+            .is_ok());
     }
     let requests = owners
         .into_iter()

@@ -180,7 +180,7 @@ impl AppState {
         let destination =
             crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
         destination.create_directory()?;
-        self.finish_file_mutation(&scope)?;
+        self.finish_file_mutation(&scope, &root)?;
         Ok(FsCreateDirectoryResult {
             path: destination.path().into(),
         })
@@ -197,7 +197,7 @@ impl AppState {
         let destination =
             crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
         destination.create_file()?;
-        self.finish_file_mutation(&scope)?;
+        self.finish_file_mutation(&scope, &root)?;
         Ok(FsCreateDirectoryResult {
             path: destination.path().into(),
         })
@@ -217,7 +217,12 @@ impl AppState {
         Ok((scope, root))
     }
 
-    fn finish_file_mutation(&mut self, scope: &FileScope) -> Result<(), ApiError> {
+    fn finish_file_mutation(
+        &mut self,
+        scope: &FileScope,
+        root: &std::path::Path,
+    ) -> Result<(), ApiError> {
+        self.invalidate_snapshot_checkout_observations(root);
         if let FileScope::WorkspaceSource { workspace_id, .. } = scope {
             self.reopen_workspace(workspace_id)
                 .map_err(ApiError::classify)?;
@@ -384,6 +389,7 @@ impl AppState {
             return Err("file is not editable UTF-8 text".to_string());
         }
         replace_text(&root, &path, &expected_revision, &replacement)?;
+        self.invalidate_snapshot_checkout_observations(&root);
         if let FileScope::WorkspaceSource { workspace_id, .. } = &scope {
             self.reopen_workspace(workspace_id)?;
         }

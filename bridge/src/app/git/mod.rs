@@ -576,12 +576,12 @@ impl AppState {
         if let Ok(status) = &result {
             self.record_git_snapshot_branches(status);
         }
+        git.call.invalidate(self);
         if result.is_ok() && git.params.get("source_id").is_some() {
             if let Some(workspace_id) = git.params.get("workspace_id").and_then(Value::as_str) {
                 self.reopen_workspace(workspace_id)?;
             }
         }
-        git.call.invalidate(self);
         result
     }
 

@@ -46,6 +46,9 @@ impl GitCallScope for GitScope {
     }
 
     fn invalidate(&self, app: &mut AppState) {
+        // The completed write belongs to this checkout even if its original
+        // owner moved, or a workspace selected it without a legacy owner.
+        app.invalidate_snapshot_checkout_observations(&self.repo_path);
         if app.git_scope_is_current(self) {
             app.invalidate_git_scope_caches(self);
         }

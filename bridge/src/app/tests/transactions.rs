@@ -1,5 +1,7 @@
 use super::*;
 
+mod projections;
+
 #[test]
 fn failed_plan_save_cannot_leak_through_an_unrelated_success_or_same_owner_retry() {
     let (dir, repo) = init_repo();

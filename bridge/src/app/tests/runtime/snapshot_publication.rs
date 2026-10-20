@@ -148,7 +148,7 @@ fn first_snapshot_keeps_seeded_workspace_rows_and_performs_no_path_lookups() {
     // synthetic 16/64-owner counting tests. Reads must do zero owner searches.
     for count in [4, 16] {
         let (directory, repository) = init_repo();
-        let mut app = qa_state(&repository, directory.path());
+        let mut app = qa_state_before_admission(&repository, directory.path());
         let project = app.project_at(0).id.clone();
         let mut expected = Vec::new();
         for index in 0..count {

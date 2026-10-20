@@ -515,8 +515,7 @@ fn mixed_capture_indexes_repeated_lineages_and_workspaces_once_with_legacy_home_
     for (params, expected) in requests.iter().zip(expected) {
         let actual = captured
             .prepare("thread.attachment", params, None)
-            .unwrap()
-            .run()
+            .and_then(|job| job.run())
             .map_err(|error| error.message().to_string());
         assert_eq!(actual, expected, "{params}");
     }

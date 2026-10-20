@@ -159,6 +159,64 @@ pub(in crate::app) fn media_mime_hint(path: &std::path::Path) -> Option<&'static
 }
 
 impl AppState {
+    /// Capture all homes in one pass over runs, retaining legacy equal-time order.
+    pub(in crate::app) fn capture_attachment_homes(
+        &self,
+    ) -> std::collections::HashMap<String, AttachmentHomes> {
+        let local = self.local_attachments_dir();
+        let mut homes = std::collections::HashMap::new();
+        let mut latest: std::collections::HashMap<&str, (String, &std::path::Path)> =
+            std::collections::HashMap::new();
+        for (owner, active) in &self.runs {
+            #[cfg(test)]
+            Self::note_implementation_lookup_visit();
+            homes.insert(
+                owner.clone(),
+                AttachmentHomes {
+                    worktree: Some(active.worktree.path.join(ATTACHMENTS_DIR)),
+                    local: local.clone(),
+                },
+            );
+            if active.run.state.is_terminal() {
+                continue;
+            }
+            let Some(plan) = &active.run.plan_id else {
+                continue;
+            };
+            let created = self
+                .board
+                .attention()
+                .clock(owner)
+                .created_at
+                .unwrap_or_default();
+            if latest
+                .get(plan.0.as_str())
+                .is_none_or(|(previous, _)| created >= *previous)
+            {
+                latest.insert(&plan.0, (created, &active.worktree.path));
+            }
+        }
+        for (owner, active) in &self.plans {
+            let root = latest
+                .get(owner.as_str())
+                .map(|(_, root)| (*root).to_path_buf())
+                .or_else(|| {
+                    active
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.checkout.clone())
+                });
+            homes.insert(
+                owner.clone(),
+                AttachmentHomes {
+                    worktree: root.map(|root| root.join(ATTACHMENTS_DIR)),
+                    local: local.clone(),
+                },
+            );
+        }
+        homes
+    }
+
     /// Where this entity's attachments live: the bridge's own store, always,
     /// and the checkout its agent reads from, when it has one.
     ///

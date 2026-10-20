@@ -16,31 +16,25 @@ pub(super) struct ReviewSources {
 
 impl ReviewSources {
     pub(super) fn capture(app: &AppState) -> Self {
+        let mut checkouts: HashMap<String, Vec<(String, PathBuf)>> = HashMap::new();
+        for workspace in app.workspaces.list(None) {
+            checkouts
+                .entry(workspace.project_id.clone())
+                .or_default()
+                .extend(
+                    workspace
+                        .directories
+                        .iter()
+                        .map(|directory| (directory.source_id.clone(), directory.path.clone())),
+                );
+        }
         Self {
             projects: app
                 .projects
                 .iter()
                 .map(|project| (project.id.clone(), project.sources.clone()))
                 .collect(),
-            checkouts: app
-                .projects
-                .iter()
-                .map(|project| {
-                    (
-                        project.id.clone(),
-                        app.workspaces
-                            .list(Some(&project.id))
-                            .iter()
-                            .flat_map(|workspace| {
-                                workspace
-                                    .directories
-                                    .iter()
-                                    .map(|dir| (dir.source_id.clone(), dir.path.clone()))
-                            })
-                            .collect(),
-                    )
-                })
-                .collect(),
+            checkouts,
             reservations: app.read_reclaim_reservations(),
         }
     }

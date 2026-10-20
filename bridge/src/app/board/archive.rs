@@ -20,7 +20,7 @@ impl AppState {
                 project: self.project_name_of(id),
                 project_path: self.project_path_for(id),
                 title: active.plan.goal.clone(),
-                state: plan_state_str(&active.plan.state).into(),
+                state: plan_state_str(&active.plan.state),
                 finished_at: active.plan.archived_at.clone(),
                 branch: None,
                 plan_id: Some(id.clone()),
@@ -44,7 +44,7 @@ impl AppState {
                     } else {
                         active.run.goal.clone()
                     },
-                    state: run_state_str(&active.run.state).into(),
+                    state: run_state_str(&active.run.state),
                     finished_at: self.board.attention().clock(id).state_changed_at.clone(),
                     branch: Some(branch),
                     plan_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),

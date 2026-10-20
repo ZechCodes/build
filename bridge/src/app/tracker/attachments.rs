@@ -230,7 +230,7 @@ fn resolve_task_attachment(
     home: &std::path::Path,
     path: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let canonical_home = std::fs::canonicalize(&home)
+    let canonical_home = std::fs::canonicalize(home)
         .map_err(|_| format!("not an attachment on this task: {path}"))?;
     let candidate = std::path::Path::new(path);
     let attempts = [

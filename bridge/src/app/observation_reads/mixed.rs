@@ -46,16 +46,7 @@ impl MixedReadContext {
         Self {
             tasks: app.task_scope_read_context(),
             threads: AttachmentReadContext::capture(app),
-            homes: app
-                .plans
-                .keys()
-                .chain(app.runs.keys())
-                .filter_map(|owner| {
-                    app.attachment_homes(owner)
-                        .ok()
-                        .map(|homes| (owner.clone(), homes))
-                })
-                .collect(),
+            homes: app.capture_attachment_homes(),
             attachment_root: app.local_attachments_dir(),
             documents: documents::Documents::capture(app),
             archive: Arc::new(app.archive_read_input()),

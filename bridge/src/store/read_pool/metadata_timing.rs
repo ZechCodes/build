@@ -93,7 +93,7 @@ async fn measure_pool(
     let available = (0..READ_CONNECTIONS)
         .map(|_| open_read_connection(&path).unwrap())
         .collect();
-    let pool = ReadPool::from_connections(available);
+    let pool = ReadPool::from_connections(available, store.conn.clone());
     let open_ns = started.elapsed().as_nanos();
     let started = Instant::now();
     let mut connections = Vec::with_capacity(READ_CONNECTIONS);

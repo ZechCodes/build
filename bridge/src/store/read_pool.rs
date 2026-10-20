@@ -16,6 +16,10 @@ pub struct ReadPool {
 struct Pool {
     available: Mutex<Vec<Connection>>,
     permits: Arc<Semaphore>,
+    // Fields drop in declaration order: close every idle reader before the
+    // final writable connection, so SQLite can checkpoint and remove its WAL.
+    // This is ownership only; read paths never acquire the writer mutex.
+    _writer_lifetime: Arc<Mutex<Connection>>,
     #[cfg(test)]
     initialization: ReadPoolInitialization,
 }
@@ -52,7 +56,7 @@ fn open_read_connection(path: &Path) -> Result<Connection, StoreError> {
 }
 
 impl ReadPool {
-    pub(super) fn open(path: &Path) -> Result<Self, StoreError> {
+    pub(super) fn open(path: &Path, writer: Arc<Mutex<Connection>>) -> Result<Self, StoreError> {
         #[cfg(test)]
         let started = std::time::Instant::now();
         #[cfg(test)]
@@ -73,7 +77,7 @@ impl ReadPool {
             }
             available.push(connection);
         }
-        let pool = Self::from_connections(available);
+        let pool = Self::from_connections(available, writer);
         #[cfg(test)]
         let pool = {
             let mut pool = pool;
@@ -86,11 +90,12 @@ impl ReadPool {
         Ok(pool)
     }
 
-    fn from_connections(available: Vec<Connection>) -> Self {
+    fn from_connections(available: Vec<Connection>, writer: Arc<Mutex<Connection>>) -> Self {
         Self {
             inner: Arc::new(Pool {
                 available: Mutex::new(available),
                 permits: Arc::new(Semaphore::new(READ_CONNECTIONS)),
+                _writer_lifetime: writer,
                 #[cfg(test)]
                 initialization: ReadPoolInitialization::default(),
             }),

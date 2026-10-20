@@ -159,8 +159,8 @@ struct FoldedRead {
     /// why none of them may simply be dropped, and a wire that closed while
     /// its read waited must not take the other wires' answers with it.
     callers: Vec<(Value, SessionSender)>,
-    /// One computation is timed from the first caller's intake; later callers
-    /// keep their replies but do not create additional timing samples.
+    /// One computation is timed from the earliest caller intake, regardless of
+    /// admission order; joined callers do not create additional timing samples.
     queued: QueuedFrame,
 }
 
@@ -176,7 +176,9 @@ impl FoldedRead {
         sender: SessionSender,
         frame: Frame,
         priority: Priority,
+        queued: QueuedFrame,
     ) -> Folded {
+        self.queued.fold_in(queued);
         self.callers.push((id, sender.clone()));
         self.sender = sender;
         self.frame = frame;
@@ -468,7 +470,7 @@ impl Dispatcher {
                         && waiting.priority == Priority::Background) =>
             {
                 let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
-                let joined = waiting.join(id, sender, frame, priority);
+                let joined = waiting.join(id, sender, frame, priority, queued);
                 debug_assert!(matches!(joined, Folded::Joined));
                 None
             }
@@ -509,7 +511,7 @@ impl Dispatcher {
         let mut folded_reads = self.folded_reads.lock().unwrap();
         match folded_reads.get_mut(&key) {
             Some(waiting) if waiting.callers.len() < MAX_FOLDED_READS => {
-                waiting.join(id, sender, frame, priority)
+                waiting.join(id, sender, frame, priority, queued)
             }
             // A full fold: this read takes a queue slot of its own, which is what
             // puts the caller back under the queue's bound.

@@ -382,6 +382,13 @@ pub struct QueuedFrame {
 }
 
 impl QueuedFrame {
+    /// Fold another caller into this one computation. Its intake may precede
+    /// ours even if its carrier reached dispatch later. Dropping its ticket
+    /// releases its depth count; this ticket keeps its priority until promoted.
+    pub(crate) fn fold_in(&mut self, other: QueuedFrame) {
+        self.since = self.since.min(other.since);
+    }
+
     /// A worker took the frame. The queue wait ends here and the frame's own
     /// record begins.
     pub fn start(mut self, method: &str) -> FrameTimer {

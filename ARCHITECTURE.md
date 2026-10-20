@@ -2754,6 +2754,18 @@ path, so reading every worker roster never delays finding the selected
 conversation. The rail's `railWorkItem.js` reads the same complete
 record on project hosts and filters it to the exact pin on a workspace host.
 
+The inbox derives project activity from the same complete roster and cached
+lineage as chat, including workers absent from pinned-only board rows. Derived
+rollups decorate feed copies of both board agents and complete project agents;
+they never rewrite cache records. A complete project's running count sums each
+independent roster agent's own running loop and running panel rows, counting
+roster descendants on their ancestor's panel only once. An idle pin with three
+running workers says “3 running”; its own running loop adds one. Independent
+project workers also contribute, while workspace and legacy roster counts keep
+their existing per-member meaning. Active rows omit the empty “Getting started”
+fallback, retaining any Git or pending-operation facts. Topic and ordering still
+come from the pinned identity and the project conversation's own session.
+
 Roster pulls use the sync planner and its two shared background wire slots.
 The selected project's roster has foreground authority; unrelated held roster
 replies cannot delay selected thread, Git or task recovery. Landing a complete

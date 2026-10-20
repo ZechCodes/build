@@ -65,10 +65,11 @@ function conversationOf(project, rows, rosterOf) {
 const uniqueConversations = (agents = []) => [...new Map(agents.map((agent) =>
   [agent.conversation_id || agent.id, agent])).values()];
 
-/** The conversation's own work, with the same running count as a workspace. */
-function conversationFacts(row, agents, hasRoster) {
-  const facts = entryFactsText(row) || GETTING_STARTED;
-  return hasRoster ? `${facts} · ${runningAgentCount(agents)} running` : facts;
+/** Keep Git and pending facts beside the project's cached activity count. */
+function conversationFacts(row, agents, hasRoster, roster) {
+  const runningCount = roster?.running_count ?? runningAgentCount(agents);
+  const facts = entryFactsText(row) || (runningCount ? "" : GETTING_STARTED);
+  return hasRoster ? [facts, `${runningCount} running`].filter(Boolean).join(" · ") : facts;
 }
 
 function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
@@ -99,7 +100,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     watchedWorking,
     muted: false,
     dismissed: false,
-    facts: conversationFacts(row, agents, hasRoster),
+    facts: conversationFacts(row, agents, hasRoster, project.projectRoster),
     route: projectRoute(project),
     ...conversationTimes(row),
   };

@@ -1,6 +1,20 @@
 //! A retained observation service follows committed workspace directory changes.
 use super::*;
 
+fn assert_observation_bytes(reply: &Value, expected: &[u8]) {
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(reply["result"]["content_b64"], b64encode(expected));
+}
+
+fn publish_unrelated_watch_setting(handler: &crate::carrier::FrameHandler, watched: bool) {
+    let unrelated = call(
+        handler,
+        "settings.set",
+        json!({"watch_agent_filed_tasks":watched}),
+    );
+    assert_eq!(unrelated["ok"], true, "{unrelated}");
+}
+
 #[test]
 fn observation_workspace_directories_follow_acknowledged_changes_and_keep_saved_sources() {
     let (directory, repository) = init_repo();
@@ -46,12 +60,7 @@ fn observation_workspace_directories_follow_acknowledged_changes_and_keep_saved_
     assert_eq!(failed["ok"], false, "{failed}");
     std::fs::remove_dir(&manifest).unwrap();
     std::fs::rename(&backup, &manifest).unwrap();
-    let unrelated = call(
-        &handler,
-        "settings.set",
-        json!({"watch_agent_filed_tasks":true}),
-    );
-    assert_eq!(unrelated["ok"], true, "{unrelated}");
+    publish_unrelated_watch_setting(&handler, true);
     let missing = service.prepare(
         req(
             "fs.read",
@@ -76,11 +85,7 @@ fn observation_workspace_directories_follow_acknowledged_changes_and_keep_saved_
     let params = json!({"workspace_id":workspace,"source_id":source,"path":"note.txt"});
     let prepare = || service.prepare(req("fs.read", params.clone()), None);
     let initial = prepare()();
-    assert_eq!(initial["ok"], true, "{initial}");
-    assert_eq!(
-        initial["result"]["content_b64"],
-        b64encode(b"saved workspace source\n")
-    );
+    assert_observation_bytes(&initial, b"saved workspace source\n");
     let saved = prepare();
     let removed_source = call(
         &handler,
@@ -110,12 +115,7 @@ fn observation_workspace_directories_follow_acknowledged_changes_and_keep_saved_
     // by a missing physical file. Only the committed directory fence may refuse.
     std::fs::create_dir_all(&saved_path).unwrap();
     std::fs::write(saved_path.join("note.txt"), b"saved workspace source\n").unwrap();
-    let unrelated = call(
-        &handler,
-        "settings.set",
-        json!({"watch_agent_filed_tasks":false}),
-    );
-    assert_eq!(unrelated["ok"], true, "{unrelated}");
+    publish_unrelated_watch_setting(&handler, false);
     let stale = stale();
     assert_eq!(stale["ok"], false, "{stale}");
     assert_eq!(stale["error_code"], "not_found", "{stale}");
@@ -159,8 +159,7 @@ fn assert_project_source_failure_keeps_committed_inputs(failure: ConfigPersistSt
         json!({"project_id":project,"source_id":source,"source_path":original,"path":"note.txt"});
     let prepare = || service.prepare(req("fs.read", params.clone()), None);
     let before = prepare()();
-    assert_eq!(before["ok"], true, "{before}");
-    assert_eq!(before["result"]["content_b64"], b64encode(b"committed\n"));
+    assert_observation_bytes(&before, b"committed\n");
     let pending = prepare();
     state.lock().unwrap().config_persist_failure = Some(failure);
     let (method, change) = if remove {
@@ -177,12 +176,7 @@ fn assert_project_source_failure_keeps_committed_inputs(failure: ConfigPersistSt
     let failed = call(&handler, method, change.clone());
     assert_eq!(failed["ok"], false, "{failed}");
     state.lock().unwrap().config_persist_failure = None;
-    let unrelated = call(
-        &handler,
-        "settings.set",
-        json!({"watch_agent_filed_tasks":true}),
-    );
-    assert_eq!(unrelated["ok"], true, "{unrelated}");
+    publish_unrelated_watch_setting(&handler, true);
     assert_eq!(
         pending(),
         before,
@@ -206,8 +200,7 @@ fn assert_project_source_failure_keeps_committed_inputs(failure: ConfigPersistSt
         let current = service.prepare(req("fs.read", json!({
             "project_id":project,"source_id":source,"source_path":candidate,"path":"note.txt"
         })), None)();
-        assert_eq!(current["ok"], true, "{current}");
-        assert_eq!(current["result"]["content_b64"], b64encode(b"candidate\n"));
+        assert_observation_bytes(&current, b"candidate\n");
     }
 }
 

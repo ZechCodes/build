@@ -223,19 +223,21 @@ fn removed_live_agent_invalidates_tasks_even_if_saving_roster_fails() {
     removing_an_agent(true);
 }
 
-fn assert_routed_availability(
-    handler: &crate::carrier::FrameHandler,
-    fixture: &Fixture,
-    available: bool,
-) {
-    let sender = SessionSender::detached("identity-reader");
-    let get = handler.call(
-        sender.clone(),
+fn assert_routed_availability(state: &Arc<Mutex<AppState>>, fixture: &Fixture, available: bool) {
+    let (reads, pool) = {
+        let app = state.lock().unwrap();
+        (app.read_service(), app.tracker_store().unwrap().read_pool())
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let get = reads.call(
         req("tasks.get", json!({"task_id": fixture.open})),
+        Some(runtime.block_on(pool.acquire())),
     );
-    let list = handler.call(
-        sender,
+    let list = reads.call(
         req("tasks.list", json!({"project_id": fixture.project})),
+        Some(runtime.block_on(pool.acquire())),
     );
     assert_eq!(get["ok"], true, "{get}");
     assert_eq!(list["ok"], true, "{list}");
@@ -264,8 +266,8 @@ fn configured_idle_agents_remain_available_in_routed_task_reads() {
         assert!(!app.session_registry.contains(&TabKey::agent(&root, agent)));
     }
     let state = app.shared();
-    let handler = AppState::handler(state);
-    assert_routed_availability(&handler, &fixture, true);
+    let _handler = AppState::handler(Arc::clone(&state));
+    assert_routed_availability(&state, &fixture, true);
 }
 
 fn queue_and_install_live_agent(app: &mut AppState, fixture: &Fixture) -> (TabKey, SessionLog) {
@@ -300,7 +302,7 @@ fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
     let fixture = seed(&mut app);
     let state = app.shared();
     let handler = AppState::handler(Arc::clone(&state));
-    assert_routed_availability(&handler, &fixture, true);
+    assert_routed_availability(&state, &fixture, true);
     let (tab, session) = queue_and_install_live_agent(&mut state.lock().unwrap(), &fixture);
     rusqlite::Connection::open(dir.path().join("store/build.db"))
         .unwrap()
@@ -332,7 +334,7 @@ fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
             .by_id(&fixture.removed)
             .is_some());
     }
-    assert_routed_availability(&handler, &fixture, false);
+    assert_routed_availability(&state, &fixture, false);
     let changed = handler.call(
         SessionSender::detached("other-client"),
         req(
@@ -345,12 +347,12 @@ fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
         changed["result"]["task"]["identities"][&fixture.removed]["available"],
         false
     );
-    assert_routed_availability(&handler, &fixture, false);
+    assert_routed_availability(&state, &fixture, false);
     {
         let mut app = state.lock().unwrap();
         let fresh = terminal_free_agent_tab(&tab.root, &fixture.entity, &fixture.removed);
         app.session_registry.insert_opened(tab, fresh);
         app.publish_read_metadata();
     }
-    assert_routed_availability(&handler, &fixture, true);
+    assert_routed_availability(&state, &fixture, true);
 }

@@ -368,3 +368,87 @@ fn merge_release_keeps_unrelated_routed_reads_live() {
         "successful unrelated write did not reach routed read: {after}"
     );
 }
+
+fn fresh_implementation_adoption(
+    app: &mut AppState,
+    repo: &std::path::Path,
+    dir: &std::path::Path,
+    owner: &str,
+) -> crate::lifecycle::AdoptedImplementation {
+    add_external_worktree(repo, dir, owner, owner);
+    let project_id = app.project_at(0).id.clone();
+    let base_branch = app.base_for(&project_id).unwrap();
+    let checkout = app
+        .scan_external_worktrees_now(&project_id)
+        .unwrap()
+        .into_iter()
+        .find(|checkout| checkout.branch.as_deref() == Some(owner))
+        .unwrap();
+    let base_sha = crate::worktree::git_stdout(&checkout.path, &["rev-parse", "HEAD"]).unwrap();
+    crate::lifecycle::AdoptedImplementation {
+        base_sha,
+        adopted: Some(crate::lifecycle::AdoptionPrepared {
+            project_id,
+            run_id: owner.to_string(),
+            base_branch: base_branch.clone(),
+            checkout: crate::orchestrator::AdoptableCheckout::judge(&checkout, &base_branch)
+                .unwrap(),
+            model_choice: ModelChoice::default(),
+        }),
+    }
+}
+
+fn assert_adopted_workspace_published(app: &AppState, owner: &str) {
+    assert!(app.runs.contains_key(owner), "the adopted owner was saved");
+    let detail = app
+        .snapshot_service()
+        .call(req("workspace.get", json!({"workspace_id": owner})));
+    assert_eq!(
+        detail["ok"], true,
+        "the saved adoption must publish its alias: {detail}"
+    );
+    assert_eq!(detail["result"]["run_id"], owner, "{detail}");
+}
+
+#[test]
+fn adopted_implementation_publishes_its_workspace_before_acknowledgement() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let project = app.project_at(0).id.clone();
+    let task = file_legacy_task(&mut app, "implementation on a newly adopted checkout");
+    let owner = "new-implementation-owner";
+    let adoption = fresh_implementation_adoption(&mut app, &repo, dir.path(), owner);
+
+    app.open_adopted_implementation(
+        project,
+        task,
+        owner.to_string(),
+        adoption,
+        ModelChoice::default(),
+    )
+    .unwrap();
+
+    assert_adopted_workspace_published(&app, owner);
+}
+
+#[test]
+fn refused_implementation_handover_publishes_the_adoption_it_retains() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let project = app.project_at(0).id.clone();
+    let owner = "refused-implementation-owner";
+    let adoption = fresh_implementation_adoption(&mut app, &repo, dir.path(), owner);
+
+    let error = app
+        .open_adopted_implementation(
+            project,
+            "missing-plan".to_string(),
+            owner.to_string(),
+            adoption,
+            ModelChoice::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error, "unknown plan_id");
+
+    assert_adopted_workspace_published(&app, owner);
+}

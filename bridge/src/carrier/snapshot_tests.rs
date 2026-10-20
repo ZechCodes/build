@@ -2,6 +2,7 @@ use super::testing::{client_request, session_init};
 use super::*;
 use crate::test_support::off_lock::OffLockGate;
 use crate::timing::FrameClock;
+use std::future::Future;
 use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -56,6 +57,23 @@ async fn snapshots_bypass_saturated_write_and_sql_admission() {
         send(&intake, &carrier, &key, id, "tasks.get").await;
         sql_held.wait_for_arrival();
     }
+    assert_eq!(
+        intake.dispatcher.sql_depths(),
+        (sql::SQL_BACKLOG, 1),
+        "the fixture must fill the SQL backlog after occupying every worker"
+    );
+    let envelope = client_request(
+        &key,
+        "snapshots",
+        "data",
+        json!({"id":90,"method":"tasks.get","params":{"parked":true}}),
+    );
+    let mut parked = Box::pin(intake.accept(envelope, &carrier));
+    let pending =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(parked.as_mut().poll(cx).is_pending()))
+            .await;
+    assert!(pending, "the next SQL request must park ordered intake");
+    assert_eq!(intake.dispatcher.sql_depths(), (sql::SQL_BACKLOG, 1));
     let app_held = Arc::new(AtomicBool::new(false));
     let held = Arc::clone(&app_held);
     let (entered, waiting) = std::sync::mpsc::channel();
@@ -99,6 +117,11 @@ async fn snapshots_bypass_saturated_write_and_sql_admission() {
     }
     release_app.send(()).unwrap();
     app_holder.join().unwrap();
+    intake.close_carrier(&carrier);
+    tokio::time::timeout(Duration::from_secs(2), parked)
+        .await
+        .expect("carrier close releases its parked SQL intake")
+        .unwrap();
     write_held.release();
     sql_held.release();
 }

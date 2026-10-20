@@ -70,6 +70,22 @@ function earliest(moments) {
 }
 
 const ownSince = (agent) => (agent.working ? agent.working_time?.since || null : null);
+const canonicalConversationOf = (agent) => agent.conversation_id || agent.id;
+
+/** One digest per owner's canonical conversation, matching roster last-wins
+ * selection. Old agent ids still name the winner, including as creators. */
+function canonicalMembers(members) {
+  const keyOf = ({ agent, entityId }) => JSON.stringify([entityId, canonicalConversationOf(agent)]);
+  const byConversation = new Map(members.map((member) => [keyOf(member), member]));
+  const aliases = new Map(members.map((member) => [member.agent.id, byConversation.get(keyOf(member)).agent.id]));
+  const idOf = (agentId) => aliases.get(agentId) || agentId;
+  const canonical = [...byConversation.values()].map((member) => {
+    const creator = idOf(member.agent.created_by);
+    return creator === member.agent.created_by ? member
+      : { ...member, agent: { ...member.agent, created_by: creator } };
+  });
+  return { members: canonical, idOf };
+}
 
 /** Whether an agent's line of makers leads back to itself: a cycle no bridge
  *  should write. Each agent names one maker, so its line is one walk up. */
@@ -87,12 +103,13 @@ function onMakerCycle(agentId, byId) {
  *  agent counts as made by another, whatever its digest carries (#221). The
  *  harness's own sub-agents roll up either way. */
 export function agentLineage(members, { namesMakers = true } = {}) {
-  const byId = new Map(members.map((member) => [member.agent.id, member]));
+  const canonical = canonicalMembers(members);
+  const byId = new Map(canonical.members.map((member) => [member.agent.id, member]));
   // An agent on a cycle counts as made by no one. Cut there, who made whom is
   // a forest, so every rollup below is the same whichever agent is asked
   // about first (#221).
   const children = new Map();
-  for (const member of members) {
+  for (const member of canonical.members) {
     const creator = namesMakers ? member.agent.created_by : null;
     if (!creator || onMakerCycle(member.agent.id, byId)) continue;
     if (!children.has(creator)) children.set(creator, []);
@@ -125,10 +142,10 @@ export function agentLineage(members, { namesMakers = true } = {}) {
   return {
     /** The Build agents this agent made, as members, in the rows' order —
      *  none that sit on a cycle of makers. */
-    createdBy: (agentId) => (agentId && children.get(agentId)) || [],
+    createdBy: (agentId) => (agentId && children.get(canonical.idOf(agentId))) || [],
     /** Whether the agent counts as running, how many agents in its panel
      *  run, and since when the earliest running thing has been going. */
-    rollup: rollupOf,
+    rollup: (agentId) => rollupOf(canonical.idOf(agentId)),
   };
 }
 
@@ -199,7 +216,7 @@ export function buildAgentChatRoute({ agentId, kind, workspaceId }, { deviceId, 
  *  drawn from here. */
 export function lineagePrint(members) {
   return JSON.stringify(members.map(({ agent, kind, entityId, workspaceId, workspaceName }) => [
-    agent.id, agent.created_by || null, agent.name || null, agent.ordinal || null, !!agent.working,
+    agent.id, canonicalConversationOf(agent), agent.created_by || null, agent.name || null, agent.ordinal || null, !!agent.working,
     kind, agent.provider || null, agent.active_model || null, agent.model || null,
     agent.working_time?.since || null, agent.start_error || null,
     runningSubagents(agent).map((entry) => entry.started_at ?? null),

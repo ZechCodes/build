@@ -138,13 +138,16 @@ impl SnapshotDelta {
         self
     }
 
-    pub fn put_history(
+    pub fn put_history(self, agent_id: impl Into<String>, value: history::SharedHistory) -> Self {
+        self.put_shared_history(agent_id, Arc::new(value))
+    }
+
+    pub fn put_shared_history(
         mut self,
         agent_id: impl Into<String>,
-        value: history::SharedHistory,
+        value: Arc<history::SharedHistory>,
     ) -> Self {
-        self.histories
-            .insert(agent_id.into(), Some(Arc::new(value)));
+        self.histories.insert(agent_id.into(), Some(value));
         self
     }
 

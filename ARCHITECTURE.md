@@ -399,7 +399,9 @@ and symlink aliases.
 Snapshot preparation captures one ephemeral ownership context shared by board,
 workspace, agent and push projections. It indexes agent ownership and preferred
 run outcomes in the existing precedence order, and reuses branch candidates and
-canonical agent digests for matching render inputs. Cached external checkout
+canonical agent digests for matching render inputs. Updated canonical histories
+are shared by unread projections and history staging; unread summaries are keyed
+by the effective read cursor. Cached external checkout
 rows are rendered in one pass and reused by push states, retaining the first
 matching project and agent-root entry. Project-scoped workspace filters and
 canonical conversation aliases retain their existing behavior without resolving
@@ -408,6 +410,10 @@ persistence or canonical mutation; a failed candidate cannot seed a later
 publication. Complete local read-view deltas retain their atomic publication
 boundary before replies and change notices. Counting tests include the
 publication producer as well as the pure push reader.
+Bounded push tail bodies are shared between publications while conversation
+identity, publication sequence and resident tail geometry match. Each publication
+still captures fresh tip metadata. Historical receipt rows retain their existing
+bounded floor and generation fences.
 
 ### Liveness and signaling
 

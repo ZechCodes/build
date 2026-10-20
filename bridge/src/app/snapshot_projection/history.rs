@@ -18,7 +18,7 @@ impl AppState {
         let retained = histories.keys().cloned().collect::<BTreeSet<_>>();
         for (id, history) in histories {
             match history {
-                Ok(history) => delta = delta.put_history(id, history),
+                Ok(history) => delta = delta.put_shared_history(id, history),
                 Err(error) => eprintln!("snapshot history warm {id}: {error}"),
             }
         }
@@ -30,7 +30,7 @@ impl AppState {
         owner: &str,
     ) -> Vec<(
         String,
-        Result<crate::app::read_view::history::SharedHistory, String>,
+        Result<Arc<crate::app::read_view::history::SharedHistory>, String>,
     )> {
         let Ok(agents) = self.entity_agents(owner) else {
             return Vec::new();
@@ -43,13 +43,14 @@ impl AppState {
                     .unwrap_or(&agent.thread);
                 let id = thread.agent.id.clone();
                 let history = match previous.history(&id) {
-                    Some(history) => Ok(history.updated(thread)),
+                    Some(history) => Ok(self.updated_snapshot_history(&id, history, thread)),
                     None => crate::app::read_view::history::SharedHistory::warm(
                         thread,
                         (!self.snapshot_observations.ready)
                             .then_some(self.store.as_ref())
                             .flatten(),
-                    ),
+                    )
+                    .map(Arc::new),
                 };
                 (id, history)
             })

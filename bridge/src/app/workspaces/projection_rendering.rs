@@ -7,10 +7,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod history;
+
 pub(in crate::app) type AgentDigestKey = (String, String, Option<PathBuf>, bool);
 
 #[derive(Default)]
 pub(in crate::app) struct ProjectionRendering {
+    histories: history::Histories,
     agent_owners: BTreeMap<String, String>,
     run_states: BTreeMap<String, RunState>,
     root_states: BTreeMap<(String, PathBuf), RunState>,

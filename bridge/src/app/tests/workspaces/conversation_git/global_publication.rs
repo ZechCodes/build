@@ -267,9 +267,117 @@ fn global_publication_updates_each_canonical_history_once() {
         state.mark_snapshot_owner_pending(owner);
     }
     let (_, counts) = work_counts::measure(|| state.publish_all_snapshot_projection());
+    eprintln!(
+        "64 canonical threads: {} history updates",
+        counts.history_updates
+    );
     assert_eq!(
         counts.history_updates,
         16 * 4,
         "repeated canonical history updates: {counts:?}"
+    );
+}
+
+#[test]
+fn global_publication_unread_memo_distinguishes_cursors_and_preview_threads() {
+    let (_tmp, mut state, _) = ownership_fixture(1, false);
+    add_tip_agents(&mut state, 1);
+    let agent = state.runs["run-00"]
+        .agents
+        .iter()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    state
+        .runs
+        .get_mut("run-00")
+        .unwrap()
+        .agents
+        .by_id_mut(&agent)
+        .unwrap()
+        .thread
+        .post_agent("canonical message", None, "2026-10-19T00:00:00Z");
+    state.initialize_snapshot_projection();
+    let thread = state.agent_conversation("run-00", Some(&agent)).unwrap();
+    let _context = state.begin_snapshot_ownership();
+    let ((unread, read), counts) = work_counts::measure(|| {
+        (
+            state.unread_including_history(&agent, thread, 0),
+            state.unread_including_history(&agent, thread, thread.last_sequence()),
+        )
+    });
+    assert_eq!(unread.count, 1);
+    assert_eq!(read.count, 0);
+    assert_eq!(read.reason, None);
+    assert_eq!(counts.history_updates, 1);
+    let mut preview = thread.clone();
+    preview.post_agent("preview message", None, "2026-10-19T00:01:00Z");
+    assert_eq!(state.unread_including_history(&agent, &preview, 0).count, 2);
+    assert_eq!(state.unread_including_history(&agent, thread, 0), unread);
+}
+
+#[test]
+fn global_publication_unread_memo_expires_when_an_alias_rebinds() {
+    let (_tmp, mut state, _) = ownership_fixture(2, false);
+    add_tip_agents(&mut state, 1);
+    let canonical = state.runs["run-00"]
+        .agents
+        .iter()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    let alias = state.runs["run-01"]
+        .agents
+        .iter()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    for (owner, agent, count) in [("run-00", &canonical, 1), ("run-01", &alias, 2)] {
+        for _ in 0..count {
+            state
+                .runs
+                .get_mut(owner)
+                .unwrap()
+                .agents
+                .by_id_mut(agent)
+                .unwrap()
+                .thread
+                .post_agent("message", None, "2026-10-19T00:00:00Z");
+        }
+    }
+    state
+        .runs
+        .get_mut("run-01")
+        .unwrap()
+        .agents
+        .by_id_mut(&alias)
+        .unwrap()
+        .bind_conversation(&canonical);
+    state.initialize_snapshot_projection();
+    let previous = state.read_view.load();
+    assert_eq!(
+        previous.get("agent.list", "run-01").unwrap()["agents"][0]["unread_count"],
+        1
+    );
+    state
+        .runs
+        .get_mut("run-01")
+        .unwrap()
+        .agents
+        .by_id_mut(&alias)
+        .unwrap()
+        .bind_conversation(&alias);
+    state.mark_snapshot_owner_pending("run-01");
+    state.publish_owner_snapshot_projection("run-01");
+    let current = state.read_view.load();
+    let row = &current.get("agent.list", "run-01").unwrap()["agents"][0];
+    assert_eq!(row["conversation_id"], alias);
+    assert_eq!(row["unread_count"], 2);
+    assert_eq!(
+        previous.get("agent.list", "run-01").unwrap()["agents"][0]["unread_count"],
+        1
     );
 }

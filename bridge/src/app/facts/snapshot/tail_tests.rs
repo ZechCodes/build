@@ -116,6 +116,7 @@ fn metadata_only_global_publication_does_not_serialize_unchanged_tails() {
         .session_summaries
         .insert(fixture.project.clone(), summary.clone());
     let count = fixture.publish_counted();
+    eprintln!("metadata-only publication serialized {count} tail items");
     assert_eq!(
         count, 0,
         "metadata-only publication serialized {count} tail items"
@@ -131,6 +132,7 @@ fn changing_one_conversation_serializes_only_its_bounded_tail() {
         .thread_mut(0)
         .post_agent("one changed conversation", None, "2026-10-19T00:01:00Z");
     let count = fixture.publish_counted();
+    eprintln!("one changed conversation serialized {count} tail items");
     assert!(
         count > 0,
         "changed local items must exercise the serializer counter"

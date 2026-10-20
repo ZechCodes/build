@@ -601,11 +601,7 @@ impl AppState {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.unread_history");
         if self.snapshot_projection_initialized() {
-            let mut summary = thread.unread_since(cursor);
-            if let Some(history) = self.read_view.load().history(agent_id) {
-                summary.count = history.updated(thread).unread_since(cursor).count;
-            }
-            return summary;
+            return self.snapshot_unread_history(agent_id, thread, cursor);
         }
         let mut summary = thread.unread_since(cursor);
         let floor = thread.resident_from_sequence();

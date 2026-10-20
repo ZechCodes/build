@@ -365,7 +365,8 @@ impl AppState {
         if state_changed {
             self.persist_plan_record(&plan_id, &active)?;
         }
-        self.plans.insert(plan_id, active);
+        self.plans.insert(plan_id.clone(), active);
+        self.publish_read_owner(&plan_id, true);
         Ok(())
     }
 
@@ -644,7 +645,8 @@ impl AppState {
         if state_changed {
             self.persist_run_record(&run_id, &active)?;
         }
-        self.runs.insert(run_id, active);
+        self.runs.insert(run_id.clone(), active);
+        self.publish_read_owner(&run_id, true);
         Ok(())
     }
 

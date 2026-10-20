@@ -73,6 +73,7 @@ use std::sync::OnceLock;
 pub struct Handler {
     call: fn(&mut AppState, &Value) -> Result<Value, ApiError>,
     parse_params: fn(&Value) -> Result<(), String>,
+    normalize_params: fn(&Value) -> Result<Value, ApiError>,
     round_trip_result: fn(&Value) -> Result<Value, String>,
     /// The verb's declared result type, as a check a value must pass. Handed
     /// to the drain by [`dispatch`] for a verb that deferred its work, whose
@@ -121,6 +122,7 @@ macro_rules! v1_method {
                     $crate::api::v1::call_typed(app, params, $handler)
                 },
                 $crate::api::v1::parse_as::<$params>,
+                $crate::api::v1::normalize_as::<$params>,
                 $crate::api::v1::round_trip_as::<$result>,
                 $crate::api::v1::check_as::<$result>,
             ),
@@ -133,12 +135,14 @@ impl Handler {
     pub const fn new(
         call: fn(&mut AppState, &Value) -> Result<Value, ApiError>,
         parse_params: fn(&Value) -> Result<(), String>,
+        normalize_params: fn(&Value) -> Result<Value, ApiError>,
         round_trip_result: fn(&Value) -> Result<Value, String>,
         check_result: crate::app::DeferredResultCheck,
     ) -> Handler {
         Handler {
             call,
             parse_params,
+            normalize_params,
             round_trip_result,
             check_result,
         }
@@ -311,6 +315,11 @@ pub fn parse_as<P: DeserializeOwned + Serialize>(params: &Value) -> Result<(), S
         .map_err(|error| error.message().to_string())
 }
 
+#[doc(hidden)]
+pub fn normalize_as<P: DeserializeOwned + Serialize>(params: &Value) -> Result<Value, ApiError> {
+    parse_params::<P>(params).map(|parsed| parsed.wire())
+}
+
 /// The verb's declared result type as a check: does this value parse as `R`?
 /// What the drain holds a deferred reply to.
 #[doc(hidden)]
@@ -369,6 +378,7 @@ pub fn methods() -> &'static [(&'static str, Handler)] {
                     Handler::new(
                         handler.call,
                         handler.parse_params,
+                        handler.normalize_params,
                         handler.round_trip_result,
                         handler.check_result,
                     ),
@@ -401,6 +411,27 @@ pub fn dispatch(
     // along with the work instead: it is checked when the real value lands.
     app.expect_deferred_result(handler.check_result);
     Some(answered)
+}
+
+/// Independent reads keep the same typed contract without borrowing mutable
+/// application state or registering a deferred-result check on it.
+pub(crate) fn normalize_read_params(method: &str, params: &Value) -> Result<Value, ApiError> {
+    let handler = registry()
+        .get(method)
+        .ok_or_else(|| ApiError::unknown_method(method))?;
+    (handler.normalize_params)(params)
+}
+
+pub(crate) fn check_read_result(method: &str, result: Value) -> Result<Value, ApiError> {
+    let handler = registry()
+        .get(method)
+        .ok_or_else(|| ApiError::unknown_method(method))?;
+    (handler.check_result)(&result).map_err(|error| {
+        ApiError::classify(format!(
+            "{method}: the read reply does not match the type api/v1 declares for it: {error}"
+        ))
+    })?;
+    Ok(result)
 }
 
 /// What every family's unit tests hold their fixtures to. The contract test

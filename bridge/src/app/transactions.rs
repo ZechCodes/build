@@ -160,6 +160,7 @@ impl AppState {
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.roster_news(&active.agents);
         self.plans.insert(plan_id.clone(), active);
+        self.publish_read_owner(&plan_id, persisted.is_ok());
         // Back in its map first: a push's content (#200) names the place the
         // entity belongs to, which is read from there.
         self.push_agent_news(&plan_id, news);
@@ -211,6 +212,7 @@ impl AppState {
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.roster_news(&active.agents);
         self.runs.insert(run_id.clone(), active);
+        self.publish_read_owner(&run_id, persisted.is_ok());
         // See `finish_plan_mutation`: pushed once the record is back.
         self.push_agent_news(&run_id, news);
         // See `finish_plan_mutation`: seeded once the record is back in its map.

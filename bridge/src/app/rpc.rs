@@ -540,13 +540,22 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers) = {
+        let (clock, peers, pool, reads) = {
             let app = state.lock().unwrap();
-            (Arc::clone(&app.frame_clock), app.peers_slot())
+            app.initialize_read_context();
+            (
+                Arc::clone(&app.frame_clock),
+                app.peers_slot(),
+                app.store.as_ref().map(crate::store::Store::read_pool),
+                app.read_service(),
+            )
         };
         let ending = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, &peers, sender, frame, timer)
+        })
+        .with_sql_reads(pool, move |_sender, frame, _timer, connection| {
+            reads.call(frame, connection)
         })
         .on_session_end(move |session_id| {
             ending

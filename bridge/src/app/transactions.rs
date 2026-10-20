@@ -217,6 +217,14 @@ impl AppState {
         self.finish_run_mutation_kind(run_id, active, RunMutationKind::Existing)
     }
 
+    pub(in crate::app) fn finish_adopted_run_mutation(
+        &mut self,
+        run_id: String,
+        active: ActiveRun,
+    ) -> Result<(), String> {
+        self.finish_run_mutation_kind(run_id, active, RunMutationKind::Adoption)
+    }
+
     fn finish_run_mutation_kind(
         &mut self,
         run_id: String,
@@ -267,8 +275,7 @@ impl AppState {
         active: ActiveRun,
         thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
-        let settled =
-            self.finish_run_mutation_kind(run_id.clone(), active, RunMutationKind::Adoption);
+        let settled = self.finish_adopted_run_mutation(run_id.clone(), active);
         self.run_mutation_answer(&run_id, thread_detail, settled)
     }
 

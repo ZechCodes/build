@@ -191,7 +191,7 @@ impl AppState {
         }
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Settle)?;
-        self.finish_run_mutation(run_id.clone(), active)?;
+        self.finish_adopted_run_mutation(run_id.clone(), active)?;
         // Only the human's own dispatch is the human acting on this run. One
         // agent handing work to another is the work happening, and the work
         // happening must not tell the inbox they have been here.

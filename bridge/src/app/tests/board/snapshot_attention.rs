@@ -116,16 +116,17 @@ fn mute_and_unmute_immediately_publish_unread_without_advancing_cursors() {
 }
 
 #[test]
-fn dismiss_immediately_publishes_every_agent_read_cursor() {
+fn dismiss_publishes_board_state_without_reading_any_agent() {
     let mut f = fixture();
     mutate(
         &mut f.state,
         "entity.dismiss",
         json!({"entity_id": f.owner}),
     );
-    for (agent, sequence) in f.agents.iter().zip(&f.sequences) {
-        assert_unread(digest(&mut f.state, &f.owner, agent), 0, *sequence);
+    for agent in &f.agents {
+        assert_unread(digest(&mut f.state, &f.owner, agent), 1, 0);
     }
+    assert_eq!(board_entry(&mut f.state, &f.owner)["dismissed"], true);
 }
 
 fn alias_fixture() -> Fixture {
@@ -175,7 +176,7 @@ fn muted_conversation_aliases_publish_and_restore_their_unread() {
 }
 
 #[test]
-fn dismissed_conversation_aliases_publish_both_read_cursors() {
+fn dismissed_conversation_aliases_keep_unread_and_publish_the_dismissed_board_row() {
     let mut f = alias_fixture();
     mutate(
         &mut f.state,
@@ -183,6 +184,7 @@ fn dismissed_conversation_aliases_publish_both_read_cursors() {
         json!({"entity_id": f.owner}),
     );
     for agent in &f.agents {
-        assert_unread(digest(&mut f.state, &f.owner, agent), 0, f.sequences[0]);
+        assert_unread(digest(&mut f.state, &f.owner, agent), 1, 0);
     }
+    assert_eq!(board_entry(&mut f.state, &f.owner)["dismissed"], true);
 }

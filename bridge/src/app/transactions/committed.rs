@@ -1,6 +1,7 @@
 use super::notices::MutationNotice;
+use crate::agent::Agent;
 use crate::store::{PersistedPlan, PersistedRun, RESIDENT_CONVERSATION_TAIL};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Durable owner fields are independent of process lifetime. These records
 /// contain no session/PTY handles. Reuse the owned SQL payload after commit and
@@ -61,6 +62,34 @@ impl CommittedEntities {
         }
     }
 
+    /// Reset commits independently of an owner save. Patch only its exact
+    /// durable payload so a later failed save cannot restore the erased
+    /// generation, including aliases owned by other plans or runs.
+    pub(in crate::app) fn apply_conversation_reset(
+        &mut self,
+        agents: &[Agent],
+        summary_owners: &HashSet<String>,
+    ) {
+        for agent in agents {
+            if let Some(record) = self.plans.get_mut(&agent.owner_id) {
+                replace_reset_agent(&mut record.agents, agent);
+            }
+            if let Some(record) = self.runs.get_mut(&agent.owner_id) {
+                replace_reset_agent(&mut record.agents, agent);
+            }
+        }
+        for owner in summary_owners {
+            if let Some(record) = self.plans.get_mut(owner) {
+                record.last_summary = None;
+                record.last_error = None;
+            }
+            if let Some(record) = self.runs.get_mut(owner) {
+                record.last_summary = None;
+                record.last_error = None;
+            }
+        }
+    }
+
     pub(in crate::app) fn forget(&mut self, id: &str) {
         self.plans.remove(id);
         self.runs.remove(id);
@@ -71,6 +100,12 @@ impl CommittedEntities {
     pub(in crate::app) fn has_borrowed(&self, app: &crate::app::AppState) -> bool {
         self.plans.keys().any(|id| !app.plans.contains_key(id))
             || self.runs.keys().any(|id| !app.runs.contains_key(id))
+    }
+}
+
+fn replace_reset_agent(agents: &mut [Agent], replacement: &Agent) {
+    if let Some(agent) = agents.iter_mut().find(|agent| agent.id == replacement.id) {
+        *agent = replacement.clone();
     }
 }
 

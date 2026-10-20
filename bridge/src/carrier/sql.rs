@@ -99,35 +99,6 @@ impl ReadExecutors {
             .expect("SQL executors stay open");
         complete
     }
-
-    /// Mixed reads transfer their owned external job after releasing SQL
-    /// capacity, without scheduling an intermediate Tokio continuation.
-    fn submit_then<T: Send + 'static, R: Send + 'static>(
-        &self,
-        permit: OwnedSemaphorePermit,
-        work: impl FnOnce() -> T + Send + 'static,
-        continuation: impl FnOnce(T) -> R + Send + 'static,
-    ) -> oneshot::Receiver<R> {
-        let (done, complete) = oneshot::channel();
-        self.executor
-            .submit_detached(Box::new(move || {
-                let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
-                drop(permit);
-                if let Ok(answer) = answer {
-                    if done.is_closed() {
-                        return;
-                    }
-                    let continued = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        continuation(answer)
-                    }));
-                    if let Ok(continued) = continued {
-                        let _ = done.send(continued);
-                    }
-                }
-            }))
-            .expect("SQL executors stay open");
-        complete
-    }
 }
 
 /// Each successful spawn has created its OS thread before this returns. No
@@ -574,49 +545,24 @@ async fn coordinate_io(
                 .clock
                 .mark_observed(&observed, "lane_pop", std::time::Instant::now());
         }
-        let Some(complete) = submit_io(&queue, &handler, work, &executor).await else {
+        let Some(execution) = prepare_io(&queue, &handler, work).await else {
             continue;
         };
-        let Ok(complete) = complete else { return };
+        #[cfg(test)]
+        handler
+            .clock
+            .mark_observed(&observed, "io_submitted", std::time::Instant::now());
+        let Ok(complete) = executor.submit(execution) else {
+            return;
+        };
         let _ = complete.await;
     }
 }
 
-type IoCompletion = std::io::Result<oneshot::Receiver<()>>;
-
-fn submit_external(
-    executor: &DedicatedExecutors,
-    execution: Execution,
-    #[cfg(test)] clock: &crate::timing::FrameClock,
-    #[cfg(test)] observed: &Option<Frame>,
-) -> IoCompletion {
-    #[cfg(test)]
-    clock.mark_observed(observed, "io_submitted", std::time::Instant::now());
-    // Keep submission last: after enqueue succeeds no fallible instrumentation
-    // may unwind and release a coordinator while its physical I/O still runs.
-    executor.submit(execution)
-}
-
-async fn submit_io(
-    queue: &Queue,
-    handler: &FrameHandler,
-    work: Work,
-    executor: &Arc<DedicatedExecutors>,
-) -> Option<IoCompletion> {
-    #[cfg(test)]
-    let observed = handler.clock.request_frame(&work.job.frame);
+async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option<Execution> {
     if !crate::api::effects::observation_needs_sql(&work.job.frame.payload) {
         let handler = handler.clone();
-        #[cfg(test)]
-        let clock = handler.clock.clone();
-        return Some(submit_external(
-            executor,
-            Box::new(move || work.prepare_observation(&handler, None)()),
-            #[cfg(test)]
-            &clock,
-            #[cfg(test)]
-            &observed,
-        ));
+        return Some(Box::new(move || work.prepare_observation(&handler, None)()));
     }
     #[cfg(test)]
     handler.clock.mark_request(
@@ -665,25 +611,11 @@ async fn submit_io(
             .clock
             .mark_request(&work.job.frame, "sql_submitted", std::time::Instant::now());
     }
-    #[cfg(test)]
-    let clock = handler.clock.clone();
     let handler = handler.clone();
-    let executor = executor.clone();
     executors
-        .submit_then(
-            permit,
-            move || work.prepare_observation(&handler, connection),
-            move |execution| {
-                submit_external(
-                    &executor,
-                    execution,
-                    #[cfg(test)]
-                    &clock,
-                    #[cfg(test)]
-                    &observed,
-                )
-            },
-        )
+        .submit(permit, move || {
+            work.prepare_observation(&handler, connection)
+        })
         .await
         .ok()
 }
@@ -818,80 +750,6 @@ mod queue_wakeup_tests {
         assert_eq!(
             awakened, 1,
             "one queued read must not wake all idle execution coordinators"
-        );
-    }
-}
-
-#[cfg(test)]
-mod continuation_tests {
-    use super::*;
-    use std::sync::atomic::AtomicUsize;
-    use std::time::Duration;
-
-    #[tokio::test]
-    async fn continuation_runs_after_the_shared_sql_permit_is_released() {
-        let executors = ReadExecutors::new(Arc::new(AtomicUsize::new(0)));
-        executors.ensure_workers().unwrap();
-        let mut held = Vec::new();
-        for _ in 0..SQL_WORKERS {
-            held.push(executors.acquire().await);
-        }
-        let permit = held.pop().unwrap();
-        let preparing_slots = executors.slots.clone();
-        let continuing_slots = executors.slots.clone();
-        let complete = executors.submit_then(
-            permit,
-            move || {
-                assert_eq!(preparing_slots.available_permits(), 0);
-                42
-            },
-            move |answer| {
-                assert_eq!(continuing_slots.available_permits(), 1);
-                answer
-            },
-        );
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), complete)
-                .await
-                .unwrap()
-                .unwrap(),
-            42
-        );
-    }
-
-    #[tokio::test]
-    async fn preparation_and_continuation_panics_release_their_completion_and_permit() {
-        let executors = ReadExecutors::new(Arc::new(AtomicUsize::new(0)));
-        executors.ensure_workers().unwrap();
-        let prepare_failed: oneshot::Receiver<()> = executors.submit_then(
-            executors.acquire().await,
-            || panic!("injected preparation panic"),
-            |()| panic!("unreachable continuation"),
-        );
-        assert!(tokio::time::timeout(Duration::from_secs(5), prepare_failed)
-            .await
-            .unwrap()
-            .is_err());
-        assert_eq!(executors.slots.available_permits(), SQL_WORKERS);
-        let continuation_failed: oneshot::Receiver<()> = executors.submit_then(
-            executors.acquire().await,
-            || (),
-            |()| panic!("injected continuation panic"),
-        );
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), continuation_failed)
-                .await
-                .unwrap()
-                .is_err()
-        );
-        assert_eq!(executors.slots.available_permits(), SQL_WORKERS);
-        let complete = executors.submit(executors.acquire().await, || 7);
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(5), complete)
-                .await
-                .unwrap()
-                .unwrap(),
-            7
         );
     }
 }

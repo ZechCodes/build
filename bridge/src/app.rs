@@ -22,6 +22,7 @@ mod github;
 mod harness_inventory;
 mod mcp;
 mod model_catalog;
+mod observation_reads;
 mod projects;
 mod push_keys;
 mod read_context;

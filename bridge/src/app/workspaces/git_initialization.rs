@@ -116,39 +116,15 @@ impl AppState {
         let workspace_id = require_str(params, "workspace_id")?;
         let source_id = require_str(params, "source_id")?;
         let directory = self.resolve_workspace_directory(&workspace_id, &source_id)?;
-        let source_id = directory.source_id.clone();
         let workspace = self
             .workspaces
             .get(&workspace_id)
-            .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
-        let workspace_option = self
-            .workspace_init_location(&workspace, &directory)
-            .map(|location| git_init_option(&location.path, directory.is_git))
-            .unwrap_or_else(
-                |reason| json!({"available": false, "is_git": false, "reason": reason}),
-            );
-        let source_option = self
-            .source_init_location(&workspace, &directory)
-            .map(|location| {
-                let recorded = self
-                    .projects
-                    .get(&workspace.project_id)
-                    .and_then(|project| {
-                        project.sources.iter().find(|source| source.id == source_id)
-                    })
-                    .is_some_and(|source| source.is_git);
-                git_init_option(&location.path, recorded)
-            })
-            .unwrap_or_else(
-                |reason| json!({"available": false, "is_git": false, "reason": reason}),
-            );
-        Ok(json!({
-            "workspace_id": workspace_id,
-            "source_id": source_id,
-            "workspace": workspace_option,
-            "source": source_option,
-        }))
+        Ok(observe_git_init_options(
+            workspace,
+            &directory,
+            self.workspace_init_source(workspace, &directory),
+        ))
     }
 
     pub(crate) fn workspace_init_git(&mut self, params: &Value) -> Result<Value, String> {
@@ -187,71 +163,16 @@ impl AppState {
         Ok(Value::Null)
     }
 
-    fn workspace_init_location(
-        &self,
+    fn workspace_init_source<'a>(
+        &'a self,
         workspace: &Workspace,
         directory: &WorkspaceDirectory,
-    ) -> Result<GitInitLocation, String> {
-        if workspace.status != WorkspaceStatus::Ready || directory.status != DirectoryStatus::Ready
-        {
-            return Err("workspace directory is not ready for Git initialization".to_string());
-        }
-        let path = std::fs::canonicalize(&directory.path).map_err(|error| {
-            format!(
-                "resolve workspace directory {}: {error}",
-                directory.path.display()
-            )
-        })?;
-        if path != directory.path || !path.is_dir() {
-            return Err("workspace target is not a directory".to_string());
-        }
-        let root = std::fs::canonicalize(&workspace.root).map_err(|error| {
-            format!(
-                "resolve workspace root {}: {error}",
-                workspace.root.display()
-            )
-        })?;
-        let valid = if workspace.managed {
-            path.parent() == Some(root.as_path())
-        } else {
-            path == root
-        };
-        if !valid {
-            return Err("workspace directory is outside its recorded root".to_string());
-        }
-        let base_branch = if !workspace.managed && directory.base_branch.is_empty() {
-            self.projects
-                .get(&workspace.project_id)
-                .and_then(|project| {
-                    project
-                        .sources
-                        .iter()
-                        .find(|source| source.id == directory.source_id)
-                })
-                .map(|source| source.base_branch.clone())
-                .ok_or_else(|| "adopted workspace has no matching project source".to_string())?
-        } else {
-            directory.base_branch.clone()
-        };
-        let identity = DirectoryIdentity::capture(&path)?;
-        Ok(GitInitLocation {
-            target: GitInitTarget::Workspace,
-            path,
-            base_branch,
-            identity,
-        })
-    }
-
-    fn source_init_location(
-        &self,
-        workspace: &Workspace,
-        directory: &WorkspaceDirectory,
-    ) -> Result<GitInitLocation, String> {
+    ) -> Result<&'a crate::app::projects::ProjectSource, String> {
         let project = self
             .projects
             .get(&workspace.project_id)
             .ok_or_else(|| format!("unknown project: {}", workspace.project_id))?;
-        let source = project
+        project
             .sources
             .iter()
             .find(|source| source.id == directory.source_id)
@@ -260,37 +181,31 @@ impl AppState {
                     "unknown source_id {} in project {}",
                     directory.source_id, workspace.project_id
                 )
-            })?;
-        let path = std::fs::canonicalize(&source.path).map_err(|error| {
-            format!("resolve project source {}: {error}", source.path.display())
-        })?;
-        let recorded = if !workspace.managed
-            && directory.source_path.as_os_str().is_empty()
-            && directory.path == workspace.root
-        {
-            path.clone()
-        } else {
-            std::fs::canonicalize(&directory.source_path).map_err(|error| {
-                format!(
-                    "resolve recorded source {}: {error}",
-                    directory.source_path.display()
-                )
-            })?
-        };
-        if path != source.path
-            || (!directory.source_path.as_os_str().is_empty() && recorded != directory.source_path)
-            || path != recorded
-            || !path.is_dir()
-        {
-            return Err("project source no longer matches the workspace record".to_string());
-        }
-        let identity = DirectoryIdentity::capture(&path)?;
-        Ok(GitInitLocation {
-            target: GitInitTarget::Source,
-            path,
-            base_branch: source.base_branch.clone(),
-            identity,
-        })
+            })
+    }
+
+    fn workspace_init_location(
+        &self,
+        workspace: &Workspace,
+        directory: &WorkspaceDirectory,
+    ) -> Result<GitInitLocation, String> {
+        workspace_init_location(
+            workspace,
+            directory,
+            self.workspace_init_source(workspace, directory),
+        )
+    }
+
+    fn source_init_location(
+        &self,
+        workspace: &Workspace,
+        directory: &WorkspaceDirectory,
+    ) -> Result<GitInitLocation, String> {
+        source_init_location(
+            workspace,
+            directory,
+            self.workspace_init_source(workspace, directory),
+        )
     }
 
     fn record_git_target(
@@ -504,6 +419,114 @@ fn parse_git_init_targets(target: &str) -> Result<Vec<GitInitTarget>, String> {
         "both" => Ok(vec![GitInitTarget::Workspace, GitInitTarget::Source]),
         value => Err(format!("unknown git init target: {value}")),
     }
+}
+
+pub(in crate::app) fn observe_git_init_options(
+    workspace: &Workspace,
+    directory: &WorkspaceDirectory,
+    source: Result<&crate::app::projects::ProjectSource, String>,
+) -> Value {
+    let workspace_option = workspace_init_location(workspace, directory, source.clone())
+        .map(|location| git_init_option(&location.path, directory.is_git))
+        .unwrap_or_else(unavailable_git_init_option);
+    let source_option = source_init_location(workspace, directory, source.clone())
+        .map(|location| git_init_option(&location.path, source.is_ok_and(|source| source.is_git)))
+        .unwrap_or_else(unavailable_git_init_option);
+    json!({
+        "workspace_id": workspace.id,
+        "source_id": directory.source_id,
+        "workspace": workspace_option,
+        "source": source_option,
+    })
+}
+
+fn unavailable_git_init_option(reason: String) -> Value {
+    json!({"available": false, "is_git": false, "reason": reason})
+}
+
+fn workspace_init_location(
+    workspace: &Workspace,
+    directory: &WorkspaceDirectory,
+    source: Result<&crate::app::projects::ProjectSource, String>,
+) -> Result<GitInitLocation, String> {
+    if workspace.status != WorkspaceStatus::Ready || directory.status != DirectoryStatus::Ready {
+        return Err("workspace directory is not ready for Git initialization".to_string());
+    }
+    let path = std::fs::canonicalize(&directory.path).map_err(|error| {
+        format!(
+            "resolve workspace directory {}: {error}",
+            directory.path.display()
+        )
+    })?;
+    if path != directory.path || !path.is_dir() {
+        return Err("workspace target is not a directory".to_string());
+    }
+    let root = std::fs::canonicalize(&workspace.root).map_err(|error| {
+        format!(
+            "resolve workspace root {}: {error}",
+            workspace.root.display()
+        )
+    })?;
+    let valid = if workspace.managed {
+        path.parent() == Some(root.as_path())
+    } else {
+        path == root
+    };
+    if !valid {
+        return Err("workspace directory is outside its recorded root".to_string());
+    }
+    let base_branch = if !workspace.managed && directory.base_branch.is_empty() {
+        source
+            .ok()
+            .map(|source| source.base_branch.clone())
+            .ok_or_else(|| "adopted workspace has no matching project source".to_string())?
+    } else {
+        directory.base_branch.clone()
+    };
+    let identity = DirectoryIdentity::capture(&path)?;
+    Ok(GitInitLocation {
+        target: GitInitTarget::Workspace,
+        path,
+        base_branch,
+        identity,
+    })
+}
+
+fn source_init_location(
+    workspace: &Workspace,
+    directory: &WorkspaceDirectory,
+    source: Result<&crate::app::projects::ProjectSource, String>,
+) -> Result<GitInitLocation, String> {
+    let source = source?;
+    let path = std::fs::canonicalize(&source.path)
+        .map_err(|error| format!("resolve project source {}: {error}", source.path.display()))?;
+    let recorded = if !workspace.managed
+        && directory.source_path.as_os_str().is_empty()
+        && directory.path == workspace.root
+    {
+        path.clone()
+    } else {
+        std::fs::canonicalize(&directory.source_path).map_err(|error| {
+            format!(
+                "resolve recorded source {}: {error}",
+                directory.source_path.display()
+            )
+        })?
+    };
+    if path != source.path
+        || (!directory.source_path.as_os_str().is_empty() && recorded != directory.source_path)
+        || path != recorded
+        || !path.is_dir()
+    {
+        return Err("project source no longer matches the workspace record".to_string());
+    }
+    let identity = DirectoryIdentity::capture(&path)?;
+    Ok(GitInitLocation {
+        target: GitInitTarget::Source,
+        path,
+        base_branch: source.base_branch.clone(),
+        identity,
+    })
 }
 
 fn git_init_option(path: &Path, recorded_is_git: bool) -> Value {

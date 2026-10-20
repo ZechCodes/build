@@ -481,6 +481,16 @@ impl Store {
         &self,
         task_id: &str,
     ) -> Result<Vec<ReviewSyncObservation>, StoreError> {
+        crate::store::ReadTransaction::new(&self.connection())
+            .load_review_sync_observations(task_id)
+    }
+}
+
+impl crate::store::ReadTransaction<'_> {
+    pub fn load_review_sync_observations(
+        &self,
+        task_id: &str,
+    ) -> Result<Vec<ReviewSyncObservation>, StoreError> {
         let conn = self.connection();
         let mut statement = conn.prepare("SELECT directory_id, record FROM review_sync_observations WHERE task_id = ?1 ORDER BY directory_id")?;
         let rows = statement.query_map([task_id], |row| {

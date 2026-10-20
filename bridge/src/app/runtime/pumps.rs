@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
 
+#[cfg(test)]
+pub(in crate::app) mod status_timing;
+
 /// Start whichever pump this tab's session needs: the byte pump for a terminal,
 /// the activity pump for a session that reports its own work.
 ///
@@ -107,7 +110,15 @@ impl StatusPump {
             return false;
         };
         let (ended, retry_deferred, clock) = {
+            // The optional benchmark span drops after the guard. It records
+            // outside the critical section and is absent from production.
+            #[cfg(test)]
+            let mut timing = status_timing::GuardSpan::start();
             let mut app = state.lock().unwrap();
+            #[cfg(test)]
+            if let Some(timing) = timing.as_mut() {
+                timing.acquired();
+            }
             let Some(session) = self.session.upgrade() else {
                 return false;
             };

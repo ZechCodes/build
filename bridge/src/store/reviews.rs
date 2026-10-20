@@ -2,7 +2,7 @@
 //! review service before `save_review_snapshot` commits their identities here.
 
 use super::tracker::{append_activity, write_tracker_task};
-use super::{now_rfc3339, Store, StoreError};
+use super::{now_rfc3339, ReadTransaction, Store, StoreError};
 use crate::reviews::model::ReviewSnapshot;
 use crate::reviews::records::{
     PullRequestMetadata, PullRequestStatus, Review, ReviewCompletion, ReviewMode, ReviewState,
@@ -41,6 +41,13 @@ struct CompletionWrite<'a> {
     description: &'a str,
     now: &'a str,
     terminal_status: Option<PullRequestStatus>,
+}
+
+impl ReadTransaction<'_> {
+    /// Complete review metadata from this request's SQLite snapshot.
+    pub fn load_review(&self, task_id: &str) -> Result<Option<Review>, StoreError> {
+        load_review(self.connection(), task_id)
+    }
 }
 
 impl Store {

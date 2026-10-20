@@ -29,6 +29,9 @@ use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionIn
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
+mod io;
+#[cfg(test)]
+mod observation_tests;
 #[cfg(test)]
 mod snapshot_tests;
 mod sql;
@@ -43,6 +46,7 @@ pub mod testing;
 mod timing_tests;
 
 use dispatch::Dispatcher;
+pub(crate) use dispatch::PreparedObservation;
 
 /// One thing bound for a carrier's wire, before any wire wrapper exists: an
 /// encrypted frame for a client session, or the `session_accept` answering an
@@ -199,6 +203,38 @@ impl SessionSender {
         };
         let _reply = self.reply_gate.lock().unwrap();
         if self.read_is_live() {
+            self.send_sealed(sealed);
+        }
+    }
+
+    /// Diagnostic equivalent of push/push_read_reply with an exact seal boundary.
+    /// With tracing disabled, use the original path without inspecting payloads.
+    #[cfg(test)]
+    fn push_observed(
+        &self,
+        payload: Value,
+        clock: &crate::timing::FrameClock,
+        observed: &Option<Frame>,
+        read_fenced: bool,
+    ) {
+        let Some(frame) = observed else {
+            if read_fenced {
+                self.push_read_reply(payload);
+            } else {
+                self.push(payload);
+            }
+            return;
+        };
+        let Some(sealed) = self.seal(payload) else {
+            return;
+        };
+        clock.mark_request(frame, "reply_sealed", std::time::Instant::now());
+        if read_fenced {
+            let _reply = self.reply_gate.lock().unwrap();
+            if self.read_is_live() {
+                self.send_sealed(sealed);
+            }
+        } else {
             self.send_sealed(sealed);
         }
     }
@@ -940,6 +976,12 @@ impl FrameIntake {
     ) -> Result<(), CarrierError> {
         let arrived = WaitTimer::start();
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
+        #[cfg(test)]
+        {
+            let clock = &self.dispatcher.handler().clock;
+            clock.mark_request(&frame, "intake", arrived.started_at());
+            clock.mark_request(&frame, "decrypted", std::time::Instant::now());
+        }
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");
             self.close_ended(self.registry.end(&envelope.session_id));
@@ -959,6 +1001,12 @@ impl FrameIntake {
         if let Some(receipt) = receipt_for(&frame) {
             sender.push(receipt);
         }
+        #[cfg(test)]
+        self.dispatcher.handler().clock.mark_request(
+            &frame,
+            "receipt_sent",
+            std::time::Instant::now(),
+        );
         if frame.payload["method"] == "bridge.stats" {
             self.answer_stats(sender, frame, arrived);
             return Ok(());
@@ -977,6 +1025,12 @@ impl FrameIntake {
         // `tasks.list` was a phone giving up on the device (task #128).
         if writes_an_attachment(&frame) || is_signaling(&frame) {
             self.answer_without_queueing(sender, frame, arrived);
+            return Ok(());
+        }
+        if crate::api::effects::is_observation_read(&frame.payload) {
+            self.dispatcher
+                .dispatch_observation(sender, frame, arrived)
+                .await;
             return Ok(());
         }
         if crate::api::effects::is_sql_read(&frame.payload) {

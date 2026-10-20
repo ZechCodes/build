@@ -165,9 +165,16 @@ impl AppState {
         self.board
             .attention_mut()
             .advance_conversation(thread_id, 0);
+        // Every alias and canonical generation belongs to one committed reset.
+        // Stage the complete affected set before the first sparse publication.
+        for owner in &owners {
+            self.mark_observation_owner_changed(owner);
+        }
         for owner in owners {
             self.publish_read_owner(&owner, true);
             self.note_entity_changed(&owner);
+            #[cfg(test)]
+            reset_observer::record(&self.read_view.load());
             self.publish_live_roster_for(&owner);
         }
         self.note_board_changed();
@@ -764,4 +771,41 @@ fn native_lineages_share(one: &SessionLineage, other: &SessionLineage) -> bool {
     }
     one_harness.native_history_cwd(std::path::Path::new(one_cwd))
         == other_harness.native_history_cwd(std::path::Path::new(other_cwd))
+}
+
+#[cfg(test)]
+impl AppState {
+    pub(in crate::app) fn observe_reset_publications(
+        callback: impl FnMut(&super::super::read_view::ReadView) + 'static,
+    ) -> impl Drop {
+        reset_observer::install(Box::new(callback))
+    }
+}
+
+#[cfg(test)]
+mod reset_observer {
+    use super::super::super::read_view::ReadView;
+    use std::cell::RefCell;
+    type Callback = Box<dyn FnMut(&ReadView)>;
+    thread_local! { static OBSERVER: RefCell<Option<Callback>> = RefCell::new(None); }
+    pub(super) struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            OBSERVER.with(|observer| *observer.borrow_mut() = None);
+        }
+    }
+    pub(super) fn install(callback: Callback) -> Guard {
+        OBSERVER.with(|observer| {
+            assert!(observer.borrow().is_none());
+            *observer.borrow_mut() = Some(callback);
+        });
+        Guard
+    }
+    pub(super) fn record(view: &ReadView) {
+        OBSERVER.with(|observer| {
+            if let Some(callback) = observer.borrow_mut().as_mut() {
+                callback(view);
+            }
+        });
+    }
 }

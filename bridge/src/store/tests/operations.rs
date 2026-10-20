@@ -488,3 +488,34 @@ fn a_backup_is_a_whole_store_and_never_silently_replaces_one() {
     let refused = store.backup_to(&backup).expect_err("the second is refused");
     assert!(refused.to_string().contains("already exists"), "{refused}");
 }
+
+#[test]
+fn a_closed_store_keeps_saved_runs_in_the_database_file_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = dir.path().join("original");
+    let store = Store::new(&original).unwrap();
+    let mut record = run_record("run-after-close", None, NOW);
+    record.agents[0]
+        .thread
+        .post_user("durable after clean close", None, NOW);
+    store.save_run(&record).unwrap();
+    drop(store);
+
+    let copied = dir.path().join("file-only-copy");
+    std::fs::create_dir(&copied).unwrap();
+    std::fs::copy(original.join("build.db"), copied.join("build.db")).unwrap();
+    let restored = Store::new(&copied).unwrap();
+    let runs = restored.load_all_runs().unwrap();
+    assert_eq!(
+        runs.len(),
+        1,
+        "clean close checkpoints saved runs into build.db"
+    );
+    assert_eq!(runs[0].id, record.id);
+    assert_eq!(
+        runs[0].agents[0].thread.items,
+        record.agents[0].thread.items
+    );
+    assert!(!original.join("build.db-wal").exists());
+    assert!(!original.join("build.db-shm").exists());
+}

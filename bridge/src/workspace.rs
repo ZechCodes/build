@@ -11,6 +11,17 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+thread_local! { static LISTING_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(crate) fn take_workspace_listing_visits() -> usize {
+    LISTING_VISITS.with(|count| count.replace(0))
+}
+mod changes;
+#[cfg(test)]
+mod changes_tests;
 mod reservation;
 #[cfg(test)]
 use std::process::Command;
@@ -130,6 +141,7 @@ pub struct WorkspaceRegistry {
     root: PathBuf,
     storage_anchor: crate::reclaim::containment::StorageAnchor,
     workspaces: HashMap<String, Workspace>,
+    observation_changes: crate::observation_changes::ChangeKeys,
 }
 
 impl WorkspaceRegistry {
@@ -139,6 +151,7 @@ impl WorkspaceRegistry {
             storage_anchor: crate::reclaim::containment::StorageAnchor::new(&root),
             root,
             workspaces: HashMap::new(),
+            observation_changes: Default::default(),
         };
         registry.reload()?;
         Ok(registry)
@@ -158,14 +171,23 @@ impl WorkspaceRegistry {
             storage_anchor: crate::reclaim::containment::StorageAnchor::new(&root),
             root,
             workspaces: HashMap::new(),
+            observation_changes: Default::default(),
         }
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
-        self.workspaces.retain(|_, workspace| !workspace.managed);
+        // Stage the fallible disk walk before moving any installed rows. This
+        // preserves rollback without cloning the complete in-memory registry.
+        let loaded = self.load_workspace_records()?;
+        self.install_reloaded_workspaces(loaded);
+        Ok(())
+    }
+
+    fn load_workspace_records(&self) -> Result<Option<HashMap<String, Workspace>>, String> {
         if !self.root.exists() {
-            return Ok(());
+            return Ok(None);
         }
+        let mut loaded = HashMap::new();
         let registry_root = fs::canonicalize(&self.root).map_err(|error| {
             format!(
                 "resolve workspace registry {}: {error}",
@@ -213,34 +235,10 @@ impl WorkspaceRegistry {
                             workspace.root.display()
                         )
                     })?;
-                self.workspaces.insert(workspace.id.clone(), workspace);
+                loaded.insert(workspace.id.clone(), workspace);
             }
         }
-        let legacy = self.root.join(".legacy");
-        for workspace in self
-            .workspaces
-            .values_mut()
-            .filter(|workspace| !workspace.managed)
-        {
-            let proof = fs::read(legacy.join(&workspace.id))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Workspace>(&bytes).ok());
-            workspace.status = if let Some(proof) = proof {
-                workspace.archived_at = proof.archived_at.clone();
-                for directory in &mut workspace.directories {
-                    directory.finished_head = proof
-                        .directories
-                        .iter()
-                        .find(|candidate| candidate.source_id == directory.source_id)
-                        .and_then(|candidate| candidate.finished_head.clone());
-                }
-                WorkspaceStatus::Finished
-            } else {
-                workspace.archived_at = None;
-                WorkspaceStatus::Ready
-            };
-        }
-        Ok(())
+        Ok(Some(loaded))
     }
 
     fn recover_interrupted(&mut self) -> Result<(), String> {
@@ -250,6 +248,7 @@ impl WorkspaceRegistry {
             .filter(|workspace| workspace.status == WorkspaceStatus::Provisioning)
         {
             workspace.status = WorkspaceStatus::Failed;
+            self.observation_changes.mark(workspace.id.clone());
             for directory in workspace
                 .directories
                 .iter_mut()
@@ -267,10 +266,7 @@ impl WorkspaceRegistry {
     }
 
     pub fn claim_retry(&mut self, id: &str) -> Result<Workspace, String> {
-        let workspace = self
-            .workspaces
-            .get_mut(id)
-            .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
+        let mut workspace = self.observed_workspace_mut(id)?;
         match workspace.status {
             WorkspaceStatus::Failed => {}
             WorkspaceStatus::Provisioning => {
@@ -280,7 +276,7 @@ impl WorkspaceRegistry {
         }
         let previous = workspace.clone();
         workspace.status = WorkspaceStatus::Provisioning;
-        if let Err(error) = persist(workspace) {
+        if let Err(error) = persist(&workspace) {
             *workspace = previous;
             return Err(error);
         }
@@ -288,7 +284,7 @@ impl WorkspaceRegistry {
     }
 
     pub fn fail_if_still_provisioning(&mut self, id: &str) {
-        let Some(workspace) = self.workspaces.get_mut(id) else {
+        let Ok(mut workspace) = self.observed_workspace_mut(id) else {
             return;
         };
         if workspace.status != WorkspaceStatus::Provisioning {
@@ -303,7 +299,7 @@ impl WorkspaceRegistry {
             directory.error =
                 Some("workspace provisioning failed; retry the workspace".to_string());
         }
-        if let Err(error) = persist(workspace) {
+        if let Err(error) = persist(&workspace) {
             eprintln!("record failed workspace {id}: {error}");
         }
     }
@@ -348,7 +344,7 @@ impl WorkspaceRegistry {
         }
         workspace.name = name.to_string();
         persist(&workspace)?;
-        self.workspaces.insert(id.to_string(), workspace.clone());
+        self.install_workspace(workspace.clone());
         Ok(workspace)
     }
 
@@ -374,14 +370,16 @@ impl WorkspaceRegistry {
                 fs::remove_file(path).map_err(|error| error.to_string())?;
             }
         }
-        self.workspaces.insert(id.to_string(), workspace.clone());
+        self.install_workspace(workspace.clone());
         Ok(workspace)
     }
 
     /// Drop a removed workspace or a stale adopted checkout from the index.
     /// Its private lock marker must go too, so re-adoption starts unlocked.
     pub(crate) fn forget(&mut self, id: &str) {
-        self.workspaces.remove(id);
+        if self.workspaces.remove(id).is_some() {
+            self.observation_changes.mark(id.to_string());
+        }
         if validate_segment("workspace id", id).is_err() {
             return;
         }
@@ -395,7 +393,9 @@ impl WorkspaceRegistry {
     /// Roll back a memory-only adoption staged before its owner was saved.
     /// The checkout's lock marker belongs to the existing checkout and survives.
     pub(crate) fn remove_staged_adoption(&mut self, id: &str) {
-        self.workspaces.remove(id);
+        if self.workspaces.remove(id).is_some() {
+            self.observation_changes.mark(id.to_string());
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -416,10 +416,7 @@ impl WorkspaceRegistry {
         source_id: &str,
         branch: &str,
     ) -> Result<Workspace, String> {
-        let workspace = self
-            .workspaces
-            .get_mut(workspace_id)
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let mut workspace = self.observed_workspace_mut(workspace_id)?;
         let directory = workspace
             .directories
             .iter_mut()
@@ -429,7 +426,7 @@ impl WorkspaceRegistry {
         directory.branch = Some(branch.to_string());
         directory.base_branch = branch.to_string();
         if workspace.managed {
-            persist(workspace)?;
+            persist(&workspace)?;
         }
         Ok(workspace.clone())
     }
@@ -453,7 +450,7 @@ impl WorkspaceRegistry {
                     Err(error) => return Err(format!("reopen legacy workspace {id}: {error}")),
                 }
             }
-            self.workspaces.insert(id.to_string(), workspace);
+            self.install_workspace(workspace);
         }
         Ok(())
     }
@@ -462,7 +459,11 @@ impl WorkspaceRegistry {
         let mut workspaces = self
             .workspaces
             .values()
-            .filter(|workspace| project_id.is_none_or(|id| workspace.project_id == id))
+            .filter(|workspace| {
+                #[cfg(test)]
+                LISTING_VISITS.with(|count| count.set(count.get() + 1));
+                project_id.is_none_or(|id| workspace.project_id == id)
+            })
             .collect::<Vec<_>>();
         workspaces.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
         workspaces
@@ -487,9 +488,12 @@ impl WorkspaceRegistry {
                 directory.is_git = true;
                 directory.branch = branch;
             }
-            if changed && workspace.managed {
-                if let Err(error) = persist(workspace) {
-                    eprintln!("refresh workspace {}: {error}", workspace.id);
+            if changed {
+                self.observation_changes.mark(workspace.id.clone());
+                if workspace.managed {
+                    if let Err(error) = persist(workspace) {
+                        eprintln!("refresh workspace {}: {error}", workspace.id);
+                    }
                 }
             }
         }
@@ -550,8 +554,7 @@ impl WorkspaceRegistry {
             let _ = fs::remove_dir_all(&workspace.root);
             return Err(error);
         }
-        self.workspaces
-            .insert(workspace.id.clone(), workspace.clone());
+        self.install_workspace(workspace.clone());
         Ok(workspace)
     }
 
@@ -674,8 +677,7 @@ impl WorkspaceRegistry {
         if let Err(error) = persist(&workspace) {
             return Err(Box::new((error, workspace)));
         }
-        self.workspaces
-            .insert(workspace.id.clone(), workspace.clone());
+        self.install_workspace(workspace.clone());
         Ok(workspace)
     }
 
@@ -691,10 +693,7 @@ impl WorkspaceRegistry {
     where
         F: FnMut(&WorkspaceSource, &Path, Isolation) -> Result<(Option<String>, Isolation), String>,
     {
-        let workspace = self
-            .workspaces
-            .get_mut(id)
-            .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
+        let mut workspace = self.observed_workspace_mut(id)?;
         for source in sources {
             let Some(directory) = workspace
                 .directories
@@ -717,11 +716,11 @@ impl WorkspaceRegistry {
                     directory.status = DirectoryStatus::Failed;
                     directory.error = Some(error.clone());
                     workspace.status = WorkspaceStatus::Failed;
-                    persist(workspace)?;
+                    persist(&workspace)?;
                     return Err(error);
                 }
             }
-            persist(workspace)?;
+            persist(&workspace)?;
         }
         workspace.status = if workspace
             .directories
@@ -732,7 +731,7 @@ impl WorkspaceRegistry {
         } else {
             WorkspaceStatus::Failed
         };
-        persist(workspace)?;
+        persist(&workspace)?;
         Ok(workspace.clone())
     }
 
@@ -750,10 +749,7 @@ impl WorkspaceRegistry {
         source: &WorkspaceSource,
     ) -> Result<WorkspaceDirectory, String> {
         validate_segment("source mount", &source.mount)?;
-        let workspace = self
-            .workspaces
-            .get_mut(workspace_id)
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let mut workspace = self.observed_workspace_mut(workspace_id)?;
         if !workspace.managed {
             return Err(
                 "workspace.add_directory: adopted checkouts are not Build's to change".to_string(),
@@ -792,7 +788,7 @@ impl WorkspaceRegistry {
             error: None,
         };
         workspace.directories.push(directory.clone());
-        if let Err(error) = persist(workspace) {
+        if let Err(error) = persist(&workspace) {
             workspace.directories.pop();
             return Err(error);
         }
@@ -814,10 +810,7 @@ impl WorkspaceRegistry {
     where
         F: FnOnce(&WorkspaceDirectory) -> Result<MaterializedDirectory, String>,
     {
-        let workspace = self
-            .workspaces
-            .get_mut(workspace_id)
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let mut workspace = self.observed_workspace_mut(workspace_id)?;
         let pending = workspace
             .directories
             .iter()
@@ -830,7 +823,7 @@ impl WorkspaceRegistry {
                 workspace
                     .directories
                     .retain(|directory| directory.id != directory_id);
-                let _ = persist(workspace);
+                let _ = persist(&workspace);
                 return Err(error);
             }
         };
@@ -849,7 +842,7 @@ impl WorkspaceRegistry {
         }
         directory.status = DirectoryStatus::Ready;
         directory.error = None;
-        persist(workspace)?;
+        persist(&workspace)?;
         Ok(workspace.clone())
     }
 
@@ -860,10 +853,7 @@ impl WorkspaceRegistry {
         workspace_id: &str,
         directory_id: &str,
     ) -> Result<Workspace, String> {
-        let workspace = self
-            .workspaces
-            .get_mut(workspace_id)
-            .ok_or_else(|| format!("unknown workspace_id: {workspace_id}"))?;
+        let mut workspace = self.observed_workspace_mut(workspace_id)?;
         let before = workspace.directories.len();
         workspace
             .directories
@@ -871,7 +861,7 @@ impl WorkspaceRegistry {
         if workspace.directories.len() == before {
             return Err(format!("unknown directory_id: {directory_id}"));
         }
-        persist(workspace)?;
+        persist(&workspace)?;
         Ok(workspace.clone())
     }
 
@@ -905,6 +895,7 @@ impl WorkspaceRegistry {
         workspace.status = WorkspaceStatus::Finished;
         workspace.archived_at = Some(crate::store::now_rfc3339());
         self.persist_finished_record(workspace)?;
+        self.observation_changes.mark(workspace.id.clone());
         Ok(WorkspaceFinish {
             complete: true,
             repositories,
@@ -915,7 +906,11 @@ impl WorkspaceRegistry {
     /// outside the roots themselves. The files are gone, so these are the
     /// history of what was finished and where each source was left.
     pub fn finished_records(&self) -> Vec<Workspace> {
-        let directory = self.root.join(".legacy");
+        Self::finished_records_at(&self.root)
+    }
+
+    pub(crate) fn finished_records_at(root: &Path) -> Vec<Workspace> {
+        let directory = root.join(".legacy");
         let Ok(entries) = fs::read_dir(&directory) else {
             return Vec::new();
         };
@@ -1008,7 +1003,7 @@ impl WorkspaceRegistry {
                 .first()
                 .and_then(|directory| directory.finished_head.clone());
         }
-        self.workspaces.insert(id, workspace.clone());
+        self.install_workspace(workspace.clone());
         workspace
     }
 

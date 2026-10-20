@@ -5,21 +5,39 @@ use crate::session_summary::UserSession;
 use crate::store::{TaskFilter, TaskSeek};
 use crate::tracker::{Task, TimelineEntry};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct TaskReadContext {
-    pub(super) project_paths: HashMap<String, String>,
+    pub(super) project_paths: imbl::OrdMap<String, String>,
     pub(super) identities: super::read_identities::TaskIdentityContext,
     user_session: UserSession,
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct TaskReadFence {
     project_id: String,
     project_path: String,
 }
 
+impl TaskReadFence {
+    pub(in crate::app) fn project_id(&self) -> &str {
+        &self.project_id
+    }
+}
+
 impl AppState {
+    /// Mixed observations need project admission only, without identity path probes.
+    pub(in crate::app) fn task_scope_read_context(&self) -> TaskReadContext {
+        TaskReadContext {
+            project_paths: self
+                .projects
+                .iter()
+                .map(|project| (project.id.clone(), project.repo_path.display().to_string()))
+                .collect(),
+            identities: Default::default(),
+            user_session: self.user_session,
+        }
+    }
     /// Producer-only capture. Path aliases are resolved here, never by a read.
     pub(in crate::app) fn task_read_context(&self) -> TaskReadContext {
         TaskReadContext {
@@ -35,6 +53,16 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn update_scope_project(&mut self, id: &str, path: Option<String>) {
+        match path {
+            Some(path) => {
+                self.project_paths.insert(id.into(), path);
+            }
+            None => {
+                self.project_paths.remove(id);
+            }
+        }
+    }
     /// Only a successful owner save can admit a new live agent. Owners checked
     /// out by a surrounding mutation retain their last published observation.
     pub(in crate::app) fn retain_live_owners(

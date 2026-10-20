@@ -191,6 +191,19 @@ export function createSessionRpc({
 
   const resetSqlReads = (reason = new Error("the SQL read path was restored")) => sqlReads.reset(sqlDeliveryError(reason));
 
+  const prepareCarrier = (sql, id, wire, reject) => {
+    if (!sql) return wire;
+    const ready = Promise.resolve(wire).then((sending) => {
+      sqlReads.bind(id, sending);
+      if (closedCarriers.has(sending)) throw sqlDeliveryError(new Error("the channel closed"));
+      return sending;
+    });
+    // Watch even a caller still queued for credit: a failed/closed carrier
+    // retires its unsent calls without waiting for another read to finish.
+    ready.catch((error) => { reject(error); sqlReads.finish(id); });
+    return ready;
+  };
+
   /** Every call still waiting, told why it will never answer. */
   const fail = (error) => {
     resetSqlReads(error);
@@ -272,12 +285,7 @@ export function createSessionRpc({
         waiting.reject(error);
       };
       const sql = isSqlRead(method);
-      const wireReady = Promise.resolve(wire).then((sending) => {
-        if (sql) sqlReads.bind(id, sending);
-        if (sql && closedCarriers.has(sending)) throw sqlDeliveryError(new Error("the channel closed"));
-        return sending;
-      });
-      wireReady.catch((error) => { reject(error); sqlReads.finish(id); });
+      const wireReady = prepareCarrier(sql, id, wire, reject);
       // A frame that never crossed the wire has no answer coming: the call
       // fails then rather than waiting out a timeout for a reply nobody will
       // send.

@@ -176,7 +176,7 @@ describe("SQL reads share eight sender credits per opening", () => {
     const old = Array.from({ length: 10 }, () => ask());
     const ping = ask("ping");
     await flush();
-    const oldIds = wire.sent.slice(0, 8).map(({ id }) => id);
+    const oldIds = wire.sent.filter(({ method }) => method !== "ping").map(({ id }) => id);
     rpc.resetSqlReads();
     for (const call of old) {
       const error = await call.catch((failure) => failure);
@@ -189,7 +189,7 @@ describe("SQL reads share eight sender credits per opening", () => {
     for (const id of oldIds) wire.deliver({ id, ok: true, result: {} });
     await flush();
     expect(wire.sent).toHaveLength(17);
-    wire.deliver({ id: wire.sent[8].id, ok: true, result: { pong: true } });
+    wire.deliver({ id: wire.sent.find(({ method }) => method === "ping").id, ok: true, result: { pong: true } });
     await expect(ping).resolves.toEqual({ pong: true });
     wire.deliver({ id: wire.sent[9].id, ok: true, result: { fresh: true } });
     await expect(fresh[0]).resolves.toEqual({ fresh: true });

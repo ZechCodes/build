@@ -69,7 +69,10 @@ fn workspace_reload_marks_only_real_changes_and_preserves_rows_after_invalid_man
     let mut worker = WorkspaceRegistry::load(&root).unwrap();
     let third = managed(&mut worker, "third");
     registry.reload().unwrap();
-    assert_eq!(keys(&registry), BTreeSet::from([first.id.clone(), second.id, third.id]));
+    assert_eq!(
+        keys(&registry),
+        BTreeSet::from([first.id.clone(), second.id, third.id])
+    );
     assert_eq!(registry.get(&first.id).unwrap(), &changed);
     acknowledge(&registry);
 
@@ -87,8 +90,22 @@ fn adopted_finish_reopen_and_capability_refresh_mark_only_changed_workspaces() {
     let untouched = temp.path().join("untouched");
     fs::create_dir(&adopted).unwrap();
     fs::create_dir(&untouched).unwrap();
-    let mut workspace = registry.adopt_root("project", "adopted".into(), "adopted".into(), adopted.clone(), "source".into(), false);
-    registry.adopt_root("project", "untouched".into(), "untouched".into(), untouched, "source".into(), false);
+    let mut workspace = registry.adopt_root(
+        "project",
+        "adopted".into(),
+        "adopted".into(),
+        adopted.clone(),
+        "source".into(),
+        false,
+    );
+    registry.adopt_root(
+        "project",
+        "untouched".into(),
+        "untouched".into(),
+        untouched,
+        "source".into(),
+        false,
+    );
     acknowledge(&registry);
     registry.refresh_local_capabilities();
     registry.refresh_finished_local();
@@ -99,7 +116,10 @@ fn adopted_finish_reopen_and_capability_refresh_mark_only_changed_workspaces() {
     registry.reload().unwrap();
     acknowledge(&registry);
     registry.reopen(&workspace.id).unwrap();
-    assert_eq!(registry.get(&workspace.id).unwrap().status, WorkspaceStatus::Ready);
+    assert_eq!(
+        registry.get(&workspace.id).unwrap().status,
+        WorkspaceStatus::Ready
+    );
     assert_eq!(keys(&registry), BTreeSet::from([workspace.id.clone()]));
     acknowledge(&registry);
     registry.reopen(&workspace.id).unwrap();

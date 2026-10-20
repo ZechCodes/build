@@ -13,6 +13,7 @@ struct IoSample {
     worker_starts: Arc<std::sync::atomic::AtomicUsize>,
     sql_worker_starts: Arc<std::sync::atomic::AtomicUsize>,
     read_pool_initialization: Value,
+    sql_preaccept_initialization: Value,
 }
 
 impl IoSample {
@@ -49,10 +50,28 @@ impl IoSample {
             (requests, read_pool_initialization)
         };
         benchmark::setup_mark(&mut setup, "extra_fixture_seed", &mut start);
-        let mut handler = AppState::handler(Arc::clone(&sample.state));
-        // Set only the lazy-start policy; actual startup remains in the timed first request.
-        handler.set_observation_sql_startup_eager(eager_sql);
+        let handler = AppState::handler(Arc::clone(&sample.state));
         let sql_worker_starts = handler.sql_worker_starts();
+        let sql_workers_before = sql_worker_starts.load(Ordering::Acquire);
+        assert_eq!(sql_workers_before, 0);
+        let sql_started = std::time::Instant::now();
+        let sql_duration = if eager_sql {
+            handler
+                .start_read_workers()
+                .expect("production preaccept SQL startup");
+            sql_started.elapsed()
+        } else {
+            std::time::Duration::ZERO
+        };
+        let sql_workers_after = sql_worker_starts.load(Ordering::Acquire);
+        assert_eq!(sql_workers_after, if eager_sql { 8 } else { 0 });
+        let sql_preaccept_initialization = json!({
+            "called":eager_sql,"duration_ns":sql_duration.as_nanos(),
+            "workers_before":sql_workers_before,"workers_after":sql_workers_after,
+            "schema_plus_sql_ns":u128::from(read_pool_initialization["schema_total_ns"].as_u64().unwrap()) + sql_duration.as_nanos(),
+            "reader_pool_plus_sql_ns":u128::from(read_pool_initialization["total_ns"].as_u64().unwrap()) + sql_duration.as_nanos(),
+            "semantics":"The production start_read_workers call runs before FrameIntake only in eager8. SQL duration is nested in production_handler; reader pool total is nested in helper seed. Schema+SQL and pool+SQL sums combine disjoint costs, not extra latency to add to enclosing setup totals. No warmup requests."
+        });
         let worker_starts = handler.observation_worker_starts();
         benchmark::setup_mark(&mut setup, "production_handler", &mut start);
         let transport = crate::transport::generate_transport_keypair();
@@ -73,6 +92,7 @@ impl IoSample {
         ));
         benchmark::setup_mark(&mut setup, "session_open", &mut start);
         Self {
+            sql_preaccept_initialization,
             read_pool_initialization,
             sql_worker_starts,
             worker_starts,

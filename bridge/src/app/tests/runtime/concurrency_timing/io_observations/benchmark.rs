@@ -85,6 +85,7 @@ impl Capture {
             "first_observation_method":order[0],"actual_request_order":order,
             "threads_after":thread_count(),"phases":sample.setup,
             "read_pool_initialization":sample.read_pool_initialization,
+            "sql_preaccept_initialization":sample.sql_preaccept_initialization,
             "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire),
             "sql_worker_starts":sample.sql_worker_starts.load(Ordering::Acquire),
             "sql_startup_mode":if self.sql_startup_eager {"eager8"} else {"demand"}}));
@@ -314,7 +315,8 @@ async fn paired_observation_benchmark() {
         "samples":samples,"warmups":warmups,"cold_batches":cold,"trace":trace,
         "requested_first_method":first_method,"requested_scenario":selected_scenario,
         "requested_sql_startup":requested_sql_startup,"sql_startup_mode":sql_startup_mode,
-        "sql_startup_semantics":"per-handler test policy only; same generic named SQLpool mechanism starts8 at timed lazy initialization in eager8 mode or grows from0 on demand; benchmark adds no reader warmup",
+        "sql_startup_semantics":"eager8 calls the production FrameHandler::start_read_workers before FrameIntake/session acceptance; demand skips that call and grows SQL workers from0 during requests. Both use natural production schema initialization. This supersedes older f210 timed-lazy-eager8 semantics; no benchmark warmup requests.",
+        "sql_preaccept_initialization_available":true,
         "sql_worker_starts_available":true,
         "read_pool_initialization_available":true,
         "read_pool_initialization_semantics":"natural production schema initialization is nested within Store/helper seed; benchmark performs no additional SQL warmup",

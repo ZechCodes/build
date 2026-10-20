@@ -378,6 +378,11 @@ pub struct AttachSnapshot {
 }
 
 impl ScreenHandle {
+    /// Registration identity without acquiring either screen's lock.
+    pub(crate) fn same_screen(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.screen, &other.screen)
+    }
+
     pub fn new(term_id: &str, cols: u16, rows: u16) -> ScreenHandle {
         ScreenHandle {
             term_id: Arc::from(term_id),

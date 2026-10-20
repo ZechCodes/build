@@ -7,6 +7,7 @@ use crate::isolation::{remove_directory_with_rift_root, Isolation};
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
 use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 mod adoption;
@@ -17,6 +18,7 @@ mod directories;
 pub(in crate::app) mod git_initialization;
 mod lock;
 mod ownership;
+mod projection_rendering;
 mod reclaim;
 mod sizes;
 mod snapshots;
@@ -360,35 +362,43 @@ impl AppState {
 
     pub(in crate::app) fn workspace_list_snapshot(&self, params: &Value) -> Result<Value, String> {
         let project_id = params.get("project_id").and_then(Value::as_str);
-        Ok(json!({
-            "workspaces": self
-                .workspaces
-                .list(project_id)
-                .into_iter()
-                .filter(|workspace| !self.is_projects_own_checkout(workspace))
-                .map(|workspace| {
-                    // The conversation entity, as `workspace.get` names it: a
-                    // client standing on the list files the workspace's git
-                    // under it without asking for the row.
-                    let owner = self.workspace_snapshot_conversation_owner(workspace);
-                    let mut value = workspace_json(workspace);
-                    self.add_scope_compaction(&mut value, &crate::compaction::CompactionScope::Workspace(workspace.id.clone()));
-                    let summary = owner
+        let rows = self
+            .workspaces
+            .list(project_id)
+            .into_iter()
+            .filter(|workspace| !self.is_projects_own_checkout(workspace))
+            .map(|workspace| {
+                // The conversation entity, as `workspace.get` names it: a
+                // client standing on the list files the workspace's git
+                // under it without asking for the row.
+                let owner = self.workspace_snapshot_conversation_owner(workspace);
+                let mut value = workspace_json(workspace);
+                self.add_scope_compaction(
+                    &mut value,
+                    &crate::compaction::CompactionScope::Workspace(workspace.id.clone()),
+                );
+                let summary = owner
+                    .as_deref()
+                    .map(|id| self.session_summary(id))
+                    .unwrap_or_default();
+                value["session_started_ms"] = json!(summary.session_started_ms);
+                value["last_activity_ms"] = json!(summary.last_activity_ms);
+                value["conversations"] = Value::Array(
+                    owner
                         .as_deref()
-                        .map(|id| self.session_summary(id))
-                        .unwrap_or_default();
-                    value["session_started_ms"] = json!(summary.session_started_ms);
-                    value["last_activity_ms"] = json!(summary.last_activity_ms);
-                    value["conversations"] = json!(owner.as_deref()
                         .map(|id| self.conversation_activity_rows(id))
-                        .unwrap_or_default());
-                    value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
-                    value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
-                    self.extend_workspace_review_summary(&workspace.id, &mut value)?;
-                    Ok(value)
-                })
-                .collect::<Result<Vec<_>, String>>()?
-        }))
+                        .unwrap_or_default(),
+                );
+                value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
+                value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
+                self.extend_workspace_review_summary(&workspace.id, &mut value)?;
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Value::Object(serde_json::Map::from_iter([(
+            "workspaces".into(),
+            Value::Array(rows),
+        )])))
     }
 
     fn workspace_paths_match(&self, left: &Path, right: &Path, observed: bool) -> bool {
@@ -835,13 +845,22 @@ impl AppState {
                 .any(|(candidate, working)| working && Self::canonical_root(&candidate) == root)
     }
 
-    pub(in crate::app) fn snapshot_agent_working_at_root(&self, root: &Path) -> bool {
-        self.delivery_queue.has_in_flight_at_root(root)
-            || self
-                .session_registry
+    /// Observe once for all rows in a board candidate. Delivery keys already
+    /// have their comparison roots; only session roots use the path observation.
+    pub(in crate::app) fn snapshot_working_roots(&self) -> HashSet<PathBuf> {
+        let mut roots = self
+            .delivery_queue
+            .in_flight_agent_roots()
+            .map(Path::to_path_buf)
+            .collect::<HashSet<_>>();
+        roots.extend(
+            self.session_registry
                 .agent_working_roots()
                 .into_iter()
-                .any(|(candidate, working)| working && self.snapshot_root(&candidate) == root)
+                .filter(|(_, working)| *working)
+                .map(|(root, _)| self.snapshot_root(&root)),
+        );
+        roots
     }
 
     /// Done: the workspace's work is somewhere else, so the workspace goes.
@@ -917,6 +936,13 @@ impl AppState {
         root: &Path,
         workspace_id: Option<&str>,
     ) -> Option<crate::run::RunState> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context.rendering.preferred_run_state(
+                project_id,
+                &self.snapshot_root(root),
+                workspace_id,
+            );
+        }
         self.preferred_workspace_run_state_using(project_id, root, workspace_id, true)
     }
 

@@ -7,7 +7,7 @@ use crate::app::read_view::ReadViewSlot;
 use crate::changes::{BoardLists, EntityFacts, FactsRequest, ThreadTip, THREAD_PUSH_MAX_ITEMS};
 use crate::thread::Thread;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -17,10 +17,10 @@ pub(in crate::app) struct PushFacts {
     entities: BTreeMap<String, Arc<()>>,
     observation_generations: BTreeMap<String, Arc<()>>,
     pub(super) observed: BTreeMap<String, Arc<CheckoutObservation>>,
-    states: BTreeMap<String, Value>,
-    terminals: BTreeMap<String, Value>,
+    states: BTreeMap<String, Arc<Value>>,
+    terminals: BTreeMap<String, Arc<Value>>,
     threads: BTreeMap<String, Vec<PushThread>>,
-    lists: Value,
+    lists: Arc<Value>,
     pub(super) summaries: BTreeMap<String, (String, Vec<PathBuf>)>,
 }
 
@@ -28,12 +28,58 @@ pub(in crate::app) struct PushFacts {
 struct PushThread {
     tip: ThreadTip,
     floor: u64,
-    items: Vec<(u64, Value)>,
-    external: BTreeMap<u64, (u64, Value)>,
+    source: TailSource,
+    items: Arc<Vec<(u64, Value)>>,
+    external: Arc<BTreeMap<u64, (u64, Value)>>,
     external_sequence: u64,
 }
 
+/// Tip identity fences resets/bindings; this local shape also detects a
+/// withdrawn resident item whose monotonic publication counter did not move.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TailSource {
+    publication_sequence: u64,
+    total_count: u64,
+    resident_from: u64,
+    resident_count: usize,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
+}
+
+impl TailSource {
+    fn capture(thread: &Thread) -> Self {
+        Self {
+            publication_sequence: thread.publication_sequence(),
+            total_count: thread.total_item_count(),
+            resident_from: thread.resident_from_sequence(),
+            resident_count: thread.items.len(),
+            first_sequence: thread
+                .items
+                .first()
+                .map(crate::thread::ThreadItem::sequence),
+            last_sequence: thread.items.last().map(crate::thread::ThreadItem::sequence),
+        }
+    }
+}
+
 impl PushThread {
+    fn recapture(tip: ThreadTip, thread: &Thread, previous: Option<&Self>) -> Self {
+        let previous = previous.filter(|previous| same_tip_identity(&previous.tip, &tip));
+        if let Some(previous) =
+            previous.filter(|previous| previous.source == TailSource::capture(thread))
+        {
+            let mut retained = previous.clone();
+            retained.tip = tip;
+            retained.tip.last_sequence = retained.tip.last_sequence.max(retained.external_sequence);
+            return retained;
+        }
+        let mut captured = Self::capture(tip, thread);
+        if let Some(previous) = previous {
+            captured.merge_previous(previous);
+        }
+        captured
+    }
+
     fn capture(tip: ThreadTip, thread: &Thread) -> Self {
         // Keep only the newest mutation counters, not the resident history.
         // The greatest omitted counter certifies every supported cursor.
@@ -60,13 +106,18 @@ impl PushThread {
             .items
             .iter()
             .filter(|item| item.latest_sequence() > floor)
-            .map(|item| (item.latest_sequence(), json!(item)))
+            .map(|item| {
+                #[cfg(test)]
+                tail_tests::record_serialized();
+                (item.latest_sequence(), json!(item))
+            })
             .collect();
         Self {
             tip,
             floor,
-            items,
-            external: BTreeMap::new(),
+            source: TailSource::capture(thread),
+            items: Arc::new(items),
+            external: Arc::new(BTreeMap::new()),
             external_sequence: 0,
         }
     }
@@ -82,10 +133,10 @@ impl PushThread {
                 (sequence, (*latest, item.clone()))
             })
             .collect::<BTreeMap<_, _>>();
-        for (sequence, (latest, item)) in &previous.external {
+        for (sequence, (latest, item)) in previous.external.iter() {
             if merged.get(sequence).is_none_or(|(held, _)| held < latest) {
                 merged.insert(*sequence, (*latest, item.clone()));
-                self.external.insert(*sequence, (*latest, item.clone()));
+                Arc::make_mut(&mut self.external).insert(*sequence, (*latest, item.clone()));
             }
         }
         if !self.external.is_empty() {
@@ -97,19 +148,21 @@ impl PushThread {
             self.floor = self.floor.max(*latest);
             merged.remove(&sequence);
         }
-        self.external
+        Arc::make_mut(&mut self.external)
             .retain(|sequence, (latest, _)| *latest > self.floor && merged.contains_key(sequence));
-        self.items = merged
-            .into_values()
-            .filter(|(latest, _)| *latest > self.floor)
-            .collect();
+        self.items = Arc::new(
+            merged
+                .into_values()
+                .filter(|(latest, _)| *latest > self.floor)
+                .collect(),
+        );
     }
 
     fn apply_committed(&mut self, delta: &crate::store::CommittedThreadItems) {
         self.tip.last_sequence = self.tip.last_sequence.max(delta.sequence);
         self.external_sequence = self.external_sequence.max(delta.sequence);
         let mut selected = BTreeMap::new();
-        for (latest, value) in &self.items {
+        for (latest, value) in self.items.iter() {
             let sequence = value["data"]["sequence"].as_u64().unwrap_or(*latest);
             select_push_item(
                 &mut selected,
@@ -142,8 +195,8 @@ impl PushThread {
             }
             items.push((latest, value));
         }
-        self.items = items;
-        self.external = external;
+        self.items = Arc::new(items);
+        self.external = Arc::new(external);
     }
 
     fn render(&self, after: &[(String, u64)]) -> ThreadTip {
@@ -239,7 +292,9 @@ impl PushFacts {
             .values_mut()
             .chain(std::iter::once(&mut self.lists))
         {
-            crate::app::read_view::history::patch_thread_digests(state, delta);
+            if crate::app::read_view::history::thread_digests_need_patch(state, delta) {
+                crate::app::read_view::history::patch_thread_digests(Arc::make_mut(state), delta);
+            }
         }
     }
 
@@ -277,14 +332,22 @@ impl PushFacts {
             state: if request.lists.is_empty() {
                 request
                     .state
-                    .then(|| self.states.get(&request.entity_id).cloned())
+                    .then(|| {
+                        self.states
+                            .get(&request.entity_id)
+                            .map(|state| state.as_ref().clone())
+                    })
                     .flatten()
             } else {
                 Some(self.lists(request.lists))
             },
             terminals: request
                 .terminals
-                .then(|| self.terminals.get(&request.entity_id).cloned())
+                .then(|| {
+                    self.terminals
+                        .get(&request.entity_id)
+                        .map(|terminals| terminals.as_ref().clone())
+                })
                 .flatten(),
             threads: if request.thread {
                 self.threads
@@ -411,14 +474,16 @@ pub(in crate::app) fn entity_facts(
 
 impl AppState {
     pub(in crate::app) fn push_facts_snapshot(&self, lists: Value) -> PushFacts {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.push_facts");
         let previous = self.read_view.load();
         let mut snapshot = PushFacts {
-            lists,
+            lists: Arc::new(lists),
             ..PushFacts::default()
         };
         for owner in self.plans.keys().chain(self.runs.keys()) {
             if let Some(state) = self.entity_state_item(owner) {
-                snapshot.states.insert(owner.clone(), state);
+                snapshot.states.insert(owner.clone(), Arc::new(state));
             }
             snapshot.threads.insert(
                 owner.clone(),
@@ -442,29 +507,27 @@ impl AppState {
                 let thread = self
                     .agent_conversation(owner, Some(&agent.id))
                     .unwrap_or(&agent.thread);
-                let mut captured = PushThread::capture(tip, thread);
-                if let Some(old) = previous
+                let old = previous
                     .threads
                     .get(owner)
                     .into_iter()
                     .flatten()
-                    .find(|old| same_tip_identity(&old.tip, &captured.tip))
-                {
-                    captured.merge_previous(old);
-                }
-                Some(captured)
+                    .find(|old| same_tip_identity(&old.tip, &tip));
+                Some(PushThread::recapture(tip, thread, old))
             })
             .collect()
     }
 
     fn capture_push_checkouts(&self, snapshot: &mut PushFacts, previous: &PushFacts) {
         for (entity, subject) in self.checkout_subjects() {
-            if let Some(state) = self.entity_state_item(&entity) {
-                snapshot.states.insert(entity.clone(), state);
+            if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
+                if let Some(state) = self.entity_state_item(&entity) {
+                    entry.insert(Arc::new(state));
+                }
             }
             snapshot.terminals.insert(
                 entity.clone(),
-                json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())}),
+                Arc::new(json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())})),
             );
             if let Some(workspace) = self.workspace_snapshot_for_conversation(&entity, None) {
                 let repositories = workspace
@@ -695,3 +758,9 @@ mod tests {
         assert!(facts[0].state.is_none());
     }
 }
+
+#[cfg(test)]
+mod tail_tests;
+
+#[cfg(test)]
+mod sharing_tests;

@@ -314,6 +314,13 @@ pub(in crate::app) async fn handle_authenticated_mcp_frame(
     timer: &FrameTimer,
     turn: &mut Turn,
 ) -> Option<Value> {
+    #[cfg(test)]
+    timer.sample_tool(
+        serde_json::from_value::<BridgeAction>(frame["request"].clone())
+            .as_ref()
+            .map(BridgeAction::tool_name)
+            .unwrap_or("done"),
+    );
     let admission = timer.lock(state).update_admission();
     let _lease = match admission {
         Some(gate) => match gate.try_enter() {

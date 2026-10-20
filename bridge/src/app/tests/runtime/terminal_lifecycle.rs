@@ -856,7 +856,7 @@ fn the_reaper_drops_an_agent_screen_whose_worktree_vanished_before_a_spawn() {
     }
     std::fs::remove_dir_all(&vanishing).unwrap();
 
-    let reaped = state.lock().unwrap().reap_orphaned_terminals();
+    let reaped = AppState::reap_orphaned_terminals(&state);
     assert_eq!(reaped, vec![wire_id.clone()]);
     assert!(
         state

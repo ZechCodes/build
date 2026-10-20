@@ -180,7 +180,7 @@ fn legacy_historical_handoff_updates_warmed_snapshot_below_resident_tail() {
     let mut fixture = HistoryReceipt::new(false);
     let payload = fixture
         .state
-        .legacy_delivery_payload(&fixture.owner, &fixture.agent)
+        .freeze_legacy_delivery(&fixture.owner, &fixture.agent)
         .unwrap()
         .unwrap();
     fixture

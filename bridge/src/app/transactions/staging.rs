@@ -60,6 +60,8 @@ impl AppState {
         state: &str,
         now: &str,
     ) -> (ActivePlan, Option<SnapshotDelta>) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.snapshot");
         if !self.snapshot_projection_initialized() {
             return (active, None);
         }
@@ -84,6 +86,8 @@ impl AppState {
         state: &str,
         now: &str,
     ) -> (ActiveRun, Option<SnapshotDelta>) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.snapshot");
         if !self.snapshot_projection_initialized() {
             return (active, None);
         }

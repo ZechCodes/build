@@ -352,7 +352,7 @@ async fn the_reaper_closes_the_turn_of_an_agent_whose_worktree_vanished() {
     );
 
     std::fs::remove_dir_all(&tab_key.root).expect("the user rm -rfs the checkout");
-    let reaped = state.lock().unwrap().reap_orphaned_terminals();
+    let reaped = AppState::reap_orphaned_terminals(&state);
     assert!(
         reaped.contains(&wire_id),
         "the reaper closes the vanished worktree's tab: {reaped:?}"

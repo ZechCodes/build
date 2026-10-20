@@ -87,6 +87,29 @@ pub(in crate::app) struct AgentTabFact {
     pub instance: Option<SessionInstance>,
 }
 
+/// Immutable registration identity retained across an off-lock root probe.
+/// Keeping the handles alive also prevents allocation identity from being reused.
+pub(in crate::app) enum TerminalCleanupCandidate {
+    Tab {
+        key: TabKey,
+        role: TabRole,
+        session: Arc<dyn AgentSession>,
+        instance: Option<SessionInstance>,
+    },
+    WaitingScreen {
+        key: TabKey,
+        screen: ScreenHandle,
+    },
+}
+
+impl TerminalCleanupCandidate {
+    pub(in crate::app) fn key(&self) -> &TabKey {
+        match self {
+            Self::Tab { key, .. } | Self::WaitingScreen { key, .. } => key,
+        }
+    }
+}
+
 pub(in crate::app) struct ShellTabFact {
     pub project_source: Option<crate::changes::ProjectSourceScope>,
     pub key: TabKey,
@@ -198,6 +221,8 @@ impl SessionRegistry {
             .iter()
             .filter(|(_, tab)| tab.role.agent().is_some())
             .map(|(_, tab)| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::summary_counts::status_visit();
                 (
                     tab.root.clone(),
                     tab.live && matches!(tab.session.status(), AgentStatus::Working),
@@ -363,8 +388,49 @@ impl SessionRegistry {
             .collect()
     }
 
+    #[cfg(test)]
     pub(in crate::app) fn waiting_screen_keys(&self) -> Vec<TabKey> {
         self.waiting_screens.keys().cloned().collect()
+    }
+
+    pub(in crate::app) fn terminal_cleanup_candidates(&self) -> Vec<TerminalCleanupCandidate> {
+        self.tabs
+            .iter()
+            .map(|(key, tab)| TerminalCleanupCandidate::Tab {
+                key: key.clone(),
+                role: tab.role.clone(),
+                session: Arc::clone(&tab.session),
+                instance: tab.session_instance.clone(),
+            })
+            .chain(self.waiting_screens.iter().map(|(key, screen)| {
+                TerminalCleanupCandidate::WaitingScreen {
+                    key: key.clone(),
+                    screen: screen.clone(),
+                }
+            }))
+            .collect()
+    }
+
+    pub(in crate::app) fn cleanup_candidate_is_current(
+        &self,
+        candidate: &TerminalCleanupCandidate,
+    ) -> bool {
+        match candidate {
+            TerminalCleanupCandidate::Tab {
+                key,
+                role,
+                session,
+                instance,
+            } => self.tabs.get(key).is_some_and(|tab| {
+                tab.role == *role
+                    && Arc::ptr_eq(&tab.session, session)
+                    && tab.session_instance == *instance
+            }),
+            TerminalCleanupCandidate::WaitingScreen { key, screen } => self
+                .waiting_screens
+                .get(key)
+                .is_some_and(|current| current.same_screen(screen)),
+        }
     }
 
     /// Session detach needs every live and waiting screen, but no map identity.

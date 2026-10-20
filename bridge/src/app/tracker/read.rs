@@ -53,6 +53,10 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn set_user_session(&mut self, session: UserSession) {
+        self.user_session = session;
+    }
+
     pub(in crate::app) fn update_scope_project(&mut self, id: &str, path: Option<String>) {
         match path {
             Some(path) => {

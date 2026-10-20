@@ -138,7 +138,7 @@ cmd > /tmp/gate.log 2>&1; echo "exit=$?"
 | desktop | `desktop/` | `nice -n 10 npm test` |
 | shell | repo root | `git ls-files '*.sh' \| nice -n 10 xargs shellcheck` |
 
-The two `#[ignore]`d timing tests (git child cost, daemon under PTY flood) are out of `cargo test`; `.github/workflows/timing.yml` runs them nightly and by hand.
+The three `#[ignore]`d timing regressions are out of `cargo test`; `.github/workflows/timing.yml` runs git child cost and daemon under PTY flood in their debug profile, and busy app-lock holds in the release profile. Each job builds before its serial timed runs, nightly and by hand.
 
 Transport is maintained in this checkout; [transport/README.md](transport/README.md)
 records ownership, tests and the historical source pin. The dedicated CI job

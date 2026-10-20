@@ -2,7 +2,7 @@ use crate::api::clients::DeclaredClient;
 use crate::api::API_VERSION;
 use crate::app::{
     capture_conversation_names, err, off_the_workers, record_idle_in_thread, require_str,
-    spawn_tab_pumps, AppState, HarnessExit, IdleObservation, LifecycleDiagnostic, Tab, TabKey,
+    spawn_tab_pumps, AppState, HarnessExit, IdleObservation, Tab, TabKey,
 };
 use crate::carrier::SessionSender;
 use crate::changes::{Kind, ANNOUNCED_EVENTS, MAX_BATCH_MS, MIN_BATCH_MS};
@@ -10,13 +10,13 @@ use crate::encoding::b64decode;
 use crate::models::AgentProvider;
 use crate::pty::HarnessSpec;
 use crate::screen::{AttachSnapshot, TerminalHandle};
-use crate::thread::SessionInstance;
 use crate::timing::FrameTimer;
 use portable_pty::PtySize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod cleanup;
 mod scope;
 
 use scope::resolve_terminal_scope;
@@ -535,92 +535,6 @@ impl AppState {
         }
     }
 
-    /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
-    /// AND reaping each one, and tell every attached client. Returns the closed
-    /// wire ids. Called at the tail of `finish_mutation` (prompt closure right
-    /// after abandon/delete/merge-prune) and by the periodic reaper loop
-    /// (out-of-band disappearance, e.g. a user `rm -rf`ing a worktree).
-    ///
-    /// A tab lives as long as the WORKTREE it is rooted in — not as long as the
-    /// entity that happens to own it. That is one rule for shells and agents
-    /// alike, and it is the right one for both: a merged run kept with
-    /// `cleanup=keep` keeps its directory and everything open in it, and
-    /// releasing or deleting an adopted run leaves the human's worktree exactly
-    /// where it was. The two verbs that remove a run while keeping its worktree
-    /// close Build's agent themselves ([`AppState::retire_agent_tabs`]), because
-    /// an agent whose owner is gone reports `done` into the unknown-entity log
-    /// forever.
-    pub(in crate::app) fn reap_orphaned_terminals(&mut self) -> Vec<String> {
-        let vanished: Vec<TabKey> = self
-            .session_registry
-            .tab_keys()
-            .into_iter()
-            .filter(|key| !key.root.exists())
-            .collect();
-        let mut reaped = Vec::new();
-        let mut killed_agents: Vec<SessionInstance> = Vec::new();
-        for key in vanished {
-            let provider = self.session_registry.agent_snapshot(&key).and_then(|tab| {
-                tab.role
-                    .agent()
-                    .map(|(owner, agent)| (owner.to_string(), agent.to_string()))
-            });
-            let provider_thread_id = provider
-                .as_ref()
-                .and_then(|(owner, agent)| self.recorded_resume_id(owner, agent));
-            let shell = self.session_registry.tab_is_shell(&key);
-            let Some(retired) = self.session_registry.retire_tab(
-                &key,
-                "reaped",
-                LifecycleDiagnostic {
-                    event: "shutdown_requested",
-                    origin: "tab_retirement",
-                    reason: Some("reaped"),
-                    operation_id: None,
-                    provider_thread_id: provider_thread_id.as_deref(),
-                    caller: Some(std::panic::Location::caller()),
-                },
-            ) else {
-                continue;
-            };
-            if let Some(instance) = retired.instance {
-                killed_agents.push(instance);
-            }
-            if shell {
-                self.note_terminals_at(&key.root);
-            }
-            reaped.push(retired.wire_id);
-        }
-        // The kill above is one the pump can never report: the tab left the
-        // registry before the process died, so the pump's EOF finds no tab and
-        // records nothing. This is the one teardown where the OWNER may stay on
-        // the board (a worktree deleted by hand out from under a live run) — so
-        // the session lineage and any turn the dead agent was holding close
-        // here, or the row reads as working forever. Owners that left the board
-        // in the same mutation (delete, merge-prune) make this a quiet no-op,
-        // and abandon already closed its own. The loop runs after every removal
-        // above so the nested reap inside `finish_run_mutation` finds nothing
-        // left to take.
-        for instance in killed_agents {
-            self.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
-        }
-        // The screens waiting for a first spawn go the same way: a worktree
-        // that is gone will never host the agent their clients are watching
-        // for, and a screen nothing can ever paint is not one to keep.
-        let orphaned: Vec<TabKey> = self
-            .session_registry
-            .waiting_screen_keys()
-            .into_iter()
-            .filter(|key| !key.root.exists())
-            .collect();
-        for key in orphaned {
-            if let Some(wire_id) = self.session_registry.remove_waiting_screen(&key, "reaped") {
-                reaped.push(wire_id);
-            }
-        }
-        reaped
-    }
-
     /// Periodically close tabs whose worktree vanished out-of-band (nothing
     /// went through `finish_*_mutation` — e.g. the user deleted a worktree by
     /// hand). Runs beside `spawn_idle_monitor`.
@@ -629,9 +543,7 @@ impl AppState {
             loop {
                 tokio::time::sleep(interval).await;
                 let reaping = Arc::clone(&state);
-                let reaped =
-                    off_the_workers(move || reaping.lock().unwrap().reap_orphaned_terminals())
-                        .await;
+                let reaped = off_the_workers(move || Self::reap_orphaned_terminals(&reaping)).await;
                 for term_id in reaped {
                     eprintln!("terminal reaper: closed {term_id} (worktree gone)");
                 }

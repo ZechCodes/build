@@ -3,6 +3,12 @@ use super::*;
 use std::path::Path;
 
 impl AppState {
+    #[cfg(test)]
+    pub(in crate::app) fn warm_snapshot_observations_for_test(&mut self) {
+        self.refresh_snapshot_observations();
+        self.snapshot_observations.ready = true;
+    }
+
     pub(super) fn warm_snapshot_board_observations(&mut self) {
         let run_ids = self.runs.keys().cloned().collect::<Vec<_>>();
         let project_ids = self
@@ -276,6 +282,8 @@ impl AppState {
         }
     }
     pub(in crate::app) fn snapshot_root(&self, path: &Path) -> PathBuf {
+        #[cfg(test)]
+        crate::workspace::read_work_counts::observed_root();
         if !self.snapshot_observations.ready {
             return Self::canonical_root(path);
         }

@@ -435,13 +435,24 @@ impl AppState {
     }
 
     /// Prune a merged run's worktree once its `Merged` verdict is durable.
-    pub(in crate::app) fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
+    pub(in crate::app) fn prune_merged_worktree(
+        &self,
+        project_id: &str,
+        worktree: &Worktree,
+    ) -> bool {
         if let Err(error) = self.refuse_removing_locked_workspace_at(&worktree.path) {
             eprintln!("merge cleanup kept {}: {error}", worktree.path.display());
-            return;
+            return false;
         }
-        if let Ok(orch) = self.orch_for(project_id) {
-            orch.discard_checkout(worktree, /* keep_branch */ false);
+        self.orch_for(project_id)
+            .is_ok_and(|orch| orch.discard_checkout(worktree, /* keep_branch */ false))
+    }
+
+    fn prune_merged_terminals(&mut self, project_id: &str, worktree: &Worktree) {
+        let candidates = self.session_registry.terminal_cleanup_candidates();
+        let root = self.retire_agents_of_pruned_worktree(&worktree.path);
+        if self.prune_merged_worktree(project_id, worktree) {
+            self.reap_terminal_candidates_at(&candidates, &root);
         }
     }
 
@@ -454,10 +465,7 @@ impl AppState {
         cleanup: MergeCleanup,
     ) {
         match cleanup {
-            MergeCleanup::Prune => {
-                self.retire_agents_of_pruned_worktree(&worktree.path);
-                self.prune_merged_worktree(project_id, worktree);
-            }
+            MergeCleanup::Prune => self.prune_merged_terminals(project_id, worktree),
             MergeCleanup::Keep => {}
             MergeCleanup::Release => {
                 if let Err(error) = self.preserve_entity_task_identities(run_id) {

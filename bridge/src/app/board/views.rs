@@ -2,7 +2,7 @@ use crate::app::{run_state_str, DigestScope, ExternalWorktreeRows, WORKSPACE_SUM
 use crate::run::RunState;
 use crate::store::now_rfc3339;
 use crate::thread::ThreadDetail;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{json, Value};
 
@@ -342,6 +342,12 @@ impl AppState {
     /// scanned here: a flush answers with what the board knows, and the walk
     /// that would make it newer is the board's own TTL to run.
     pub(in crate::app) fn external_worktree_row_of(&self, worktree_id: &str) -> Option<Value> {
+        if let Some(row) = self
+            .snapshot_ownership_context()
+            .and_then(|context| context.rendering.external_row(worktree_id))
+        {
+            return row;
+        }
         let projects = self.projects.iter().filter(|project| project.is_git);
         for project in projects {
             // A project whose walk has not landed is not an answer about the
@@ -349,7 +355,11 @@ impl AppState {
             let Some(scan) = self.board.diff().external_scan_cache(&project.id) else {
                 continue;
             };
-            let Some(w) = scan.worktrees.iter().find(|w| w.id == worktree_id) else {
+            let Some(w) = scan.worktrees.iter().find(|w| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::external_candidate();
+                w.id == worktree_id
+            }) else {
                 continue;
             };
             let agent = self
@@ -452,28 +462,78 @@ impl AppState {
     }
 
     pub(in crate::app) fn cached_external_worktrees_json(&self) -> ExternalWorktreeRows {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board_external_rows");
+        let attention_of = self
+            .board
+            .attention()
+            .attention_ids()
+            .map(|id| (id.to_owned(), self.attention_json(id)))
+            .collect::<HashMap<_, _>>();
+        // The single-row reader uses the first matching registry entry, even
+        // when several agents share a root and report different statuses.
+        let agent_signals = self
+            .session_registry
+            .agent_working_roots()
+            .into_iter()
+            .fold(HashMap::new(), |mut signals, (root, working)| {
+                signals
+                    .entry(crate::worktree::external_worktree_id(&root))
+                    .or_insert((working, !working));
+                signals
+            });
         let mut rows = ExternalWorktreeRows::default();
+        let mut by_id = BTreeMap::new();
         for project in self.projects.iter().filter(|project| project.is_git) {
             let scan = self.board.diff().external_scan(&project.id);
             rows.scanning |= scan.settled_at.is_none();
-            rows.rows.extend(
-                scan.worktrees
-                    .iter()
-                    .filter_map(|worktree| self.external_worktree_row_of(&worktree.id)),
-            );
+            for worktree in scan.worktrees {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::external_candidate();
+                // Preserve the old single-row lookup's first project scope
+                // when two registered projects observed the same checkout id.
+                let row = by_id.entry(worktree.id.clone()).or_insert_with(|| {
+                    external_worktree_row(
+                        worktree,
+                        &ExternalRowScope {
+                            project_id: &project.id,
+                            project_name: &project.name,
+                            base_branch: &project.base_branch,
+                        },
+                        agent_signals
+                            .get(&worktree.id)
+                            .copied()
+                            .unwrap_or((false, false)),
+                        attention_of.get(&worktree.id).cloned(),
+                    )
+                });
+                rows.rows.push(row.clone());
+            }
+        }
+        if let Some(context) = self.snapshot_ownership_context() {
+            context.rendering.remember_external_rows(by_id);
         }
         rows
     }
 
     fn cached_workspace_summaries_json(&self) -> Vec<Value> {
-        self.workspaces.list(None).into_iter().map(|workspace| {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board_workspace_summaries");
+        let workspaces = self.workspaces.list(None);
+        if workspaces.is_empty() {
+            return Vec::new();
+        }
+        // This observation belongs only to these rows. A later candidate must
+        // observe live statuses and accepted delivery roots again.
+        let working_roots = self.snapshot_working_roots();
+        workspaces.into_iter().map(|workspace| {
             let repositories = workspace.directories.iter()
                 .filter(|directory| directory.is_git)
                 .map(|directory| directory.path.clone()).collect::<Vec<_>>();
             let summary = self.workspace_summary_of(&workspace.id, &repositories)
                 .map(|(_, summary)| summary.clone()).unwrap_or(Value::Null);
             let mut blockers = Vec::new();
-            if self.snapshot_agent_working_at_root(&self.snapshot_root(&workspace.root)) {
+            if working_roots.contains(&self.snapshot_root(&workspace.root)) {
                 blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
             }
             if workspace.directories.iter().any(|directory| !directory.is_git) {
@@ -516,7 +576,11 @@ impl AppState {
 
     /// Render already observed board state without starting maintenance.
     pub(in crate::app) fn board_snapshot(&self) -> Value {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board");
         let runs: Vec<Value> = {
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.board_run_rows");
             let ids: Vec<String> = self
                 .runs
                 .iter()
@@ -577,28 +641,31 @@ impl AppState {
         // Tasks → Watching). A row's absence is how unwatching shows.
         items.extend(self.snapshot_watched_task_rows());
         crate::branch::sort_by_anchor(&mut items);
-        json!({
+        #[cfg(test)]
+        let _assemble_phase = crate::timing::phase_samples::phase("publication.board_assemble");
+        super::assembly::BoardSnapshot {
             // The active feed contains workspace-backed work only. Legacy
             // task records are intentionally absent from both the folded
             // items and the compatibility collections.
-            "items": items,
-            "projects": projects,
-            "runs": runs,
-            "external_worktrees": checkouts.rows,
+            items,
+            projects,
+            runs,
+            external_worktrees: checkouts.rows,
             // Lifecycle verbs whose git is running right now. A checkout being
             // cut is on the board from the moment it is asked for, under the id
             // it will settle as.
-            "pending": self.pending_rows_json(),
+            pending: self.pending_rows_json(),
             // The rail has not finished looking. An empty list under this flag
             // is a board still working, not a project with no checkouts, and
             // the scan that lands invalidates the board so the client asks
             // again.
-            "scanning": checkouts.scanning,
-            "workspace_summaries": workspace_summaries,
+            scanning: checkouts.scanning,
+            workspace_summaries: Value::Array(workspace_summaries),
             // The harnesses out of usage on this device (task #58). The board
             // item carries the same list whole whenever it moves.
-            "usage_limits": self.usage_limits_json(),
-        })
+            usage_limits: self.usage_limits_json(),
+        }
+        .into_value()
     }
 
     /// The feed's work items: one row per branch or task.
@@ -630,6 +697,8 @@ impl AppState {
     }
 
     pub(in crate::app) fn cached_work_items(&self, external_worktrees: &[Value]) -> Vec<Value> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board_work_items");
         let run_ids: Vec<String> = self
             .runs
             .iter()
@@ -729,6 +798,27 @@ impl AppState {
         run_id: &str,
         stat: &Value,
     ) -> crate::branch::WorkItemCandidate {
+        let context = self.snapshot_ownership_context();
+        if let Some(cached) = context
+            .as_ref()
+            .and_then(|context| context.rendering.branch(run_id, stat))
+        {
+            return cached;
+        }
+        let candidate = self.render_branch_candidate_from_run(run_id, stat);
+        if let Some(context) = context {
+            context.rendering.remember_branch(run_id, stat, &candidate);
+        }
+        candidate
+    }
+
+    fn render_branch_candidate_from_run(
+        &self,
+        run_id: &str,
+        stat: &Value,
+    ) -> crate::branch::WorkItemCandidate {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::branch();
         let active = self.runs.get(run_id).expect("caller listed this run");
         let branch = self.snapshot_run_branch(run_id, &active.worktree);
         let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
@@ -759,7 +849,7 @@ impl AppState {
             )
             .unwrap_or(active.run.state);
         let state = crate::branch::displayed_run_state(active.run.state, selected_state);
-        let row = json!({
+        let mut row = json!({
             "kind": crate::branch::WorkItemKind::Branch.as_str(),
             "project_id": project_id,
             "project": self.project_name_of(run_id),
@@ -771,12 +861,6 @@ impl AppState {
             "unread_reason": unread.reason,
             "working": working,
             "working_time": working_time_json(working_since.as_deref()),
-            // `Detail`, on a row: a cache-first client reads its agents off
-            // this row and asks no detail verb after it, so the surface
-            // snapshot has to ride here or the reader never sees a goal, a
-            // checklist or a workflow again. The scope is what carries it.
-            "agents": self.agent_digests(run_id, DigestScope::Detail),
-            "stat": sync.to_json(),
             "resume_at": self.attention_json(run_id)["resume_at"],
             // Where this row sits in the inbox, and how long it has been quiet.
             // Every row carries both, whatever it was read off.
@@ -801,6 +885,12 @@ impl AppState {
             "run_id": run_id,
             "task_id": task_id,
         });
+        // `Detail`, on a row: a cache-first client reads its agents off
+        // this row and asks no detail verb after it, so the surface
+        // snapshot has to ride here or the reader never sees a goal, a
+        // checklist or a workflow again. The scope is what carries it.
+        row["agents"] = Value::Array(self.agent_digests(run_id, DigestScope::Detail));
+        row["stat"] = sync.to_json();
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
             key: crate::branch::WorkItemKey::Branch {

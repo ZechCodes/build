@@ -5,7 +5,7 @@ use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -214,6 +214,8 @@ impl AppState {
     }
 
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.install");
         let receipts = delta.take_observation_receipts();
         if self.read_view.publish_delta(delta) {
             if let Some(receipts) = receipts {
@@ -270,6 +272,8 @@ impl AppState {
         mut delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.global");
         let board = self.board_snapshot();
         let projects = self.snapshot_project_list();
         let workspaces = self
@@ -281,11 +285,14 @@ impl AppState {
                     .cloned()
                     .expect("workspace observations warmed before publication")
             });
-        let lists = json!({"projects": projects["projects"], "workspaces": snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]), "usage_limits": board["usage_limits"]});
+        let mut lists =
+            json!({"projects": projects["projects"], "usage_limits": board["usage_limits"]});
+        lists["workspaces"] =
+            snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]);
         delta = put_changed(delta, previous, "board.list", "", board);
         delta = put_changed(delta, previous, "project.list", "", projects);
-        delta = put_changed(delta, previous, "workspace.list", "", workspaces.clone());
         delta = self.prepare_workspace_lists(delta, previous, &workspaces);
+        delta = put_changed(delta, previous, "workspace.list", "", workspaces);
         delta = put_changed(
             delta,
             previous,
@@ -336,7 +343,10 @@ impl AppState {
                 previous,
                 "workspace.list",
                 project,
-                json!({"workspaces": rows}),
+                Value::Object(serde_json::Map::from_iter([(
+                    "workspaces".into(),
+                    Value::Array(rows),
+                )])),
             );
         }
         delta
@@ -344,18 +354,23 @@ impl AppState {
 }
 
 fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value {
+    let mut by_workspace = HashMap::new();
+    for summary in summaries.as_array().into_iter().flatten() {
+        #[cfg(test)]
+        summary_counts::join_visit();
+        // The old search selected the first equal id, including missing/null
+        // and legacy non-string ids. Keep Value equality for every input.
+        by_workspace
+            .entry(&summary["workspace_id"])
+            .or_insert(summary);
+    }
     let rows = workspaces
         .as_array()
         .into_iter()
         .flatten()
         .map(|workspace| {
             let mut workspace = workspace.clone();
-            if let Some(summary) = summaries
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|summary| summary["workspace_id"] == workspace["workspace_id"])
-            {
+            if let Some(summary) = by_workspace.get(&workspace["workspace_id"]) {
                 for key in ["work_summary", "can_finish", "finish_blockers"] {
                     workspace[key] = summary[key].clone();
                 }
@@ -363,7 +378,7 @@ fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value 
             workspace
         })
         .collect::<Vec<_>>();
-    json!(rows)
+    Value::Array(rows)
 }
 
 fn put_changed(
@@ -388,3 +403,9 @@ mod projects;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::app) mod work_counts;
+
+#[cfg(test)]
+pub(in crate::app) mod summary_counts;

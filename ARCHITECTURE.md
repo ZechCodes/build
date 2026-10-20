@@ -422,6 +422,20 @@ before saving. A failed save removes only that staged in-memory alias, while
 a successful save publishes both before notices, including branch dispatch
 and implementation handover.
 
+Plan/run finishers do not discover or reap unrelated terminals. The periodic
+service in `app/runtime/terminals/cleanup.rs` captures registration identities
+under a brief app guard, probes checkout roots outside the guard, then applies
+each disappearance under its own guard. It rechecks the exact tab role,
+session handle and lineage, or waiting-screen handle, before retiring anything.
+Cleanup attempts the exact session's lineage and turn closure through its
+canonical owner mutation. It publishes actual runtime retirement with committed
+roster fields before completing even if that save fails. Known checkout removals
+carry captured registrations through
+their deferred work and clean up only those covered by a confirmed removal
+receipt before replying. Merge prune uses the same registration checks after
+successful removal; its existing synchronous filesystem work remains guarded.
+Process kill and reap still run separately through `reaper.rs::Retirement`.
+
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read
 rolls back the write. Background observation failures retain the previous
@@ -446,11 +460,30 @@ Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
 Snapshot preparation captures one ephemeral ownership context shared by board,
-workspace, agent and push projections. It preserves project-scoped workspace
-filters and canonical conversation aliases without resolving paths per agent.
-The context ends before persistence or canonical mutation; it cannot retain a
-failed candidate's workspace mapping. Counting tests include the publication
-producer as well as the pure push reader.
+workspace, agent and push projections. It observes ordered workspace inputs and
+distinct roots once, preserving run-map fallback order and workspace name/ID
+precedence. Task live locations use a qualified owner index with the existing
+project/root checks and project-repository exclusion, so each agent resolves its
+location without repeating registry scans. It indexes agent ownership and preferred
+run outcomes in the existing precedence order, and reuses branch candidates and
+canonical agent digests for matching render inputs. Updated canonical histories
+are shared by unread projections and history staging; unread summaries are keyed
+by the effective read cursor. Cached external checkout
+rows are rendered in one pass and reused by push states, retaining the first
+matching project and agent-root entry. Project-scoped workspace filters and
+canonical conversation aliases retain their existing behavior without resolving
+paths per agent. Board workspace summaries observe in-flight delivery roots
+and live session status once for all workspace rows. Push workspace rows join
+summaries through a temporary index that preserves JSON id equality and
+first-match duplicate precedence. These candidate-local indexes and render
+memos end before persistence or canonical mutation; a failed candidate cannot
+seed a later publication. Complete local read-view deltas retain their atomic publication
+boundary before replies and change notices. Counting tests include the
+publication producer as well as the pure push reader.
+Bounded push tail bodies are shared between publications while conversation
+identity, publication sequence and resident tail geometry match. Each publication
+still captures fresh tip metadata. Historical receipt rows retain their existing
+bounded floor and generation fences.
 
 ### Liveness and signaling
 

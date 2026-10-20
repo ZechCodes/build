@@ -598,12 +598,10 @@ impl AppState {
         thread: &crate::thread::Thread,
         cursor: u64,
     ) -> crate::thread::UnreadSummary {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.unread_history");
         if self.snapshot_projection_initialized() {
-            let mut summary = thread.unread_since(cursor);
-            if let Some(history) = self.read_view.load().history(agent_id) {
-                summary.count = history.updated(thread).unread_since(cursor).count;
-            }
-            return summary;
+            return self.snapshot_unread_history(agent_id, thread, cursor);
         }
         let mut summary = thread.unread_since(cursor);
         let floor = thread.resident_from_sequence();
@@ -650,6 +648,8 @@ impl AppState {
     /// (one small file) and done on every stamp, so a crash costs at most the
     /// action in flight rather than the day's ordering.
     pub(in crate::app) fn persist_attention(&mut self) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.attention");
         // The inbox is ordered and coloured by this map, so a stamp on it IS a
         // feed change — an interaction, a seen, a mute, a dismissal. Noted
         // ahead of the write, because the map moved whether or not there is a

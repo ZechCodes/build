@@ -1,7 +1,7 @@
 use super::*;
 
+mod batching;
 mod history;
-use crate::operation::OperationPayload;
 use crate::thread::{MessageDeliveryStatus, ThreadItem, ThreadMessage};
 
 fn operation_message<'a>(
@@ -285,18 +285,18 @@ fn legacy_native_receipt_preserves_unlisted_messages_between_its_sequences() {
     let first = message_by_body(&state, &run_id, &agent_id, "queued first").clone();
     let middle = message_by_body(&state, &run_id, &agent_id, "separate middle").clone();
     let last = message_by_body(&state, &run_id, &agent_id, "queued last").clone();
+    let mut frozen = state
+        .freeze_legacy_delivery(&run_id, &agent_id)
+        .unwrap()
+        .unwrap();
+    frozen.payload.messages = vec![middle.clone()];
+    frozen.payload.start_sequence = middle.sequence;
+    frozen.payload.end_sequence = middle.sequence;
     state
         .record_legacy_delivery_status(
             &run_id,
             &agent_id,
-            &OperationPayload {
-                start_sequence: middle.sequence,
-                end_sequence: middle.sequence,
-                messages: vec![middle.clone()],
-                prior_context: String::new(),
-                ask_to_name: false,
-                tells_sender_context: false,
-            },
+            &frozen,
             MessageDeliveryStatus::Uncertain,
         )
         .unwrap();

@@ -242,7 +242,12 @@ impl DeliveryQueue {
     }
 
     pub(in crate::app) fn has_in_flight_at_root(&self, root: &std::path::Path) -> bool {
-        self.agents_in_flight.keys().any(|key| key.root == root)
+        self.in_flight_agent_roots()
+            .any(|candidate| candidate == root)
+    }
+
+    pub(in crate::app) fn in_flight_agent_roots(&self) -> impl Iterator<Item = &std::path::Path> {
+        self.agents_in_flight.keys().map(|key| key.root.as_path())
     }
 
     /// A turn in flight for an agent at `root` or anywhere below it.
@@ -312,6 +317,15 @@ impl DeliveryQueue {
         turn.wants_catch_up = false;
         turn.survives_refusal = true;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn fixture_is_drained(&self) -> bool {
+        self.queued.is_empty()
+            && self.settling.fixture_is_drained()
+            && self.owners_in_flight.is_empty()
+            && self.agents_in_flight.is_empty()
+            && self.executions_in_flight.is_empty()
     }
 
     #[cfg(test)]

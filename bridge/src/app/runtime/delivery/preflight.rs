@@ -1,4 +1,5 @@
 use super::compaction::compact_before_turn;
+use crate::app::conversations::FrozenLegacyDelivery;
 use crate::app::{
     ensure_agent_tab, still_pumping_instance, AgentSpawnRequest, AppState, DeliveryOutcome,
     DeliveryPreflight, LifecycleDiagnostic, PendingAgentTurn, Spawned, TabKey,
@@ -269,18 +270,19 @@ pub(in crate::app) fn deliver(
                 },
             );
         }
-        let legacy_payload = if turn.reads_unread_thread() {
-            s.legacy_delivery_payload(owner, agent_id)?
+        let legacy_payload: Option<FrozenLegacyDelivery> = if turn.reads_unread_thread() {
+            s.freeze_legacy_delivery(owner, agent_id)?
         } else {
             None
         };
         // Every entry path reaches this point: native and legacy posts,
         // notices, reminders, catch-up, and starts with no existing text.
         // Slash commands must remain unadorned for the provider to parse.
-        let asks_name = !legacy_payload
-            .as_ref()
-            .is_some_and(|payload| payload.requires_unadorned_delivery(model_choice.provider))
-            && s.claim_agent_name_request(owner, agent_id);
+        let asks_name = !legacy_payload.as_ref().is_some_and(|frozen| {
+            frozen
+                .payload
+                .requires_unadorned_delivery(model_choice.provider)
+        }) && s.claim_agent_name_request(owner, agent_id);
         if say.is_none() && !asks_name {
             return Ok(DeliveryOutcome::Delivered(Some((wire_id, spawned))));
         }
@@ -309,7 +311,7 @@ pub(in crate::app) fn deliver(
     let reports_turn_boundaries = session.status_changed().is_some();
     let prompt = delivered_prompt(
         prompt.unwrap_or_default(),
-        legacy_payload.as_ref(),
+        legacy_payload.as_ref().map(|frozen| &frozen.payload),
         model_choice.provider,
     );
     let prompt = if asks_name {
@@ -321,6 +323,7 @@ pub(in crate::app) fn deliver(
     native_turn.operation_id = turn.operation_id.clone().or_else(|| {
         legacy_payload.as_ref().map(|payload| {
             let sequences = payload
+                .payload
                 .messages
                 .iter()
                 .map(|message| message.sequence.to_string())

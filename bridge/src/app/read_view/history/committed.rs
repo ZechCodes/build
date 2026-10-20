@@ -1,12 +1,15 @@
 //! Separately committed historical row edits share the same immutable root as
 //! their existing digest rows and bounded push tails.
-use super::{insert, patch_thread_digests, SharedHistory};
+use super::{insert, patch_thread_digests, thread_digests_need_patch, SharedHistory};
 use crate::app::read_view::SnapshotDelta;
 use crate::app::AppState;
 use crate::store::CommittedThreadItems;
 use crate::thread::Thread;
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+#[cfg(test)]
+mod tests;
 
 impl SharedHistory {
     pub fn with_committed_items(&self, delta: &CommittedThreadItems) -> Option<Self> {
@@ -43,6 +46,8 @@ impl AppState {
         &mut self,
         committed: &CommittedThreadItems,
     ) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.committed");
         self.committed_entities.apply_thread_items(committed);
         for agents in self
             .plans
@@ -63,8 +68,16 @@ impl AppState {
             let mut delta = SnapshotDelta::new(version)
                 .put_history(&committed.conversation_id, history)
                 .set_facts(Arc::new(facts));
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.committed.chunks");
             for key in previous.keys() {
-                let mut row = previous.get(key.method, &key.owner)?.clone();
+                let row = previous.get(key.method, &key.owner)?;
+                if !thread_digests_need_patch(row, committed) {
+                    continue;
+                }
+                let mut row = row.clone();
+                #[cfg(test)]
+                tests::record_chunk_copy();
                 if patch_thread_digests(&mut row, committed) {
                     delta = delta.put(key.method, &key.owner, row);
                 }

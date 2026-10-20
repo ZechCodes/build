@@ -26,6 +26,9 @@ use serde_json::{json, Value};
 use crate::api::clients::ClientRegistry;
 use crate::logline::Throttle;
 
+#[cfg(test)]
+pub(crate) mod phase_samples;
+
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
 /// above it a human is already waiting and wants to know which wait or hold
@@ -183,6 +186,8 @@ pub struct FrameClock {
     /// by `bridge.stats` beside the counters.
     clients: ClientRegistry,
     #[cfg(test)]
+    phase_samples: Mutex<Option<phase_samples::PhaseSamples>>,
+    #[cfg(test)]
     request_observer: RwLock<Option<Arc<RequestObserver>>>,
     #[cfg(test)]
     request_observed: AtomicBool,
@@ -219,6 +224,8 @@ impl FrameClock {
             sink,
             slow_lines: throttle.map(|window| (Throttle::new(window), window)),
             clients: ClientRegistry::new(),
+            #[cfg(test)]
+            phase_samples: Mutex::new(None),
             #[cfg(test)]
             request_observer: RwLock::new(None),
             #[cfg(test)]
@@ -423,6 +430,10 @@ impl QueuedFrame {
             pool_wait_recorded: AtomicBool::new(false),
             held_micros: AtomicU64::new(0),
             #[cfg(test)]
+            sample_tool: Mutex::new(None),
+            #[cfg(test)]
+            phase_capture: phase_samples::start_frame(&self.clock),
+            #[cfg(test)]
             request: None,
         }
     }
@@ -477,6 +488,10 @@ pub struct FrameTimer {
     pool_wait_recorded: AtomicBool,
     held_micros: AtomicU64,
     #[cfg(test)]
+    sample_tool: Mutex<Option<String>>,
+    #[cfg(test)]
+    phase_capture: Option<phase_samples::PhaseSamples>,
+    #[cfg(test)]
     request: Option<crate::transport::Frame>,
 }
 
@@ -530,6 +545,8 @@ impl FrameTimer {
             guard: Some(guard),
             timer: self,
             acquired_at: Instant::now(),
+            #[cfg(test)]
+            phase_sample: phase_samples::LockSample::begin(self),
         }
     }
 
@@ -566,6 +583,8 @@ impl FrameTimer {
 
 impl Drop for FrameTimer {
     fn drop(&mut self) {
+        #[cfg(test)]
+        phase_samples::record_frame(self);
         self.clock.publish(self);
     }
 }
@@ -580,6 +599,8 @@ pub struct LockedFor<'a, T> {
     guard: Option<MutexGuard<'a, T>>,
     timer: &'a FrameTimer,
     acquired_at: Instant,
+    #[cfg(test)]
+    phase_sample: Option<phase_samples::LockSample>,
 }
 
 impl<'a, T> LockedFor<'a, T> {
@@ -596,6 +617,8 @@ impl<'a, T> LockedFor<'a, T> {
         timeout: Duration,
         mut ready: impl FnMut(&mut T) -> bool,
     ) -> LockedFor<'a, T> {
+        #[cfg(test)]
+        self.phase_sample.take();
         let guard = self.guard.take().expect("held until drop");
         self.timer.clock.hold_ended();
         self.timer
@@ -611,6 +634,10 @@ impl<'a, T> LockedFor<'a, T> {
         self.timer.clock.hold_began(&self.timer.method);
         self.acquired_at = Instant::now();
         self.guard = Some(guard);
+        #[cfg(test)]
+        {
+            self.phase_sample = phase_samples::LockSample::begin(self.timer);
+        }
         self
     }
 }
@@ -631,6 +658,8 @@ impl<T> std::ops::DerefMut for LockedFor<'_, T> {
 
 impl<T> Drop for LockedFor<'_, T> {
     fn drop(&mut self) {
+        #[cfg(test)]
+        self.phase_sample.take();
         self.timer.clock.hold_ended();
         self.guard.take();
         #[cfg(test)]

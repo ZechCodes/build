@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+pub(crate) mod read_work_counts;
 
 #[cfg(test)]
 thread_local! { static LISTING_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
@@ -456,6 +458,8 @@ impl WorkspaceRegistry {
     }
 
     pub fn list(&self, project_id: Option<&str>) -> Vec<&Workspace> {
+        #[cfg(test)]
+        read_work_counts::workspace_list(self.workspaces.len());
         let mut workspaces = self
             .workspaces
             .values()

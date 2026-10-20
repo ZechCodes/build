@@ -683,6 +683,8 @@ impl AppState {
         method: &str,
         params: &Value,
     ) -> Result<Value, ApiError> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("routing.handler");
         if self.project_deletion_in_progress && !allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(PROJECT_DELETION_IN_PROGRESS));
         }

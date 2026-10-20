@@ -1,6 +1,81 @@
 use super::*;
 
 #[tokio::test]
+async fn failed_conversation_watch_save_is_refused_without_publication_or_push() {
+    assert_failed_agent_setting_is_unpublished(|app, owner, agent| {
+        let watching = !app
+            .entity_agents(owner)
+            .unwrap()
+            .by_id(agent)
+            .unwrap()
+            .watched;
+        app.set_conversation_watched(owner, agent, watching)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn failed_agent_topic_save_is_refused_without_publication_or_push() {
+    assert_failed_agent_setting_is_unpublished(|app, owner, agent| {
+        app.set_agent_topic(owner, agent, "uncommitted topic")
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn failed_agent_name_save_is_refused_without_publication_or_push() {
+    assert_failed_agent_setting_is_unpublished(|app, owner, agent| {
+        app.set_agent_name(owner, agent, "Uncommitted Name")
+    })
+    .await;
+}
+
+async fn assert_failed_agent_setting_is_unpublished(
+    apply: fn(&mut AppState, &str, &str) -> Result<Value, String>,
+) {
+    let (directory, repository) = init_repo();
+    let (state, handler, sender, mut incoming, key) =
+        push::greeted_push_session(&repository, directory.path());
+    push::watch_everything(&handler, &sender);
+    let owners = {
+        let mut app = state.lock().unwrap();
+        let plan = file_legacy_task(&mut app, "committed settings plan");
+        let run = adopted_run(
+            &mut app,
+            &repository,
+            directory.path(),
+            "committed-settings-run",
+        );
+        [plan, run]
+    };
+    push::settled_pushes(&mut incoming, &key).await;
+    for owner in owners {
+        let mut app = state.lock().unwrap();
+        let agent = app
+            .entity_agents(&owner)
+            .unwrap()
+            .iter()
+            .next()
+            .unwrap()
+            .clone();
+        let before = app.read_view.load();
+        app.store.as_ref().unwrap().fail_next_write();
+        let response = apply(&mut app, &owner, &agent.id);
+        assert!(
+            response.is_err(),
+            "a failed save was acknowledged: {response:?}"
+        );
+        assert!(Arc::ptr_eq(&before, &app.read_view.load()));
+        assert_eq!(
+            app.entity_agents(&owner).unwrap().by_id(&agent.id).unwrap(),
+            &agent
+        );
+    }
+    let pushed = push::settled_pushes(&mut incoming, &key).await;
+    assert!(push::changed_entities(&pushed).is_empty(), "{pushed:?}");
+}
+
+#[tokio::test]
 async fn failed_conversation_compaction_save_is_refused_without_publication_or_push() {
     let (directory, repository) = init_repo();
     let (state, handler, sender, mut incoming, key) =

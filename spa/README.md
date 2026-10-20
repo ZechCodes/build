@@ -129,6 +129,17 @@ Fences show their language label; registered Prism grammars highlight up to
 4,096 characters, with longer/unknown code shown as escaped plain text to bound
 rendering work. No additional dependencies are needed.
 
+External images render as a keyboard-accessible “Load image from host” button
+with their alt text. No image element or request exists until that button is
+activated; only that instance loads, and a cached repaint resets consent.
+Same-origin HTTP(S) images and Build attachments keep loading directly.
+All markdown images use `referrerpolicy="no-referrer"`. `markdownImages.js`
+delegates activation and revalidates the URL before creating the image.
+
+Table prose wraps; numeric/measurement cells and right-aligned columns keep
+their values together. `markdownTableFocus.js` measures rendered tables and
+adds a keyboard stop only while a table actually overflows.
+
 Pass a stable `taskLabelScope` for each document rendered alongside others;
 this scopes checkbox labels and footnotes. Chat messages and task bodies/comments
 do so. `markdownNavigation.js`, installed once by `main.js`, handles footnote
@@ -142,10 +153,13 @@ Capture it with headless Chromium (from `spa/`):
 nice -n 10 node test/browser/captureMarkdownPolish.mjs /tmp/markdown-review after
 # Optional fourth argument reads the original renderer/CSS from a Git commit:
 nice -n 10 node test/browser/captureMarkdownPolish.mjs /tmp/markdown-review before 54e8e1d79
+# Production other-agent chat, cached task comment, and Files plan document:
+nice -n 10 node test/browser/captureMarkdownSurfaces.mjs /tmp/markdown-review
 ```
 
 Both commands produce desktop, phone and 320px narrow captures in light/dark. The before mode
 uses Vite's loader and `git show`; it does not change the checkout. Layout tests
-add a 320px narrow-screen check, verify whole timing values and local table/code
-scrolling, and keep images inside the message. See the Markdown Rendering
+add a 320px narrow-screen check, verify the timing table fits all three columns,
+exercise local scrolling for genuinely wide tables/code, and keep loaded images
+inside the message. See the Markdown Rendering
 Security Checklist for the fixed output vocabulary and adversarial evidence.

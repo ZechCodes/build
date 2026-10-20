@@ -320,6 +320,38 @@ fn baseline_emitter_writes_self_describing_artifacts() {
     assert!(markdown.contains("| tasks.list | queued | 8 | 12.0 | 2.0 | 5.0 | 6.0 |"));
 }
 
+struct UnusedUpdateBackend;
+
+#[async_trait::async_trait]
+impl crate::update::UpdateBackend for UnusedUpdateBackend {
+    async fn latest(&self) -> Result<crate::update::Release, String> {
+        panic!("timing reads never request update checks")
+    }
+
+    async fn install(&self, _: &crate::update::Release, _: &str) -> Result<(), String> {
+        panic!("timing reads never request update installation")
+    }
+}
+
+fn timing_update_service(root: &Path) -> Arc<crate::update::UpdateService> {
+    Arc::new(
+        crate::update::UpdateService::new(
+            crate::update::UpdateConfig {
+                status_path: root.join("update-status.json"),
+                result_path: root.join("update-result.json"),
+                running_version: env!("CARGO_PKG_VERSION").into(),
+                platform: "linux-x86_64".into(),
+                development_build: true,
+                replaceable_development_build: false,
+                running_from_cargo_target: false,
+                check_interval: Duration::from_secs(86_400),
+            },
+            Arc::new(UnusedUpdateBackend),
+        )
+        .unwrap(),
+    )
+}
+
 struct HistorySample {
     owner: String,
     agent: String,
@@ -439,17 +471,19 @@ impl Sample {
             })
             .collect();
         let history = HistorySample::new(&mut app, &project_id);
+        app = app.with_update_service(timing_update_service(state_root.path()));
         let repo = app.project_at(0).repo_path.clone();
         let clock = FrameClock::new();
         app.frame_clock = Arc::clone(&clock);
         let state = app.shared();
-        let (peers, reads, read_pool) = {
+        let (peers, reads, read_pool, snapshots) = {
             let app = state.lock().unwrap();
             app.initialize_read_context();
             (
                 app.peers_slot(),
                 app.read_service(),
                 app.store.as_ref().map(crate::store::Store::read_pool),
+                app.snapshot_service(),
             )
         };
         let measurements = SqlMeasurements::default();
@@ -470,6 +504,7 @@ impl Sample {
         .with_sql_reads(read_pool, move |_sender, frame, _timer, connection| {
             query_measurements.call(&reads, frame, connection)
         })
+        .with_snapshot_reads(move |frame| snapshots.call(frame))
         .observe_sql(move |frame, checkout, handoff| {
             scheduled_measurements.scheduled(frame, checkout, handoff);
         });
@@ -748,5 +783,248 @@ async fn unbounded_task_list_reports_full_query_transaction_duration() {
         "checkout_us": checkout_us,
         "transaction_us": transaction_us,
     });
+    eprintln!("{record}");
+}
+
+const SNAPSHOT_METHODS: [&str; 9] = [
+    "board.list",
+    "project.list",
+    "workspace.list",
+    "workspace.get",
+    "agent.list",
+    "settings.get",
+    "models.list",
+    "harnesses.list",
+    "bridge.update_status",
+];
+
+/// Reuses the file-backed SQL fixture and real intake. One batch finishes
+/// before the next begins so coalescing cannot change the computation count.
+struct SnapshotSample {
+    sample: Sample,
+    workspace: String,
+}
+
+impl SnapshotSample {
+    fn new(workers: usize, git_gate: Option<WorkGate>) -> Self {
+        let sample = Sample::new(workers, git_gate);
+        let created = sample.state.lock().unwrap().handle(req(
+            "workspace.create",
+            json!({ "project_id": sample.project_id, "name": "timing workspace", "isolation": "worktree" }),
+        ));
+        assert_eq!(created["ok"], true, "{created}");
+        Self {
+            workspace: created["result"]["workspace_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            sample,
+        }
+    }
+
+    async fn reads(&mut self, serial: bool) {
+        for method in SNAPSHOT_METHODS {
+            let params = match method {
+                "workspace.list" => json!({ "project_id": self.sample.project_id }),
+                "workspace.get" => json!({ "workspace_id": self.workspace }),
+                "agent.list" => json!({ "entity_id": self.sample.history.owner }),
+                _ => json!({}),
+            };
+            self.sample.send(method, params).await;
+            if serial {
+                self.sample.answers(1).await;
+            }
+        }
+    }
+
+    async fn answers(&mut self) {
+        self.sample.answers(SNAPSHOT_METHODS.len()).await;
+    }
+
+    fn baseline(&self, scenario: &str, gate: &str) {
+        let stats = self.sample.clock.stats();
+        let methods: serde_json::Map<_, _> = SNAPSHOT_METHODS
+            .into_iter()
+            .map(|method| {
+                let metric = &stats["methods"][method];
+                assert_eq!(metric["served"], SAMPLE_COUNT, "{method}: {stats}");
+                assert_no_app_lock(method, metric);
+                (method.to_string(), metric.clone())
+            })
+            .collect();
+        emit_baseline(
+            &baseline_output_dir(self.sample._state_root.path()),
+            scenario,
+            gate,
+            self.sample.dispatch_workers,
+            &json!(methods),
+            &json!({}),
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn isolated_snapshot_reads_publish_a_file_backed_baseline() {
+    let mut snapshot = SnapshotSample::new(2, None);
+    for _ in 0..SAMPLE_COUNT {
+        snapshot.reads(true).await;
+    }
+    snapshot.baseline("snapshot_isolated", "none");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn snapshot_reads_complete_while_app_held_write_is_gated() {
+    let mut snapshot = SnapshotSample::new(2, None);
+    for _ in 0..SAMPLE_COUNT {
+        let (gate, acquired, mut release) = WorkGate::new();
+        let state = Arc::clone(&snapshot.sample.state);
+        release.holder = Some(std::thread::spawn(move || {
+            let _guard = state.lock().unwrap();
+            gate.wait();
+        }));
+        acquired.recv_timeout(PATIENCE).unwrap();
+        snapshot.reads(false).await;
+        tokio::time::sleep(GATE).await;
+        snapshot.answers().await;
+        release.assert_held();
+        release.finish();
+    }
+    snapshot.baseline(
+        "snapshot_app_held_write",
+        "app mutex held for at least 75ms per batch",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn snapshot_reads_complete_while_off_lock_git_worker_is_gated() {
+    let (gate, entered, release) = WorkGate::new();
+    let mut snapshot = SnapshotSample::new(1, Some(gate));
+    for _ in 0..SAMPLE_COUNT {
+        snapshot
+            .sample
+            .send(
+                "git.status",
+                json!({ "project_id": snapshot.sample.project_id }),
+            )
+            .await;
+        entered.recv_timeout(PATIENCE).unwrap();
+        snapshot.reads(false).await;
+        tokio::time::sleep(GATE).await;
+        snapshot.answers().await;
+        release.assert_held();
+        release.release.as_ref().unwrap().send(true).unwrap();
+        snapshot.sample.answers(1).await;
+    }
+    release.finish();
+    snapshot.baseline(
+        "snapshot_off_lock_git_worker",
+        "Git worker held for at least 75ms per batch",
+    );
+}
+
+fn snapshot_duration_summary(values: &[Duration]) -> Value {
+    let mut values = values
+        .iter()
+        .map(Duration::as_secs_f64)
+        .map(|seconds| seconds * 1000.0)
+        .collect::<Vec<_>>();
+    values.sort_by(f64::total_cmp);
+    let count = values.len();
+    json!({
+        "count": count,
+        "sum_ms": values.iter().sum::<f64>(),
+        "p50_ms": values[(count * 50 - 1) / 100],
+        "p95_ms": values[(count * 95 - 1) / 100],
+        "max_ms": values[count - 1],
+    })
+}
+
+/// Direct CPU/publication boundaries from the real producer. This measures
+/// steady-state global/fact projection with warmed observations; lifecycle
+/// filesystem/SQL observation and history warming are outside this interval.
+#[tokio::test]
+async fn snapshot_generation_publication_and_clone_costs_are_reported() {
+    use crate::app::read_view::SnapshotDelta;
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    let snapshot = SnapshotSample::new(2, None);
+    let app = snapshot.sample.state.lock().unwrap();
+    let slot = &app.read_view;
+    let mut phases: BTreeMap<&str, Vec<Duration>> = BTreeMap::new();
+    for _ in 0..SAMPLE_COUNT {
+        let previous = slot.load();
+        let started = Instant::now();
+        let delta = app.prepare_global_snapshot(SnapshotDelta::new(slot.next_version()), &previous);
+        phases
+            .entry("global_and_fact_generation")
+            .or_default()
+            .push(started.elapsed());
+        let started = Instant::now();
+        slot.publish_delta(delta);
+        phases
+            .entry("root_publication")
+            .or_default()
+            .push(started.elapsed());
+        let started = Instant::now();
+        let root = slot.load();
+        phases
+            .entry("root_arc_load")
+            .or_default()
+            .push(started.elapsed());
+        std::hint::black_box(root);
+    }
+    let root = slot.load();
+    let keys = [
+        ("board.list", ""),
+        ("project.list", ""),
+        ("workspace.list", snapshot.sample.project_id.as_str()),
+        ("workspace.get", snapshot.workspace.as_str()),
+        ("agent.list", snapshot.sample.history.owner.as_str()),
+        ("settings.get", ""),
+        ("models.list", ""),
+    ];
+    let mut clones = serde_json::Map::new();
+    for (method, owner) in keys {
+        let value = root
+            .get(method, owner)
+            .unwrap_or_else(|| panic!("missing {method} snapshot for {owner}"));
+        let mut elapsed = Vec::new();
+        for _ in 0..SAMPLE_COUNT {
+            let started = Instant::now();
+            let cloned = value.clone();
+            elapsed.push(started.elapsed());
+            assert_eq!(&cloned, value);
+            std::hint::black_box(cloned);
+        }
+        clones.insert(
+            method.into(),
+            json!({
+                "value_clone": snapshot_duration_summary(&elapsed),
+                "serialized_bytes": serde_json::to_vec(value).unwrap().len(),
+            }),
+        );
+    }
+    let phases = phases
+        .into_iter()
+        .map(|(phase, values)| (phase, snapshot_duration_summary(&values)))
+        .collect::<BTreeMap<_, _>>();
+    assert!(phases.values().all(|phase| phase["count"] == SAMPLE_COUNT));
+    let record = json!({
+        "kind": "bridge_snapshot_costs",
+        "git_revision": git_revision(Path::new(env!("CARGO_MANIFEST_DIR"))),
+        "rust_toolchain": rust_toolchain(Path::new("rustc")),
+        "scope": "steady-state global/fact generation, root publication, Arc load and root-backed response clone",
+        "fixture": { "projects": 1, "managed_workspaces": 1, "tasks": SAMPLE_COUNT, "history_messages": SAMPLE_COUNT, "history_activity_events": 64 },
+        "phases": phases,
+        "methods": clones,
+    });
+    let output = baseline_output_dir(snapshot.sample._state_root.path());
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(
+        output.join("bridge-snapshot-costs.json"),
+        serde_json::to_vec_pretty(&record).unwrap(),
+    )
+    .unwrap();
     eprintln!("{record}");
 }

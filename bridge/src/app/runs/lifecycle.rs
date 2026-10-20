@@ -475,6 +475,7 @@ impl AppState {
     /// Forget every trace of a run whose record has been deleted. The map entry
     /// itself went in the decide phase; this is the bookkeeping beside it.
     pub(in crate::app) fn forget_run(&mut self, run_id: &str) {
+        self.committed_entities.forget(run_id);
         self.projects.unbind_entity(run_id);
         self.board.attention_mut().remove_entity_clocks(run_id);
         self.board.diff_mut().remove_run_files_changed_at(run_id);

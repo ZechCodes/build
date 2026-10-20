@@ -9,6 +9,12 @@ pub(in crate::app) struct EntityClock {
     pub state_changed_at: Option<String>,
 }
 
+pub(in crate::app) struct MutationAttention {
+    clock: EntityClock,
+    state: Option<String>,
+    attention: Option<Attention>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::app) struct ConversationWatermark {
     pub previous: Option<u64>,
@@ -101,6 +107,56 @@ impl AttentionIndex {
             updated_at: self.entity_updated_at.get(entity_id).cloned(),
             state_changed_at: self.entity_state_changed_at.get(entity_id).cloned(),
         }
+    }
+
+    /// Prepare a finisher's clocks without advancing the committed attention
+    /// index. A failed save must leave timestamps unchanged as well as fields.
+    pub(in crate::app) fn mutation_clock(
+        &self,
+        entity_id: &str,
+        state: &str,
+        now: &str,
+    ) -> EntityClock {
+        let mut clock = self.clock(entity_id);
+        clock.created_at.get_or_insert_with(|| now.to_string());
+        clock.updated_at = Some(now.to_string());
+        if self.entity_last_state.get(entity_id).map(String::as_str) != Some(state) {
+            clock.state_changed_at = Some(now.to_string());
+        }
+        clock
+    }
+
+    /// Temporarily render the complete candidate, then restore before SQL.
+    /// Only this owner's small clocks/attention are copied, never histories.
+    pub(in crate::app) fn stage_mutation(
+        &mut self,
+        id: &str,
+        state: &str,
+        now: &str,
+    ) -> MutationAttention {
+        let previous = MutationAttention {
+            clock: self.clock(id),
+            state: self.entity_last_state.get(id).cloned(),
+            attention: self.entries.get(id).cloned(),
+        };
+        self.record_created_if_absent(id, now.to_string());
+        self.record_updated(id, now.to_string());
+        self.observe_state(id, state.to_string(), now.to_string());
+        let created = self.entity_created_at[id].clone();
+        self.seed_anchor(id, &created);
+        previous
+    }
+
+    pub(in crate::app) fn restore_mutation(&mut self, id: &str, previous: MutationAttention) {
+        restore_entry(&mut self.entity_created_at, id, previous.clock.created_at);
+        restore_entry(&mut self.entity_updated_at, id, previous.clock.updated_at);
+        restore_entry(
+            &mut self.entity_state_changed_at,
+            id,
+            previous.clock.state_changed_at,
+        );
+        restore_entry(&mut self.entity_last_state, id, previous.state);
+        restore_entry(&mut self.entries, id, previous.attention);
     }
 
     pub(in crate::app) fn record_created_if_absent(&mut self, entity_id: &str, at: String) {
@@ -385,5 +441,16 @@ impl AttentionIndex {
         self.conversation_attention_sequence
             .insert(conversation_id, sequence)
             .is_none()
+    }
+}
+
+fn restore_entry<T>(entries: &mut HashMap<String, T>, id: &str, previous: Option<T>) {
+    match previous {
+        Some(value) => {
+            entries.insert(id.to_string(), value);
+        }
+        None => {
+            entries.remove(id);
+        }
     }
 }

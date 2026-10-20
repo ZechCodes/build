@@ -200,7 +200,10 @@ fn removing_an_agent(fail_persistence: bool) -> Value {
     let saved = read_task(&app, &fixture.open);
     assert_eq!(saved.updated_at, before_saved.updated_at);
     let identities = &after["get"]["task"]["identities"];
-    assert_eq!(identities[&fixture.removed]["available"], false);
+    // A refused save keeps the committed roster. Runtime retirement still
+    // invalidates these identities, but availability means a routable roster
+    // entry in a ready workspace, independently of whether its PTY is live.
+    assert_eq!(identities[&fixture.removed]["available"], fail_persistence);
     assert_eq!(identities[&fixture.removed]["name"], "Historian");
     assert_eq!(identities[&fixture.removed]["provider"], "pi");
     assert_eq!(identities[&fixture.survivor]["available"], true);

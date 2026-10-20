@@ -10,7 +10,6 @@ use crate::attention::Attention;
 use crate::store::PersistedArchivedWorktree;
 
 pub(in crate::app) use attention::AttentionIndex;
-#[cfg(test)]
 pub(in crate::app) use attention::EntityClock;
 pub(in crate::app) use cache::{
     CacheEffect, CachePublication, DiffCache, DiffCacheEntry, DiffCacheKey, ExternalScanCache,

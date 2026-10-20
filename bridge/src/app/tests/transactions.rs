@@ -218,7 +218,7 @@ async fn borrowed_owner_defers_committed_events_until_failed_peer_is_restored() 
     push::watch_everything(&handler, &sender);
     let (plan, run, snapshots) = {
         let mut app = state.lock().unwrap();
-        let plan = file_legacy_task(&mut app, "original plan");
+        let plan = adopted_run(&mut app, &repo, dir.path(), "committed-peer");
         let run = adopted_run(&mut app, &repo, dir.path(), "borrowed-peer");
         (plan, run, app.snapshot_service())
     };
@@ -226,10 +226,10 @@ async fn borrowed_owner_defers_committed_events_until_failed_peer_is_restored() 
     let before = snapshots.call(req("board.list", json!({})));
     let (failed, original_run_goal) = {
         let mut app = state.lock().unwrap();
-        let mut first = app.take_plan(&plan).unwrap();
+        let mut first = app.take_run(&plan).unwrap();
         let mut second = app.take_run(&run).unwrap();
         let original_run_goal = second.run.goal.clone();
-        first.plan.goal = "committed first owner".into();
+        first.run.goal = "committed first owner".into();
         first.agents.sole_thread_mut().post_agent(
             "committed first news",
             None,
@@ -241,7 +241,7 @@ async fn borrowed_owner_defers_committed_events_until_failed_peer_is_restored() 
             None,
             "2099-01-01T00:00:00Z",
         );
-        app.finish_plan_mutation(plan.clone(), first).unwrap();
+        app.finish_run_mutation(plan.clone(), first).unwrap();
         (second, original_run_goal)
     };
     assert_eq!(snapshots.call(req("board.list", json!({}))), before);
@@ -255,7 +255,7 @@ async fn borrowed_owner_defers_committed_events_until_failed_peer_is_restored() 
         app.store.as_ref().unwrap().fail_next_write();
         assert!(app.finish_run_mutation(run.clone(), failed).is_err());
         assert_eq!(app.runs[&run].run.goal, original_run_goal);
-        let plans = app.store.as_ref().unwrap().load_all_plans().unwrap();
+        let plans = app.store.as_ref().unwrap().load_all_runs().unwrap();
         assert_eq!(
             plans.iter().find(|record| record.id == plan).unwrap().goal,
             "committed first owner"

@@ -289,7 +289,7 @@ impl AppState {
             };
             active.publication_attempt = Some(attempt);
             if let Err(error) = self.persist_run_record(&run_id, &active) {
-                self.runs.insert(run_id, active);
+                self.restore_run_after_failed_save(&run_id, active);
                 return Err(error);
             }
         }

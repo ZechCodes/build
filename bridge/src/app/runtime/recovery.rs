@@ -296,6 +296,7 @@ impl AppState {
     /// session died with the daemon); the next revision dispatch remakes the
     /// workspace from the store. Recovery never abandons a plan.
     pub(in crate::app) fn recover_plan(&mut self, record: PersistedPlan) -> Result<(), String> {
+        self.committed_entities.remember_plan(record.clone());
         let plan_id = record.id.clone();
         let mut active = ActivePlan::reattach(&record);
 
@@ -378,6 +379,7 @@ impl AppState {
     /// abandon a native one, both with a reason.
     #[allow(clippy::cognitive_complexity)] // ratchet: recover_run is at 29, threshold 15 — bring it under, then remove
     pub(in crate::app) fn recover_run(&mut self, record: PersistedRun) -> Result<(), String> {
+        self.committed_entities.remember_run(record.clone());
         let run_id = record.id.clone();
         // Re-derive `plan_path` from the owning plan (recovered first); adopted
         // runs and orphaned links fall back to the convention default.

@@ -44,6 +44,8 @@ impl SharedHistory {
     /// Call only with a successfully saved canonical conversation. An older
     /// generation is never allowed to replace a reset conversation.
     pub fn updated(&self, thread: &Thread) -> Self {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::history_update();
         let older_revision = thread.generation_revision == self.generation
             && thread.id == self.thread_id
             && thread.publication_sequence() < self.publication_sequence;

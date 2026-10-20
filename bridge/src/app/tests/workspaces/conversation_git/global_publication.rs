@@ -257,3 +257,19 @@ fn global_publication_external_rows_keep_first_project_scope_for_duplicate_ids()
     assert_eq!(rows.rows, vec![expected.clone(), expected]);
     assert!(!rows.scanning);
 }
+
+#[test]
+fn global_publication_updates_each_canonical_history_once() {
+    let (_tmp, mut state, _) = ownership_fixture(16, false);
+    add_tip_agents(&mut state, 4);
+    state.initialize_snapshot_projection();
+    for owner in state.runs.keys() {
+        state.mark_snapshot_owner_pending(owner);
+    }
+    let (_, counts) = work_counts::measure(|| state.publish_all_snapshot_projection());
+    assert_eq!(
+        counts.history_updates,
+        16 * 4,
+        "repeated canonical history updates: {counts:?}"
+    );
+}

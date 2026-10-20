@@ -7,8 +7,9 @@ pub(in crate::app) struct Counts {
     pub agents: usize,
     pub owner_candidates: usize,
     pub external_candidates: usize,
+    pub history_updates: usize,
 }
-thread_local! { static COUNTS: Cell<Counts> = const { Cell::new(Counts { branches: 0, agents: 0, owner_candidates: 0, external_candidates: 0 }) }; }
+thread_local! { static COUNTS: Cell<Counts> = const { Cell::new(Counts { branches: 0, agents: 0, owner_candidates: 0, external_candidates: 0, history_updates: 0 }) }; }
 
 pub(in crate::app) fn measure<T>(work: impl FnOnce() -> T) -> (T, Counts) {
     let previous = COUNTS.replace(Counts::default());
@@ -41,6 +42,14 @@ pub(in crate::app) fn external_candidate() {
     COUNTS.with(|held| {
         let mut count = held.get();
         count.external_candidates += 1;
+        held.set(count)
+    });
+}
+
+pub(in crate::app) fn history_update() {
+    COUNTS.with(|held| {
+        let mut count = held.get();
+        count.history_updates += 1;
         held.set(count)
     });
 }

@@ -21,6 +21,8 @@ pub(in crate::app) struct ProjectionRendering {
 
 impl ProjectionRendering {
     pub(super) fn capture(app: &AppState) -> Self {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.ownership_render_indexes");
         let mut captured = Self::default();
         // Match entity_of_agent's plans-before-runs traversal, including an
         // old malformed roster containing an id already owned elsewhere.

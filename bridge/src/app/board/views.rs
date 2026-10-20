@@ -462,6 +462,8 @@ impl AppState {
     }
 
     pub(in crate::app) fn cached_external_worktrees_json(&self) -> ExternalWorktreeRows {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board_external_rows");
         let attention_of = self
             .board
             .attention()
@@ -515,6 +517,8 @@ impl AppState {
     }
 
     fn cached_workspace_summaries_json(&self) -> Vec<Value> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board_workspace_summaries");
         self.workspaces.list(None).into_iter().map(|workspace| {
             let repositories = workspace.directories.iter()
                 .filter(|directory| directory.is_git)
@@ -568,6 +572,8 @@ impl AppState {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.board");
         let runs: Vec<Value> = {
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.board_run_rows");
             let ids: Vec<String> = self
                 .runs
                 .iter()
@@ -628,6 +634,8 @@ impl AppState {
         // Tasks → Watching). A row's absence is how unwatching shows.
         items.extend(self.snapshot_watched_task_rows());
         crate::branch::sort_by_anchor(&mut items);
+        #[cfg(test)]
+        let _assemble_phase = crate::timing::phase_samples::phase("publication.board_assemble");
         json!({
             // The active feed contains workspace-backed work only. Legacy
             // task records are intentionally absent from both the folded
@@ -681,6 +689,8 @@ impl AppState {
     }
 
     pub(in crate::app) fn cached_work_items(&self, external_worktrees: &[Value]) -> Vec<Value> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.board_work_items");
         let run_ids: Vec<String> = self
             .runs
             .iter()

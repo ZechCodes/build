@@ -60,7 +60,11 @@ impl PushThread {
             .items
             .iter()
             .filter(|item| item.latest_sequence() > floor)
-            .map(|item| (item.latest_sequence(), json!(item)))
+            .map(|item| {
+                #[cfg(test)]
+                tail_tests::record_serialized();
+                (item.latest_sequence(), json!(item))
+            })
             .collect();
         Self {
             tip,
@@ -699,3 +703,6 @@ mod tests {
         assert!(facts[0].state.is_none());
     }
 }
+
+#[cfg(test)]
+mod tail_tests;

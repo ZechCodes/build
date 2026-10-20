@@ -140,6 +140,26 @@ impl MixedReadContext {
         self.review(transaction, method, params, fence)
     }
 
+    pub(in crate::app) fn prepare_mcp_review(
+        &self,
+        project: &str,
+        method: &str,
+        params: &Value,
+        transaction: &ReadTransaction<'_>,
+    ) -> Result<MixedJob, ApiError> {
+        let id = require_str(params, "task_id").map_err(ApiError::classify)?;
+        let fence = self
+            .tasks
+            .validate_scope(transaction, method, params)
+            .map_err(task_error)?;
+        if fence.project_id() != project {
+            return Err(task_error(format!("unknown task_id: {id}")));
+        }
+        // The caller project is checked before loading review/snapshot/directory
+        // content; the selected job then owns everything it will use off SQL.
+        self.review(transaction, method, params, fence)
+    }
+
     fn review(
         &self,
         transaction: &ReadTransaction<'_>,

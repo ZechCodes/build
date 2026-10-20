@@ -1,6 +1,6 @@
 # Markdown rendering security checklist
 
-**Status:** 90/100 (#701 integration scans pending)
+**Status:** 100/100
 **Verified:** 2026-10-20 (#695 rich markdown rendering; #701 boundary revisions and approved external-image consent policy); earlier desktop link, credential, persistence and API authentication evidence remains recorded below (#262, #615, #616).
 
 Checklist rendering re-verified 2026-10-03 (#347): checklist list items have the
@@ -81,7 +81,7 @@ Since #256 the renderer writes web links as well as Build routes (`spa/src/core/
 | 7 | Code and keyboard contents remain literal; references, links, footnotes and emphasis are not expanded there. Highlighted fences may add only constrained Prism token spans inside known code classes; malformed/unknown labels do not create attributes | 10/10 | `markdownSafety.test.js` fenced-language adversarial matrix, including nested markdown fences, plus protected contents test; `markdownInline.test.js` exact backtick runs and keyboard grammar; `markdownRichBlocks.test.js` highlighted and unknown fence labels |
 | 8 | Quotes, lists and details share an eight-level bound. Long mixed documents, blank lines, link punctuation, unmatched rich delimiters and large fenced source finish within fixed regression budgets | 10/10 | `markdownSafety.test.js` "nesting that tries to exhaust the reader": 40,000 blank lines, 100,000-character link punctuation, 200 nested details, 10,000 unmatched details openers, malformed keyboard/footnote/emphasis/image delimiters, and a large known-language fence. #238 and #256 earlier regressions remain covered #700: `markdownInline.test.js` has 15 closer-before-unmatched-opener cases, each in a Node 22 child bounded to 2 seconds with SIGKILL. The original two keyboard cases timed out (red suite exit 1, 2 failed/22 passed); after validating closer position and enforcing forward progress, the five-suite focused check passed 108/108, exit 0. Raw logs/exits: `/tmp/build-markdown-695-review/inline-700-{red,green}.{log,exit}`. |
 | 9 | Plain mode answers text with no markup, and its callers escape it | 10/10 | `markdownSafety.test.js` "answers plain text with no markup in plain mode"; `agentOverview.js` writes the snippet through `esc` |
-| 10 | Repository scanners are clean on the change | 0/10 | #701 integration scans pending. Earlier #695 scans exited 0 (semgrep zero findings; gitleaks zero leaks), and do not verify the new revision |
+| 10 | Repository scanners are clean on the change | 10/10 | #701 integration scan at code head `8bb0eff859d3760129a9af2a9b0968957778f80e`: Semgrep checked all 35 changed JS/MJS/CSS files with 200 rules, zero findings, exit 0; Gitleaks scanned `main..HEAD`, zero leaks, exit 0. Raw output and exit footers are attached to the task handoff (`semgrep.log`, `gitleaks.log`); Gitleaks runs again after this evidence-only update and before push. |
 
 Actual mutation controls (#701) run against a temporary copy of the production
 source, with each mutation applied separately and restored before the next run.
@@ -113,4 +113,4 @@ mutation. No production files were mutated in the shared checkout.
 | Activation URL validation | Bypass source validation of a modified placeholder dataset | Eight hostile-source assertion failures, exit 1 |
 | Activated-image privacy | Omit `referrerpolicy="no-referrer"` from the activated image | Assertion failure, exit 1 |
 
-**Total: 90/100 until #701 integration scans pass.**
+**Total: 100/100.**

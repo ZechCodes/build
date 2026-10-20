@@ -418,7 +418,7 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
     let attached_again = call(
         &handler,
         "thread.attach",
-        json!({"entity_id":owner,"agent_id":agent,"filename":"a.txt","content_b64":b64encode(b"old attachment")}),
+        json!({"entity_id":owner,"agent_id":agent,"thread_id":reset["result"]["thread_id"],"filename":"a.txt","content_b64":b64encode(b"old attachment")}),
     );
     assert_eq!(attached_again["ok"], true, "{attached_again}");
     assert_eq!(attached_again["result"]["path"], params["path"]);
@@ -437,7 +437,7 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
     let removed = call(
         &handler,
         "agent.remove",
-        json!({"entity_id":owner,"agent_id":agent}),
+        json!({"entity_id":owner,"agent_id":agent,"thread_id":reset["result"]["thread_id"]}),
     );
     assert_eq!(removed["ok"], true, "{removed}");
     let stale = delayed();

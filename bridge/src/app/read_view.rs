@@ -30,16 +30,38 @@ impl ReadKey {
     }
 }
 
-#[derive(Clone)]
+#[cfg_attr(not(test), derive(Clone))]
 struct VersionedChunk {
     version: u64,
     value: Option<SharedJson>,
 }
 
-#[derive(Clone)]
+#[cfg_attr(not(test), derive(Clone))]
 struct VersionedHistory {
     version: u64,
     value: Option<Arc<history::SharedHistory>>,
+}
+
+#[cfg(test)]
+impl Clone for VersionedChunk {
+    fn clone(&self) -> Self {
+        map_sharing::record_chunk_clone();
+        Self {
+            version: self.version,
+            value: self.value.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Clone for VersionedHistory {
+    fn clone(&self) -> Self {
+        map_sharing::record_history_clone();
+        Self {
+            version: self.version,
+            value: self.value.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -324,5 +346,7 @@ impl ReadViewSlot {
 
 mod service;
 
+#[cfg(test)]
+mod map_sharing;
 #[cfg(test)]
 mod tests;

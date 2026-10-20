@@ -9,6 +9,7 @@ use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+mod adoption;
 mod branch_delete;
 mod deferred_creation;
 mod deletion;

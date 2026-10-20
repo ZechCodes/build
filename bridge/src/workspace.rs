@@ -392,6 +392,12 @@ impl WorkspaceRegistry {
         }
     }
 
+    /// Roll back a memory-only adoption staged before its owner was saved.
+    /// The checkout's lock marker belongs to the existing checkout and survives.
+    pub(crate) fn remove_staged_adoption(&mut self, id: &str) {
+        self.workspaces.remove(id);
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }

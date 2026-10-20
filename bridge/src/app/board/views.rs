@@ -349,7 +349,11 @@ impl AppState {
             let Some(scan) = self.board.diff().external_scan_cache(&project.id) else {
                 continue;
             };
-            let Some(w) = scan.worktrees.iter().find(|w| w.id == worktree_id) else {
+            let Some(w) = scan.worktrees.iter().find(|w| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::external_candidate();
+                w.id == worktree_id
+            }) else {
                 continue;
             };
             let agent = self
@@ -731,6 +735,8 @@ impl AppState {
         run_id: &str,
         stat: &Value,
     ) -> crate::branch::WorkItemCandidate {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::branch();
         let active = self.runs.get(run_id).expect("caller listed this run");
         let branch = self.snapshot_run_branch(run_id, &active.worktree);
         let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());

@@ -6,6 +6,7 @@
 use super::*;
 
 mod projection_ownership;
+mod global_publication;
 
 fn conversation_run(state: &mut AppState, workspace_id: &str) -> String {
     let conversation = state.handle(req(

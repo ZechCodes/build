@@ -523,7 +523,11 @@ impl AppState {
             .iter()
             .map(|(id, plan)| (id, &plan.agents))
             .chain(self.runs.iter().map(|(id, run)| (id, &run.agents)))
-            .find(|(_, roster)| roster.by_id(agent_id).is_some())
+            .find(|(_, roster)| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::owner_candidate();
+                roster.by_id(agent_id).is_some()
+            })
             .map(|(id, _)| id.clone())
     }
 
@@ -1473,6 +1477,8 @@ impl AppState {
         root: Option<&std::path::Path>,
         scope: DigestScope,
     ) -> Value {
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::agent();
         let thread = self
             .agent_conversation(entity_id, Some(&agent.id))
             .unwrap_or(&agent.thread);

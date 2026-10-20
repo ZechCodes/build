@@ -383,3 +383,6 @@ mod projects;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(in crate::app) mod work_counts;

@@ -760,3 +760,11 @@ unpersisted evidence after page lifetimes end). Final Gitleaks, diff-check,
 pushed SHA and snapshot evidence are recorded on #564. No new complexity
 exceptions, ratchet entries, independent Astra review or security-constraint
 exceptions.
+
+## #696 shared evidence intake — 2026-10-20
+
+Agent chat attachments reuse the existing task evidence intake policy without
+changing task file limits, task reads or local storage trust. The new chat
+entry points and readers are scoped separately in
+[Agent Message Attachments Security Checklist](Agent%20Message%20Attachments%20Security%20Checklist.md).
+The task controls and their historical evidence remain unchanged.

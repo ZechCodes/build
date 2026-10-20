@@ -425,9 +425,9 @@ runtime that starts them.
   The thread page fixture shows all three. No new capability is needed:
   the SPA paints the descriptors present in its cached thread records.
   `thread.attachment` now caps an unranged response at 5,242,880 bytes too.
-  Its `size` remains the total file length and `offset` names the chunk start;
-  a short chunk must be followed with ranged reads, never treated as a whole
-  file. The SPA's shared attachment reader follows that metadata even before
+  Its `size` remains the total file length and `offset` names the chunk start.
+  If `offset + decoded byte count < size`, the client must request the next
+  range at that sum before using the file. The SPA's shared attachment reader follows that metadata even before
   it knows the paging capability, and checks offsets, size and progress.
   User uploads remain capped at 5,242,880 bytes by `ATTACHMENT_MAX_BYTES`
   and the size check in `app/conversations/attachments.rs::thread_attach`.

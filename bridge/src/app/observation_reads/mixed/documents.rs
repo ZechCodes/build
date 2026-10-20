@@ -1,13 +1,15 @@
 //! Canonical document inputs are frozen at committed snapshot publication.
 use crate::app::{require_str, AppState};
 use crate::plan::is_worktree_contained_path;
+use im::OrdMap;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-pub(super) struct Documents(HashMap<String, Document>);
+#[derive(Clone, Default)]
+pub(super) struct Documents(OrdMap<String, Arc<Document>>);
 
-struct Document {
+pub(super) struct Document {
     path: String,
     stages: Vec<(String, String)>,
     root: Option<PathBuf>,
@@ -17,25 +19,36 @@ impl Documents {
     pub(super) fn capture(app: &AppState) -> Self {
         Self(
             app.plans
-                .iter()
-                .map(|(id, active)| {
-                    #[cfg(test)]
-                    crate::app::observation_reads::capture_metrics::record("document", id);
-                    (
-                        id.clone(),
-                        Document {
-                            path: active.plan_path.clone(),
-                            stages: active
-                                .stages
-                                .iter()
-                                .map(|stage| (stage.id.clone(), stage.path.clone()))
-                                .collect(),
-                            root: app.store.as_ref().map(|store| store.plan_docs_dir(id)),
-                        },
-                    )
-                })
+                .keys()
+                .map(|id| (id.clone(), Self::owner(app, id).expect("plan exists")))
                 .collect(),
         )
+    }
+
+    pub(super) fn owner(app: &AppState, id: &str) -> Option<Arc<Document>> {
+        #[cfg(test)]
+        crate::app::observation_reads::capture_metrics::record("document", id);
+        let active = app.plans.get(id)?;
+        Some(Arc::new(Document {
+            path: active.plan_path.clone(),
+            stages: active
+                .stages
+                .iter()
+                .map(|stage| (stage.id.clone(), stage.path.clone()))
+                .collect(),
+            root: app.store.as_ref().map(|store| store.plan_docs_dir(id)),
+        }))
+    }
+
+    pub(super) fn apply(&mut self, id: &str, row: &Option<Arc<Document>>) {
+        match row {
+            Some(row) => {
+                self.0.insert(id.into(), row.clone());
+            }
+            None => {
+                self.0.remove(id);
+            }
+        }
     }
 
     pub(super) fn contains(&self, id: &str) -> bool {

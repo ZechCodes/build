@@ -1,23 +1,24 @@
 //! Mixed readers split transactional metadata from their fully owned external work.
+mod capture;
 mod documents;
+mod homes;
 mod reviews;
 
 use crate::api::ApiError;
 use crate::app::board::archive::ArchiveReadInput;
 use crate::app::conversations::sql_read::{AttachmentReadContext, AttachmentReadFence};
-use crate::app::conversations::AttachmentHomes;
 use crate::app::tracker::{TaskReadContext, TaskReadFence};
 use crate::app::{require_str, AppState};
 use crate::store::ReadTransaction;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub(in crate::app) struct MixedReadContext {
     tasks: TaskReadContext,
     threads: AttachmentReadContext,
-    homes: HashMap<String, AttachmentHomes>,
+    homes: homes::Homes,
     attachment_root: PathBuf,
     documents: documents::Documents,
     archive: Arc<ArchiveReadInput>,
@@ -25,6 +26,8 @@ pub(in crate::app) struct MixedReadContext {
     #[cfg(test)]
     gate: Option<crate::app::OffLockGate>,
 }
+
+pub(super) use capture::MixedPatch;
 
 pub(in crate::app) struct MixedJob {
     fence: MixedFence,
@@ -46,7 +49,7 @@ impl MixedReadContext {
         Self {
             tasks: app.task_scope_read_context(),
             threads: AttachmentReadContext::capture(app),
-            homes: app.capture_attachment_homes(),
+            homes: homes::Homes::capture(app),
             attachment_root: app.local_attachments_dir(),
             documents: documents::Documents::capture(app),
             archive: Arc::new(app.archive_read_input()),
@@ -104,9 +107,8 @@ impl MixedReadContext {
         require_str(params, "path").map_err(thread_error)?;
         let homes = self
             .homes
-            .get(&owner)
-            .ok_or_else(|| thread_error("unknown conversation owner".into()))?
-            .clone();
+            .get(&owner, &self.attachment_root)
+            .ok_or_else(|| thread_error("unknown conversation owner".into()))?;
         let params = params.clone();
         Ok(self.job(MixedFence::Thread(fence), move || {
             crate::app::conversations::read_thread_attachment(homes, &params).map_err(thread_error)

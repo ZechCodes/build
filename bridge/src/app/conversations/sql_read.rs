@@ -17,7 +17,7 @@ use super::read::conversation_owner_param;
 
 mod attachments;
 mod pages;
-pub(in crate::app) use attachments::{AttachmentReadContext, AttachmentReadFence};
+pub(in crate::app) use attachments::{AttachmentOwner, AttachmentReadContext, AttachmentReadFence};
 use pages::{activity, page};
 
 #[derive(Clone, Default)]

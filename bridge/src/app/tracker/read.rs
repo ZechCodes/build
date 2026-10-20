@@ -5,11 +5,10 @@ use crate::session_summary::UserSession;
 use crate::store::{TaskFilter, TaskSeek};
 use crate::tracker::{Task, TimelineEntry};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct TaskReadContext {
-    pub(super) project_paths: HashMap<String, String>,
+    pub(super) project_paths: im::OrdMap<String, String>,
     pub(super) identities: super::read_identities::TaskIdentityContext,
     user_session: UserSession,
 }
@@ -54,6 +53,16 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn update_scope_project(&mut self, id: &str, path: Option<String>) {
+        match path {
+            Some(path) => {
+                self.project_paths.insert(id.into(), path);
+            }
+            None => {
+                self.project_paths.remove(id);
+            }
+        }
+    }
     /// Only a successful owner save can admit a new live agent. Owners checked
     /// out by a surrounding mutation retain their last published observation.
     pub(in crate::app) fn retain_live_owners(

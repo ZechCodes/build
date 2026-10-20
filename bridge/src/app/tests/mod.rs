@@ -225,6 +225,7 @@ mod mcp_invalid_actions;
 mod merge_regressions;
 mod observation_mixed;
 mod observation_publication;
+mod observation_workspace_lifecycle;
 mod pr_review_tools;
 mod project_agent;
 mod project_agent_base;

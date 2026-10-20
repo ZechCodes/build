@@ -157,17 +157,30 @@ pub(in crate::app) fn probe_reclaim_stop_for_test() -> (
 }
 
 impl AppState {
-    /// Owned reservation facts for off-lock observational destination checks.
-    pub(in crate::app) fn read_reclaim_reservations(&self) -> Vec<(PathBuf, Instant)> {
+    /// Owned reservation facts for bootstrap and keyed observational deltas.
+    pub(in crate::app) fn read_reclaim_reservation_rows(
+        &self,
+    ) -> Vec<(String, (PathBuf, Instant))> {
         self.reclaim_reserved
-            .values()
-            .map(|reservation| {
+            .iter()
+            .map(|(id, reservation)| {
                 (
-                    reservation.root.clone(),
-                    reservation.since + RESERVATION_LIMIT,
+                    id.clone(),
+                    (
+                        reservation.root.clone(),
+                        reservation.since + RESERVATION_LIMIT,
+                    ),
                 )
             })
             .collect()
+    }
+    pub(in crate::app) fn read_reclaim_reservation(&self, id: &str) -> Option<(PathBuf, Instant)> {
+        self.reclaim_reserved.get(id).map(|reservation| {
+            (
+                reservation.root.clone(),
+                reservation.since + RESERVATION_LIMIT,
+            )
+        })
     }
     /// Run the service for the life of the daemon: the first sweep a little
     /// after startup, then one every `sweep_every`, and one soon after a nudge.
@@ -534,6 +547,7 @@ impl AppState {
                 since: Instant::now(),
             },
         );
+        self.mark_observation_reservation_changed(workspace_id);
         self.publish_snapshot_projection();
     }
 
@@ -549,6 +563,7 @@ impl AppState {
 
     fn release_reservation(&mut self, workspace_id: &str) {
         if self.reclaim_reserved.remove(workspace_id).is_some() {
+            self.mark_observation_reservation_changed(workspace_id);
             self.publish_snapshot_projection();
         }
     }

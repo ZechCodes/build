@@ -85,6 +85,11 @@ impl ReadView {
                 .is_none_or(|chunk| chunk.version < delta.version)
         }) && (delta.facts.is_none() || self.facts_version < delta.version)
             && (delta.observations.is_none() || self.observations_version < delta.version)
+            && delta.observation_patch.as_ref().is_none_or(|patch| {
+                self.observations
+                    .as_ref()
+                    .is_some_and(|context| patch.accepts(context, delta.version))
+            })
     }
 
     fn apply(&mut self, delta: &SnapshotDelta) {
@@ -107,8 +112,14 @@ impl ReadView {
             );
         }
         if let Some(observations) = &delta.observations {
-            self.observations = Some(Arc::clone(observations));
+            self.observations = Some(Arc::new(observations.with_base_version(delta.version)));
             self.observations_version = delta.version;
+        }
+        if let Some(patch) = &delta.observation_patch {
+            if let Some(context) = &self.observations {
+                self.observations = Some(Arc::new(patch.apply(context, delta.version)));
+                self.observations_version = self.observations_version.max(delta.version);
+            }
         }
         if let Some(facts) = &delta.facts {
             self.facts = Arc::clone(facts);
@@ -123,6 +134,8 @@ pub(in crate::app) struct SnapshotDelta {
     facts: Option<Arc<super::facts::PushFacts>>,
     histories: BTreeMap<String, Option<Arc<history::SharedHistory>>>,
     observations: Option<Arc<super::observation_reads::ObservationContext>>,
+    observation_patch: Option<super::observation_reads::ObservationPatch>,
+    observation_receipts: Option<super::observation_reads::ObservationReceipts>,
 }
 
 impl SnapshotDelta {
@@ -133,6 +146,8 @@ impl SnapshotDelta {
             facts: None,
             histories: BTreeMap::new(),
             observations: None,
+            observation_patch: None,
+            observation_receipts: None,
         }
     }
 
@@ -168,6 +183,28 @@ impl SnapshotDelta {
     ) -> Self {
         self.observations = Some(observations);
         self
+    }
+
+    pub(in crate::app) fn patch_observations(
+        mut self,
+        patch: super::observation_reads::ObservationPatch,
+    ) -> Self {
+        if !patch.is_empty() {
+            self.observation_patch = Some(patch);
+        }
+        self
+    }
+    pub(in crate::app) fn set_observation_receipts(
+        mut self,
+        receipts: super::observation_reads::ObservationReceipts,
+    ) -> Self {
+        self.observation_receipts = Some(receipts);
+        self
+    }
+    pub(in crate::app) fn take_observation_receipts(
+        &mut self,
+    ) -> Option<super::observation_reads::ObservationReceipts> {
+        self.observation_receipts.take()
     }
 
     pub fn set_facts(mut self, facts: Arc<super::facts::PushFacts>) -> Self {
@@ -213,17 +250,17 @@ impl ReadViewSlot {
 
     /// Publish every owner together or reject the entire stale candidate.
     /// Tombstones retain their versions, so old refreshes cannot resurrect rows.
-    pub fn publish_delta(&self, delta: SnapshotDelta) {
+    pub fn publish_delta(&self, delta: SnapshotDelta) -> bool {
         loop {
             let previous = self.root.load_full();
             if !previous.accepts(&delta) {
-                return;
+                return false;
             }
             let mut next = (*previous).clone();
             next.apply(&delta);
             let replaced = self.root.compare_and_swap(&previous, Arc::new(next));
             if Arc::ptr_eq(&previous, &replaced) {
-                return;
+                return true;
             }
         }
     }

@@ -2,7 +2,9 @@
 //! Publication supplies committed identities; each job owns all external inputs.
 
 pub(in crate::app) mod mixed;
+mod publication;
 pub(in crate::app) mod scopes;
+pub(in crate::app) use publication::{ObservationPatch, ObservationReceipts};
 
 #[cfg(test)]
 pub(in crate::app) mod capture_metrics;
@@ -38,13 +40,21 @@ macro_rules! trace_phase {
     };
 }
 
+#[derive(Clone)]
 pub(in crate::app) struct ObservationContext {
+    versions: im::OrdMap<publication::InputKey, u64>,
+    base_version: u64,
     pub scopes: scopes::ScopeReadContext,
     pub mixed: mixed::MixedReadContext,
     deleting_project: bool,
 }
 
 impl ObservationContext {
+    pub(in crate::app) fn with_base_version(&self, version: u64) -> Self {
+        let mut context = self.clone();
+        context.base_version = version;
+        context
+    }
     pub fn capture(app: &AppState) -> Self {
         #[cfg(test)]
         capture_metrics::record("full", "");
@@ -63,6 +73,8 @@ impl ObservationContext {
             "publication_capture_start",
             "publication_capture_end",
             Self {
+                versions: Default::default(),
+                base_version: 0,
                 scopes: scopes::ScopeReadContext::capture(app),
                 mixed: mixed::MixedReadContext::capture(app),
                 deleting_project: app.project_deletion_in_progress,

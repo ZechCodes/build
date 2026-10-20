@@ -31,6 +31,7 @@ pub(in crate::app) struct BoardIndex {
     attention: AttentionIndex,
     diff: DiffCache,
     archived_worktrees: HashMap<String, PersistedArchivedWorktree>,
+    observation_archives: crate::observation_changes::ChangeKeys,
 }
 
 impl BoardIndex {
@@ -42,7 +43,12 @@ impl BoardIndex {
             attention: AttentionIndex::new(attention),
             diff: DiffCache::default(),
             archived_worktrees,
+            observation_archives: Default::default(),
         }
+    }
+
+    pub(in crate::app) fn observation_changes(&self) -> &crate::observation_changes::ChangeKeys {
+        &self.observation_archives
     }
 
     pub(in crate::app) fn attention(&self) -> &AttentionIndex {
@@ -87,6 +93,7 @@ impl BoardIndex {
         &mut self,
         archived: HashMap<String, PersistedArchivedWorktree>,
     ) {
+        self.observation_archives.mark("retained");
         self.archived_worktrees = archived;
     }
 }

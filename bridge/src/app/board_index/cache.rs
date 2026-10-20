@@ -112,6 +112,7 @@ pub(in crate::app) struct RefreshClaim {
 
 #[derive(Default)]
 pub(in crate::app) struct DiffCache {
+    observation_projects: crate::observation_changes::ChangeKeys,
     run_stat_cache: HashMap<String, (Instant, Value)>,
     run_files_changed_at: HashMap<String, String>,
     project_cache: HashMap<String, ProjectCache>,
@@ -122,13 +123,18 @@ pub(in crate::app) struct DiffCache {
 }
 
 impl DiffCache {
+    pub(in crate::app) fn observation_changes(&self) -> &crate::observation_changes::ChangeKeys {
+        &self.observation_projects
+    }
     pub(in crate::app) fn register_project(&mut self, project_id: String) {
+        self.observation_projects.mark(&*project_id);
         self.project_cache.entry(project_id).or_default();
     }
 
     /// Removes only project-owned cache values. In-flight/superseded claims stay
     /// held until their existing computation settles.
     pub(in crate::app) fn remove_project(&mut self, project_id: &str) {
+        self.observation_projects.mark(&*project_id);
         self.project_cache.remove(project_id);
     }
 
@@ -306,6 +312,7 @@ impl DiffCache {
 
     #[cfg(test)]
     pub(in crate::app) fn clear_external_scan(&mut self, project_id: &str) {
+        self.observation_projects.mark(&*project_id);
         self.project_cache
             .get_mut(project_id)
             .expect("registered project cache")
@@ -384,6 +391,7 @@ impl DiffCache {
         worktrees: Vec<ExternalWorktree>,
         now: Instant,
     ) -> Vec<CacheEffect> {
+        self.observation_projects.mark(&*project_id);
         let Some(project) = self.project_cache.get_mut(project_id) else {
             return Vec::new();
         };
@@ -404,6 +412,7 @@ impl DiffCache {
     }
 
     fn store_scan_failure(&mut self, project_id: &str, now: Instant) -> Vec<CacheEffect> {
+        self.observation_projects.mark(&*project_id);
         let Some(project) = self.project_cache.get_mut(project_id) else {
             return Vec::new();
         };
@@ -432,6 +441,7 @@ impl DiffCache {
         project_id: &str,
         worktree: ExternalWorktree,
     ) -> Vec<CacheEffect> {
+        self.observation_projects.mark(&*project_id);
         let Some(scan) = self
             .project_cache
             .get_mut(project_id)
@@ -461,6 +471,7 @@ impl DiffCache {
         project_id: &str,
         canonical_path: &Path,
     ) -> Vec<CacheEffect> {
+        self.observation_projects.mark(&*project_id);
         let Some(scan) = self
             .project_cache
             .get_mut(project_id)

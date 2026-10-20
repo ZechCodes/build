@@ -7,10 +7,13 @@ use crate::app::{AppState, ReadSubject};
 use crate::run::StageProgress;
 use crate::workspace::Workspace;
 use crate::worktree::ExternalWorktree;
+use im::OrdMap;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
+mod capture;
 mod files;
 mod git;
 mod resolution;
@@ -33,13 +36,19 @@ pub(in crate::app) const METHODS: &[&str] = &[
     "workspace.git_init_options",
 ];
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(in crate::app) struct ScopeReadContext {
-    projects: BTreeMap<String, ProjectInput>,
-    workspaces: BTreeMap<String, Workspace>,
-    runs: BTreeMap<String, RunInput>,
-    lineages: BTreeMap<String, Vec<String>>,
+    projects: OrdMap<String, Arc<ProjectInput>>,
+    workspaces: OrdMap<String, Arc<Workspace>>,
+    runs: OrdMap<String, Arc<RunInput>>,
+    lineages: OrdMap<String, Arc<Vec<String>>>,
+    order: Arc<BTreeMap<String, usize>>,
+    workspace_dependents: OrdMap<String, im::OrdSet<String>>,
+    workspace_roots: OrdMap<PathBuf, im::OrdSet<String>>,
+    workspace_canonical: OrdMap<String, PathBuf>,
 }
+
+pub(super) use capture::ScopePatch;
 
 struct ProjectInput {
     path: PathBuf,
@@ -50,7 +59,13 @@ struct ProjectInput {
     scan_settled: bool,
 }
 
+#[derive(Clone)]
 struct RunInput {
+    plan_id: Option<String>,
+    created_at: String,
+    workspace_id: Option<String>,
+    checkout_git: bool,
+    canonical_checkout: PathBuf,
     project_id: Option<String>,
     project_path: PathBuf,
     checkout: PathBuf,
@@ -139,102 +154,6 @@ impl ScopeReadFence {
 }
 
 impl ScopeReadContext {
-    pub fn capture(app: &AppState) -> Self {
-        let projects = app
-            .projects
-            .iter()
-            .map(|project| {
-                #[cfg(test)]
-                super::capture_metrics::record("scope_project", &project.id);
-                let scan = app.board.diff().external_scan(&project.id);
-                (
-                    project.id.clone(),
-                    ProjectInput {
-                        path: project.repo_path.clone(),
-                        is_git: project.is_git,
-                        base_branch: project.base_branch.clone(),
-                        sources: project.sources.clone(),
-                        external: scan.worktrees.to_vec(),
-                        scan_settled: scan.settled_at.is_some(),
-                    },
-                )
-            })
-            .collect();
-        let workspaces = app
-            .workspaces
-            .list(None)
-            .into_iter()
-            .map(|workspace| {
-                #[cfg(test)]
-                super::capture_metrics::record("scope_workspace", &workspace.id);
-                (workspace.id.clone(), workspace.clone())
-            })
-            .collect();
-        let runs = app
-            .runs
-            .iter()
-            .map(|(id, run)| {
-                #[cfg(test)]
-                super::capture_metrics::record("scope_run", id);
-                let git_root = if !app.snapshot_projection_initialized() {
-                    // No observation is admitted before warming. Cold test roots
-                    // can still carry empty, entirely in-memory contexts.
-                    run.worktree.path.clone()
-                } else if app.snapshot_path_exists(&run.worktree.path.join(".git")) {
-                    run.worktree.path.clone()
-                } else {
-                    app.workspace_snapshot_for_conversation(id, None)
-                        .and_then(|workspace| {
-                            workspace
-                                .directories
-                                .iter()
-                                .find(|directory| directory.is_git)
-                        })
-                        .map(|directory| directory.path.clone())
-                        .unwrap_or_else(|| run.worktree.path.clone())
-                };
-                (
-                    id.clone(),
-                    RunInput {
-                        project_id: app.projects.project_id_of(id).map(str::to_owned),
-                        project_path: PathBuf::from(app.project_path_for(id)),
-                        checkout: run.worktree.path.clone(),
-                        git_root,
-                        base_sha: run.base_sha.clone(),
-                        base_branch: app.run_base_branch(id, &run.worktree.base_branch),
-                        stages: run.stages.clone(),
-                        terminal: run.run.state.is_terminal(),
-                    },
-                )
-            })
-            .collect();
-        let mut ordered = app.runs.values().collect::<Vec<_>>();
-        ordered.sort_by_key(|run| {
-            app.board
-                .attention()
-                .clock(&run.run.id.0)
-                .created_at
-                .unwrap_or_default()
-        });
-        let mut lineages = BTreeMap::<String, Vec<String>>::new();
-        for run in ordered {
-            #[cfg(test)]
-            super::capture_metrics::record("scope_lineage", &run.run.id.0);
-            if let Some(task) = &run.run.plan_id {
-                lineages
-                    .entry(task.0.clone())
-                    .or_default()
-                    .push(run.run.id.0.clone());
-            }
-        }
-        Self {
-            projects,
-            workspaces,
-            runs,
-            lineages,
-        }
-    }
-
     pub fn prepare(&self, method: &str, params: &Value) -> Result<ScopeReadJob, ApiError> {
         self.prepare_scoped(method, params)
             .map_err(ApiError::classify)

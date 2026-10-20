@@ -80,3 +80,136 @@ fn observation_publication_board_guard_reuses_unchanged_io_inputs() {
         "board note rebuilt I/O inputs: {visits:?}"
     );
 }
+
+#[test]
+fn observation_sparse_versions_merge_disjoint_keys_and_reject_old_replacements() {
+    use crate::app::observation_reads::ObservationPatch;
+    use crate::app::read_view::{ReadViewSlot, SnapshotDelta};
+    let (_dir, state, first) = fixture();
+    capture_metrics::take();
+    let app = state.lock().unwrap();
+    let second = app.runs.keys().find(|id| **id != first).unwrap().clone();
+    let initial = app.read_view.load().observations.clone().unwrap();
+    let slot = ReadViewSlot::default();
+    assert!(slot.publish_delta(SnapshotDelta::new(1).set_observations(initial.clone())));
+    let mut earlier = ObservationPatch::default();
+    earlier.owner(&app, &first, &initial);
+    let mut later = ObservationPatch::default();
+    later.owner(&app, &second, &initial);
+    assert!(slot.publish_delta(SnapshotDelta::new(3).patch_observations(later)));
+    assert!(slot.publish_delta(SnapshotDelta::new(2).patch_observations(earlier)));
+    assert!(!slot.publish_delta(SnapshotDelta::new(2).set_observations(initial)));
+    let current = slot.load().observations.clone().unwrap();
+    // Replacing a prior sparse root establishes a floor for every key,
+    // including keys whose old explicit version was lower than that floor.
+    assert!(slot.publish_delta(SnapshotDelta::new(5).set_observations(current.clone())));
+    let mut obsolete = ObservationPatch::default();
+    obsolete.owner(&app, &first, &current);
+    assert!(!slot.publish_delta(SnapshotDelta::new(4).patch_observations(obsolete)));
+}
+
+#[test]
+fn observation_reset_first_publication_fences_canonical_and_cross_owner_aliases() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    let (_, canonical_owner) = planned_run_in_review(&mut app, "canonical reset");
+    let (_, alias_owner) = planned_run_in_review(&mut app, "retained alias");
+    let (_, unrelated_owner) = planned_run_in_review(&mut app, "unrelated reset witness");
+    let canonical = primary_agent_id(&app, &canonical_owner);
+    let alias = primary_agent_id(&app, &alias_owner);
+    app.edit_agent_record("bind reset witness", &alias_owner, &alias, |agent| {
+        agent.bind_conversation(&canonical);
+    });
+    app.delivery_queue.clear_queued();
+    let state = app.shared();
+    let _handler = AppState::handler(state.clone());
+    let mut app = state.lock().unwrap();
+    let initial = app.read_view.load().observations.clone().unwrap();
+    let fence = |owner: &str| {
+        initial
+            .mixed
+            .prepare(
+                "thread.attachment",
+                &json!({
+                    "entity_id":owner, "path":".build/attachments/reset-witness.txt"
+                }),
+                None,
+            )
+            .unwrap()
+            .fence()
+    };
+    let canonical_fence = fence(&canonical_owner);
+    let alias_fence = fence(&alias_owner);
+    let unrelated_fence = fence(&unrelated_owner);
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+    let count = seen.clone();
+    let _observer = AppState::observe_reset_publications(move |view| {
+        let context = &view.observations.as_ref().unwrap().mixed;
+        assert!(
+            context.validate(&canonical_fence).is_err(),
+            "canonical old generation survived the first reset publication"
+        );
+        assert!(
+            context.validate(&alias_fence).is_err(),
+            "cross-owner alias old generation survived the first reset publication"
+        );
+        assert!(context.validate(&unrelated_fence).is_ok());
+        count.set(count.get() + 1);
+    });
+    let agent = app
+        .entity_agents(&canonical_owner)
+        .unwrap()
+        .primary()
+        .unwrap();
+    let params = json!({
+        "project_id":app.projects.project_id_of(&canonical_owner),
+        "entity_id":canonical_owner,"agent_id":agent.id,
+        "conversation_id":agent.conversation_id(),"expected_thread_id":agent.thread.id
+    });
+    let reply = app.handle(req("conversation.reset", params));
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert!(
+        seen.get() >= 2,
+        "both canonical and alias owners must publish"
+    );
+}
+
+#[test]
+fn observation_rejected_owner_delta_keeps_pending_wire_and_input_retry() {
+    use crate::app::read_view::SnapshotDelta;
+    let (_dir, state, owner) = fixture();
+    capture_metrics::take();
+    let mut app = state.lock().unwrap();
+    let older = app.prepare_owner_snapshot_projection(&owner).unwrap();
+    // An intervening publication wins this owner's wire key. The rejected
+    // candidate must retain its pending owner and dirty-input receipt.
+    assert!(app
+        .read_view
+        .publish_delta(SnapshotDelta::new(app.read_view.next_version()).put(
+            "agent.list",
+            &owner,
+            json!({"intervening":true})
+        )));
+    app.runs.remove(&owner);
+    app.publish_prepared_snapshot_projection(older);
+    assert_eq!(
+        app.read_view.load().get("agent.list", &owner),
+        Some(&json!({"intervening":true}))
+    );
+    app.publish_snapshot_projection();
+    let latest = app.read_view.load();
+    assert!(
+        latest.get("agent.list", &owner).is_none(),
+        "rejection discarded pending owner wire tombstone"
+    );
+    assert!(
+        latest
+            .observations
+            .as_ref()
+            .unwrap()
+            .scopes
+            .prepare("git.status", &json!({"run_id":owner}))
+            .is_err(),
+        "rejection discarded pending observation tombstone"
+    );
+}

@@ -7,6 +7,7 @@ impl ScopeReadContext {
     pub(super) fn project(&self, id: &str) -> Result<&ProjectInput, String> {
         self.projects
             .get(id)
+            .map(Arc::as_ref)
             .ok_or_else(|| format!("unknown project_id: {id}"))
     }
 
@@ -26,6 +27,7 @@ impl ScopeReadContext {
         let workspace = self
             .workspaces
             .get(workspace)
+            .map(Arc::as_ref)
             .ok_or_else(|| format!("unknown workspace_id: {workspace}"))?;
         let directory = workspace
             .directories
@@ -35,8 +37,30 @@ impl ScopeReadContext {
         Ok((workspace, directory))
     }
 
-    pub(super) fn run(&self, id: &str) -> Result<&RunInput, String> {
-        self.runs.get(id).ok_or_else(|| "unknown run_id".into())
+    pub(super) fn run(&self, id: &str) -> Result<RunInput, String> {
+        let mut run = self.runs.get(id).ok_or("unknown run_id")?.as_ref().clone();
+        if let Some(project) = run.project_id.as_ref().and_then(|id| self.projects.get(id)) {
+            run.project_path = project.path.clone();
+            if run.base_branch.is_empty() {
+                run.base_branch = project.base_branch.clone();
+            }
+        }
+        run.git_root = if run.checkout_git {
+            run.checkout.clone()
+        } else {
+            run.workspace_id
+                .as_ref()
+                .and_then(|id| self.workspaces.get(id))
+                .and_then(|workspace| {
+                    workspace
+                        .directories
+                        .iter()
+                        .find(|directory| directory.is_git)
+                })
+                .map(|directory| directory.path.clone())
+                .unwrap_or_else(|| run.checkout.clone())
+        };
+        Ok(run)
     }
 
     pub(super) fn external(&self, project: &str, id: &str) -> Result<ExternalWorktree, String> {

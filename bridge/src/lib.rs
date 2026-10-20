@@ -75,6 +75,7 @@ pub mod logline;
 pub mod mcp;
 pub mod models;
 pub mod notify;
+mod observation_changes;
 pub mod operation;
 pub mod orchestrator;
 pub mod pairing;

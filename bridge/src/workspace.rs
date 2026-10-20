@@ -176,20 +176,18 @@ impl WorkspaceRegistry {
     }
 
     pub fn reload(&mut self) -> Result<(), String> {
-        let previous = self.workspaces.clone();
-        if let Err(error) = self.reload_records() {
-            self.workspaces = previous;
-            return Err(error);
-        }
-        self.note_reloaded_workspaces(&previous);
+        // Stage the fallible disk walk before moving any installed rows. This
+        // preserves rollback without cloning the complete in-memory registry.
+        let loaded = self.load_workspace_records()?;
+        self.install_reloaded_workspaces(loaded);
         Ok(())
     }
 
-    fn reload_records(&mut self) -> Result<(), String> {
-        self.workspaces.retain(|_, workspace| !workspace.managed);
+    fn load_workspace_records(&self) -> Result<Option<HashMap<String, Workspace>>, String> {
         if !self.root.exists() {
-            return Ok(());
+            return Ok(None);
         }
+        let mut loaded = HashMap::new();
         let registry_root = fs::canonicalize(&self.root).map_err(|error| {
             format!(
                 "resolve workspace registry {}: {error}",
@@ -237,34 +235,10 @@ impl WorkspaceRegistry {
                             workspace.root.display()
                         )
                     })?;
-                self.workspaces.insert(workspace.id.clone(), workspace);
+                loaded.insert(workspace.id.clone(), workspace);
             }
         }
-        let legacy = self.root.join(".legacy");
-        for workspace in self
-            .workspaces
-            .values_mut()
-            .filter(|workspace| !workspace.managed)
-        {
-            let proof = fs::read(legacy.join(&workspace.id))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Workspace>(&bytes).ok());
-            workspace.status = if let Some(proof) = proof {
-                workspace.archived_at = proof.archived_at.clone();
-                for directory in &mut workspace.directories {
-                    directory.finished_head = proof
-                        .directories
-                        .iter()
-                        .find(|candidate| candidate.source_id == directory.source_id)
-                        .and_then(|candidate| candidate.finished_head.clone());
-                }
-                WorkspaceStatus::Finished
-            } else {
-                workspace.archived_at = None;
-                WorkspaceStatus::Ready
-            };
-        }
-        Ok(())
+        Ok(Some(loaded))
     }
 
     fn recover_interrupted(&mut self) -> Result<(), String> {

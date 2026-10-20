@@ -14,6 +14,7 @@
 mod activity;
 mod agent_files;
 mod attachments;
+pub(in crate::app) use attachments::read_task_attachment;
 mod closure_context;
 mod comments;
 mod completion_authority;

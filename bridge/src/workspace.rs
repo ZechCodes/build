@@ -915,7 +915,11 @@ impl WorkspaceRegistry {
     /// outside the roots themselves. The files are gone, so these are the
     /// history of what was finished and where each source was left.
     pub fn finished_records(&self) -> Vec<Workspace> {
-        let directory = self.root.join(".legacy");
+        Self::finished_records_at(&self.root)
+    }
+
+    pub(crate) fn finished_records_at(root: &Path) -> Vec<Workspace> {
+        let directory = root.join(".legacy");
         let Ok(entries) = fs::read_dir(&directory) else {
             return Vec::new();
         };

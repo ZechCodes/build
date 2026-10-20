@@ -35,7 +35,7 @@ impl Store {
         self.dir.join(Store::PLANS_DIR).join(task_id)
     }
     /// Where a Task's canonical docs live (worktree-relative layout inside).
-    pub(super) fn plan_docs_dir(&self, plan_id: &str) -> PathBuf {
+    pub(crate) fn plan_docs_dir(&self, plan_id: &str) -> PathBuf {
         self.task_dir(plan_id).join("docs")
     }
     /// Ingest a worktree's plan docs into the plan's canonical store docs —

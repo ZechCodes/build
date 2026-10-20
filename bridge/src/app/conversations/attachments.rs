@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use std::io::{Read, Seek, SeekFrom};
 
 /// The folders one conversation's attachments live in.
+#[derive(Clone)]
 pub(in crate::app) struct AttachmentHomes {
     /// `<worktree>/.build/attachments`, when the entity has a checkout: the
     /// copy the agent is told about.
@@ -358,44 +359,7 @@ impl AppState {
     pub(crate) fn thread_attachment(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         self.resolve_conversation_params(&entity_id, params)?;
-        let path = require_str(params, "path")?;
-        let target = self.resolve_attachment(&entity_id, &path)?;
-        let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
-        let ranged = params.get("offset").is_some() || params.get("length").is_some();
-        let mut file =
-            std::fs::File::open(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
-        let size = file
-            .metadata()
-            .map_err(|e| format!("cannot read the attachment: {e}"))?
-            .len();
-        let length = if ranged {
-            params
-                .get("length")
-                .and_then(Value::as_u64)
-                .unwrap_or(ATTACHMENT_MAX_BYTES)
-                .min(ATTACHMENT_MAX_BYTES)
-        } else {
-            size
-        };
-        let mut head = Vec::new();
-        (&mut file)
-            .take(8192)
-            .read_to_end(&mut head)
-            .map_err(|e| format!("cannot read the attachment: {e}"))?;
-        file.seek(SeekFrom::Start(offset.min(size)))
-            .map_err(|e| format!("cannot read the attachment: {e}"))?;
-        let mut content = Vec::new();
-        (&mut file)
-            .take(length)
-            .read_to_end(&mut content)
-            .map_err(|e| format!("cannot read the attachment: {e}"))?;
-        Ok(json!({
-            "path": path,
-            "size": size,
-            "mime": mime_hint(&target, &head),
-            "offset": offset,
-            "content_b64": b64encode(&content),
-        }))
+        read_thread_attachment(self.attachment_homes(&entity_id)?, params)
     }
 
     /// Resolve a client-supplied attachment path to a real file, refusing
@@ -413,34 +377,7 @@ impl AppState {
         entity_id: &str,
         path: &str,
     ) -> Result<std::path::PathBuf, String> {
-        let candidate = std::path::Path::new(path);
-        let leaf = candidate.file_name().map(std::path::PathBuf::from);
-        for home in self.attachment_homes(entity_id)?.in_read_order() {
-            let Ok(canonical_home) = std::fs::canonicalize(&home) else {
-                continue;
-            };
-            // A worktree path is written relative to the worktree, which is the
-            // attachments folder's own parent twice over; the leaf retry is
-            // what covers a home the path was not written against.
-            let worktree_relative = home
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|worktree| worktree.join(candidate));
-            let attempts = [
-                candidate.is_absolute().then(|| candidate.to_path_buf()),
-                worktree_relative.filter(|_| !candidate.is_absolute()),
-                leaf.as_ref().map(|leaf| home.join(leaf)),
-            ];
-            for attempt in attempts.into_iter().flatten() {
-                let Ok(resolved) = std::fs::canonicalize(&attempt) else {
-                    continue;
-                };
-                if resolved.starts_with(&canonical_home) && resolved.is_file() {
-                    return Ok(resolved);
-                }
-            }
-        }
-        Err(format!("not an attachment on this conversation: {path}"))
+        resolve_attachment(self.attachment_homes(entity_id)?, path)
     }
 
     /// The files a `thread.post` says it is sending. Name and size are re-read
@@ -495,4 +432,80 @@ impl AppState {
             })
             .collect()
     }
+}
+
+/// Read only after a caller has admitted the immutable conversation binding.
+pub(in crate::app) fn read_thread_attachment(
+    homes: AttachmentHomes,
+    params: &Value,
+) -> Result<Value, String> {
+    let path = require_str(params, "path")?;
+    let target = resolve_attachment(homes, &path)?;
+    let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
+    let ranged = params.get("offset").is_some() || params.get("length").is_some();
+    let mut file =
+        std::fs::File::open(&target).map_err(|e| format!("cannot read the attachment: {e}"))?;
+    let size = file
+        .metadata()
+        .map_err(|e| format!("cannot read the attachment: {e}"))?
+        .len();
+    let length = if ranged {
+        params
+            .get("length")
+            .and_then(Value::as_u64)
+            .unwrap_or(ATTACHMENT_MAX_BYTES)
+            .min(ATTACHMENT_MAX_BYTES)
+    } else {
+        size
+    };
+    let mut head = Vec::new();
+    (&mut file)
+        .take(8192)
+        .read_to_end(&mut head)
+        .map_err(|e| format!("cannot read the attachment: {e}"))?;
+    file.seek(SeekFrom::Start(offset.min(size)))
+        .map_err(|e| format!("cannot read the attachment: {e}"))?;
+    let mut content = Vec::new();
+    (&mut file)
+        .take(length)
+        .read_to_end(&mut content)
+        .map_err(|e| format!("cannot read the attachment: {e}"))?;
+    Ok(json!({
+        "path": path,
+        "size": size,
+        "mime": mime_hint(&target, &head),
+        "offset": offset,
+        "content_b64": b64encode(&content),
+    }))
+}
+
+fn resolve_attachment(homes: AttachmentHomes, path: &str) -> Result<std::path::PathBuf, String> {
+    let candidate = std::path::Path::new(path);
+    let leaf = candidate.file_name().map(std::path::PathBuf::from);
+    for home in homes.in_read_order() {
+        let Ok(canonical_home) = std::fs::canonicalize(&home) else {
+            continue;
+        };
+        // A worktree path is written relative to the worktree, which is the
+        // attachments folder's own parent twice over; the leaf retry is
+        // what covers a home the path was not written against.
+        let worktree_relative = home
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|worktree| worktree.join(candidate));
+        let attempts = [
+            candidate.is_absolute().then(|| candidate.to_path_buf()),
+            worktree_relative.filter(|_| !candidate.is_absolute()),
+            leaf.as_ref().map(|leaf| home.join(leaf)),
+        ];
+        for attempt in attempts.into_iter().flatten() {
+            let Ok(resolved) = std::fs::canonicalize(&attempt) else {
+                continue;
+            };
+            if resolved.starts_with(&canonical_home) && resolved.is_file() {
+                return Ok(resolved);
+            }
+        }
+    }
+    Err(format!("not an attachment on this conversation: {path}"))
 }

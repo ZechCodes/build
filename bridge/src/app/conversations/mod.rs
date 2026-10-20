@@ -16,6 +16,7 @@ pub(in crate::app) mod sql_read;
 
 pub(in crate::app) use agent_to_agent::AgentSender;
 pub(in crate::app) use attachments::media_mime_hint;
+pub(in crate::app) use attachments::{read_thread_attachment, AttachmentHomes};
 pub(crate) use attachments::mime_hint;
 pub use attachments::ATTACHMENT_MAX_BYTES;
 // The tracker files the same kind of object under the same rules, so it reads

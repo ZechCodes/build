@@ -7,15 +7,32 @@ async fn review_metadata_uses_one_readonly_snapshot_without_the_writer_connectio
     let fixture = crate::reviews::sync::reconcile::tests::Fixture::new();
     fixture.sync();
     let review = fixture.review();
-    let sync = fixture.store.load_review_sync_observations(&review.task_id).unwrap();
-    let intents = fixture.store.load_review_merge_intents(&review.task_id).unwrap();
+    let sync = fixture
+        .store
+        .load_review_sync_observations(&review.task_id)
+        .unwrap();
+    let intents = fixture
+        .store
+        .load_review_merge_intents(&review.task_id)
+        .unwrap();
     let mut reader = fixture.store.read_pool().acquire().await;
     let _writer = fixture.store.connection();
-    reader.read(|read| {
-        assert_eq!(read.load_review(&review.task_id).unwrap(), Some(review.clone()));
-        assert_eq!(read.load_review_sync_observations(&review.task_id).unwrap(), sync);
-        assert_eq!(read.load_review_merge_intents(&review.task_id).unwrap(), intents);
-    }).unwrap();
+    reader
+        .read(|read| {
+            assert_eq!(
+                read.load_review(&review.task_id).unwrap(),
+                Some(review.clone())
+            );
+            assert_eq!(
+                read.load_review_sync_observations(&review.task_id).unwrap(),
+                sync
+            );
+            assert_eq!(
+                read.load_review_merge_intents(&review.task_id).unwrap(),
+                intents
+            );
+        })
+        .unwrap();
 }
 
 #[tokio::test]

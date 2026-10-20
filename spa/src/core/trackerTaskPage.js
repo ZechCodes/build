@@ -59,7 +59,7 @@ import { createThreadState, wireThreadAttachments } from "./thread.js";
 import { createTaskAttachmentBodies } from "./taskAttachmentBodies.js";
 import { uiAddress, watchUiState } from "./localUiState.js";
 import { createUnreadMarker } from "./unreadAnchor.js";
-import { taskUnreadReading, taskUnreadRules, latestTaskMark } from "./trackerUnread.js";
+import { taskUnreadReading, taskUnreadRules, latestTaskMark, taskWatchBaseline } from "./trackerUnread.js";
 import { mountNewMessagesPill } from "./newMessagesPill.js";
 import { scrollWithin } from "./scrollWithin.js";
 import { createTaskChecklist } from "./taskChecklist.js";
@@ -187,7 +187,9 @@ export function mountTaskPage(host, options) {
       unreadFrom = null;
       return;
     }
-    unreadFrom = unreadMarker.update(taskUnreadReading(state.rows, state.task?.read_through, markedThrough));
+    const baseline = taskWatchBaseline(state.rows, state.task);
+    const cursor = latestTaskMark(state.task?.read_through, baseline);
+    unreadFrom = unreadMarker.update(taskUnreadReading(state.rows, cursor, markedThrough));
   };
 
   /**

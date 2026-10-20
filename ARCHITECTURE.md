@@ -359,6 +359,20 @@ before saving. A failed save removes only that staged in-memory alias, while
 a successful save publishes both before notices, including branch dispatch
 and implementation handover.
 
+Plan/run finishers do not discover or reap unrelated terminals. The periodic
+service in `app/runtime/terminals/cleanup.rs` captures registration identities
+under a brief app guard, probes checkout roots outside the guard, then applies
+each disappearance under its own guard. It rechecks the exact tab role,
+session handle and lineage, or waiting-screen handle, before retiring anything.
+Cleanup attempts the exact session's lineage and turn closure through its
+canonical owner mutation. It publishes actual runtime retirement with committed
+roster fields before completing even if that save fails. Known checkout removals
+carry captured registrations through
+their deferred work and clean up only those covered by a confirmed removal
+receipt before replying. Merge prune uses the same registration checks after
+successful removal; its existing synchronous filesystem work remains guarded.
+Process kill and reap still run separately through `reaper.rs::Retirement`.
+
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read
 rolls back the write. Background observation failures retain the previous

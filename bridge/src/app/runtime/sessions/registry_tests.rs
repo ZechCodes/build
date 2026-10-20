@@ -103,6 +103,32 @@ fn diagnostic<'a>() -> LifecycleDiagnostic<'a> {
 }
 
 #[test]
+fn terminal_cleanup_rechecks_session_lineage_and_owner_before_effect() {
+    let root = Path::new("/fixture/checkout");
+    let mut registry = SessionRegistry::new();
+    let (key, _, instance) = insert_agent(&mut registry, root, "owner-a", "agent-a", "thread-a");
+    let candidate = registry.terminal_cleanup_candidates().pop().unwrap();
+    assert!(registry.cleanup_candidate_is_current(&candidate));
+
+    let tab = registry.test_tab_mut(&key).unwrap();
+    tab.session_instance.as_mut().unwrap().id = "replacement-generation".into();
+    assert!(
+        !registry.cleanup_candidate_is_current(&candidate),
+        "a reused session handle cannot authorize retiring another lineage"
+    );
+
+    let tab = registry.test_tab_mut(&key).unwrap();
+    tab.session_instance = Some(instance);
+    if let TabRole::Agent { owner, .. } = &mut tab.role {
+        *owner = "owner-b".into();
+    }
+    assert!(
+        !registry.cleanup_candidate_is_current(&candidate),
+        "a changed binding is another owner's cleanup command"
+    );
+}
+
+#[test]
 fn token_comparison_preserves_exact_length_and_byte_behavior() {
     assert!(constant_time_token_eq("same-token", "same-token"));
     assert!(!constant_time_token_eq("same-token", "same-tokeN"));

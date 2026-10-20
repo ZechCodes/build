@@ -1,3 +1,4 @@
+use crate::app::runtime::sessions::TerminalCleanupCandidate;
 use crate::app::AppState;
 use crate::lifecycle::{PendingRow, Performed, WorktreeMutation};
 use serde_json::Value;
@@ -18,11 +19,15 @@ where
 
 pub struct AppReservation {
     pub row: Arc<PendingRow>,
+    pub(super) terminal_cleanup: Vec<TerminalCleanupCandidate>,
 }
 
 impl AppReservation {
     pub fn row_only(row: Arc<PendingRow>) -> Self {
-        Self { row }
+        Self {
+            row,
+            terminal_cleanup: Vec::new(),
+        }
     }
     fn roll_back(self, _state: &mut AppState) {}
 }
@@ -83,6 +88,9 @@ where
         state.release_row(&reservation.row.entity_id);
         match result {
             Ok(Performed { change, output }) => {
+                for root in &change.gone {
+                    state.reap_terminal_candidates_at(&reservation.terminal_cleanup, root);
+                }
                 state.amend_checkouts(project_id.as_deref(), &change);
                 match settlement.settle(state, Ok(output)) {
                     Ok(answer) => Ok(answer),

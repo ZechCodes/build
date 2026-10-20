@@ -6,6 +6,7 @@ mod registry_tests;
 pub(in crate::app) use registry::constant_time_token_eq;
 pub(in crate::app) use registry::{
     IdleObservation, McpTokenLease, SessionRegistry, SpawnAvailability, SpawnClaimToken,
+    TerminalCleanupCandidate,
 };
 
 use crate::app::{no_terminal_here, AppState, NO_TERMINAL_LEFT};

@@ -16,6 +16,7 @@
 
 use super::branch_delete::{self, BranchDeleteFailure, BranchDeletion};
 use crate::app::git::deferred::DeferredGitWork;
+use crate::app::runtime::sessions::TerminalCleanupCandidate;
 use crate::app::{require_str, AppState, DeferredGit, DeferredWork};
 use crate::reclaim::containment::WorkspaceBoundary;
 use crate::tracker::{Actor, TaskEventKind};
@@ -31,6 +32,7 @@ pub(super) struct DeleteWorkspaceFiles {
     boundary: WorkspaceBoundary,
     rift_root: PathBuf,
     retirements: Vec<crate::reaper::Retirement>,
+    terminal_cleanup: Vec<TerminalCleanupCandidate>,
     /// `(source repository, checkout inside the workspace)` per Git directory.
     checkouts: Vec<(PathBuf, PathBuf)>,
     /// The runs whose checkout lived under this root — the conversation the
@@ -199,6 +201,9 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
     }
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
+        for candidate in &self.terminal_cleanup {
+            app.reap_terminal_candidate(candidate);
+        }
         let _cleanup = app.complete_workspace_delete(&self.workspace_id, &self.run_ids)?;
         match &self.removal {
             Removal::Finish(finishing) if result["branch_deleted"] == true => {
@@ -347,6 +352,12 @@ impl AppState {
             .expected_root()
             .to_path_buf();
         let run_ids = self.runs_under(&root);
+        let terminal_cleanup = self
+            .session_registry
+            .terminal_cleanup_candidates()
+            .into_iter()
+            .filter(|candidate| candidate.key().root.starts_with(&root))
+            .collect();
         let retirements = self.retire_everything_at(&root);
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteWorkspaceFiles {
@@ -355,6 +366,7 @@ impl AppState {
                 boundary,
                 rift_root: self.project_worktrees_root(&workspace.project_id),
                 retirements,
+                terminal_cleanup,
                 checkouts: checkouts_of(workspace),
                 run_ids,
                 workspace: workspace.clone(),

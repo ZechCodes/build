@@ -634,9 +634,8 @@ fn a_task_write_publishes_its_owned_row_without_rereading_other_tasks() {
 
     assert_eq!(answer["ok"], true, "{answer}");
     let view = state.read_view.load();
-    let rows = view.get("board.list", "").unwrap()["items"]
-        .as_array()
-        .unwrap();
+    let board = view.get("board.list", "").unwrap();
+    let rows = board["items"].as_array().unwrap();
     assert_eq!(
         rows.iter().find(|row| row["task_id"] == first).unwrap()["title"],
         "after"
@@ -668,9 +667,8 @@ fn a_task_write_publishes_dependency_digests_with_its_own_row() {
 
     assert_eq!(answer["ok"], true, "{answer}");
     let view = state.read_view.load();
-    let rows = view.get("board.list", "").unwrap()["items"]
-        .as_array()
-        .unwrap();
+    let board = view.get("board.list", "").unwrap();
+    let rows = board["items"].as_array().unwrap();
     let row = rows.iter().find(|row| row["task_id"] == dependent).unwrap();
     assert_eq!(
         row["dependencies"]["waiting_on"][0]["title"],

@@ -3,7 +3,8 @@
 
 use super::observations::{CheckoutObservation, ObservationRequest, ObservationSink};
 use super::{AppState, CheckoutSubject, ReadSubject};
-use crate::app::read_view::ReadViewSlot;
+use crate::app::read_view::shared_json::DigestPatch;
+use crate::app::read_view::{ReadViewSlot, SharedJson};
 use crate::changes::{BoardLists, EntityFacts, FactsRequest, ThreadTip, THREAD_PUSH_MAX_ITEMS};
 use crate::thread::Thread;
 use serde_json::{json, Value};
@@ -17,10 +18,10 @@ pub(in crate::app) struct PushFacts {
     entities: BTreeMap<String, Arc<()>>,
     observation_generations: BTreeMap<String, Arc<()>>,
     pub(super) observed: BTreeMap<String, Arc<CheckoutObservation>>,
-    states: BTreeMap<String, Arc<Value>>,
+    states: BTreeMap<String, SharedJson>,
     terminals: BTreeMap<String, Arc<Value>>,
     threads: BTreeMap<String, Vec<PushThread>>,
-    lists: Arc<Value>,
+    lists: SharedJson,
     pub(super) summaries: BTreeMap<String, (String, Vec<PathBuf>)>,
 }
 
@@ -276,9 +277,20 @@ impl FactsSource {
 }
 
 impl PushFacts {
+    #[cfg(test)]
     pub(in crate::app) fn apply_committed_history_delta(
         &mut self,
         delta: &crate::store::CommittedThreadItems,
+    ) {
+        let mut patch =
+            DigestPatch::new(&delta.thread_id, delta.generation_revision, delta.sequence);
+        self.apply_committed_history_delta_with_patch(delta, &mut patch);
+    }
+
+    pub(in crate::app) fn apply_committed_history_delta_with_patch(
+        &mut self,
+        delta: &crate::store::CommittedThreadItems,
+        patch: &mut DigestPatch<'_>,
     ) {
         for thread in self.threads.values_mut().flatten().filter(|thread| {
             thread.tip.conversation_id.as_deref() == Some(delta.conversation_id.as_str())
@@ -292,8 +304,8 @@ impl PushFacts {
             .values_mut()
             .chain(std::iter::once(&mut self.lists))
         {
-            if crate::app::read_view::history::thread_digests_need_patch(state, delta) {
-                crate::app::read_view::history::patch_thread_digests(Arc::make_mut(state), delta);
+            if let Some(next) = patch.apply(state) {
+                *state = next;
             }
         }
     }
@@ -335,7 +347,7 @@ impl PushFacts {
                     .then(|| {
                         self.states
                             .get(&request.entity_id)
-                            .map(|state| state.as_ref().clone())
+                            .map(SharedJson::materialize)
                     })
                     .flatten()
             } else {
@@ -440,8 +452,8 @@ impl PushFacts {
                 .filter(|(_, wanted)| *wanted)
                 .filter_map(|(name, _)| {
                     self.lists
-                        .get(name)
-                        .map(|value| (name.to_owned(), value.clone()))
+                        .field(name)
+                        .map(|value| (name.to_owned(), value.materialize()))
                 })
                 .collect(),
         )
@@ -474,16 +486,30 @@ pub(in crate::app) fn entity_facts(
 
 impl AppState {
     pub(in crate::app) fn push_facts_snapshot(&self, lists: Value) -> PushFacts {
+        let lists = match lists {
+            Value::Object(fields) => SharedJson::object(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, SharedJson::value(value))),
+            ),
+            value => SharedJson::value(value),
+        };
+        self.push_facts_shared_snapshot(lists)
+    }
+
+    pub(in crate::app) fn push_facts_shared_snapshot(&self, lists: SharedJson) -> PushFacts {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.push_facts");
         let previous = self.read_view.load();
         let mut snapshot = PushFacts {
-            lists: Arc::new(lists),
+            lists,
             ..PushFacts::default()
         };
         for owner in self.plans.keys().chain(self.runs.keys()) {
             if let Some(state) = self.entity_state_item(owner) {
-                snapshot.states.insert(owner.clone(), Arc::new(state));
+                snapshot
+                    .states
+                    .insert(owner.clone(), SharedJson::value(state));
             }
             snapshot.threads.insert(
                 owner.clone(),
@@ -522,7 +548,7 @@ impl AppState {
         for (entity, subject) in self.checkout_subjects() {
             if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
                 if let Some(state) = self.entity_state_item(&entity) {
-                    entry.insert(Arc::new(state));
+                    entry.insert(SharedJson::value(state));
                 }
             }
             snapshot.terminals.insert(

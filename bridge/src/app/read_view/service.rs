@@ -49,8 +49,8 @@ impl SnapshotService {
         {
             json!({"workspaces": []})
         } else {
-            match view.get(method, owner) {
-                Some(value) => value.clone(),
+            match view.get_owned(method, owner) {
+                Some(value) => value,
                 None => missing(method, owner)?,
             }
         };
@@ -172,8 +172,7 @@ fn workspace_detail(
     if let Some(agent) = named_agent {
         let key = format!("{workspace}/{agent}");
         answer = view
-            .get("workspace.get", &key)
-            .cloned()
+            .get_owned("workspace.get", &key)
             .ok_or_else(|| ApiError::classify(format!("unknown agent_id: {agent}")))?;
     }
     let Some(canonical_agent) = answer["thread"]["agent"]["id"].as_str() else {
@@ -331,7 +330,7 @@ mod tests {
             "/tmp/v1-snapshot.sock",
         );
         app.initialize_snapshot_projection();
-        let mut board = app.read_view.load().get("board.list", "").unwrap().clone();
+        let mut board = app.read_view.load().get_owned("board.list", "").unwrap();
         board["snapshot_marker"] = json!(true);
         app.read_view
             .publish_delta(SnapshotDelta::new(app.read_view.next_version()).put(

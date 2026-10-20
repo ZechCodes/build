@@ -288,6 +288,7 @@ impl<'a> DigestPatch<'a> {
     }
 }
 
+#[cfg(test)]
 pub fn value_needs_digest_patch(
     value: &Value,
     thread: &str,

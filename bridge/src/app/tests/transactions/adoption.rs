@@ -32,13 +32,17 @@ fn adoption_finisher_first_publication_includes_its_workspace_alias() {
     let owner = "adoption-first-publication";
     let active = opened_adoption(&mut app, &repo, home.path(), owner);
     assert!(app.read_view.load().get("workspace.get", owner).is_none());
+    let revision = app.changes.board_revision();
 
     // This is the adoption settlement's inner finisher, before any epilogue
     // maintenance can repair the first root that its notices advertise.
     let (_, saved) =
         app.answer_adopted_run_mutation(owner.into(), active, crate::thread::ThreadDetail::Digest);
     saved.unwrap();
-    assert!(app.changes.has_pending(), "the finisher staged its notices");
+    assert!(
+        app.changes.board_revision() > revision,
+        "the finisher advertised the new board revision"
+    );
     let reply = app
         .snapshot_service()
         .call(req("workspace.get", json!({"workspace_id": owner})));

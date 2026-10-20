@@ -9,6 +9,7 @@ use crate::carrier::{FrameIntake, OutboundEnvelope};
 use crate::mcp::BridgeAction;
 use crate::timing::phase_samples::PhaseSamples;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 const WORKTREES: usize = 190;
@@ -37,6 +38,7 @@ const RPC_METHODS: [&str; 5] = [
 ];
 const REQUEST_PATIENCE: Duration = Duration::from_secs(600);
 const MAX_BUSY_LOCK_WAIT_MS: f64 = 5000.0;
+const MAX_BUSY_RESPONSE_MS: f64 = 5000.0;
 
 struct Busy {
     _home: tempfile::TempDir,
@@ -268,6 +270,7 @@ async fn control_agent(
     identity: ControlIdentity,
     start: Arc<tokio::sync::Barrier>,
     completed: Arc<AtomicUsize>,
+    samples: PhaseSamples,
 ) {
     let ControlIdentity {
         owner,
@@ -331,6 +334,7 @@ async fn control_agent(
         ];
         for action in actions {
             let frame = json!({"task_id":agent,"session_token":format!("busy-token-{agent}"),"request":action});
+            let requested_at = Instant::now();
             client
                 .get_mut()
                 .write_all(format!("{frame}\n").as_bytes())
@@ -342,6 +346,10 @@ async fn control_agent(
                 .unwrap()
                 .unwrap();
             let response: Value = serde_json::from_str(&response).unwrap();
+            samples.record_client_total(
+                &format!("mcp.control:{}", action.tool_name()),
+                requested_at.elapsed(),
+            );
             assert_eq!(response["ok"], true, "{response}");
             assert_acknowledged_snapshot(&view, &owner, &agent, &action, &response);
             completed.fetch_add(1, Ordering::Relaxed);
@@ -356,6 +364,7 @@ fn busy_rpc(
     start: Arc<tokio::sync::Barrier>,
     method: &'static str,
     params: Value,
+    samples: PhaseSamples,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut wire = ChannelWire::open();
@@ -372,7 +381,8 @@ fn busy_rpc(
             Ok(OutboundEnvelope::SessionAccept { .. })
         ));
         start.wait().await;
-        for i in 0..8 {
+        let mut submitted = std::collections::BTreeMap::<u64, Instant>::new();
+        for i in 0..RPC_SAMPLES {
             let mut params = params.clone();
             if method == "tasks.review.get" {
                 let tasks = params.as_object_mut().unwrap().remove("task_ids").unwrap();
@@ -381,6 +391,7 @@ fn busy_rpc(
             if method == "git.show" {
                 params["max_bytes"] = json!(1024 + i);
             }
+            assert!(submitted.insert(i as u64, Instant::now()).is_none());
             wire.accept(
                 &intake,
                 client_request(
@@ -394,13 +405,20 @@ fn busy_rpc(
             .unwrap();
         }
         let mut answers = 0;
-        while answers < 8 {
+        while answers < RPC_SAMPLES {
             let outbound = tokio::time::timeout(REQUEST_PATIENCE, wire.outbound.recv())
                 .await
                 .unwrap()
                 .unwrap();
             let reply = SessionSender::decrypt_push(&key, &outbound);
             if reply.get("accepted").is_none() {
+                let id = reply["id"]
+                    .as_u64()
+                    .expect("a final reply names its request");
+                let requested_at = submitted
+                    .remove(&id)
+                    .expect("each submitted request has exactly one reply");
+                samples.record_client_total(method, requested_at.elapsed());
                 assert_eq!(reply["ok"], true, "{method}: {reply}");
                 if method == "tasks.review.get" {
                     assert!(
@@ -411,6 +429,7 @@ fn busy_rpc(
                 answers += 1;
             }
         }
+        assert!(submitted.is_empty(), "every submitted RPC completed");
     })
 }
 
@@ -521,6 +540,7 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
             },
             Arc::clone(&start),
             Arc::clone(&completed),
+            busy.samples.clone(),
         )));
     }
     let (owner, agent) = &busy.owners[0];
@@ -538,30 +558,35 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
             Arc::clone(&start),
             "entity.seen",
             json!({"entity_id":owner,"agent_id":agent,"thread_id":thread_id}),
+            busy.samples.clone(),
         ),
         busy_rpc(
             Arc::clone(&intake),
             Arc::clone(&start),
             "thread.post",
             json!({"entity_id":owner,"agent_id":agent,"thread_id":thread_id,"body":"busy user turn"}),
+            busy.samples.clone(),
         ),
         busy_rpc(
             Arc::clone(&intake),
             Arc::clone(&start),
             "user.present",
             json!({}),
+            busy.samples.clone(),
         ),
         busy_rpc(
             Arc::clone(&intake),
             Arc::clone(&start),
             "tasks.review.get",
             json!({"task_ids":busy.tasks.iter().take(8).collect::<Vec<_>>()}),
+            busy.samples.clone(),
         ),
         busy_rpc(
             Arc::clone(&intake),
             Arc::clone(&start),
             "git.show",
             json!({"run_id":owner,"hash":busy.hash}),
+            busy.samples.clone(),
         ),
     ];
     start.wait().await;
@@ -635,9 +660,19 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
         overall_max_frame_sample(&measurements, "frame.queued");
     let (worst_queue_and_lock_method, overall_queue_and_lock_wait_max_ms) =
         overall_max_frame_sample(&measurements, "frame.queue_and_lock_wait");
+    let (worst_permit_wait_method, overall_permit_wait_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.permit_wait");
+    let (worst_pool_wait_method, overall_pool_wait_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.pool_wait");
+    let (worst_queue_permit_and_lock_method, overall_queue_permit_and_lock_wait_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.queue_permit_and_lock_wait");
+    let (worst_frame_total_method, overall_frame_total_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.total");
+    let (worst_client_total_method, overall_client_total_max_ms) =
+        overall_max_client_total(&measurements);
     println!(
         "TASK709_BUSY_BASELINE {}",
-        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"status_observations":AGENTS*STATUS_OBSERVATIONS_PER_AGENT,"status_observer_path":"production StatusPump::observe via MeasuredStatusPump adapter","mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
+        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"status_observations":AGENTS*STATUS_OBSERVATIONS_PER_AGENT,"status_observer_path":"production StatusPump::observe via MeasuredStatusPump adapter","mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"client_total_is_exclusive_phase":false,"client_total_endpoints":{"mcp":"before socket write through parsed JSON reply","rpc":"before encrypted wire submission through decrypted reply keyed by exact request id","status":"before blocking-pool submission through joined production observe completion"},"response_limit_ms":MAX_BUSY_RESPONSE_MS,"overall_permit_wait_max_ms":overall_permit_wait_max_ms,"worst_permit_wait_method":worst_permit_wait_method,"overall_pool_wait_max_ms":overall_pool_wait_max_ms,"worst_pool_wait_method":worst_pool_wait_method,"overall_queue_permit_and_lock_wait_max_ms":overall_queue_permit_and_lock_wait_max_ms,"worst_queue_permit_and_lock_method":worst_queue_permit_and_lock_method,"overall_frame_total_max_ms":overall_frame_total_max_ms,"worst_frame_total_method":worst_frame_total_method,"overall_client_total_max_ms":overall_client_total_max_ms,"worst_client_total_method":worst_client_total_method,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
     );
     assert!(
         failures.is_empty(),
@@ -673,6 +708,7 @@ fn status_observers(
                 instance,
             );
             let start = Arc::clone(start);
+            let samples = busy.samples.clone();
             tokio::spawn(async move {
                 start.wait().await;
                 let mut previous = None;
@@ -684,12 +720,14 @@ fn status_observers(
                         "each ordinary Working observation has a fresh boundary"
                     );
                     previous = Some(snapshot.changed_at.clone());
+                    let requested_at = Instant::now();
                     pump = tokio::task::spawn_blocking(move || {
                         pump.observe(&snapshot);
                         pump
                     })
                     .await
                     .unwrap();
+                    samples.record_client_total("agent.poll_status", requested_at.elapsed());
                 }
             })
         })
@@ -739,8 +777,8 @@ fn ordinary_status_observer_records_a_complete_named_frame() {
     assert_eq!(captured["agent.poll_status"]["entered.lock"]["count"], 1);
 }
 
-fn assert_expected_samples(measurements: &Value) {
-    let expected = CONTROL_TOOLS
+fn expected_request_samples() -> Vec<(String, usize)> {
+    CONTROL_TOOLS
         .into_iter()
         .map(|tool| (format!("mcp.control:{tool}"), AGENTS * ROUNDS))
         .chain(
@@ -752,7 +790,11 @@ fn assert_expected_samples(measurements: &Value) {
             String::from("agent.poll_status"),
             AGENTS * STATUS_OBSERVATIONS_PER_AGENT,
         )])
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+}
+
+fn assert_expected_samples(measurements: &Value) {
+    let expected = expected_request_samples();
     for (method, count) in &expected {
         assert_eq!(
             measurements[method]["frame.held"]["count"], *count,
@@ -771,6 +813,19 @@ fn assert_expected_samples(measurements: &Value) {
         maximum <= MAX_BUSY_LOCK_WAIT_MS,
         "whole busy fixture exceeded {MAX_BUSY_LOCK_WAIT_MS}ms frame lock-wait limit: {method} waited {maximum}ms"
     );
+    for metric in ["frame.permit_wait", "frame.pool_wait"] {
+        let _ = overall_max_frame_sample(measurements, metric);
+    }
+    let (method, maximum) =
+        overall_max_frame_sample(measurements, "frame.queue_permit_and_lock_wait");
+    assert!(maximum <= MAX_BUSY_RESPONSE_MS, "whole busy fixture queue+permit+lock wait exceeded {MAX_BUSY_RESPONSE_MS}ms: {method} waited {maximum}ms");
+    let (method, total) = overall_max_frame_sample(measurements, "frame.total");
+    assert!(
+        total <= MAX_BUSY_RESPONSE_MS,
+        "whole busy fixture frame total exceeded {MAX_BUSY_RESPONSE_MS}ms: {method} took {total}ms"
+    );
+    let (method, total) = overall_max_client_total(measurements);
+    assert!(total <= MAX_BUSY_RESPONSE_MS, "whole busy fixture client/status response exceeded {MAX_BUSY_RESPONSE_MS}ms: {method} took {total}ms");
     for method in expected
         .iter()
         .map(|(method, _)| method.as_str())
@@ -783,6 +838,31 @@ fn assert_expected_samples(measurements: &Value) {
             "app-lock hold budget exceeded for {method}: {held}"
         );
     }
+}
+
+fn overall_max_client_total(measurements: &Value) -> (String, f64) {
+    expected_request_samples()
+        .into_iter()
+        .map(|(method, expected)| {
+            let phases = &measurements[&method];
+            let count = phases["client.total"]["count"]
+                .as_u64()
+                .expect("every client/status submission completed");
+            assert_eq!(
+                count, expected as u64,
+                "exact completed caller count for {method}"
+            );
+            assert_eq!(
+                count,
+                phases["frame.held"]["count"].as_u64().unwrap(),
+                "every observed caller has a completed frame: {method}"
+            );
+            let maximum = phases["client.total"]["max_ms"].as_f64().unwrap();
+            assert!(maximum.is_finite() && maximum >= 0.0);
+            (method, maximum)
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .expect("the busy fixture submits actual requests")
 }
 
 fn overall_max_frame_sample<'a>(measurements: &'a Value, sample: &str) -> (&'a str, f64) {

@@ -213,12 +213,13 @@ describe("SQL reads share eight sender credits per opening", () => {
     expect(reopened.wire.sent).toHaveLength(8);
   });
 
-  it("releases an unsent credit after an explicit send failure", async () => {
-    const { wire, ask } = setup();
-    wire.send = vi.fn().mockRejectedValueOnce(new Error("the channel closed")).mockImplementation((frame) => wire.sent.push(frame.payload));
+  it("releases an unsent credit after encryption fails before carrier handoff", async () => {
+    const encryptFrame = vi.fn().mockRejectedValueOnce(new Error("encryption failed")).mockImplementation(transport.encryptFrame);
+    const { wire, ask } = setup({ transport: { ...transport, encryptFrame } });
     const failed = ask();
     for (let n = 0; n < 8; n += 1) ask();
-    await expect(failed).rejects.toThrow("the channel closed");
+    await expect(failed).rejects.toMatchObject({ message: "encryption failed" });
+    await expect(failed).rejects.not.toMatchObject({ uncertain: true });
     await flush();
     expect(wire.sent).toHaveLength(8);
   });

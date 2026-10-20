@@ -1,7 +1,11 @@
 // One E2EE session's crypto and correlation, over one carrier at a time.
 
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { createSessionRpc } from "../src/core/sessionRpc.js";
+import { openCarrier } from "../src/core/carrier.js";
+import { CHUNK_BYTES } from "../src/core/chunk.js";
+import { SQL_READ_LIMIT, isSqlRead } from "../src/core/sqlReadCredits.js";
+import { readFileSync } from "node:fs";
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -20,22 +24,24 @@ const fakeTransport = {
 };
 
 /** A wire the test drives: what it was asked to carry, and what it delivers. */
-function fakeCarrier({ sendFails = null } = {}) {
+function fakeCarrier({ sendFails = null, sent = () => {} } = {}) {
   const listeners = new Set();
+  const closes = new Set();
   return {
     sent: [],
     send(envelope) {
       if (sendFails) return Promise.reject(new Error(sendFails));
       this.sent.push(envelope);
+      sent(envelope, this);
       return Promise.resolve();
     },
     onEnvelope: (fn) => {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
-    onClose: () => () => {},
-    close: () => {},
-    deliver: (payload) => listeners.forEach((fn) => fn({ key: "key-1", frameFields: { payload } })),
+    onClose: (fn) => { closes.add(fn); return () => closes.delete(fn); },
+    close: () => closes.forEach((fn) => fn()),
+    deliver: (payload, key = "key-1") => listeners.forEach((fn) => fn({ key, frameFields: { payload } })),
     listeners,
   };
 }
@@ -376,6 +382,139 @@ describe("createSessionRpc", () => {
     await expect(waiting).rejects.toMatchObject({ message: "session closed", uncertain: true });
     await expect(rpc.call("project.list", {})).rejects.toThrow("your device went offline");
     expect(carrier.sent).toHaveLength(1);
+  });
+});
+
+describe("SQL admission under held work", () => {
+  const sessions = [];
+  const open = (wire, options = {}) => {
+    const rpc = rpcOn(wire, { timeoutMs: 0, ...options });
+    sessions.push(rpc);
+    return rpc;
+  };
+  const ask = (rpc, method = "tasks.get", options = {}, params = {}) => {
+    const answer = rpc.call(method, params, options);
+    answer.catch(() => {});
+    return answer;
+  };
+  const payloadOf = (envelope) => envelope.frameFields.payload;
+  afterEach(() => sessions.splice(0).forEach((rpc) => rpc.close(new Error("test ended"))));
+
+  it("at fixture N=B=16 holds extra SQL unsent while same-carrier control and snapshots answer", async () => {
+    const serverSource = readFileSync(new URL("../../bridge/src/carrier/sql.rs", import.meta.url), "utf8");
+    const backlogLimit = Number(serverSource.match(/const SQL_BACKLOG: usize = (\d+);/)[1]);
+    expect(backlogLimit).toBe(16);
+    const backlog = [];
+    // The intake fixture holds every SQL execution until a connection returns.
+    // The bridge counterpart holds all eight actual pool connections.
+    const wire = fakeCarrier({ sent: (envelope, sending) => {
+      const request = payloadOf(envelope);
+      if (isSqlRead(request.method)) backlog.push(request);
+      else sending.deliver({ id: request.id, ok: true, result: { method: request.method } });
+    } });
+    const rpc = open(wire, { sqlReadLimit: backlogLimit });
+    const reads = Array.from({ length: 17 }, () => ask(rpc));
+    await tick();
+    expect(backlog).toHaveLength(16);
+    const extraId = "r17";
+    expect(wire.sent.some((entry) => payloadOf(entry).id === extraId)).toBe(false);
+    await expect(ask(rpc, "ping")).resolves.toEqual({ method: "ping" });
+    await expect(ask(rpc, "bridge.stats")).resolves.toEqual({ method: "bridge.stats" });
+    expect(backlog).toHaveLength(16);
+
+    const first = backlog.shift();
+    wire.deliver({ id: first.id, ok: true, result: { released: true } });
+    await expect(reads[0]).resolves.toEqual({ released: true });
+    await tick();
+    expect(backlog).toHaveLength(16);
+    expect(backlog.at(-1).id).toBe(extraId);
+  });
+
+  it("keeps every interleaved carrier and priority burst within the shared credit bound", async () => {
+    const live = new Map();
+    const sent = (envelope, wire) => {
+      const request = payloadOf(envelope);
+      expect(live.size).toBeLessThan(SQL_READ_LIMIT);
+      live.set(request.id, { wire, request });
+    };
+    const wires = [fakeCarrier({ sent }), fakeCarrier({ sent })];
+    const rpc = open(wires[0]);
+    rpc.readFrom(wires[1]);
+    const replies = [];
+    const completed = [];
+    for (let index = 0; index < 40; index += 1) {
+      const wire = wires[index % 2];
+      rpc.rideOn(wire); // a switch alone returns no credit
+      replies.push(ask(rpc, "tasks.get", { carrier: wire, priority: index % 3 ? "foreground" : "background" }));
+      await tick();
+      expect(live.size).toBe(Math.min(index + 1, SQL_READ_LIMIT));
+    }
+    while (live.size) {
+      const { request, wire } = [...live.values()].at(-1);
+      wire.deliver({ id: request.id, accepted: true });
+      wires.find((other) => other !== wire).deliver({ id: request.id, ok: true, result: "wrong carrier" });
+      await tick();
+      expect(live.size).toBeLessThanOrEqual(SQL_READ_LIMIT);
+      live.delete(request.id);
+      completed.push(request.id);
+      wire.deliver({ id: request.id, ok: true, result: request.id });
+      wire.deliver({ id: request.id, ok: true, result: "duplicate" });
+      await tick();
+      expect(live.size).toBe(Math.min(40 - completed.length, SQL_READ_LIMIT));
+    }
+    expect(new Set(await Promise.all(replies)).size).toBe(40);
+    for (const wire of wires) {
+      expect(wire.sent.some((entry) => payloadOf(entry).priority === "background")).toBe(true);
+      expect(wire.sent.some((entry) => payloadOf(entry).priority === undefined)).toBe(true);
+    }
+  });
+
+  it("cannot settle replacement-opening callers with old completions even when request ids repeat", async () => {
+    const wire = fakeCarrier();
+    const old = open(wire);
+    for (let index = 0; index < SQL_READ_LIMIT; index += 1) ask(old);
+    await tick();
+    const oldIds = wire.sent.map((entry) => payloadOf(entry).id);
+    old.close(new Error("old opening ended"));
+    const fresh = open(wire, { sessionId: "sess-2", sessionKeyB64: "key-2" });
+    const settled = vi.fn();
+    const replies = Array.from({ length: SQL_READ_LIMIT + 1 }, () => ask(fresh).then(settled));
+    replies.forEach((reply) => reply.catch(() => {}));
+    await tick();
+    expect(wire.sent).toHaveLength(SQL_READ_LIMIT * 2);
+    for (const id of oldIds) wire.deliver({ id, ok: true, result: "old opening" });
+    await tick();
+    expect(settled).not.toHaveBeenCalled();
+    expect(wire.sent).toHaveLength(SQL_READ_LIMIT * 2);
+    wire.deliver({ id: oldIds[0], ok: true, result: "new opening" }, "key-2");
+    await tick();
+    expect(settled).toHaveBeenCalledExactlyOnceWith("new opening");
+    expect(wire.sent).toHaveLength(SQL_READ_LIMIT * 2 + 1);
+  });
+
+  it("retains SQL credit when the actual DataChannel carrier rejects after writing a chunk", async () => {
+    const writes = [];
+    const channel = {
+      readyState: "open", bufferedAmount: 0,
+      addEventListener: () => {}, close: () => {},
+      send(text) {
+        if (writes.length === 1) throw new Error("chunk enqueue failed");
+        writes.push(text);
+      },
+    };
+    const wire = openCarrier({ channel });
+    const rpc = open(wire);
+    const failed = ask(rpc, "tasks.get", {}, { task_id: "x".repeat(CHUNK_BYTES * 2) });
+    await expect(failed).rejects.toMatchObject({ message: "chunk enqueue failed", uncertain: true, retryable: true });
+    expect(writes).toHaveLength(1);
+    const replacement = fakeCarrier();
+    rpc.rideOn(replacement);
+    for (let index = 0; index < SQL_READ_LIMIT; index += 1) ask(rpc);
+    await tick();
+    expect(replacement.sent).toHaveLength(SQL_READ_LIMIT - 1);
+    wire.close();
+    await tick();
+    expect(replacement.sent).toHaveLength(SQL_READ_LIMIT);
   });
 });
 

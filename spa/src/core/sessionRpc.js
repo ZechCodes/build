@@ -9,7 +9,7 @@
 // Hides the pending map, the request ids, encrypt/decrypt, the per-call
 // timeout, and the rule that tells a reply from a push.
 
-import { createSqlReadCredits, isSqlRead } from "./sqlReadCredits.js";
+import { createSqlReadCredits, isSqlRead, SQL_READ_LIMIT } from "./sqlReadCredits.js";
 
 /** How long a call waits for its answer before it is not coming.
  *
@@ -126,9 +126,10 @@ export function createSessionRpc({
   deviceId,
   noCarrier = () => new Error("nothing is carrying this session"),
   timeoutMs: defaultTimeoutMs = DEFAULT_RPC_TIMEOUT_MS,
+  sqlReadLimit = SQL_READ_LIMIT, // saturation fixtures inject N=B; production stays at eight
 }) {
   const pending = new Map();
-  const sqlReads = createSqlReadCredits();
+  const sqlReads = createSqlReadCredits(sqlReadLimit);
   const readers = new WeakSet();
   const closedCarriers = new WeakSet();
   const pushListeners = new Set();
@@ -286,9 +287,9 @@ export function createSessionRpc({
       };
       const sql = isSqlRead(method);
       const wireReady = prepareCarrier(sql, id, wire, reject);
-      // A frame that never crossed the wire has no answer coming: the call
-      // fails then rather than waiting out a timeout for a reply nobody will
-      // send.
+      // Preparation failures are definitely unsent. Once send is invoked,
+      // a rejection can follow written DataChannel chunks: reject the caller
+      // but retain SQL credit until a reply or carrier/opening release.
       const deliver = async () => {
         const sending = await wireReady;
         if (closed || pending.get(id) !== waiting) return;
@@ -314,7 +315,10 @@ export function createSessionRpc({
       };
       const start = () => {
         deadline.start(() => waiting.handoffAttempted);
-        deliver().catch((error) => { reject(error); sqlReads.finish(id); });
+        deliver().catch((error) => {
+          reject(sql && waiting.handoffAttempted ? sqlDeliveryError(error) : error);
+          sqlReads.cancel(id);
+        });
       };
       const settled = deadline.race(answer);
       if (sql) sqlReads.reserve(id, start, reject);

@@ -9,12 +9,12 @@ export const SQL_READ_LIMIT = 8;
 const methods = new Set(SQL_READ_METHODS);
 export const isSqlRead = (method) => methods.has(method);
 
-export function createSqlReadCredits() {
+export function createSqlReadCredits(limit = SQL_READ_LIMIT) {
   const queued = new Map();
   const admitted = new Map();
 
   const drain = () => {
-    while (admitted.size < SQL_READ_LIMIT && queued.size) {
+    while (admitted.size < limit && queued.size) {
       const [id, entry] = queued.entries().next().value;
       queued.delete(id);
       admitted.set(id, entry);

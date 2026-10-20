@@ -626,14 +626,31 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_connections() {
     // SQL-blocked requests retain their admission slots; they no longer own
     // an I/O coordinator or have an attributable per-request checkout event.
     assert_eq!(client.intake.dispatcher.observation_depths(), (8, 1));
-    client.send(100, "fs.list", json!({})).await;
-    let pure = tokio::time::timeout(Duration::from_secs(2), client.reply()).await;
-    // Unblock every mixed request before asserting, including the RED path.
+    let mut observations = Vec::new();
+    for (id, method) in [(100, "fs.list"), (101, "git.status")] {
+        let started = std::time::Instant::now();
+        let pure = tokio::time::timeout(Duration::from_secs(2), async {
+            client.send(id, method, json!({})).await;
+            client.reply().await
+        })
+        .await;
+        let elapsed = started.elapsed();
+        eprintln!("SATURATION synthetic SQL connections: {method} send-to-reply={:.3}ms held_connections={}",
+            elapsed.as_secs_f64() * 1000.0, held.len());
+        observations.push((id, method, pure, elapsed));
+    }
+    // Unblock every mixed request before asserting, including deadline failures.
     drop(held);
-    assert_eq!(
-        pure.expect("pure I/O must not wait behind SQL checkout")["id"],
-        100
-    );
+    for (id, method, pure, elapsed) in observations {
+        assert_eq!(
+            pure.expect("pure I/O must not wait behind SQL checkout")["id"],
+            id
+        );
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "{method} under SQL connection saturation took {elapsed:?}, exceeding 100ms"
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -667,14 +684,34 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_execution_permi
             .await;
     }
     assert_eq!(client.intake.dispatcher.observation_depths(), (8, 1));
-    client.send(100, "git.status", json!({})).await;
-    let pure = tokio::time::timeout(Duration::from_secs(2), client.reply()).await;
+    let mut observations = Vec::new();
+    for (id, method) in [(100, "fs.list"), (101, "git.status")] {
+        let started = std::time::Instant::now();
+        let pure = tokio::time::timeout(Duration::from_secs(2), async {
+            client.send(id, method, json!({})).await;
+            client.reply().await
+        })
+        .await;
+        let elapsed = started.elapsed();
+        eprintln!(
+            "SATURATION synthetic SQL execution: {method} send-to-reply={:.3}ms held_workers={}",
+            elapsed.as_secs_f64() * 1000.0,
+            sql::SQL_WORKERS
+        );
+        observations.push((id, method, pure, elapsed));
+    }
     // Disconnect the gate before asserting so all held SQL workers can exit.
     drop(held);
-    assert_eq!(
-        pure.expect("pure I/O must not wait behind SQL execution capacity")["id"],
-        100
-    );
+    for (id, method, pure, elapsed) in observations {
+        assert_eq!(
+            pure.expect("pure I/O must not wait behind SQL execution capacity")["id"],
+            id
+        );
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "{method} under SQL execution saturation took {elapsed:?}, exceeding 100ms"
+        );
+    }
 }
 
 mod pipeline;

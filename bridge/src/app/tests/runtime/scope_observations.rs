@@ -45,6 +45,7 @@ fn observation_file_reads_keep_symlink_fences_and_byte_bounds() {
     std::fs::write(&outside, "outside").unwrap();
     std::os::unix::fs::symlink(&outside, repository.join("escape.txt")).unwrap();
     std::fs::write(repository.join("large.txt"), vec![b'x'; 1_048_577]).unwrap();
+    std::fs::write(repository.join("large.png"), vec![b'x'; 1_048_577]).unwrap();
     let app = qa_state(&repository, directory.path());
     let project = app.project_at(0).id.clone();
     let handler = app.into_handler();
@@ -76,7 +77,7 @@ fn observation_file_reads_keep_symlink_fences_and_byte_bounds() {
         crate::encoding::b64decode(answer["result"]["content_b64"].as_str().unwrap()).unwrap();
     assert_eq!(bytes.len(), 1_048_576);
     let page = handler.call(sender, req("fs.read", json!({
-        "project_id": project, "path": "large.txt", "range": {"offset": 4096, "bytes": 4096, "raw": true}
+                "project_id": project, "path": "large.png", "range": {"offset": 4096, "bytes": 4096, "raw": true}
     })));
     assert_eq!(page["ok"], true, "{page}");
     assert_eq!(page["result"]["range"]["offset"], 4096);
@@ -295,13 +296,17 @@ async fn gated_scope_job_leaves_other_reads_free(method: &'static str) {
         wire.outbound.try_recv(),
         Ok(OutboundEnvelope::SessionAccept { .. })
     ));
+    let mut params = json!({"project_id": project});
+    if method == "fs.read" {
+        params["path"] = json!("README.md");
+    }
+    let (finished, early_answer) = std::sync::mpsc::channel();
     let held = std::thread::spawn(move || {
-        handler.call(
-            SessionSender::detached("held-scope"),
-            req(method, json!({"project_id": project, "path": "README.md"})),
-        )
+        let answer = handler.call(SessionSender::detached("held-scope"), req(method, params));
+        let _ = finished.send(answer.clone());
+        answer
     });
-    permits.wait_for_arrival();
+    wait_for_scope_gate(&permits, &early_answer).await;
     for (id, method, params) in [
         (101, "tasks.get", json!({"task_id": task["id"]})),
         (102, "board.list", json!({})),
@@ -338,6 +343,22 @@ async fn gated_scope_job_leaves_other_reads_free(method: &'static str) {
         );
         assert_eq!(stats["methods"][observed]["held"]["sum_ms"], 0.0, "{stats}");
     }
+}
+
+async fn wait_for_scope_gate(
+    permits: &OffLockGateHandle,
+    answer: &std::sync::mpsc::Receiver<Value>,
+) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !permits.has_pending_arrival() {
+            if let Ok(answer) = answer.try_recv() {
+                panic!("scope observation answered before reaching its I/O gate: {answer}");
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("scope observation must reach its I/O gate");
 }
 
 async fn scope_wire_answer(wire: &mut crate::carrier::testing::ChannelWire, key: &str) -> Value {

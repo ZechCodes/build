@@ -26,17 +26,17 @@ impl PhaseSamples {
     }
 
     pub(crate) fn snapshot(&self) -> Value {
+        let captured = self.0.lock().unwrap().clone();
         let mut methods = serde_json::Map::new();
-        for (method, phases) in self.0.lock().unwrap().iter() {
+        for (method, phases) in captured {
             let mut rows = serde_json::Map::new();
-            for (phase, values) in phases {
-                let mut values = values.clone();
+            for (phase, mut values) in phases {
                 values.sort_by(f64::total_cmp);
                 let n = values.len();
-                rows.insert(phase.clone(), json!({"count":n,"sum_ms":values.iter().sum::<f64>(),
+                rows.insert(phase, json!({"count":n,"sum_ms":values.iter().sum::<f64>(),
                     "p50_ms":values[(n*50).div_ceil(100)-1],"p95_ms":values[(n*95).div_ceil(100)-1],"max_ms":values[n-1]}));
             }
-            methods.insert(method.clone(), Value::Object(rows));
+            methods.insert(method, Value::Object(rows));
         }
         Value::Object(methods)
     }

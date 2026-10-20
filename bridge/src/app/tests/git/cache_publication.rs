@@ -14,6 +14,15 @@ fn published_run_stat(state: &mut AppState, run: &str) -> Value {
 
 #[test]
 fn changed_run_stat_is_published_after_install_before_snapshot_reads() {
+    assert_changed_run_stat_is_published(false);
+}
+
+#[test]
+fn completed_run_stat_refresh_is_published_before_snapshot_reads() {
+    assert_changed_run_stat_is_published(true);
+}
+
+fn assert_changed_run_stat_is_published(claimed_refresh: bool) {
     let (home, repository) = init_repo();
     let mut state = qa_state(&repository, home.path());
     let run = adopted_run(&mut state, &repository, home.path(), "stat-publication");
@@ -32,7 +41,18 @@ fn changed_run_stat_is_published_after_install_before_snapshot_reads() {
     );
 
     stat["files_changed"] = json!(2);
-    state.store_run_stat(run.clone(), stat.clone(), std::time::Instant::now());
+    if claimed_refresh {
+        let claim = state.claim_diff_refresh_for_test(DiffCacheKey::RunStat(run.clone()));
+        state.publish_diff_refresh(
+            claim,
+            Some(DiffCacheEntry::RunStat {
+                run_id: run.clone(),
+                stat: stat.clone(),
+            }),
+        );
+    } else {
+        state.store_run_stat(run.clone(), stat.clone(), std::time::Instant::now());
+    }
     assert_eq!(
         state.board.diff().run_stat(&run).unwrap().value,
         &stat,

@@ -519,6 +519,7 @@ impl AppState {
             CachePublication::RunStatChanged(pending) => {
                 let run_id = pending.run_id().to_owned();
                 self.board.diff_mut().commit_changed_run_stat(pending);
+                self.publish_owner_snapshot_projection(&run_id);
                 self.note_entity_settled(&run_id);
             }
         }
@@ -637,8 +638,10 @@ impl AppState {
         match publication {
             CachePublication::Settled(effects) => self.apply_cache_effects(effects),
             CachePublication::RunStatChanged(pending) => {
-                self.note_entity_settled(pending.run_id());
+                let run_id = pending.run_id().to_owned();
                 self.board.diff_mut().commit_changed_run_stat(pending);
+                self.publish_owner_snapshot_projection(&run_id);
+                self.note_entity_settled(&run_id);
             }
         }
     }

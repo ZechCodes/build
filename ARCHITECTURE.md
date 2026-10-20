@@ -424,6 +424,13 @@ runtime that starts them.
   outgoing agent messages and the corresponding incoming messages (#696).
   The thread page fixture shows all three. No new capability is needed:
   the SPA paints the descriptors present in its cached thread records.
+  `thread.attachment` now caps an unranged response at 5,242,880 bytes too.
+  Its `size` remains the total file length and `offset` names the chunk start;
+  a short chunk must be followed with ranged reads, never treated as a whole
+  file. The SPA's shared attachment reader follows that metadata even before
+  it knows the paging capability, and checks offsets, size and progress.
+  User uploads remain capped at 5,242,880 bytes by `ATTACHMENT_MAX_BYTES`
+  and the size check in `app/conversations/attachments.rs::thread_attach`.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -2080,6 +2087,9 @@ Conversation records and delivery payloads retain the existing
 `{path, name, mime, size}` descriptor, and receiving agents get readable copies
 through the conversation's normal attachment homes. User-supplied attachment
 paths retain their existing storage containment checks.
+`thread.attachment` bounds both default and explicit reads to 5 MiB while
+returning the full file size; the existing ranged SPA reader reconstructs
+larger agent recordings without exceeding the transport message limit.
 
 The task board's column and assignee carry routine status. Agent prompts and
 MCP descriptions tell agents to comment on tasks only for a decision or

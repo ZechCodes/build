@@ -17,12 +17,18 @@ fn agent_attachment_messages_round_trip_in_the_thread_page_contract() {
                     "sent" => message["role"] == "agent" && message.get("sent_to").is_some(),
                     _ => message["role"] == "user" && message.get("from_agent").is_some(),
                 };
-                addressed && message["attachments"].as_array().is_some_and(|a| a.len() == 2)
+                addressed
+                    && message["attachments"]
+                        .as_array()
+                        .is_some_and(|a| a.len() == 2)
             })
             .unwrap_or_else(|| panic!("missing {direction} image/log attachment example"));
         let message: ThreadItem = serde_json::from_value(item.clone()).unwrap();
         let round_trip = serde_json::to_value(message).unwrap();
-        assert_eq!(round_trip["data"]["attachments"], item["data"]["attachments"]);
+        assert_eq!(
+            round_trip["data"]["attachments"],
+            item["data"]["attachments"]
+        );
         let attachments = item["data"]["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["mime"], "image/png");
         assert_eq!(attachments[1]["mime"], "text/plain");

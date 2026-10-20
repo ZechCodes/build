@@ -39,7 +39,7 @@ impl Capture {
         }
     }
 
-    fn fixture(&mut self, fixture: usize) -> IoSample {
+    fn fixture(&mut self, fixture: usize, first_method: Option<&str>, scenario: &str) -> IoSample {
         let clock = FrameClock::new();
         if self.trace {
             let phases = Arc::clone(&self.phases);
@@ -52,10 +52,35 @@ impl Capture {
         }
         let start = Instant::now();
         let threads_before = thread_count();
-        let sample = IoSample::new_with_clock(clock);
+        let mut sample = IoSample::new_with_clock(clock);
+        if let Some(first) = first_method {
+            let position = sample
+                .requests
+                .iter()
+                .position(|(method, _)| *method == first)
+                .expect("FIRST_METHOD must exactly name one of the 22 fixture observations");
+            let request = sample.requests.remove(position);
+            sample.requests.insert(0, request);
+        }
+        let order: Vec<_> = sample.requests.iter().map(|(method, _)| *method).collect();
+        let configuration = self.records.first_mut().unwrap();
+        if configuration["actual_request_order"].is_null() {
+            configuration["actual_request_order"] = json!(order);
+            configuration["first_observation_method"] = json!(order[0]);
+            configuration["first_carrier_rpc_method"] = json!(if scenario == "git_worker" {
+                "git.stage"
+            } else {
+                order[0]
+            });
+        } else {
+            assert_eq!(configuration["actual_request_order"], json!(order));
+        }
         self.records.push(json!({"kind":"setup","fixture":fixture,
             "start_ns":start.duration_since(self.origin).as_nanos(),
             "duration_ns":start.elapsed().as_nanos(),"threads_before":threads_before,
+            "scenario":scenario,"first_fixture_in_process":fixture == 1,
+            "first_carrier_rpc_method":if scenario == "git_worker" {"git.stage"} else {order[0]},
+            "first_observation_method":order[0],"actual_request_order":order,
             "threads_after":thread_count(),"phases":sample.setup}));
         self.previous_stats
             .insert(fixture, sample.sample.clock.stats());
@@ -229,6 +254,16 @@ async fn gate(sample: &mut IoSample, scenario: &str) -> Option<std::thread::Join
     }
 }
 
+fn selected_scenarios(selected: Option<&str>) -> Vec<&'static str> {
+    match selected {
+        None => vec!["isolated", "app_held", "git_worker"],
+        Some("isolated") => vec!["isolated"],
+        Some("app_held") => vec!["app_held"],
+        Some("git_worker") => vec!["git_worker"],
+        Some(_) => panic!("SCENARIO must exactly name isolated, app_held, or git_worker"),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "explicit paired benchmark; not a routine unit gate"]
 async fn paired_observation_benchmark() {
@@ -237,6 +272,9 @@ async fn paired_observation_benchmark() {
     let cold = count("BUILD_OBSERVATION_BENCH_COLD", 16);
     assert!(samples > 0 && cold > 0);
     let trace = std::env::var("BUILD_OBSERVATION_BENCH_TRACE").is_ok_and(|v| v == "1");
+    let first_method = std::env::var("BUILD_OBSERVATION_BENCH_FIRST_METHOD").ok();
+    let selected_scenario = std::env::var("BUILD_OBSERVATION_BENCH_SCENARIO").ok();
+    let scenarios = selected_scenarios(selected_scenario.as_deref());
     let output =
         PathBuf::from(std::env::var("BUILD_OBSERVATION_BENCH_OUTPUT").expect("output path"));
     let unix_ns = SystemTime::now()
@@ -246,16 +284,19 @@ async fn paired_observation_benchmark() {
     let mut capture = Capture::new(trace);
     capture.records.push(json!({"kind":"configuration","unix_ns":unix_ns,
         "samples":samples,"warmups":warmups,"cold_batches":cold,"trace":trace,
-        "cold_semantics":"git.log is first observation and first RPC except git_worker, where the gated git.stage RPC precedes it; remaining methods are first-use positions",
+        "requested_first_method":first_method,"requested_scenario":selected_scenario,
+        "scenarios":scenarios,"actual_request_order":null,
+        "process_semantics":"cold batches reset app/handler/intake fixtures within one test process; they are not OS-process restarts. Only fixture1 carries this process's first encrypted carrier data RPC. Seed helpers invoke app logic before the carrier data RPC.",
+        "cold_semantics":"actual_request_order[0] is the first encrypted observation RPC per fresh fixture; it is also the first carrier data RPC except git_worker, where gated git.stage precedes it. Other observations are first-use positions. Setup identifies the first fixture in the process; handler/intake reset is distinct from process restart.",
         "client_endpoint":"before payload construction/encryption through final reply decryption",
         "gate_ms":GATE.as_millis()}));
     let mut fixture = 0;
-    for scenario in ["isolated", "app_held", "git_worker"] {
+    for scenario in scenarios {
         let mut retained = None;
         for batch in 0..cold {
             drop(retained.take());
             fixture += 1;
-            let mut sample = capture.fixture(fixture);
+            let mut sample = capture.fixture(fixture, first_method.as_deref(), scenario);
             capture
                 .batch(&mut sample, scenario, fixture, "cold", batch)
                 .await;

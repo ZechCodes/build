@@ -956,8 +956,9 @@ async fn snapshot_generation_publication_and_clone_costs_are_reported() {
         let previous = slot.load();
         let started = Instant::now();
         let delta = app.prepare_global_snapshot(SnapshotDelta::new(slot.next_version()), &previous);
+        let delta = app.prepare_workspace_snapshot_details(delta, &previous, None);
         phases
-            .entry("global_and_fact_generation")
+            .entry("global_workspace_and_fact_generation")
             .or_default()
             .push(started.elapsed());
         let started = Instant::now();
@@ -973,6 +974,13 @@ async fn snapshot_generation_publication_and_clone_costs_are_reported() {
             .or_default()
             .push(started.elapsed());
         std::hint::black_box(root);
+        let started = Instant::now();
+        let agents = app.agent_list(&json!({ "entity_id": snapshot.sample.history.owner, "include_project_workers": true })).unwrap();
+        phases
+            .entry("owner_agent_digest_generation")
+            .or_default()
+            .push(started.elapsed());
+        std::hint::black_box(agents);
     }
     let root = slot.load();
     let keys = [

@@ -205,6 +205,7 @@ use support::*;
 
 mod agent_creators;
 mod agent_messages;
+mod agent_message_attachments;
 mod agent_names;
 mod agent_roles;
 mod api_facade;

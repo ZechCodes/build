@@ -89,6 +89,15 @@ impl ThreadReadContext {
         }
     }
 
+    /// Delivery observations change receipts independently of roster saves.
+    /// Keep committed owners and histories even while a producer holds one
+    /// outside the live maps or has installed a candidate whose save failed.
+    pub(in crate::app) fn refresh_operations(&mut self, app: &AppState) {
+        if let Some(memory) = &mut self.memory {
+            memory.operations = app.operation_ledger.read_snapshot();
+        }
+    }
+
     /// A failed save cannot publish a candidate roster. Actual retirement may
     /// still remove access, without admitting additions or changed bindings.
     pub(in crate::app) fn retain_owner_agents(&mut self, app: &AppState, owner: &str) {

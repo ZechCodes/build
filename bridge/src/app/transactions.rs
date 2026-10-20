@@ -243,6 +243,16 @@ impl AppState {
         )
     }
 
+    /// Adoption's settlement boundary also owns its compatibility workspace.
+    pub(in crate::app) fn answer_adopted_run_mutation(
+        &mut self,
+        run_id: String,
+        active: ActiveRun,
+        thread_detail: ThreadDetail,
+    ) -> (Value, Result<(), String>) {
+        self.answer_run_mutation(run_id, active, thread_detail)
+    }
+
     fn commit_mutation_clock(&mut self, owner: &str, state: String, now: String) -> bool {
         let created = self
             .board

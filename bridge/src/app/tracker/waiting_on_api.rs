@@ -90,26 +90,9 @@ impl AppState {
         Ok(json!({"task":read["task"]}))
     }
 
-    pub(crate) fn tasks_waiting_on_blocks(&mut self, params: &Value) -> Result<Value, String> {
-        let id = require_str(params, "task_id")?;
-        let (_, task) = self.tracker_task(&id)?;
-        let limit = match params.get("limit") {
-            None => 20,
-            Some(value) => value
-                .as_u64()
-                .filter(|n| (1..=100).contains(n))
-                .ok_or("limit must be 1 to 100")? as usize,
-        };
-        let cursor = crate::app::optional_nonempty_string(params, "cursor")?;
-        let page = self
-            .tracker_store()?
-            .waiting_on_blocks(&task.project_path, &id, limit, cursor)
-            .stored()?;
-        let mut answer = json!({"blocks":page.blocks});
-        if let Some(cursor) = page.next_cursor {
-            answer["next_cursor"] = json!(cursor)
-        }
-        Ok(answer)
+    pub(crate) fn tasks_waiting_on_blocks(&self, params: &Value) -> Result<Value, String> {
+        self.task_read_context()
+            .tasks_waiting_on_blocks(self.tracker_store()?, params)
     }
 
     pub(super) fn commit_task_dependency_write(

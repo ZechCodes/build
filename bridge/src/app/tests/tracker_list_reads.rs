@@ -23,10 +23,12 @@ fn task_reads_derive_legacy_fields_without_writing() {
     legacy.done_at = None;
     store.save_tracker_task_activity(&legacy, &[], &[]).unwrap();
     let connection = rusqlite::Connection::open(tmp.path().join("store/build.db")).unwrap();
-    connection.execute_batch(
-        "CREATE TRIGGER forbid_read_backfill BEFORE UPDATE ON tracker_tasks
+    connection
+        .execute_batch(
+            "CREATE TRIGGER forbid_read_backfill BEFORE UPDATE ON tracker_tasks
          BEGIN SELECT RAISE(FAIL, 'read attempted a task write'); END;",
-    ).unwrap();
+        )
+        .unwrap();
 
     for (method, params) in [
         ("tasks.get", json!({"task_id":id})),
@@ -52,15 +54,65 @@ async fn task_read_context_keeps_snapshot_and_sql_fields_separate() {
     let task = filed(&mut state, &project, "before commit");
     let context = state.task_read_context();
     let store = state.tracker_store().unwrap().clone();
-    let mut updated = store.load_tracker_task(task["id"].as_str().unwrap()).unwrap().unwrap();
+    let mut updated = store
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
     updated.title = "after commit".into();
-    store.save_tracker_task_activity(&updated, &[], &[]).unwrap();
+    store
+        .save_tracker_task_activity(&updated, &[], &[])
+        .unwrap();
     drop(state);
     let mut connection = store.read_pool().acquire().await;
-    let answer = connection.read(|tx| context.tasks_get(tx, &json!({"task_id":updated.id})))
-        .unwrap().unwrap();
+    let answer = connection
+        .read(|tx| context.tasks_get(tx, &json!({"task_id":updated.id})))
+        .unwrap()
+        .unwrap();
     assert_eq!(answer["task"]["title"], "after commit");
     assert_eq!(answer["task"]["project_id"], project);
+}
+
+#[tokio::test]
+async fn task_read_identity_names_use_committed_rosters_and_live_availability() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (entity, agent) = agent_on_checkout(&mut state, &project, "Committed name");
+    let task = filed(&mut state, &project, &format!("Ask @agent:{agent}"));
+    // Simulate the retained live candidate after a roster save failed. Its
+    // availability remains meaningful; its unsaved name must never publish.
+    state
+        .runs
+        .get_mut(&entity)
+        .unwrap()
+        .agents
+        .by_id_mut(&agent)
+        .unwrap()
+        .name = Some("Failed candidate".into());
+    let context = state.task_read_context();
+    let store = state.tracker_store().unwrap().clone();
+    let mut connection = store.read_pool().acquire().await;
+    let params = json!({"task_id":task["id"]});
+    let answer = connection
+        .read(|tx| context.tasks_get(tx, &params))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        answer["task"]["identities"][&agent]["name"],
+        "Committed name"
+    );
+    assert_eq!(answer["task"]["identities"][&agent]["available"], true);
+
+    state.runs.remove(&entity);
+    let retired = state.task_read_context();
+    let answer = connection
+        .read(|tx| retired.tasks_get(tx, &params))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        answer["task"]["identities"][&agent]["name"],
+        "Committed name"
+    );
+    assert_eq!(answer["task"]["identities"][&agent]["available"], false);
 }
 
 /// An agent on a checkout of its own, named so its identity has something to
@@ -145,8 +197,7 @@ fn activity(cast: &Cast, task_id: &str, index: usize) -> (Vec<TaskComment>, Vec<
     (comments, events)
 }
 
-/// Fifty tasks whose records predate identities, so the list is also the
-/// read that fills them in.
+/// Fifty tasks whose records predate identities, so the list derives them.
 fn history(state: &mut AppState, project_id: &str, cast: &Cast) -> Vec<String> {
     (0..TASKS)
         .map(|index| {
@@ -236,17 +287,13 @@ fn a_long_list_answers_what_each_task_answers_alone() {
             && row["identities"]["agent-ghost"]["name"].is_null()
     }));
     assert!(
-        filled
-            .iter()
-            .filter(|task| !task.identities.is_empty())
-            .count()
-            >= TASKS / 2,
-        "the list fills identities into the records it read"
+        filled.iter().all(|task| task.identities.is_empty()),
+        "read-derived identities do not mutate legacy records"
     );
     assert_eq!(
         stored_records(&state, &ids),
         filled,
-        "reading each task alone found nothing the list had not already filled"
+        "list and detail reads preserve the original records"
     );
 
     let (again, _) = listed_and_each_alone(&mut state, json!({ "project_id": project_id }));

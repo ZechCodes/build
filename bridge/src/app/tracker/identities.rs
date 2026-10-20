@@ -26,7 +26,7 @@ pub(super) struct StoredRosters {
     known: OnceCell<Option<HashMap<String, TaskAgentIdentity>>>,
 }
 
-fn mentioned(task: &Task, timeline: &[TimelineEntry]) -> BTreeSet<String> {
+pub(super) fn mentioned(task: &Task, timeline: &[TimelineEntry]) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     add_actor(&mut ids, &task.created_by);
     collect_written_agent_ids(&task.title, &mut ids);
@@ -97,7 +97,7 @@ fn add_actor(ids: &mut BTreeSet<String>, actor: &Actor) {
     }
 }
 
-fn retain_known_fields(
+pub(super) fn retain_known_fields(
     prior: &TaskAgentIdentity,
     mut current: TaskAgentIdentity,
 ) -> TaskAgentIdentity {
@@ -121,7 +121,9 @@ fn retain_known_fields(
 }
 
 /// Every agent the stored plans name, as the identity a task shows.
-fn plan_identities(plans: &[PersistedPlan]) -> impl Iterator<Item = TaskAgentIdentity> + '_ {
+pub(super) fn plan_identities(
+    plans: &[PersistedPlan],
+) -> impl Iterator<Item = TaskAgentIdentity> + '_ {
     plans.iter().flat_map(|plan| {
         plan.members().into_iter().map(|member| TaskAgentIdentity {
             agent_id: member.id,
@@ -137,6 +139,15 @@ fn plan_identities(plans: &[PersistedPlan]) -> impl Iterator<Item = TaskAgentIde
 }
 
 impl AppState {
+    /// Startup migration, also run before a roster is removed. Read handlers
+    /// retain pure derived fields while an older store still needs this work.
+    pub(in crate::app) fn migrate_task_read_fields(&self) -> Result<(), String> {
+        for project in self.projects.iter() {
+            self.preserve_project_task_identities(&project.id)?;
+        }
+        Ok(())
+    }
+
     /// Migrate every task before a roster can disappear. An old author's
     /// only reference may be in a closed, unlinked task's timeline; reads
     /// and the workspace's automatic close operation cannot cover that case.
@@ -157,7 +168,8 @@ impl AppState {
         let rosters = StoredRosters::default();
         for task in tasks {
             let timeline = timelines.remove(&task.id).unwrap_or_default();
-            self.backfill_task_identities(task, &timeline, &rosters)?;
+            let task = self.backfill_task_identities(task, &timeline, &rosters)?;
+            self.backfill_done_at(task, &timeline)?;
         }
         Ok(())
     }
@@ -214,7 +226,7 @@ impl AppState {
         Ok(answer)
     }
 
-    fn live_task_identity(&self, agent_id: &str) -> Option<TaskAgentIdentity> {
+    pub(super) fn live_task_identity(&self, agent_id: &str) -> Option<TaskAgentIdentity> {
         let entity_id = self.entity_of_agent(agent_id)?;
         let agent = self.entity_agents(&entity_id).ok()?.by_id(agent_id)?;
         let workspace = if crate::agent::is_project_agent(agent_id) {
@@ -348,8 +360,8 @@ impl AppState {
     }
 
     /// Backfill all historical actors while their records can still be read.
-    /// A read is a durable migration: the next workspace removal must not
-    /// turn an older comment's author back into an opaque id.
+    /// Startup and removal preparation perform this durable migration; reads
+    /// derive the same fields without writing their result back.
     pub(super) fn backfill_task_identities(
         &self,
         mut task: Task,

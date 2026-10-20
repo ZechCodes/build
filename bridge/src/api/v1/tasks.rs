@@ -730,7 +730,7 @@ const UNAVAILABLE: [&str; 1] = ["tasks need a durable store"];
 /// unmatched keeps the code classify gave it; the message is never rewritten.
 ///
 /// [`ApiError::classify`]: crate::api::ApiError::classify
-fn refine(error: ApiError) -> ApiError {
+pub(crate) fn refine(error: ApiError) -> ApiError {
     let message = error.message().to_string();
     if message == "conflict: operation_id already used with different assignment" {
         return ApiError::conflict(message, None);
@@ -785,7 +785,7 @@ fn tasks_waiting_on_blocks(
 
 /// Add facts only after the implementation fenced every dependency endpoint.
 fn refine_waiting(
-    app: &mut AppState,
+    app: &AppState,
     error: ApiError,
     task_id: Option<&str>,
     project_id: Option<&str>,
@@ -821,7 +821,7 @@ fn refine_waiting(
 
 /// Rejected creation has no saved task; scope facts to its validated project.
 fn refine_waiting_create(
-    app: &mut AppState,
+    app: &AppState,
     error: ApiError,
     project_id: Option<&str>,
     proposed: &[String],
@@ -838,7 +838,7 @@ fn refine_waiting_create(
 
 /// A refused new edge is absent from storage; include its scoped proposal too.
 fn scoped_waiting_blockers(
-    app: &mut AppState,
+    app: &AppState,
     project_id: &str,
     dependencies: Option<&TaskDependenciesView>,
     proposed: &[String],
@@ -864,7 +864,7 @@ fn scoped_waiting_blockers(
     blockers
 }
 
-fn waiting_task_read(app: &mut AppState, id: &str) -> Option<TaskView> {
+fn waiting_task_read(app: &AppState, id: &str) -> Option<TaskView> {
     let read = app.tasks_get(&serde_json::json!({"task_id":id})).ok()?;
     serde_json::from_value::<TaskDetail>(read)
         .ok()
@@ -872,7 +872,7 @@ fn waiting_task_read(app: &mut AppState, id: &str) -> Option<TaskView> {
 }
 
 fn proposed_waiting_blocker(
-    app: &mut AppState,
+    app: &AppState,
     project_id: &str,
     id: &str,
 ) -> Option<crate::store::DependencyDigest> {

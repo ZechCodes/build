@@ -66,7 +66,9 @@ impl AppState {
                 ("label", label),
             ]))),
             BridgeAction::TrackerGetTask { task_id } => {
-                self.scoped_task_call(&scope, task_id, json!({}), AppState::tasks_get)
+                self.scoped_task_call(&scope, task_id, json!({}), |app, params| {
+                    app.tasks_get(params)
+                })
             }
             BridgeAction::TrackerReadComment { comment_id } => {
                 self.read_comment_as_agent(&scope, comment_id)
@@ -161,7 +163,9 @@ impl AppState {
                 if let Some(cursor) = cursor {
                     params["cursor"] = json!(cursor)
                 }
-                self.scoped_task_call(&scope, task_id, params, AppState::tasks_waiting_on_blocks)
+                self.scoped_task_call(&scope, task_id, params, |app, params| {
+                    app.tasks_waiting_on_blocks(params)
+                })
             }
             BridgeAction::TrackerUnlinkWaitingOn {
                 task_id,

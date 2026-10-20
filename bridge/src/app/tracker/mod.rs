@@ -36,8 +36,12 @@ mod inbox;
 mod notices;
 mod pages;
 mod push;
+mod read;
+mod read_identities;
+mod read_source;
 #[cfg(test)]
 pub(in crate::app) use push::news_phrase;
+pub(in crate::app) use read::{TaskReadContext, TaskReadFence};
 mod refs;
 mod reminder;
 mod reviews;
@@ -57,10 +61,10 @@ pub(in crate::app) use dispatch::AssignTarget;
 use identities::StoredRosters;
 #[cfg(test)]
 pub(in crate::app) use inbox::unread_since_mark;
-pub(in crate::app) use views::{columns_json, task_with_timeline_json};
+pub(in crate::app) use views::columns_json;
 
 use crate::app::{require_str, AppState};
-use crate::store::{Store, TaskFilter, TaskSeek};
+use crate::store::Store;
 use crate::tracker::{
     Actor, Task, TaskComment, TaskEvent, TaskEventKind, TaskState, MAX_BODY_BYTES,
 };
@@ -132,123 +136,16 @@ impl TaskWrite {
 impl AppState {
     // ------------------------------------------------------------- reads ---
 
-    /// `tasks.list` — one project's tasks, newest first.
-    ///
-    /// `state` and `status` narrow the store read; `assignee` and `label` are
-    /// applied to each row as it is read, because both live inside the record
-    /// and hoisting a label list would mean a join table phase 1 does not need.
-    ///
-    /// Every row is what `tasks.get` says of that task, gathered in bulk:
-    /// the timelines in one read, and the store's agent records at most once.
-    /// Read per task, a long project's list held the app lock — and every
-    /// other call behind it — for seconds (#128).
-    ///
-    /// With a `limit` it answers one page, and `next_cursor` while there is
-    /// another (#85, [`pages`]). Only the page's own timelines are read.
-    pub(crate) fn tasks_list(&mut self, params: &Value) -> Result<Value, String> {
-        let project_id = require_str(params, "project_id")?;
-        let project_path = self.tracker_project_path(&project_id)?;
-        let state = edits::optional_state(params)?;
-        let status = edits::optional_status(params, "status")?;
-        let assignee = edits::optional_assignee_filter(params)?;
-        let label = crate::app::optional_nonempty_string(params, "label")?;
-        let store_key = self.tracker_store()?.tracker_list_key().stored()?;
-        let page = pages::PageAsk::parse(
-            params,
-            &pages::ListOf {
-                store_key: &store_key,
-                project_path: &project_path,
-            },
-            &pages::ListFilter {
-                state,
-                status: status.as_deref(),
-                assignee: &assignee,
-                label,
-            },
-        )?;
-        let stretch = self
-            .tracker_store()?
-            .list_tracker_tasks_with_assignment_below(
-                &project_path,
-                TaskFilter {
-                    state,
-                    status: status.as_deref(),
-                },
-                TaskSeek {
-                    below: page.below,
-                    take: page.rows_to_keep(),
-                    scan: page.rows_to_scan(),
-                },
-                |task, target| assignee.matches(task, target) && edits::carries_label(task, label),
-            )
-            .stored()?;
-        let mut tasks = stretch.tasks;
-        let next_cursor = page.cut(&mut tasks, stretch.scanned_to, |task| task.number);
-        let rows = self.listed_rows(&project_id, tasks)?;
-        let mut answer = json!({
-            "project_id": project_id,
-            "tasks": rows,
-            // Device-wide, and here because the Done section reads it beside
-            // the list: every push that moves a task re-reads this answer,
-            // and a new session is pushed as one (`note_user_activity`).
-            "user_session": self.user_session_json(),
-        });
-        if let Some(next_cursor) = next_cursor {
-            answer["next_cursor"] = Value::from(next_cursor);
-        }
-        Ok(answer)
+    /// Legacy synchronous adapters used by mutation answers and MCP. The
+    /// application RPC lane calls the same projection on a ReadTransaction.
+    pub(crate) fn tasks_list(&self, params: &Value) -> Result<Value, String> {
+        self.task_read_context()
+            .tasks_list(self.tracker_store()?, params)
     }
 
-    /// Each listed task as `tasks.get` says it, the timelines read in one go.
-    fn listed_rows(&mut self, project_id: &str, tasks: Vec<Task>) -> Result<Vec<Value>, String> {
-        let ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
-        let mut timelines = self
-            .tracker_store()?
-            .load_tracker_timelines(&ids)
-            .stored()?;
-        let rosters = StoredRosters::default();
-        let mut rows = Vec::with_capacity(tasks.len());
-        for task in tasks {
-            let timeline = timelines.remove(&task.id).unwrap_or_default();
-            let task = self.backfill_task_identities(task, &timeline, &rosters)?;
-            let task = self.backfill_done_at(task, &timeline)?;
-            let task = self.task_with_read_identities(task, &timeline, &rosters);
-            let mut row = views::read_task_json(project_id, &task, &timeline);
-            self.extend_task_review_summary(&task.id, &mut row)?;
-            self.extend_task_waiting_summary(&task, &mut row)?;
-            rows.push(row);
-        }
-        Ok(rows)
-    }
-
-    /// `tasks.get` — one task and its whole timeline.
-    pub(crate) fn tasks_get(&mut self, params: &Value) -> Result<Value, String> {
-        let task_id = require_str(params, "task_id")?;
-        let (project_id, task) = self.tracker_task(&task_id)?;
-        let timeline = self
-            .tracker_store()?
-            .load_tracker_timeline(&task.id)
-            .stored()?;
-        let rosters = StoredRosters::default();
-        let task = self.backfill_task_identities(task, &timeline, &rosters)?;
-        let task = self.backfill_done_at(task, &timeline)?;
-        let task = self.task_with_read_identities(task, &timeline, &rosters);
-        let mut answer = task_with_timeline_json(&project_id, &task, &timeline);
-        self.extend_task_review_summary(&task.id, &mut answer["task"])?;
-        self.extend_task_waiting_summary(&task, &mut answer["task"])?;
-        Ok(answer)
-    }
-
-    /// Discover PR identity without reading its snapshots or action journal.
-    fn extend_task_review_summary(&self, task_id: &str, row: &mut Value) -> Result<(), String> {
-        if let Some(summary) = self
-            .tracker_store()?
-            .load_review_summary(task_id)
-            .stored()?
-        {
-            row["review_summary"] = json!(summary);
-        }
-        Ok(())
+    pub(crate) fn tasks_get(&self, params: &Value) -> Result<Value, String> {
+        self.task_read_context()
+            .tasks_get(self.tracker_store()?, params)
     }
 
     /// Give a task filed before `done_at` existed the one its timeline

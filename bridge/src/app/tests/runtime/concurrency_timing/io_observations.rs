@@ -11,6 +11,7 @@ struct IoSample {
     pending: std::collections::BTreeMap<u64, &'static str>,
     setup: Vec<Value>,
     worker_starts: Arc<std::sync::atomic::AtomicUsize>,
+    sql_worker_starts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl IoSample {
@@ -19,6 +20,10 @@ impl IoSample {
     }
 
     fn new_with_clock(clock: Arc<FrameClock>) -> Self {
+        Self::new_with_clock_and_sql_startup(clock, false)
+    }
+
+    fn new_with_clock_and_sql_startup(clock: Arc<FrameClock>, eager_sql: bool) -> Self {
         let mut setup = Vec::new();
         let mut start = std::time::Instant::now();
         let mut sample = Sample::new_with_clock(1, None, clock);
@@ -31,7 +36,10 @@ impl IoSample {
             requests
         };
         benchmark::setup_mark(&mut setup, "extra_fixture_seed", &mut start);
-        let handler = AppState::handler(Arc::clone(&sample.state));
+        let mut handler = AppState::handler(Arc::clone(&sample.state));
+        // Set only the lazy-start policy; actual startup remains in the timed first request.
+        handler.set_observation_sql_startup_eager(eager_sql);
+        let sql_worker_starts = handler.sql_worker_starts();
         let worker_starts = handler.observation_worker_starts();
         benchmark::setup_mark(&mut setup, "production_handler", &mut start);
         let transport = crate::transport::generate_transport_keypair();
@@ -52,6 +60,7 @@ impl IoSample {
         ));
         benchmark::setup_mark(&mut setup, "session_open", &mut start);
         Self {
+            sql_worker_starts,
             worker_starts,
             setup,
             sample,

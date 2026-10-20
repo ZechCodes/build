@@ -25,16 +25,18 @@ struct Capture {
     phases: Arc<Mutex<Vec<Value>>>,
     records: Vec<Value>,
     trace: bool,
+    sql_startup_eager: bool,
     previous_stats: BTreeMap<usize, Value>,
 }
 
 impl Capture {
-    fn new(trace: bool) -> Self {
+    fn new(trace: bool, sql_startup_eager: bool) -> Self {
         Self {
             origin: Instant::now(),
             phases: Default::default(),
             records: Vec::new(),
             trace,
+            sql_startup_eager,
             previous_stats: BTreeMap::new(),
         }
     }
@@ -52,7 +54,7 @@ impl Capture {
         }
         let start = Instant::now();
         let threads_before = thread_count();
-        let mut sample = IoSample::new_with_clock(clock);
+        let mut sample = IoSample::new_with_clock_and_sql_startup(clock, self.sql_startup_eager);
         if let Some(first) = first_method {
             let position = sample
                 .requests
@@ -82,7 +84,9 @@ impl Capture {
             "first_carrier_rpc_method":if scenario == "git_worker" {"git.stage"} else {order[0]},
             "first_observation_method":order[0],"actual_request_order":order,
             "threads_after":thread_count(),"phases":sample.setup,
-            "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire)}));
+            "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire),
+            "sql_worker_starts":sample.sql_worker_starts.load(Ordering::Acquire),
+            "sql_startup_mode":if self.sql_startup_eager {"eager8"} else {"demand"}}));
         self.previous_stats
             .insert(fixture, sample.sample.clock.stats());
         sample
@@ -97,6 +101,7 @@ impl Capture {
         batch: usize,
     ) {
         let workers_before = sample.worker_starts.load(Ordering::Acquire);
+        let sql_workers_before = sample.sql_worker_starts.load(Ordering::Acquire);
         let holder = gate(sample, scenario).await;
         let mut pending = BTreeMap::new();
         for (position, (method, params)) in sample.requests.clone().into_iter().enumerate() {
@@ -117,6 +122,7 @@ impl Capture {
         }
         assert!(pending.is_empty(), "all observation replies checked");
         let workers_after_client_replies = sample.worker_starts.load(Ordering::Acquire);
+        let sql_workers_after_client_replies = sample.sql_worker_starts.load(Ordering::Acquire);
         if let Some(holder) = holder {
             holder.join().unwrap();
         }
@@ -128,6 +134,12 @@ impl Capture {
             "after_bookkeeping":sample.worker_starts.load(Ordering::Acquire),
             "at_ns":Instant::now().duration_since(self.origin).as_nanos(),
             "semantics":"actual successful dedicated I/O thread starts; client reply may precede execution completion; no quiescence forced"}));
+        self.records.push(json!({"kind":"sql_workers","fixture":fixture,
+            "scenario":scenario,"population":population,"batch":batch,
+            "before_batch":sql_workers_before,"after_client_replies":sql_workers_after_client_replies,
+            "after_bookkeeping":sample.sql_worker_starts.load(Ordering::Acquire),
+            "at_ns":Instant::now().duration_since(self.origin).as_nanos(),
+            "semantics":"actual successful shared SQL thread starts; client reply may precede execution completion; no quiescence forced"}));
     }
 
     async fn capture_queue_deltas(&mut self, sample: &IoSample, fixture: usize, writer: bool) {
@@ -283,6 +295,12 @@ async fn paired_observation_benchmark() {
     let trace = std::env::var("BUILD_OBSERVATION_BENCH_TRACE").is_ok_and(|v| v == "1");
     let first_method = std::env::var("BUILD_OBSERVATION_BENCH_FIRST_METHOD").ok();
     let selected_scenario = std::env::var("BUILD_OBSERVATION_BENCH_SCENARIO").ok();
+    let requested_sql_startup = std::env::var("BUILD_OBSERVATION_BENCH_SQL_STARTUP").ok();
+    let sql_startup_mode = requested_sql_startup.as_deref().unwrap_or("demand");
+    assert!(
+        matches!(sql_startup_mode, "demand" | "eager8"),
+        "SQL_STARTUP must exactly name demand or eager8"
+    );
     let scenarios = selected_scenarios(selected_scenario.as_deref());
     let output =
         PathBuf::from(std::env::var("BUILD_OBSERVATION_BENCH_OUTPUT").expect("output path"));
@@ -290,10 +308,13 @@ async fn paired_observation_benchmark() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let mut capture = Capture::new(trace);
+    let mut capture = Capture::new(trace, sql_startup_mode == "eager8");
     capture.records.push(json!({"kind":"configuration","unix_ns":unix_ns,
         "samples":samples,"warmups":warmups,"cold_batches":cold,"trace":trace,
         "requested_first_method":first_method,"requested_scenario":selected_scenario,
+        "requested_sql_startup":requested_sql_startup,"sql_startup_mode":sql_startup_mode,
+        "sql_startup_semantics":"per-handler test policy only; same generic named SQLpool mechanism starts8 at timed lazy initialization in eager8 mode or grows from0 on demand; no reader warmup",
+        "sql_worker_starts_available":true,
         "observation_worker_starts_available":true,
         "scenarios":scenarios,"actual_request_order":null,
         "process_semantics":"cold batches reset app/handler/intake fixtures within one test process; they are not OS-process restarts. Only fixture1 carries this process's first encrypted carrier data RPC. Seed helpers invoke app logic before the carrier data RPC.",
@@ -325,7 +346,8 @@ async fn paired_observation_benchmark() {
         }
         capture.records.push(json!({"kind":"frame_clock","scenario":scenario,
             "fixture":fixture,"includes":"last cold + warmup + measured","stats":sample.sample.clock.stats(),
-            "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire)}));
+            "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire),
+            "sql_worker_starts":sample.sql_worker_starts.load(Ordering::Acquire)}));
     }
     capture
         .records

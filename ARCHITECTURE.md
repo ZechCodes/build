@@ -346,9 +346,14 @@ update status and CLI catalogs have their own atomic service snapshots.
 
 Plan/run finishers stage projections before saving and restore committed
 canonical fields after a failed save. Their checkpoints exclude live PTYs;
-actual retirement remains observable separately. A failed durable candidate
+actual retirement remains observable separately, even when a failed roster
+save restores the configured agent. Configured idle agents remain available.
+A conversation reset updates every affected owner's checkpoint from the
+committed reset payload, so a later failed save cannot resurrect its history.
+Permanent owner removal also retires its checkpoint. A failed durable candidate
 cannot be exposed by an unrelated later publication. Nested owner mutations
-wait until their shared projection can be published coherently.
+wait until their shared projection can be published coherently. Seen and mute
+mutations publish affected agent cursors and unread counts before replying.
 
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read
@@ -373,8 +378,12 @@ every root, with repeated filesystem canonicalization under the app lock.
 Counting tests bound the path comparisons for a refresh as runs and workspaces
 grow; ownership tests retain direct IDs, terminal states, project conversations
 and symlink aliases.
-Subscribed thread pushes use the same lookup, preserving their project-scoped
-workspace filter and resolving ownership once per entity rather than per agent.
+Snapshot preparation captures one ephemeral ownership context shared by board,
+workspace, agent and push projections. It preserves project-scoped workspace
+filters and canonical conversation aliases without resolving paths per agent.
+The context ends before persistence or canonical mutation; it cannot retain a
+failed candidate's workspace mapping. Counting tests include the publication
+producer as well as the pure push reader.
 
 ### Liveness and signaling
 

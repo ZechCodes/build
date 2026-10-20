@@ -300,6 +300,8 @@ fn assert_receipt(
                 tip.conversation_id.as_deref().unwrap_or(&tip.agent_id),
                 canonical
             );
+            assert_eq!(tip.thread_id.as_deref(), Some(thread));
+            assert_eq!(tip.thread_generation_revision, Some(generation));
             assert!(tip.last_sequence >= sequence);
             assert!(
                 tip.items

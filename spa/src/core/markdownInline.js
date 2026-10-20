@@ -6,8 +6,10 @@ import { esc } from "./text.js";
 import { expandReferences } from "./markdownLinks.js";
 import { webLinks } from "./markdownWebLinks.js";
 
-const COMPLETE = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>/g;
-const INLINE_TOKEN = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>|&(?:#\d+|#x[\da-f]+|[a-z]+);|\[\^[A-Za-z0-9_-]+\]|\*+|_+|~+/gi;
+// Both readers share the same protected-element grammar. Generated missing
+// references are spans whose labels and titles must remain literal too.
+const COMPLETE = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<span\b[^>]*>[\s\S]*?<\/span>|<sup\b[^>]*>[\s\S]*?<\/sup>|<img\b[^>]*>/g;
+const INLINE_TOKEN = new RegExp(`${COMPLETE.source}|&(?:#\\d+|#x[\\da-f]+|[a-z]+);|\\[\\^[A-Za-z0-9_-]+\\]|\\*+|_+|~+`, "gi");
 const ESCAPABLE = /\\([!*_~`[\]<>])/g;
 const TAGS = { "*": ["em", "strong"], _: ["em", "strong"], "~": [null, "del"] };
 

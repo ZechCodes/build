@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it } from "vitest";
 import { markdownHtml } from "../src/core/markdown.js";
+import { inlineHtml } from "../src/core/markdownInline.js";
 
 const render = (source) => {
   const host = document.createElement("div");
@@ -70,6 +71,19 @@ describe("the shared inline vocabulary", () => {
     expect([...host.querySelectorAll(".md-footnote-ref a")].map((node) => node.textContent)).toEqual(["1", "2"]);
     expect(host.querySelector("strong .md-footnote-ref")).not.toBeNull();
     expect(host.textContent).toContain("missing[^_missing_]");
+  });
+
+  it("protects entire generated unresolved-reference spans from emphasis", () => {
+    const host = document.createElement("div");
+    host.innerHTML = inlineHtml("@workspace:_missing_ and [[a_b_:x]] and **real**", { workspace: () => null });
+    const missing = [...host.querySelectorAll(".md-ref-missing")];
+    expect(missing.map((node) => node.textContent)).toEqual(["@workspace:_missing_", "[[a_b_:x]]"]);
+    expect(missing.map((node) => node.getAttribute("title"))).toEqual([
+      "Not found: no workspace called “_missing_” is on record here.",
+      "Not found: no workspace called “a_b_” is on record here.",
+    ]);
+    expect(host.querySelectorAll("em, .md-ref-missing strong, .md-ref-missing del")).toHaveLength(0);
+    expect(host.querySelector("strong")?.textContent).toBe("real");
   });
 
   it("handles long unclosed marks in bounded time", () => {

@@ -5,6 +5,8 @@
 
 use super::*;
 
+mod projection_ownership;
+
 fn conversation_run(state: &mut AppState, workspace_id: &str) -> String {
     let conversation = state.handle(req(
         "workspace.ensure_conversation",
@@ -329,7 +331,13 @@ fn ownership_fixture(
     shared_root: bool,
 ) -> (tempfile::TempDir, AppState, Vec<(String, PathBuf)>) {
     let tmp = tempfile::tempdir().unwrap();
-    let mut state = app(tmp.path());
+    let context = crate::harness::HarnessContext::resolved(
+        tmp.path().join("mcp.sock"),
+        tmp.path().to_path_buf(),
+    )
+    .unwrap();
+    let mut state =
+        AppState::new_unrooted_configured(tmp.path().join("worktrees"), "main", true, context);
     let project_id = state.add_project(tmp.path().to_path_buf(), "main".into());
     let mut expected = Vec::new();
     for number in 0..count {

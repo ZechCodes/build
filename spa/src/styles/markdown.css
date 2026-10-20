@@ -11,7 +11,7 @@
 }
 :is(.markdown, .thread-body, .task-comment-body, .plan) h1 { font-size:1.65em; }
 :is(.markdown, .thread-body, .task-comment-body, .plan) h2 { font-size:1.35em; }
-:is(.markdown, .thread-body, .task-comment-body, .plan) h3 { font-size:1.16em; }
+:is(.markdown, .thread-body, .task-comment-body, .plan) h3 { font-size:1.25em; }
 :is(.markdown, .thread-body, .task-comment-body, .plan) h4 { font-size:1.1em; }
 :is(.markdown, .thread-body, .task-comment-body, .plan) h5 { font-size:1em; font-weight:600; }
 :is(.markdown, .thread-body, .task-comment-body, .plan) h6 { font-size:.9em; font-weight:600; }

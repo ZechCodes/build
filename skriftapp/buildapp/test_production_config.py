@@ -276,7 +276,7 @@ def test_app_csp_allows_https_images_and_existing_blob_media(config_name: str):
     assert directives["media-src"] == ["'self'", "blob:"]
 
 
-def test_preview_csp_allows_https_images_without_general_http():
+def test_preview_csp_preserves_local_images_and_blob_workers():
     source = (SKRIFTAPP_DIR.parent / "scripts" / "preview-landing.py").read_text()
     assignment = next(node for node in ast.parse(source).body
                       if isinstance(node, ast.Assign)
@@ -284,7 +284,9 @@ def test_preview_csp_allows_https_images_without_general_http():
                               for target in node.targets))
     policy = ast.literal_eval(assignment.value)
     directives = _csp_directives({"security_headers": {"content_security_policy": policy}})
-    assert directives["img-src"] == ["'self'", "data:", "https:"]
+    assert directives["img-src"] == ["'self'", "data:"]
+    assert directives["worker-src"] == ["'self'", "blob:"]
+    assert not any({"http:", "https:"} & set(sources) for sources in directives.values())
 
 
 def test_https_scheme_is_allowed_only_for_images_in_production():

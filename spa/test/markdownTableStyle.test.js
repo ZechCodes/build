@@ -76,12 +76,12 @@ describe("a markdown table in a narrow column", () => {
     expect(ungated).not.toMatch(/animation(-timeline)?:\s*(mdtable-edges|scroll\()/);
   });
 
-  it("gives a table the conversation card's full width, gutter to gutter", () => {
-    // The body's 12px gutter is the message's, not the table's: pulling it back
-    // buys 24px of column and makes the scroll run edge to edge.
+  it("pulls shaded rows out by their cell inset to align text with surrounding prose", () => {
+    // Rows extend 8px into the host gutter and cells add that 8px back,
+    // keeping shaded rows clear of text without changing prose alignment.
     const bleed = ruleOf(".thread-body .mdtable");
-    expect(bleed["margin-inline"]).toBe("-12px");
-    expect(bleed["padding-inline"]).toBe("12px");
+    expect(bleed["margin-inline"]).toBe("-8px");
+    expect(bleed["padding-inline"]).toBe("0");
     // .mdtable caps itself at 100% of its parent; the bleed has to lift that cap
     // or the negative margins slide the table instead of widening it.
     expect(bleed["max-width"]).toBe("none");

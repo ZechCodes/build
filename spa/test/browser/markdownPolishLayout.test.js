@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { markdownHtml } from "../../src/core/markdown.js";
 import { openLayoutSession, mountLayout, loadBrowserModules } from "./layoutHarness.mjs";
+import { mountAgentMarkdown } from "./markdownSurfacesFixture.mjs";
 import { MARKDOWN_POLISH_FIXTURE, FIXTURE_IMAGE, FIXTURE_STYLES, fixtureMarkup } from "./markdownPolishFixture.mjs";
 
 let session;
@@ -57,7 +58,7 @@ for (const theme of ["light", "dark"]) {
         expect(metrics.rows[1]).not.toBe(metrics.rows[0]);
         expect(metrics.shadeAlpha).toBeGreaterThan(0);
         expect(metrics.shadeAlpha).toBeLessThanOrEqual(.06);
-        expect(metrics.columnPadding.every((padding) => padding >= 16)).toBe(true);
+        expect(metrics.columnPadding.every((padding) => padding >= (width <= 500 ? 10 : 16))).toBe(true);
         expect(metrics.cells.filter((_, index) => index % 3 !== 0).every((cell) => cell.lines === 1)).toBe(true);
         expect(metrics.cells.every((cell) => cell.numbers === "tabular-nums" && cell.padding >= 8)).toBe(true);
         expect(metrics.cells[1].align).toBe("right");
@@ -109,3 +110,41 @@ it("adds a keyboard stop only while a measured table overflows and updates on re
     await page.evaluate(() => window.__tableFocusDispose());
   }, { width: 320, height: 600 });
 });
+
+for (const theme of ["light", "dark"]) {
+  it(`keeps phone agent-bubble conditions within two lines with inset shading and aligned text in ${theme}`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      await mountAgentMarkdown(page, basePath, theme);
+      const metrics = await page.evaluate(() => {
+        const body = document.querySelector(".thread-message.from-agent .thread-body");
+        const wrapper = body.querySelector(".mdtable");
+        const prose = body.querySelector(":scope > p").getBoundingClientRect();
+        const condition = wrapper.querySelector("tbody td");
+        const conditionRange = document.createRange();
+        conditionRange.selectNodeContents(condition);
+        const row = wrapper.querySelector("tbody tr:nth-child(2)");
+        const first = document.createRange();
+        first.selectNodeContents(row.firstElementChild);
+        const last = document.createRange();
+        last.selectNodeContents(row.lastElementChild);
+        const box = row.getBoundingClientRect();
+        return { condition: condition.textContent, lines: conditionRange.getClientRects().length,
+          leftInset: first.getBoundingClientRect().left - box.left,
+          rightInset: box.right - last.getBoundingClientRect().right,
+          leftAlignment: first.getBoundingClientRect().left - prose.left,
+          rightAlignment: last.getBoundingClientRect().right - prose.right,
+          scrolls: wrapper.scrollWidth > wrapper.clientWidth, tabindex: wrapper.getAttribute("tabindex") };
+      });
+      expect(metrics.condition).toBe("A write holding the app lock");
+      expect(metrics.lines).toBeLessThanOrEqual(2);
+      expect(metrics.leftInset).toBeGreaterThanOrEqual(6);
+      expect(metrics.leftInset).toBeLessThanOrEqual(8);
+      expect(metrics.rightInset).toBeGreaterThanOrEqual(6);
+      expect(metrics.rightInset).toBeLessThanOrEqual(8);
+      expect(Math.abs(metrics.leftAlignment)).toBeLessThan(1);
+      expect(Math.abs(metrics.rightAlignment)).toBeLessThan(1);
+      expect(metrics.scrolls).toBe(false);
+      expect(metrics.tabindex).toBeNull();
+    }, { width: 390, height: 844 });
+  });
+}

@@ -883,7 +883,7 @@ main#root.surface { max-width:none;
   4%, 96% { --mdtable-shade-left:14px; --mdtable-shade-right:14px; }
   100% { --mdtable-shade-left:14px; --mdtable-shade-right:0px; }
 }
-.mdtable { margin:12px 0 16px; max-width:100%; overflow-x:auto;
+.mdtable { margin:12px -8px 16px; max-width:calc(100% + 16px); overflow-x:auto;
   --mdtable-shade:color-mix(in srgb, var(--line) 85%, transparent);
   background:
     linear-gradient(to right, var(--mdtable-shade), transparent) 0 0 / var(--mdtable-shade-left) 100% no-repeat,
@@ -906,7 +906,12 @@ main#root.surface { max-width:none;
 .mdtable th { color:var(--ink); font-weight:650; }
 .mdtable tbody tr:nth-child(even) { background:color-mix(in srgb, var(--ink) 3%, transparent); }
 .mdtable td.md-cell-short { white-space:nowrap; }
-.mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
+/* Shading extends into the gutter while first and last text align with prose. */
+.mdtable th:first-child, .mdtable td:first-child { padding-left:8px; }
+.mdtable th:last-child, .mdtable td:last-child { padding-right:8px; }
+@media (max-width:500px) {
+  .mdtable th:not(:last-child), .mdtable td:not(:last-child) { padding-right:10px; }
+}
 /* plan */
 /* The doc card sits INSIDE a panel, so it takes the inner step (--panel2) and
    no outline at all; the tone is the whole boundary. */
@@ -1972,11 +1977,9 @@ a.md-link::after { content:"\2197" / ""; margin-left:.12em; font-size:.8em; opac
 
 .thread-body > :first-child { margin-top:0; }
 .thread-body > :last-child { margin-bottom:0; }
-/* The 12px gutter is the message's, not its table's: a table takes the card
-   edge to edge — 24px more column in the narrowest place a table is read —
-   and carries the gutter inside as padding so the text still clears the edge
-   at either end of the scroll. */
-.thread-body .mdtable { margin-inline:-12px; padding-inline:12px; max-width:none; }
+/* The row shade extends 8px into the message gutter. Cell padding returns
+   its text to the same edges as the surrounding prose. */
+.thread-body .mdtable { margin-inline:-8px; padding-inline:0; max-width:none; }
 .thread-references { display:flex; flex-wrap:wrap; gap:6px; padding:0 12px 12px; }
 .thread-event-content .thread-references { padding:6px 0 0; }
 /* A file reference is an anchor and every other kind a button (core/thread.js

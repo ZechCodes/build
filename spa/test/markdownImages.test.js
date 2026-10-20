@@ -6,13 +6,20 @@ import { installMarkdownImages } from "../src/core/markdownImages.js";
 let dispose;
 afterEach(() => { dispose?.(); document.body.replaceChildren(); });
 
-function mount(source = '![Diagram](https://images.test/a.png "A title")') {
-  document.body.innerHTML = `<div class="markdown">${markdownHtml(source)}</div>`;
+function mount(source = '![Diagram](https://images.test/a.png "A title")', hostClass = "markdown") {
+  document.body.innerHTML = `<div class="${hostClass}">${markdownHtml(source)}</div>`;
   dispose = installMarkdownImages(document);
-  return document.querySelector(".markdown");
+  return document.querySelector(`.${hostClass}`);
 }
 
 describe("external markdown image activation", () => {
+  it.each(["markdown", "thread-body", "task-comment-body", "plan", "thread-event-detail", "cc-body"])("activates images in the actual %s renderer host", (hostClass) => {
+    const host = mount(undefined, hostClass);
+    expect(host.querySelectorAll("img")).toHaveLength(0);
+    host.querySelector("button").click();
+    expect(host.querySelector("img")?.getAttribute("src")).toBe("https://images.test/a.png");
+  });
+
   it("loads exactly one button instance with fixed safe image attributes", () => {
     const host = mount('![Diagram](https://images.test/a.png "A title") ![Diagram](https://images.test/a.png)');
     const [first, second] = host.querySelectorAll("button");

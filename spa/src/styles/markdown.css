@@ -31,7 +31,7 @@
   border-radius:4px; box-shadow:0 2px 0 var(--line2); background:var(--panel);
   color:var(--ink); font:.85em/1.45 var(--mono); vertical-align:baseline;
 }
-:is(.markdown, .thread-body, .task-comment-body, .plan) img { display:block; max-width:100%; height:auto; margin:.75em 0; border-radius:6px; }
+:is(.markdown, .thread-body, .task-comment-body, .plan, .thread-event-detail, .cc-body) img { display:block; max-width:100%; height:auto; margin:.75em 0; border-radius:6px; }
 .md-alert {
   --md-alert-color:var(--accent);
   margin:1em 0; padding:.8em 1em; border-left:3px solid var(--md-alert-color);
@@ -67,12 +67,12 @@
 
 .mdtable:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
-:is(.markdown, .thread-body, .task-comment-body, .plan) .md-image-load {
+:is(.markdown, .thread-body, .task-comment-body, .plan, .thread-event-detail, .cc-body) .md-image-load {
   appearance:none; display:block; width:100%; max-width:100%; min-height:44px;
   margin:.75em 0; padding:10px 12px; border:1px solid var(--line3);
   border-radius:6px; background:var(--panel); color:var(--ink2);
   font:inherit; line-height:1.5; text-align:left; white-space:normal;
   overflow-wrap:anywhere; cursor:pointer;
 }
-:is(.markdown, .thread-body, .task-comment-body, .plan) .md-image-load:hover { border-color:var(--accent); color:var(--ink); }
-:is(.markdown, .thread-body, .task-comment-body, .plan) .md-image-load:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+:is(.markdown, .thread-body, .task-comment-body, .plan, .thread-event-detail, .cc-body) .md-image-load:hover { border-color:var(--accent); color:var(--ink); }
+:is(.markdown, .thread-body, .task-comment-body, .plan, .thread-event-detail, .cc-body) .md-image-load:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }

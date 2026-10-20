@@ -3,7 +3,7 @@
 // own renderer and never pass through this controller.
 import { safeImageSrc } from "./markdownWebLinks.js";
 
-const HOST = ":is(.markdown, .thread-body, .task-comment-body, .plan)";
+const HOST = ":is(.markdown, .thread-body, .task-comment-body, .plan, .thread-event-detail, .cc-body)";
 
 function activatedImage(button, src) {
   const image = button.ownerDocument.createElement("img");

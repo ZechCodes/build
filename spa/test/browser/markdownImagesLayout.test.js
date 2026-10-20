@@ -64,3 +64,28 @@ it("requests a validated same-origin image without asking for activation", async
     expect(requests).toBe(1);
   });
 });
+
+for (const hostClass of ["thread-event-detail", "cc-body"]) {
+  it(`loads and sizes an image activated by keyboard in the ${hostClass} host`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      let requests = 0;
+      await page.route("https://images.fixture.test/**", (route) => {
+        requests += 1;
+        return route.fulfill({ contentType: "image/svg+xml", body: IMAGE });
+      });
+      await loadBrowserModules(page, { markdown: "src/core/markdown.js", images: "src/core/markdownImages.js" }, basePath);
+      const html = await page.evaluate(() => window.__layoutModules.markdown.markdownHtml("![Example](https://images.fixture.test/example.svg)", { mode: "inline" }));
+      await mountLayout(page, `<main style="padding:16px"><div class="${hostClass}">${html}</div></main>`, { basePath });
+      await page.evaluate(() => { window.__disposeImages = window.__layoutModules.images.installMarkdownImages(document); });
+      expect(requests).toBe(0);
+      const button = page.getByRole("button", { name: "Load image from images.fixture.test — Example" });
+      expect(await button.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+      await button.press("Enter");
+      expect(await page.locator(`.${hostClass} img`).count()).toBe(1);
+      await page.locator("img").evaluate(async (image) => { image.loading = "eager"; await image.decode(); });
+      expect(requests).toBe(1);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.evaluate(() => window.__disposeImages());
+    }, { width: 390, height: 600 });
+  });
+}

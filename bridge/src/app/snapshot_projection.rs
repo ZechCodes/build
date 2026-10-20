@@ -277,11 +277,14 @@ impl AppState {
                     .cloned()
                     .expect("workspace observations warmed before publication")
             });
-        let lists = json!({"projects": projects["projects"], "workspaces": snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]), "usage_limits": board["usage_limits"]});
+        let mut lists =
+            json!({"projects": projects["projects"], "usage_limits": board["usage_limits"]});
+        lists["workspaces"] =
+            snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]);
         delta = put_changed(delta, previous, "board.list", "", board);
         delta = put_changed(delta, previous, "project.list", "", projects);
-        delta = put_changed(delta, previous, "workspace.list", "", workspaces.clone());
         delta = self.prepare_workspace_lists(delta, previous, &workspaces);
+        delta = put_changed(delta, previous, "workspace.list", "", workspaces);
         delta = put_changed(
             delta,
             previous,
@@ -331,7 +334,10 @@ impl AppState {
                 previous,
                 "workspace.list",
                 project,
-                json!({"workspaces": rows}),
+                Value::Object(serde_json::Map::from_iter([(
+                    "workspaces".into(),
+                    Value::Array(rows),
+                )])),
             );
         }
         delta

@@ -1436,7 +1436,8 @@ impl AppState {
             .into_iter()
             .map(|agent| self.agent_digest(&entity_id, agent, root.as_deref(), DigestScope::List))
             .collect();
-        let mut listed = json!({ "entity_id": entity_id, "agents": agents });
+        let mut listed = json!({ "entity_id": entity_id });
+        listed["agents"] = Value::Array(agents);
         if let Some(pin) = self.project_pin(&entity_id) {
             listed["pinned_agent_id"] = json!(pin);
         }

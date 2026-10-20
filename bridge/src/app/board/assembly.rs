@@ -1,5 +1,5 @@
 //! The already-rendered collections carried by one board snapshot.
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub(super) struct BoardSnapshot {
     pub items: Vec<Value>,
@@ -14,22 +14,28 @@ pub(super) struct BoardSnapshot {
 
 impl BoardSnapshot {
     pub(super) fn into_value(self) -> Value {
-        json!({
-            "items": self.items,
-            "projects": self.projects,
-            "runs": self.runs,
-            "external_worktrees": self.external_worktrees,
-            "pending": self.pending,
-            "scanning": self.scanning,
-            "workspace_summaries": self.workspace_summaries,
-            "usage_limits": self.usage_limits,
-        })
+        Value::Object(
+            [
+                ("items", Value::Array(self.items)),
+                ("projects", Value::Array(self.projects)),
+                ("runs", Value::Array(self.runs)),
+                ("external_worktrees", Value::Array(self.external_worktrees)),
+                ("pending", Value::Array(self.pending)),
+                ("scanning", Value::Bool(self.scanning)),
+                ("workspace_summaries", self.workspace_summaries),
+                ("usage_limits", self.usage_limits),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn board_assembly_moves_every_rendered_collection_without_copying_payloads() {

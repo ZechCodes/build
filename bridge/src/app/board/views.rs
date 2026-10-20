@@ -643,28 +643,29 @@ impl AppState {
         crate::branch::sort_by_anchor(&mut items);
         #[cfg(test)]
         let _assemble_phase = crate::timing::phase_samples::phase("publication.board_assemble");
-        json!({
+        super::assembly::BoardSnapshot {
             // The active feed contains workspace-backed work only. Legacy
             // task records are intentionally absent from both the folded
             // items and the compatibility collections.
-            "items": items,
-            "projects": projects,
-            "runs": runs,
-            "external_worktrees": checkouts.rows,
+            items,
+            projects,
+            runs,
+            external_worktrees: checkouts.rows,
             // Lifecycle verbs whose git is running right now. A checkout being
             // cut is on the board from the moment it is asked for, under the id
             // it will settle as.
-            "pending": self.pending_rows_json(),
+            pending: self.pending_rows_json(),
             // The rail has not finished looking. An empty list under this flag
             // is a board still working, not a project with no checkouts, and
             // the scan that lands invalidates the board so the client asks
             // again.
-            "scanning": checkouts.scanning,
-            "workspace_summaries": workspace_summaries,
+            scanning: checkouts.scanning,
+            workspace_summaries,
             // The harnesses out of usage on this device (task #58). The board
             // item carries the same list whole whenever it moves.
-            "usage_limits": self.usage_limits_json(),
-        })
+            usage_limits: self.usage_limits_json(),
+        }
+        .into_value()
     }
 
     /// The feed's work items: one row per branch or task.
@@ -848,7 +849,7 @@ impl AppState {
             )
             .unwrap_or(active.run.state);
         let state = crate::branch::displayed_run_state(active.run.state, selected_state);
-        let row = json!({
+        let mut row = json!({
             "kind": crate::branch::WorkItemKind::Branch.as_str(),
             "project_id": project_id,
             "project": self.project_name_of(run_id),
@@ -860,12 +861,6 @@ impl AppState {
             "unread_reason": unread.reason,
             "working": working,
             "working_time": working_time_json(working_since.as_deref()),
-            // `Detail`, on a row: a cache-first client reads its agents off
-            // this row and asks no detail verb after it, so the surface
-            // snapshot has to ride here or the reader never sees a goal, a
-            // checklist or a workflow again. The scope is what carries it.
-            "agents": self.agent_digests(run_id, DigestScope::Detail),
-            "stat": sync.to_json(),
             "resume_at": self.attention_json(run_id)["resume_at"],
             // Where this row sits in the inbox, and how long it has been quiet.
             // Every row carries both, whatever it was read off.
@@ -890,6 +885,12 @@ impl AppState {
             "run_id": run_id,
             "task_id": task_id,
         });
+        // `Detail`, on a row: a cache-first client reads its agents off
+        // this row and asks no detail verb after it, so the surface
+        // snapshot has to ride here or the reader never sees a goal, a
+        // checklist or a workflow again. The scope is what carries it.
+        row["agents"] = Value::Array(self.agent_digests(run_id, DigestScope::Detail));
+        row["stat"] = sync.to_json();
         crate::branch::WorkItemCandidate {
             kind: crate::branch::WorkItemKind::Branch,
             key: crate::branch::WorkItemKey::Branch {

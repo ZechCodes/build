@@ -362,35 +362,43 @@ impl AppState {
 
     pub(in crate::app) fn workspace_list_snapshot(&self, params: &Value) -> Result<Value, String> {
         let project_id = params.get("project_id").and_then(Value::as_str);
-        Ok(json!({
-            "workspaces": self
-                .workspaces
-                .list(project_id)
-                .into_iter()
-                .filter(|workspace| !self.is_projects_own_checkout(workspace))
-                .map(|workspace| {
-                    // The conversation entity, as `workspace.get` names it: a
-                    // client standing on the list files the workspace's git
-                    // under it without asking for the row.
-                    let owner = self.workspace_snapshot_conversation_owner(workspace);
-                    let mut value = workspace_json(workspace);
-                    self.add_scope_compaction(&mut value, &crate::compaction::CompactionScope::Workspace(workspace.id.clone()));
-                    let summary = owner
+        let rows = self
+            .workspaces
+            .list(project_id)
+            .into_iter()
+            .filter(|workspace| !self.is_projects_own_checkout(workspace))
+            .map(|workspace| {
+                // The conversation entity, as `workspace.get` names it: a
+                // client standing on the list files the workspace's git
+                // under it without asking for the row.
+                let owner = self.workspace_snapshot_conversation_owner(workspace);
+                let mut value = workspace_json(workspace);
+                self.add_scope_compaction(
+                    &mut value,
+                    &crate::compaction::CompactionScope::Workspace(workspace.id.clone()),
+                );
+                let summary = owner
+                    .as_deref()
+                    .map(|id| self.session_summary(id))
+                    .unwrap_or_default();
+                value["session_started_ms"] = json!(summary.session_started_ms);
+                value["last_activity_ms"] = json!(summary.last_activity_ms);
+                value["conversations"] = Value::Array(
+                    owner
                         .as_deref()
-                        .map(|id| self.session_summary(id))
-                        .unwrap_or_default();
-                    value["session_started_ms"] = json!(summary.session_started_ms);
-                    value["last_activity_ms"] = json!(summary.last_activity_ms);
-                    value["conversations"] = json!(owner.as_deref()
                         .map(|id| self.conversation_activity_rows(id))
-                        .unwrap_or_default());
-                    value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
-                    value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
-                    self.extend_workspace_review_summary(&workspace.id, &mut value)?;
-                    Ok(value)
-                })
-                .collect::<Result<Vec<_>, String>>()?
-        }))
+                        .unwrap_or_default(),
+                );
+                value["entity_id"] = owner.map(Value::String).unwrap_or(Value::Null);
+                value["lifecycle"] = self.workspace_lifecycle_json(&workspace.id);
+                self.extend_workspace_review_summary(&workspace.id, &mut value)?;
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Value::Object(serde_json::Map::from_iter([(
+            "workspaces".into(),
+            Value::Array(rows),
+        )])))
     }
 
     fn workspace_paths_match(&self, left: &Path, right: &Path, observed: bool) -> bool {

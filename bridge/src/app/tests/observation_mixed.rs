@@ -450,3 +450,74 @@ async fn mixed_thread_attachment_service_observes_real_reset_and_agent_removal()
         "{stale}"
     );
 }
+
+#[test]
+fn mixed_capture_indexes_repeated_lineages_and_workspaces_once_with_legacy_home_parity() {
+    let (dir, repo) = init_repo();
+    let mut app = qa_state(&repo, dir.path());
+    for index in 0..2 {
+        let source = init_repo_named(dir.path(), &format!("source-{index}"));
+        super::project_agent::added_project(&mut app, &source);
+    }
+    for plan_index in 0..4 {
+        let plan = file_legacy_task(&mut app, "repeated attachment lineage");
+        for run_index in 0..3 {
+            let run = adopted_run(
+                &mut app,
+                &repo,
+                dir.path(),
+                &format!("lineage-{plan_index}-{run_index}"),
+            );
+            let active = app.runs.get_mut(&run).unwrap();
+            active.run.plan_id = Some(crate::plan::PlanId::new(&plan));
+            if run_index == 2 {
+                active.run.state = RunState::Archived;
+            }
+            let root = active.worktree.path.join(".build/attachments");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("lineage.txt"), run.as_bytes()).unwrap();
+            let at = "2026-10-20T12:00:00Z".to_string();
+            app.board.attention_mut().restore_entity_clocks(
+                run,
+                at.clone(),
+                at.clone(),
+                at,
+                "review".into(),
+            );
+        }
+    }
+    app.delivery_queue.clear_queued();
+    let requests = app
+        .plans
+        .keys()
+        .chain(app.runs.keys())
+        .map(|owner| json!({"entity_id":owner,"path":".build/attachments/lineage.txt"}))
+        .collect::<Vec<_>>();
+    let expected = requests
+        .iter()
+        .map(|params| app.thread_attachment(params))
+        .collect::<Vec<_>>();
+    let runs = app.runs.len();
+    let workspaces = app.workspaces.list(None).len();
+    AppState::take_implementation_lookup_visits();
+    crate::workspace::take_workspace_listing_visits();
+    let captured = MixedReadContext::capture(&app);
+    assert_eq!(
+        AppState::take_implementation_lookup_visits(),
+        runs,
+        "one implementation-index visit per run"
+    );
+    assert_eq!(
+        crate::workspace::take_workspace_listing_visits(),
+        2 * workspaces,
+        "one archive pass and one review-source pass"
+    );
+    for (params, expected) in requests.iter().zip(expected) {
+        let actual = captured
+            .prepare("thread.attachment", params, None)
+            .unwrap()
+            .run()
+            .map_err(|error| error.message().to_string());
+        assert_eq!(actual, expected, "{params}");
+    }
+}

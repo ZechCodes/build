@@ -11,6 +11,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+thread_local! { static LISTING_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(crate) fn take_workspace_listing_visits() -> usize {
+    LISTING_VISITS.with(|count| count.replace(0))
+}
 mod reservation;
 #[cfg(test)]
 use std::process::Command;
@@ -462,7 +470,11 @@ impl WorkspaceRegistry {
         let mut workspaces = self
             .workspaces
             .values()
-            .filter(|workspace| project_id.is_none_or(|id| workspace.project_id == id))
+            .filter(|workspace| {
+                #[cfg(test)]
+                LISTING_VISITS.with(|count| count.set(count.get() + 1));
+                project_id.is_none_or(|id| workspace.project_id == id)
+            })
             .collect::<Vec<_>>();
         workspaces.sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
         workspaces

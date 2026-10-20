@@ -1962,9 +1962,9 @@ mod dispatcher_tests {
             .await;
         gate.wait_until_held();
         dispatcher
-            .dispatch(sender.clone(), request(2, "quick", json!({})))
+            .dispatch(sender.clone(), request(2, "tasks.columns", json!({})))
             .await;
-        // Longer than SLOW_FRAME, and spent entirely in the queue: the `quick`
+        // Longer than SLOW_FRAME, and spent entirely in the queue: the read's
         // handler itself does nothing but answer.
         tokio::time::sleep(SLOW_FRAME + Duration::from_millis(20)).await;
         gate.release();
@@ -1974,14 +1974,14 @@ mod dispatcher_tests {
 
         let stats = clock.stats();
         assert!(
-            stats["methods"]["quick"]["max_ms"].as_f64().unwrap() >= 200.0,
+            stats["methods"]["tasks.columns"]["max_ms"].as_f64().unwrap() >= 200.0,
             "the queue wait belongs to the frame that waited: {stats}"
         );
         let lines = lines.lock().unwrap();
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("slow frame quick ")),
+                .any(|line| line.starts_with("slow frame tasks.columns ")),
             "the frame that waited logged its own line: {lines:?}"
         );
     }

@@ -567,7 +567,7 @@ pub(in crate::app) fn read_thread_attachment(
             .unwrap_or(ATTACHMENT_MAX_BYTES)
             .min(ATTACHMENT_MAX_BYTES)
     } else {
-        size
+        size.min(ATTACHMENT_MAX_BYTES)
     };
     let mut head = Vec::new();
     (&mut file)

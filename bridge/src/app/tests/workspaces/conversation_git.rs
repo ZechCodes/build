@@ -157,9 +157,26 @@ fn snapshot_publication_counts_cached_ownership_lookups() {
 /// retain the once-per-entity bound when the roster grows from one to four.
 #[test]
 fn thread_push_facts_resolve_ownership_once_per_entity() {
+    let mut measurements = Vec::new();
     for shared_root in [false, true] {
-        let small = measure_thread_facts_publication(16, shared_root);
-        let large = measure_thread_facts_publication(64, shared_root);
+        for entities in [16, 64] {
+            measurements.push((
+                entities,
+                shared_root,
+                measure_thread_facts_publication(entities, shared_root),
+            ));
+        }
+    }
+    for (entities, shared_root, (one, four)) in &measurements {
+        assert_eq!(four, one, "ownership is shared by the whole roster");
+        assert!(
+            *one <= 8 * entities * entities,
+            "complete snapshot publication repeated nested ownership searches: {one} for {entities} entities, shared_root={shared_root}"
+        );
+    }
+    for pair in measurements.chunks_exact(2) {
+        let (_, shared_root, small) = pair[0];
+        let (_, _, large) = pair[1];
         for (small, large) in [(small.0, large.0), (small.1, large.1)] {
             assert!(
                 large <= 16 * small,
@@ -214,14 +231,6 @@ fn measure_thread_facts_publication(entities: usize, shared_root: bool) -> (usiz
         "the immutable facts reader resolved ownership"
     );
     eprintln!("{entities} thread entities (shared_root={shared_root}): one agent={one_count}, four agents={four_count} publication path comparisons");
-    assert_eq!(
-        four_count, one_count,
-        "ownership is shared by the whole roster"
-    );
-    assert!(
-        one_count <= 8 * entities * entities,
-        "complete snapshot publication repeated nested ownership searches: {one_count}"
-    );
     (one_count, four_count)
 }
 

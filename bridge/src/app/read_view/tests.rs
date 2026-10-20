@@ -99,11 +99,12 @@ fn stale_observation_context_rejects_the_entire_candidate_delta() {
         .set_observations(context())
         .put("board.list", "", json!({"candidate":true}));
     let latest = context();
-    slot.publish_delta(SnapshotDelta::new(slot.next_version()).set_observations(latest.clone()));
-    slot.publish_delta(stale);
+    assert!(slot.publish_delta(SnapshotDelta::new(slot.next_version()).set_observations(latest)));
+    let installed = slot.load();
+    assert!(!slot.publish_delta(stale));
     assert!(Arc::ptr_eq(
         slot.load().observations.as_ref().unwrap(),
-        &latest
+        installed.observations.as_ref().unwrap()
     ));
     assert!(
         slot.load().get("board.list", "").is_none(),

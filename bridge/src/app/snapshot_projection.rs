@@ -193,7 +193,7 @@ impl AppState {
             .pending_owners
             .lock()
             .unwrap()
-            .insert(owner.to_owned());
+            .extend(self.snapshot_affected_owner_ids(owner));
         if !self.can_publish_snapshot_projection() {
             return None;
         }

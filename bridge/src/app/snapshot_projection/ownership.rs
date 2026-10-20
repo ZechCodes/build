@@ -1,5 +1,5 @@
 //! Share ownership resolution across every chunk prepared for one publication.
-use super::{AppState, Arc, Mutex, ProjectionOwnership};
+use super::{AppState, Arc, BTreeSet, Mutex, ProjectionOwnership};
 
 pub(super) struct ProjectionOwnershipGuard<'a> {
     slot: &'a Mutex<Option<Arc<ProjectionOwnership>>>,
@@ -30,6 +30,43 @@ impl AppState {
 
     pub(in crate::app) fn snapshot_ownership_context(&self) -> Option<Arc<ProjectionOwnership>> {
         self.snapshot_observations.ownership.lock().unwrap().clone()
+    }
+
+    /// A canonical conversation can appear on another owner's roster. Include
+    /// aliases of both the committed and candidate bindings when that owner
+    /// changes, without rebuilding unrelated owners' agent chunks.
+    pub(super) fn snapshot_affected_owner_ids(&self, owner: &str) -> BTreeSet<String> {
+        let mut conversations = BTreeSet::new();
+        if let Ok(roster) = self.entity_agents(owner) {
+            for agent in roster.iter() {
+                conversations.insert(agent.id.clone());
+                conversations.insert(agent.conversation_id().to_string());
+            }
+        }
+        let previous = self.read_view.load();
+        let previous_agents = previous
+            .get("agent.list", owner)
+            .and_then(|row| row["agents"].as_array());
+        for agent in previous_agents.into_iter().flatten() {
+            for field in ["id", "conversation_id"] {
+                if let Some(id) = agent[field].as_str() {
+                    conversations.insert(id.to_string());
+                }
+            }
+        }
+        let mut affected = self
+            .snapshot_owner_ids()
+            .into_iter()
+            .filter(|candidate| {
+                self.entity_agents(candidate).is_ok_and(|roster| {
+                    roster
+                        .iter()
+                        .any(|agent| conversations.contains(agent.conversation_id()))
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        affected.insert(owner.to_string());
+        affected
     }
 }
 

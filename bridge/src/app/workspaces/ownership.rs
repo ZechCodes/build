@@ -123,6 +123,8 @@ impl ProjectionOwnership {
 
 impl AppState {
     pub(in crate::app) fn capture_snapshot_ownership(&self) -> ProjectionOwnership {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.ownership_capture");
         let mut context = ProjectionOwnership {
             rendering: super::projection_rendering::ProjectionRendering::capture(self),
             project_owners: self
@@ -134,11 +136,20 @@ impl AppState {
             ..ProjectionOwnership::default()
         };
         let workspaces = self.workspaces.list(None);
-        for workspace in &workspaces {
-            context.capture_workspace(self, workspace);
+        {
+            #[cfg(test)]
+            let _phase =
+                crate::timing::phase_samples::phase("publication.ownership_workspace_owners");
+            for workspace in &workspaces {
+                context.capture_workspace(self, workspace);
+            }
         }
-        for owner in self.runs.keys() {
-            context.capture_run_scopes(self, owner, &workspaces);
+        {
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.ownership_run_scopes");
+            for owner in self.runs.keys() {
+                context.capture_run_scopes(self, owner, &workspaces);
+            }
         }
         context
     }

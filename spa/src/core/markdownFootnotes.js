@@ -68,6 +68,14 @@ export function collectFootnotes(lines, offsets, source, scope) {
   return footnoteRenderer(definitions, scope == null ? sourceScope(source) : encode(scope));
 }
 
+function appendBacklinks(body, backlinks) {
+  // The body is renderer-owned HTML. Keep return links on the last paragraph's
+  // text line; a code-only definition still needs an accessible return path.
+  const paragraphEnd = body.lastIndexOf("</p>");
+  if (paragraphEnd < 0) return `${body} ${backlinks}`;
+  return `${body.slice(0, paragraphEnd)} ${backlinks}${body.slice(paragraphEnd)}`;
+}
+
 function footnoteRenderer(definitions, scope) {
   const used = new Map();
   const noteId = (number) => `md-fn:${scope}:${number}`;
@@ -85,7 +93,7 @@ function footnoteRenderer(definitions, scope) {
       const definition = definitions.get(id);
       const body = render(definition.lines, definition.offsets);
       const backlinks = Array.from({ length: note.count }, (_, index) => `<a class="md-footnote-backref" href="#${refId(note.number, index + 1)}" aria-label="Back to reference ${note.number}${note.count > 1 ? ` (${index + 1})` : ""}">↩</a>`).join(" ");
-      return `<li id="${noteId(note.number)}">${body} ${backlinks}</li>`;
+      return `<li id="${noteId(note.number)}">${appendBacklinks(body, backlinks)}</li>`;
     }).join("");
     return `<section class="md-footnotes" aria-label="Footnotes"><ol>${notes}</ol></section>`;
   };

@@ -76,6 +76,19 @@ describe("restricted attribute-free details", () => {
 });
 
 describe("footnotes", () => {
+  it("places all return links inside the definition's last paragraph", () => {
+    const host = render("Text[^a], again[^a].\n\n[^a]: First paragraph.\n\n    Final **paragraph**.");
+    const paragraphs = host.querySelectorAll(".md-footnotes > ol > li > p");
+    expect(paragraphs).toHaveLength(2);
+    expect(paragraphs[0].querySelector("a")).toBeNull();
+    expect(paragraphs[1].querySelectorAll(".md-footnote-backref")).toHaveLength(2);
+    expect(paragraphs[1].textContent).toBe("Final paragraph. ↩ ↩");
+  });
+  it("keeps a return link for definitions that contain no paragraph", () => {
+    const host = render("Text[^a].\n\n[^a]: ```text\n    code\n    ```");
+    expect(host.querySelector(".md-footnotes code").textContent).toBe("code\n");
+    expect(host.querySelectorAll(".md-footnotes .md-footnote-backref")).toHaveLength(1);
+  });
   it("orders notes by reference and gives every reference a local accessible backlink", () => {
     const host = render("Second[^b], first[^a], again[^b].\n\n[^a]: First **note**\n[^b]: Other note\n\n    - nested item", { taskLabelScope: "comment:1" });
     expect([...host.querySelectorAll(".md-footnote-ref a")].map((ref) => ref.textContent)).toEqual(["1", "2", "1"]);

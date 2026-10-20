@@ -1,10 +1,135 @@
 # Step 4 observation timings and acceptance
 
-The selected-source capture answered all 22 observations without application-mutex wait or hold. Across four baseline/final pairs, warm client p95 ranges were 77.101–121.161 → 11.878–21.092 ms with the app mutex held, and 118.305–161.132 → 11.947–21.316 ms with the Git writer held. Every observation improved in every held-work client comparison, including cold samples. Isolated residuals remain: task attachment client latency and all three SQL-backed observation queues rose in every warm pair; app-held `git.log` queue rose by 42–133 µs in every warm pair.
+The review revision replaces recurring whole observation-input capture with scoped, versioned publication deltas and separates SQL metadata preparation from physical I/O admission. The matched actual status-event guard comparison retains large legacy producer holds and does not establish a consistent total-hold improvement. The earlier read-client measurements and their isolated residuals remain explicitly tied to their original sources.
+
+The earlier aa-source capture answered all 22 observations without application-mutex wait or hold. Across four baseline/final pairs, warm client p95 ranges were 77.101–121.161 → 11.878–21.092 ms with the app mutex held, and 118.305–161.132 → 11.947–21.316 ms with the Git writer held. Every observation improved in every held-work client comparison, including cold samples. Isolated residuals remain: task attachment client latency and all three SQL-backed observation queues rose in every warm pair; app-held `git.log` queue rose by 42–133 µs in every warm pair.
 
 The coordinator selected eight SQL workers before accept, with natural reader-schema initialization, under an explicit timebox. The remaining isolated-latency differences are a disclosed tradeoff, not clearance of the original latency gate. One final direct-submit attempt was measured and dropped; no further optimization loop is implied by this handoff.
 
 **The original eight-sample total-latency ratios had unequal endpoints.** BEFORE 54 ended its FrameTimer at handler return; AFTER a94 continued through reply cloning, sealing and enqueue. The original 2.07×–9.31× ratios are preserved historical internal-timer measurements. They are not matched handler timings or full-client ratios, and fixing the internal endpoint does not itself improve client latency. The [original report](<Bridge Concurrency Step 4 Original Timings.md>) and its raw evidence remain available with that correction prominently attached.
+
+## Review-revision publication and scheduling corrections
+
+The matched status comparison uses old-behavior comparator `bdbbabdb595efc24690b42c03c975a59ac8824a2` (test-only fixture overlays; binary SHA-256 `382df21201ea4f089344c537a2795724c7871f5ff46cd423f93b710addbbdc3e`) and measured candidate `bd642abfffe392ee1b22806c8a66fa76c93d81ad` (binary `64fab23965a5b011b51fe33b27715739313790f51aa41f50a9948bc93a140853`). Both status-fixture and timing-helper files have identical hashes. Subsequent changes include fixture/test corrections, equivalent-borrow/iterator lint fixes (`3ec36ece4`, `9ffd7c930`), and boxing the queued `ObservationJob` (`d4d58ca60`). The latter adds an allocation per admitted observation request and frees it on claim/fold. These later changes do not alter the measured status-pump/publication algorithms, but the final production binary is not identical to measured bd642. No new read-client latency is attributed to those changes.
+
+
+Candidate 3 source `a064171016190f30d551f24baa245b94ab3efd5f` was tested in a fresh Cargo-built binary with SHA-256 `1aaca65015f5174fe80bc0f126dcd6cd2c3a3d09d6deb0a4c15d615be7fe43a4`. The seven original review regressions failed before fixes (all exits 101) and passed on this source (all exits 0). Ten focused groups passed **79 tests**; the separately invoked timing gate below is not counted as an ordinary unfiltered test. An intermediate retry-publication fixture failure is retained: its wire-only conflict did not force observation rejection, so the corrected test advances the same-owner observation version and verifies the installed ReadView Arc before checking retries. This was a test correction, not an additional production fix. `status-pairs-1/final-gate-source-provenance.json` enumerates every post-measurement commit and verifies byte-identical pump, instrumentation and status-fixture files at measured and gated sources.
+
+The first complete review-revision gate run (`gates/runs/20261020T205447.851112Z`) is retained: Cargo tests exited 101 because four inherited 22-verb timing fixtures directly edited `archived_at` after their owner had already been committed and published. The other 16 gates exited 0. Scoped publication correctly did not adopt that raw edit during unrelated global publication. Test-only commit `ebae458bb6db7a693433193974080f5b6f551cbd` seeds the same archive through `take_plan`/`finish_plan_mutation`, preserving both the timestamp and the nonempty archive assertion. It adds no full-capture escape hatch or production change. The final retry record is separate below.
+
+The final retry code is `ebae458bb6db7a693433193974080f5b6f551cbd`, with fresh binary SHA-256 `35e0ccdb4b35706b97fe329d01de5141c597ca1a8fb73e954b045a42653048d1`. All four affected 22-observation fixture tests passed without weakening payload checks. The status pump, its timing helper and status fixture remain byte-identical to measured bd642; final provenance also records the changed archive seed in the separate old read-client fixture.
+
+All **17 final gates exited 0** on unchanged source `ebae458bb6db7a693433193974080f5b6f551cbd`. Unfiltered Cargo tests passed **5,456 tests**, with **18 ignored**, across **34 top-level target summaries** (library: 5,229 passed, 14 ignored). Counts use outer target summaries and exclude nested filtered subprocess summaries. The ignored status/timing benchmarks are separate manual invocations, not counted as ordinary tests.
+
+| Final gate | Exit |
+| --- | --- |
+| `toolchain-cargo-local` | 0 |
+| `toolchain-cargo-stable` | 0 |
+| `toolchain-node` | 0 |
+| `toolchain-npm` | 0 |
+| `cargo-test` | 0 |
+| `clippy-local` | 0 |
+| `clippy-stable` | 0 |
+| `fmt` | 0 |
+| `vendor` | 0 |
+| `pi-install` | 0 |
+| `pi-test` | 0 |
+| `pi-typecheck` | 0 |
+| `semgrep` | 0 |
+| `gitleaks` | 0 |
+| `diff-check-committed` | 0 |
+| `diff-check-worktree` | 0 |
+| `diff-check-index` | 0 |
+
+Exact commands, logs, exit JSON, source immutability and count proof are in `/home/zech/Projects/.task694-review-delta-artifacts/gates/runs/20261020T210200.929446Z/` (`manifest.json`, `summary.json`, `test-counts.json` and each named gate log/exit file). A subsequent documentation-only commit has the same bridge source tree; final-head security evidence records that identity separately.
+
+The separate review2 plain-text evidence export uses the workspace `artifacts/task694-review2/` directory. Its `task694-review2-evidence-index.json` records exact included paths, byte counts, hashes and reconstruction offsets for `task694-review2-evidence-*.txt`; it does not replace or modify the earlier four-part export.
+
+Full `ObservationContext` capture is limited to startup before intake. Recurring publication under the app guard uses scoped, versioned deltas for the inputs affected by the committed operation. Unrelated families and rows remain structurally shared; touched owner rows may still be copied under the guard, even when their values compare equal. Legitimate topology changes can rebuild thin order/association indexes to preserve legacy precedence. This does not move every producer copy off the lock or eliminate the existing Step 3 board/render work.
+
+Mixed reads retain their caller charge in the same 16-caller opening backlog while metadata is Pending, Preparing or Ready. Separate asynchronous metadata coordinators await shared SQL capacity; physical I/O workers accept pure jobs or jobs whose metadata is ready. Already admitted pure reads can progress during SQL saturation, while a full opening still applies intake backpressure. The scheduler change is covered separately from the status-guard measurement below.
+
+The review-revision fixture drives the actual private `StatusPump::observe` synchronously with a live dictated watch session and its recorded instance. Each event alternates Working/Waiting; context, limits and queued delivery remain absent. Wait ends after acquiring the app mutex; hold ends immediately after its guard drops. Total observe wall time is separate and excludes watch delivery/Tokio scheduling. The identical test-only span records outside the guard in both binaries. Request-phase tracing and capture-visit collection are disabled.
+
+All rows below use warmed production bootstrap, including its ordinary legacy adoption:
+
+| Fixture | Approved plans | Retained runs (archived) | Seeded / warmed workspaces (finished) | Persisted archive rows |
+| --- | --- | --- | --- | --- |
+| Small | 4 | 12 (6) | 4 / 17 (2) | 64 |
+| Representative | 16 | 128 (64) | 32 / 161 (16) | 512 |
+
+Retained runs are persisted and reattached in real temporary plain directories; explicit workspaces are half plain/ready and half clean local Git clones/finished. No live agent process or per-retained-run Git checkout is created. The benchmark verifies these warmed counts, successful status persistence and absence of queued delivery. This is a controlled producer fixture, not a whole-daemon latency or production-SLO measurement.
+
+The timeboxed protocol uses four alternating before/fixed pairs, 32 measured events after four warmups per scale/run. Per-run p95 is nearest-rank sample 31 of 32; p50 is sample 16, and maxima remain visible. The four runs are the repetition units; 128 pooled samples per arm/scale are not treated as 128 independent replications. Resource records preserve actual child priority/affinity and host load/CPU endpoints; endpoint ranges do not describe every instant of the measured window. The two earlier setup-smoke failures (invalid finished plain workspace, then seeded versus warmed workspace count) remain fixture-debug evidence and are not regression or performance samples.
+
+All eight runs exited 0. Validation retained all **576 alternating events**, including 512 measured events and 64 warmups; no samples or runs were dropped. The actual status-guard measurement does **not** establish a consistent hold-time improvement. Small-fixture hold p95 rose in one of four pairs; representative-fixture p95 rose in two of four. The large remaining hold includes the existing status/board/render producer work; structural removal of a whole observation-input capture must not be presented as removal of that work.
+
+Median of four run p95s [minimum–maximum run p95], milliseconds:
+
+| Fixture / metric | Before | Fixed | Fixed > before pairs |
+| --- | --- | --- | --- |
+| small / guard hold | 174.339041 [98.025893–426.596109] | 184.858600 [101.196683–359.856769] | 1/4 |
+| small / guard wait | 0.000496 [0.000361–0.000811] | 0.000491 [0.000351–0.000702] | 2/4 |
+| small / observe wall | 174.350547 [98.032205–426.609694] | 184.866740 [101.203647–359.881836] | 1/4 |
+| representative / guard hold | 2754.542893 [1722.514372–4023.413029] | 2119.452857 [1628.050504–4779.303122] | 2/4 |
+| representative / guard wait | 0.000466 [0.000351–0.000731] | 0.000556 [0.000301–0.000681] | 2/4 |
+| representative / observe wall | 2754.553002 [1722.522015–4023.424661] | 2119.462847 [1628.058850–4779.313952] | 2/4 |
+
+### Small actual guard hold
+
+| Pair | Before p50 / p95 / max | Fixed p50 / p95 / max | Fixed−before p95 |
+| --- | --- | --- | --- |
+| 1 | 234.176418 / 426.596109 / 486.478261 | 229.774551 / 359.856769 / 458.839490 | -66.739340 |
+| 2 | 90.718606 / 98.025893 / 99.852336 | 148.753495 / 238.258960 / 258.604201 | +140.233067 |
+| 3 | 120.954595 / 165.548043 / 175.931136 | 88.349823 / 101.196683 / 113.743057 | -64.351360 |
+| 4 | 118.445023 / 183.130038 / 192.826262 | 107.267761 / 131.458240 / 161.010237 | -51.671798 |
+
+
+### Representative actual guard hold
+
+| Pair | Before p50 / p95 / max | Fixed p50 / p95 / max | Fixed−before p95 |
+| --- | --- | --- | --- |
+| 1 | 3166.291771 / 4023.413029 / 5255.827650 | 2912.132776 / 4779.303122 / 5178.578437 | +755.890093 |
+| 2 | 1572.627812 / 2542.636592 / 2570.326257 | 1412.838983 / 1628.050504 / 1638.691540 | -914.586088 |
+| 3 | 1450.523454 / 1722.514372 / 1901.387716 | 1509.786679 / 2022.124432 / 2385.729547 | +299.610060 |
+| 4 | 1489.149398 / 2966.449193 / 3107.013581 | 1393.887644 / 2216.781283 / 2634.881968 | -749.667910 |
+
+
+Mutex wait p95 remained below one microsecond, while observe wall closely followed hold. The fixture does not create concurrent app-mutex contenders, so its wait result is not a contention claim.
+
+All child processes actually ran at nice 19 with 32-CPU affinity; the parent was nice 10 and invoked literal `nice -n 10`. One-minute host-load endpoints ranged from 10.92 to 45.63, and whole-run aggregate CPU busy ranged from 25.5% to 89.2%. The monitor spans fixture setup, events and teardown, rather than every measured event; neither these snapshots nor the paired signs identify a CPU-load cause. Every run is retained:
+
+| Run | Pair / arm | Load1 start / end | CPU busy | Actual child nice | Child / parent affinity CPUs |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 / B | 33.49 / 45.63 | 89.2% | 19 | 32 / 32 |
+| 2 | 1 / F | 45.63 / 41.99 | 88.3% | 19 | 32 / 32 |
+| 3 | 2 / F | 41.99 / 27.14 | 25.5% | 19 | 32 / 32 |
+| 4 | 2 / B | 27.14 / 18.88 | 32.3% | 19 | 32 / 32 |
+| 5 | 3 / B | 18.88 / 14.33 | 32.4% | 19 | 32 / 32 |
+| 6 | 3 / F | 14.33 / 19.96 | 34.6% | 19 | 32 / 32 |
+| 7 | 4 / F | 19.96 / 12.91 | 26.0% | 19 | 32 / 32 |
+| 8 | 4 / B | 12.91 / 10.92 | 33.9% | 19 | 32 / 32 |
+
+Exact event rows, per-run p50/p95/max/means, paired differences, source/fixture hashes and resource records are under `/home/zech/Projects/.task694-review-delta-artifacts/status-analysis/` (`events.csv`, `run-statistics.csv`, `paired-statistics.csv`, `summary.json`, `validation.json`, `resources.json`, `tables.md`). Raw inputs and binary identities are in the neighboring `status-pairs-1/manifest.json` and `source-provenance.json`. The runner is `/tmp/task694-review-delta/run_status_pairs.py`; the analysis is `/tmp/task694-review-delta/analyze_status_pairs.py`.
+
+The structural checks are separate from this untraced timing fixture. `app::tests::observation_publication::{observation_publication_owner_guard_visits_only_its_declared_input_dependencies,observation_publication_status_guard_never_captures_the_global_input_graph,observation_publication_board_guard_reuses_unchanged_io_inputs}` enable visit collection only for their assertions. They check dependency scope rather than infer it from a faster clock. Sparse-version, rejected-publication and cross-owner reset tests cover disjoint merging, stale rejection and retry/fence preservation. Carrier saturation and bounded-queue tests independently cover mixed preparation, pure-I/O progress, caller accounting, folding, fairness and cancellation; their final pass counts and exact elapsed evidence are recorded with the revision gates.
+
+Review-revision preservation coverage (test names are relative to the indicated module):
+
+| Contract | Tests |
+| --- | --- |
+| Sparse input versions, stale rejection and retry | `app::tests::observation_publication::{observation_sparse_versions_merge_disjoint_keys_and_reject_old_replacements,observation_rejected_owner_delta_keeps_pending_wire_and_input_retry}` |
+| Reset publishes canonical and cross-owner generation fences together | `app::tests::observation_publication::observation_reset_first_publication_fences_canonical_and_cross_owner_aliases` |
+| Acknowledged workspace/source changes and failed-save isolation | `app::tests::observation_workspace_lifecycle::{observation_workspace_directories_follow_acknowledged_changes_and_keep_saved_sources,observation_project_source_failed_saves_never_change_retained_service_inputs}` |
+| Owner changes reassign or retire a workspace Git fallback | `app::tests::observation_workspace_lifecycle::{observation_terminal_owner_reassigns_the_shared_workspace_git_root,observation_direct_workspace_owner_retires_the_previous_fallback_git_root}` |
+| Registry updates, reloads, capability refresh and failed persistence retain exact dirty keys | `workspace::changes_tests::{workspace_changes_keep_scoped_revisions_and_ignore_failed_or_identical_saves,workspace_reload_marks_only_real_changes_and_preserves_rows_after_invalid_manifest,adopted_finish_reopen_and_capability_refresh_mark_only_changed_workspaces,failed_reopen_preserves_committed_status_and_its_change_revision,missing_registry_root_retires_managed_rows_and_keeps_adopted_legacy_state}` |
+| Preparing/ready caller charges, folding, fairness and cancellation | `carrier::sql::observations::tests::{preparing_and_ready_keep_every_folded_caller_charged_until_io_admission,folding_stops_when_metadata_starts_and_preparing_heads_do_not_block_pure_jobs,ready_publication_does_not_jump_other_eligible_openings,pruning_ready_work_drops_owned_inputs_and_admission_leases_immediately,closing_during_preparation_discards_late_results_without_recreating_queue_slots,aborted_or_failed_preparation_releases_its_admission_reservation,old_preparation_cannot_publish_into_a_reopened_session}` |
+
+The revision also bounds an unranged `thread.attachment` response at 5,242,880 bytes. The response retains total file size and chunk-start offset; the client advances by the decoded byte count so later pages can cover the final byte. Both the independent observation service and the legacy helper are exercised by `app::tests::observation_mixed::mixed_thread_attachment_service_caps_unranged_reads_and_covers_large_files` and `app::tests::conversations::attachments::thread_attachment_pages_are_bounded_and_cover_the_last_byte`. Their original failures returned 5,242,893 bytes instead of the cap; these are valid regressions, separate from the timing-fixture setup mistakes.
+
+The real saturation fixture is `app::tests::runtime::observation_saturation::real_file_and_git_reads_progress_while_eight_mixed_reads_wait_for_sql`. It retains all eight SQLite read connections, admits eight real `tasks.review.get` calls, then sends encrypted `fs.list` and `git.status` requests through the initialized AppState handler and validates actual directory/Git payloads before releasing SQL. Its separately invoked ignored sibling, `timing_real_file_and_git_reads_finish_within_100ms_while_eight_mixed_reads_wait_for_sql`, applies the 100 ms send-to-decrypted-reply bound. Synthetic carrier tests remain queue-mechanics coverage and are not substituted for this filesystem-service measurement. Four explicit final-ebae invocations all exited 0: `fs.list` took **1.804, 1.486, 1.697, 1.537 ms**; `git.status` took **4.543, 2.590, 3.661, 2.431 ms**. These are four fresh-test-process invocations with one actual send-to-decrypted-reply sample per method, not p95 estimates. Eight pending mixed requests precede them; fs.list is the first pure read and git.status the next, so these are not true process-first RPC samples. Every sample was below 100 ms while all eight connections and eight mixed requests remained held. Actual child priority was nice 19 with 32-CPU affinity; host load1 endpoints were 11.4995. Exact commands, successful payload assertions and host records are in `/home/zech/Projects/.task694-review-delta-artifacts/saturation-candidate-4/{summary.json,run1.log,run2.log,run3.log,run4.log}`. The preceding candidate 3 four-run cohort is retained separately in `saturation-candidate-3`; it was not discarded or substituted based on timing outcomes.
+
+The status-event comparison is separate from the earlier 22-observation read-client captures. Those read-client tables retain their measured aa/a74 source identities; they are not measurements of the new publication/scheduler revision. The new guard evidence does not clear, relabel or establish the current size of the earlier isolated read-latency residuals.
 
 ## Remaining latency differences
 
@@ -38,7 +163,9 @@ Attachment warm queue p95 remains higher in all four target pairs; review-diff c
 
 Tracing localizes remaining per-request metadata preparation, validation, SQL-to-I/O transfer and first I/O-thread launch. The earlier large first-connection query cost largely disappeared after schema initialization. In the primed eager diagnostic, metadata-end→I/O-worker means were about 81–114 µs for warm attachment and 110–111 µs for warm review-diff; cold spans also include first I/O-thread creation and scheduling. These observations support a contribution from those phases. They do not prove the cause of every offset, production impact or irreducibility. Diagnostic hooks differ by execution path and add overhead; the acceptance captures install no phase observer.
 
-## Selected-source complete 22-observation capture
+For **tasks.attachment**, the strongest retained residual is higher warm queue p95 in all four target pairs (and higher isolated warm/cold client p95 in all four aa pairs). Its extra transactional scope metadata, validation and SQL-to-I/O transfer are observed phases; first I/O launch also contributes to a cold path. The captures do not assign an exact share of each p95 offset to those phases. For **tasks.review.diff**, target-first process-first client time increased in all four pairs even though its queue decreased in all four: queue delay alone cannot explain that result. Its per-request review metadata, blob work, transfer and reply tail remain candidate contributions rather than a proven single cause. The large first-query schema cost was demonstrated separately for both methods and moved to explicit natural startup; it must not be reused as the explanation for a schema-primed residual.
+
+## Earlier aa-source complete 22-observation capture
 
 Cells: median of four run p95s [run range], milliseconds, warm / fresh-fixture cold. CSV preserves all paired p95 and mean values. No equivalence conclusion is inferred from signs or range overlap.
 
@@ -209,7 +336,7 @@ Cells: median of four run p95s [run range], milliseconds, warm / fresh-fixture c
 
 ### Counts, application lock and remaining queue offsets
 
-All eight runs exited 0: **84,480 successful observation requests**, comprising 67,584 measured, 8,448 warmup and 8,448 fresh-fixture cold requests. All 22 payload assertions passed in every batch. Every per-method count delta was one, and all retained-fixture served counts and phase sums reconciled. Application wait and hold were **exactly zero** for the selected source across every scenario and population.
+All eight runs exited 0: **84,480 successful observation requests**, comprising 67,584 measured, 8,448 warmup and 8,448 fresh-fixture cold requests. All 22 payload assertions passed in every batch. Every per-method count delta was one, and all retained-fixture served counts and phase sums reconciled. Application wait and hold were **exactly zero** for measured aa across every scenario and population.
 
 The app-held and Git-writer-held scenarios each improved all 22 client p95s in all four pairs, warm and cold: 352/352 favorable paired comparisons. Git-writer queue p95 improved in every comparison. App-held queue improved for all other 21 observations in every pair, but `git.log` was higher in all four warm pairs and one cold pair:
 
@@ -243,9 +370,9 @@ The fixture uses a temporary file-backed Store, real encrypted FrameIntake and t
 
 The successful-resource fixture is `bridge/src/app/tests/runtime/concurrency_timing/io_observations.rs`; its opt-in client/queue collector is `io_observations/benchmark.rs`. The runner selects `app::tests::runtime::concurrency_timing::io_observations::benchmark::paired_observation_benchmark` with `--exact --ignored --nocapture --test-threads=1`.
 
-The full-client interval starts immediately before payload construction/encryption and ends after final result decryption and JSON decoding. It includes send/intake, execution, reply encryption/enqueue and client decoding. A receipt is not the result. Payload validation and metric bookkeeping follow the endpoint.
-
 The fine-grained tracer (`timing/requests.rs`, observer fields and phase calls) is compiled only for tests. The production `trace_phase!` macro expands to the work itself. Diagnostic tracing remains available in test binaries; tracing-off captures install no phase observer. This describes the compilation boundary rather than a removal of production instrumentation in this revision.
+
+The full-client interval starts immediately before payload construction/encryption and ends after final result decryption and JSON decoding. It includes send/intake, execution, reply encryption/enqueue and client decoding. A receipt is not the result. Payload validation and metric bookkeeping follow the endpoint.
 
 Each batch has exactly one distinct computation per method. Exact production queue, app-wait and app-hold values come from existing FrameClock count/integer-microsecond-sum differences sampled after all client timestamps. Every count delta must equal one; every retained-fixture phase sum and served count must reconcile. Cumulative internal FrameClock totals are not substituted for the client endpoint or used to infer I/O cost by subtracting percentiles.
 
@@ -269,7 +396,7 @@ Across all measured windows, load1 ranged 3.37–12.19. CPU busy is whole-machin
 ## Source and machine provenance
 
 Measured selected production/test source: `aa26175d604253f58eed3705bba814d26d7c7d8a`.
-Final correctness source: `c4e3e8ee2265cc7c9f8856ccaf521faa4db5dc90` (binary SHA-256 `5ca43d169181ee58c01dbae107892df63c500ecbc1bcd5622c18743877b3dc09`); its later lifetime correction is described with the gates below.
+Earlier correctness source: `c4e3e8ee2265cc7c9f8856ccaf521faa4db5dc90` (binary SHA-256 `5ca43d169181ee58c01dbae107892df63c500ecbc1bcd5622c18743877b3dc09`); its later lifetime correction is described with the gates below.
 Selected binary SHA-256: `41010f93808953e258dd48f8268b02305298012c297ecbbba0ed1e7252726c43`.
 Target-first eager control: `a74a4c47204c045dab02b1f0fc866fcdfd9e91cd`, binary `27558b05491ab5c483dc8edb8fdacc0b3a17a33aa9d3b706ebfa2edc9ff7ea31`.
 Baseline production: `54e8e1d791c4f93d596a4aafb06487207084c27e`, extracted by git archive with declared test-only overlays; the supplemental baseline binary is `611d558efc4053bd4232cc0af09e8b538967a5c76f82a64ceb9bd2e077db1900`.
@@ -400,15 +527,15 @@ nice -n 10 python /tmp/task694-acceptance-resources.py \
 nice -n 10 python /tmp/task694-startup-summary.py /tmp/task694-reproduction-analysis
 ```
 
-Baseline reconstruction starts from `git archive 54e8e1d791c4f93d596a4aafb06487207084c27e` and applies the exact declared test-only overlay, whose SHA-256 is `4a4b7ac944a732e647c4287242151f300accab580083a18ff03128a066bbe5d4`. The measured selected source uses aa26175 unchanged. Both build with `nice -n 10 cargo test --lib --no-run --message-format=json`; provenance records toolchain, flags, source paths, fixture hashes and the copied compiler artifact. The runner invokes the ignored `paired_observation_benchmark` directly; these manual performance runs are separate from the unfiltered correctness gate. Target-first reproduction adds `--first-method tasks.attachment` or `tasks.review.diff` and `--scenario isolated`. Historical P control requires its recorded old eager override and is intentionally not substituted for the selected binary.
+Baseline reconstruction starts from `git archive 54e8e1d791c4f93d596a4aafb06487207084c27e` and applies the exact declared test-only overlay, whose SHA-256 is `4a4b7ac944a732e647c4287242151f300accab580083a18ff03128a066bbe5d4`. The earlier measured selected source is aa26175; its capture is not relabeled as the current review-revision source. Both build with `nice -n 10 cargo test --lib --no-run --message-format=json`; provenance records toolchain, flags, source paths, fixture hashes and the copied compiler artifact. The runner invokes the ignored `paired_observation_benchmark` directly; these manual performance runs are separate from the unfiltered correctness gate. Target-first reproduction adds `--first-method tasks.attachment` or `tasks.review.diff` and `--scenario isolated`. Historical P control requires its recorded old eager override and is intentionally not substituted for the selected binary.
 
 The first full gate on measured aa26175 exposed a **real backup correctness failure**: the existing whole-store backup test restored zero saved rows instead of one. Schema-initialized read connections participate in WAL, and Store teardown closed its writable connection before its read pool; the final read-only connection could not perform the final checkpoint. The narrow c4e3e8ee2 fix retains the same private writer Arc until every pooled reader closes. It adds no writer-mutex acquisition, query or scheduling step to observation reads. Cloned pool and outstanding-borrower cases are covered explicitly.
 
 All four exact shutdown/backup regressions exited **101 before → 0 after** that fix. `/tmp/task694-latency/writer-lifetime-{red,fixed}/regressions.json` and their logs retain each result. The first full gate is also retained at `/tmp/task694-latency/gates/runs/20261020T183002.706544Z`: 5,178 unit tests passed, one failed, 12 were ignored; its other 16 checks passed. It is not the final green gate.
 
-Final-source focused checks passed 10 read-pool, 108 carrier and four observation tests. Its three correctness smokes passed 220 successful observations: 132 across all three scenarios, plus 44 each with attachment and review-diff first. An independent parse verified fixed eager8/no switch, schema count eight, SQL 0→8 before intake, every observation count delta one, exact retained phase sums and zero app wait/hold. Payload validity is asserted by the successful fixture. `/tmp/task694-latency/writer-lifetime-fixed/smoke-validation.json` records those checks. These smokes verify final-source behavior; they are **not a new acceptance latency capture**.
+Earlier c4-source focused checks passed 10 read-pool, 108 carrier and four observation tests. Its three correctness smokes passed 220 successful observations: 132 across all three scenarios, plus 44 each with attachment and review-diff first. An independent parse verified fixed eager8/no switch, schema count eight, SQL 0→8 before intake, every observation count delta one, exact retained phase sums and zero app wait/hold. Payload validity is asserted by the successful fixture. `/tmp/task694-latency/writer-lifetime-fixed/smoke-validation.json` records those checks. These smokes verify the earlier c4-source behavior; they are **not a new acceptance latency capture**.
 
-The corrected final gate ran against unchanged source **c4e3e8ee2265cc7c9f8856ccaf521faa4db5dc90**. All **17 checks exited 0**, aggregate exit 0. The unfiltered Cargo run passed **5,408 tests with 16 ignored across 33 target summaries**, including **5,182 library tests with 12 ignored**. Ignored performance diagnostics remain separate from those correctness counts. Both Clippy toolchains checked all targets with warnings denied. Exact commands, environment, timings and logs are in `/tmp/task694-latency/gates/runs/20261020T184239.010527Z/summary.json` and its per-check exit files.
+The earlier corrected gate ran against unchanged source **c4e3e8ee2265cc7c9f8856ccaf521faa4db5dc90**. All **17 checks exited 0**, aggregate exit 0. The unfiltered Cargo run passed **5,408 tests with 16 ignored across 33 target summaries**, including **5,182 library tests with 12 ignored**. Ignored performance diagnostics remain separate from those correctness counts. Both Clippy toolchains checked all targets with warnings denied. Exact commands, environment, timings and logs are in `/tmp/task694-latency/gates/runs/20261020T184239.010527Z/summary.json` and its per-check exit files.
 
 | Gate | Exit |
 | --- | --- |
@@ -431,9 +558,9 @@ The corrected final gate ran against unchanged source **c4e3e8ee2265cc7c9f8856cc
 | `diff-check-index` | 0 |
 
 
-The timing tables measure aa26175, while the final correctness gates exercise the later lifetime-corrected source identified above. There is no new timing cohort for that final shutdown-only change, so the tables are not relabeled as measurements of it. A later documentation-only commit does not alter either source. Full JSON/CSV output retains all paired values and recorded setup, workers and machine context. The final evidence export includes source/binary/overlay identities, valid RED and GREEN records, the excluded stale artifact, historical failed cohorts and reconstruction instructions. Large raw captures remain indexed by exact path/hash; no claim is based on a filtered subset.
+The timing tables measure aa26175, while the earlier c4 correctness gates exercise the lifetime-corrected source identified above. The review revision has its own source and gate record in the new section. There was no new timing cohort for that shutdown-only change, so the tables are not relabeled as measurements of it. A later documentation-only commit does not alter either source. Full JSON/CSV output retains all paired values and recorded setup, workers and machine context. That earlier evidence export includes source/binary/overlay identities, valid RED and GREEN records, the excluded stale artifact, historical failed cohorts and reconstruction instructions. Large raw captures remain indexed by exact path/hash; no claim is based on a filtered subset.
 
-The attachable plain-text evidence export is under `/tmp/task694-evidence-final/`: `task694-results-01.txt` (reports, exact CSV/JSON and analysis sources), `task694-capture-controls-01.txt` (run/configuration/setup/worker records), `task694-provenance-01.txt` (source, overlay and binary/build identity) and `task694-gates-history-01.txt` (gates, RED/GREEN and retained investigation inventory). `task694-evidence-index.log` identifies exact inputs and hashes; `task694-evidence-readme.txt` describes extraction and reproduction. Parts remain below the attachment size cap. The export is evidence of the disclosed result, not a statement of latency equivalence.
+The earlier sealed plain-text evidence export is under `/tmp/task694-evidence-final/`: `task694-results-01.txt` (reports, exact CSV/JSON and analysis sources), `task694-capture-controls-01.txt` (run/configuration/setup/worker records), `task694-provenance-01.txt` (source, overlay and binary/build identity) and `task694-gates-history-01.txt` (gates, RED/GREEN and retained investigation inventory). `task694-evidence-index.log` identifies exact inputs and hashes; `task694-evidence-readme.txt` describes extraction and reproduction. Parts remain below the attachment size cap. The export is evidence of the disclosed result, not a statement of latency equivalence.
 
 Primary retained files:
 

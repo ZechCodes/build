@@ -186,6 +186,14 @@ are released before any filesystem/Git work. Pure I/O reads take no SQL slot or
 connection. Carrier closure cancels preparation waits and suppresses replies
 from released carriers; compatible callers on surviving carriers remain live.
 
+Mixed jobs remain counted in the same 16-caller opening backlog while pending,
+preparing metadata or ready for I/O. Separate asynchronous metadata coordinators
+wait for the shared SQL executor and connection pool; physical I/O coordinators
+select only pure jobs or fully prepared jobs. Already admitted pure jobs can
+advance within that opening or on other openings while metadata waits for SQL.
+A full opening still parks its subsequent ordered intake. Queued-only folding,
+carrier cancellation and the eight-worker physical-I/O bound remain in force.
+
 Other queued work uses the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
@@ -375,6 +383,18 @@ publication before returning the existing typed reply. GitHub observations
 retain their service deadline and update admission spans the complete job.
 Writer routing and the later MCP concurrency migration retain their existing
 boundaries.
+
+Ordinary owner/global publication structurally shares unrelated observation
+families and rows. Touched owner rows may be recaptured even when their fields
+compare equal. Producer mutations identify affected inputs and stage their
+family/key values under the committed publication boundary; dirty-key receipts
+are acknowledged only after an accepted delta, so failed or stale candidates
+retain pending work. Legitimate topology changes may rebuild thin owner/run
+order indexes to preserve legacy tie precedence. An unrelated status publication
+does not rebuild the complete observation graph or enumerate all retained
+lineages, attachment homes and archive rows. Existing board rendering and legacy
+producer maintenance remain separate work; this is not a claim that all
+publication is constant time.
 
 **Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
 `Arc<ReadView>` root with shared immutable response chunks. Versioned deltas

@@ -17,7 +17,7 @@ pub(in crate::app) struct SnapshotObservations {
     paths: BTreeMap<PathBuf, PathBuf>,
     existing_paths: BTreeSet<PathBuf>,
     branches: BTreeMap<String, String>,
-    watched_tasks: Mutex<BTreeMap<String, Vec<Value>>>,
+    watched_tasks: Mutex<BTreeMap<String, Vec<Arc<Value>>>>,
     projects: Mutex<BTreeMap<String, ProjectObservation>>,
     workspace_reviews: BTreeMap<String, Value>,
 }

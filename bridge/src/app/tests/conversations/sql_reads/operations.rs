@@ -32,6 +32,7 @@ fn receipt_publication_preserves_temporarily_checked_out_owner() {
     let reads = state.read_service();
     let params = json!({"entity_id": record.id});
     let before = reads.call(req("thread.page", params.clone()), None);
+    assert_eq!(before["ok"], true, "{before}");
     let active = state.runs.remove(&record.id).unwrap();
 
     claim_operation(&mut state);
@@ -60,6 +61,7 @@ fn receipt_publication_does_not_admit_failed_roster_candidates() {
     let reads = state.read_service();
     let params = json!({"entity_id": record.id});
     let before = reads.call(req("thread.page", params.clone()), None);
+    assert_eq!(before["ok"], true, "{before}");
     let roster = &mut state.runs.get_mut(&record.id).unwrap().agents;
     let added = roster
         .add(

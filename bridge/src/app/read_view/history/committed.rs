@@ -38,6 +38,22 @@ impl SharedHistory {
     fn matches(&self, thread: &Thread) -> bool {
         self.thread_id == thread.id && self.generation == thread.generation_revision
     }
+
+    /// Only a message-page failure may use the already accepted resident
+    /// rows. A stale projection from before reset cannot supply that fallback.
+    pub(in crate::app) fn resident_fallback_items(
+        &self,
+        thread: &Thread,
+        floor: u64,
+    ) -> Option<Vec<crate::thread::ThreadItem>> {
+        self.matches(thread).then(|| {
+            self.items()
+                .into_iter()
+                .filter(|item| item.sequence() >= floor)
+                .cloned()
+                .collect()
+        })
+    }
 }
 
 impl AppState {

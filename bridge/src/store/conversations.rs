@@ -124,18 +124,7 @@ impl Store {
         agent_id: &str,
         limit: usize,
     ) -> Result<Vec<ThreadItem>, StoreError> {
-        let connection = self.connection();
-        let mut statement = connection.prepare(THREAD_MESSAGE_PAGE_SQL)?;
-        let mut page = decode_thread_items(
-            agent_id,
-            statement.query_map(rusqlite::params![agent_id, limit as i64], |row| {
-                row.get::<_, String>(0)
-            })?,
-        )?;
-        // Read newest-first off the seek, handed back in the order the
-        // conversation happened — the way `read_thread_page` reverses.
-        page.reverse();
-        Ok(page)
+        ReadTransaction::new(&self.connection()).thread_message_page(agent_id, limit)
     }
     pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
         ReadTransaction::new(&self.connection()).thread_item_count(agent_id)
@@ -208,11 +197,7 @@ impl Store {
     /// migration replays out of everything the user ever said. Both are wrong
     /// if they only see the tail, and neither runs on a poll.
     pub fn thread_items(&self, agent_id: &str) -> Result<Vec<ThreadItem>, StoreError> {
-        let connection = self.connection();
-        let mut statement = connection
-            .prepare("SELECT item FROM thread_items WHERE agent_id = ?1 ORDER BY sequence")?;
-        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-        decode_thread_items(agent_id, rows)
+        ReadTransaction::new(&self.connection()).thread_items(agent_id)
     }
     /// The human's messages a legacy delivery still owes the agent, across the
     /// whole conversation, oldest first: what
@@ -678,5 +663,36 @@ impl ReadTransaction<'_> {
         // creation order, which is what a client merges its cache against.
         delta.sort_by_key(ThreadItem::sequence);
         Ok(delta)
+    }
+}
+
+impl ReadTransaction<'_> {
+    pub fn thread_message_page(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(THREAD_MESSAGE_PAGE_SQL)?;
+        let mut page = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?,
+        )?;
+        // Read newest-first off the seek, handed back in the order the
+        // conversation happened — the way `read_thread_page` reverses.
+        page.reverse();
+        Ok(page)
+    }
+}
+
+impl ReadTransaction<'_> {
+    pub fn thread_items(&self, agent_id: &str) -> Result<Vec<ThreadItem>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection
+            .prepare("SELECT item FROM thread_items WHERE agent_id = ?1 ORDER BY sequence")?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        decode_thread_items(agent_id, rows)
     }
 }

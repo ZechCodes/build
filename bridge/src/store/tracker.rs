@@ -318,16 +318,7 @@ impl Store {
         &self,
         comment_id: &str,
     ) -> Result<Option<TaskComment>, StoreError> {
-        let conn = self.connection();
-        let mut statement =
-            conn.prepare("SELECT id, record FROM tracker_comments WHERE id = ?1")?;
-        let mut rows = statement.query([comment_id])?;
-        let Some(row) = rows.next()? else {
-            return Ok(None);
-        };
-        let id: String = row.get(0)?;
-        let raw: String = row.get(1)?;
-        decode(&raw, "tracker_comments", &id).map(Some)
+        ReadTransaction::new(&self.connection()).load_tracker_comment(comment_id)
     }
 
     /// One task's comments and events as a single ascending timeline.
@@ -732,4 +723,22 @@ pub(super) fn initialize_list_key(conn: &rusqlite::Connection) -> Result<(), Sto
         rusqlite::params![LIST_KEY, uuid::Uuid::new_v4().simple().to_string()],
     )?;
     Ok(())
+}
+
+impl ReadTransaction<'_> {
+    pub fn load_tracker_comment(
+        &self,
+        comment_id: &str,
+    ) -> Result<Option<TaskComment>, StoreError> {
+        let conn = self.connection();
+        let mut statement =
+            conn.prepare("SELECT id, record FROM tracker_comments WHERE id = ?1")?;
+        let mut rows = statement.query([comment_id])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let id: String = row.get(0)?;
+        let raw: String = row.get(1)?;
+        decode(&raw, "tracker_comments", &id).map(Some)
+    }
 }

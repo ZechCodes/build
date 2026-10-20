@@ -14,6 +14,7 @@ pub(in crate::app::tests) mod off_the_workers;
 mod pi_compaction;
 pub(in crate::app::tests) mod run_agents;
 mod snapshot_publication;
+mod scope_observations;
 mod sql_reads;
 pub(in crate::app::tests) mod start_refused;
 pub(in crate::app::tests) mod terminal_lifecycle;

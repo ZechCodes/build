@@ -292,7 +292,11 @@ impl AppState {
             "",
             self.models_list_snapshot(),
         );
-        delta.set_facts(Arc::new(self.push_facts_snapshot(lists)))
+        delta
+            .set_observations(Arc::new(
+                super::observation_reads::ObservationContext::capture(self),
+            ))
+            .set_facts(Arc::new(self.push_facts_snapshot(lists)))
     }
 
     fn prepare_workspace_lists(

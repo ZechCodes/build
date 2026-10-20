@@ -30,6 +30,8 @@ use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
 #[cfg(test)]
+mod observation_tests;
+#[cfg(test)]
 mod snapshot_tests;
 mod sql;
 #[cfg(test)]
@@ -43,6 +45,7 @@ pub mod testing;
 mod timing_tests;
 
 use dispatch::Dispatcher;
+pub(crate) use dispatch::PreparedObservation;
 
 /// One thing bound for a carrier's wire, before any wire wrapper exists: an
 /// encrypted frame for a client session, or the `session_accept` answering an
@@ -977,6 +980,12 @@ impl FrameIntake {
         // `tasks.list` was a phone giving up on the device (task #128).
         if writes_an_attachment(&frame) || is_signaling(&frame) {
             self.answer_without_queueing(sender, frame, arrived);
+            return Ok(());
+        }
+        if crate::api::effects::is_observation_read(&frame.payload) {
+            self.dispatcher
+                .dispatch_observation(sender, frame, arrived)
+                .await;
             return Ok(());
         }
         if crate::api::effects::is_sql_read(&frame.payload) {

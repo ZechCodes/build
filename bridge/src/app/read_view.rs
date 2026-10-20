@@ -44,6 +44,8 @@ pub(in crate::app) struct ReadView {
     histories: BTreeMap<String, VersionedHistory>,
     pub facts: Arc<super::facts::PushFacts>,
     pub facts_version: u64,
+    pub observations: Option<Arc<super::observation_reads::ObservationContext>>,
+    observations_version: u64,
 }
 
 impl ReadView {
@@ -82,6 +84,7 @@ impl ReadView {
                 .get(key)
                 .is_none_or(|chunk| chunk.version < delta.version)
         }) && (delta.facts.is_none() || self.facts_version < delta.version)
+            && (delta.observations.is_none() || self.observations_version < delta.version)
     }
 
     fn apply(&mut self, delta: &SnapshotDelta) {
@@ -103,6 +106,10 @@ impl ReadView {
                 },
             );
         }
+        if let Some(observations) = &delta.observations {
+            self.observations = Some(Arc::clone(observations));
+            self.observations_version = delta.version;
+        }
         if let Some(facts) = &delta.facts {
             self.facts = Arc::clone(facts);
             self.facts_version = delta.version;
@@ -115,6 +122,7 @@ pub(in crate::app) struct SnapshotDelta {
     updates: BTreeMap<ReadKey, Option<Arc<Value>>>,
     facts: Option<Arc<super::facts::PushFacts>>,
     histories: BTreeMap<String, Option<Arc<history::SharedHistory>>>,
+    observations: Option<Arc<super::observation_reads::ObservationContext>>,
 }
 
 impl SnapshotDelta {
@@ -124,6 +132,7 @@ impl SnapshotDelta {
             updates: BTreeMap::new(),
             facts: None,
             histories: BTreeMap::new(),
+            observations: None,
         }
     }
 
@@ -150,6 +159,14 @@ impl SnapshotDelta {
 
     pub fn remove_history(mut self, agent_id: impl Into<String>) -> Self {
         self.histories.insert(agent_id.into(), None);
+        self
+    }
+
+    pub fn set_observations(
+        mut self,
+        observations: Arc<super::observation_reads::ObservationContext>,
+    ) -> Self {
+        self.observations = Some(observations);
         self
     }
 

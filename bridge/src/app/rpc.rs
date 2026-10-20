@@ -446,7 +446,7 @@ fn pause_terminal_create_after_admission(state: &Arc<Mutex<AppState>>, timer: &F
 
 /// Keep observations and session subscriptions available during filesystem cleanup.
 /// New verbs default to blocked until their read-only behavior is established.
-fn allowed_during_project_deletion(method: &str) -> bool {
+pub(in crate::app) fn allowed_during_project_deletion(method: &str) -> bool {
     matches!(
         method,
         "ping"
@@ -540,7 +540,7 @@ impl AppState {
     /// this mutex with no handler behind it, and both must record against one
     /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        let (clock, peers, pool, reads, snapshots) = {
+        let (clock, peers, pool, reads, snapshots, observations) = {
             let mut app = state.lock().unwrap();
             app.initialize_snapshot_projection();
             app.initialize_read_context();
@@ -550,11 +550,15 @@ impl AppState {
                 app.store.as_ref().map(crate::store::Store::read_pool),
                 app.read_service(),
                 app.snapshot_service(),
+                app.observation_service(),
             )
         };
         let ending = Arc::clone(&state);
         FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, &peers, sender, frame, timer)
+        })
+        .with_observation_reads(pool.clone(), move |frame, connection| {
+            observations.prepare(frame, connection)
         })
         .with_sql_reads(pool, move |_sender, frame, _timer, connection| {
             reads.call(frame, connection)

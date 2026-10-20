@@ -212,6 +212,22 @@ pub(crate) fn effect(method: &str) -> Option<Effect> {
     .find_map(|(methods, effect)| methods.contains(&method).then_some(effect))
 }
 
+/// External observations use an independent bounded I/O lane. Archive reads
+/// also observe checkout existence despite their legacy classification.
+pub(crate) fn is_observation_read(payload: &Value) -> bool {
+    payload
+        .get("method")
+        .and_then(Value::as_str)
+        .is_some_and(|method| EXTERNAL_READ_METHODS.contains(&method) || method == "archived.list")
+}
+
+pub(crate) fn observation_needs_sql(payload: &Value) -> bool {
+    matches!(
+        payload.get("method").and_then(Value::as_str),
+        Some("tasks.review.get" | "tasks.review.diff" | "tasks.attachment")
+    )
+}
+
 pub(crate) fn is_sql_read(payload: &Value) -> bool {
     payload
         .get("method")

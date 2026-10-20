@@ -171,14 +171,25 @@ and `bridge.update_status`) answer at intake from immutable snapshots. They
 take no SQL permit, dispatch slot or app lock, including when those lanes are
 full. Typed parameter normalization and result validation still apply.
 
+The 22 remaining observation reads (filesystem/Git, stage documents, review
+reads, attachments, archives, GitHub repositories and Git initialization
+options) enter an independent fair I/O lane before write admission. It reuses
+the SQL lane's bounded per-opening queue and queued-only folding, with its own
+16-caller backlog and eight dedicated I/O threads. Excess intake waits without
+capacity refusals. Review and task-attachment metadata preparation runs on the
+same fixed SQL executor as ordinary SQL reads; its transaction and connection
+are released before any filesystem/Git work. Pure I/O reads take no SQL slot or
+connection. Carrier closure cancels preparation waits and suppresses replies
+from released carriers; compatible callers on surviving carriers remain live.
+
 Other queued work uses the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
 arrival order; its overflow answers retryable `busy`. The pool has eight
 workers and separate foreground/background queues, with at most two workers
 running background frames. Terminal lanes and immediate handlers run outside
-that eight-worker bound. A deferred handler releases the app lock during its
-external work, but retains its dispatch worker until it finishes.
+that eight-worker bound. Deferred writers release the app lock during external
+work and retain their dispatch worker until they finish.
 
 **Dispatch.** Each handled frame goes to `dispatch_frame` in
 `bridge/src/app/rpc.rs`, which tries these in order:
@@ -332,6 +343,18 @@ The Store-free fallback is an immutable snapshot. Task timeline, dependency,
 review-summary and durable-identity rows share one transaction, with live
 availability supplied by the published overlay. Read replies retain typed
 parameter normalization and result checks without deferred app state.
+
+**Independent observations (#681 step 4).** `app/observation_reads.rs`
+prepares owned jobs from a typed immutable identity context published with the
+versioned `ReadView` delta. The context is staged under the existing committed
+publication boundary, so failed saves and stale refreshes cannot publish
+candidate identities. Preparation never reacquires the app lock or drains
+deferred writes. Dedicated I/O workers execute filesystem/Git observations,
+then validate source, owner and conversation fences against the latest
+publication before returning the existing typed reply. GitHub observations
+retain their service deadline and update admission spans the complete job.
+Writer routing and the later MCP concurrency migration retain their existing
+boundaries.
 
 **Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
 `Arc<ReadView>` root with shared immutable response chunks. Versioned deltas

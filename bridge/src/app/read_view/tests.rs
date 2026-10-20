@@ -79,3 +79,34 @@ fn current_builder_rebases_on_a_concurrent_publication() {
     assert_eq!(slot.load().get("agent.list", "a"), Some(&json!(11)));
     assert_eq!(built.load(Ordering::SeqCst), 2);
 }
+
+#[test]
+fn stale_observation_context_rejects_the_entire_candidate_delta() {
+    let root = tempfile::tempdir().unwrap();
+    let app = crate::app::AppState::new_unrooted(
+        root.path().join("worktrees"),
+        "main",
+        true,
+        "/tmp/observation-version.sock",
+    );
+    let context = || {
+        Arc::new(crate::app::observation_reads::ObservationContext::capture(
+            &app,
+        ))
+    };
+    let slot = ReadViewSlot::default();
+    let stale = SnapshotDelta::new(slot.next_version())
+        .set_observations(context())
+        .put("board.list", "", json!({"candidate":true}));
+    let latest = context();
+    slot.publish_delta(SnapshotDelta::new(slot.next_version()).set_observations(latest.clone()));
+    slot.publish_delta(stale);
+    assert!(Arc::ptr_eq(
+        slot.load().observations.as_ref().unwrap(),
+        &latest
+    ));
+    assert!(
+        slot.load().get("board.list", "").is_none(),
+        "stale identity rejects associated wire rows"
+    );
+}

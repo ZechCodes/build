@@ -22,8 +22,21 @@ pub struct FrameHandler {
     session_end: Arc<dyn Fn(&str) + Send + Sync>,
     snapshot: Option<Arc<dyn Fn(Frame) -> Value + Send + Sync>>,
     pub(super) sql: Option<SqlHandler>,
+    pub(super) observations: Option<ObservationHandler>,
+    pub(super) read_executors: Arc<OnceLock<super::sql::ReadExecutors>>,
     #[cfg(test)]
     pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
+}
+
+pub(crate) type PreparedObservation = Box<dyn FnOnce() -> Value + Send>;
+
+type ObservationPrepare =
+    dyn Fn(Frame, Option<crate::store::ReadConnection>) -> PreparedObservation + Send + Sync;
+
+#[derive(Clone)]
+pub(super) struct ObservationHandler {
+    pub(super) pool: Option<crate::store::ReadPool>,
+    prepare: Arc<ObservationPrepare>,
 }
 
 type SqlCall = dyn Fn(SessionSender, Frame, FrameTimer, Option<crate::store::ReadConnection>) -> Value
@@ -46,6 +59,8 @@ impl FrameHandler {
             dispatch: Arc::new(dispatch),
             session_end: Arc::new(|_| {}),
             sql: None,
+            observations: None,
+            read_executors: Arc::new(OnceLock::new()),
             snapshot: None,
             #[cfg(test)]
             sql_observer: None,
@@ -105,6 +120,38 @@ impl FrameHandler {
         self
     }
 
+    pub(crate) fn with_observation_reads(
+        mut self,
+        pool: Option<crate::store::ReadPool>,
+        prepare: impl Fn(Frame, Option<crate::store::ReadConnection>) -> PreparedObservation
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.observations = Some(ObservationHandler {
+            pool,
+            prepare: Arc::new(prepare),
+        });
+        self
+    }
+
+    pub(super) fn prepare_observation(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        connection: Option<crate::store::ReadConnection>,
+    ) -> PreparedObservation {
+        match &self.observations {
+            Some(observations) => (observations.prepare)(frame, connection),
+            None => {
+                let handler = self.clone();
+                Box::new(move || {
+                    handler.run(handler.clock.queued_at(Priority::Foreground), sender, frame)
+                })
+            }
+        }
+    }
+
     pub(super) fn run_sql(
         &self,
         queued: QueuedFrame,
@@ -145,6 +192,9 @@ impl FrameHandler {
             Ok(answer) => return answer,
             Err(arrived) => arrived,
         };
+        if self.observations.is_some() && crate::api::effects::is_observation_read(&frame.payload) {
+            return super::sql::call_observation(self.clone(), sender, frame, arrived);
+        }
         self.run(
             self.clock.queued_since(Priority::Foreground, arrived),
             sender,
@@ -152,7 +202,7 @@ impl FrameHandler {
         )
     }
 
-    fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
+    pub(super) fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value {
         let method = frame
             .payload
             .get("method")
@@ -364,7 +414,8 @@ enum LaneMessage {
 /// stale and stays stale.
 pub(super) struct Dispatcher {
     handler: FrameHandler,
-    sql: OnceLock<super::sql::SqlDispatcher>,
+    sql: OnceLock<super::sql::ReadDispatcher>,
+    observations: OnceLock<super::sql::ReadDispatcher>,
     /// The two shared pool queues, foreground and background. Both bounded: a
     /// full queue makes the read loop wait, and it waits per queue, so a flood
     /// of background pulls cannot fill the slot a foreground frame needs.
@@ -415,6 +466,7 @@ impl Dispatcher {
         Dispatcher {
             handler,
             sql: OnceLock::new(),
+            observations: OnceLock::new(),
             jobs: [foreground, background],
             lanes: Mutex::new(HashMap::new()),
             folded_reads,
@@ -434,12 +486,34 @@ impl Dispatcher {
         arrived: WaitTimer,
     ) {
         self.sql
-            .get_or_init(|| super::sql::SqlDispatcher::new(self.handler.clone()))
+            .get_or_init(|| super::sql::ReadDispatcher::new(self.handler.clone()))
             .dispatch(sender, frame, arrived)
             .await;
     }
 
+    pub(super) async fn dispatch_observation(
+        &self,
+        sender: SessionSender,
+        frame: Frame,
+        arrived: WaitTimer,
+    ) {
+        self.observations
+            .get_or_init(|| super::sql::ReadDispatcher::new_observations(self.handler.clone()))
+            .dispatch(sender, frame, arrived)
+            .await;
+    }
+
+    #[cfg(test)]
+    pub(super) fn observation_depths(&self) -> (usize, usize) {
+        self.observations
+            .get()
+            .map_or((0, 0), super::sql::ReadDispatcher::depths)
+    }
+
     pub(super) fn prune_sql(&self) {
+        if let Some(observations) = self.observations.get() {
+            observations.prune();
+        }
         if let Some(sql) = self.sql.get() {
             sql.prune();
         }
@@ -449,7 +523,7 @@ impl Dispatcher {
     pub(super) fn sql_depths(&self) -> (usize, usize) {
         self.sql
             .get()
-            .map_or((0, 0), super::sql::SqlDispatcher::depths)
+            .map_or((0, 0), super::sql::ReadDispatcher::depths)
     }
 
     /// The queue a frame of this priority joins.
@@ -477,6 +551,10 @@ impl Dispatcher {
         // an ended opening must not so much as open a lane, since the lane
         // would outlive the session whose close already took its lanes away.
         if !sender.session_is_open() {
+            return;
+        }
+        if crate::api::effects::is_observation_read(&frame.payload) {
+            self.dispatch_observation(sender, frame, arrived).await;
             return;
         }
         if crate::api::effects::is_sql_read(&frame.payload) {

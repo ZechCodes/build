@@ -32,6 +32,12 @@ fn fixture() -> (tempfile::TempDir, AppState) {
             crate::app::run_state_str(&active.run.state).into(),
         );
     }
+    let projects = state
+        .capture_project_snapshot_observations()
+        .into_iter()
+        .map(|row| (row.project_id.clone(), row.render()))
+        .collect();
+    state.install_project_snapshot_observations(projects);
     state.warm_snapshot_observations_for_test();
     for owner in state.runs.keys() {
         state.mark_snapshot_owner_pending(owner);
@@ -152,16 +158,13 @@ fn assert_fast_eligible(state: &AppState, owner: &str) {
 
 #[test]
 fn rejected_incremental_candidate_never_enters_the_accepted_cache() {
-    let (tmp, mut state) = fixture();
+    let (_tmp, mut state) = fixture();
     let requests = requests(&state);
     let old = state.read_view.load();
     let before = image(&old, &requests);
     let original_root = state.runs["run-00"].worktree.path.clone();
-    let rejected_root = tmp.path().join("rejected-checkout");
-    std::fs::create_dir(&rejected_root).unwrap();
     let mut rejected = state.take_run("run-00").unwrap();
     rejected.run.goal = "UNCOMMITTED GOAL".into();
-    rejected.worktree.path = rejected_root;
     rejected
         .agents
         .sole_thread_mut()

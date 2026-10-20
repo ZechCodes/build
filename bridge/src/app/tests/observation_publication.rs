@@ -26,7 +26,7 @@ fn fixture() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String) {
     app.delivery_queue.clear_queued();
     let state = app.shared();
     let _handler = AppState::handler(state.clone());
-    capture_metrics::take();
+    capture_metrics::start();
     (dir, state, owners.remove(0))
 }
 

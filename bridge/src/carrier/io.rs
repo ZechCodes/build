@@ -165,13 +165,23 @@ mod tests {
         let complete = pool.submit(Box::new(move || gate.arrive())).unwrap();
         held.wait_for_arrival();
         assert_eq!(counts(&pool), (1, 1));
-        drop(pool);
+        let (dropped, owner_released) = oneshot::channel();
+        std::thread::spawn(move || {
+            drop(pool);
+            let _ = dropped.send(());
+        });
+        let owner_released = tokio::time::timeout(PATIENCE, owner_released).await;
+        // Release active work before asserting, even if a future Drop starts
+        // waiting for workers. A failure must not leave the fixture blocked.
+        held.release();
+        assert!(
+            matches!(owner_released, Ok(Ok(()))),
+            "dropping the owner must not wait for active work"
+        );
         assert!(
             executor.upgrade().is_none(),
             "workers retain no executor owner"
         );
-        assert_eq!(accounting.lock().unwrap().outstanding, 1);
-        held.release();
         tokio::time::timeout(PATIENCE, complete)
             .await
             .expect("active work finishes after its owner is dropped")

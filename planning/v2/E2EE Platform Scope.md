@@ -22,7 +22,8 @@ not override current code or ARCHITECTURE.md.
 
 
 > **Amendment (2026-09-18):** `post_thread_message` takes only `status`,
-> `body` and `options`. There is no `phase`, `outputs`, `anchor` or `links`:
+> `body`, `options` and optional `attachments` (added by #696). There is no
+> `phase`, `outputs`, `anchor` or `links`:
 > Build knows which phase a report closes from the session that sent it, and a
 > plan's stages are read from `.build/plan/stages.json` on disk when the plan
 > agent reports Complete. The per-stage validation gate (validate/fix-stage

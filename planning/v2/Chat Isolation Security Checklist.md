@@ -292,3 +292,12 @@ transport fixtures are not rescored. Confirmed deletion can retain an orphan
 policy if its final config write fails; a same-path adopted checkout can then
 reuse that policy. Adoption re-identification and migration remain #654; this
 task does not change adoption order or IDs.
+
+## #696 agent message attachments — 2026-10-20
+
+Agent replies and handoffs now carry durable attachment descriptors using the
+existing session, address and generation ownership checks. Their shared file
+intake, persistence, reset-reference and bounded-read verification is scoped in
+[Agent Message Attachments Security Checklist](Agent%20Message%20Attachments%20Security%20Checklist.md).
+This extension does not change the authentication or reset deletion controls
+scored above.

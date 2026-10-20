@@ -771,13 +771,14 @@ impl AppState {
         if let BridgeAction::MessageAgent {
             agent_id: target,
             body,
+            attachments,
         } = &action
         {
             let sender = crate::app::AgentSender {
                 entity_id,
                 agent_id,
             };
-            return self.agent_message_agent(sender, target, body);
+            return self.agent_message_agent(sender, target, body, attachments);
         }
         // The task tracker, before the per-surface tables: it is the one
         // family both working surfaces carry, so it is answered in one place
@@ -813,6 +814,15 @@ impl AppState {
         if let BridgeAction::SetName { name } = &action {
             return self.set_agent_name(entity_id, agent_id, name);
         }
+        let attachments = if let BridgeAction::PostThreadMessage {
+            body, attachments, ..
+        } = &action
+        {
+            crate::app::conversations::validate_agent_message_body(body)?;
+            self.take_in_agent_message_files(entity_id, agent_id, attachments)?
+        } else {
+            Vec::new()
+        };
         let posted_still_working = match &action {
             BridgeAction::PostThreadMessage { still_working, .. } => Some(*still_working),
             _ => None,
@@ -822,7 +832,7 @@ impl AppState {
         // `edit_agent_conversation`'s.
         let now = now_rfc3339();
         let result = self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
-            apply_thread_action(thread, action, &now)
+            apply_thread_action(thread, action, attachments, &now)
         });
         if result.is_ok() {
             match posted_still_working {

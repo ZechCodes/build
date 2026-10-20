@@ -902,6 +902,7 @@ fn a_project_agents_message_lands_on_its_own_conversation() {
             &owner,
             &agent_id,
             BridgeAction::PostThreadMessage {
+                attachments: Vec::new(),
                 still_working: false,
                 body: "one workspace, nobody in it".to_string(),
                 options: Vec::new(),
@@ -1556,6 +1557,7 @@ fn a_workspace_agents_report_reaches_no_agent_on_its_own() {
             &handed.entity_id,
             &handed.worker,
             BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: handed.agent_id.clone(),
                 body: "the router reads top to bottom".to_string(),
             },
@@ -1668,6 +1670,7 @@ fn a_mid_turn_message_reaches_no_agent_either() {
                 &handed.entity_id,
                 &handed.worker,
                 BridgeAction::PostThreadMessage {
+                    attachments: Vec::new(),
                     still_working: body == "still reading",
                     body: body.to_string(),
                     options: Vec::new(),
@@ -1995,6 +1998,7 @@ fn a_message_from_an_agent_names_the_conversation_it_came_from() {
             &handed.entity_id,
             &handed.worker,
             BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: handed.agent_id.clone(),
                 body: "the router reads top to bottom".to_string(),
             },

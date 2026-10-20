@@ -326,7 +326,7 @@ impl AppState {
         Ok(ResolvedCompactionPolicy { tokens, source })
     }
 
-    fn compaction_project_of(&self, owner: &str) -> Option<String> {
+    pub(in crate::app) fn compaction_project_of(&self, owner: &str) -> Option<String> {
         if let Some(id) = self.projects.project_id_of(owner) {
             return Some(id.to_string());
         }
@@ -342,6 +342,11 @@ impl AppState {
     }
 
     fn compaction_workspace_of(&self, owner: &str, observed: bool) -> Option<String> {
+        if observed {
+            if let Some(context) = self.snapshot_ownership_context() {
+                return context.compaction_workspace(owner).map(str::to_owned);
+            }
+        }
         let workspace = if observed {
             self.workspace_snapshot_for_conversation(owner, None)
         } else {

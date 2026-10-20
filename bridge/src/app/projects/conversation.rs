@@ -207,6 +207,9 @@ impl AppState {
     }
 
     pub(in crate::app) fn is_project_snapshot_conversation_owner(&self, run_id: &str) -> bool {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context.is_project_owner(run_id);
+        }
         let Some(active) = self.runs.get(run_id) else {
             return false;
         };

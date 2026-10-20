@@ -15,10 +15,12 @@ mod deletion;
 mod directories;
 mod git_initialization;
 mod lock;
+mod ownership;
 mod reclaim;
 mod sizes;
 mod snapshots;
 
+pub(in crate::app) use ownership::ProjectionOwnership;
 #[cfg(test)]
 pub(in crate::app) use reclaim::probe_reclaim_stop_for_test;
 #[cfg(test)]
@@ -516,6 +518,11 @@ impl AppState {
         &self,
         workspace: &Workspace,
     ) -> Option<String> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            if let Some(owner) = context.workspace_owner(&workspace.id) {
+                return owner.cloned();
+            }
+        }
         self.workspace_conversation_owner_using(workspace, true)
     }
 
@@ -579,6 +586,11 @@ impl AppState {
         entity_id: &str,
         workspace_project: Option<&str>,
     ) -> Option<&Workspace> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context
+                .workspace_for_owner(entity_id, workspace_project)
+                .and_then(|id| self.workspaces.get(id));
+        }
         self.workspace_for_conversation_using(entity_id, workspace_project, true)
     }
 
@@ -633,6 +645,9 @@ impl AppState {
         &self,
         run_id: &str,
     ) -> Option<String> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context.surviving_workspace(run_id).map(str::to_owned);
+        }
         self.surviving_workspace_of_run_using(run_id, true)
     }
 

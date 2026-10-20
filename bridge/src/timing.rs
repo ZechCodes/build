@@ -418,6 +418,8 @@ impl QueuedFrame {
             held_micros: AtomicU64::new(0),
             #[cfg(test)]
             sample_tool: Mutex::new(None),
+            #[cfg(test)]
+            phase_capture: phase_samples::start_frame(&self.clock),
         }
     }
 }
@@ -472,6 +474,8 @@ pub struct FrameTimer {
     held_micros: AtomicU64,
     #[cfg(test)]
     sample_tool: Mutex<Option<String>>,
+    #[cfg(test)]
+    phase_capture: Option<phase_samples::PhaseSamples>,
 }
 
 /// A wait whose endpoint may run on a different thread from its frame.

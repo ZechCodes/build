@@ -46,6 +46,7 @@ struct Busy {
     samples: PhaseSamples,
     view: ReadViewSlot,
     sessions: Vec<(TabKey, Arc<dyn AgentSession>)>,
+    logs: Vec<SessionLog>,
 }
 
 impl Busy {
@@ -146,14 +147,16 @@ impl Busy {
                 .unwrap();
         }
         // These sessions accept turns without spawning provider processes.
+        let mut logs = Vec::new();
         for (owner, agent) in owners.iter().take(AGENTS) {
             let path = app.runs[owner].worktree.path.clone();
             let key = TabKey::agent(&AppState::canonical_root(&path), agent);
+            let log = SessionLog::default();
             let mut tab = dictated_agent_tab(
                 &path,
                 owner,
                 agent,
-                DictatedSession::reporting(AgentStatus::Working),
+                DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
             );
             let choice = app.runs[owner].agents.by_id(agent).unwrap().choice.clone();
             let instance =
@@ -163,6 +166,7 @@ impl Busy {
                 app.session_instance_uses_choice(tab.session_instance.as_ref().unwrap(), &choice),
                 "fixture session lineage and launch choice match"
             );
+            logs.push(log);
             app.session_registry.test_insert_tab(key, tab);
             app.session_registry
                 .test_install_token(agent.clone(), format!("busy-token-{agent}"));
@@ -233,6 +237,7 @@ impl Busy {
             samples,
             view,
             sessions,
+            logs,
         }
     }
 }
@@ -522,20 +527,7 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
         );
     }
 
-    // Drain delivery work before capturing results and dropping temporary roots.
-    for _ in 0..1000 {
-        let quiet = {
-            let app = busy.state.lock().unwrap();
-            busy.owners.iter().all(|(owner, _)| {
-                !app.delivery_queue
-                    .has_in_flight_at_root(&app.runs[owner].worktree.path)
-            })
-        };
-        if quiet {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    let measurements = wait_for_fixture_idle(&busy).await;
     {
         let app = busy.state.lock().unwrap();
         assert!(
@@ -544,6 +536,7 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
                 .has_in_flight_at_root(&app.runs[owner].worktree.path)),
             "all delivery callbacks drained before capture"
         );
+        assert!(app.delivery_queue.fixture_is_drained());
         for (key, session) in &busy.sessions {
             let tab = app
                 .session_registry
@@ -562,12 +555,22 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
             );
         }
     }
+    for log in &busy.logs {
+        let turns = log.turns();
+        for round in 0..ROUNDS {
+            assert!(
+                turns
+                    .iter()
+                    .any(|text| text.contains(&format!("busy handoff {round}"))),
+                "every recipient consumed every queued handoff"
+            );
+        }
+    }
     done.store(true, Ordering::Relaxed);
     logger.abort();
-    let measurements = busy.samples.snapshot();
     println!(
         "TASK709_BUSY_BASELINE {}",
-        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"retained_history_items_per_conversation":HISTORY_ITEMS,"simulated_running_agents":AGENTS,"mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"measurements":measurements})
+        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"measurements":measurements})
     );
     assert!(
         failures.is_empty(),
@@ -656,4 +659,22 @@ fn assert_acknowledged_snapshot(
         }
         _ => {}
     }
+}
+
+async fn wait_for_fixture_idle(busy: &Busy) -> Value {
+    tokio::time::timeout(REQUEST_PATIENCE, async {
+        loop {
+            {
+                let app = busy.state.lock().unwrap();
+                if app.delivery_queue.fixture_is_drained() && busy.samples.active_frames() == 0 {
+                    // Freeze the report at the proven quiet cut. Periodic task
+                    // polling may start another harmless frame after this guard.
+                    return busy.samples.snapshot();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued/settling/in-flight deliveries and sampled frames all finished")
 }

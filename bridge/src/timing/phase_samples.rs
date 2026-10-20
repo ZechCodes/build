@@ -7,11 +7,14 @@ use std::collections::BTreeMap;
 type Measurements = BTreeMap<String, BTreeMap<String, Vec<f64>>>;
 
 #[derive(Clone, Default)]
-pub(crate) struct PhaseSamples(Arc<Mutex<Measurements>>);
+pub(crate) struct PhaseSamples {
+    measurements: Arc<Mutex<Measurements>>,
+    active_frames: Arc<AtomicUsize>,
+}
 
 impl PhaseSamples {
     fn record(&self, method: &str, phase: &str, duration: Duration) {
-        self.0
+        self.measurements
             .lock()
             .unwrap()
             .entry(method.into())
@@ -21,12 +24,16 @@ impl PhaseSamples {
             .push(duration.as_secs_f64() * 1000.0);
     }
 
+    pub(crate) fn active_frames(&self) -> usize {
+        self.active_frames.load(Ordering::Acquire)
+    }
+
     pub(crate) fn clear(&self) {
-        self.0.lock().unwrap().clear();
+        self.measurements.lock().unwrap().clear();
     }
 
     pub(crate) fn snapshot(&self) -> Value {
-        let captured = self.0.lock().unwrap().clone();
+        let captured = self.measurements.lock().unwrap().clone();
         let mut methods = serde_json::Map::new();
         for (method, phases) in captured {
             let mut rows = serde_json::Map::new();
@@ -63,8 +70,14 @@ impl FrameTimer {
     }
 }
 
+pub(super) fn start_frame(clock: &FrameClock) -> Option<PhaseSamples> {
+    let samples = clock.phase_samples.lock().unwrap().clone()?;
+    samples.active_frames.fetch_add(1, Ordering::Relaxed);
+    Some(samples)
+}
+
 pub(super) fn record_frame(timer: &FrameTimer) {
-    if let Some(samples) = timer.clock.phase_samples.lock().unwrap().as_ref() {
+    if let Some(samples) = timer.phase_capture.as_ref() {
         let spent = timer.spent();
         let method = timer.sample_label();
         for (name, elapsed) in [
@@ -75,6 +88,7 @@ pub(super) fn record_frame(timer: &FrameTimer) {
         ] {
             samples.record(&method, name, elapsed);
         }
+        samples.active_frames.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -88,7 +102,7 @@ thread_local! { static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(No
 pub(crate) struct LockSample;
 impl LockSample {
     pub(super) fn begin(timer: &FrameTimer) -> Option<Self> {
-        let samples = timer.clock.phase_samples.lock().unwrap().clone()?;
+        let samples = timer.phase_capture.clone()?;
         samples.record(&timer.sample_label(), "entered.lock", Duration::ZERO);
         ACTIVE.with(|active| {
             assert!(active.borrow().is_none(), "app locks cannot nest");
@@ -131,6 +145,34 @@ impl Drop for Phase {
             end_phase();
         }
     }
+}
+
+#[test]
+fn phase_capture_keeps_in_flight_frames_with_their_original_collector() {
+    let (clock, _) = recording_clock();
+    let uncaptured = clock.frame("git.show");
+    let first = clock.capture_phases();
+    let old = clock.frame("mcp.control");
+    let second = clock.capture_phases();
+    let new = clock.frame("board.list");
+    assert_eq!(first.active_frames(), 1);
+    assert_eq!(second.active_frames(), 1);
+    let state = Arc::new(Mutex::new(()));
+    {
+        let _guard = old.lock(&state);
+        let _phase = phase("original");
+    }
+    drop(uncaptured);
+    drop(old);
+    assert_eq!(first.active_frames(), 0);
+    assert_eq!(second.active_frames(), 1);
+    assert_eq!(first.snapshot()["mcp.control"]["original"]["count"], 1);
+    assert!(second.snapshot().get("mcp.control").is_none());
+    drop(new);
+    assert_eq!(second.active_frames(), 0);
+    assert_eq!(second.snapshot()["board.list"]["frame.held"]["count"], 1);
+    assert!(first.snapshot().get("git.show").is_none());
+    assert!(second.snapshot().get("git.show").is_none());
 }
 fn end_phase() {
     ACTIVE.with(|active| {

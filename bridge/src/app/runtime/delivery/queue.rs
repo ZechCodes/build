@@ -315,6 +315,15 @@ impl DeliveryQueue {
     }
 
     #[cfg(test)]
+    pub(in crate::app) fn fixture_is_drained(&self) -> bool {
+        self.queued.is_empty()
+            && self.settling.fixture_is_drained()
+            && self.owners_in_flight.is_empty()
+            && self.agents_in_flight.is_empty()
+            && self.executions_in_flight.is_empty()
+    }
+
+    #[cfg(test)]
     pub(in crate::app) fn queued_len(&self) -> usize {
         self.queued.len()
     }

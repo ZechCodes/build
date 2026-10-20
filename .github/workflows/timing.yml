@@ -1,13 +1,14 @@
 name: Bridge timing tests
 
-# The two timing tests the default run ignores (#280, #289):
-# a_git_child_costs_what_the_child_costs (src/git_process.rs) and
+# The three timing tests the default run ignores (#280, #289, #709):
+# a_git_child_costs_what_the_child_costs (src/git_process.rs),
 # the_daemon_answers_reads_and_writes_while_three_ptys_flood
-# (tests/concurrency_load.rs). They compare wall-clock times against fixed
-# ceilings, which a machine running other suites breaks with nothing wrong in
+# (tests/concurrency_load.rs), and busy_writers_keep_app_lock_holds_below_budget
+# (src/app/tests/runtime/lock_hold_busy.rs). They compare wall-clock times against
+# fixed ceilings, which a machine running other suites breaks with nothing wrong in
 # the bridge, so they are out of `cargo test` and run here instead, alone on a
-# fresh runner, so a regression in git child cost or daemon throughput still
-# turns something red.
+# fresh runner, so a regression in git child cost, daemon throughput, or app-lock
+# holds still turns something red.
 #
 # Nightly and by hand, never on a push or a PR: a red run here is a performance
 # regression to look at, not a gate on the merge.
@@ -46,13 +47,15 @@ jobs:
 
       # Built first so the compile is not running beside the timed tests.
       - name: Build the tests
-        run: cargo test --no-run
+        run: nice -n 10 cargo test --no-run
 
-      # Two filters, each matching one test; --no-fail-fast so a failure in
+      # Three filters, each matching one test; --no-fail-fast so a failure in
       # the lib binary still runs the flood test in its own.
       - name: Timing tests
         run: >-
-          cargo test --no-fail-fast --
+          nice -n 10 cargo test --no-fail-fast --
           --ignored
+          --test-threads=1
           a_git_child_costs_what_the_child_costs
           the_daemon_answers_reads_and_writes_while_three_ptys_flood
+          busy_writers_keep_app_lock_holds_below_budget

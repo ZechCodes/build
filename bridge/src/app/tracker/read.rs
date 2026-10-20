@@ -35,6 +35,22 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    /// Only a successful owner save can admit a new live agent. Owners checked
+    /// out by a surrounding mutation retain their last published observation.
+    pub(in crate::app) fn retain_live_owners(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        published: Option<(&str, bool)>,
+    ) {
+        self.identities
+            .retain_live_owners(&previous.identities, app, published);
+    }
+
+    pub(in crate::app) fn forget_live_owner(&mut self, owner: &str) {
+        self.identities.forget_live_owner(owner);
+    }
+
     pub(in crate::app) fn validate_scope(
         &self,
         source: &impl TaskReadSource,

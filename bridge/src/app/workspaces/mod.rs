@@ -344,6 +344,7 @@ impl AppState {
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
         self.workspaces.refresh_finished_local();
+        self.publish_read_metadata();
         let project_id = params.get("project_id").and_then(Value::as_str);
         Ok(json!({
             "workspaces": self
@@ -395,6 +396,7 @@ impl AppState {
         self.adopt_legacy_workspaces();
         self.workspaces.refresh_local_capabilities();
         self.workspaces.refresh_finished_local();
+        self.publish_read_metadata();
         let id = require_str(params, "workspace_id")?;
         let workspace = self
             .workspaces

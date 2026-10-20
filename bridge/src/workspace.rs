@@ -336,9 +336,10 @@ impl WorkspaceRegistry {
         if name.is_empty() {
             return Err("workspace.rename: name cannot be empty".to_string());
         }
-        let workspace = self
+        let mut workspace = self
             .workspaces
-            .get_mut(id)
+            .get(id)
+            .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         if !workspace.managed {
             return Err(
@@ -346,8 +347,9 @@ impl WorkspaceRegistry {
             );
         }
         workspace.name = name.to_string();
-        persist(workspace)?;
-        Ok(workspace.clone())
+        persist(&workspace)?;
+        self.workspaces.insert(id.to_string(), workspace.clone());
+        Ok(workspace)
     }
 
     /// Persist the user's removal guard before publishing it in memory. Adopted
@@ -427,15 +429,16 @@ impl WorkspaceRegistry {
     }
 
     pub fn reopen(&mut self, id: &str) -> Result<(), String> {
-        let workspace = self
+        let mut workspace = self
             .workspaces
-            .get_mut(id)
+            .get(id)
+            .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         if workspace.status == WorkspaceStatus::Finished {
             workspace.status = WorkspaceStatus::Ready;
             workspace.archived_at = None;
             if workspace.managed {
-                persist(workspace)?;
+                persist(&workspace)?;
             } else {
                 let sidecar = self.root.join(".legacy").join(id);
                 match fs::remove_file(sidecar) {
@@ -444,6 +447,7 @@ impl WorkspaceRegistry {
                     Err(error) => return Err(format!("reopen legacy workspace {id}: {error}")),
                 }
             }
+            self.workspaces.insert(id.to_string(), workspace);
         }
         Ok(())
     }

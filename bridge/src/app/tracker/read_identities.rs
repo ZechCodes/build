@@ -17,6 +17,7 @@ pub(super) struct TaskIdentityContext {
 
 #[derive(Clone)]
 struct LiveTaskLocation {
+    owner: String,
     workspace_id: Option<String>,
     workspace_name: Option<String>,
     available: bool,
@@ -31,15 +32,19 @@ impl AppState {
     pub(super) fn task_identity_context(&self) -> TaskIdentityContext {
         let live = self
             .plans
-            .values()
-            .map(|plan| &plan.agents)
-            .chain(self.runs.values().map(|run| &run.agents))
-            .flat_map(|roster| roster.agents())
-            .filter_map(|agent| self.live_task_identity(&agent.id))
-            .map(|identity| {
+            .iter()
+            .map(|(owner, plan)| (owner, &plan.agents))
+            .chain(self.runs.iter().map(|(owner, run)| (owner, &run.agents)))
+            .flat_map(|(owner, roster)| roster.agents().iter().map(move |agent| (owner, agent)))
+            .filter_map(|(owner, agent)| {
+                self.live_task_identity(&agent.id)
+                    .map(|identity| (owner, identity))
+            })
+            .map(|(owner, identity)| {
                 (
                     identity.agent_id,
                     LiveTaskLocation {
+                        owner: owner.clone(),
                         workspace_id: identity.workspace_id,
                         workspace_name: identity.workspace_name,
                         available: identity.available,
@@ -72,6 +77,38 @@ impl AppState {
 }
 
 impl TaskIdentityContext {
+    pub(super) fn retain_live_owners(
+        &mut self,
+        previous: &Self,
+        app: &AppState,
+        published: Option<(&str, bool)>,
+    ) {
+        self.live.retain(
+            |id, live| match published.filter(|(owner, _)| *owner == live.owner) {
+                Some((_, true)) => true,
+                Some((_, false)) => match previous.live.get(id) {
+                    Some(prior) => {
+                        *live = prior.clone();
+                        true
+                    }
+                    None => false,
+                },
+                None => previous.live.contains_key(id),
+            },
+        );
+        for (id, live) in &previous.live {
+            let present = app.plans.contains_key(&live.owner) || app.runs.contains_key(&live.owner);
+            let publishing = published.is_some_and(|(owner, _)| owner == live.owner);
+            if !present && !publishing {
+                self.live.entry(id.clone()).or_insert_with(|| live.clone());
+            }
+        }
+    }
+
+    pub(super) fn forget_live_owner(&mut self, owner: &str) {
+        self.live.retain(|_, live| live.owner != owner);
+    }
+
     pub(super) fn read_task(
         &self,
         source: &impl TaskReadSource,

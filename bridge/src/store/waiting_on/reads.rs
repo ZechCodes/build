@@ -1,4 +1,5 @@
 use super::{invalid, require_task, DependencyDigest, DependencySummary, DependentsPage};
+use crate::store::ReadTransaction;
 use crate::store::{Store, StoreError};
 use crate::tracker::{TaskState, DONE_STATUS};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -41,9 +42,7 @@ impl Store {
         project: &str,
         id: &str,
     ) -> Result<DependencySummary, StoreError> {
-        self.waiting_on_summaries(project, &[id.to_string()])?
-            .remove(id)
-            .ok_or_else(|| invalid("task not found in project"))
+        ReadTransaction::new(&self.connection()).waiting_on_summary(project, id)
     }
 
     /// Batch forward facts and reverse counts, without timeline reads or
@@ -53,12 +52,7 @@ impl Store {
         project: &str,
         ids: &[String],
     ) -> Result<HashMap<String, DependencySummary>, StoreError> {
-        let conn = self.connection();
-        let mut summaries = HashMap::new();
-        for chunk in ids.chunks(500) {
-            read_chunk(&conn, project, chunk, &mut summaries)?;
-        }
-        Ok(summaries)
+        ReadTransaction::new(&self.connection()).waiting_on_summaries(project, ids)
     }
 
     pub fn waiting_on_blocks(
@@ -68,38 +62,7 @@ impl Store {
         limit: usize,
         cursor: Option<&str>,
     ) -> Result<DependentsPage, StoreError> {
-        let key = self.tracker_list_key()?;
-        let scope = format!(
-            "{:x}",
-            Sha256::digest(serde_json::json!([key, project, id]).to_string().as_bytes())
-        );
-        let after = parse_cursor(cursor, &scope)?;
-        let conn = self.connection();
-        require_task(&conn, project, id)?;
-        let take = limit.clamp(1, 100);
-        let mut statement = conn.prepare(&format!("SELECT {DIGEST_COLUMNS} FROM tracker_task_dependencies d JOIN tracker_tasks t ON t.id = d.task_id
-            WHERE d.waiting_on_task_id = ?1 AND d.task_number > ?2 AND t.project_key = ?3 ORDER BY d.task_number LIMIT ?4"))?;
-        let mut blocks: Vec<_> = statement
-            .query_map(
-                params![id, after as i64, project, (take + 1) as i64],
-                digest,
-            )?
-            .collect::<Result<_, _>>()?;
-        let next_cursor = if blocks.len() > take {
-            blocks.truncate(take);
-            Some(
-                URL_SAFE_NO_PAD.encode(
-                    serde_json::json!([scope, blocks.last().expect("nonempty page").number])
-                        .to_string(),
-                ),
-            )
-        } else {
-            None
-        };
-        Ok(DependentsPage {
-            blocks,
-            next_cursor,
-        })
+        ReadTransaction::new(&self.connection()).waiting_on_blocks(project, id, limit, cursor)
     }
 }
 
@@ -185,4 +148,68 @@ fn read_forward_chunk(
         }
     }
     Ok(())
+}
+
+impl ReadTransaction<'_> {
+    pub fn waiting_on_summary(
+        &self,
+        project: &str,
+        id: &str,
+    ) -> Result<DependencySummary, StoreError> {
+        self.waiting_on_summaries(project, &[id.to_string()])?
+            .remove(id)
+            .ok_or_else(|| invalid("task not found in project"))
+    }
+    pub fn waiting_on_summaries(
+        &self,
+        project: &str,
+        ids: &[String],
+    ) -> Result<HashMap<String, DependencySummary>, StoreError> {
+        let conn = self.connection();
+        let mut summaries = HashMap::new();
+        for chunk in ids.chunks(500) {
+            read_chunk(conn, project, chunk, &mut summaries)?;
+        }
+        Ok(summaries)
+    }
+    pub fn waiting_on_blocks(
+        &self,
+        project: &str,
+        id: &str,
+        limit: usize,
+        cursor: Option<&str>,
+    ) -> Result<DependentsPage, StoreError> {
+        let key = self.tracker_list_key()?;
+        let scope = format!(
+            "{:x}",
+            Sha256::digest(serde_json::json!([key, project, id]).to_string().as_bytes())
+        );
+        let after = parse_cursor(cursor, &scope)?;
+        let conn = self.connection();
+        require_task(conn, project, id)?;
+        let take = limit.clamp(1, 100);
+        let mut statement = conn.prepare(&format!("SELECT {DIGEST_COLUMNS} FROM tracker_task_dependencies d JOIN tracker_tasks t ON t.id = d.task_id
+            WHERE d.waiting_on_task_id = ?1 AND d.task_number > ?2 AND t.project_key = ?3 ORDER BY d.task_number LIMIT ?4"))?;
+        let mut blocks: Vec<_> = statement
+            .query_map(
+                params![id, after as i64, project, (take + 1) as i64],
+                digest,
+            )?
+            .collect::<Result<_, _>>()?;
+        let next_cursor = if blocks.len() > take {
+            blocks.truncate(take);
+            Some(
+                URL_SAFE_NO_PAD.encode(
+                    serde_json::json!([scope, blocks.last().expect("nonempty page").number])
+                        .to_string(),
+                ),
+            )
+        } else {
+            None
+        };
+        Ok(DependentsPage {
+            blocks,
+            next_cursor,
+        })
+    }
 }

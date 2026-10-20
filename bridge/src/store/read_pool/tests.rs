@@ -170,7 +170,7 @@ async fn unwinding_a_query_rolls_back_its_snapshot_before_the_connection_returns
     let mut reader = pool.acquire().await;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         reader
-            .read(|read| {
+            .read::<()>(|read| {
                 read.connection()
                     .query_row("SELECT COUNT(*) FROM meta", [], |row| row.get::<_, i64>(0))
                     .unwrap();

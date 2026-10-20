@@ -3,6 +3,7 @@
 
 use super::{check_version, decode, load_header, require_task, ReviewHeader};
 use crate::reviews::model::*;
+use crate::store::ReadTransaction;
 use crate::store::{Store, StoreError};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
@@ -31,7 +32,7 @@ impl Store {
 
     /// Lightweight projection for task rows, without reading snapshots/actions.
     pub fn load_review_summary(&self, task_id: &str) -> Result<Option<ReviewSummary>, StoreError> {
-        Ok(load_header(&self.connection(), task_id)?.and_then(header_summary))
+        ReadTransaction::new(&self.connection()).load_review_summary(task_id)
     }
 
     /// Prefer the workspace's active owner; otherwise retain its latest PR link.
@@ -183,4 +184,10 @@ pub(super) fn require_pull_request(
         return Err(invalid("operation requires a PR-mode review"));
     }
     Ok(header)
+}
+
+impl ReadTransaction<'_> {
+    pub fn load_review_summary(&self, task_id: &str) -> Result<Option<ReviewSummary>, StoreError> {
+        Ok(load_header(self.connection(), task_id)?.and_then(header_summary))
+    }
 }

@@ -64,6 +64,9 @@ mod entities;
 mod legacy;
 mod migrations;
 mod operations;
+mod read_agents;
+mod read_pool;
+pub use read_pool::{ReadConnection, ReadPool, ReadTransaction};
 pub mod push_keys;
 mod reviews;
 mod schema;
@@ -241,11 +244,13 @@ const DB_FILE: &str = "build.db";
 ///
 /// Cloneable on purpose: the lock-free half of a mutation carries its own
 /// handle rather than borrowing the daemon's. Clones share one connection
-/// behind a mutex, which is what SQLite wants for a single writer.
+/// behind a mutex for writes and legacy callers. Independent read requests
+/// borrow a read-only connection from the bounded WAL pool.
 #[derive(Clone)]
 pub struct Store {
     dir: PathBuf,
     conn: Arc<Mutex<Connection>>,
+    read_pool: ReadPool,
     pub(crate) waiting_on_wakeup: Arc<tokio::sync::Notify>,
     /// Test-only: make the next write fail.
     ///
@@ -351,8 +356,11 @@ impl Store {
                 [SCHEMA_VERSION.to_string()],
             )?;
         }
+        tracker::initialize_list_key(&conn)?;
+        let read_pool = ReadPool::open(&dir.join(DB_FILE))?;
         Ok(Store {
             dir,
+            read_pool,
             conn: Arc::new(Mutex::new(conn)),
             waiting_on_wakeup: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
@@ -360,6 +368,11 @@ impl Store {
             renamed_tasks,
         })
     }
+    /// Independent read-only connections opened after startup migrations.
+    pub fn read_pool(&self) -> ReadPool {
+        self.read_pool.clone()
+    }
+
     /// Whether opening this store ran the task rename (#190).
     pub fn renamed_tasks_on_open(&self) -> bool {
         self.renamed_tasks

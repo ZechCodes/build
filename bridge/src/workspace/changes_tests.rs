@@ -151,3 +151,38 @@ fn failed_reopen_preserves_committed_status_and_its_change_revision() {
     assert_eq!(registry.get(&workspace.id).unwrap(), &finished);
     assert!(keys(&registry).is_empty());
 }
+
+#[test]
+fn missing_registry_root_retires_managed_rows_and_keeps_adopted_legacy_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut registry = WorkspaceRegistry::empty(temp.path().join("workspaces"));
+    let managed = managed(&mut registry, "removed");
+    let external = temp.path().join("external");
+    fs::create_dir(&external).unwrap();
+    let mut adopted = registry.adopt_root(
+        "project",
+        "adopted".into(),
+        "adopted".into(),
+        external,
+        "source".into(),
+        false,
+    );
+    registry.record_finished(&mut adopted).unwrap();
+    registry.reload().unwrap();
+    assert_eq!(
+        registry.get(&adopted.id).unwrap().status,
+        WorkspaceStatus::Finished
+    );
+    acknowledge(&registry);
+    fs::remove_dir_all(registry.root()).unwrap();
+    registry.reload().unwrap();
+    assert!(registry.get(&managed.id).is_none());
+    assert_eq!(
+        registry.get(&adopted.id).unwrap().status,
+        WorkspaceStatus::Finished
+    );
+    assert_eq!(keys(&registry), BTreeSet::from([managed.id]));
+    acknowledge(&registry);
+    registry.reload().unwrap();
+    assert!(keys(&registry).is_empty());
+}

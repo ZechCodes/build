@@ -30,7 +30,9 @@ describe("external markdown image activation", () => {
     const follow = vi.fn((event) => event.preventDefault());
     link.addEventListener("click", follow);
     if (tampered) button.dataset.mdImageSrc = "javascript:alert(1)";
-    button.click();
+    const activation = new MouseEvent("click", { bubbles: true, cancelable: true });
+    button.dispatchEvent(activation);
+    expect(activation.defaultPrevented).toBe(true);
     expect(follow).not.toHaveBeenCalled();
     expect(host.querySelectorAll("img")).toHaveLength(tampered ? 0 : 1);
     link.click();

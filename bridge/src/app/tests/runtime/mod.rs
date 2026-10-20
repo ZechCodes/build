@@ -7,6 +7,7 @@ pub(in crate::app::tests) mod compaction;
 mod compaction_policy;
 pub(in crate::app::tests) mod compaction_tools;
 mod concurrency_timing;
+mod sql_reads;
 pub(in crate::app::tests) mod delivery;
 pub(in crate::app::tests) mod frame_locks;
 pub(in crate::app::tests) mod idle_sessions;

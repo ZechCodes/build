@@ -11,9 +11,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-mod reservation;
 #[cfg(test)]
 pub(crate) mod read_work_counts;
+mod reservation;
 #[cfg(test)]
 use std::process::Command;
 

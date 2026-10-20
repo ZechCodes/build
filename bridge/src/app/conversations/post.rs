@@ -723,7 +723,7 @@ impl AppState {
                 execution_error,
             ) {
                 if self.store.is_none() {
-                    self.publish_read_owner(&entity_id, true);
+                    self.publish_read_operations();
                 }
                 self.note_entity_changed(&entity_id);
             }

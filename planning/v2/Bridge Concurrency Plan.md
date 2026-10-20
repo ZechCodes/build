@@ -143,10 +143,11 @@ clients use the safety net below.
 
 `spa/src/core/sessionRpc.js::createSessionRpc` reserves credit before send, independently of
 caller promises, and records the actual sending carrier. Return it on the **first** final reply,
-cancellation, that carrier closing, `onRestored` (clear the whole ledger), or opening end. Keep at
+**unsent** cancellation, that carrier closing, `onRestored` (clear the whole ledger), or opening end. Keep at
 most N current reservations/sent entries; receipts, bare timeouts and a carrier switch alone do
-not release credit. Cancel unsent entries immediately. Local cancellation releases credit, not
-remote work: no server cancellation acknowledgment exists today. Late replies cannot release a
+not release credit. Cancel unsent entries immediately. Cancelling an already-sent read retains its
+credit until a reply or carrier/opening event: no server cancellation
+acknowledgment exists today (the #683 scope correction implemented by #685). Late replies cannot release a
 replacement credit. Start wire deadlines after credit admission; cache rendering remains unchanged.
 
 Carrier close/restore reject affected SQL promises via `uncertainDeliveryError` with `retryable: true`;

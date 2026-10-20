@@ -153,7 +153,19 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-Everything else is queued to the worker pool in
+The six SQL reads (`thread.page`, `thread.activity`, `thread.operation`,
+`tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`) enter a separate lane
+before terminal or write admission. `carrier/sql.rs` owns eight dedicated
+threads and a fair queue with at most 16 waiting callers per session opening.
+Callers waiting for a read connection still count against that bound. Excess
+SQL parks ordered intake on its carrier; it never returns capacity `busy`.
+Queued compatible callers may fold, but a new caller never joins a running
+query. Carrier release prunes its queued callers and fences running replies;
+a replacement carrier keeps its opening usable. Close signaling wakes a
+parked intake independently of the channel event pump. Stats and the existing
+ping/signaling fast paths bypass this lane.
+
+Other queued work uses the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
 arrival order; its overflow answers retryable `busy`. The pool has eight
@@ -264,14 +276,19 @@ would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_worke
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
 and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
-clones share that one SQLite connection: reads and writes serialize on its
-mutex even though the database uses WAL. Routed v1 handlers receive
+clones share one writer connection. The six migrated SQL RPCs instead borrow
+one of eight read-only, query-only WAL connections from `store/read_pool.rs`.
+A fair asynchronous permit supplies one borrower; a fresh request transaction
+covers all related rows and ends before the connection returns. Those RPCs
+never acquire the app mutex or use the writer's connection. Remaining Store
+callers still serialize on the writer connection. Routed v1 handlers receive
 `&mut AppState`, and their Store calls can execute while the app mutex is held.
 `off_the_workers` protects runtime workers from blocking; it does not remove
 these serialization points.
 
-Some read-named verbs mutate state. Task list/detail reads can backfill stored
-records; project listing revives parked projects; workspace listing/detail
+Some read-named verbs mutate state. Task identity/done-at backfills and cursor
+key creation now happen before reader admission; task reads retain pure derived
+fallbacks for older records. Project listing revives parked projects; workspace listing/detail
 can adopt legacy workspaces and refresh manifests; board reads reconcile
 attention and schedule cache/sweep work. Moving these handlers to a read lane
 requires separating those effects first. The push bus owns separate locks,
@@ -297,27 +314,27 @@ frame duration, and their depth counts dispatch waiting, not wire admission.
 Total duration, per-queue p95, slow-frame `total=`/`queued=` and the 200 ms
 slow-frame threshold now measure from intake, including decrypt and admission;
 compare them only against this change's baseline, not older logs.
-`bridge.stats` avoids the app lock in its handler but still queues for a
-dispatch worker.
+`bridge.stats` answers at intake without an app lock or dispatch worker.
 
-**Proposed concurrency boundary (#681; not implemented).**
+**Independent SQL reads (#681 step 2).** `AppState::handler` captures the
+read pool, update-admission service and an atomic immutable `ReadContext` slot.
+Producer hooks publish project/path mappings, live owner admission, task
+identity/workspace overlays and user presence before their replies. A roster
+save adds admission only after success; actual retirement can remove it even
+when persistence failed. Durable identity fields come from the read transaction,
+so later metadata publication cannot expose a failed roster candidate.
+Thread binding, aliases, reset generation, metadata and history share that
+transaction. Retained SQL owners remain inaccessible without live admission.
+The Store-free fallback is an immutable snapshot. Task timeline, dependency,
+review-summary and durable-identity rows share one transaction, with live
+availability supplied by the published overlay. Read replies retain typed
+parameter normalization and result checks without deferred app state.
+
 [`Bridge Concurrency Plan.md`](<planning/v2/Bridge Concurrency Plan.md>) records
-the verb inventory, minimal timing comparison and staged tests. SQL history/task
-reads move first to an independent WAL read pool, followed by immutable
-board/project/workspace/agent views. Reads never return capacity refusals;
-an exhausted SQL read pool waits on its own connections, never the app lock or
-writer. Snapshot/control frames bypass SQL admission at intake; the SPA paces
-SQL sends with per-session credits while views keep rendering from cache.
-Credits track the sending carrier and return once on reply, cancellation,
-carrier close, restored-path reset or opening end. Restore clears old SQL
-calls before resync; carrier release drops its queued SQL and discards running
-replies, preserving the existing opening-end conditions and usable replacements.
-Excess reads may backpressure their ordered carrier, delaying later frames not
-yet admitted. The target releases app/domain guards for SQL and external work, uses
-device → project → workspace write ownership, and orders successful writes
-commit → publish → stage changes → acknowledge. Failed saves cannot enter
-canonical views or emit their changes. The plan covers maintenance/autonomous
-writers and existing review publication fences before scoped parallel writes.
+the remaining stages. Immutable board/project/workspace/agent snapshots, push
+facts and scoped writers are still proposed. Their current handlers and
+services retain the app mutex, including the existing failed-save finisher
+behavior. This step does not claim to repair those later-stage write paths.
 
 Checkout-root refreshes use the reverse conversation lookup in
 `app/workspaces/mod.rs`. It filters candidates against the queried run before
@@ -3245,6 +3262,16 @@ through the same device's rendezvous (`mintTerminalSession`), and it rides the
   shows the projection from `spa/src/core/connectionStatusModel.js`
   (`connected`, `attempting`, `waiting`, `offline`). Per-device contexts live in
   `spa/src/core/deviceContexts.js`.
+
+`sessionRpc.js` shares eight SQL sender credits across the opening's carriers
+and priorities. Extra reads stay unsent and have no wire deadline yet. Each
+credit records its actual sending carrier and settles once on a final reply,
+unsent cancellation, that carrier closing, authoritative restore, or opening
+end. Receipts, timeouts, sent cancellation and switching carriers retain it.
+`connection.js` clears old SQL calls before restore greeting/resync, fenced by
+the current lifetime. Affected promises receive retryable uncertain-delivery
+errors; late replies cannot release replacement credits. Cache rendering and
+read coordination remain independent of these admission waits.
 
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`

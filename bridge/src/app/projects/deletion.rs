@@ -52,10 +52,10 @@ impl DeferredGitWork for DeleteProjectFiles {
 
     fn invalidate(&self, app: &mut AppState) {
         app.project_deletion_in_progress = false;
-        app.publish_read_metadata();
         if let Err(error) = app.workspaces.reload() {
             eprintln!("reload deleted workspaces: {error}");
         }
+        app.publish_read_metadata();
     }
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {

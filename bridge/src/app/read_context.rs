@@ -34,6 +34,9 @@ pub(in crate::app) struct ReadService {
 
 impl AppState {
     pub(in crate::app) fn initialize_read_context(&self) {
+        if self.read_context.load().is_some() {
+            return;
+        }
         self.read_context.store(Some(Arc::new(ReadContext {
             tasks: self.task_read_context(),
             threads: self.thread_read_context(),
@@ -55,6 +58,8 @@ impl AppState {
             next.threads.retain_owner_agents(self, owner);
         }
         next.tasks = self.task_read_context();
+        next.tasks
+            .retain_live_owners(&previous.tasks, self, Some((owner, saved)));
         next.deleting_project = self.project_deletion_in_progress;
         self.read_context.store(Some(Arc::new(next)));
     }
@@ -66,6 +71,8 @@ impl AppState {
         let mut next = (*previous).clone();
         next.threads.forget_owner(owner);
         next.tasks = self.task_read_context();
+        next.tasks.retain_live_owners(&previous.tasks, self, None);
+        next.tasks.forget_live_owner(owner);
         self.read_context.store(Some(Arc::new(next)));
     }
 
@@ -75,11 +82,22 @@ impl AppState {
         let Some(previous) = self.read_context.load_full() else {
             return;
         };
-        let next = ReadContext {
+        let mut next = ReadContext {
             tasks: self.task_read_context(),
             threads: previous.threads.clone(),
             deleting_project: self.project_deletion_in_progress,
         };
+        next.tasks.retain_live_owners(&previous.tasks, self, None);
+        self.read_context.store(Some(Arc::new(next)));
+    }
+
+    /// A receipt transition must not republish a borrowed or unsaved roster.
+    pub(in crate::app) fn publish_read_operations(&self) {
+        let Some(previous) = self.read_context.load_full() else {
+            return;
+        };
+        let mut next = (*previous).clone();
+        next.threads.refresh_operations(self);
         self.read_context.store(Some(Arc::new(next)));
     }
 

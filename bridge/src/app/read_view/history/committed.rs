@@ -8,6 +8,9 @@ use crate::thread::Thread;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+#[cfg(test)]
+mod tests;
+
 impl SharedHistory {
     pub fn with_committed_items(&self, delta: &CommittedThreadItems) -> Option<Self> {
         if self.metadata["agent"]["id"].as_str() != Some(delta.conversation_id.as_str())
@@ -43,6 +46,8 @@ impl AppState {
         &mut self,
         committed: &CommittedThreadItems,
     ) {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.committed");
         self.committed_entities.apply_thread_items(committed);
         for agents in self
             .plans
@@ -63,8 +68,12 @@ impl AppState {
             let mut delta = SnapshotDelta::new(version)
                 .put_history(&committed.conversation_id, history)
                 .set_facts(Arc::new(facts));
+            #[cfg(test)]
+            let _phase = crate::timing::phase_samples::phase("publication.committed.chunks");
             for key in previous.keys() {
                 let mut row = previous.get(key.method, &key.owner)?.clone();
+                #[cfg(test)]
+                tests::record_chunk_copy();
                 if patch_thread_digests(&mut row, committed) {
                     delta = delta.put(key.method, &key.owner, row);
                 }

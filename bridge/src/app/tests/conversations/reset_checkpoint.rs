@@ -100,95 +100,7 @@ fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
         "{reset:?}"
     );
 
-    let observe =
-        || {
-            let (mut rows, facts_handle) =
-                {
-                    let state = app.lock().unwrap();
-                    let store = state.store.as_ref().unwrap();
-                    let plans = store.load_all_plans().unwrap();
-                    let runs = store.load_all_runs().unwrap();
-                    let rows = owners
-                .iter()
-                .map(|owner| {
-                    let live = state.entity_agents(owner).unwrap().primary().unwrap();
-                    let saved = plans
-                        .iter()
-                        .find(|record| &record.id == owner)
-                        .map(|record| {
-                            record
-                                .agents
-                                .iter()
-                                .find(|agent| agent.id == live.id)
-                                .unwrap()
-                        })
-                        .or_else(|| {
-                            runs.iter()
-                                .find(|record| &record.id == owner)
-                                .map(|record| {
-                                    record
-                                        .agents
-                                        .iter()
-                                        .find(|agent| agent.id == live.id)
-                                        .unwrap()
-                                })
-                        })
-                        .unwrap();
-                    let memory_summary = state.plans.get(owner)
-                        .map(|active| json!([active.last_summary, active.last_error]))
-                        .or_else(|| state.runs.get(owner)
-                            .map(|active| json!([active.last_summary, active.last_error])));
-                    let sql_summary = plans.iter().find(|record| &record.id == owner)
-                        .map(|record| json!([record.last_summary, record.last_error]))
-                        .or_else(|| runs.iter().find(|record| &record.id == owner)
-                            .map(|record| json!([record.last_summary, record.last_error])));
-                    json!({
-                        "owner": owner,
-                        "memory": checkpoint_agent(live),
-                        "sql": checkpoint_agent(saved),
-                        "sql_items": store.thread_item_count(live.conversation_id()).unwrap(),
-                        "memory_summary": memory_summary,
-                        "sql_summary": sql_summary,
-                    })
-                })
-                .collect::<Vec<_>>();
-                    (rows, Arc::clone(&state.facts_handle))
-                };
-            for (owner, row) in owners.iter().zip(&mut rows) {
-                let agents = handler.call(
-                    sender.clone(),
-                    req("agent.list", json!({"entity_id": owner})),
-                );
-                assert_eq!(agents["ok"], true, "{agents:?}");
-                row["routed_agents"] = agents["result"]["agents"].clone();
-                let page = handler.call(
-                    sender.clone(),
-                    req("thread.page", json!({"entity_id": owner})),
-                );
-                assert_eq!(page["ok"], true, "{page:?}");
-                row["routed_page"] = page["result"].clone();
-                let requests = [crate::changes::FactsRequest {
-                    entity_id: owner.clone(),
-                    thread: true,
-                    thread_after: vec![(primary_agent_id(&app.lock().unwrap(), owner), 0)],
-                    ..Default::default()
-                }];
-                let facts = crate::app::facts::entity_facts(&facts_handle, &requests);
-                row["push_threads"] = json!(facts[0]
-                    .threads
-                    .iter()
-                    .map(|tip| json!({
-                        "agent_id": tip.agent_id,
-                        "conversation_id": tip.conversation_id,
-                        "thread_id": tip.thread_id,
-                        "generation": tip.thread_generation_revision,
-                        "last_sequence": tip.last_sequence,
-                        "items": tip.items,
-                    }))
-                    .collect::<Vec<_>>());
-            }
-            json!(rows)
-        };
+    let observe = || observe_reset_checkpoint(&app, &handler, &sender, &owners);
     let expected = observe();
     for row in expected.as_array().unwrap() {
         assert_eq!(row["memory"]["resume_session_id"], Value::Null);
@@ -228,6 +140,110 @@ fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
             "successful_retry": expected,
         })
     );
+}
+
+fn observe_reset_checkpoint(
+    app: &Arc<Mutex<AppState>>,
+    handler: &FrameHandler,
+    sender: &SessionSender,
+    owners: &[String],
+) -> Value {
+    let (mut rows, facts_handle) = {
+        let state = app.lock().unwrap();
+        let store = state.store.as_ref().unwrap();
+        let plans = store.load_all_plans().unwrap();
+        let runs = store.load_all_runs().unwrap();
+        let rows = owners
+            .iter()
+            .map(|owner| {
+                let live = state.entity_agents(owner).unwrap().primary().unwrap();
+                let saved = plans
+                    .iter()
+                    .find(|record| &record.id == owner)
+                    .map(|record| {
+                        record
+                            .agents
+                            .iter()
+                            .find(|agent| agent.id == live.id)
+                            .unwrap()
+                    })
+                    .or_else(|| {
+                        runs.iter()
+                            .find(|record| &record.id == owner)
+                            .map(|record| {
+                                record
+                                    .agents
+                                    .iter()
+                                    .find(|agent| agent.id == live.id)
+                                    .unwrap()
+                            })
+                    })
+                    .unwrap();
+                let memory_summary = state
+                    .plans
+                    .get(owner)
+                    .map(|active| json!([active.last_summary, active.last_error]))
+                    .or_else(|| {
+                        state
+                            .runs
+                            .get(owner)
+                            .map(|active| json!([active.last_summary, active.last_error]))
+                    });
+                let sql_summary = plans
+                    .iter()
+                    .find(|record| &record.id == owner)
+                    .map(|record| json!([record.last_summary, record.last_error]))
+                    .or_else(|| {
+                        runs.iter()
+                            .find(|record| &record.id == owner)
+                            .map(|record| json!([record.last_summary, record.last_error]))
+                    });
+                json!({
+                    "owner": owner,
+                    "memory": checkpoint_agent(live),
+                    "sql": checkpoint_agent(saved),
+                    "sql_items": store.thread_item_count(live.conversation_id()).unwrap(),
+                    "memory_summary": memory_summary,
+                    "sql_summary": sql_summary,
+                })
+            })
+            .collect::<Vec<_>>();
+        (rows, Arc::clone(&state.facts_handle))
+    };
+    for (owner, row) in owners.iter().zip(&mut rows) {
+        let agents = handler.call(
+            sender.clone(),
+            req("agent.list", json!({"entity_id": owner})),
+        );
+        assert_eq!(agents["ok"], true, "{agents:?}");
+        row["routed_agents"] = agents["result"]["agents"].clone();
+        let page = handler.call(
+            sender.clone(),
+            req("thread.page", json!({"entity_id": owner})),
+        );
+        assert_eq!(page["ok"], true, "{page:?}");
+        row["routed_page"] = page["result"].clone();
+        let requests = [crate::changes::FactsRequest {
+            entity_id: owner.clone(),
+            thread: true,
+            thread_after: vec![(primary_agent_id(&app.lock().unwrap(), owner), 0)],
+            ..Default::default()
+        }];
+        let facts = crate::app::facts::entity_facts(&facts_handle, &requests);
+        row["push_threads"] = json!(facts[0]
+            .threads
+            .iter()
+            .map(|tip| json!({
+                "agent_id": tip.agent_id,
+                "conversation_id": tip.conversation_id,
+                "thread_id": tip.thread_id,
+                "generation": tip.thread_generation_revision,
+                "last_sequence": tip.last_sequence,
+                "items": tip.items,
+            }))
+            .collect::<Vec<_>>());
+    }
+    json!(rows)
 }
 
 fn checkpoint_agent(agent: &crate::agent::Agent) -> Value {

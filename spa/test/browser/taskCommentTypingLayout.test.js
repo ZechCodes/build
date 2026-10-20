@@ -118,9 +118,9 @@ for (const [label, width, height] of [["phone", 390, 844], ["desktop", 1440, 900
       await page.waitForTimeout(200);
       // Native anchoring at the pane's end rounds fractional content heights
       // into integer scrollHeight/scrollTop: a 425.703125px push can advance
-      // scrollTop by 425px. Bound that rounding to one CSS pixel; typing above
+      // scrollTop by 425px. Keep that rounding below one CSS pixel; typing above
       // must still produce exactly zero movement and zero scroll events.
-      expect(Math.abs(await boxTop() - top), "the box moved under the reader").toBeLessThanOrEqual(1);
+      expect(Math.abs(await boxTop() - top), "the box moved under the reader").toBeLessThan(1);
       await captureLayout(page, `task-comment-typing-${label}-3-pushed.png`);
       expect(await node.evaluate((element) => [element.isConnected, document.activeElement === element,
         element.value, element.selectionStart])).toEqual([true, true, "abc", 3]);

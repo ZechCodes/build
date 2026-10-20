@@ -40,6 +40,8 @@ struct Fixture {
     status: tokio::sync::watch::Sender<SessionStatusSnapshot>,
     owner: String,
     snapshot: SessionStatusSnapshot,
+    warmed_workspaces: usize,
+    finished_workspaces: usize,
 }
 
 impl Fixture {
@@ -80,7 +82,16 @@ impl Fixture {
         app.initialize_snapshot_projection();
         assert_eq!(app.plans.len(), scale.plans);
         assert_eq!(app.runs.len(), scale.runs);
-        assert_eq!(app.workspaces.list(None).len(), scale.workspaces);
+        // Bootstrap adopts every retained run plus the legacy project root.
+        // Preserve that production work and distinguish it from explicit seeds.
+        let warmed_workspaces = app.workspaces.list(None).len();
+        assert_eq!(warmed_workspaces, scale.workspaces + scale.runs + 1);
+        let finished_workspaces = app
+            .workspaces
+            .list(None)
+            .iter()
+            .filter(|workspace| workspace.status == crate::workspace::WorkspaceStatus::Finished)
+            .count();
         assert_eq!(app.board.archived_values().count(), scale.archives);
         assert_eq!(
             app.require_store()
@@ -103,6 +114,8 @@ impl Fixture {
             status,
             owner,
             snapshot,
+            warmed_workspaces,
+            finished_workspaces,
         }
     }
 
@@ -266,9 +279,13 @@ fn status_event_application_guard_benchmark() {
     for scale in SCALES {
         let setup = Instant::now();
         let mut fixture = Fixture::new(scale);
-        records.push(json!({"kind":"setup","scale":scale.name,"duration_ns":setup.elapsed().as_nanos(),
-            "plans":scale.plans,"runs":scale.runs,"workspaces":scale.workspaces,"finished_workspaces":scale.workspaces/2,
-            "archived_runs":scale.runs/2,"archived_records":scale.archives}));
+        records.push(
+            json!({"kind":"setup","scale":scale.name,"duration_ns":setup.elapsed().as_nanos(),
+            "plans":scale.plans,"runs":scale.runs,"seeded_workspaces":scale.workspaces,
+            "workspaces":fixture.warmed_workspaces,"seeded_finished_workspaces":scale.workspaces/2,
+            "finished_workspaces":fixture.finished_workspaces,
+            "archived_runs":scale.runs/2,"archived_records":scale.archives}),
+        );
         for index in 0..warmups + samples {
             let start_ns = epoch.elapsed().as_nanos();
             let sample = fixture.event();

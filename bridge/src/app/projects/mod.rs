@@ -101,6 +101,7 @@ pub(in crate::app) use conversation::{is_project_scratch, recut_project_scratch,
 pub(crate) use coordinator::PINNED_AGENT_STAYS;
 mod deletion;
 mod lifecycle;
+mod persistence;
 mod list;
 pub(in crate::app) use list::primary_remote;
 mod parked;

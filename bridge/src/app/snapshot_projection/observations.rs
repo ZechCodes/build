@@ -212,8 +212,9 @@ impl AppState {
             .watched_tasks
             .lock()
             .unwrap()
-            .values()
-            .flatten()
+            .iter()
+            .filter(|(id, _)| self.projects.get(id).is_some())
+            .flat_map(|(_, rows)| rows)
             .cloned()
             .collect()
     }

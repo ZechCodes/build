@@ -79,9 +79,8 @@ impl AppState {
         config
     }
 
-    /// Write the config as it stands, for a verb that has already put its
-    /// change to the account. The settings setter builds a prospective value
-    /// instead, so a refused write leaves nothing applied.
+    /// Save a fixture's already-installed configuration.
+    #[cfg(test)]
     pub(in crate::app) fn persist(&self) {
         let config = self.config_value(&self.projects_dir, self.default_harness, self.isolation);
         if let Err(error) = self.persist_config(&config) {

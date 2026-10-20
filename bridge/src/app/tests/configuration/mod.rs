@@ -4,6 +4,7 @@ mod compaction_policy;
 mod compaction_policy_scopes;
 mod isolation;
 mod projects;
+mod project_snapshot_persistence;
 mod provider_defaults;
 mod remote_urls;
 mod settings;

@@ -20,7 +20,7 @@ pub(in crate::app) struct SnapshotObservations {
     workspace_reviews: BTreeMap<String, Value>,
 }
 
-struct ProjectObservation {
+pub(in crate::app) struct ProjectObservation {
     version: u64,
     value: Value,
 }

@@ -78,16 +78,22 @@ impl AppState {
         };
         let mut sources = project.sources.clone();
         sources.extend(added);
-        assert!(
-            self.projects.set_sources(project_id, sources),
-            "the project was just resolved"
-        );
-        self.persist();
-        let project = self
-            .projects
-            .get(project_id)
-            .expect("the project was just resolved");
-        let value = self.project_json(project);
+        let value = self.commit_project_configuration(project_id, |projects| {
+            assert!(
+                projects.set_sources(project_id, sources),
+                "project was resolved"
+            );
+            Ok(())
+        });
+        let value = match value {
+            Ok(value) => value,
+            Err(error) => {
+                for path in created_checkouts {
+                    self.run_off_lock(RemoveUnregisteredProject { path });
+                }
+                return Err(error);
+            }
+        };
         self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(value)
     }

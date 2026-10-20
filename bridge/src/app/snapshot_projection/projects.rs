@@ -2,6 +2,19 @@
 use super::*;
 
 impl AppState {
+    pub(in crate::app) fn swap_project_snapshot_observation(
+        &self,
+        id: &str,
+        candidate: &mut Option<ProjectObservation>,
+    ) {
+        let mut observations = self.snapshot_observations.projects.lock().unwrap();
+        let previous = observations.remove(id);
+        if let Some(candidate) = candidate.take() {
+            observations.insert(id.to_owned(), candidate);
+        }
+        *candidate = previous;
+    }
+
     pub(in crate::app) fn capture_project_snapshot_observations(&self) -> Vec<ProjectListRow> {
         self.project_list_rows()
     }

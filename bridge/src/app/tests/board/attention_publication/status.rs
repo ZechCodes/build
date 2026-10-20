@@ -84,7 +84,7 @@ fn failed_status_owner_save_restores_working_roster_and_published_thread_admissi
     let params = json!({"entity_id":fixture.owner,"agent_id":fixture.agents[0],"conversation_id":fixture.agents[0]});
     let before = app
         .read_service()
-        .call(req("thread.get", params.clone()), None);
+        .call(req("thread.page", params.clone()), None);
     assert_eq!(before["ok"], true, "{before}");
     let roster = app.runs[&fixture.owner].agents.clone();
     let saved = app.store.as_ref().unwrap().load_all_runs().unwrap();
@@ -94,7 +94,7 @@ fn failed_status_owner_save_restores_working_roster_and_published_thread_admissi
     assert_eq!(app.runs[&fixture.owner].agents, roster);
     assert_eq!(app.store.as_ref().unwrap().load_all_runs().unwrap(), saved);
     assert_eq!(
-        app.read_service().call(req("thread.get", params), None),
+        app.read_service().call(req("thread.page", params), None),
         before
     );
 }

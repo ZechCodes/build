@@ -254,12 +254,13 @@ async fn successful_attention_touch_cannot_admit_a_failed_added_agent() {
     let connection = state.tracker_store().unwrap().read_pool().acquire().await;
     let answer = state.read_service().call(
         req(
-            "thread.get",
+            "thread.page",
             json!({"entity_id":owner,"agent_id":added,"conversation_id":added}),
         ),
         Some(connection),
     );
     assert_eq!(answer["ok"], false, "{answer}");
+    assert_ne!(answer["error_code"], "unknown_method", "{answer}");
 }
 
 #[tokio::test]

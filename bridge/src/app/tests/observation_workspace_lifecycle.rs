@@ -210,3 +210,178 @@ fn assert_project_source_failure_keeps_committed_inputs(failure: ConfigPersistSt
         assert_eq!(current["result"]["content_b64"], b64encode(b"candidate\n"));
     }
 }
+
+struct WorkspaceReassociationFixture {
+    _directory: tempfile::TempDir,
+    state: Arc<Mutex<AppState>>,
+    service: crate::app::observation_reads::ObservationService,
+    workspace: String,
+    project: String,
+    root: PathBuf,
+    git: PathBuf,
+    owners: Vec<String>,
+}
+
+impl WorkspaceReassociationFixture {
+    fn new(owners: usize) -> Self {
+        let (directory, repository) = init_repo();
+        let mut app = qa_state(&repository, directory.path());
+        let project = app.project_at(0).id.clone();
+        let created = app.handle(req(
+            "workspace.create",
+            json!({
+                "project_id":project,"name":"ownership fallback","isolation":"worktree"
+            }),
+        ));
+        assert_eq!(created["ok"], true, "{created}");
+        let workspace = created["result"]["workspace_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let root = PathBuf::from(created["result"]["root"].as_str().unwrap());
+        let git = PathBuf::from(
+            created["result"]["directories"][0]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(!root.join(".git").exists());
+        std::fs::write(git.join("ownership-marker.txt"), b"selected source\n").unwrap();
+        let owners = (0..owners)
+            .map(|index| format!("fallback-{index}"))
+            .collect::<Vec<_>>();
+        for owner in &owners {
+            let active = crate::orchestrator::ActiveRun::workspace_conversation(
+                crate::run::RunId::new(owner),
+                "fallback".into(),
+                root.clone(),
+                crate::models::ModelChoice::default(),
+            );
+            app.projects.bind_entity(owner.clone(), project.clone());
+            app.finish_run_mutation(owner.clone(), active).unwrap();
+        }
+        app.delivery_queue.clear_queued();
+        let state = app.shared();
+        let _handler = AppState::handler(state.clone());
+        let service = state.lock().unwrap().observation_service();
+        Self {
+            _directory: directory,
+            state,
+            service,
+            workspace,
+            project,
+            root,
+            git,
+            owners,
+        }
+    }
+
+    fn assert_git_parity(&self, owner: &str) -> Value {
+        let params = json!({"run_id":owner});
+        let expected = {
+            let mut app = self.state.lock().unwrap();
+            app.resolve_git_scope(&params)
+                .and_then(|scope| scope.read("git.status", &params))
+        };
+        let frame = req("git.status", params);
+        let expected = crate::api::reply(
+            frame.payload["id"].clone(),
+            expected.map_err(crate::api::ApiError::classify),
+        );
+        let actual = self.service.prepare(frame, None)();
+        assert_eq!(
+            actual, expected,
+            "retained observation disagrees with legacy root for {owner}"
+        );
+        actual
+    }
+
+    fn assert_no_workspace_change(&self) {
+        assert!(
+            self.state
+                .lock()
+                .unwrap()
+                .workspaces
+                .observation_changes()
+                .snapshot()
+                .is_empty(),
+            "this transition must be driven only by owner inputs"
+        );
+    }
+}
+
+#[test]
+fn observation_terminal_owner_reassigns_the_shared_workspace_git_root() {
+    let fixture = WorkspaceReassociationFixture::new(2);
+    let first = {
+        let app = fixture.state.lock().unwrap();
+        app.workspace_snapshot_conversation_owner(app.workspaces.get(&fixture.workspace).unwrap())
+            .unwrap()
+    };
+    let next = fixture
+        .owners
+        .iter()
+        .find(|owner| **owner != first)
+        .unwrap();
+    assert_eq!(fixture.assert_git_parity(&first)["ok"], true);
+    assert_eq!(fixture.assert_git_parity(next)["ok"], false);
+    fixture.assert_no_workspace_change();
+    {
+        let mut app = fixture.state.lock().unwrap();
+        let mut candidate = app.take_run(&first).unwrap();
+        candidate.run.state = RunState::Archived;
+        app.finish_run_mutation(first, candidate).unwrap();
+        let root = app
+            .resolve_git_scope(&json!({"run_id":next}))
+            .unwrap()
+            .repo_path;
+        assert_eq!(
+            root, fixture.git,
+            "legacy resolver must promote the remaining owner"
+        );
+    }
+    fixture.assert_no_workspace_change();
+    let promoted = fixture.assert_git_parity(next);
+    assert_eq!(promoted["ok"], true);
+    assert!(promoted["result"]["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|file| file["path"] == "ownership-marker.txt"));
+}
+
+#[test]
+fn observation_direct_workspace_owner_retires_the_previous_fallback_git_root() {
+    let fixture = WorkspaceReassociationFixture::new(1);
+    let fallback = &fixture.owners[0];
+    assert_eq!(fixture.assert_git_parity(fallback)["ok"], true);
+    let pending = fixture
+        .service
+        .prepare(req("git.status", json!({"run_id":fallback})), None);
+    fixture.assert_no_workspace_change();
+    {
+        let mut app = fixture.state.lock().unwrap();
+        let direct = crate::orchestrator::ActiveRun::workspace_conversation(
+            crate::run::RunId::new(&fixture.workspace),
+            "direct owner".into(),
+            fixture.root.clone(),
+            crate::models::ModelChoice::default(),
+        );
+        app.projects
+            .bind_entity(fixture.workspace.clone(), fixture.project.clone());
+        app.finish_run_mutation(fixture.workspace.clone(), direct)
+            .unwrap();
+        let root = app
+            .resolve_git_scope(&json!({"run_id":fallback}))
+            .unwrap()
+            .repo_path;
+        assert_eq!(
+            root, fixture.root,
+            "direct ownership must displace the old fallback"
+        );
+    }
+    fixture.assert_no_workspace_change();
+    let stale = pending();
+    assert_eq!(stale["error_code"], "conflict", "{stale}");
+    assert_eq!(fixture.assert_git_parity(fallback)["ok"], false);
+    assert_eq!(fixture.assert_git_parity(&fixture.workspace)["ok"], true);
+}

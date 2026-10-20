@@ -143,6 +143,56 @@ describe("openSession", () => {
 // ---- which wire a call rides -------------------------------------------------
 
 describe("a session that is being upgraded", () => {
+  it("keeps SQL credit waits off path probes and exposes reset before new pulls", async () => {
+    vi.useFakeTimers();
+    const { session, peer } = await carrying();
+    const ask = (method, options = {}) => {
+      const call = session.call(method, {}, options);
+      call.catch(() => {});
+      return call;
+    };
+    try {
+      session.installAdapter(selectAdapter({ api_version: "2.0.0" }));
+      const old = Array.from({ length: 8 }, () => ask("tasks.list", { timeoutMs: 0 }));
+      const queued = ask("tasks.get", { timeoutMs: 10 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(peer.sent).toHaveLength(8);
+      expect(peer.sent.some((frame) => frame.frameFields.payload.method === "ping")).toBe(false);
+
+      session.resetSqlReads();
+      for (const call of [...old, queued]) await expect(call).rejects.toMatchObject({ uncertain: true, retryable: true });
+      const next = ask("tasks.get");
+      await vi.advanceTimersByTimeAsync(0);
+      answer(peer, { task: { id: "fresh" } });
+      await expect(next).resolves.toEqual({ task: { id: "fresh" } });
+      expect(session.sessionId).toBe("sess-1");
+    } finally {
+      session.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes cancellation through the public session without freeing sent SQL credit", async () => {
+    const { session, peer } = await carrying();
+    const abort = new AbortController();
+    const cancelled = session.call("tasks.get", {}, { signal: abort.signal });
+    cancelled.catch(() => {});
+    await tick();
+    abort.abort();
+    try {
+      await expect(cancelled).rejects.toMatchObject({ name: "AbortError" });
+      const held = Array.from({ length: 8 }, () => session.call("tasks.list", {}, { timeoutMs: 0 }));
+      held.forEach((call) => call.catch(() => {}));
+      await tick();
+      expect(peer.sent).toHaveLength(8);
+      peer.reply({ id: replyTo(peer, 0).id, ok: true, result: {} });
+      await tick();
+      expect(peer.sent).toHaveLength(9);
+    } finally {
+      session.close();
+    }
+  });
+
   it("holds the user's calls for the channel rather than putting them on the relay", async () => {
     const { session, signaling } = await opened();
 

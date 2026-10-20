@@ -9,6 +9,8 @@
 // Hides the pending map, the request ids, encrypt/decrypt, the per-call
 // timeout, and the rule that tells a reply from a push.
 
+import { createSqlReadCredits, isSqlRead } from "./sqlReadCredits.js";
+
 /** How long a call waits for its answer before it is not coming.
  *
  *  This is the PATH's deadline: how long a frame may go unacknowledged before
@@ -40,19 +42,15 @@ function createDeadline(method, timeoutMs, onReceipt) {
   let timer = null;
   let settle = null;
   let receipted = false;
+  const expiry = new Promise((_, reject) => { settle = reject; });
   const arm = (waitMs, uncertain, which) => {
     clearTimeout(timer);
     if (waitMs == null || waitMs === 0) return;
     timer = setTimeout(() => settle?.(timedOutError(method, uncertain(), which)), waitMs);
   };
   return {
-    race(answer, uncertain) {
-      const expiry = new Promise((_, reject) => {
-        settle = reject;
-        arm(timeoutMs, uncertain, "path");
-      });
-      return Promise.race([answer, expiry]);
-    },
+    start: (uncertain) => arm(timeoutMs, uncertain, "path"),
+    race: (answer) => Promise.race([answer, expiry]),
     receipted(handoffAttempted) {
       if (receipted) return;
       receipted = true;
@@ -102,6 +100,16 @@ function uncertainDeliveryError(reason) {
   return error;
 }
 
+const sqlDeliveryError = (reason) => Object.assign(uncertainDeliveryError(reason), { retryable: true });
+
+function watchCancellation(signal, cancel) {
+  if (!signal) return () => {};
+  const abort = () => cancel(signal.reason || new DOMException("The request was cancelled", "AbortError"));
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+  return () => signal.removeEventListener("abort", abort);
+}
+
 /**
  * @param transport the injected crypto layer (`@build/secure-transport`).
  * @param sessionId, sessionKeyB64, deviceId what the rendezvous minted:
@@ -120,6 +128,9 @@ export function createSessionRpc({
   timeoutMs: defaultTimeoutMs = DEFAULT_RPC_TIMEOUT_MS,
 }) {
   const pending = new Map();
+  const sqlReads = createSqlReadCredits();
+  const readers = new WeakSet();
+  const closedCarriers = new WeakSet();
   const pushListeners = new Set();
   let carrier = null;
   let requestId = 0;
@@ -129,7 +140,7 @@ export function createSessionRpc({
   /** One decrypted frame off whichever carrier brought it: somebody's answer,
    *  or the bridge saying something moved. A frame written for another session
    *  is one this key cannot open, and is not this session's to read. */
-  const takeEnvelope = async (envelope) => {
+  const takeEnvelope = async (envelope, source) => {
     let frame;
     try {
       frame = await transport.decryptEnvelope({ sessionKeyB64, envelope });
@@ -137,7 +148,11 @@ export function createSessionRpc({
       return;
     }
     lastFrameAt = Date.now(); // whatever it says, the bridge reached us
-    const payload = frame.payload;
+    takePayload(frame.payload, source);
+  };
+
+  const takePayload = (payload, source) => {
+    if (!acceptSqlReply(payload, source)) return;
     const answered = payload && payload.id !== undefined ? pending.get(payload.id) : null;
     if (answered) {
       // A receipt settles nothing: it says the device has the request, which
@@ -157,8 +172,28 @@ export function createSessionRpc({
     if (payload && payload.type) for (const listener of [...pushListeners]) listener(payload);
   };
 
+  const acceptSqlReply = (payload, source) => {
+    if (!sqlReads.holds(payload?.id)) return true;
+    if (!sqlReads.accepts(payload.id, source)) return false;
+    if (!(payload.accepted === true && payload.ok === undefined)) sqlReads.finish(payload.id);
+    return true;
+  };
+
+  const readFrom = (held) => {
+    if (!held || readers.has(held)) return;
+    readers.add(held);
+    held.onEnvelope((envelope) => takeEnvelope(envelope, held));
+    held.onClose(() => {
+      closedCarriers.add(held);
+      sqlReads.releaseCarrier(held, sqlDeliveryError(new Error("the channel closed")));
+    });
+  };
+
+  const resetSqlReads = (reason = new Error("the SQL read path was restored")) => sqlReads.reset(sqlDeliveryError(reason));
+
   /** Every call still waiting, told why it will never answer. */
   const fail = (error) => {
+    resetSqlReads(error);
     for (const waiting of pending.values()) {
       waiting.reject(waiting.handoffAttempted ? uncertainDeliveryError(error) : error);
     }
@@ -173,15 +208,13 @@ export function createSessionRpc({
      *  from, not only the one it sends on: signaling is pinned to the relay, so
      *  its answers arrive on a wire this session may not be sending over.
      *  Registering the same reader twice is registering it once. */
-    readFrom(held) {
-      held?.onEnvelope(takeEnvelope);
-    },
+    readFrom,
 
     /** The wire this session sends on now, `null` when nothing is carrying. */
     rideOn(taken) {
       carrier = taken || null;
       lastFrameAt = 0; // the wire that just went vouches for nothing here
-      taken?.onEnvelope(takeEnvelope);
+      readFrom(taken);
     },
 
     /** Subscribe to what the bridge says without being asked. Returns the
@@ -211,11 +244,14 @@ export function createSessionRpc({
      * and stamps nothing: absence is the default on both ends.
      * A `null` or zero `timeoutMs` leaves the call pending until an answer or
      * session failure; it does not create a browser timer.
+     * SQL reads start that deadline after sender admission. An optional
+     * `signal` cancels the caller; once sent, its SQL credit stays occupied
+     * until the bridge answers or the carrying path is retired.
      */
     async call(
       method,
       params = {},
-      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null, assertCurrent = () => {} } = {},
+      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null, assertCurrent = () => {}, signal } = {},
     ) {
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
@@ -230,11 +266,23 @@ export function createSessionRpc({
         };
         pending.set(id, waiting);
       });
+      const reject = (error) => {
+        if (pending.get(id) !== waiting) return;
+        pending.delete(id);
+        waiting.reject(error);
+      };
+      const sql = isSqlRead(method);
+      const wireReady = Promise.resolve(wire).then((sending) => {
+        if (sql) sqlReads.bind(id, sending);
+        if (sql && closedCarriers.has(sending)) throw sqlDeliveryError(new Error("the channel closed"));
+        return sending;
+      });
+      wireReady.catch((error) => { reject(error); sqlReads.finish(id); });
       // A frame that never crossed the wire has no answer coming: the call
       // fails then rather than waiting out a timeout for a reply nobody will
       // send.
-      const delivered = (async () => {
-        const sending = await wire;
+      const deliver = async () => {
+        const sending = await wireReady;
         if (closed || pending.get(id) !== waiting) return;
         if (!sending) throw noCarrier();
         assertCurrent();
@@ -253,23 +301,29 @@ export function createSessionRpc({
         if (closed || pending.get(id) !== waiting) return;
         assertCurrent();
         waiting.handoffAttempted = true;
+        sqlReads.sent(id);
         await sending.send(envelope);
-      })();
-      delivered.catch((error) => {
-        if (pending.get(id) !== waiting) return;
-        pending.delete(id);
-        waiting.reject(error);
-      });
+      };
+      const start = () => {
+        deadline.start(() => waiting.handoffAttempted);
+        deliver().catch((error) => { reject(error); sqlReads.finish(id); });
+      };
+      const settled = deadline.race(answer);
+      if (sql) sqlReads.reserve(id, start, reject);
+      else start();
+      const stopCancellation = watchCancellation(signal, (error) => { reject(error); sqlReads.cancel(id); });
       // However this settles, nothing is waiting for it any more: a call that
       // timed out must not leave an entry for a later loss to reject at nobody.
-      const settled = deadline.race(answer, () => waiting.handoffAttempted);
       return settled.finally(() => {
         deadline.done();
+        stopCancellation();
         pending.delete(id);
+        sqlReads.cancel(id);
       });
     },
 
     fail,
+    resetSqlReads,
 
     /** The client said so: nothing is asked or answered on this session again.
      *  `reason` is what the calls in flight are told, when the client has a

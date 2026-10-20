@@ -244,6 +244,7 @@ function fakeSession(deviceId, onLost = () => {}) {
       return carrier ? carrierChanged() : undefined;
     }),
     fail: vi.fn(),
+    resetSqlReads: vi.fn(),
     // The deliberate path probe another channel's verdict is checked against
     // (#60). A live path by default: the terminals being wrong about the app
     // channel is the ordinary case.
@@ -546,6 +547,9 @@ describe("per-device connections", () => {
     await flush();
 
     await vi.waitFor(() => expect(hellos()).toBeGreaterThan(greeted));
+    expect(session.resetSqlReads).toHaveBeenCalledTimes(1);
+    const restoredHello = session.call.mock.calls.findIndex(([method], index) => method === "session.hello" && session.call.mock.invocationCallOrder[index] > session.resetSqlReads.mock.invocationCallOrder[0]);
+    expect(restoredHello).toBeGreaterThan(-1);
     expect(lastSession("dev-a")).toBe(session); // the same session, greeted again
     expect(contextFor("dev-a").offline).toBe(false);
     expect(contextFor("dev-a").adapter.capabilities.changes.subscriptions).toBe(true);
@@ -638,6 +642,8 @@ describe("per-device connections", () => {
     expect(lastSession("dev-a")).toBe(currentSession);
     expect(boardReads("dev-a")).toBe(boardBefore);
     expect(oldSession.call.mock.calls.filter(([method]) => method === "session.hello")).toHaveLength(oldHelloBefore);
+    expect(oldSession.resetSqlReads).not.toHaveBeenCalled();
+    expect(currentSession.resetSqlReads).not.toHaveBeenCalled();
   });
 
   // The link only knows a restart landed on a dead process if it can ask the

@@ -202,8 +202,8 @@ export async function openSession({
     // Workspace detail waits until the bridge answers or the session fails;
     // every other RPC retains the ordinary browser deadline.
     const defaultTimeoutMs = method === "workspace.get" ? null : DEFAULT_RPC_TIMEOUT_MS;
-    const { timeoutMs = defaultTimeoutMs, priority } = callOptions(options);
-    const pending = rpc.call(method, params, { timeoutMs, priority, carrier: carrierSwitch.wireFor(method) });
+    const { timeoutMs = defaultTimeoutMs, ...wireOptions } = callOptions(options);
+    const pending = rpc.call(method, params, { ...wireOptions, timeoutMs, carrier: carrierSwitch.wireFor(method) });
     // Signaling rides the rendezvous, so its deadline says nothing about the
     // peer path and must not be allowed to judge it.
     if (isSignaling(method)) return pending;
@@ -241,6 +241,8 @@ export async function openSession({
      *  refusal a caller sees is then an `ApiError` with a code, whichever
      *  bridge answered. Before a greeting, use its device's cached capability. */
     call,
+    /** Retire SQL work carried before a restored path, before greeting/pulls. */
+    resetSqlReads: () => rpc.resetSqlReads(),
     /**
      * Install what `selectAdapter` picked for this session's bridge. The
      * adapter is bound to the raw rpc, never to `call`, so its normalisation

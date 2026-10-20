@@ -7,7 +7,7 @@ import { expandReferences } from "./markdownLinks.js";
 import { webLinks } from "./markdownWebLinks.js";
 
 const COMPLETE = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>/g;
-const INLINE_TOKEN = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>|&(?:#\d+|#x[\da-f]+|[a-z]+);|\*+|_+|~+/gi;
+const INLINE_TOKEN = /<code>[\s\S]*?<\/code>|<kbd>[^<]*<\/kbd>|<a\b[^>]*>[\s\S]*?<\/a>|<img\b[^>]*>|&(?:#\d+|#x[\da-f]+|[a-z]+);|\[\^[A-Za-z0-9_-]+\]|\*+|_+|~+/gi;
 const ESCAPABLE = /\\([!*_~`[\]<>])/g;
 const TAGS = { "*": ["em", "strong"], _: ["em", "strong"], "~": [null, "del"] };
 
@@ -143,9 +143,8 @@ function outsideComplete(html, transform) {
 }
 
 export function inlineHtml(text, links, { footnote } = {}) {
-  const html = emphasisHtml(webLinks(literalsHtml(text), emphasisHtml));
-  return outsideComplete(html, (prose) => {
-    const references = expandReferences(prose, links);
-    return footnote ? outsideComplete(references, (run) => run.replace(/\[\^([A-Za-z0-9_-]+)\]/g, (raw, id) => footnote(id) || raw)) : references;
-  });
+  const web = webLinks(literalsHtml(text), emphasisHtml);
+  const notes = footnote ? outsideComplete(web, (run) => run.replace(/\[\^([A-Za-z0-9_-]+)\]/g, (raw, id) => footnote(id) || raw)) : web;
+  const references = outsideComplete(notes, (prose) => expandReferences(prose, links));
+  return emphasisHtml(references);
 }

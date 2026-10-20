@@ -64,6 +64,14 @@ describe("the shared inline vocabulary", () => {
     expect(host.textContent).toBe("https://a.test/?a=1&b=2 someone@example.test mailto:other@example.test <script>alert(1)</script>");
   });
 
+  it("keeps footnote identifiers literal before interpreting emphasis", () => {
+    const host = document.createElement("div");
+    host.innerHTML = markdownHtml("An underscore note[^_id_] and **a note[^other]**; missing[^_missing_].\n\n[^_id_]: First\n[^other]: Second");
+    expect([...host.querySelectorAll(".md-footnote-ref a")].map((node) => node.textContent)).toEqual(["1", "2"]);
+    expect(host.querySelector("strong .md-footnote-ref")).not.toBeNull();
+    expect(host.textContent).toContain("missing[^_missing_]");
+  });
+
   it("handles long unclosed marks in bounded time", () => {
     const source = "[!(**~~`<kbd>".repeat(12000);
     const started = performance.now();

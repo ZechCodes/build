@@ -10,6 +10,29 @@ fn save_message(app: &mut AppState, owner: &str, goal: &str, body: &str) -> (Str
     tip
 }
 
+fn retain_legacy_release_path(app: &mut AppState, owner: &str) {
+    // Persisted adopted owners can predate workspace maintenance. Recreate
+    // that supported shape even when normal adoption eagerly adds its alias.
+    let root = app.runs[owner].worktree.path.clone();
+    let aliases: Vec<_> = app
+        .workspaces
+        .list(None)
+        .into_iter()
+        .filter(|workspace| workspace.id == owner || workspace.root == root)
+        .map(|workspace| {
+            assert!(
+                !workspace.managed,
+                "the fixture only removes compatibility aliases"
+            );
+            workspace.id.clone()
+        })
+        .collect();
+    for alias in aliases {
+        app.workspaces.forget(&alias);
+    }
+    assert!(app.surviving_workspace_of_run(owner).is_none());
+}
+
 fn routed(handler: &FrameHandler, method: &str, params: Value) -> Value {
     let answer = handler.call(
         SessionSender::detached("review-reader"),
@@ -49,7 +72,6 @@ async fn merge_release_keeps_later_reads_notices_and_news_live() {
         let mut app = state.lock().unwrap();
         let released = adopted_run(&mut app, &repo, dir.path(), "released-owner");
         let survivor = adopted_run(&mut app, &repo, dir.path(), "surviving-owner");
-        assert!(app.surviving_workspace_of_run(&released).is_none());
         (released, survivor)
     };
     push::settled_pushes(&mut incoming, &key).await;
@@ -91,6 +113,7 @@ async fn merge_release_keeps_later_reads_notices_and_news_live() {
     let tip = {
         let mut app = state.lock().unwrap();
         let project = app.project_of(&released).unwrap();
+        retain_legacy_release_path(&mut app, &released);
         let worktree = app.runs[&released].worktree.clone();
         app.apply_merge_cleanup(&released, &project, &worktree, MergeCleanup::Release);
         assert!(!app.runs.contains_key(&released));
@@ -350,7 +373,7 @@ fn merge_release_keeps_unrelated_routed_reads_live() {
     {
         let mut app = state.lock().unwrap();
         let project = app.project_of(&released).unwrap();
-        assert!(app.surviving_workspace_of_run(&released).is_none());
+        retain_legacy_release_path(&mut app, &released);
         let worktree = app.runs[&released].worktree.clone();
         app.apply_merge_cleanup(&released, &project, &worktree, MergeCleanup::Release);
         assert!(!app.runs.contains_key(&released));

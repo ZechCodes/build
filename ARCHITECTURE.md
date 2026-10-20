@@ -3268,6 +3268,9 @@ and priorities. Extra reads stay unsent and have no wire deadline yet. Each
 credit records its actual sending carrier and settles once on a final reply,
 unsent cancellation, that carrier closing, authoritative restore, or opening
 end. Receipts, timeouts, sent cancellation and switching carriers retain it.
+Once the carrier's send is invoked, a rejection also retains the credit:
+DataChannel sends can fail after writing chunks. Failures before that handoff
+release the unsent reservation.
 `connection.js` clears old SQL calls before restore greeting/resync, fenced by
 the current lifetime. Affected promises receive retryable uncertain-delivery
 errors; late replies cannot release replacement credits. Cache rendering and

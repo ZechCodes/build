@@ -67,17 +67,22 @@ struct Client {
     carrier: CarrierHandle,
     rx: mpsc::UnboundedReceiver<OutboundEnvelope>,
     key: String,
+    session_id: String,
 }
 
 impl Client {
     fn new(handler: FrameHandler) -> Self {
         let intake = FrameIntake::with_pool(handler, transport::generate_transport_keypair(), 1, 1);
+        Self::on_intake(intake, "observations")
+    }
+
+    fn on_intake(intake: Arc<FrameIntake>, session_id: &str) -> Self {
         let (carrier, mut rx) = CarrierHandle::open_channel();
         let key = transport::generate_session_key();
         intake
             .open(
-                "observations",
-                &session_init("observations", intake.transport_public_key(), &key),
+                session_id,
+                &session_init(session_id, intake.transport_public_key(), &key),
                 &carrier,
             )
             .unwrap();
@@ -87,6 +92,7 @@ impl Client {
             carrier,
             rx,
             key,
+            session_id: session_id.into(),
         }
     }
 
@@ -95,7 +101,7 @@ impl Client {
             .accept(
                 client_request(
                     &self.key,
-                    "observations",
+                    &self.session_id,
                     "data",
                     json!({"id":id,"method":method,"params":params}),
                 ),
@@ -294,12 +300,12 @@ async fn closing_mixed_preparation_waits_releases_io_slots_before_sql_connection
             .await;
     }
     tokio::time::timeout(Duration::from_secs(2), async {
-        while client.intake.dispatcher.observation_depths() != (0, 0) {
+        while client.intake.dispatcher.observation_depths() != (sql::IO_WORKERS, 1) {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("all metadata reads wait for pool checkout");
+    .expect("all metadata reads retain admission slots while waiting for pool checkout");
     client.intake.close_carrier(&client.carrier);
     let (carrier, mut rx) = CarrierHandle::open_channel();
     client
@@ -473,8 +479,8 @@ async fn mixed_sql_preparation_shares_eight_permits_with_ordinary_reads() {
     let sql_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let calls = sql_calls.clone();
     let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
-        .with_sql_reads(Some(pool.clone()), move |_, frame, _, connection| {
-            assert!(connection.is_some());
+        .with_sql_reads(None, move |_, frame, _, connection| {
+            assert!(connection.is_none());
             calls.fetch_add(1, Ordering::SeqCst);
             json!({"id":frame.payload["id"],"ok":true})
         })
@@ -593,22 +599,6 @@ async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones(
     );
 }
 
-fn observation_sql_wait_clock(phase: &'static str) -> (Arc<FrameClock>, Arc<tokio::sync::Notify>) {
-    let clock = FrameClock::new();
-    let waiting = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let all_waiting = Arc::new(tokio::sync::Notify::new());
-    let arrived = all_waiting.clone();
-    clock.observe_requests(Arc::new(move |frame, observed_phase, _| {
-        if frame.payload["method"] == "tasks.review.get"
-            && observed_phase == phase
-            && waiting.fetch_add(1, Ordering::SeqCst) + 1 == sql::IO_WORKERS
-        {
-            arrived.notify_one();
-        }
-    }));
-    (clock, all_waiting)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_connections() {
     let root = tempfile::tempdir().unwrap();
@@ -618,8 +608,7 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_connections() {
     for _ in 0..sql::SQL_WORKERS {
         held.push(pool.acquire().await);
     }
-    let (clock, all_waiting) = observation_sql_wait_clock("sql_borrow_start");
-    let handler = FrameHandler::new(clock, |_, _, _| panic!("reads bypass app"))
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
         .with_observation_reads(Some(pool), |frame, connection| {
             assert_eq!(
                 connection.is_some(),
@@ -634,9 +623,9 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_connections() {
             .send(id, "tasks.review.get", json!({"unique":id}))
             .await;
     }
-    tokio::time::timeout(Duration::from_secs(5), all_waiting.notified())
-        .await
-        .expect("all eight mixed reads are waiting for unavailable SQL connections");
+    // SQL-blocked requests retain their admission slots; they no longer own
+    // an I/O coordinator or have an attributable per-request checkout event.
+    assert_eq!(client.intake.dispatcher.observation_depths(), (8, 1));
     client.send(100, "fs.list", json!({})).await;
     let pure = tokio::time::timeout(Duration::from_secs(2), client.reply()).await;
     // Unblock every mixed request before asserting, including the RED path.
@@ -653,8 +642,7 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_execution_permi
     let store = crate::store::Store::new(root.path()).unwrap();
     let pool = store.read_pool();
     let (gate, held) = OffLockGate::new();
-    let (clock, all_waiting) = observation_sql_wait_clock("sql_permit_start");
-    let handler = FrameHandler::new(clock, |_, _, _| panic!("reads bypass app"))
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
         .with_sql_reads(Some(pool.clone()), move |_, frame, _, connection| {
             assert!(connection.is_some());
             gate.arrive();
@@ -678,9 +666,7 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_execution_permi
             .send(id, "tasks.review.get", json!({"unique":id}))
             .await;
     }
-    tokio::time::timeout(Duration::from_secs(5), all_waiting.notified())
-        .await
-        .expect("all eight mixed reads are waiting for unavailable SQL execution permits");
+    assert_eq!(client.intake.dispatcher.observation_depths(), (8, 1));
     client.send(100, "git.status", json!({})).await;
     let pure = tokio::time::timeout(Duration::from_secs(2), client.reply()).await;
     // Disconnect the gate before asserting so all held SQL workers can exit.
@@ -690,3 +676,5 @@ async fn pure_io_progresses_while_eight_mixed_reads_wait_for_sql_execution_permi
         100
     );
 }
+
+mod pipeline;

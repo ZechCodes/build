@@ -14,6 +14,8 @@ use crate::store::{ReadConnection, ReadPool};
 use crate::timing::{Priority, QueuedFrame, WaitTimer};
 use crate::transport::Frame;
 
+mod observations;
+
 pub(super) const SQL_WORKERS: usize = 8;
 pub(super) const SQL_BACKLOG: usize = 16;
 pub(super) const IO_WORKERS: usize = 8;
@@ -127,49 +129,45 @@ struct Queue {
     changed: Notify,
 }
 
+enum ReadQueue {
+    Sql(Arc<Queue>),
+    Observation(Arc<observations::ObservationQueue>),
+}
+
 pub(super) struct ReadDispatcher {
-    queue: Arc<Queue>,
+    queue: ReadQueue,
     handler: FrameHandler,
 }
 
 impl ReadDispatcher {
     pub(super) fn new(handler: FrameHandler) -> Self {
-        Self::for_lane(handler, ReadLane::Sql)
+        let queue = Arc::new(Queue::default());
+        ReadExecutors::ready_for_handler(&handler);
+        for _ in 0..SQL_WORKERS {
+            tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
+        }
+        Self {
+            queue: ReadQueue::Sql(queue),
+            handler,
+        }
     }
 
     pub(super) fn new_observations(handler: FrameHandler) -> Self {
-        Self::for_lane(handler, ReadLane::Observation)
-    }
-
-    fn for_lane(handler: FrameHandler, lane: ReadLane) -> Self {
-        let queue = Arc::new(Queue::default());
-        match lane {
-            ReadLane::Sql => {
-                ReadExecutors::ready_for_handler(&handler);
-                for _ in 0..SQL_WORKERS {
-                    tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
-                }
-            }
-            ReadLane::Observation => {
-                let executor = Arc::new(DedicatedExecutors::new(
-                    "bridge-io",
-                    IO_WORKERS,
-                    #[cfg(test)]
-                    handler.io_thread_starts.clone(),
-                ));
-                for _ in 0..IO_WORKERS {
-                    tokio::spawn(coordinate_io(
-                        queue.clone(),
-                        handler.clone(),
-                        executor.clone(),
-                    ));
-                }
-            }
+        let queue = observations::ObservationQueue::start(handler.clone());
+        Self {
+            queue: ReadQueue::Observation(queue),
+            handler,
         }
-        Self { queue, handler }
     }
 
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame, arrived: WaitTimer) {
+        let queue = match &self.queue {
+            ReadQueue::Sql(queue) => queue,
+            ReadQueue::Observation(queue) => {
+                queue.dispatch(&self.handler, sender, frame, arrived).await;
+                return;
+            }
+        };
         let priority = match frame.payload["priority"].as_str() {
             Some("background") => Priority::Background,
             _ => Priority::Foreground,
@@ -182,12 +180,12 @@ impl ReadDispatcher {
             queued: self.handler.clock.queued_since(priority, arrived),
         });
         loop {
-            let changed = self.queue.changed.notified();
+            let changed = queue.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             #[cfg(test)]
             let mut admitted_at = None;
-            if self.queue.admit(
+            if queue.admit(
                 &mut job,
                 #[cfg(test)]
                 &mut admitted_at,
@@ -198,7 +196,7 @@ impl ReadDispatcher {
                         .clock
                         .mark_observed(&observed, "admitted", admitted_at);
                 }
-                self.queue.notify_admitted();
+                queue.notify_admitted();
                 return;
             }
             changed.await;
@@ -206,28 +204,43 @@ impl ReadDispatcher {
     }
 
     pub(super) fn prune(&self) {
-        self.queue.waiting.lock().unwrap().prune();
-        self.queue.changed.notify_waiters();
+        match &self.queue {
+            ReadQueue::Sql(queue) => {
+                queue.waiting.lock().unwrap().prune();
+                queue.changed.notify_waiters();
+            }
+            ReadQueue::Observation(queue) => queue.prune(),
+        }
     }
 
     #[cfg(test)]
     pub(super) fn depths(&self) -> (usize, usize) {
-        let waiting = self.queue.waiting.lock().unwrap();
-        (
-            waiting.openings.values().map(VecDeque::len).sum(),
-            waiting.ready.len(),
-        )
+        match &self.queue {
+            ReadQueue::Sql(queue) => {
+                let waiting = queue.waiting.lock().unwrap();
+                (
+                    waiting.openings.values().map(VecDeque::len).sum(),
+                    waiting.ready.len(),
+                )
+            }
+            ReadQueue::Observation(queue) => queue.depths(),
+        }
     }
 }
 
 impl Drop for ReadDispatcher {
     fn drop(&mut self) {
-        let mut waiting = self.queue.waiting.lock().unwrap();
-        waiting.closed = true;
-        waiting.openings.clear();
-        waiting.ready.clear();
-        self.queue.ready.notify_waiters();
-        self.queue.changed.notify_waiters();
+        match &self.queue {
+            ReadQueue::Sql(queue) => {
+                let mut waiting = queue.waiting.lock().unwrap();
+                waiting.closed = true;
+                waiting.openings.clear();
+                waiting.ready.clear();
+                queue.ready.notify_waiters();
+                queue.changed.notify_waiters();
+            }
+            ReadQueue::Observation(queue) => queue.close(),
+        }
     }
 }
 
@@ -525,103 +538,7 @@ async fn coordinate_sql(queue: Arc<Queue>, handler: FrameHandler) {
     }
 }
 
-async fn coordinate_io(
-    queue: Arc<Queue>,
-    handler: FrameHandler,
-    executor: Arc<DedicatedExecutors>,
-) {
-    while queue.work_available().await {
-        #[cfg(test)]
-        let queue_take_started = std::time::Instant::now();
-        let Some(work) = queue.take() else { continue };
-        #[cfg(test)]
-        let observed = handler.clock.request_frame(&work.job.frame);
-        #[cfg(test)]
-        {
-            handler
-                .clock
-                .mark_observed(&observed, "queue_take_start", queue_take_started);
-            handler
-                .clock
-                .mark_observed(&observed, "lane_pop", std::time::Instant::now());
-        }
-        let Some(execution) = prepare_io(&queue, &handler, work).await else {
-            continue;
-        };
-        #[cfg(test)]
-        handler
-            .clock
-            .mark_observed(&observed, "io_submitted", std::time::Instant::now());
-        let Ok(complete) = executor.submit(execution) else {
-            return;
-        };
-        let _ = complete.await;
-    }
-}
-
-async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option<Execution> {
-    if !crate::api::effects::observation_needs_sql(&work.job.frame.payload) {
-        let handler = handler.clone();
-        return Some(Box::new(move || work.prepare_observation(&handler, None)()));
-    }
-    #[cfg(test)]
-    handler.clock.mark_request(
-        &work.job.frame,
-        "sql_executor_init_start",
-        std::time::Instant::now(),
-    );
-    let executors = ReadExecutors::ready_for_handler(handler);
-    #[cfg(test)]
-    handler.clock.mark_request(
-        &work.job.frame,
-        "sql_executor_init_end",
-        std::time::Instant::now(),
-    );
-    #[cfg(test)]
-    handler.clock.mark_request(
-        &work.job.frame,
-        "sql_permit_start",
-        std::time::Instant::now(),
-    );
-    let permit = while_live(queue, Some(&work), executors.acquire()).await?;
-    #[cfg(test)]
-    handler
-        .clock
-        .mark_request(&work.job.frame, "sql_permit_end", std::time::Instant::now());
-    let pool = handler
-        .observations
-        .as_ref()
-        .and_then(|observations| observations.pool.as_ref());
-    #[cfg(test)]
-    handler.clock.mark_request(
-        &work.job.frame,
-        "sql_borrow_start",
-        std::time::Instant::now(),
-    );
-    let connection = match pool {
-        Some(pool) => Some(while_live(queue, Some(&work), pool.acquire()).await?),
-        None => None,
-    };
-    #[cfg(test)]
-    {
-        handler
-            .clock
-            .mark_request(&work.job.frame, "sql_borrow_end", std::time::Instant::now());
-        handler
-            .clock
-            .mark_request(&work.job.frame, "sql_submitted", std::time::Instant::now());
-    }
-    let handler = handler.clone();
-    executors
-        .submit(permit, move || {
-            work.prepare_observation(&handler, connection)
-        })
-        .await
-        .ok()
-}
-
-/// Preparation waits retain an I/O slot only while at least one caller still
-/// owns its carrier/opening. Closing a carrier wakes admission and checkout.
+/// Ordinary SQL resource waits end when the queue closes or empties.
 async fn while_live<T>(
     queue: &Queue,
     work: Option<&Work>,

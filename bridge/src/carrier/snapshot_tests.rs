@@ -198,7 +198,11 @@ async fn probe_controls(
                 reply["error"], "no peer connection for session snapshots",
                 "{reply}"
             ),
-            _ => assert_eq!(reply["error_code"], "invalid_params", "{reply}"),
+            "rtc.offer" => assert_eq!(reply["error"], "missing required param: sdp", "{reply}"),
+            _ => assert_eq!(
+                reply["error"], "missing required param: candidate",
+                "{reply}"
+            ),
         }
     }
 }

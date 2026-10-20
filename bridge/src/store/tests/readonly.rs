@@ -182,3 +182,51 @@ async fn readonly_unbounded_task_list_reports_checkout_and_transaction_duration(
         "sql_read_sizing verb=tasks.list count={count} checkout_us={checkout_us} transaction_us={transaction_us}"
     );
 }
+
+#[tokio::test]
+async fn readonly_legacy_thread_identity_matches_roster_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let mut record = run_record("run-legacy-thread-identity", None, NOW);
+    record.agents[0]
+        .thread
+        .post_user("history remains addressable", None, NOW);
+    let id = record.agents[0].id.clone();
+    store.save_run(&record).unwrap();
+    store.connection().execute(
+        "UPDATE agents SET record = json_set(record, '$.thread.id', '', '$.thread.agent.id', 'legacy-owner') WHERE id = ?1",
+        [&id],
+    ).unwrap();
+    let writes = store.total_changes();
+    let pool = store.read_pool();
+    let mut reader = pool.acquire().await;
+    reader
+        .read(|read| {
+            let (_, restored) = read.load_agent_skeleton(&id).unwrap().unwrap();
+            assert_eq!(restored.thread.agent.id, id);
+            assert_eq!(restored.thread.id, format!("thread:{id}"));
+            assert_eq!(
+                read.thread_page(&restored.thread.agent.id, None, 10)
+                    .unwrap()
+                    .len(),
+                1
+            );
+        })
+        .unwrap();
+    assert_eq!(store.total_changes(), writes);
+
+    let reset_id = format!("thread-reset:{id}");
+    record.agents[0].thread.id = reset_id.clone();
+    record.agents[0].thread.generation_revision = 2;
+    store.save_run(&record).unwrap();
+    let writes = store.total_changes();
+    reader
+        .read(|read| {
+            let (_, restored) = read.load_agent_skeleton(&id).unwrap().unwrap();
+            assert_eq!(restored.thread.agent.id, id);
+            assert_eq!(restored.thread.id, reset_id);
+            assert_eq!(restored.thread.generation_revision, 2);
+        })
+        .unwrap();
+    assert_eq!(store.total_changes(), writes);
+}

@@ -21,6 +21,8 @@ pub(crate) fn take_workspace_listing_visits() -> usize {
 }
 mod reservation;
 #[cfg(test)]
+mod changes_tests;
+#[cfg(test)]
 use std::process::Command;
 
 pub const LOCKED_REFUSAL: &str = "Workspace is locked. Unlock it to delete it.";

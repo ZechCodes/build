@@ -293,16 +293,7 @@ impl AppState {
                 return Err(error);
             }
         }
-        let result = {
-            let orch = self.orch_for(&project_id)?;
-            match action.as_str() {
-                "commit" => orch.run_commit(&active).map_err(err),
-                "push" => orch.run_push(&active).map_err(err),
-                "merge" => orch.run_approve_merge(&mut active).map_err(err),
-                "merge_push" => orch.run_merge_and_push(&mut active).map_err(err),
-                other => Err(format!("unknown git action: {other}")),
-            }
-        };
+        let result = self.perform_run_git_action(&project_id, &action, &mut active);
         if let Err(message) = &result {
             if message.starts_with("merge_failed:") {
                 active.last_error = Some(message.clone());
@@ -409,6 +400,24 @@ impl AppState {
             self.apply_merge_cleanup(&run_id, &project_id, &worktree, cleanup);
         }
         Ok(view)
+    }
+
+    /// Keep orchestration refusals inside the action result, so the caller
+    /// settles its borrowed run through the same tail as every Git error.
+    fn perform_run_git_action(
+        &self,
+        project_id: &str,
+        action: &str,
+        active: &mut crate::orchestrator::ActiveRun,
+    ) -> Result<(), String> {
+        let orch = self.orch_for(project_id)?;
+        match action {
+            "commit" => orch.run_commit(active).map_err(err),
+            "push" => orch.run_push(active).map_err(err),
+            "merge" => orch.run_approve_merge(active).map_err(err),
+            "merge_push" => orch.run_merge_and_push(active).map_err(err),
+            other => Err(format!("unknown git action: {other}")),
+        }
     }
 
     /// Validate destructive merge cleanup before committing or merging. Other

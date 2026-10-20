@@ -191,8 +191,12 @@ impl AppState {
         self.delivery_queue.enqueue(PendingAgentTurn::for_run_agent(
             &run_id, &agent_id, &active, turn,
         ));
-        if self.qa_agent {
-            self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
+        if let Err(error) = self.qa_drive_run(&project_id, &mut active, &plan_docs) {
+            // The handover has not been saved. Keep any existing owner's
+            // committed fields and release the publication barrier on refusal.
+            self.restore_run_after_failed_save(&run_id, active);
+            self.settle_failed_mutation(&run_id);
+            return Err(error);
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
         // The checkout belongs to a run from here on, so it leaves the unbound

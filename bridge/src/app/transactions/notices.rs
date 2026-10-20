@@ -34,7 +34,7 @@ impl AppState {
         self.flush_committed_mutation_notices();
     }
 
-    pub(super) fn settle_failed_mutation(&mut self, owner: &str) {
+    pub(in crate::app) fn settle_failed_mutation(&mut self, owner: &str) {
         self.publish_read_owner(owner, false);
         if self.committed_entities.has_borrowed(self) || !self.committed_entities.has_notices() {
             return;

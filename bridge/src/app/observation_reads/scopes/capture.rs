@@ -88,11 +88,11 @@ impl ScopePatch {
         self.order = Some(
             app.runs
                 .keys()
-                .map(|id| {
+                .inspect(|_id| {
                     #[cfg(test)]
-                    super::super::capture_metrics::record("scope_topology", id);
-                    id.clone()
+                    super::super::capture_metrics::record("scope_topology", _id);
                 })
+                .cloned()
                 .collect(),
         );
     }

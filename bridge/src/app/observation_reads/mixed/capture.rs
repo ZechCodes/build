@@ -84,11 +84,11 @@ impl MixedPatch {
             app.plans
                 .keys()
                 .chain(app.runs.keys())
-                .map(|id| {
+                .inspect(|_id| {
                     #[cfg(test)]
-                    super::super::capture_metrics::record("mixed_topology", id);
-                    id.clone()
+                    super::super::capture_metrics::record("mixed_topology", _id);
                 })
+                .cloned()
                 .collect(),
         ));
         self.run_order = Some(app.runs.keys().cloned().collect());

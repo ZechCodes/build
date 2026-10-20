@@ -134,7 +134,7 @@ impl DiffCache {
     /// Removes only project-owned cache values. In-flight/superseded claims stay
     /// held until their existing computation settles.
     pub(in crate::app) fn remove_project(&mut self, project_id: &str) {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(project_id);
         self.project_cache.remove(project_id);
     }
 
@@ -391,7 +391,7 @@ impl DiffCache {
         worktrees: Vec<ExternalWorktree>,
         now: Instant,
     ) -> Vec<CacheEffect> {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(project_id);
         let Some(project) = self.project_cache.get_mut(project_id) else {
             return Vec::new();
         };
@@ -412,7 +412,7 @@ impl DiffCache {
     }
 
     fn store_scan_failure(&mut self, project_id: &str, now: Instant) -> Vec<CacheEffect> {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(project_id);
         let Some(project) = self.project_cache.get_mut(project_id) else {
             return Vec::new();
         };
@@ -441,7 +441,7 @@ impl DiffCache {
         project_id: &str,
         worktree: ExternalWorktree,
     ) -> Vec<CacheEffect> {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(project_id);
         let Some(scan) = self
             .project_cache
             .get_mut(project_id)
@@ -471,7 +471,7 @@ impl DiffCache {
         project_id: &str,
         canonical_path: &Path,
     ) -> Vec<CacheEffect> {
-        self.observation_projects.mark(&*project_id);
+        self.observation_projects.mark(project_id);
         let Some(scan) = self
             .project_cache
             .get_mut(project_id)

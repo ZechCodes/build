@@ -50,8 +50,7 @@ impl ObservationPatch {
             for workspace in app.workspaces.list(None) {
                 let before = previous.scopes.workspace_dependents(&workspace.id);
                 let after = app.workspace_snapshot_conversation_owner(workspace);
-                if before.as_slice() != after.as_ref().map(std::slice::from_ref).unwrap_or_default()
-                {
+                if before.as_slice() != after.as_slice() {
                     for owner in before.into_iter().chain(after) {
                         self.owner(app, &owner, previous);
                     }

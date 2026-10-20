@@ -361,7 +361,7 @@ impl AppState {
             "model": active.model_choice.model,
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
-                ThreadDetail::Digest => active.agents.sole_thread().digest_value(),
+                ThreadDetail::Digest => self.snapshot_thread_digest(active.agents.sole_thread()),
                 ThreadDetail::Full => active.agents.sole_thread().wire_value(),
                 ThreadDetail::Page(limit) => self.first_thread_page(active.agents.sole_thread(), limit),
             },

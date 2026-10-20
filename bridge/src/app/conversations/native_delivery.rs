@@ -78,9 +78,9 @@ impl AppState {
             .as_ref()
             .map(|store| {
                 store
-                    .set_operation_delivery_status(
+                    .set_delivery_status(
                         &receipt.conversation_id,
-                        &receipt.operation_id,
+                        Some(&receipt.operation_id),
                         payload.start_sequence,
                         payload.end_sequence,
                         status,
@@ -88,6 +88,9 @@ impl AppState {
                     .map_err(|error| format!("operation message store: {error}"))
             })
             .transpose()?;
+        if let Some(committed) = &sequence {
+            self.apply_committed_thread_items(committed);
+        }
         self.edit_agent_conversation(&delivery.owner_id, &delivery.agent_id, |thread, _| {
             thread.set_operation_delivery_status(
                 &receipt.operation_id,
@@ -96,7 +99,7 @@ impl AppState {
                 status,
             );
             if let Some(sequence) = sequence {
-                thread.advance_sequence_to(sequence);
+                thread.advance_sequence_to(sequence.sequence);
             }
             Ok(serde_json::Value::Null)
         })?;
@@ -136,9 +139,9 @@ impl AppState {
             .as_ref()
             .map(|store| {
                 store
-                    .acknowledge_native_operation_messages(
+                    .acknowledge_messages(
                         &receipt.conversation_id,
-                        operation_id,
+                        Some(operation_id),
                         payload.start_sequence,
                         payload.end_sequence,
                         &now,
@@ -146,6 +149,9 @@ impl AppState {
                     .map_err(|error| format!("operation message store: {error}"))
             })
             .transpose()?;
+        if let Some(committed) = &sequence {
+            self.apply_committed_thread_items(committed);
+        }
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
             thread.read_native_operation_messages(
                 operation_id,
@@ -154,7 +160,7 @@ impl AppState {
                 &now,
             );
             if let Some(sequence) = sequence {
-                thread.advance_sequence_to(sequence);
+                thread.advance_sequence_to(sequence.sequence);
             }
             Ok(serde_json::Value::Null)
         })?;

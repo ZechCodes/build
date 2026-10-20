@@ -458,6 +458,12 @@ impl AppState {
         Err("unknown id".to_string())
     }
 
+    pub(in crate::app) fn entity_agent_snapshot_root(&self, entity_id: &str) -> Option<std::path::PathBuf> {
+        self.plans.get(entity_id).and_then(|plan| plan.workspace.as_ref())
+            .map(|workspace| self.snapshot_root(&workspace.checkout))
+            .or_else(|| self.runs.get(entity_id).map(|run| self.snapshot_root(&run.worktree.path)))
+    }
+
     /// An entity's agents, whichever kind of entity it is.
     pub(in crate::app) fn entity_agents(
         &self,
@@ -731,19 +737,11 @@ impl AppState {
         if self.plans.contains_key(entity_id) {
             let mut active = self.take_plan(entity_id)?;
             active.model_choice = choice;
-            let persisted = self.persist_plan_record(entity_id, &active);
-            self.plans.insert(entity_id.to_string(), active);
-            self.publish_read_owner(entity_id, persisted.is_ok());
-            self.note_entity_changed(entity_id);
-            return persisted;
+            return self.finish_plan_mutation(entity_id.to_string(), active);
         }
         let mut active = self.take_run(entity_id)?;
         active.model_choice = choice;
-        let persisted = self.persist_run_record(entity_id, &active);
-        self.runs.insert(entity_id.to_string(), active);
-        self.publish_read_owner(entity_id, persisted.is_ok());
-        self.note_entity_changed(entity_id);
-        persisted
+        self.finish_run_mutation(entity_id.to_string(), active)
     }
 
     /// Kill, reap, and forget EVERY agent rooted in a worktree, telling every
@@ -1099,8 +1097,6 @@ impl AppState {
                 ));
             }
         }
-        let before_agents = self.runs[&entity_id].agents.clone();
-        let before_entity_choice = self.runs[&entity_id].model_choice.clone();
         let owner = self.agent_owner(&entity_id);
         let mut active = self.take_run(&entity_id)?;
         if active.agents.is_empty() {
@@ -1143,16 +1139,7 @@ impl AppState {
             .find(|agent| agent.id == added.id)
             .cloned()
             .unwrap_or(added);
-        let persisted = self.finish_run_mutation(entity_id.clone(), active);
-        if let Err(error) = persisted {
-            let restored = self
-                .runs
-                .get_mut(&entity_id)
-                .expect("the failed finish put the run back");
-            restored.agents = before_agents;
-            restored.model_choice = before_entity_choice;
-            return Err(error);
-        }
+        self.finish_run_mutation(entity_id.clone(), active)?;
         self.touch_attention(&entity_id);
         let root = self.entity_agent_root(&entity_id).ok();
         let mut answered = json!({
@@ -1243,10 +1230,7 @@ impl AppState {
         agent_id: &str,
         choice: ModelChoice,
     ) -> Result<u64, String> {
-        let previous = self
-            .entity_agents(entity_id)?
-            .resolve(Some(agent_id))?
-            .clone();
+        self.entity_agents(entity_id)?.resolve(Some(agent_id))?;
         let revision = if self.plans.contains_key(entity_id) {
             let mut active = self.take_plan(entity_id)?;
             let revision = active
@@ -1254,16 +1238,7 @@ impl AppState {
                 .resolve_mut(Some(agent_id))
                 .expect("the agent was validated before its task was taken")
                 .choose(choice);
-            if let Err(error) = self.finish_plan_mutation(entity_id.to_string(), active) {
-                *self
-                    .plans
-                    .get_mut(entity_id)
-                    .expect("the failed finish put the task back")
-                    .agents
-                    .resolve_mut(Some(agent_id))
-                    .expect("the previous agent still belongs to the task") = previous;
-                return Err(error);
-            }
+            self.finish_plan_mutation(entity_id.to_string(), active)?;
             revision
         } else if self.runs.contains_key(entity_id) {
             let mut active = self.take_run(entity_id)?;
@@ -1272,16 +1247,7 @@ impl AppState {
                 .resolve_mut(Some(agent_id))
                 .expect("the agent was validated before its run was taken")
                 .choose(choice);
-            if let Err(error) = self.finish_run_mutation(entity_id.to_string(), active) {
-                *self
-                    .runs
-                    .get_mut(entity_id)
-                    .expect("the failed finish put the run back")
-                    .agents
-                    .resolve_mut(Some(agent_id))
-                    .expect("the previous agent still belongs to the run") = previous;
-                return Err(error);
-            }
+            self.finish_run_mutation(entity_id.to_string(), active)?;
             revision
         } else {
             return Err("unknown id".to_string());
@@ -1365,13 +1331,16 @@ impl AppState {
             }
         };
         let persisted = self.finish_run_mutation(entity_id.clone(), active);
-        // finish_run_mutation installs the changed live roster even if its
-        // persistence fails. Invalidate wherever that availability is cached;
-        // tasks.get/list retain the historical facts and resolve availability.
+        // Retirement is a real runtime effect even when the canonical save
+        // failed; never restore the process or a queued delivery from a copy.
+        self.retire_agent(&root, &removed.id);
+        if persisted.is_err() {
+            self.publish_owner_snapshot_projection(&entity_id);
+        }
         if let Some((project_id, task_ids)) = task_refresh {
             self.changes.note_tasks(&project_id, &task_ids);
         }
-        self.retire_agent(&root, &removed.id);
+        persisted?;
         // Nothing prunes cursors by agent, so one left behind here would
         // outlive the daemon it was written in.
         self.board.attention_mut().remove_agent_cursor(
@@ -1380,7 +1349,6 @@ impl AppState {
             removed_agent_revived_clear,
         );
         self.persist_attention();
-        persisted?;
         self.touch_attention(&entity_id);
         Ok(json!({
             "entity_id": entity_id,
@@ -1429,7 +1397,7 @@ impl AppState {
     /// for a project owner's whole roster; without it a project owner lists
     /// its pinned coordinator alone, the shape a client that predates workers
     /// paints. A project owner's answer names its pin.
-    pub(crate) fn agent_list(&mut self, params: &Value) -> Result<Value, String> {
+    pub(crate) fn agent_list(&self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         self.entity_agents(&entity_id)
             .map_err(|_| format!("agent.list: unknown entity {entity_id}"))?;
@@ -1437,7 +1405,7 @@ impl AppState {
             .get("include_project_workers")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let root = self.entity_agent_root(&entity_id).ok();
+        let root = self.entity_agent_snapshot_root(&entity_id);
         let agents: Vec<Value> = self
             .listed_agents(&entity_id, include_workers)
             .into_iter()
@@ -1454,7 +1422,7 @@ impl AppState {
     /// agent, in rail order. A project owner's is its pin alone
     /// ([`AppState::listed_agents`]); `agent.list` is where its workers are.
     pub(in crate::app) fn agent_digests(&self, entity_id: &str, scope: DigestScope) -> Vec<Value> {
-        let root = self.entity_agent_root(entity_id).ok();
+        let root = self.entity_agent_snapshot_root(entity_id);
         self.listed_agents(entity_id, false)
             .into_iter()
             .map(|agent| self.agent_digest(entity_id, agent, root.as_deref(), scope))

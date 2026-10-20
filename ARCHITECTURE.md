@@ -165,6 +165,12 @@ a replacement carrier keeps its opening usable. Close signaling wakes a
 parked intake independently of the channel event pump. Stats and the existing
 ping/signaling fast paths bypass this lane.
 
+The nine published reads (`board.list`, `project.list`, `workspace.list`,
+`workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`
+and `bridge.update_status`) answer at intake from immutable snapshots. They
+take no SQL permit, dispatch slot or app lock, including when those lanes are
+full. Typed parameter normalization and result validation still apply.
+
 Other queued work uses the worker pool in
 `bridge/src/carrier/dispatch.rs`, which runs handlers on blocking threads.
 Before that pool, a bounded per-wire admitter in `carrier.rs` feeds frames in
@@ -286,14 +292,11 @@ callers still serialize on the writer connection. Routed v1 handlers receive
 `off_the_workers` protects runtime workers from blocking; it does not remove
 these serialization points.
 
-Some read-named verbs mutate state. Task identity/done-at backfills and cursor
-key creation now happen before reader admission; task reads retain pure derived
-fallbacks for older records. Project listing revives parked projects; workspace listing/detail
-can adopt legacy workspaces and refresh manifests; board reads reconcile
-attention and schedule cache/sweep work. Moving these handlers to a read lane
-requires separating those effects first. The push bus owns separate locks,
-but its current `app/facts.rs::entity_facts` source still takes the app mutex
-for state/thread facts before doing Git work outside it.
+Task identity/done-at backfills and cursor key creation happen before reader
+admission; task reads retain pure derived fallbacks for older records.
+Parked-project revival, legacy workspace adoption, manifest refresh, board
+attention and cache/sweep work run during initial warming and from lifecycle
+or periodic producers. Published list/detail reads do none of that work.
 
 `timing.rs::FrameClock` exposes per-method `queued`, `lock_wait` and `held`
 aggregates through `bridge.stats`: each has `count`, `sum_ms`, `p50_ms`,
@@ -330,11 +333,32 @@ review-summary and durable-identity rows share one transaction, with live
 availability supplied by the published overlay. Read replies retain typed
 parameter normalization and result checks without deferred app state.
 
+**Published snapshots (#681 step 3).** `app/read_view.rs` holds an atomic
+`Arc<ReadView>` root with shared immutable response chunks. Versioned deltas
+merge disjoint updates through compare-and-swap; stale overlapping updates
+are rejected as a unit, and deletion versions remain as tombstones. Producers
+warm required observations before admission, then publish committed values
+before change events and successful replies. Agent rows use observed paths,
+compaction context and unread summaries. Workspace history shares immutable
+history chunks; response paging preserves the existing cursor and full-history
+contracts without cloning retained history on each publication. Inventory,
+update status and CLI catalogs have their own atomic service snapshots.
+
+Plan/run finishers stage projections before saving and restore committed
+canonical fields after a failed save. Their checkpoints exclude live PTYs;
+actual retirement remains observable separately. A failed durable candidate
+cannot be exposed by an unrelated later publication. Nested owner mutations
+wait until their shared projection can be published coherently.
+
+The push bus reads committed state, thread tails, terminal rows and whole
+lists from the same immutable view. Git/filesystem observations belong to a
+bounded independent producer; a flush does not wait for the app or Store
+writer. Source identity fences reject obsolete observations. The existing
+250 ms coalescing and wire shapes remain.
+
 [`Bridge Concurrency Plan.md`](<planning/v2/Bridge Concurrency Plan.md>) records
-the remaining stages. Immutable board/project/workspace/agent snapshots, push
-facts and scoped writers are still proposed. Their current handlers and
-services retain the app mutex, including the existing failed-save finisher
-behavior. This step does not claim to repair those later-stage write paths.
+the remaining observation-read and scoped-writer stages. Legacy writers still
+serialize through the app mutex and Store writer.
 
 Checkout-root refreshes use the reverse conversation lookup in
 `app/workspaces/mod.rs`. It filters candidates against the queried run before
@@ -1034,9 +1058,10 @@ matches. So once the re-scoping `changes.subscribe` is applied, no
 old-scope frame follows it. A source moved or removed in settings leaves the
 roots snapshot and its watcher stops. Reconcile passes apply their snapshots
 in the order they read them, so a stale pass cannot restart that watcher.
-After its off-lock reads, the facts source re-checks the sources under the
-app lock: a source moved or removed by then comes back `withdrawn`, and its
-item is dropped. A frame whose facts passed that check just before the move
+The facts source checks immutable source identity; moved or removed sources
+come back `withdrawn`, and their items are dropped. The independent observation
+producer rechecks that identity before publishing its off-lock reads.
+A frame whose facts passed that check just before the move
 can still go out just after it. It carries what the old folder held before
 the move, under the old `project_source`. Nothing collected after the move
 goes out for the old folder. `project.sync_source` also accepts an optional

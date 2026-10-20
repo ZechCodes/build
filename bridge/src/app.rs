@@ -25,11 +25,13 @@ mod model_catalog;
 mod projects;
 mod push_keys;
 mod read_context;
+mod read_view;
 mod rpc;
 mod rtc;
 mod runs;
 mod runtime;
 mod session_summaries;
+mod snapshot_projection;
 mod streams;
 mod tasks;
 mod tracker;
@@ -279,6 +281,9 @@ pub struct AppState {
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
     read_context: read_context::ReadContextSlot,
+    committed_entities: transactions::CommittedEntities,
+    read_view: read_view::ReadViewSlot,
+    snapshot_observations: snapshot_projection::SnapshotObservations,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
@@ -658,6 +663,9 @@ impl AppState {
             projects: ProjectRegistry::new(),
             project_deletion_in_progress: false,
             read_context: Arc::new(arc_swap::ArcSwapOption::empty()),
+            committed_entities: Default::default(),
+            read_view: read_view::ReadViewSlot::default(),
+            snapshot_observations: snapshot_projection::SnapshotObservations::default(),
             source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
             worktrees_root,
@@ -849,15 +857,18 @@ impl AppState {
     /// Share this state so the relay handler and the done-socket listener both
     /// drive the same tasks. Stashes a weak self-handle so `&mut self` hooks
     /// can spawn pump tasks (see the `self_handle` field).
-    pub fn shared(self) -> Arc<Mutex<AppState>> {
+    pub fn shared(mut self) -> Arc<Mutex<AppState>> {
         if let Err(error) = self.migrate_task_read_fields() {
             eprintln!("task read metadata migration: {error}; retaining derived read fields");
         }
+        self.initialize_snapshot_projection();
         let state = Arc::new(Mutex::new(self));
         let (changes, watchers, push_runtime) = {
             let mut app = state.lock().unwrap();
             app.self_handle = Some(Arc::downgrade(&state));
-            let _ = app.facts_handle.set(Arc::downgrade(&state));
+            let _ = app.facts_handle.set(facts::FactsSource::new(
+                app.read_view.clone(), Arc::downgrade(&state),
+            ));
             app.watchers.set_roots(app.worktree_roots());
             (
                 Arc::clone(&app.changes),
@@ -865,6 +876,7 @@ impl AppState {
                 app.push_runtime.clone(),
             )
         };
+        Self::spawn_snapshot_maintenance(&state);
         if let Some(updates) = state.lock().unwrap().update_service() {
             let weak = Arc::downgrade(&state);
             let probe = Arc::new(move || {

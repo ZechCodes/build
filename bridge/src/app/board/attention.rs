@@ -1049,25 +1049,6 @@ impl AppState {
         }
     }
 
-    /// Give a newly created entity its place in the inbox. Idempotent, so every
-    /// mutation can call it and only the first one does anything.
-    pub(in crate::app) fn seed_anchor(&mut self, entity_id: &str) {
-        let created_at = self
-            .board
-            .attention()
-            .clock(entity_id)
-            .created_at
-            .unwrap_or_else(now_rfc3339);
-        if !self
-            .board
-            .attention_mut()
-            .seed_anchor(entity_id, &created_at)
-        {
-            return;
-        }
-        self.persist_attention();
-    }
-
     /// The user said something to this entity: move its anchor if they had gone
     /// quiet for [`crate::attention::ANCHOR_GAP`], and leave it exactly where it
     /// is otherwise.

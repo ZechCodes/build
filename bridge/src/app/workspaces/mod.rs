@@ -691,6 +691,7 @@ impl AppState {
     /// The workspace a conversation's run stands on, as its work summary is
     /// keyed: the workspace id and its repositories, in the order the board
     /// reads them. `None` for a run that is no workspace conversation.
+    #[cfg(test)]
     pub(in crate::app) fn workspace_summary_subject_of_run(
         &self,
         run_id: &str,

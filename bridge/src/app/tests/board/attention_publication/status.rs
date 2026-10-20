@@ -19,11 +19,11 @@ fn status_snapshot_attention_publishes_only_its_known_owner_and_preserves_clocks
         .collect::<Vec<_>>();
     let mut observed = Vec::new();
     for (status, changed, completed) in [
-        (AgentStatus::Working, "2026-10-20T12:00:01Z", None),
+        (AgentStatus::Working, "2999-01-01T12:00:01Z", None),
         (
             AgentStatus::Waiting,
-            "2026-10-20T12:00:02Z",
-            Some("2026-10-20T12:00:02Z"),
+            "2999-01-01T12:00:02Z",
+            Some("2999-01-01T12:00:02Z"),
         ),
     ] {
         let mut snapshot = SessionStatusSnapshot::new(status);

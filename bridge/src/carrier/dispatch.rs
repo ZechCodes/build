@@ -27,6 +27,8 @@ pub struct FrameHandler {
     #[cfg(test)]
     pub(super) io_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
+    pub(super) sql_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
     pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
 }
 
@@ -65,6 +67,8 @@ impl FrameHandler {
             read_executors: Arc::new(OnceLock::new()),
             #[cfg(test)]
             io_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            sql_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             snapshot: None,
             #[cfg(test)]
             sql_observer: None,
@@ -74,6 +78,11 @@ impl FrameHandler {
     #[cfg(test)]
     pub(crate) fn observation_worker_starts(&self) -> Arc<std::sync::atomic::AtomicUsize> {
         self.io_thread_starts.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sql_worker_starts(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.sql_thread_starts.clone()
     }
 
     #[cfg(test)]

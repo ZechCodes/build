@@ -32,7 +32,7 @@ pub(super) struct ReadExecutors {
 }
 
 impl ReadExecutors {
-    fn new() -> Self {
+    fn new(#[cfg(test)] starts: Arc<std::sync::atomic::AtomicUsize>) -> Self {
         let (send, receive) = std::sync::mpsc::channel::<Execution>();
         let receive = Arc::new(Mutex::new(receive));
         for number in 0..SQL_WORKERS {
@@ -47,6 +47,8 @@ impl ReadExecutors {
                     }
                 })
                 .expect("start SQL read worker");
+            #[cfg(test)]
+            starts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         Self {
             send,
@@ -119,7 +121,12 @@ impl ReadDispatcher {
         let queue = Arc::new(Queue::default());
         match lane {
             ReadLane::Sql => {
-                handler.read_executors.get_or_init(ReadExecutors::new);
+                handler.read_executors.get_or_init(|| {
+                    ReadExecutors::new(
+                        #[cfg(test)]
+                        handler.sql_thread_starts.clone(),
+                    )
+                });
                 for _ in 0..SQL_WORKERS {
                     tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
                 }
@@ -539,7 +546,12 @@ async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option
         "sql_executor_init_start",
         std::time::Instant::now(),
     );
-    let executors = handler.read_executors.get_or_init(ReadExecutors::new);
+    let executors = handler.read_executors.get_or_init(|| {
+        ReadExecutors::new(
+            #[cfg(test)]
+            handler.sql_thread_starts.clone(),
+        )
+    });
     #[cfg(test)]
     handler.clock.mark_request(
         &work.job.frame,
@@ -658,7 +670,12 @@ pub(super) fn call_observation(
                 .build()
                 .expect("direct read checkout runtime");
             let prepared = runtime.block_on(async {
-                let executors = handler.read_executors.get_or_init(ReadExecutors::new);
+                let executors = handler.read_executors.get_or_init(|| {
+                    ReadExecutors::new(
+                        #[cfg(test)]
+                        handler.sql_thread_starts.clone(),
+                    )
+                });
                 let permit = executors.acquire().await;
                 let connection = match handler
                     .observations

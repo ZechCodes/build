@@ -417,3 +417,109 @@ async fn io_threads_grow_only_for_concurrent_work_and_reuse_warm_workers() {
     assert_eq!(answered, (100..=108).collect());
     assert_eq!(starts.load(Ordering::SeqCst), sql::IO_WORKERS);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cold_mixed_observation_starts_only_one_sql_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| {
+        panic!("mixed observation bypasses app")
+    })
+    .with_observation_reads(Some(store.read_pool()), |frame, connection| {
+        assert!(connection.is_some());
+        assert!(std::thread::current()
+            .name()
+            .unwrap()
+            .starts_with("bridge-sql-"));
+        drop(connection);
+        Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+    });
+    let starts = handler.sql_worker_starts();
+    let mut client = Client::new(handler);
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    client.send(1, "tasks.attachment", json!({})).await;
+    assert_eq!(client.reply().await["id"], 1);
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        1,
+        "first mixed read starts one SQL worker, rather than all eight"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_sql_workers_grow_for_overlapping_preparation_and_share_eight_permits() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let pool = store.read_pool();
+    let (gate, held) = OffLockGate::new();
+    let sql_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = sql_calls.clone();
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
+        .with_sql_reads(Some(pool.clone()), move |_, frame, _, connection| {
+            assert!(connection.is_some());
+            calls.fetch_add(1, Ordering::SeqCst);
+            json!({"id":frame.payload["id"],"ok":true})
+        })
+        .with_observation_reads(Some(pool), move |frame, connection| {
+            assert!(connection.is_some());
+            // Preparation deliberately retains the shared SQL permit and connection.
+            gate.arrive();
+            drop(connection);
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let starts = handler.sql_worker_starts();
+    let mut client = Client::new(handler);
+    for index in 0..sql::SQL_WORKERS {
+        client
+            .send(index, "tasks.review.diff", json!({"unique":index}))
+            .await;
+        held.wait_for_arrival();
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            index + 1,
+            "each overlapping preparation grows the shared executor only as needed"
+        );
+    }
+    client.send(100, "tasks.get", json!({})).await;
+    // Ordinary SQL admission has initialized its coordinators, but it cannot
+    // borrow a ninth shared execution permit while all eight are held above.
+    assert_eq!(sql_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(client.intake.dispatcher.sql_depths(), (1, 1));
+    assert_eq!(starts.load(Ordering::SeqCst), sql::SQL_WORKERS);
+    for _ in 0..sql::SQL_WORKERS {
+        held.release();
+    }
+    let mut answers = std::collections::BTreeSet::new();
+    for _ in 0..=sql::SQL_WORKERS {
+        answers.insert(client.reply().await["id"].as_u64().unwrap());
+    }
+    assert_eq!(answers, (0..8).chain([100]).collect());
+    assert_eq!(sql_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), sql::SQL_WORKERS);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_sql_keeps_eight_workers_after_mixed_first_initialization() {
+    let root = tempfile::tempdir().unwrap();
+    let store = crate::store::Store::new(root.path()).unwrap();
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
+        .with_sql_reads(Some(store.read_pool()), |_, frame, _, connection| {
+            assert!(connection.is_some());
+            json!({"id":frame.payload["id"],"ok":true})
+        })
+        .with_observation_reads(Some(store.read_pool()), |frame, connection| {
+            drop(connection);
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let starts = handler.sql_worker_starts();
+    let mut client = Client::new(handler);
+    client.send(1, "tasks.attachment", json!({})).await;
+    assert_eq!(client.reply().await["id"], 1);
+    client.send(2, "tasks.get", json!({})).await;
+    assert_eq!(client.reply().await["id"], 2);
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        sql::SQL_WORKERS,
+        "ordinary SQL must ensure eight workers even when mixed reads initialized first"
+    );
+}

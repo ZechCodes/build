@@ -33,21 +33,29 @@ pub struct ReadTransaction<'a> {
     connection: &'a Connection,
 }
 
+fn open_read_connection(path: &Path) -> Result<Connection, StoreError> {
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    connection.pragma_update(None, "query_only", true)?;
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(connection)
+}
+
 impl ReadPool {
     pub(super) fn open(path: &Path) -> Result<Self, StoreError> {
         let mut available = Vec::with_capacity(READ_CONNECTIONS);
         for _ in 0..READ_CONNECTIONS {
-            let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            connection.pragma_update(None, "query_only", true)?;
-            connection.busy_timeout(std::time::Duration::from_secs(5))?;
-            available.push(connection);
+            available.push(open_read_connection(path)?);
         }
-        Ok(Self {
+        Ok(Self::from_connections(available))
+    }
+
+    fn from_connections(available: Vec<Connection>) -> Self {
+        Self {
             inner: Arc::new(Pool {
                 available: Mutex::new(available),
                 permits: Arc::new(Semaphore::new(READ_CONNECTIONS)),
             }),
-        })
+        }
     }
 
     /// Tokio's semaphore queues borrowers fairly and removes cancelled waits.
@@ -146,6 +154,9 @@ impl<'a> ReadTransaction<'a> {
 
 #[cfg(test)]
 mod metadata_timing;
+
+#[cfg(test)]
+mod schema_tests;
 
 #[cfg(test)]
 mod tests;

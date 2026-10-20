@@ -88,7 +88,12 @@ async fn measure_pool(
     };
     let before = resources();
     let started = Instant::now();
-    let pool = ReadPool::open(&store.dir.join(crate::store::DB_FILE)).unwrap();
+    // Keep this explicit raw control when production pool startup loads schemas.
+    let path = store.dir.join(crate::store::DB_FILE);
+    let available = (0..READ_CONNECTIONS)
+        .map(|_| open_read_connection(&path).unwrap())
+        .collect();
+    let pool = ReadPool::from_connections(available);
     let open_ns = started.elapsed().as_nanos();
     let started = Instant::now();
     let mut connections = Vec::with_capacity(READ_CONNECTIONS);

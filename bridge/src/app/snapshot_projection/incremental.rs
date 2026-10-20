@@ -16,6 +16,8 @@ impl AppState {
         previous: &ReadView,
         requested: &BTreeSet<String>,
     ) -> Option<SnapshotDelta> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.global");
         let (cache, owners) = previous.global.as_ref()?.refresh(self, requested)?;
         let mut delta = cache.publish(self, delta, previous);
         // The owner publisher already refreshes requested detail rows. Other

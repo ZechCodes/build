@@ -1,6 +1,6 @@
 //! Separately committed historical row edits share the same immutable root as
 //! their existing digest rows and bounded push tails.
-use super::{insert, patch_thread_digests, SharedHistory};
+use super::{insert, patch_thread_digests, thread_digests_need_patch, SharedHistory};
 use crate::app::read_view::SnapshotDelta;
 use crate::app::AppState;
 use crate::store::CommittedThreadItems;
@@ -71,7 +71,11 @@ impl AppState {
             #[cfg(test)]
             let _phase = crate::timing::phase_samples::phase("publication.committed.chunks");
             for key in previous.keys() {
-                let mut row = previous.get(key.method, &key.owner)?.clone();
+                let row = previous.get(key.method, &key.owner)?;
+                if !thread_digests_need_patch(row, committed) {
+                    continue;
+                }
+                let mut row = row.clone();
                 #[cfg(test)]
                 tests::record_chunk_copy();
                 if patch_thread_digests(&mut row, committed) {

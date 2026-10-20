@@ -201,23 +201,46 @@ mod tests;
 
 /// Existing row summaries share the same committed tip as the history. These
 /// delivery-only edits do not change attention membership or unread counts.
+fn thread_digest_needs_patch(
+    object: &serde_json::Map<String, Value>,
+    delta: &crate::store::CommittedThreadItems,
+) -> bool {
+    object.get("thread_id").and_then(Value::as_str) == Some(delta.thread_id.as_str())
+        && object
+            .get("thread_generation_revision")
+            .and_then(Value::as_u64)
+            == Some(delta.generation_revision)
+        && object
+            .get("last_sequence")
+            .and_then(Value::as_u64)
+            .is_some_and(|sequence| sequence < delta.sequence)
+}
+
+pub(in crate::app) fn thread_digests_need_patch(
+    value: &Value,
+    delta: &crate::store::CommittedThreadItems,
+) -> bool {
+    match value {
+        Value::Object(object) => {
+            thread_digest_needs_patch(object, delta)
+                || object
+                    .values()
+                    .any(|value| thread_digests_need_patch(value, delta))
+        }
+        Value::Array(values) => values
+            .iter()
+            .any(|value| thread_digests_need_patch(value, delta)),
+        _ => false,
+    }
+}
+
 pub(in crate::app) fn patch_thread_digests(
     value: &mut Value,
     delta: &crate::store::CommittedThreadItems,
 ) -> bool {
     match value {
         Value::Object(object) => {
-            let matching = object.get("thread_id").and_then(Value::as_str)
-                == Some(delta.thread_id.as_str())
-                && object
-                    .get("thread_generation_revision")
-                    .and_then(Value::as_u64)
-                    == Some(delta.generation_revision);
-            let changed = matching
-                && object
-                    .get("last_sequence")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|sequence| sequence < delta.sequence);
+            let changed = thread_digest_needs_patch(object, delta);
             if changed {
                 object.insert("last_sequence".into(), json!(delta.sequence));
             }

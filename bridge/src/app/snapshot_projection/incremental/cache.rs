@@ -93,9 +93,14 @@ impl GlobalProjection {
     }
 
     pub(super) fn board(&self) -> SharedJson {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.incremental.board_json");
         let mut fields = self.board_fields.clone();
         fields.insert("runs".into(), rows::array(&self.runs));
         fields.insert("workspace_summaries".into(), rows::array(&self.summaries));
+        #[cfg(test)]
+        let _item_order_phase =
+            crate::timing::phase_samples::phase("publication.incremental.item_order");
         let mut items = self
             .winners
             .iter()
@@ -108,6 +113,8 @@ impl GlobalProjection {
             )
             .collect::<Vec<_>>();
         items.sort_by(|(left, _), (right, _)| crate::branch::compare_anchors(*left, *right));
+        #[cfg(test)]
+        drop(_item_order_phase);
         fields.insert(
             "items".into(),
             SharedJson::array(items.into_iter().map(|(_, value)| value)),
@@ -116,6 +123,8 @@ impl GlobalProjection {
     }
 
     pub(super) fn lists(&self) -> SharedJson {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.incremental.list_json");
         SharedJson::object([
             ("projects".into(), rows::array(&self.projects)),
             (
@@ -135,6 +144,8 @@ impl GlobalProjection {
         mut delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.incremental.publish");
         delta = rows::put(delta, previous, "board.list", "", self.board());
         delta = rows::put(
             delta,
@@ -150,6 +161,9 @@ impl GlobalProjection {
             "",
             rows::wrapped("workspaces", &self.workspaces),
         );
+        #[cfg(test)]
+        let _project_lists_phase =
+            crate::timing::phase_samples::phase("publication.incremental.project_lists");
         let projects = app
             .projects
             .iter()
@@ -177,6 +191,8 @@ impl GlobalProjection {
                 SharedJson::object([("workspaces".into(), SharedJson::array(rows))]),
             );
         }
+        #[cfg(test)]
+        drop(_project_lists_phase);
         delta = put_changed(
             delta,
             previous,
@@ -195,6 +211,8 @@ impl GlobalProjection {
 }
 
 pub(super) fn captures(app: &AppState) -> Vec<Row> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.captures");
     crate::branch::fold_work_items(app.capture_candidates())
         .into_iter()
         .map(|value| Row::new("capture_id", value))

@@ -50,6 +50,11 @@ struct AgentLayout {
 
 impl Layout {
     pub fn capture(app: &AppState) -> Self {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.incremental.layout_capture");
+        #[cfg(test)]
+        let _workspace_shape_phase =
+            crate::timing::phase_samples::phase("publication.incremental.layout_workspaces");
         let workspaces = app
             .workspaces
             .list(None)
@@ -68,6 +73,8 @@ impl Layout {
                 ])
             })
             .collect();
+        #[cfg(test)]
+        drop(_workspace_shape_phase);
         Self {
             owners: owner_layouts(app),
             projects: project_layouts(app),
@@ -117,6 +124,8 @@ impl Layout {
     }
 
     pub fn expand_owners(&self, app: &AppState, requested: &BTreeSet<String>) -> BTreeSet<String> {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.incremental.owner_closure");
         let mut owners = requested.clone();
         owners.extend(app.session_registry.projection_agent_owners());
         owners.extend(
@@ -221,6 +230,8 @@ fn agent_layouts(
 }
 
 fn owner_layouts(app: &AppState) -> Vec<OwnerLayout> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.layout_owners");
     let runs = app.runs.iter().map(|(id, active)| OwnerLayout {
         id: id.clone(),
         project: app
@@ -276,6 +287,8 @@ fn owner_layouts(app: &AppState) -> Vec<OwnerLayout> {
 }
 
 fn project_layouts(app: &AppState) -> Vec<Value> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.layout_projects");
     app.project_list_rows().into_iter().map(|row| json!({
         "id": row.project_id, "name": row.name, "base": row.base_branch, "git": row.is_git,
         "sources": row.sources.iter().map(|source| source.wire_observed(Value::Null)).collect::<Vec<_>>(),

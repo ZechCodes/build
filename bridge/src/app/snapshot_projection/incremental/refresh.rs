@@ -11,10 +11,18 @@ impl GlobalProjection {
         app: &AppState,
         requested: &BTreeSet<String>,
     ) -> Option<(Self, BTreeSet<String>)> {
+        #[cfg(test)]
+        let _layout_phase =
+            crate::timing::phase_samples::phase("publication.incremental.layout_check");
         let current = Arc::new(Layout::capture(app));
         if self.layout.as_ref()? != &current {
             return None;
         }
+        #[cfg(test)]
+        drop(_layout_phase);
+        #[cfg(test)]
+        let _owners_phase =
+            crate::timing::phase_samples::phase("publication.incremental.owner_inputs");
         let mut requested = requested.clone();
         requested.extend(self.active_owners.iter().cloned());
         let agent_states = agent_states(app);
@@ -33,22 +41,37 @@ impl GlobalProjection {
         );
         let owners = current.expand_owners(app, &requested);
         let active_owners = current.expand_owners(app, &BTreeSet::new());
+        #[cfg(test)]
+        drop(_owners_phase);
+        #[cfg(test)]
+        let _clone_phase =
+            crate::timing::phase_samples::phase("publication.incremental.cache_clone");
         let mut next = self.clone();
         next.layout = Some(current);
         next.active_owners = active_owners;
         next.stat_versions = Arc::new(stat_versions);
         next.agent_states = Arc::new(agent_states);
+        #[cfg(test)]
+        drop(_clone_phase);
         refresh_runs(app, &owners, &mut next.runs);
         refresh_winners(app, &owners, &mut next.winners);
         refresh_workspaces(app, &owners, &mut next.workspaces)?;
         refresh_projects(app, &owners, &mut next.projects);
         next.tasks = rows::tasks(app, &self.tasks);
         next.captures = captures(app);
+        #[cfg(test)]
+        let _summaries_phase =
+            crate::timing::phase_samples::phase("publication.incremental.summary_rows");
         next.summaries = app
             .cached_workspace_summaries_json()
             .into_iter()
             .map(|value| Row::object("workspace_id", value))
             .collect();
+        #[cfg(test)]
+        drop(_summaries_phase);
+        #[cfg(test)]
+        let _external_phase =
+            crate::timing::phase_samples::phase("publication.incremental.external_rows");
         let checkouts = app.cached_external_worktrees_json();
         next.board_fields.insert(
             "external_worktrees".into(),
@@ -58,6 +81,11 @@ impl GlobalProjection {
             "scanning".into(),
             SharedJson::value(Value::Bool(checkouts.scanning)),
         );
+        #[cfg(test)]
+        drop(_external_phase);
+        #[cfg(test)]
+        let _dynamic_phase =
+            crate::timing::phase_samples::phase("publication.incremental.pending_usage");
         next.board_fields.insert(
             "pending".into(),
             SharedJson::value(Value::Array(app.pending_rows_json())),
@@ -66,6 +94,8 @@ impl GlobalProjection {
             "usage_limits".into(),
             SharedJson::value(app.usage_limits_json()),
         );
+        #[cfg(test)]
+        drop(_dynamic_phase);
         Some((next, owners))
     }
 }
@@ -79,6 +109,8 @@ fn run_stat(app: &AppState, owner: &str) -> Value {
 }
 
 fn refresh_runs(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.run_rows");
     for row in rows.iter_mut().filter(|row| owners.contains(&row.id)) {
         let mut value = app.run_view(
             &row.id,
@@ -92,6 +124,8 @@ fn refresh_runs(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) {
 }
 
 fn refresh_winners(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.winner_rows");
     for row in rows.iter_mut().filter(|row| owners.contains(&row.id)) {
         let candidate = app.branch_candidate_from_run(&row.id, &run_stat(app, &row.id));
         *row = Row::new("run_id", crate::branch::named_project_row(candidate.row));
@@ -99,6 +133,8 @@ fn refresh_winners(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) 
 }
 
 fn refresh_workspaces(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) -> Option<()> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.workspace_rows");
     for row in rows.iter_mut().filter(|row| {
         row.owner
             .as_ref()
@@ -114,6 +150,11 @@ fn refresh_workspaces(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row
 }
 
 fn refresh_projects(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.project_rows");
+    #[cfg(test)]
+    let _project_filter_phase =
+        crate::timing::phase_samples::phase("publication.incremental.project_capture_filter");
     let projects = owners
         .iter()
         .filter_map(|owner| app.projects.project_id_of(owner))
@@ -126,6 +167,8 @@ fn refresh_projects(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row])
         .filter(|row| projects.contains(row.project_id.as_str()))
         .map(|row| (row.project_id.clone(), row))
         .collect::<HashMap<_, _>>();
+    #[cfg(test)]
+    drop(_project_filter_phase);
     for row in rows {
         let Some(captured) = captured.remove(&row.id) else {
             continue;

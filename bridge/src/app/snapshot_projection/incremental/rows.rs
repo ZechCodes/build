@@ -63,12 +63,19 @@ pub(super) struct TaskRow {
 }
 
 pub(super) fn tasks(app: &AppState, previous: &[TaskRow]) -> Vec<TaskRow> {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.task_reuse");
     // SQL replaces one immutable task payload at a time. Keep both the digest
     // index and any accepted receipt patches when its source is unchanged.
+    #[cfg(test)]
+    let _task_index_phase =
+        crate::timing::phase_samples::phase("publication.incremental.task_index");
     let indexed = previous
         .iter()
         .map(|row| (Arc::as_ptr(&row.source), row))
         .collect::<HashMap<_, _>>();
+    #[cfg(test)]
+    drop(_task_index_phase);
     app.snapshot_watched_task_shared_rows()
         .into_iter()
         .map(|source| {
@@ -124,7 +131,14 @@ pub(super) fn put(
     owner: &str,
     value: SharedJson,
 ) -> SnapshotDelta {
-    if previous.get_shared(method, owner) == Some(&value) {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.put");
+    let unchanged = {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("publication.incremental.equality");
+        previous.get_shared(method, owner) == Some(&value)
+    };
+    if unchanged {
         delta
     } else {
         delta.put_shared(method, owner, value)
@@ -132,12 +146,19 @@ pub(super) fn put(
 }
 
 pub(super) fn push_workspaces(workspaces: &[Row], summaries: &[Row]) -> SharedJson {
+    #[cfg(test)]
+    let _phase = crate::timing::phase_samples::phase("publication.incremental.workspace_list_json");
+    #[cfg(test)]
+    let _summary_index_phase =
+        crate::timing::phase_samples::phase("publication.incremental.summary_index");
     let summaries = summaries.iter().fold(HashMap::new(), |mut index, row| {
         #[cfg(test)]
         crate::app::snapshot_projection::summary_counts::join_visit();
         index.entry(row.id.as_str()).or_insert(row);
         index
     });
+    #[cfg(test)]
+    drop(_summary_index_phase);
     SharedJson::array(workspaces.iter().map(|row| {
         let Some(summary) = summaries.get(row.id.as_str()) else {
             return row.value.clone();

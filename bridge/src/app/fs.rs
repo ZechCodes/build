@@ -25,7 +25,7 @@ pub(crate) const MOVED_SOURCE: &str =
 /// worktree-backed shapes remain valid for clients that have not learned
 /// workspace sources yet; they continue to resolve through `TermScope`.
 #[derive(Debug, Clone)]
-enum FileScope {
+pub(in crate::app) enum FileScope {
     WorkspaceSource {
         workspace_id: String,
         source_id: String,
@@ -40,7 +40,7 @@ enum FileScope {
 }
 
 impl FileScope {
-    fn parse(params: &Value) -> Result<Self, String> {
+    pub(in crate::app) fn parse(params: &Value) -> Result<Self, String> {
         let workspace_id = scope_field(params, "workspace_id")?;
         let source_id = scope_field(params, "source_id")?;
         if workspace_id.is_none() && params.get("project_id").is_some() {
@@ -171,6 +171,92 @@ pub(in crate::app) fn directory_listing(
     Ok(json!({ "path": path, "entries": entries }))
 }
 
+pub(in crate::app) fn host_directory_list(params: &Value) -> Result<Value, String> {
+    let path = match params
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        Some(p) => expand_tilde(p),
+        None => expand_tilde("~"),
+    };
+    let path =
+        std::fs::canonicalize(&path).map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+    let reader =
+        std::fs::read_dir(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut dirs: Vec<(String, std::path::PathBuf, bool)> = reader
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| {
+            let p = e.path();
+            let is_git = p.join(".git").exists();
+            (e.file_name().to_string_lossy().into_owned(), p, is_git)
+        })
+        .collect();
+    dirs.sort_by_key(|a| a.0.to_lowercase());
+    let entries: Vec<Value> = dirs
+        .into_iter()
+        .map(|(name, p, is_git)| {
+            let is_hidden = name.starts_with('.');
+            json!({ "name": name, "path": p.display().to_string(), "is_git": is_git, "is_hidden": is_hidden })
+        })
+        .collect();
+    Ok(json!({
+        "path": path.display().to_string(),
+        "parent": path.parent().map(|p| p.display().to_string()),
+        "is_git": path.join(".git").exists(),
+        "entries": entries,
+    }))
+}
+
+pub(in crate::app) fn read_scoped_file(
+    root: &std::path::Path,
+    params: &Value,
+) -> Result<Value, String> {
+    let path = require_str(params, "path")?;
+    let target = fenced_scope_path(root, &path)?;
+    let leaf =
+        std::fs::symlink_metadata(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
+    if leaf.file_type().is_symlink() {
+        return Err("refusing to read a symlink".to_string());
+    }
+    let (file, opened_metadata) = open_regular_read(&target, &path)?;
+    if let Some(range) = FileRange::from_params(params)? {
+        return read_page(
+            file,
+            &target,
+            &path,
+            range.body(),
+            range.raw.unwrap_or(false),
+        );
+    }
+    let size = opened_metadata.len();
+    let read_limit = if media_mime_hint(&target).is_some() {
+        FS_MEDIA_LEGACY_READ_MAX_BYTES
+    } else {
+        FS_READ_MAX_BYTES
+    };
+    let mut content = Vec::with_capacity(size.min(read_limit) as usize);
+    file.take(read_limit)
+        .read_to_end(&mut content)
+        .map_err(|e| format!("cannot read {path}: {e}"))?;
+    let truncated = size > read_limit;
+    let head_len = content.len().min(8192);
+    let mime = mime_hint(&target, &content[..head_len]);
+    let editable = is_editable(&content, !truncated) && text_mime(mime);
+    let revision = (!truncated).then(|| revision_hex(&content));
+    Ok(json!({
+        "path": path,
+        "size": size,
+        "truncated": truncated,
+        "mime": mime,
+        "content_b64": b64encode(&content),
+        "editable": editable,
+        "encoding": editable.then_some("utf-8"),
+        "revision": revision,
+    }))
+}
+
 impl AppState {
     pub(crate) fn fs_create_directory(
         &mut self,
@@ -235,41 +321,7 @@ impl AppState {
     /// Returns the canonical path, its parent (for "up"), whether it is itself a git
     /// repo, and its subdirectories (each flagged if it is a git repo).
     pub(crate) fn fs_list(&self, params: &Value) -> Result<Value, String> {
-        let path = match params
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-        {
-            Some(p) => expand_tilde(p),
-            None => expand_tilde("~"),
-        };
-        let path = std::fs::canonicalize(&path)
-            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
-        let reader =
-            std::fs::read_dir(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let mut dirs: Vec<(String, std::path::PathBuf, bool)> = reader
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| {
-                let p = e.path();
-                let is_git = p.join(".git").exists();
-                (e.file_name().to_string_lossy().into_owned(), p, is_git)
-            })
-            .collect();
-        dirs.sort_by_key(|a| a.0.to_lowercase());
-        let entries: Vec<Value> = dirs
-            .into_iter()
-            .map(|(name, p, is_git)| {
-                let is_hidden = name.starts_with('.');
-                json!({ "name": name, "path": p.display().to_string(), "is_git": is_git, "is_hidden": is_hidden })
-            })
-            .collect();
-        Ok(json!({
-            "path": path.display().to_string(),
-            "parent": path.parent().map(|p| p.display().to_string()),
-            "is_git": path.join(".git").exists(),
-            "entries": entries,
-        }))
+        host_directory_list(params)
     }
 
     /// Create one plain directory in a host folder selected by the user.
@@ -322,48 +374,7 @@ impl AppState {
     pub(crate) fn fs_read(&mut self, params: &Value) -> Result<Value, String> {
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
-        let path = require_str(params, "path")?;
-        let target = fenced_scope_path(&root, &path)?;
-        let leaf =
-            std::fs::symlink_metadata(&target).map_err(|e| format!("cannot read {path}: {e}"))?;
-        if leaf.file_type().is_symlink() {
-            return Err("refusing to read a symlink".to_string());
-        }
-        let (file, opened_metadata) = open_regular_read(&target, &path)?;
-        if let Some(range) = FileRange::from_params(params)? {
-            return read_page(
-                file,
-                &target,
-                &path,
-                range.body(),
-                range.raw.unwrap_or(false),
-            );
-        }
-        let size = opened_metadata.len();
-        let read_limit = if media_mime_hint(&target).is_some() {
-            FS_MEDIA_LEGACY_READ_MAX_BYTES
-        } else {
-            FS_READ_MAX_BYTES
-        };
-        let mut content = Vec::with_capacity(size.min(read_limit) as usize);
-        file.take(read_limit)
-            .read_to_end(&mut content)
-            .map_err(|e| format!("cannot read {path}: {e}"))?;
-        let truncated = size > read_limit;
-        let head_len = content.len().min(8192);
-        let mime = mime_hint(&target, &content[..head_len]);
-        let editable = is_editable(&content, !truncated) && text_mime(mime);
-        let revision = (!truncated).then(|| revision_hex(&content));
-        Ok(json!({
-            "path": path,
-            "size": size,
-            "truncated": truncated,
-            "mime": mime,
-            "content_b64": b64encode(&content),
-            "editable": editable,
-            "encoding": editable.then_some("utf-8"),
-            "revision": revision,
-        }))
+        read_scoped_file(&root, params)
     }
 
     /// Replace an existing editable text file after verifying the exact bytes

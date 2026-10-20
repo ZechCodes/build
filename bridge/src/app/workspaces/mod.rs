@@ -14,7 +14,7 @@ mod branch_delete;
 mod deferred_creation;
 mod deletion;
 mod directories;
-mod git_initialization;
+pub(in crate::app) mod git_initialization;
 mod lock;
 mod ownership;
 mod reclaim;

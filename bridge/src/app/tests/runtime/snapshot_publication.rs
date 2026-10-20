@@ -273,7 +273,7 @@ fn detached_checkout_publishes_the_recorded_branch_fallback() {
     let reply = fixture.checkout("refs/tags/snapshot-anchor");
     let repository = git2::Repository::open(&fixture.path).unwrap();
     assert!(repository.head_detached().unwrap());
-    assert!(reply["result"]["branch"].is_null(), "{reply}");
+    assert_eq!(reply["result"]["branch"], "HEAD", "{reply}");
     // Worktree::branch has always answered its recorded branch for detached
     // HEAD; retaining the last observed attached branch would change that.
     fixture.assert_snapshot_branch(&fixture.recorded_branch);

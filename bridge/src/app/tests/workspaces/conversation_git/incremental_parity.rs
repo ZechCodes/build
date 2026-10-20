@@ -6,6 +6,7 @@ use crate::changes::{BoardLists, EntityFacts, FactsRequest};
 use std::collections::{BTreeMap, BTreeSet};
 
 const CLOCK: &str = "2026-01-01T00:00:00Z";
+const LATER_CLOCK: &str = "2026-01-01T00:01:00Z";
 
 fn fixture() -> (tempfile::TempDir, AppState) {
     let (tmp, mut state, _) = ownership_fixture(4, false);
@@ -179,6 +180,10 @@ fn rejected_incremental_candidate_never_enters_the_accepted_cache() {
     assert_fast_eligible(&state, "run-02");
     let mut accepted = state.take_run("run-02").unwrap();
     accepted.run.goal = "accepted unrelated goal".into();
+    accepted
+        .agents
+        .sole_thread_mut()
+        .post_agent("accepted unrelated news", None, LATER_CLOCK);
     state
         .finish_run_mutation("run-02".into(), accepted)
         .unwrap();
@@ -202,7 +207,7 @@ fn accepted_owner_waits_for_failed_borrowed_peer_before_cache_publication() {
     accepted
         .agents
         .sole_thread_mut()
-        .post_agent("accepted peer news", None, CLOCK);
+        .post_agent("accepted peer news", None, LATER_CLOCK);
     rejected.run.goal = "UNCOMMITTED BORROWED GOAL".into();
     rejected
         .agents
@@ -368,6 +373,11 @@ fn receipt_patch_survives_unrelated_owner_and_task_publication() {
     assert_fast_eligible(&state, "run-02");
     let mut unrelated = state.take_run("run-02").unwrap();
     unrelated.run.goal = "unrelated publication after receipt".into();
+    unrelated.agents.sole_thread_mut().post_agent(
+        "unrelated news after receipt",
+        None,
+        LATER_CLOCK,
+    );
     state
         .finish_run_mutation("run-02".into(), unrelated)
         .unwrap();

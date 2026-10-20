@@ -3,7 +3,7 @@
 //! independent I/O workers execute external observations.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::{json, Value};
 use tokio::sync::{oneshot, Notify, OwnedSemaphorePermit, Semaphore};
@@ -25,10 +25,12 @@ enum ReadLane {
 }
 
 /// Both ordinary SQL reads and observation metadata preparation share these
-/// dedicated SQL workers, up to eight. Ordinary SQL initializes all eight;
-/// observation metadata grows on demand. External work never enters this executor.
+/// eight dedicated SQL workers. The daemon starts them before accepting reads;
+/// callers outside daemon bootstrap initialize the same full set on first use.
+/// External work never enters this executor.
 pub(super) struct ReadExecutors {
     executor: DedicatedExecutors,
+    ready: OnceLock<()>,
     slots: Arc<Semaphore>,
 }
 
@@ -41,6 +43,7 @@ impl ReadExecutors {
                 #[cfg(test)]
                 starts,
             ),
+            ready: OnceLock::new(),
             slots: Arc::new(Semaphore::new(SQL_WORKERS)),
         }
     }
@@ -54,10 +57,21 @@ impl ReadExecutors {
         })
     }
 
-    fn ensure_workers(&self) {
-        self.executor
-            .ensure_workers(SQL_WORKERS)
-            .expect("start SQL read workers");
+    fn ready_for_handler(handler: &FrameHandler) -> &Self {
+        let executors = Self::for_handler(handler);
+        executors.ensure_workers().expect("start SQL read workers");
+        executors
+    }
+
+    fn ensure_workers(&self) -> std::io::Result<()> {
+        if self.ready.get().is_some() {
+            return Ok(());
+        }
+        // The executor serializes concurrent initializers and retains partial
+        // successful starts if a spawn fails. Publish readiness only at eight.
+        self.executor.ensure_workers(SQL_WORKERS)?;
+        let _ = self.ready.set(());
+        Ok(())
     }
 
     async fn acquire(&self) -> OwnedSemaphorePermit {
@@ -90,9 +104,7 @@ impl ReadExecutors {
 /// Each successful spawn has created its OS thread before this returns. No
 /// request or SQL query is needed to initialize the dedicated executor.
 pub(super) fn start_read_workers(handler: &FrameHandler) -> std::io::Result<()> {
-    ReadExecutors::for_handler(handler)
-        .executor
-        .ensure_workers(SQL_WORKERS)
+    ReadExecutors::for_handler(handler).ensure_workers()
 }
 
 struct Job {
@@ -133,7 +145,7 @@ impl ReadDispatcher {
         let queue = Arc::new(Queue::default());
         match lane {
             ReadLane::Sql => {
-                ReadExecutors::for_handler(&handler).ensure_workers();
+                ReadExecutors::ready_for_handler(&handler);
                 for _ in 0..SQL_WORKERS {
                     tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
                 }
@@ -558,7 +570,7 @@ async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option
         "sql_executor_init_start",
         std::time::Instant::now(),
     );
-    let executors = ReadExecutors::for_handler(handler);
+    let executors = ReadExecutors::ready_for_handler(handler);
     #[cfg(test)]
     handler.clock.mark_request(
         &work.job.frame,
@@ -677,7 +689,7 @@ pub(super) fn call_observation(
                 .build()
                 .expect("direct read checkout runtime");
             let prepared = runtime.block_on(async {
-                let executors = ReadExecutors::for_handler(&handler);
+                let executors = ReadExecutors::ready_for_handler(&handler);
                 let permit = executors.acquire().await;
                 let connection = match handler
                     .observations

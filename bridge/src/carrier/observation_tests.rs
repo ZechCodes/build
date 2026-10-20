@@ -437,7 +437,7 @@ async fn io_threads_grow_only_for_concurrent_work_and_reuse_warm_workers() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cold_mixed_observation_starts_only_one_sql_worker() {
+async fn a_cold_mixed_observation_initializes_eight_sql_workers() {
     let root = tempfile::tempdir().unwrap();
     let store = crate::store::Store::new(root.path()).unwrap();
     let handler = FrameHandler::new(FrameClock::new(), |_, _, _| {
@@ -459,13 +459,13 @@ async fn a_cold_mixed_observation_starts_only_one_sql_worker() {
     assert_eq!(client.reply().await["id"], 1);
     assert_eq!(
         starts.load(Ordering::SeqCst),
-        1,
-        "first mixed read starts one SQL worker, rather than all eight"
+        sql::SQL_WORKERS,
+        "fallback mixed reads initialize the selected eight-worker SQL executor"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mixed_sql_workers_grow_for_overlapping_preparation_and_share_eight_permits() {
+async fn mixed_sql_preparation_shares_eight_permits_with_ordinary_reads() {
     let root = tempfile::tempdir().unwrap();
     let store = crate::store::Store::new(root.path()).unwrap();
     let pool = store.read_pool();
@@ -494,8 +494,8 @@ async fn mixed_sql_workers_grow_for_overlapping_preparation_and_share_eight_perm
         held.wait_for_arrival();
         assert_eq!(
             starts.load(Ordering::SeqCst),
-            index + 1,
-            "each overlapping preparation grows the shared executor only as needed"
+            sql::SQL_WORKERS,
+            "overlapping preparation reuses the selected eight-worker SQL executor"
         );
     }
     client.send(100, "tasks.get", json!({})).await;
@@ -535,6 +535,7 @@ async fn ordinary_sql_keeps_eight_workers_after_mixed_first_initialization() {
     let mut client = Client::new(handler);
     client.send(1, "tasks.attachment", json!({})).await;
     assert_eq!(client.reply().await["id"], 1);
+    assert_eq!(starts.load(Ordering::SeqCst), sql::SQL_WORKERS);
     client.send(2, "tasks.get", json!({})).await;
     assert_eq!(client.reply().await["id"], 2);
     assert_eq!(

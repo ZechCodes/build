@@ -44,8 +44,9 @@ impl AppState {
             }
         }
         let previous = self.read_view.load();
-        let previous_agents = previous
-            .get("agent.list", owner)
+        let previous_row = previous.get("agent.list", owner);
+        let previous_agents = previous_row
+            .as_deref()
             .and_then(|row| row["agents"].as_array());
         for agent in previous_agents.into_iter().flatten() {
             for field in ["id", "conversation_id"] {

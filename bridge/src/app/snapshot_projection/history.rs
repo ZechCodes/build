@@ -71,6 +71,7 @@ impl AppState {
                 .collect::<Vec<_>>(),
             Some(owner) => previous
                 .get("agent.list", owner)
+                .as_deref()
                 .and_then(|row| row["agents"].as_array())
                 .into_iter()
                 .flatten()

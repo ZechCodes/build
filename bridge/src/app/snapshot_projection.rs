@@ -19,7 +19,7 @@ pub(in crate::app) struct SnapshotObservations {
     paths: BTreeMap<PathBuf, PathBuf>,
     existing_paths: BTreeSet<PathBuf>,
     branches: BTreeMap<String, String>,
-    watched_tasks: Mutex<BTreeMap<String, Vec<Value>>>,
+    watched_tasks: Mutex<BTreeMap<String, Vec<Arc<Value>>>>,
     projects: Mutex<BTreeMap<String, ProjectObservation>>,
     workspace_reviews: BTreeMap<String, Value>,
 }
@@ -109,6 +109,32 @@ impl AppState {
             .unwrap()
             .clone();
         let delta = self.prepare_snapshot_owner_rows(delta, &previous, &owners, false);
+        self.publish_prepared_snapshot_projection(delta);
+    }
+
+    /// A committed task observation changes the watched-task rows. Keep the
+    /// usual publication barrier and fall back when other owners are pending.
+    pub(in crate::app) fn publish_task_snapshot_projection(&self) {
+        if !self.can_publish_snapshot_projection() {
+            return;
+        }
+        let owners_pending = !self
+            .snapshot_observations
+            .pending_owners
+            .lock()
+            .unwrap()
+            .is_empty();
+        let _ownership = self.begin_snapshot_ownership();
+        let previous = self.read_view.load();
+        let delta = if owners_pending {
+            None
+        } else {
+            self.prepare_incremental_task_snapshot(
+                SnapshotDelta::new(self.read_view.next_version()),
+                &previous,
+            )
+        }
+        .unwrap_or_else(|| self.prepare_fallback_snapshot_projection(&previous));
         self.publish_prepared_snapshot_projection(delta);
     }
 
@@ -202,15 +228,42 @@ impl AppState {
         }
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
-        let delta = self
-            .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
         let owners = self
             .snapshot_observations
             .pending_owners
             .lock()
             .unwrap()
             .clone();
-        Some(self.prepare_snapshot_owner_rows(delta, &previous, &owners, true))
+        Some(
+            match self.prepare_incremental_owner_snapshot(
+                SnapshotDelta::new(self.read_view.next_version()),
+                &previous,
+                &owners,
+            ) {
+                Some(delta) => self.prepare_snapshot_owner_rows(delta, &previous, &owners, true),
+                None => self.prepare_fallback_snapshot_projection(&previous),
+            },
+        )
+    }
+
+    fn prepare_fallback_snapshot_projection(&self, previous: &ReadView) -> SnapshotDelta {
+        // A changed layout can affect a different owner from the trigger,
+        // including one whose session or workspace has just disappeared.
+        let owners = self
+            .snapshot_owner_ids()
+            .into_iter()
+            .chain(
+                previous
+                    .keys()
+                    .filter(|key| key.method == "agent.list")
+                    .map(|key| key.owner.clone()),
+            )
+            .collect();
+        let delta = self
+            .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), previous);
+        let delta = self.prepare_workspace_snapshot_details(delta, previous, None);
+        let delta = self.prepare_snapshot_agent_rows(delta, previous, &owners);
+        self.prepare_snapshot_histories(delta, None)
     }
 
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
@@ -269,90 +322,16 @@ impl AppState {
 
     pub(in crate::app) fn prepare_global_snapshot(
         &self,
-        mut delta: SnapshotDelta,
+        delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.global");
-        let board = self.board_snapshot();
-        let projects = self.snapshot_project_list();
-        let workspaces = self
-            .workspace_list_snapshot(&json!({}))
-            .unwrap_or_else(|error| {
-                eprintln!("workspace snapshot: {error}");
-                previous
-                    .get("workspace.list", "")
-                    .cloned()
-                    .expect("workspace observations warmed before publication")
-            });
-        let mut lists =
-            json!({"projects": projects["projects"], "usage_limits": board["usage_limits"]});
-        lists["workspaces"] =
-            snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]);
-        delta = put_changed(delta, previous, "board.list", "", board);
-        delta = put_changed(delta, previous, "project.list", "", projects);
-        delta = self.prepare_workspace_lists(delta, previous, &workspaces);
-        delta = put_changed(delta, previous, "workspace.list", "", workspaces);
-        delta = put_changed(
-            delta,
-            previous,
-            "settings.get",
-            "",
-            self.settings_get_observed(self.snapshot_account_availability()),
-        );
-        delta = put_changed(
-            delta,
-            previous,
-            "models.list",
-            "",
-            self.models_list_snapshot(),
-        );
-        self.prepare_observation_inputs(delta, previous)
-            .set_facts(Arc::new(self.push_facts_snapshot(lists)))
-    }
-
-    fn prepare_workspace_lists(
-        &self,
-        mut delta: SnapshotDelta,
-        previous: &ReadView,
-        workspaces: &Value,
-    ) -> SnapshotDelta {
-        let projects = self
-            .projects
-            .iter()
-            .map(|project| project.id.as_str())
-            .collect::<BTreeSet<_>>();
-        for key in previous
-            .keys()
-            .filter(|key| key.method == "workspace.list" && !key.owner.is_empty())
-        {
-            if !projects.contains(key.owner.as_str()) {
-                delta = delta.remove(key.method, key.owner.clone());
-            }
-        }
-        for project in projects {
-            let rows = workspaces["workspaces"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|workspace| workspace["project_id"] == project)
-                .cloned()
-                .collect::<Vec<_>>();
-            delta = put_changed(
-                delta,
-                previous,
-                "workspace.list",
-                project,
-                Value::Object(serde_json::Map::from_iter([(
-                    "workspaces".into(),
-                    Value::Array(rows),
-                )])),
-            );
-        }
-        delta
+        self.prepare_full_global_snapshot(delta, previous)
     }
 }
 
+#[cfg(test)]
 fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value {
     let mut by_workspace = HashMap::new();
     for summary in summaries.as_array().into_iter().flatten() {
@@ -388,7 +367,10 @@ fn put_changed(
     owner: &str,
     value: Value,
 ) -> SnapshotDelta {
-    if previous.get(method, owner) == Some(&value) {
+    if previous
+        .get_shared(method, owner)
+        .is_some_and(|previous| previous.equals_value(&value))
+    {
         delta
     } else {
         delta.put(method, owner, value)
@@ -396,6 +378,7 @@ fn put_changed(
 }
 
 mod history;
+pub(in crate::app) mod incremental;
 mod maintenance;
 mod observations;
 mod ownership;

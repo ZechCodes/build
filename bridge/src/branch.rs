@@ -383,12 +383,11 @@ pub fn task_finish_warnings(implemented: bool) -> Vec<FinishWarning> {
 ///
 /// Stable, so rows that share an anchor keep the order the fold gave them.
 pub fn sort_by_anchor(rows: &mut [Value]) {
-    rows.sort_by(|left, right| {
-        let left = left["anchor"].as_str();
-        let right = right["anchor"].as_str();
-        (left.is_none(), left.unwrap_or_default())
-            .cmp(&(right.is_none(), right.unwrap_or_default()))
-    });
+    rows.sort_by(|left, right| compare_anchors(left["anchor"].as_str(), right["anchor"].as_str()));
+}
+
+pub(crate) fn compare_anchors(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
+    (left.is_none(), left.unwrap_or_default()).cmp(&(right.is_none(), right.unwrap_or_default()))
 }
 
 #[cfg(test)]

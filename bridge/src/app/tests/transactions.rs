@@ -9,7 +9,7 @@ fn failed_plan_save_cannot_leak_through_an_unrelated_success_or_same_owner_retry
     let mut app = qa_state(&repo, dir.path());
     let id = file_legacy_task(&mut app, "committed plan");
     app.initialize_snapshot_projection();
-    let snapshot = app.read_view.load().get("agent.list", &id).unwrap().clone();
+    let snapshot = app.read_view.load().get_owned("agent.list", &id).unwrap();
     let before = app.plans[&id].agents.clone();
     let clock = app.board.attention().clock(&id);
     let mut candidate = app.take_plan(&id).unwrap();
@@ -27,7 +27,10 @@ fn failed_plan_save_cannot_leak_through_an_unrelated_success_or_same_owner_retry
     assert_eq!(app.board.attention().clock(&id), clock);
     file_legacy_task(&mut app, "unrelated success");
     app.publish_read_metadata();
-    assert_eq!(app.read_view.load().get("agent.list", &id), Some(&snapshot));
+    assert_eq!(
+        app.read_view.load().get_owned("agent.list", &id),
+        Some(snapshot)
+    );
     let candidate = app.take_plan(&id).unwrap();
     app.finish_plan_mutation(id.clone(), candidate).unwrap();
     let records = app.store.as_ref().unwrap().load_all_plans().unwrap();
@@ -44,7 +47,7 @@ fn failed_run_save_cannot_leak_through_an_unrelated_success_or_same_owner_retry(
     let id = adopted_run(&mut app, &repo, dir.path(), "committed-run");
     let goal = app.runs[&id].run.goal.clone();
     app.initialize_snapshot_projection();
-    let snapshot = app.read_view.load().get("agent.list", &id).unwrap().clone();
+    let snapshot = app.read_view.load().get_owned("agent.list", &id).unwrap();
     let before = app.runs[&id].agents.clone();
     let clock = app.board.attention().clock(&id);
     let mut candidate = app.take_run(&id).unwrap();
@@ -62,7 +65,10 @@ fn failed_run_save_cannot_leak_through_an_unrelated_success_or_same_owner_retry(
     assert_eq!(app.board.attention().clock(&id), clock);
     file_legacy_task(&mut app, "unrelated success");
     app.publish_read_metadata();
-    assert_eq!(app.read_view.load().get("agent.list", &id), Some(&snapshot));
+    assert_eq!(
+        app.read_view.load().get_owned("agent.list", &id),
+        Some(snapshot)
+    );
     let candidate = app.take_run(&id).unwrap();
     app.finish_run_mutation(id.clone(), candidate).unwrap();
     let records = app.store.as_ref().unwrap().load_all_runs().unwrap();

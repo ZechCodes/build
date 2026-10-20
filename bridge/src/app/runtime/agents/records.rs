@@ -849,8 +849,8 @@ impl AppState {
             &snapshot.changed_at,
             snapshot.last_worked_at.as_deref(),
         ) {
-            self.persist_attention();
-            self.note_entity_changed(owner);
+            self.persist_attention_for_owner(owner);
+            self.changes.note_entity(owner);
         }
     }
 

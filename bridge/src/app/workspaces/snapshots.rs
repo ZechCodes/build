@@ -8,6 +8,9 @@ use crate::workspace::Workspace;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+use crate::app::snapshot_projection::work_counts::detail_scans;
+
 impl AppState {
     pub(in crate::app) fn prepare_workspace_snapshot_details(
         &self,
@@ -17,6 +20,8 @@ impl AppState {
     ) -> SnapshotDelta {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.workspace_details");
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::workspace_details(owner.is_none());
         let changed = self.snapshot_changed_agent_ids(previous, owner);
         let mut affected = BTreeSet::new();
         let mut retained = BTreeSet::new();
@@ -24,23 +29,34 @@ impl AppState {
             .keys()
             .filter(|key| key.method == "workspace.get" && !key.owner.contains('/'))
         {
+            #[cfg(test)]
+            detail_scans::previous_base();
             if previous
                 .get(key.method, &key.owner)
-                .is_some_and(|row| depends_on_owner(row, owner, &changed))
+                .is_some_and(|row| depends_on_owner(&row, owner, &changed))
             {
                 affected.insert(key.owner.clone());
             }
         }
+        #[cfg(test)]
+        detail_scans::registry_scan();
         for workspace in self.workspaces.list(None) {
+            #[cfg(test)]
+            detail_scans::registry_row();
             if !affected.contains(&workspace.id)
                 && !self.workspace_snapshot_depends(workspace, owner, &changed)
             {
                 continue;
             }
             affected.insert(workspace.id.clone());
+            #[cfg(test)]
+            detail_scans::base_render();
             let value = self.workspace_snapshot_base(workspace);
             retained.insert(workspace.id.clone());
-            if previous.get("workspace.get", &workspace.id) != Some(&value) {
+            if !previous
+                .get_shared("workspace.get", &workspace.id)
+                .is_some_and(|old| old.equals_value(&value))
+            {
                 delta = delta.put("workspace.get", &workspace.id, value.clone());
             }
             delta = self.prepare_workspace_agent_variants(
@@ -52,6 +68,8 @@ impl AppState {
             );
         }
         for key in previous.keys().filter(|key| key.method == "workspace.get") {
+            #[cfg(test)]
+            detail_scans::tombstone_key();
             let workspace = key.owner.split('/').next().unwrap_or_default();
             if affected.contains(workspace) && !retained.contains(&key.owner) {
                 delta = delta.remove("workspace.get", key.owner.clone());
@@ -78,12 +96,17 @@ impl AppState {
             let Ok(thread) = self.agent_conversation(owner, Some(&agent.id)) else {
                 continue;
             };
+            #[cfg(test)]
+            detail_scans::variant_render();
             let key = format!("{}/{}", workspace.id, agent.id);
             let mut variant = value.clone();
             variant["thread"] = self.snapshot_thread_digest(thread);
             variant["run"]["thread"] = variant["thread"].clone();
             retained.insert(key.clone());
-            if previous.get("workspace.get", &key) != Some(&variant) {
+            if !previous
+                .get_shared("workspace.get", &key)
+                .is_some_and(|old| old.equals_value(&variant))
+            {
                 delta = delta.put("workspace.get", key, variant);
             }
         }
@@ -103,8 +126,9 @@ impl AppState {
             .ok()
             .into_iter()
             .flat_map(|roster| roster.iter().map(|agent| agent.id.clone()));
-        let previous = previous
-            .get("agent.list", owner)
+        let previous_row = previous.get("agent.list", owner);
+        let previous = previous_row
+            .as_deref()
             .into_iter()
             .flat_map(|row| row["agents"].as_array().into_iter().flatten())
             .filter_map(|agent| agent["id"].as_str().map(str::to_owned));

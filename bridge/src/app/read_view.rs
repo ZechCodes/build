@@ -4,9 +4,13 @@
 //! shared chunks, merging independent producers against the latest root.
 
 pub(in crate::app) mod history;
+pub(in crate::app) mod shared_json;
+
+pub(in crate::app) use shared_json::SharedJson;
 
 use arc_swap::ArcSwap;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -29,7 +33,7 @@ impl ReadKey {
 #[derive(Clone)]
 struct VersionedChunk {
     version: u64,
-    value: Option<Arc<Value>>,
+    value: Option<SharedJson>,
 }
 
 #[derive(Clone)]
@@ -46,14 +50,30 @@ pub(in crate::app) struct ReadView {
     pub facts_version: u64,
     pub observations: Option<Arc<super::observation_reads::ObservationContext>>,
     observations_version: u64,
+    pub global: Option<Arc<super::snapshot_projection::incremental::GlobalProjection>>,
+    global_version: u64,
 }
 
 impl ReadView {
-    pub fn get(&self, method: &'static str, owner: &str) -> Option<&Value> {
+    pub fn get_shared(&self, method: &'static str, owner: &str) -> Option<&SharedJson> {
         self.chunks
             .get(&ReadKey::new(method, owner))?
             .value
-            .as_deref()
+            .as_ref()
+    }
+
+    /// Compatibility reader. Producers use shared chunks without assembling
+    /// aggregate JSON; consumers own and drop any materialized response.
+    pub fn get(&self, method: &'static str, owner: &str) -> Option<Cow<'_, Value>> {
+        let value = self.get_shared(method, owner)?;
+        Some(match value.leaf() {
+            Some(value) => Cow::Borrowed(value),
+            None => Cow::Owned(value.materialize()),
+        })
+    }
+
+    pub fn get_owned(&self, method: &'static str, owner: &str) -> Option<Value> {
+        self.get_shared(method, owner).map(SharedJson::materialize)
     }
 
     pub fn history(&self, agent_id: &str) -> Option<&history::SharedHistory> {
@@ -90,6 +110,8 @@ impl ReadView {
                     .as_ref()
                     .is_some_and(|context| patch.accepts(context, delta.version))
             })
+            && (delta.global.as_ref().is_none_or(Option::is_none)
+                || self.global_version < delta.version)
     }
 
     fn apply(&mut self, delta: &SnapshotDelta) {
@@ -125,17 +147,22 @@ impl ReadView {
             self.facts = Arc::clone(facts);
             self.facts_version = delta.version;
         }
+        if let Some(global) = &delta.global {
+            self.global = global.clone();
+            self.global_version = self.global_version.max(delta.version);
+        }
     }
 }
 
 pub(in crate::app) struct SnapshotDelta {
     version: u64,
-    updates: BTreeMap<ReadKey, Option<Arc<Value>>>,
+    updates: BTreeMap<ReadKey, Option<SharedJson>>,
     facts: Option<Arc<super::facts::PushFacts>>,
     histories: BTreeMap<String, Option<Arc<history::SharedHistory>>>,
     observations: Option<Arc<super::observation_reads::ObservationContext>>,
     observation_patch: Option<super::observation_reads::ObservationPatch>,
     observation_receipts: Option<super::observation_reads::ObservationReceipts>,
+    global: Option<Option<Arc<super::snapshot_projection::incremental::GlobalProjection>>>,
 }
 
 impl SnapshotDelta {
@@ -148,16 +175,28 @@ impl SnapshotDelta {
             observations: None,
             observation_patch: None,
             observation_receipts: None,
+            global: None,
         }
     }
 
-    pub fn put(mut self, method: &'static str, owner: impl Into<String>, value: Value) -> Self {
+    pub fn put(self, method: &'static str, owner: impl Into<String>, value: Value) -> Self {
+        self.put_shared(method, owner, SharedJson::value(value))
+    }
+
+    pub fn put_shared(
+        mut self,
+        method: &'static str,
+        owner: impl Into<String>,
+        value: SharedJson,
+    ) -> Self {
+        self.invalidate_global(method);
         self.updates
-            .insert(ReadKey::new(method, owner), Some(Arc::new(value)));
+            .insert(ReadKey::new(method, owner), Some(value));
         self
     }
 
     pub fn remove(mut self, method: &'static str, owner: impl Into<String>) -> Self {
+        self.invalidate_global(method);
         self.updates.insert(ReadKey::new(method, owner), None);
         self
     }
@@ -213,6 +252,20 @@ impl SnapshotDelta {
     pub fn set_facts(mut self, facts: Arc<super::facts::PushFacts>) -> Self {
         self.facts = Some(facts);
         self
+    }
+
+    pub fn set_global(
+        mut self,
+        global: Arc<super::snapshot_projection::incremental::GlobalProjection>,
+    ) -> Self {
+        self.global = Some(Some(global));
+        self
+    }
+
+    fn invalidate_global(&mut self, method: &str) {
+        if matches!(method, "board.list" | "project.list" | "workspace.list") {
+            self.global = Some(None);
+        }
     }
 }
 

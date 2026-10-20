@@ -215,7 +215,7 @@ impl AppState {
             .watched_tasks
             .lock()
             .unwrap()
-            .insert(project.to_owned(), rows);
+            .insert(project.to_owned(), rows.into_iter().map(Arc::new).collect());
         Ok(())
     }
     pub(in crate::app) fn install_snapshot_watched_task(
@@ -228,13 +228,19 @@ impl AppState {
         let rows = projects.entry(project.to_owned()).or_default();
         match row {
             Some(row) => match rows.iter_mut().find(|row| row["task_id"] == task) {
-                Some(current) => *current = row,
-                None => rows.push(row),
+                Some(current) => *current = Arc::new(row),
+                None => rows.push(Arc::new(row)),
             },
             None => rows.retain(|row| row["task_id"] != task),
         }
     }
     pub(in crate::app) fn snapshot_watched_task_rows(&self) -> Vec<Value> {
+        self.snapshot_watched_task_shared_rows()
+            .into_iter()
+            .map(|row| row.as_ref().clone())
+            .collect()
+    }
+    pub(in crate::app) fn snapshot_watched_task_shared_rows(&self) -> Vec<Arc<Value>> {
         self.snapshot_observations
             .watched_tasks
             .lock()

@@ -16,16 +16,22 @@ fn fixture() -> PushFacts {
             "body": format!("{owner} immutable payload ").repeat(128),
             "thread": {"thread_id": thread, "thread_generation_revision": generation, "last_sequence": sequence}
         });
-        facts.states.insert(owner.into(), Arc::new(row.clone()));
+        let row = SharedJson::value(row);
+        facts.states.insert(owner.into(), row.clone());
         facts.terminals.insert(
             owner.into(),
             Arc::new(json!({"tabs": [], "body": format!("{owner} terminal payload ").repeat(128)})),
         );
         workspaces.push(row);
     }
-    facts.lists = Arc::new(
-        json!({"projects": [{"project_id": "project"}], "workspaces": workspaces, "usage_limits": {}}),
-    );
+    facts.lists = SharedJson::object([
+        (
+            "projects".into(),
+            SharedJson::value(json!([{"project_id":"project"}])),
+        ),
+        ("workspaces".into(), SharedJson::array(workspaces)),
+        ("usage_limits".into(), SharedJson::value(json!({}))),
+    ]);
     facts
 }
 
@@ -34,6 +40,16 @@ fn body_pointer(value: &Value) -> *const u8 {
         .as_str()
         .expect("nonempty heap payload")
         .as_ptr()
+}
+
+fn state_body_pointer(value: &SharedJson) -> *const u8 {
+    body_pointer(value.leaf().unwrap())
+}
+
+fn workspace_rows(facts: &PushFacts) -> &[SharedJson] {
+    facts.lists.fields().unwrap()["workspaces"]
+        .elements()
+        .unwrap()
 }
 
 fn committed() -> crate::store::CommittedThreadItems {
@@ -52,8 +68,8 @@ fn push_facts_clone_shares_immutable_state_payloads() {
     let after = before.clone();
     for (owner, value) in &before.states {
         assert_eq!(
-            body_pointer(value),
-            body_pointer(&after.states[owner]),
+            state_body_pointer(value),
+            state_body_pointer(&after.states[owner]),
             "state payload copied for {owner}"
         );
     }
@@ -76,15 +92,10 @@ fn push_facts_clone_shares_immutable_terminal_payloads() {
 fn push_facts_clone_shares_immutable_list_payloads() {
     let before = fixture();
     let after = before.clone();
-    for (old, new) in before.lists["workspaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .zip(after.lists["workspaces"].as_array().unwrap())
-    {
+    for (old, new) in workspace_rows(&before).iter().zip(workspace_rows(&after)) {
         assert_eq!(
-            body_pointer(old),
-            body_pointer(new),
+            state_body_pointer(old),
+            state_body_pointer(new),
             "workspace list payload copied"
         );
     }
@@ -96,14 +107,17 @@ fn push_facts_receipt_copies_only_older_matching_digests() {
     let mut after = before.clone();
     after.apply_committed_history_delta(&committed());
     assert_ne!(
-        body_pointer(&before.states["selected"]),
-        body_pointer(&after.states["selected"])
+        state_body_pointer(&before.states["selected"]),
+        state_body_pointer(&after.states["selected"])
     );
-    assert_eq!(after.states["selected"]["thread"]["last_sequence"], 8);
+    assert_eq!(
+        after.states["selected"].leaf().unwrap()["thread"]["last_sequence"],
+        8
+    );
     for owner in ["equal", "newer", "reset", "unrelated"] {
         assert_eq!(
-            body_pointer(&before.states[owner]),
-            body_pointer(&after.states[owner]),
+            state_body_pointer(&before.states[owner]),
+            state_body_pointer(&after.states[owner]),
             "unchanged digest copied for {owner}"
         );
     }
@@ -111,21 +125,22 @@ fn push_facts_receipt_copies_only_older_matching_digests() {
         assert_eq!(body_pointer(value), body_pointer(&after.terminals[owner]));
     }
     assert_ne!(
-        body_pointer(&before.lists["workspaces"][0]),
-        body_pointer(&after.lists["workspaces"][0])
+        state_body_pointer(&workspace_rows(&before)[0]),
+        state_body_pointer(&workspace_rows(&after)[0])
     );
+    assert!(after.states["selected"].ptr_eq(&workspace_rows(&after)[0]));
     let repeated = after.clone();
     after.apply_committed_history_delta(&committed());
     for (owner, value) in &repeated.states {
         assert_eq!(
-            body_pointer(value),
-            body_pointer(&after.states[owner]),
+            state_body_pointer(value),
+            state_body_pointer(&after.states[owner]),
             "repeated receipt copied {owner}"
         );
     }
     assert_eq!(
-        body_pointer(&repeated.lists["workspaces"][0]),
-        body_pointer(&after.lists["workspaces"][0]),
+        state_body_pointer(&workspace_rows(&repeated)[0]),
+        state_body_pointer(&workspace_rows(&after)[0]),
         "repeated receipt copied lists"
     );
 }

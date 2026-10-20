@@ -6,6 +6,7 @@
 use super::*;
 
 mod global_publication;
+mod incremental_parity;
 mod projection_ownership;
 mod read_identity_work;
 mod workspace_summaries;

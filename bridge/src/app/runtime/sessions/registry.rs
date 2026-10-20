@@ -3,14 +3,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::{Arc, Condvar};
+use std::sync::{Arc, Condvar, Weak};
 use std::time::Instant;
 
 use serde_json::Value;
 
 use crate::harness::{AgentSession, AgentStatus, SessionOutput};
 use crate::reaper::Retirement;
-use crate::screen::{ScreenHandle, TerminalHandle};
+use crate::screen::{ScreenHandle, ScreenIdentity, TerminalHandle};
 use crate::thread::SessionInstance;
 
 use super::{LifecycleDiagnostic, MintedCallRow, Tab, TabKey, TabPumps, TabRole};
@@ -101,6 +101,58 @@ pub(in crate::app) enum TerminalCleanupCandidate {
         screen: ScreenHandle,
     },
 }
+
+/// Accepted projections retain weak allocation identities. This prevents ABA
+/// while allowing retired sessions and terminal buffers to drop immediately.
+#[derive(Clone)]
+pub(in crate::app) enum ProjectionRegistration {
+    Tab {
+        key: TabKey,
+        role: TabRole,
+        session: Weak<dyn AgentSession>,
+        instance: Option<SessionInstance>,
+    },
+    WaitingScreen {
+        key: TabKey,
+        screen: ScreenIdentity,
+    },
+}
+
+impl PartialEq for ProjectionRegistration {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Tab {
+                    key,
+                    role,
+                    session,
+                    instance,
+                },
+                Self::Tab {
+                    key: other_key,
+                    role: other_role,
+                    session: other_session,
+                    instance: other_instance,
+                },
+            ) => {
+                key == other_key
+                    && role == other_role
+                    && instance == other_instance
+                    && session.ptr_eq(other_session)
+            }
+            (
+                Self::WaitingScreen { key, screen },
+                Self::WaitingScreen {
+                    key: other_key,
+                    screen: other_screen,
+                },
+            ) => key == other_key && screen == other_screen,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ProjectionRegistration {}
 
 impl TerminalCleanupCandidate {
     pub(in crate::app) fn key(&self) -> &TabKey {
@@ -331,6 +383,34 @@ impl SessionRegistry {
         {
             self.mcp_tokens.remove(&lease.agent_id);
         }
+    }
+
+    /// Preserve native registry order, including the first root status match.
+    pub(in crate::app) fn projection_layout(&self) -> Vec<ProjectionRegistration> {
+        self.tabs
+            .iter()
+            .map(|(key, tab)| ProjectionRegistration::Tab {
+                key: key.clone(),
+                role: tab.role.clone(),
+                session: Arc::downgrade(&tab.session),
+                instance: tab.session_instance.clone(),
+            })
+            .chain(self.waiting_screens.iter().map(|(key, screen)| {
+                ProjectionRegistration::WaitingScreen {
+                    key: key.clone(),
+                    screen: screen.identity(),
+                }
+            }))
+            .collect()
+    }
+
+    /// Retained sessions can change their status and surfaces independently of
+    /// a producer's owner. Refresh all of them on incremental publications.
+    pub(in crate::app) fn projection_agent_owners(&self) -> std::collections::BTreeSet<String> {
+        self.tabs
+            .values()
+            .filter_map(|tab| tab.role.agent().map(|(owner, _)| owner.to_owned()))
+            .collect()
     }
 
     pub(in crate::app) fn agent_tabs_at(&self, root: &Path) -> Vec<AgentTabFact> {

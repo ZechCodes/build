@@ -2,6 +2,98 @@ use super::*;
 use crate::app::snapshot_projection::work_counts;
 
 #[test]
+fn incremental_publication_renders_only_the_changed_owner_among_two_hundred() {
+    let (_tmp, mut state, _) = ownership_fixture(200, false);
+    add_tip_agents(&mut state, 1);
+    for (id, active) in &state.runs {
+        state.board.attention_mut().restore_entity_clocks(
+            id.clone(),
+            "2026-01-01T00:00:00Z".into(),
+            "2026-01-01T00:00:00Z".into(),
+            "2026-01-01T00:00:00Z".into(),
+            crate::app::run_state_str(&active.run.state).into(),
+        );
+    }
+    eprintln!("incremental200: warming observed publication inputs");
+    let started = std::time::Instant::now();
+    // This fixture measures publication of already observed inputs. Skip boot's
+    // Git/checkout maintenance; retain every owner, history and workspace row.
+    let projects = state
+        .capture_project_snapshot_observations()
+        .into_iter()
+        .map(|row| (row.project_id.clone(), row.render()))
+        .collect();
+    state.install_project_snapshot_observations(projects);
+    state.warm_snapshot_observations_for_test();
+    for owner in state.runs.keys() {
+        state.mark_snapshot_owner_pending(owner);
+    }
+    state.publish_all_snapshot_projection();
+    eprintln!(
+        "incremental200: initial publication complete after {:?}",
+        started.elapsed()
+    );
+    let old = state.read_view.load();
+    let agent = state.runs["run-00"]
+        .agents
+        .iter()
+        .next()
+        .unwrap()
+        .id
+        .clone();
+    state
+        .runs
+        .get_mut("run-00")
+        .unwrap()
+        .agents
+        .by_id_mut(&agent)
+        .unwrap()
+        .topic = Some("Only this conversation changed".into());
+    eprintln!("incremental200: publishing changed owner");
+    let (_, counts) = work_counts::measure(|| state.publish_owner_snapshot_projection("run-00"));
+    eprintln!("incremental200: changed owner published: {counts:?}");
+    let actual = state.read_view.load();
+    assert!(
+        counts.branches <= 1,
+        "unrelated branch rows were rendered: {counts:?}"
+    );
+    assert!(
+        counts.agents <= 3,
+        "unrelated agent rows were rendered: {counts:?}"
+    );
+    assert_eq!(
+        actual.get("board.list", "").unwrap()["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        200
+    );
+    let changed = actual.get("board.list", "").unwrap();
+    assert_eq!(
+        changed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["run_id"] == "run-00")
+            .unwrap()["agents"][0]["topic"],
+        "Only this conversation changed"
+    );
+    assert_ne!(
+        old.get("board.list", "").unwrap()["items"],
+        changed["items"]
+    );
+    state.publish_all_snapshot_projection();
+    let reference = state.read_view.load();
+    for method in ["board.list", "project.list", "workspace.list"] {
+        assert_eq!(
+            actual.get_owned(method, ""),
+            reference.get_owned(method, ""),
+            "{method}"
+        );
+    }
+}
+
+#[test]
 fn global_publication_renders_each_branch_and_agent_scope_once() {
     let (_tmp, mut state, _) = ownership_fixture(16, false);
     add_tip_agents(&mut state, 4);
@@ -381,3 +473,5 @@ fn global_publication_unread_memo_expires_when_an_alias_rebinds() {
         1
     );
 }
+
+mod incremental_rows;

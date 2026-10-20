@@ -1,6 +1,7 @@
 //! Separately committed historical row edits share the same immutable root as
 //! their existing digest rows and bounded push tails.
-use super::{insert, patch_thread_digests, thread_digests_need_patch, SharedHistory};
+use super::{insert, SharedHistory};
+use crate::app::read_view::shared_json::DigestPatch;
 use crate::app::read_view::SnapshotDelta;
 use crate::app::AppState;
 use crate::store::CommittedThreadItems;
@@ -63,24 +64,30 @@ impl AppState {
             let history = previous
                 .history(&committed.conversation_id)?
                 .with_committed_items(committed)?;
+            let mut patch = DigestPatch::new(
+                &committed.thread_id,
+                committed.generation_revision,
+                committed.sequence,
+            );
             let mut facts = previous.facts.as_ref().clone();
-            facts.apply_committed_history_delta(committed);
+            facts.apply_committed_history_delta_with_patch(committed, &mut patch);
             let mut delta = SnapshotDelta::new(version)
                 .put_history(&committed.conversation_id, history)
                 .set_facts(Arc::new(facts));
             #[cfg(test)]
             let _phase = crate::timing::phase_samples::phase("publication.committed.chunks");
             for key in previous.keys() {
-                let row = previous.get(key.method, &key.owner)?;
-                if !thread_digests_need_patch(row, committed) {
-                    continue;
+                let row = previous.get_shared(key.method, &key.owner)?;
+                if let Some(row) = patch.apply(row) {
+                    #[cfg(test)]
+                    tests::record_chunk_copy();
+                    delta = delta.put_shared(key.method, &key.owner, row);
                 }
-                let mut row = row.clone();
-                #[cfg(test)]
-                tests::record_chunk_copy();
-                if patch_thread_digests(&mut row, committed) {
-                    delta = delta.put(key.method, &key.owner, row);
-                }
+            }
+            if let Some(global) = &previous.global {
+                let next = global
+                    .patch_shared(&mut |value| patch.apply(value).unwrap_or_else(|| value.clone()));
+                delta = delta.set_global(Arc::new(next));
             }
             Some(delta)
         });

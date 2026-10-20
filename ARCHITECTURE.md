@@ -485,6 +485,24 @@ identity, publication sequence and resident tail geometry match. Each publicatio
 still captures fresh tip metadata. Historical receipt rows retain their existing
 bounded floor and generation fences.
 
+Global board and list projections retain shared row fragments in the accepted
+`ReadView`, alongside the layout inputs that justify reusing them. Known-owner
+and committed task-observation publications replace affected rows; structural
+changes use the full producer. Alias and shared-root dependencies, active
+session observations, and elapsed-time fields participate in each refresh.
+Registry identities use weak handles so a retained read root cannot keep a
+retired session or terminal screen alive. Attention changes for known owners
+use the same scoped publication; other board invalidations retain their full
+refresh path.
+
+`read_view/shared_json.rs` composes immutable JSON leaves without caching a
+materialized aggregate. Intake and push readers materialize their owned wire
+answers after releasing the app guard. Historical receipt patches index exact
+thread identities and replace only advancing leaves, updating cached row
+fragments in the same atomic delta. Preparing or rejecting a candidate cannot
+change the accepted fragments, and direct aggregate replacements invalidate
+their reuse cache. Watched task observations retain unchanged payloads by `Arc`.
+
 ### Liveness and signaling
 
 `DedicatedRuntime::liveness()` (`bridge/src/liveness.rs`) is a small, separate

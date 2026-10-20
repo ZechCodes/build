@@ -519,14 +519,21 @@ impl AppState {
     fn cached_workspace_summaries_json(&self) -> Vec<Value> {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.board_workspace_summaries");
-        self.workspaces.list(None).into_iter().map(|workspace| {
+        let workspaces = self.workspaces.list(None);
+        if workspaces.is_empty() {
+            return Vec::new();
+        }
+        // This observation belongs only to these rows. A later candidate must
+        // observe live statuses and accepted delivery roots again.
+        let working_roots = self.snapshot_working_roots();
+        workspaces.into_iter().map(|workspace| {
             let repositories = workspace.directories.iter()
                 .filter(|directory| directory.is_git)
                 .map(|directory| directory.path.clone()).collect::<Vec<_>>();
             let summary = self.workspace_summary_of(&workspace.id, &repositories)
                 .map(|(_, summary)| summary.clone()).unwrap_or(Value::Null);
             let mut blockers = Vec::new();
-            if self.snapshot_agent_working_at_root(&self.snapshot_root(&workspace.root)) {
+            if working_roots.contains(&self.snapshot_root(&workspace.root)) {
                 blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
             }
             if workspace.directories.iter().any(|directory| !directory.is_git) {

@@ -221,6 +221,8 @@ impl SessionRegistry {
             .iter()
             .filter(|(_, tab)| tab.role.agent().is_some())
             .map(|(_, tab)| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::summary_counts::status_visit();
                 (
                     tab.root.clone(),
                     tab.live && matches!(tab.session.status(), AgentStatus::Working),

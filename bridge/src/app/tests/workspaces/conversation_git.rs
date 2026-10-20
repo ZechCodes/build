@@ -5,8 +5,10 @@
 
 use super::*;
 
-mod projection_ownership;
 mod global_publication;
+mod projection_ownership;
+mod read_identity_work;
+mod workspace_summaries;
 
 fn conversation_run(state: &mut AppState, workspace_id: &str) -> String {
     let conversation = state.handle(req(

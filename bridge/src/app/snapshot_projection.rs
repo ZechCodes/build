@@ -5,7 +5,7 @@ use super::read_view::{ReadView, SnapshotDelta};
 use super::workspaces::ProjectionOwnership;
 use super::{AppState, ProjectListRow};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -339,18 +339,23 @@ impl AppState {
 }
 
 fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value {
+    let mut by_workspace = HashMap::new();
+    for summary in summaries.as_array().into_iter().flatten() {
+        #[cfg(test)]
+        summary_counts::join_visit();
+        // The old search selected the first equal id, including missing/null
+        // and legacy non-string ids. Keep Value equality for every input.
+        by_workspace
+            .entry(&summary["workspace_id"])
+            .or_insert(summary);
+    }
     let rows = workspaces
         .as_array()
         .into_iter()
         .flatten()
         .map(|workspace| {
             let mut workspace = workspace.clone();
-            if let Some(summary) = summaries
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|summary| summary["workspace_id"] == workspace["workspace_id"])
-            {
+            if let Some(summary) = by_workspace.get(&workspace["workspace_id"]) {
                 for key in ["work_summary", "can_finish", "finish_blockers"] {
                     workspace[key] = summary[key].clone();
                 }
@@ -358,7 +363,7 @@ fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value 
             workspace
         })
         .collect::<Vec<_>>();
-    json!(rows)
+    Value::Array(rows)
 }
 
 fn put_changed(
@@ -386,3 +391,6 @@ mod tests;
 
 #[cfg(test)]
 pub(in crate::app) mod work_counts;
+
+#[cfg(test)]
+pub(in crate::app) mod summary_counts;

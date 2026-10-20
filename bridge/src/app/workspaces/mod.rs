@@ -7,6 +7,7 @@ use crate::isolation::{remove_directory_with_rift_root, Isolation};
 use crate::workspace::{Workspace, WorkspaceDirectory, WorkspaceRegistry, WorkspaceSource};
 use crate::worktree::{copy_directory_with_rift_root, Worktree, WorktreeManager};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 mod adoption;
@@ -836,13 +837,22 @@ impl AppState {
                 .any(|(candidate, working)| working && Self::canonical_root(&candidate) == root)
     }
 
-    pub(in crate::app) fn snapshot_agent_working_at_root(&self, root: &Path) -> bool {
-        self.delivery_queue.has_in_flight_at_root(root)
-            || self
-                .session_registry
+    /// Observe once for all rows in a board candidate. Delivery keys already
+    /// have their comparison roots; only session roots use the path observation.
+    pub(in crate::app) fn snapshot_working_roots(&self) -> HashSet<PathBuf> {
+        let mut roots = self
+            .delivery_queue
+            .in_flight_agent_roots()
+            .map(Path::to_path_buf)
+            .collect::<HashSet<_>>();
+        roots.extend(
+            self.session_registry
                 .agent_working_roots()
                 .into_iter()
-                .any(|(candidate, working)| working && self.snapshot_root(&candidate) == root)
+                .filter(|(_, working)| *working)
+                .map(|(root, _)| self.snapshot_root(&root)),
+        );
+        roots
     }
 
     /// Done: the workspace's work is somewhere else, so the workspace goes.

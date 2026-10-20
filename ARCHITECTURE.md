@@ -405,9 +405,12 @@ by the effective read cursor. Cached external checkout
 rows are rendered in one pass and reused by push states, retaining the first
 matching project and agent-root entry. Project-scoped workspace filters and
 canonical conversation aliases retain their existing behavior without resolving
-paths per agent. These candidate-local indexes and render memos end before
-persistence or canonical mutation; a failed candidate cannot seed a later
-publication. Complete local read-view deltas retain their atomic publication
+paths per agent. Board workspace summaries observe in-flight delivery roots
+and live session status once for all workspace rows. Push workspace rows join
+summaries through a temporary index that preserves JSON id equality and
+first-match duplicate precedence. These candidate-local indexes and render
+memos end before persistence or canonical mutation; a failed candidate cannot
+seed a later publication. Complete local read-view deltas retain their atomic publication
 boundary before replies and change notices. Counting tests include the
 publication producer as well as the pure push reader.
 Bounded push tail bodies are shared between publications while conversation

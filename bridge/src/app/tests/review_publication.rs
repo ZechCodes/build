@@ -74,33 +74,13 @@ async fn merge_release_keeps_later_reads_notices_and_news_live() {
         let survivor = adopted_run(&mut app, &repo, dir.path(), "surviving-owner");
         (released, survivor)
     };
-    let initial = push::settled_pushes(&mut incoming, &key).await;
-    eprintln!("release initial pushes: {}", json!(initial));
+    push::settled_pushes(&mut incoming, &key).await;
     let control_tip = save_message(
         &mut state.lock().unwrap(),
         &survivor,
         "before release",
         "before release news",
     );
-    {
-        let app = state.lock().unwrap();
-        let facts = crate::app::facts::entity_facts(
-            &app.facts_handle,
-            &[crate::changes::FactsRequest {
-                entity_id: survivor.clone(),
-                state: true,
-                thread: true,
-                ..Default::default()
-            }],
-        );
-        eprintln!(
-            "release control facts: {}",
-            json!({
-                "facts": facts.iter().map(|fact| json!({"entity_id": fact.entity_id, "state": fact.state, "threads": fact.threads, "withdrawn": fact.withdrawn})).collect::<Vec<_>>(),
-                "pending": app.changes.has_pending(),
-            })
-        );
-    }
     let control = push::settled_pushes(&mut incoming, &key).await;
     assert_published(
         &handler,

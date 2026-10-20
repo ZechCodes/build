@@ -183,7 +183,7 @@ fn first_snapshot_keeps_seeded_workspace_rows_and_performs_no_path_lookups() {
 struct BranchSnapshotFixture {
     _directory: tempfile::TempDir,
     handler: crate::carrier::FrameHandler,
-    snapshots: crate::app::read_view::SnapshotService,
+    snapshots: Box<dyn Fn(crate::transport::Frame) -> Value>,
     owner: String,
     workspace: String,
     path: PathBuf,
@@ -210,7 +210,7 @@ impl BranchSnapshotFixture {
         let fixture = Self {
             _directory: directory,
             handler: AppState::handler(state),
-            snapshots,
+            snapshots: Box::new(move |frame| snapshots.call(frame)),
             owner,
             workspace,
             path,
@@ -233,7 +233,7 @@ impl BranchSnapshotFixture {
     }
 
     fn assert_snapshot_branch(&self, expected: &str) {
-        let board = self.snapshots.call(req("board.list", json!({})));
+        let board = (self.snapshots)(req("board.list", json!({})));
         assert_eq!(board["ok"], true, "{board}");
         let row = board["result"]["items"]
             .as_array()
@@ -242,7 +242,7 @@ impl BranchSnapshotFixture {
             .find(|row| row["run_id"] == self.owner)
             .unwrap_or_else(|| panic!("no adopted run in cached board: {board}"));
         assert_eq!(row["branch"], expected, "{board}");
-        let workspace = self.snapshots.call(req(
+        let workspace = (self.snapshots)(req(
             "workspace.get",
             json!({"workspace_id": self.workspace}),
         ));

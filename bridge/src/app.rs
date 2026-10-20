@@ -845,6 +845,12 @@ impl AppState {
         Ok(self)
     }
 
+    /// Clone the attached Store so fixtures hold its actual writer mutex.
+    #[cfg(test)]
+    pub(crate) fn attached_store_for_test(&self) -> Option<Store> {
+        self.store.clone()
+    }
+
     /// Push to the clients from `runtime`: the change bus's flush and every
     /// terminal's paint, serialized and encrypted per client, apart from the
     /// runtime that answers the clients' requests.

@@ -419,7 +419,11 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.22.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.23.0 populates the existing `attachments` descriptors on agent replies,
+  outgoing agent messages and the corresponding incoming messages (#696).
+  The thread page fixture shows all three. No new capability is needed:
+  the SPA paints the descriptors present in its cached thread records.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -2065,6 +2069,18 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
+`post_thread_message` and `message_agent` accept optional `attachments` entries
+with `path` and optional `name` (#696). They share the task tools' file intake
+in `app/tracker/agent_files.rs`: up to ten files of 50 MiB each, supported image
+and video signatures or UTF-8 text, and regular-file reads without following
+the source leaf symlink. Absolute agent-created paths are allowed by that
+existing policy; relative paths must identify an existing stored attachment.
+The bridge validates every source before copying bytes into its durable store.
+Conversation records and delivery payloads retain the existing
+`{path, name, mime, size}` descriptor, and receiving agents get readable copies
+through the conversation's normal attachment homes. User-supplied attachment
+paths retain their existing storage containment checks.
+
 The task board's column and assignee carry routine status. Agent prompts and
 MCP descriptions tell agents to comment on tasks only for a decision or
 finding that changes the plan, a question, a handoff, or the final result with
@@ -2828,6 +2844,12 @@ In practice:
   redraw.
 - No view waits on the wire to show what is already known.
 - No view branches on whether a device is connected, connecting or away.
+
+Thread attachment tiles use cached message descriptors and held media bodies
+for user messages, agent replies and expanded outgoing agent messages (#696).
+The shared attachment loader fills missing bodies; the same image lightbox and
+download controls serve all three. Message role and connection status do not
+gate attachment display.
 
 **How it is built:**
 

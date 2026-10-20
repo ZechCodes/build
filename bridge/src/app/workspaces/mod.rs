@@ -17,6 +17,7 @@ mod directories;
 mod git_initialization;
 mod lock;
 mod ownership;
+mod projection_rendering;
 mod reclaim;
 mod sizes;
 mod snapshots;
@@ -917,6 +918,13 @@ impl AppState {
         root: &Path,
         workspace_id: Option<&str>,
     ) -> Option<crate::run::RunState> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context.rendering.preferred_run_state(
+                project_id,
+                &self.snapshot_root(root),
+                workspace_id,
+            );
+        }
         self.preferred_workspace_run_state_using(project_id, root, workspace_id, true)
     }
 

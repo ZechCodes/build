@@ -7,7 +7,7 @@ use crate::app::read_view::ReadViewSlot;
 use crate::changes::{BoardLists, EntityFacts, FactsRequest, ThreadTip, THREAD_PUSH_MAX_ITEMS};
 use crate::thread::Thread;
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
@@ -461,8 +461,10 @@ impl AppState {
 
     fn capture_push_checkouts(&self, snapshot: &mut PushFacts, previous: &PushFacts) {
         for (entity, subject) in self.checkout_subjects() {
-            if let Some(state) = self.entity_state_item(&entity) {
-                snapshot.states.insert(entity.clone(), state);
+            if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
+                if let Some(state) = self.entity_state_item(&entity) {
+                    entry.insert(state);
+                }
             }
             snapshot.terminals.insert(
                 entity.clone(),

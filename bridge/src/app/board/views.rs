@@ -735,6 +735,25 @@ impl AppState {
         run_id: &str,
         stat: &Value,
     ) -> crate::branch::WorkItemCandidate {
+        let context = self.snapshot_ownership_context();
+        if let Some(cached) = context
+            .as_ref()
+            .and_then(|context| context.rendering.branch(run_id, stat))
+        {
+            return cached;
+        }
+        let candidate = self.render_branch_candidate_from_run(run_id, stat);
+        if let Some(context) = context {
+            context.rendering.remember_branch(run_id, stat, &candidate);
+        }
+        candidate
+    }
+
+    fn render_branch_candidate_from_run(
+        &self,
+        run_id: &str,
+        stat: &Value,
+    ) -> crate::branch::WorkItemCandidate {
         #[cfg(test)]
         crate::app::snapshot_projection::work_counts::branch();
         let active = self.runs.get(run_id).expect("caller listed this run");

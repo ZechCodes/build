@@ -118,11 +118,139 @@ fn global_publication_external_rows_visit_each_cached_checkout_once() {
         .iter()
         .map(|w| state.external_worktree_row_of(&w.id).unwrap())
         .collect::<Vec<_>>();
-    let (actual, counts) = work_counts::measure(|| state.cached_external_worktrees_json());
+    let _context = state.begin_snapshot_ownership();
+    let ((actual, states), counts) = work_counts::measure(|| {
+        let rows = state.cached_external_worktrees_json();
+        let states = checkouts
+            .iter()
+            .map(|w| state.external_worktree_row_of(&w.id).unwrap())
+            .collect::<Vec<_>>();
+        (rows, states)
+    });
     assert_eq!(actual.rows, expected);
+    assert_eq!(states, expected);
     assert!(!actual.scanning);
     assert!(
         counts.external_candidates <= checkouts.len(),
         "repeated cached checkout search: {counts:?}"
     );
+}
+
+#[test]
+fn global_publication_outcomes_preserve_direct_ids_project_scope_and_path_aliases() {
+    let (tmp, mut state, _) = ownership_fixture(8, true);
+    state.runs.get_mut("run-00").unwrap().run.state = crate::run::RunState::Merged;
+    state.runs.get_mut("run-01").unwrap().run.state = crate::run::RunState::Abandoned;
+    state.runs.get_mut("run-02").unwrap().run.state = crate::run::RunState::Archived;
+    let other_root = tmp.path().join("other-project");
+    std::fs::create_dir(&other_root).unwrap();
+    let other = state.add_project(other_root, "main".into());
+    state.projects.bind_entity("run-03".into(), other);
+    #[cfg(unix)]
+    {
+        let target = state.runs["run-00"].worktree.path.clone();
+        let alias = tmp.path().join("root-alias");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
+        state.runs.get_mut("run-01").unwrap().worktree.path = alias;
+    }
+    state.initialize_snapshot_projection();
+    let mut queries = Vec::new();
+    for project in state
+        .projects
+        .iter()
+        .map(|project| project.id.as_str())
+        .chain(["unknown-project"])
+    {
+        for active in state.runs.values() {
+            for direct in [None, Some("run-00"), Some("run-01"), Some("missing-run")] {
+                queries.push((
+                    project.to_owned(),
+                    active.worktree.path.clone(),
+                    direct,
+                    state.preferred_workspace_run_state(project, &active.worktree.path, direct),
+                ));
+            }
+        }
+    }
+    let _context = state.begin_snapshot_ownership();
+    for (project, root, direct, expected) in queries {
+        assert_eq!(
+            state.preferred_workspace_snapshot_run_state(&project, &root, direct),
+            expected,
+            "project={project} root={} direct={direct:?}",
+            root.display()
+        );
+    }
+}
+
+#[test]
+fn global_publication_index_preserves_agent_lookup_and_missing_aliases() {
+    let (_tmp, mut state, _) = ownership_fixture(4, false);
+    add_tip_agents(&mut state, 2);
+    state.initialize_snapshot_projection();
+    let ids = state
+        .runs
+        .values()
+        .flat_map(|run| run.agents.iter().map(|agent| agent.id.clone()))
+        .chain(["missing-agent".to_owned()])
+        .collect::<Vec<_>>();
+    let (expected, counts) = work_counts::measure(|| {
+        ids.iter()
+            .map(|id| state.entity_of_agent(id))
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        counts.owner_candidates > 0,
+        "the unindexed lookup must exercise the counter"
+    );
+    let _context = state.begin_snapshot_ownership();
+    let (actual, counts) = work_counts::measure(|| {
+        ids.iter()
+            .map(|id| state.entity_of_agent(id))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(actual, expected);
+    assert_eq!(counts.owner_candidates, 0);
+}
+
+#[test]
+fn global_publication_digest_memo_keeps_supplied_preview_metadata() {
+    let (_tmp, mut state, _) = ownership_fixture(1, false);
+    add_tip_agents(&mut state, 1);
+    state.initialize_snapshot_projection();
+    let agent = state.runs["run-00"].agents.iter().next().unwrap();
+    let _context = state.begin_snapshot_ownership();
+    let first = state.agent_digest("run-00", agent, None, crate::app::DigestScope::List);
+    let mut preview = agent.clone();
+    preview.topic = Some("preview metadata".into());
+    let next = state.agent_digest("run-00", &preview, None, crate::app::DigestScope::List);
+    assert_ne!(first["topic"], next["topic"]);
+    assert_eq!(next["topic"], "preview metadata");
+}
+
+#[test]
+fn global_publication_external_rows_keep_first_project_scope_for_duplicate_ids() {
+    let (tmp, mut state, _) = ownership_fixture(0, false);
+    let shared = checkout(tmp.path().join("shared-checkout"), 0);
+    let other_root = tmp.path().join("other-project");
+    std::fs::create_dir(&other_root).unwrap();
+    state.add_project(other_root, "main".into());
+    for index in 0..2 {
+        let project = state.projects.at(index).id.clone();
+        state.projects.at_mut(index).is_git = true;
+        state.board.diff_mut().register_project(project.clone());
+        let mut observed = shared.clone();
+        observed.head_subject = format!("project {index} observation");
+        state.board.diff_mut().store_entry_for_adapter(
+            crate::app::board_index::DiffCacheEntry::ExternalScan {
+                project_id: project,
+                worktrees: vec![observed],
+            },
+            std::time::Instant::now(),
+        );
+    }
+    let expected = state.external_worktree_row_of(&shared.id).unwrap();
+    let rows = state.cached_external_worktrees_json();
+    assert_eq!(rows.rows, vec![expected.clone(), expected]);
+    assert!(!rows.scanning);
 }

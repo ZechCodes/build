@@ -519,6 +519,9 @@ impl AppState {
     /// AGENT (the harness knows its own id and its own token); the lifecycle it
     /// drives belongs to the entity behind it.
     pub(in crate::app) fn entity_of_agent(&self, agent_id: &str) -> Option<String> {
+        if let Some(context) = self.snapshot_ownership_context() {
+            return context.rendering.agent_owner(agent_id).cloned();
+        }
         self.plans
             .iter()
             .map(|(id, plan)| (id, &plan.agents))
@@ -771,7 +774,10 @@ impl AppState {
     /// recorded on the thread, rather than lingering live until the reaper
     /// notices the root is gone.
     #[track_caller]
-    pub(in crate::app) fn retire_agents_of_pruned_worktree(&mut self, root: &std::path::Path) {
+    pub(in crate::app) fn retire_agents_of_pruned_worktree(
+        &mut self,
+        root: &std::path::Path,
+    ) -> std::path::PathBuf {
         let root = Self::canonical_root(root);
         let ended: Vec<SessionInstance> = self
             .session_registry
@@ -784,6 +790,7 @@ impl AppState {
         for instance in ended {
             self.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
         }
+        root
     }
 
     #[track_caller]
@@ -1471,6 +1478,38 @@ impl AppState {
     ///
     /// Unread is counted from the agent's canonical conversation binding.
     pub(in crate::app) fn agent_digest(
+        &self,
+        entity_id: &str,
+        agent: &crate::agent::Agent,
+        root: Option<&std::path::Path>,
+        scope: DigestScope,
+    ) -> Value {
+        // Snapshot callers borrow the immutable canonical roster. A preview
+        // may supply a changed copy; keep rendering its supplied metadata.
+        let Some(context) = self.snapshot_ownership_context().filter(|_| {
+            self.entity_agents(entity_id).is_ok_and(|roster| {
+                roster
+                    .by_id(&agent.id)
+                    .is_some_and(|canonical| std::ptr::eq(canonical, agent))
+            })
+        }) else {
+            return self.render_agent_digest(entity_id, agent, root, scope);
+        };
+        let key = (
+            entity_id.to_owned(),
+            agent.id.clone(),
+            root.map(std::path::Path::to_owned),
+            matches!(scope, DigestScope::Detail),
+        );
+        if let Some(cached) = context.rendering.agent_digest(&key) {
+            return cached;
+        }
+        let digest = self.render_agent_digest(entity_id, agent, root, scope);
+        context.rendering.remember_agent_digest(key, &digest);
+        digest
+    }
+
+    fn render_agent_digest(
         &self,
         entity_id: &str,
         agent: &crate::agent::Agent,

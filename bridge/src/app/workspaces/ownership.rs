@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(in crate::app) struct ProjectionOwnership {
+    pub(in crate::app) rendering: super::projection_rendering::ProjectionRendering,
     project_owners: BTreeSet<String>,
     workspace_owners: BTreeMap<String, Option<String>>,
     owner_workspaces: BTreeMap<String, String>,
@@ -123,6 +124,7 @@ impl ProjectionOwnership {
 impl AppState {
     pub(in crate::app) fn capture_snapshot_ownership(&self) -> ProjectionOwnership {
         let mut context = ProjectionOwnership {
+            rendering: super::projection_rendering::ProjectionRendering::capture(self),
             project_owners: self
                 .runs
                 .keys()

@@ -16,6 +16,7 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 /// The one module each internal part may be imported by. Everything else in
 /// src/ goes through `markdownHtml`.
 const OWNERS = {
+  "core/markdownBlockScopes.js": ["core/markdownDetails.js", "core/markdownFootnotes.js"],
   "core/markdownRefs.js": ["core/markdownLinks.js"],
   "core/markdownLinks.js": ["core/markdown.js", "core/markdownInline.js"],
   "core/markdownBlocks.js": ["core/markdown.js"],

@@ -156,3 +156,17 @@ describe("definition collection respects block boundaries", () => {
     expect(host.querySelector("code").textContent).toContain("[^fake]: source");
   });
 });
+
+describe("details matching respects list block boundaries", () => {
+  it("ends a list-contained unclosed fence at the list dedent", () => {
+    const host = render("<details>\n<summary>Title</summary>\n- item\n  ```\n  code\n</details>");
+    expect(host.querySelector("details")).not.toBeNull();
+    expect(host.querySelector("summary").textContent).toBe("Title");
+    expect(host.querySelector("details code").textContent).toBe("code\n");
+  });
+  it("keeps list-contained details delimiters inside the list scope", () => {
+    const host = render("<details>\n<summary>Title</summary>\n- ```\n  </details>\n  ```\n</details>\nafter");
+    expect(host.querySelector("details code").textContent).toBe("</details>\n");
+    expect(host.lastElementChild.textContent).toBe("after");
+  });
+});

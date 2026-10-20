@@ -3,6 +3,7 @@
 // IDs never contain author text: scopes are code-point encoded and note/ref
 // numbers are generated locally. Only these fixed fragment URLs are emitted.
 import { fenceOpening, fenceCloses } from "./markdownFences.js";
+import { listBodyEnd } from "./markdownBlockScopes.js";
 
 const DEFINITION = /^ {0,3}\[\^([A-Za-z0-9_-]+)\]:[ \t]*(.*)$/;
 const CONTINUATION = /^(?: {4}|\t)/;
@@ -43,20 +44,6 @@ function definitionAt(lines, offsets, at, match) {
     starts.push(offsets[next] + removed);
   }
   return { lines: content, offsets: starts, end };
-}
-
-// Definitions belong to the document margin. An indented list body is read
-// in its own bounded block context, so its unclosed fences must not consume
-// definitions that follow the list, nor turn fenced examples into notes.
-function listBodyEnd(lines, at) {
-  const item = /^( *)(?:[-*+]|\d{1,9}[.)]) +/.exec(lines[at]);
-  if (!item) return at;
-  let next = at + 1;
-  while (next < lines.length) {
-    if (lines[next].trim() && lines[next].length - lines[next].trimStart().length <= item[1].length) break;
-    next += 1;
-  }
-  return next - 1;
 }
 
 export function collectFootnotes(lines, offsets, source, scope) {

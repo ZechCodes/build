@@ -3,6 +3,7 @@
 // Delimiters inside fenced source are ordinary source. Matching in one pass
 // prevents repeated unclosed openers from causing quadratic searches.
 import { fenceOpening, fenceCloses } from "./markdownFences.js";
+import { listBodyEnd } from "./markdownBlockScopes.js";
 
 const OPEN = /^ {0,3}<details>[ \t]*$/;
 const CLOSE = /^ {0,3}<\/details>[ \t]*$/;
@@ -19,6 +20,8 @@ export function detailsPairs(lines) {
     }
     fence = fenceOpening(lines[at]);
     if (fence) continue;
+    const listEnd = listBodyEnd(lines, at);
+    if (listEnd > at) { at = listEnd; continue; }
     if (OPEN.test(lines[at])) stack.push(at);
     else if (CLOSE.test(lines[at]) && stack.length) pairs.set(stack.pop(), at);
   }

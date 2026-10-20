@@ -58,6 +58,7 @@ describe("the inbox project agent and chat share cached descendant activity (#69
       await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
     }
     await write("project-agents", entityId, { ...fixture.roster, agents: [worker, fixture.pin] });
+    await vi.waitFor(() => expect(snapshot.projects[0].projectRoster.agents.some((agent) => agent.id === worker.id)).toBe(true));
     await vi.waitFor(() => expect(lineage.decorate(fixture.pin).agents_running).toBe(1));
     await vi.waitFor(() => expect(entry()).toMatchObject({ watchedWorking: true, working: true, facts: "1 running" }));
     expect(snapshot.projects[0].projectRoster.agents.find((agent) => agent.id === pinId))
@@ -71,8 +72,21 @@ describe("the inbox project agent and chat share cached descendant activity (#69
     await write("project-agents", entityId, { ...fixture.roster, agents: [fixture.pin, {
       id: "independent-worker", conversation_id: "independent-history", working: true, watched: false,
     }] });
+    await vi.waitFor(() => expect(snapshot.projects[0].projectRoster.agents.some((agent) => agent.id === "independent-worker")).toBe(true));
     await vi.waitFor(() => expect(entry()).toMatchObject({ working: true, watchedWorking: false, facts: "1 running" }));
     expect(lineage.decorate(fixture.pin).agents_running || 0).toBe(0);
+  });
+
+  it("counts a canonical project conversation only once when the roster repeats it", async () => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
+    }
+    const worker = { id: "worker-copy-a", conversation_id: "same-worker-history", working: true, watched: false };
+    await write("project-agents", entityId, { ...fixture.roster,
+      agents: [fixture.pin, worker, { ...worker, id: "worker-copy-b" }],
+    });
+    await vi.waitFor(() => expect(snapshot.projects[0].projectRoster.agents).toHaveLength(3));
+    await vi.waitFor(() => expect(entry().facts).toBe("1 running"));
   });
 
   it("counts the coordinator's own working loop alongside its three running panel entries", async () => {

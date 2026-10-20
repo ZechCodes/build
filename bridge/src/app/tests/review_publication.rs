@@ -178,3 +178,68 @@ async fn git_action_orchestrator_error_keeps_owner_and_later_publication_live() 
     let owner = routed(&handler, "agent.list", json!({"entity_id": failed}));
     assert_eq!(owner["agents"].as_array().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn adopted_implementation_qa_error_keeps_owner_and_later_publication_live() {
+    let (dir, repo) = init_repo();
+    let (state, handler, sender, mut incoming, key) = push::greeted_push_session(&repo, dir.path());
+    push::watch_everything(&handler, &sender);
+    let (failed, survivor, plan) = {
+        let mut app = state.lock().unwrap();
+        let failed = adopted_run(&mut app, &repo, dir.path(), "qa-failed-owner");
+        let survivor = adopted_run(&mut app, &repo, dir.path(), "after-qa-refusal");
+        let plan = file_legacy_task(&mut app, "implementation with refused QA output");
+        let path = app.runs[&failed].worktree.path.join("result.txt");
+        std::fs::create_dir(path).unwrap();
+        (failed, survivor, plan)
+    };
+    push::settled_pushes(&mut incoming, &key).await;
+    let (retained, tip) = {
+        let mut app = state.lock().unwrap();
+        let project = app.project_of(&failed).unwrap();
+        let choice = app.runs[&failed].model_choice.clone();
+        let base_sha = crate::worktree::git_stdout(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let prepared = crate::lifecycle::AdoptedImplementation {
+            base_sha,
+            adopted: None,
+        };
+        let error = app
+            .open_adopted_implementation(project, plan, failed.clone(), prepared, choice)
+            .unwrap_err();
+        assert!(
+            error.contains("directory"),
+            "the QA output path must refuse its write: {error}"
+        );
+        let retained = app.runs.contains_key(&failed);
+        let tip = save_message(
+            &mut app,
+            &survivor,
+            "after QA refusal",
+            "after QA refusal news",
+        );
+        (retained, tip)
+    };
+    let pushed = push::settled_pushes(&mut incoming, &key).await;
+    assert_published(
+        &handler,
+        &pushed,
+        &survivor,
+        "after QA refusal",
+        "after QA refusal news",
+        tip.1,
+    );
+    assert!(
+        retained,
+        "a QA refusal must return the existing adopted owner"
+    );
+    assert_eq!(
+        state
+            .lock()
+            .unwrap()
+            .board
+            .attention()
+            .conversation_watermark(&tip.0)
+            .previous,
+        Some(tip.1)
+    );
+}

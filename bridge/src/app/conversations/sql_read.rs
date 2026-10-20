@@ -16,8 +16,10 @@ use super::inputs::required_operation_id;
 use super::read::conversation_owner_param;
 
 mod attachments;
+mod mcp;
 mod pages;
 pub(in crate::app) use attachments::{AttachmentOwner, AttachmentReadContext, AttachmentReadFence};
+pub(in crate::app) use mcp::{McpHistoryQuery, McpHistoryWork};
 use pages::{activity, page};
 
 #[derive(Clone, Default)]

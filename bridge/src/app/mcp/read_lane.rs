@@ -1,6 +1,7 @@
 //! Exact MCP reads bypass mutation turns while retaining session admission.
 mod admission;
 mod guarded;
+mod history;
 mod job;
 mod snapshots;
 mod sql;
@@ -27,6 +28,9 @@ pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
             | "list_projects"
             | "list_work"
             | "list_workspaces"
+            | "search_conversation"
+            | "read_conversation"
+            | "tracker_read_comment"
     ) {
         return None;
     }
@@ -37,8 +41,11 @@ pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
         return None;
     }
     let action = super::parse_action_request(frame).ok()?;
-    (sql::supports(&action) || guarded::supports(&action) || snapshots::supports(&action))
-        .then_some(action)
+    (sql::supports(&action)
+        || guarded::supports(&action)
+        || snapshots::supports(&action)
+        || history::supports(&action))
+    .then_some(action)
 }
 
 fn prepare(
@@ -49,6 +56,7 @@ fn prepare(
     sql::prepare(app, session, action)
         .or_else(|| guarded::prepare(app, session, action))
         .or_else(|| snapshots::prepare(app, session, action))
+        .or_else(|| history::prepare(app, session, action))
         .unwrap_or_else(|| Err("invalid MCP action request".into()))
 }
 

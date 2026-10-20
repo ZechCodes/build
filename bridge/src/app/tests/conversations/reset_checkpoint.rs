@@ -22,7 +22,80 @@ fn reset_shared_conversation_checkpoints_its_alias_run_owner() {
 
 fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
     let (dir, repo) = init_repo();
-    let mut app = qa_state(&repo, dir.path());
+    let ResetCheckpointFixture {
+        app,
+        owners,
+        failed_owner,
+        params,
+        old_generation,
+    } = reset_checkpoint_fixture(&repo, dir.path(), fail_run, shared_conversation);
+    let app = app.shared();
+    let handler = AppState::handler(Arc::clone(&app));
+    let sender = SessionSender::detached("reset-checkpoint");
+    let reset = handler.call(sender.clone(), req("conversation.reset", params));
+    assert_eq!(reset["ok"], true, "{reset:?}");
+    assert_eq!(
+        reset["result"]["thread"]["thread_generation_revision"],
+        old_generation + 1,
+        "{reset:?}"
+    );
+
+    let observe = || observe_reset_checkpoint(&app, &handler, &sender, &owners);
+    let expected = observe();
+    for row in expected.as_array().unwrap() {
+        assert_eq!(row["memory"]["resume_session_id"], Value::Null);
+        assert_eq!(row["memory"]["items"], json!([]));
+        assert_eq!(row["sql_items"], 0);
+        assert_eq!(row["memory_summary"], json!([null, null]));
+        assert_eq!(row["sql_summary"], json!([null, null]));
+    }
+    {
+        let mut state = app.lock().unwrap();
+        save_checkpoint_owner(&mut state, &failed_owner, fail_run, true);
+    }
+    let after_failure = observe();
+    {
+        let mut state = app.lock().unwrap();
+        file_legacy_task(&mut state, "unrelated publication after reset");
+        state.publish_read_metadata();
+    }
+    let after_unrelated = observe();
+    {
+        let mut state = app.lock().unwrap();
+        save_checkpoint_owner(&mut state, &failed_owner, fail_run, false);
+    }
+    let after_retry = observe();
+    // Run the whole sequence before asserting so RED also demonstrates whether
+    // a successful retry resurrects the deleted generation in durable storage.
+    assert_eq!(
+        json!({
+            "failed_save": after_failure,
+            "unrelated_publication": after_unrelated,
+            "successful_retry": after_retry,
+        }),
+        json!({
+            "failed_save": expected,
+            "unrelated_publication": expected,
+            "successful_retry": expected,
+        })
+    );
+}
+
+struct ResetCheckpointFixture {
+    app: AppState,
+    owners: Vec<String>,
+    failed_owner: String,
+    params: Value,
+    old_generation: u64,
+}
+
+fn reset_checkpoint_fixture(
+    repo: &Path,
+    dir: &Path,
+    fail_run: bool,
+    shared_conversation: bool,
+) -> ResetCheckpointFixture {
+    let mut app = qa_state(repo, dir);
     let plan = file_legacy_task(&mut app, "reset checkpoint plan");
     let project = app.project_of(&plan).unwrap();
     let orch = app.orch_for(&project).unwrap().clone();
@@ -32,7 +105,7 @@ fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
     let mut active = app.take_plan(&plan).unwrap();
     orch.open_plan_drafting(&mut active, workspace).unwrap();
     app.finish_plan_mutation(plan.clone(), active).unwrap();
-    let run = adopted_run(&mut app, &repo, dir.path(), "reset-checkpoint-run");
+    let run = adopted_run(&mut app, repo, dir, "reset-checkpoint-run");
     let plan_agent = primary_agent_id(&app, &plan);
     let run_agent = primary_agent_id(&app, &run);
     if shared_conversation {
@@ -48,25 +121,7 @@ fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
         vec![plan.clone()]
     };
     for owner in &owners {
-        let agent_id = primary_agent_id(&app, owner);
-        app.edit_agent_record("test", owner, &agent_id, |agent| {
-            // No native session lineage: cleanup stays inside the temp fixture.
-            agent.resume_session_id = Some("erased-resume-session".into());
-            agent.topic = Some("erased topic".into());
-            agent.last_context_tokens = Some(1200);
-            agent.session_cache_read_tokens = Some(300);
-        });
-        if owner == &plan {
-            let mut active = app.take_plan(owner).unwrap();
-            active.last_summary = Some("erased plan summary".into());
-            active.last_error = Some("erased plan error".into());
-            app.finish_plan_mutation(owner.clone(), active).unwrap();
-        } else {
-            let mut active = app.take_run(owner).unwrap();
-            active.last_summary = Some("erased run summary".into());
-            active.last_error = Some("erased run error".into());
-            app.finish_run_mutation(owner.clone(), active).unwrap();
-        }
+        seed_reset_checkpoint_owner(&mut app, owner);
     }
     let reset_owner = if shared_conversation || fail_run {
         &run
@@ -89,57 +144,36 @@ fn reset_checkpoint_round_trip(fail_run: bool, shared_conversation: bool) {
         "expected_thread_id": old_thread.id,
     });
     let old_generation = old_thread.generation_revision;
-    let app = app.shared();
-    let handler = AppState::handler(Arc::clone(&app));
-    let sender = SessionSender::detached("reset-checkpoint");
-    let reset = handler.call(sender.clone(), req("conversation.reset", params));
-    assert_eq!(reset["ok"], true, "{reset:?}");
-    assert_eq!(
-        reset["result"]["thread"]["thread_generation_revision"],
-        old_generation + 1,
-        "{reset:?}"
-    );
+    let failed_owner = if fail_run { run } else { plan };
+    ResetCheckpointFixture {
+        app,
+        owners,
+        failed_owner,
+        params,
+        old_generation,
+    }
+}
 
-    let observe = || observe_reset_checkpoint(&app, &handler, &sender, &owners);
-    let expected = observe();
-    for row in expected.as_array().unwrap() {
-        assert_eq!(row["memory"]["resume_session_id"], Value::Null);
-        assert_eq!(row["memory"]["items"], json!([]));
-        assert_eq!(row["sql_items"], 0);
-        assert_eq!(row["memory_summary"], json!([null, null]));
-        assert_eq!(row["sql_summary"], json!([null, null]));
+fn seed_reset_checkpoint_owner(app: &mut AppState, owner: &str) {
+    let agent_id = primary_agent_id(app, owner);
+    app.edit_agent_record("test", owner, &agent_id, |agent| {
+        // No native session lineage: cleanup stays inside the temp fixture.
+        agent.resume_session_id = Some("erased-resume-session".into());
+        agent.topic = Some("erased topic".into());
+        agent.last_context_tokens = Some(1200);
+        agent.session_cache_read_tokens = Some(300);
+    });
+    if app.plans.contains_key(owner) {
+        let mut active = app.take_plan(owner).unwrap();
+        active.last_summary = Some("erased plan summary".into());
+        active.last_error = Some("erased plan error".into());
+        app.finish_plan_mutation(owner.to_owned(), active).unwrap();
+    } else {
+        let mut active = app.take_run(owner).unwrap();
+        active.last_summary = Some("erased run summary".into());
+        active.last_error = Some("erased run error".into());
+        app.finish_run_mutation(owner.to_owned(), active).unwrap();
     }
-    let failed_owner = if fail_run { &run } else { &plan };
-    {
-        let mut state = app.lock().unwrap();
-        save_checkpoint_owner(&mut state, failed_owner, fail_run, true);
-    }
-    let after_failure = observe();
-    {
-        let mut state = app.lock().unwrap();
-        file_legacy_task(&mut state, "unrelated publication after reset");
-        state.publish_read_metadata();
-    }
-    let after_unrelated = observe();
-    {
-        let mut state = app.lock().unwrap();
-        save_checkpoint_owner(&mut state, failed_owner, fail_run, false);
-    }
-    let after_retry = observe();
-    // Run the whole sequence before asserting so RED also demonstrates whether
-    // a successful retry resurrects the deleted generation in durable storage.
-    assert_eq!(
-        json!({
-            "failed_save": after_failure,
-            "unrelated_publication": after_unrelated,
-            "successful_retry": after_retry,
-        }),
-        json!({
-            "failed_save": expected,
-            "unrelated_publication": expected,
-            "successful_retry": expected,
-        })
-    );
 }
 
 fn observe_reset_checkpoint(

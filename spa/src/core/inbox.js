@@ -41,7 +41,7 @@ import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
 import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_EYE } from "./icons.js";
 import { workspaceRoute } from "./projectModel.js";
-import { freshestRosters, runningAgentCount, watchedAgentsRunning, watchedUnreadCount } from "./inboxRoster.js";
+import { freshestRosters, runningAgentCount, watchedAgentsRunning, watchedUnreadCount, watchedDescendantsUnread } from "./inboxRoster.js";
 import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { agentIsRunning } from "./agentRunning.js";
 import { NO_TASK_UNREAD } from "./taskUnread.js";
@@ -191,6 +191,7 @@ function withRosterTallies(entry, agents, taskUnread) {
   const agentIds = agents.map((agent) => agent.id).filter(Boolean);
   const taskUnreadCount = taskUnread.heldBy(entry.projectKey, agentIds);
   const unreadCount = watchedUnreadCount(agents) + taskUnreadCount;
+  const descendantUnread = watchedDescendantsUnread(agents);
   return {
     ...entry,
     runningCount,
@@ -200,7 +201,8 @@ function withRosterTallies(entry, agents, taskUnread) {
     watchedWorking: watchedAgentsRunning(agents),
     agentIds,
     unreadCount,
-    state: entryState({ unread: unreadCount > 0, working: runningCount > 0 }),
+    descendantUnread,
+    state: entryState({ unread: unreadCount > 0 || descendantUnread, working: runningCount > 0 }),
     facts: `${entry.facts} · ${runningCount} running`,
   };
 }
@@ -994,7 +996,7 @@ function rowTooltip(entry) {
  * reader. Older row shapes name running only through their state. */
 const rowStatusDotHtml = (entry) => statusDotHtml({
   running: entry.working || entry.state === "working",
-  unread: entry.unreadCount > 0,
+  unread: entry.unreadCount > 0 || entry.descendantUnread,
 });
 
 const rowReviewSummaryHtml = (entry) => entry.kind === TRACKER_TASK ? taskReviewSummaryHtml(entry.reviewSummary) : "";

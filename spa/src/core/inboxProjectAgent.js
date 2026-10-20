@@ -14,7 +14,7 @@
 
 import { entityIdOf } from "./entityId.js";
 import { entryFactsText, GETTING_STARTED, PROJECT_AGENT } from "./inbox.js";
-import { agentsUnreadCount, freshestRosters, runningAgentCount, watchedAgentsRunning } from "./inboxRoster.js";
+import { agentsUnreadCount, freshestRosters, runningAgentCount, watchedAgentsRunning, watchedDescendantsUnread } from "./inboxRoster.js";
 import { agentIsRunning } from "./agentRunning.js";
 import { conversationSummaryUnreadCount } from "./conversationUnread.js";
 import { projectNameOf } from "./inboxProjects.js";
@@ -45,8 +45,8 @@ function conversationTimes(row) {
 }
 
 /** Its state, in the three words every row's dot says. */
-function agentState(unreadCount, working) {
-  if (unreadCount > 0) return "unread";
+function agentState(unread, working) {
+  if (unread) return "unread";
   return working ? "working" : "inactive";
 }
 
@@ -84,6 +84,7 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
   const hasRoster = complete || agents.length > 0;
   const agentUnread = hasRoster ? agentsUnreadCount(agents) : conversationSummaryUnreadCount(row);
   const unreadCount = agentUnread + taskUnreadOf(project.projectKey);
+  const descendantUnread = watchedDescendantsUnread(agents);
   const working = hasRoster ? agents.some(agentIsRunning) : agentIsRunning(row);
   const watchedWorking = hasRoster ? watchedAgentsRunning(agents) : working;
   const name = projectNameOf(project);
@@ -100,9 +101,10 @@ function toProjectAgentEntry(project, rows, rosterOf, taskUnreadOf) {
     name: pin?.topic?.trim() || name,
     title: "Project agent",
     entityId,
-    state: agentState(unreadCount, working),
+    state: agentState(unreadCount > 0 || descendantUnread, working),
     ownUnreadCount: agentUnread,
     unreadCount,
+    descendantUnread,
     working,
     watchedWorking,
     muted: false,

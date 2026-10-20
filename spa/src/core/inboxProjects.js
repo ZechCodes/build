@@ -96,7 +96,7 @@ function workspaceBlockFor(project, rows, tag, nowMs, runningTaskProjectKeys, he
     // A fold changes the head's dot but never its numeric contribution to
     // the toolbar (#183). Task rows are already counted by their owner row.
     unreadCount: grouped.reduce((total, entry) => total + rowUnreadCount(entry), 0),
-    unread: agentEntry?.unreadCount > 0 || grouped.some((entry) => entry.unreadCount > 0),
+    unread: grouped.some((entry) => entry.unreadCount > 0 || entry.descendantUnread),
     running: entryIsWatchedRunning(agentEntry) || grouped.some(entryIsWatchedRunning) || runningTaskProjectKeys.has(project.projectKey),
   };
 }

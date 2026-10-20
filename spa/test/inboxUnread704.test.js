@@ -123,3 +123,17 @@ it.each([
   await feed.startFeed();
   expect(await projectDot()).toBe(false);
 });
+
+it("follows canonical creator aliases and never resurrects an older alias's unread", async () => {
+  await writeRow(owner([agent("pin")]));
+  await cache.writeCached(address("project-agents-support"), { projectWorkers: true });
+  await cache.writeCached(address("project-agents", "owner"), { entity_id: "owner", pinned_agent_id: "pin",
+    agents: [agent("pin"), agent("older", { created_by: "pin", conversation_id: "shared", unread_count: 7 }),
+      agent("canonical", { created_by: "pin", conversation_id: "shared" })] });
+  await writeRow(row("child-owner", [agent("worker", { created_by: "older", unread_count: 1 })]));
+  await feed.startFeed();
+  expect(await projectDot()).toBe(true);
+  expect((await entries())[0].ownUnreadCount).toBe(0);
+  await writeRow(row("child-owner", [agent("worker", { created_by: "older", read_through_sequence: 2 })]));
+  await vi.waitFor(async () => expect(await projectDot()).toBe(false));
+});

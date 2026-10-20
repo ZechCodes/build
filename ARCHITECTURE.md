@@ -3657,6 +3657,12 @@ in its activity panel runs. The task feed derives those descendant rollups
 from the freshest cached rosters, per device and project, using the cached
 `agents.createdBy` capability for Build descendants. The agent's own
 `working` flag stays separate for interruption controls.
+The feed also derives descendant unread from that canonical lineage (#704).
+Only watched conversations supply news; project and workspace ancestor dots
+summarize it with an ephemeral `agents_unread` flag. Their own unread counts
+remain unchanged, so a message contributes to the Inbox total only at its
+owning row. Complete project rosters use the same lineage, including aliases,
+and a cached read update clears ancestor dots without a history fetch.
 
 ### Window chrome
 

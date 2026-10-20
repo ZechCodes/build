@@ -3148,6 +3148,12 @@ gate attachment display.
   fields. Identical results cause no cache write; cache announcements redraw
   badges. Passive clients on
   other devices need the bridge's state push.
+  The bridge's read-window guard uses the same watch-scoped cursor and full
+  conversation history as its unread count (#704). Pre-watch messages below
+  the window do not block reading current news, while unread messages outside
+  the resident tail after restart still block skipping over them. The published
+  history index supplies that check; before publication, the store supplies
+  omitted history. An unavailable history read preserves the cursor.
 - **Optimistic writes** also go into the cache first, and the push that follows
   confirms them.
   Task body checklist changes (#347, `spa/src/core/taskChecklist.js`) rewrite
@@ -3570,6 +3576,10 @@ Conversation reset returns its watch baseline to zero for the new history.
 The SPA also treats cached `watched: false` as zero on older bridges, without
 waiting for a greeting. Wire 3.19.0 announces `unread.watchScoped`; older
 bridges cannot supply watch-start-scoped counts.
+The project Tasks badge follows both cached list and detail records, using the
+same unread calculation as Inbox, so an accepted task-page read clears both
+before the next list refresh. The task page's New divider also starts after
+the watch baseline (`watch_started_after`, or the legacy watch event).
 
 Inbox rows, including Recent and the project Workspaces tab, use
 `spa/src/core/inboxStatusDot.js` for one right-edge status dot. Unread activity

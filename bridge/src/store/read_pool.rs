@@ -145,4 +145,7 @@ impl<'a> ReadTransaction<'a> {
 }
 
 #[cfg(test)]
+mod metadata_timing;
+
+#[cfg(test)]
 mod tests;

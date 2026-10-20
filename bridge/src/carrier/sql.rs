@@ -98,6 +98,7 @@ struct Waiting {
 #[derive(Default)]
 struct Queue {
     waiting: Mutex<Waiting>,
+    ready: Notify,
     changed: Notify,
 }
 
@@ -117,9 +118,9 @@ impl ReadDispatcher {
 
     fn for_lane(handler: FrameHandler, lane: ReadLane) -> Self {
         let queue = Arc::new(Queue::default());
-        handler.read_executors.get_or_init(ReadExecutors::new);
         match lane {
             ReadLane::Sql => {
+                handler.read_executors.get_or_init(ReadExecutors::new);
                 for _ in 0..SQL_WORKERS {
                     tokio::spawn(coordinate_sql(queue.clone(), handler.clone()));
                 }
@@ -183,13 +184,14 @@ impl Drop for ReadDispatcher {
         waiting.closed = true;
         waiting.openings.clear();
         waiting.ready.clear();
+        self.queue.ready.notify_waiters();
         self.queue.changed.notify_waiters();
     }
 }
 
 impl Queue {
     fn notify_admitted(&self) {
-        self.changed.notify_waiters();
+        self.ready.notify_one();
     }
 
     /// A full queue keeps exactly the carrier's current intake future parked.
@@ -215,7 +217,7 @@ impl Queue {
 
     async fn work_available(&self) -> bool {
         loop {
-            let changed = self.changed.notified();
+            let changed = self.ready.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             {
@@ -232,7 +234,17 @@ impl Queue {
     }
 
     fn take(&self) -> Option<Work> {
-        let work = self.waiting.lock().unwrap().take();
+        let (work, more_ready) = {
+            let mut waiting = self.waiting.lock().unwrap();
+            let work = waiting.take();
+            (work, !waiting.ready.is_empty())
+        };
+        // Pass a single wakeup along the backlog. Notify's stored permit may
+        // coalesce admissions while all workers are busy; the baton ensures
+        // the available workers still fan out without waking every idle one.
+        if more_ready {
+            self.ready.notify_one();
+        }
         self.changed.notify_waiters();
         work
     }
@@ -399,7 +411,6 @@ impl Work {
                 "external_worker_start",
                 std::time::Instant::now(),
             );
-            let _timer = timer;
             if !self.callers.iter().any(|(_, caller)| caller.read_is_live()) {
                 return;
             }
@@ -407,6 +418,10 @@ impl Work {
                 .ok()
                 .and_then(|job| std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok())
                 .unwrap_or_else(|| json!({"ok":false,"error":"handler failed"}));
+            // Match the ordinary handler boundary. Reply cloning, encryption
+            // and carrier enqueue are measured separately by the diagnostic
+            // hooks and remain included in client-observed acceptance timing.
+            drop(timer);
             #[cfg(test)]
             clock.mark_observed(&observed, "handler_complete", std::time::Instant::now());
             for (id, sender) in self.callers {
@@ -512,10 +527,19 @@ async fn prepare_io(queue: &Queue, handler: &FrameHandler, work: Work) -> Option
         let handler = handler.clone();
         return Some(Box::new(move || work.prepare_observation(&handler, None)()));
     }
-    let executors = handler
-        .read_executors
-        .get()
-        .expect("initialized SQL executors");
+    #[cfg(test)]
+    handler.clock.mark_request(
+        &work.job.frame,
+        "sql_executor_init_start",
+        std::time::Instant::now(),
+    );
+    let executors = handler.read_executors.get_or_init(ReadExecutors::new);
+    #[cfg(test)]
+    handler.clock.mark_request(
+        &work.job.frame,
+        "sql_executor_init_end",
+        std::time::Instant::now(),
+    );
     #[cfg(test)]
     handler.clock.mark_request(
         &work.job.frame,

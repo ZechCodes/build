@@ -10,7 +10,7 @@ fn workspace_summaries_observe_agent_statuses_once_for_all_roots() {
             let agent = format!("agent-{number:02}");
             let root = state.runs[&owner].worktree.path.clone();
             let key = crate::app::TabKey::agent(&root, &agent);
-            let status = if number % 2 == 0 {
+            let status = if number.is_multiple_of(2) {
                 crate::harness::AgentStatus::Working
             } else {
                 crate::harness::AgentStatus::Waiting
@@ -37,7 +37,7 @@ fn workspace_summaries_observe_agent_statuses_once_for_all_roots() {
             let blockers = summary["finish_blockers"].as_array().unwrap();
             assert_eq!(
                 blockers.contains(&json!(crate::workspace::FINISH_BLOCKER_AGENT_WORKING)),
-                number % 2 == 0,
+                number.is_multiple_of(2),
                 "{summary}"
             );
         }

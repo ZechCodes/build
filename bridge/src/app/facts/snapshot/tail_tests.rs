@@ -114,7 +114,7 @@ fn metadata_only_global_publication_does_not_serialize_unchanged_tails() {
     fixture
         .app
         .session_summaries
-        .insert(fixture.project.clone(), summary.clone());
+        .insert(fixture.project.clone(), summary);
     let count = fixture.publish_counted();
     eprintln!("metadata-only publication serialized {count} tail items");
     assert_eq!(

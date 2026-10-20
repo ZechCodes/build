@@ -209,12 +209,15 @@ fn push_to_agent_conversation(
     agent_id: &str,
     write: impl FnOnce(&mut crate::thread::Thread),
 ) {
-    let run = state.runs.get_mut(run_id).expect("the run exists");
+    let mut run = state.take_run(run_id).expect("the run exists");
     let agent = run
         .agents
         .by_id_mut(agent_id)
         .expect("the agent is on the roster");
     write(&mut agent.thread);
+    state
+        .finish_run_mutation(run_id.to_string(), run)
+        .expect("fixture thread write is durable and published");
 }
 
 /// The regression: a row is cleared against every agent on it, not just the
@@ -321,6 +324,7 @@ fn an_old_style_dismissal_still_clears_a_single_agent_row() {
         .board
         .attention_mut()
         .set_legacy_dismissed_through(&run_id, line);
+    state.persist_attention();
     let row = work_item_row_for(&mut state, &run_id);
     assert_eq!(row["dismissed"], true, "{row:?}");
 

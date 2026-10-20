@@ -341,13 +341,34 @@ impl AppState {
         self.capture_identities_with(task, timeline, &StoredRosters::default());
     }
 
+    pub(super) fn capture_task_identities_and_actor(
+        &self,
+        task: &mut Task,
+        timeline: &[TimelineEntry],
+        actor: &Actor,
+    ) {
+        let mut ids = mentioned(task, timeline);
+        add_actor(&mut ids, actor);
+        self.capture_identity_ids(task, ids, &StoredRosters::default());
+    }
+
     fn capture_identities_with(
         &self,
         task: &mut Task,
         timeline: &[TimelineEntry],
         rosters: &StoredRosters,
     ) {
-        for id in mentioned(task, timeline) {
+        let ids = mentioned(task, timeline);
+        self.capture_identity_ids(task, ids, rosters);
+    }
+
+    fn capture_identity_ids(
+        &self,
+        task: &mut Task,
+        ids: BTreeSet<String>,
+        rosters: &StoredRosters,
+    ) {
+        for id in ids {
             if let Some(identity) = self.resolved_task_identity(&id, rosters) {
                 task.identities
                     .entry(id)

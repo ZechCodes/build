@@ -141,4 +141,9 @@ fn dependency_edit_captures_a_new_actor_before_publishing_its_reply() {
     assert!(identity["ordinal"].is_number(), "{identity}");
     assert!(identity["provider"].is_string(), "{identity}");
     assert_eq!(identity["available"], true);
+    let (_, saved) = app.tracker_task(dependent["id"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        saved.identities[&actor.1].name.as_deref(),
+        Some("Dependency author")
+    );
 }

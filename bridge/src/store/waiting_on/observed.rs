@@ -18,17 +18,18 @@ impl Store {
 
     pub(crate) fn edit_waiting_on_observed(
         &self,
-        project: &str,
-        task_id: &str,
+        prepared: &Task,
         add: &[String],
         remove: &[String],
         actor: &Actor,
         now: &str,
     ) -> Result<TrackerTaskPublication, StoreError> {
         self.in_waiting_on_transaction(|tx| {
-            let task = require_task(tx, project, task_id)?;
+            let mut task = require_task(tx, &prepared.project_path, &prepared.id)?;
+            task.identities.extend(prepared.identities.clone());
+            super::super::tracker::write_tracker_task(tx, &task)?;
             graph::edit(tx, &task, add, remove, actor, now)?;
-            let task = require_task(tx, project, task_id)?;
+            let task = require_task(tx, &prepared.project_path, &prepared.id)?;
             ReadTransaction::new(tx).tracker_task_publication(task, remove)
         })
     }

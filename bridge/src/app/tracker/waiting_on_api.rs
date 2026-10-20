@@ -71,11 +71,16 @@ impl AppState {
         add: bool,
         actor: &Actor,
     ) -> Result<Value, String> {
+        let timeline = self
+            .tracker_store()?
+            .load_tracker_timeline(&task.id)
+            .stored()?;
+        let mut prepared = task.clone();
+        self.capture_task_identities_and_actor(&mut prepared, &timeline, actor);
         let publication = self
             .tracker_store()?
             .edit_waiting_on_observed(
-                &task.project_path,
-                &task.id,
+                &prepared,
                 if add { ids } else { &[] },
                 if add { &[] } else { ids },
                 actor,

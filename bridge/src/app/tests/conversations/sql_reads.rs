@@ -1,5 +1,7 @@
 use super::*;
 
+mod operations;
+
 #[test]
 fn store_free_thread_read_context_keeps_an_immutable_bounded_history() {
     let (dir, repo) = init_repo();

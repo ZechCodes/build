@@ -55,17 +55,9 @@ impl Store {
             if agent.thread.items.is_empty() {
                 return Ok(None);
             }
-            let sequences = agent
-                .thread
-                .items
-                .iter()
-                .map(ThreadItem::sequence)
-                .collect::<Vec<_>>();
-            for sequence in sequences {
-                agent
-                    .thread
-                    .set_legacy_delivery_status(sequence, sequence, status);
-            }
+            // Only the validated point selections are resident here. One pass
+            // stamps that exact set in its captured order, including gaps.
+            agent.thread.set_legacy_delivery_status(0, u64::MAX, status);
             write_status(tx, conversation_id, agent).map(Some)
         })
     }

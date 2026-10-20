@@ -311,3 +311,56 @@ fn frozen_legacy_delivery_batch_cannot_change_messages_from_a_reset_generation()
         "the generation frozen with admission must fence reused IDs and sequences"
     );
 }
+
+#[test]
+fn frozen_legacy_delivery_batch_ignores_an_agent_rebound_to_another_conversation() {
+    let fixture = LegacyBatch::new();
+    let replacement = {
+        let mut app = fixture.state.lock().unwrap();
+        let added = app.agent_add(&json!({"entity_id":fixture.owner})).unwrap();
+        let replacement = added["agent"]["id"].as_str().unwrap().to_owned();
+        app.edit_agent_conversation(&fixture.owner, &replacement, |thread, _| {
+            for sequence in 0..=fixture.frozen.payload.end_sequence {
+                thread.post_user(
+                    format!("rebound replacement {sequence}"),
+                    None,
+                    "2026-10-20T12:04:00Z",
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+        let mut active = app.take_run(&fixture.owner).unwrap();
+        active
+            .agents
+            .by_id_mut(&fixture.agent)
+            .unwrap()
+            .bind_conversation(&replacement);
+        app.finish_run_mutation(fixture.owner.clone(), active)
+            .unwrap();
+        replacement
+    };
+    let before = {
+        let app = fixture.state.lock().unwrap();
+        let store = app.store.as_ref().unwrap();
+        (
+            store.thread_items(&replacement).unwrap(),
+            store.total_changes(),
+        )
+    };
+    for status in [
+        MessageDeliveryStatus::Sent,
+        MessageDeliveryStatus::Uncertain,
+    ] {
+        let (result, samples) = fixture.record(status);
+        result.unwrap();
+        assert!(samples["agent.deliver"].get("entered.sql.write").is_none());
+        assert!(samples["agent.deliver"]
+            .get("entered.finisher.save")
+            .is_none());
+        let app = fixture.state.lock().unwrap();
+        let store = app.store.as_ref().unwrap();
+        assert_eq!(store.thread_items(&replacement).unwrap(), before.0);
+        assert_eq!(store.total_changes(), before.1);
+    }
+}

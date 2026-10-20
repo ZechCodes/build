@@ -39,9 +39,10 @@ async function syntheticFiles() {
 }
 
 async function verifyDownload(page, file) {
-  const downloaded = page.waitForEvent("download");
-  await page.getByTitle(`Download ${file.name}`).click();
-  const download = await downloaded;
+  const [download] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByTitle(`Download ${file.name}`).first().click(),
+  ]);
   expect(download.suggestedFilename()).toBe(file.name);
   const bytes = await readFile(await download.path());
   expect(bytes.length).toBe(file.size);

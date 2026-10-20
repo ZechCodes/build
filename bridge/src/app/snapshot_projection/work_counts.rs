@@ -67,3 +67,6 @@ pub(in crate::app) fn history_update() {
         held.set(count)
     });
 }
+
+// Actual dependency-scan and row construction work for detail batching.
+pub(in crate::app) mod detail_scans;

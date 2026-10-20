@@ -473,3 +473,5 @@ fn published_workspace_facts(view: &ReadView) -> Value {
     let mut facts = crate::app::facts::entity_facts(&handle, &[request]);
     facts.pop().unwrap().state.unwrap()["workspaces"].take()
 }
+
+mod workspace_details;

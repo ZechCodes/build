@@ -151,11 +151,19 @@ impl ReadDispatcher {
             let changed = self.queue.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            if self.queue.admit(&mut job) {
+            #[cfg(test)]
+            let mut admitted_at = None;
+            if self.queue.admit(
+                &mut job,
                 #[cfg(test)]
-                self.handler
-                    .clock
-                    .mark_observed(&observed, "admitted", std::time::Instant::now());
+                &mut admitted_at,
+            ) {
+                #[cfg(test)]
+                if let Some(admitted_at) = admitted_at {
+                    self.handler
+                        .clock
+                        .mark_observed(&observed, "admitted", admitted_at);
+                }
                 self.queue.notify_admitted();
                 return;
             }
@@ -196,7 +204,11 @@ impl Queue {
 
     /// A full queue keeps exactly the carrier's current intake future parked.
     /// Nothing has been moved into a worker or another internal queue yet.
-    fn admit(&self, incoming: &mut Option<Job>) -> bool {
+    fn admit(
+        &self,
+        incoming: &mut Option<Job>,
+        #[cfg(test)] admitted_at: &mut Option<std::time::Instant>,
+    ) -> bool {
         let mut waiting = self.waiting.lock().unwrap();
         let job = incoming.as_ref().unwrap();
         if waiting.closed || !job.sender.read_is_live() {
@@ -211,6 +223,12 @@ impl Queue {
         jobs.push_back(incoming.take().unwrap());
         if was_empty {
             waiting.ready.push_back(opening);
+        }
+        // Save the diagnostic timestamp before another coordinator can pop.
+        // Emit its observer callback after releasing this queue mutex.
+        #[cfg(test)]
+        {
+            *admitted_at = Some(std::time::Instant::now());
         }
         true
     }
@@ -701,7 +719,8 @@ mod queue_wakeup_tests {
             frame,
             queued: crate::timing::FrameClock::new().queued(),
         });
-        assert!(queue.admit(&mut job));
+        let mut admitted_at = None;
+        assert!(queue.admit(&mut job, &mut admitted_at));
         queue.notify_admitted();
         let mut awakened = 0;
         for waiter in &mut waiters {

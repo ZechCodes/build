@@ -354,6 +354,10 @@ Permanent owner removal also retires its checkpoint. A failed durable candidate
 cannot be exposed by an unrelated later publication. Nested owner mutations
 wait until their shared projection can be published coherently. Seen and mute
 mutations publish affected agent cursors and unread counts before replying.
+New Git adoptions stage their compatibility workspace alongside the owner
+before saving. A failed save removes only that staged in-memory alias, while
+a successful save publishes both before notices, including branch dispatch
+and implementation handover.
 
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read

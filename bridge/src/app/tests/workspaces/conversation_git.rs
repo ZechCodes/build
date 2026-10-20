@@ -176,9 +176,13 @@ fn thread_push_facts_resolve_ownership_once_per_entity() {
             "complete snapshot publication repeated nested ownership searches: {one} for {entities} entities, shared_root={shared_root}"
         );
     }
-    for pair in measurements.chunks_exact(2) {
-        let (_, shared_root, small) = pair[0];
-        let (_, _, large) = pair[1];
+    for (small_measurement, large_measurement) in measurements
+        .iter()
+        .step_by(2)
+        .zip(measurements.iter().skip(1).step_by(2))
+    {
+        let (_, shared_root, small) = *small_measurement;
+        let (_, _, large) = *large_measurement;
         for (small, large) in [(small.0, large.0), (small.1, large.1)] {
             assert!(
                 large <= 16 * small,

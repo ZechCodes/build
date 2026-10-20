@@ -105,30 +105,32 @@ Raw six-verb artifacts: `/tmp/build-685-after.PWpCC9/bridge-concurrency-baseline
 
 All values are milliseconds. Each row represents eight computations. App-held queue p95 changes from 159.668–170.560 ms to 4.542–5.354 ms; Git-held queue p95 changes from 194.534–212.727 ms to 5.638–6.492 ms. Isolated queue p95 ranges from 0.422–0.692 ms before and 0.464–1.174 ms after. This sample demonstrates removal of app/Git contention; it does not show a uniform isolated-latency improvement.
 
-| Scenario | Verb | Queue sum before | Queue sum after | Queue p95 before | Queue p95 after |
-| --- | --- | ---: | ---: | ---: | ---: |
-| isolated | tasks.list | 2.706 | 4.109 | 0.422 | 1.174 |
-| isolated | tasks.get | 2.847 | 3.186 | 0.434 | 0.479 |
-| isolated | tasks.waiting_on.blocks | 2.892 | 3.075 | 0.477 | 0.464 |
-| isolated | thread.page | 3.128 | 2.848 | 0.453 | 0.504 |
-| isolated | thread.activity | 3.685 | 4.152 | 0.692 | 0.637 |
-| isolated | thread.operation | 3.202 | 3.702 | 0.607 | 0.674 |
-| app_held_write | tasks.list | 904.023 | 25.486 | 159.668 | 4.723 |
-| app_held_write | tasks.get | 918.206 | 24.633 | 162.565 | 4.542 |
-| app_held_write | tasks.waiting_on.blocks | 1048.769 | 30.832 | 167.933 | 5.354 |
-| app_held_write | thread.page | 1054.595 | 30.832 | 168.005 | 5.103 |
-| app_held_write | thread.activity | 1057.039 | 32.024 | 168.509 | 5.091 |
-| app_held_write | thread.operation | 1071.286 | 30.571 | 170.560 | 5.041 |
-| off_lock_git_worker | tasks.list | 1116.614 | 31.794 | 194.534 | 5.638 |
-| off_lock_git_worker | tasks.get | 1171.934 | 32.480 | 204.749 | 6.492 |
-| off_lock_git_worker | tasks.waiting_on.blocks | 1188.004 | 37.825 | 206.160 | 6.319 |
-| off_lock_git_worker | thread.page | 1192.619 | 37.845 | 206.418 | 6.209 |
-| off_lock_git_worker | thread.activity | 1226.149 | 37.101 | 212.064 | 5.887 |
-| off_lock_git_worker | thread.operation | 1230.094 | 36.532 | 212.727 | 5.779 |
+The isolated **total p95 regressed in this first sample**: `thread.page` 4.077→6.547 ms, `thread.activity` 1.171→3.037 ms, `thread.operation` 1.036→2.010 ms and `tasks.list` 12.856→13.745 ms. These are measured intake-to-handler-completion totals, including queueing; they exclude outbound wire serialization and client receipt. This first capture does not separately measure checkout or query phases, so it cannot attribute those changes to pool waiting, scheduling or SQL. The direct diagnostic capture below supplies those missing boundaries. Neither percentile subtraction nor the app-lock-held total establishes SQLite cost.
 
-The following sums include only the six moved verbs, 48 computations per scenario, excluding the synthetic write, Git request and delivery-service setup. They add observed durations across requests; they are not elapsed wall-clock durations or aggregated percentiles.
+| Scenario | Verb | Total p50 before | Total p50 after | Queue p95 before | Total p95 before | Queue p95 after | Total p95 after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| isolated | tasks.list | 5.000 | 5.000 | 0.422 | 12.856 | 1.174 | 13.745 |
+| isolated | tasks.get | 2.500 | 2.500 | 0.434 | 2.586 | 0.479 | 2.686 |
+| isolated | tasks.waiting_on.blocks | 1.585 | 1.000 | 0.477 | 1.585 | 0.464 | 1.466 |
+| isolated | thread.page | 2.500 | 5.000 | 0.453 | 4.077 | 0.504 | 6.547 |
+| isolated | thread.activity | 1.000 | 2.500 | 0.692 | 1.171 | 0.637 | 3.037 |
+| isolated | thread.operation | 1.000 | 2.010 | 0.607 | 1.036 | 0.674 | 2.010 |
+| app_held_write | tasks.list | 166.535 | 10.000 | 159.668 | 166.535 | 4.723 | 10.999 |
+| app_held_write | tasks.get | 167.481 | 7.902 | 162.565 | 167.481 | 4.542 | 7.902 |
+| app_held_write | tasks.waiting_on.blocks | 168.805 | 7.369 | 167.933 | 168.805 | 5.354 | 7.369 |
+| app_held_write | thread.page | 170.524 | 10.000 | 168.005 | 170.524 | 5.103 | 10.718 |
+| app_held_write | thread.activity | 170.169 | 7.163 | 168.509 | 170.169 | 5.091 | 7.163 |
+| app_held_write | thread.operation | 170.944 | 6.994 | 170.560 | 170.944 | 5.041 | 6.994 |
+| off_lock_git_worker | tasks.list | 200.000 | 10.000 | 194.534 | 202.852 | 5.638 | 14.670 |
+| off_lock_git_worker | tasks.get | 200.000 | 10.000 | 204.749 | 205.942 | 6.492 | 12.053 |
+| off_lock_git_worker | tasks.waiting_on.blocks | 200.000 | 9.277 | 206.160 | 206.530 | 6.319 | 9.277 |
+| off_lock_git_worker | thread.page | 200.000 | 10.000 | 206.418 | 208.607 | 6.209 | 11.257 |
+| off_lock_git_worker | thread.activity | 200.000 | 8.828 | 212.064 | 212.387 | 5.887 | 8.828 |
+| off_lock_git_worker | thread.operation | 200.000 | 10.000 | 212.727 | 213.136 | 5.779 | 10.467 |
 
-| Scenario | Queue sum before | Queue sum after | Lock-wait sum before | Lock-wait sum after | Held sum before | Held sum after |
+The following sums include only the six moved verbs, 48 computations per scenario, excluding the synthetic write, Git request and delivery-service setup. They add observed durations across requests; they are not elapsed wall-clock durations or aggregated percentiles. **The app-lock-held sums falling to zero mean that read work moved off the app lock; the work did not disappear.** Query execution in the SQL lane is outside that instrumented app-lock phase.
+
+| Scenario | Queue sum before | Queue sum after | Lock-wait sum before | Lock-wait sum after | App-lock held sum before | App-lock held sum after |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | isolated | 18.460 | 21.072 | 0.010 | 0.000 | 81.155 | 0.000 |
 | app_held_write | 6053.918 | 174.378 | 226.899 | 0.000 | 82.855 | 0.000 |
@@ -211,3 +213,43 @@ The complete-query value is emitted as the `bridge_sql_read_sizing` JSON record 
 These are single captures with eight samples per verb/scenario in small controlled fixtures. Histogram percentiles are approximate bucket values. The app/Git gates are synthetic and held for at least 75 ms, not an identical fixed elapsed duration between runs. The before archive uses the legacy handler and the after source uses the production SQL read service; their fixture changes are described above. No live daemon, production database, paired client or user browser was involved.
 
 The sizing project contains 501 simple unassigned tasks; its complete query executes the real per-task lookup paths, including empty review and delivery lookups. More populated relationships, warm/cold cache differences, simultaneous writes and larger histories may change the duration. The 283.559 ms transaction illustrates why long unbounded reads need a separate bounded pool and supports retaining eight SQL workers as an initial size. A single uncongested checkout and transaction does not establish eight as optimal or measure pool saturation. No wire limit was introduced. Queue time still includes intake and scheduling; zero app-lock timing does not mean zero SQLite work, and these phase percentiles cannot be subtracted to infer SQLite cost.
+
+## Review follow-up: direct SQL diagnostics
+
+The original comparison above remains the first captured sample, with its isolated total regression reported explicitly. The follow-up adds test-only observations to the actual SQL lane and read transaction. They compile only under `cfg(test)`; production `bridge.stats`, logs and wire replies receive no new fields. The fixture now reports `sql_workers` through the actual carrier worker constant rather than a copied value. It preserves eight distinct computations per verb and the same seeds, scenarios, worker counts and gate assertions.
+
+| Diagnostic phase | Measured boundary |
+| --- | --- |
+| `checkout` | Coordinator starts requesting a read connection until it owns that connection, including asynchronous permit wait and connection retrieval. The coordinator checks out before choosing work, so this duration is attributed to the computation it subsequently takes; earlier admission/backlog wait remains in `queued`. |
+| `worker_handoff` | The selected computation is handed to the dedicated worker until that worker begins handling it. This measures the additional coordinator-to-thread hop, independently of checkout. |
+| `service` | Entry to return of the actual `ReadService::call`, including normalization, context load, transaction, fence/result validation and connection return. It includes the nested transaction phases rather than adding to them. |
+| `transaction_setup` | Entry to SQLite `Connection::transaction` until the transaction object is created. SQLite's deferred first read remains in query time. |
+| `query` | The complete request closure passed to `ReadConnection::read`: scope validation and production query/projection work inside the transaction. |
+| `transaction_finish` | The query closure returns until SQLite's read transaction commit completes. |
+
+Each diagnostic reports count, sum, p50, p95 and maximum; JSON also retains the per-request phase values in `samples_ms`. Diagnostic quantiles use the nearest rank of the eight direct samples, while the existing total/queued/wait/hold fields retain the bridge's fixed histogram buckets. They should not be interpreted as identically quantized distributions. Observer callbacks and timestamp reads add test-only overhead; query/setup/finish intervals exclude their reporting callback, while service and the existing intake-to-handler totals include the applicable fixture reporting work. No percentile is subtracted from another to attribute a cause.
+
+The TDD regression first required all six verbs to publish each diagnostic phase with eight samples. It failed as intended with exit **101**, missing the `tasks.list.checkout` count (`/tmp/build-685-sql-phases-red.log`). The first attempted green build exited **101** on an unrelated concurrently added carrier test's `HashSet` type inference (`/tmp/build-685-sql-phases-green.log`); that compile failure is not a diagnostic test result. Observer and fixture source was committed as `a2cabfc01fe0bcee3e2d9f892d2ed4bbcb24cd6d` before the diagnostic capture.
+
+### Before the query-work refinement
+
+The preliminary instrumented capture ran from `bridge/` with:
+
+```sh
+BUILD_CONCURRENCY_BASELINE_DIR=/tmp/build-685-sql-preopt.31xNzX nice -n 10 cargo test --lib concurrency_timing -- --nocapture --test-threads=1
+```
+
+Exit **0**, eight tests passed; the new diagnostic assertions are green for all six verbs in all three scenarios. Raw artifacts and test log are under `/tmp/build-685-sql-preopt.31xNzX/` (`bridge-concurrency-baseline.jsonl`, `bridge-concurrency-baseline.md`, `capture.log`, `capture.exit`). Before/after source checks are `revision.before` and `revision.after`; `worktree.before` records the state at invocation. The invocation began at `c4f8ace43562bc70ab397265d14be0b32a403cff`, containing the test hooks and new admission tests. SPA-only commit `e6aeddf3a14eab2aace62eb81f497ed59aa42e75` landed during compilation; all emitted records identify `e6aeddf3a14eab2aace62eb81f497ed59aa42e75`. Rust production read code was unchanged during this capture. The pending thread-read regression tests were present but their filter was not run by this command; no query optimization was applied yet.
+
+These are directly measured isolated means, calculated as each phase sum divided by its eight observations, in milliseconds. `service` contains the transaction phases. It is not a seventh additive part.
+
+| Verb | Checkout mean | Worker handoff mean | Setup mean | Query mean | Finish mean | Service mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| tasks.list | 0.0146 | 0.0482 | 0.0183 | 5.1811 | 0.0184 | 5.7722 |
+| tasks.get | 0.0160 | 0.0604 | 0.0230 | 1.3051 | 0.0153 | 1.6247 |
+| tasks.waiting_on.blocks | 0.0164 | 0.0443 | 0.0275 | 0.6846 | 0.0140 | 0.8310 |
+| thread.page | 0.0129 | 0.0515 | 0.0192 | 2.9448 | 0.0191 | 4.2121 |
+| thread.activity | 0.0173 | 0.0545 | 0.0268 | 1.5289 | 0.0212 | 1.8920 |
+| thread.operation | 0.0160 | 0.0746 | 0.0253 | 1.2636 | 0.0172 | 1.4717 |
+
+For the three history verbs, these observations place checkout, worker handoff, setup and finish individually at roughly 0.013–0.075 ms on average, while the query closure averages 1.264–2.945 ms. That measures where the new lane spends time in this capture: it does not establish that a pool wait or the extra thread hop caused the earlier isolated regression. The earlier sample lacks these probes, so its exact additional cost cannot be retrospectively assigned. Independent query-count/decoded-row regression tests investigate repeated agent-roster reads and unnecessary conversation-summary restoration; their deterministic work counts, followed by a capture with the same probes, can assess that refinement without subtracting percentiles. The complete unbounded 501-task query in this preliminary run measured 20 µs checkout and 346,142 µs transaction; it remains a single synthetic sizing sample.

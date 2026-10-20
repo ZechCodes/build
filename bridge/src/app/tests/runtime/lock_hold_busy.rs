@@ -2,6 +2,7 @@
 //! cargo-built test code are used. No daemon or installed bridge is contacted.
 use super::*;
 use crate::app::mcp::{handle_done_stream, ControlPlane};
+use crate::app::read_view::ReadViewSlot;
 use crate::app::tests::tracker::{filed, tracked};
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
@@ -16,6 +17,23 @@ const TASKS: usize = 700;
 const AGENTS: usize = 12;
 const ROUNDS: usize = 2;
 const HISTORY_ITEMS: usize = 32;
+const RPC_SAMPLES: usize = 8;
+const CONTROL_TOOLS: [&str; 7] = [
+    "create_task",
+    "move_task",
+    "message_agent",
+    "set_topic",
+    "get_task",
+    "comment_task",
+    "post_thread_message",
+];
+const RPC_METHODS: [&str; 5] = [
+    "entity.seen",
+    "thread.post",
+    "user.present",
+    "tasks.review.get",
+    "git.show",
+];
 const REQUEST_PATIENCE: Duration = Duration::from_secs(600);
 
 struct Busy {
@@ -26,6 +44,7 @@ struct Busy {
     tasks: Vec<String>,
     hash: String,
     samples: PhaseSamples,
+    view: ReadViewSlot,
     sessions: Vec<(TabKey, Arc<dyn AgentSession>)>,
 }
 
@@ -202,6 +221,7 @@ impl Busy {
                 })
                 .collect()
         };
+        let view = state.lock().unwrap().read_view.clone();
         let samples = clock.capture_phases();
         Self {
             _home: home,
@@ -211,6 +231,7 @@ impl Busy {
             tasks,
             hash,
             samples,
+            view,
             sessions,
         }
     }
@@ -221,17 +242,33 @@ fn seed_history(thread: &mut crate::thread::Thread) {
         thread.post_user(format!("Busy request {i}: inspect the project files and preserve the established task and conversation identity while preparing the next review."),None,"2026-10-20T12:00:00Z");
         thread.post_agent(format!("Busy answer {i}: the implementation records the committed result, and the next request should observe that result through the saved task timeline and conversation history."),None,"2026-10-20T12:00:01Z");
     }
+    // Historical prompts have already been consumed by these warm sessions.
+    thread.read_unread("2026-10-20T12:00:02Z");
+    assert!(!thread.has_unread());
+}
+
+struct ControlIdentity {
+    owner: String,
+    agent: String,
+    task: String,
+    recipient: String,
+    view: ReadViewSlot,
 }
 
 async fn control_agent(
     state: Arc<Mutex<AppState>>,
     plane: Arc<ControlPlane>,
-    agent: String,
-    task: String,
-    recipient: String,
+    identity: ControlIdentity,
     start: Arc<tokio::sync::Barrier>,
     completed: Arc<AtomicUsize>,
 ) {
+    let ControlIdentity {
+        owner,
+        agent,
+        task,
+        recipient,
+        view,
+    } = identity;
     let (client, daemon) = tokio::net::UnixStream::pair().unwrap();
     let server = tokio::spawn(handle_done_stream(state, daemon, plane));
     let mut client = tokio::io::BufReader::new(client);
@@ -299,6 +336,7 @@ async fn control_agent(
                 .unwrap();
             let response: Value = serde_json::from_str(&response).unwrap();
             assert_eq!(response["ok"], true, "{response}");
+            assert_acknowledged_snapshot(&view, &owner, &agent, &action, &response);
             completed.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -408,13 +446,18 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
     );
     let start = Arc::new(tokio::sync::Barrier::new(AGENTS + 5 + 1));
     let mut calls = Vec::new();
-    for (i, ((_, agent), task)) in busy.owners.iter().take(AGENTS).zip(&busy.tasks).enumerate() {
+    for (i, ((owner, agent), task)) in busy.owners.iter().take(AGENTS).zip(&busy.tasks).enumerate()
+    {
         calls.push(tokio::spawn(control_agent(
             Arc::clone(&busy.state),
             Arc::clone(&plane),
-            agent.clone(),
-            task.clone(),
-            busy.owners[(i + 1) % AGENTS].1.clone(),
+            ControlIdentity {
+                owner: owner.clone(),
+                agent: agent.clone(),
+                task: task.clone(),
+                recipient: busy.owners[(i + 1) % AGENTS].1.clone(),
+                view: busy.view.clone(),
+            },
             Arc::clone(&start),
             Arc::clone(&completed),
         )));
@@ -530,29 +573,87 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
         failures.is_empty(),
         "all fixture calls completed: {failures:?}"
     );
-    for (method, phases) in measurements.as_object().unwrap() {
-        if !method.starts_with("mcp.control:")
-            && !matches!(
-                method.as_str(),
-                "agent.deliver"
-                    | "entity.seen"
-                    | "thread.post"
-                    | "user.present"
-                    | "tasks.review.get"
-                    | "git.show"
-            )
-        {
-            continue;
-        }
-        let held = &phases["frame.held"];
-        let minimum = if method == "agent.deliver" { 1 } else { 8 };
-        assert!(
-            held["count"].as_u64().unwrap() >= minimum,
-            "{method}: {held}"
+    assert_expected_samples(&measurements);
+}
+
+fn assert_expected_samples(measurements: &Value) {
+    let expected = CONTROL_TOOLS
+        .into_iter()
+        .map(|tool| (format!("mcp.control:{tool}"), AGENTS * ROUNDS))
+        .chain(
+            RPC_METHODS
+                .into_iter()
+                .map(|method| (method.into(), RPC_SAMPLES)),
+        )
+        .collect::<Vec<_>>();
+    for (method, count) in &expected {
+        assert_eq!(
+            measurements[method]["frame.held"]["count"], *count,
+            "every requested method must complete: {method}"
         );
+    }
+    assert!(
+        measurements["agent.deliver"]["frame.held"]["count"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1,
+        "delivery work must actually run"
+    );
+    for method in expected
+        .iter()
+        .map(|(method, _)| method.as_str())
+        .chain(["agent.deliver"])
+    {
+        let phases = &measurements[method];
+        let held = &phases["frame.held"];
         assert!(
             held["p95_ms"].as_f64().unwrap() < 50.0 && held["max_ms"].as_f64().unwrap() < 200.0,
             "app-lock hold budget exceeded for {method}: {held}"
         );
+    }
+}
+
+fn assert_acknowledged_snapshot(
+    view: &ReadViewSlot,
+    owner: &str,
+    agent: &str,
+    action: &BridgeAction,
+    response: &Value,
+) {
+    let published = view.load();
+    match action {
+        BridgeAction::SetTopic { topic } => {
+            let agents = published
+                .get("agent.list", owner)
+                .expect("published owner roster");
+            let row = agents["agents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == agent)
+                .unwrap();
+            assert_eq!(
+                row["topic"], *topic,
+                "acknowledged topic is visible through independent immutable read"
+            );
+        }
+        BridgeAction::PostThreadMessage { body, .. } => {
+            let history = published
+                .history(agent)
+                .expect("published canonical history")
+                .render(&json!({}));
+            assert!(
+                history["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(
+                        |item| item["data"]["id"] == response["result"]["message_id"]
+                            && item["data"]["body"] == *body
+                    ),
+                "acknowledged message is visible through independent immutable history read"
+            );
+        }
+        _ => {}
     }
 }

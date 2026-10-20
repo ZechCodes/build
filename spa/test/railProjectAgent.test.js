@@ -368,11 +368,16 @@ describe("the + while the project's conversation is open", () => {
 
   it("swaps back to the workspace and starts the new agent there", async () => {
     await mountWorkspaceRail();
+    await painted(() => headWho() === "Fix login redirect" && agentBubble("wa-1") && addBubble());
     projectBubble().click();
-    await flush();
+    // Minting crosses cache writes: the project must be open before pressing
+    // its workspace +, or the late project mount can replace the chooser.
+    await painted(() => panelIsOpen() && headWho() === "Sort the workspaces"
+      && projectBubble()?.classList.contains("active"));
 
     addBubble().click();
-    await flush();
+    await painted(() => panelIsOpen() && !projectBubble()?.classList.contains("active")
+      && addBubble()?.classList.contains("active") && panel()?.querySelector(".rail-newagent"));
 
     // Exactly where pressing the + on the workspace's own conversation lands:
     // the rail back on the workspace, the chooser in the panel, and nothing

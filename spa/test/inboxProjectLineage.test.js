@@ -59,9 +59,43 @@ describe("the inbox project agent and chat share cached descendant activity (#69
     }
     await write("project-agents", entityId, { ...fixture.roster, agents: [worker, fixture.pin] });
     await vi.waitFor(() => expect(lineage.decorate(fixture.pin).agents_running).toBe(1));
-    await vi.waitFor(() => expect(entry()).toMatchObject({ watchedWorking: true, working: true }));
+    await vi.waitFor(() => expect(entry()).toMatchObject({ watchedWorking: true, working: true, facts: "1 running" }));
     expect(snapshot.projects[0].projectRoster.agents.find((agent) => agent.id === pinId))
       .toMatchObject({ working: false, agents_running: 1 });
+  });
+
+  it("counts an independent project worker once without inventing a creator for it", async () => {
+    for (const child of fixture.children) {
+      await write("row", child.entity_id, { ...child, agents: [{ ...child.agents[0], working: false }] });
+    }
+    await write("project-agents", entityId, { ...fixture.roster, agents: [fixture.pin, {
+      id: "independent-worker", conversation_id: "independent-history", working: true, watched: false,
+    }] });
+    await vi.waitFor(() => expect(entry()).toMatchObject({ working: true, watchedWorking: false, facts: "1 running" }));
+    expect(lineage.decorate(fixture.pin).agents_running || 0).toBe(0);
+  });
+
+  it("counts the coordinator's own working loop alongside its three running panel entries", async () => {
+    await write("project-agents", entityId, { ...fixture.roster, agents: [{ ...fixture.pin, working: true }] });
+    await vi.waitFor(() => expect(entry()).toMatchObject({ working: true, watchedWorking: true, facts: "4 running" }));
+  });
+
+  it("counts a nested worker once as the coordinator's running panel entry", async () => {
+    for (const child of fixture.children.slice(1)) {
+      await write("row", child.entity_id, { ...child,
+        agents: [{ ...child.agents[0], created_by: fixture.children[0].agents[0].id }],
+      });
+    }
+    await vi.waitFor(() => expect(lineage.decorate(fixture.pin).agents_running).toBe(1));
+    await vi.waitFor(() => expect(entry()).toMatchObject({ working: true, watchedWorking: true, facts: "1 running" }));
+  });
+
+  it.each([
+    [{ stat: { uncommitted: { files_changed: 2, insertions: 3, deletions: 1 } } }, "2 files · +3 −1 · 3 running"],
+    [{ pending: "updating" }, "Updating… · 3 running"],
+  ])("preserves the owner's Git or pending facts alongside descendant activity: %j", async (fields, facts) => {
+    await write("row", entityId, { ...fixture.owner, ...fields });
+    await vi.waitFor(() => expect(entry().facts).toBe(facts));
   });
 
   it("does not roll up Build descendants when the cached createdBy capability is absent", async () => {

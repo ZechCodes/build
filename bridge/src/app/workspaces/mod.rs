@@ -136,6 +136,7 @@ impl DeferredGitWork for WorkspaceCreateWork {
             app.workspaces
                 .fail_if_still_provisioning(&self.workspace_id);
         }
+        app.publish_read_metadata();
     }
 }
 

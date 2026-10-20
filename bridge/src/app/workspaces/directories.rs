@@ -248,6 +248,7 @@ fn reload(app: &mut AppState) {
     if let Err(error) = app.workspaces.reload() {
         eprintln!("reload workspaces after a directory change: {error}");
     }
+    app.publish_read_metadata();
 }
 
 impl AppState {

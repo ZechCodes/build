@@ -378,15 +378,22 @@ fn incremental_workspace_join_counts_the_actual_full_and_owner_producers() {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        for (number, workspace) in subjects.iter().enumerate() {
-            let repositories = workspace
-                .directories
-                .iter()
-                .filter(|directory| directory.is_git)
-                .map(|directory| directory.path.clone())
-                .collect();
+        let memberships = subjects
+            .iter()
+            .map(|workspace| {
+                let repositories = workspace
+                    .directories
+                    .iter()
+                    .filter(|directory| directory.is_git)
+                    .map(|directory| directory.path.clone())
+                    .collect::<Vec<_>>();
+                (workspace.id.clone(), repositories)
+            })
+            .collect::<Vec<_>>();
+        state.sync_workspace_summaries(&memberships);
+        for (number, (workspace_id, repositories)) in memberships.into_iter().enumerate() {
             state.board.diff_mut().store_entry_for_adapter(DiffCacheEntry::WorkspaceSummary {
-                workspace_id: workspace.id.clone(), repositories,
+                workspace_id, repositories,
                 summary: json!({"pushes":number,"dirty":false,"payload":format!("summary-{number}")}),
             }, std::time::Instant::now());
         }
@@ -417,6 +424,10 @@ fn incremental_workspace_join_counts_the_actual_full_and_owner_producers() {
                     .iter()
                     .find(|summary| summary["workspace_id"] == row["workspace_id"])
                     .unwrap();
+                assert!(
+                    summary["work_summary"]["payload"].as_str().is_some(),
+                    "the seeded summary must be observed"
+                );
                 for field in ["work_summary", "can_finish", "finish_blockers"] {
                     row[field] = summary[field].clone();
                 }

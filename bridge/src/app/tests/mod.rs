@@ -14,6 +14,7 @@ use crate::timing::{recording_clock, SLOW_FRAME};
 use serde_json::Value;
 
 mod provider_recovery;
+mod review_publication;
 mod turn_failures;
 
 /// The frame path as a test that is not measuring a frame calls it.

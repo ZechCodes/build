@@ -17,9 +17,10 @@ import { srcJsFiles, srcSourceOf } from "./treeFiles.js";
 /// src/ goes through `markdownHtml`.
 const OWNERS = {
   "core/markdownRefs.js": ["core/markdownLinks.js"],
-  "core/markdownLinks.js": ["core/markdown.js"],
+  "core/markdownLinks.js": ["core/markdown.js", "core/markdownInline.js"],
   "core/markdownBlocks.js": ["core/markdown.js"],
-  "core/markdownWebLinks.js": ["core/markdown.js"],
+  "core/markdownWebLinks.js": ["core/markdownInline.js"],
+  "core/markdownInline.js": ["core/markdown.js"],
   "core/previewText.js": ["core/markdown.js"],
   "core/referenceTargets.js": ["core/referenceIndex.js"],
 };

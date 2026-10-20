@@ -15,13 +15,16 @@ use crate::timing::FrameClock;
 use serde_json::{json, Value};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 const SESSION: &str = "timing-sample";
 const GATE: Duration = Duration::from_millis(75);
 const PATIENCE: Duration = Duration::from_secs(5);
+const GATE_PATIENCE: Duration = Duration::from_secs(10);
 const SAMPLE_COUNT: usize = 8;
+const SQL_WORKERS: usize = 8;
 const READ_METHODS: [&str; 6] = [
     "tasks.list",
     "tasks.get",
@@ -34,38 +37,91 @@ const JSONL_FILE: &str = "bridge-concurrency-baseline.jsonl";
 const MARKDOWN_FILE: &str = "bridge-concurrency-baseline.md";
 static EMIT_LOCK: Mutex<()> = Mutex::new(());
 
-/// Occupies a dispatch worker before it takes the app lock, then scans the
-/// temporary repository. The bounded receive lets a failed test unwind.
-struct GitGate {
+/// Holds a synthetic write or Git worker until the test releases it. The
+/// longer worker deadline leaves time for the bounded read attempt to fail
+/// and its release guard to cancel the gate without poisoning app state.
+struct WorkGate {
     entered: mpsc::Sender<()>,
-    released: Mutex<mpsc::Receiver<()>>,
+    released: Mutex<mpsc::Receiver<bool>>,
+    held: Arc<AtomicBool>,
 }
 
-impl GitGate {
-    fn new() -> (Self, mpsc::Receiver<()>, mpsc::Sender<()>) {
+impl WorkGate {
+    fn new() -> (Self, mpsc::Receiver<()>, GateRelease) {
         let (entered, running) = mpsc::channel();
         let (release, released) = mpsc::channel();
+        let held = Arc::new(AtomicBool::new(false));
         (
             Self {
                 entered,
                 released: Mutex::new(released),
+                held: Arc::clone(&held),
             },
             running,
-            release,
+            GateRelease {
+                release: Some(release),
+                held,
+                holder: None,
+            },
         )
     }
 
-    fn run(&self, repo: &Path) {
-        self.entered.send(()).unwrap();
-        self.released
-            .lock()
-            .unwrap()
-            .recv_timeout(PATIENCE)
-            .expect("the test releases the off-lock Git worker");
+    fn wait(&self) -> bool {
+        self.held.store(true, Ordering::Release);
+        let _ = self.entered.send(());
+        let released = self.released.lock().unwrap().recv_timeout(GATE_PATIENCE);
+        self.held.store(false, Ordering::Release);
+        released.expect("the test releases or cancels the worker gate")
+    }
+
+    fn run_git(&self, repo: &Path) -> bool {
+        if !self.wait() {
+            return false;
+        }
         git2::Repository::open(repo)
             .unwrap()
             .statuses(None)
             .expect("the temporary checkout can be scanned");
+        true
+    }
+}
+
+/// Cancels blocked work on every failure path. Cancellation skips the Git
+/// scan, so a worker cannot access a fixture after the failing test drops it.
+struct GateRelease {
+    release: Option<mpsc::Sender<bool>>,
+    held: Arc<AtomicBool>,
+    holder: Option<std::thread::JoinHandle<()>>,
+}
+
+impl GateRelease {
+    fn assert_held(&self) {
+        assert!(
+            self.held.load(Ordering::Acquire),
+            "worker gate must remain held through all SQL answers"
+        );
+    }
+
+    fn finish(mut self) {
+        self.signal(true);
+        if let Some(holder) = self.holder.take() {
+            holder.join().expect("the synthetic write finished cleanly");
+        }
+    }
+
+    fn signal(&mut self, continue_work: bool) {
+        if let Some(release) = self.release.take() {
+            let _ = release.send(continue_work);
+        }
+    }
+}
+
+impl Drop for GateRelease {
+    fn drop(&mut self) {
+        self.signal(false);
+        if let Some(holder) = self.holder.take() {
+            let _ = holder.join();
+        }
     }
 }
 
@@ -84,6 +140,7 @@ fn emit_baseline(
         "git_revision": git_revision(Path::new(env!("CARGO_MANIFEST_DIR"))),
         "rust_toolchain": rust_toolchain(Path::new("rustc")),
         "dispatch_workers": dispatch_workers,
+        "sql_workers": SQL_WORKERS,
         "methods": methods,
     });
     append_artifacts(output_dir, &record);
@@ -134,11 +191,12 @@ fn append_artifacts(output_dir: &Path, record: &Value) {
 
 fn markdown_section(record: &Value) -> String {
     let mut section = format!(
-        "## {}\n\n- Git revision: `{}`\n- Rust toolchain: `{}`\n- Dispatch workers: {}\n- Crate version: `{}`\n- Gate: {}\n\n| Method | Phase | Count | Sum ms | p50 ms | p95 ms | Max ms |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n",
+        "## {}\n\n- Git revision: `{}`\n- Rust toolchain: `{}`\n- Dispatch workers: {}\n- SQL workers: {}\n- Crate version: `{}`\n- Gate: {}\n\n| Method | Phase | Count | Sum ms | p50 ms | p95 ms | Max ms |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n",
         record["scenario"].as_str().unwrap(),
         record["git_revision"].as_str().unwrap(),
         record["rust_toolchain"].as_str().unwrap(),
         record["dispatch_workers"],
+        record["sql_workers"],
         record["crate_version"].as_str().unwrap(),
         record["gate"].as_str().unwrap(),
     );
@@ -200,6 +258,7 @@ fn baseline_emitter_writes_self_describing_artifacts() {
     assert_eq!(record["git_revision"], revision);
     assert_eq!(record["rust_toolchain"], toolchain);
     assert_eq!(record["dispatch_workers"], 2);
+    assert_eq!(record["sql_workers"], 8);
 
     let jsonl =
         std::fs::read_to_string(dir.path().join("bridge-concurrency-baseline.jsonl")).unwrap();
@@ -213,6 +272,7 @@ fn baseline_emitter_writes_self_describing_artifacts() {
     assert!(markdown.contains(&revision));
     assert!(markdown.contains(&toolchain));
     assert!(markdown.contains("Dispatch workers: 2"));
+    assert!(markdown.contains("SQL workers: 8"));
     assert!(markdown.contains("| tasks.list | queued | 8 | 12.0 | 2.0 | 5.0 | 6.0 |"));
 }
 
@@ -318,12 +378,11 @@ struct Sample {
     task_ids: Vec<String>,
     history: HistorySample,
     next_id: u64,
-    task_started: mpsc::Receiver<()>,
     dispatch_workers: usize,
 }
 
 impl Sample {
-    fn new(workers: usize, git_gate: Option<GitGate>) -> Self {
+    fn new(workers: usize, git_gate: Option<WorkGate>) -> Self {
         let state_root = tempfile::tempdir().unwrap();
         let (repo_home, mut app, project_id) = tracked(state_root.path());
         let task_ids = (0..SAMPLE_COUNT)
@@ -339,20 +398,29 @@ impl Sample {
         let clock = FrameClock::new();
         app.frame_clock = Arc::clone(&clock);
         let state = app.shared();
-        let peers = state.lock().unwrap().peers_slot();
+        let (peers, reads, read_pool) = {
+            let app = state.lock().unwrap();
+            app.initialize_read_context();
+            (
+                app.peers_slot(),
+                app.read_service(),
+                app.store.as_ref().map(crate::store::Store::read_pool),
+            )
+        };
         let dispatched = Arc::clone(&state);
-        let (task_start, task_started) = mpsc::channel();
         let handler = FrameHandler::new(Arc::clone(&clock), move |sender, frame, timer| {
-            if frame.payload["method"].as_str() == Some("git.status") {
-                git_gate
+            if frame.payload["method"].as_str() == Some("git.status")
+                && !git_gate
                     .as_ref()
                     .expect("only the Git sample sends git.status")
-                    .run(&repo);
-            }
-            if READ_METHODS.contains(&frame.payload["method"].as_str().unwrap_or_default()) {
-                let _ = task_start.send(());
+                    .run_git(&repo)
+            {
+                return json!({ "id": frame.payload["id"], "ok": false, "error": "timing fixture cancelled" });
             }
             crate::app::dispatch_frame(&dispatched, &peers, sender, frame, timer)
+        })
+        .with_sql_reads(read_pool, move |_sender, frame, _timer, connection| {
+            reads.call(frame, connection)
         });
         let transport = crate::transport::generate_transport_keypair();
         let intake = FrameIntake::with_pool(handler, transport.clone(), 128, workers);
@@ -380,7 +448,6 @@ impl Sample {
             task_ids,
             history,
             next_id: 1,
-            task_started,
             dispatch_workers: workers,
         }
     }
@@ -432,6 +499,18 @@ impl Sample {
         }
     }
 
+    async fn read_all_while_held(&mut self) {
+        tokio::time::timeout(PATIENCE, async {
+            for i in 0..SAMPLE_COUNT {
+                self.reads(i, false).await;
+            }
+            tokio::time::sleep(GATE).await;
+            self.answers(READ_METHODS.len() * SAMPLE_COUNT).await;
+        })
+        .await
+        .expect("all SQL reads answer without releasing the held worker");
+    }
+
     fn baseline(&self, scenario: &str, gate: &str) -> Value {
         let stats = self.clock.stats();
         let methods = &stats["methods"];
@@ -455,6 +534,7 @@ impl Sample {
                     );
                 }
             }
+            assert_no_app_lock(method, &methods[method]);
         }
         emit_baseline(
             &baseline_output_dir(self._state_root.path()),
@@ -463,6 +543,17 @@ impl Sample {
             self.dispatch_workers,
             methods,
         )
+    }
+}
+
+fn assert_no_app_lock(method: &str, stats: &Value) {
+    for phase in ["lock_wait", "held"] {
+        let metric = &stats[phase];
+        // Counts include computations that never acquired the app lock.
+        assert_eq!(metric["count"], SAMPLE_COUNT, "{method}.{phase}");
+        for field in ["sum_ms", "p50_ms", "p95_ms", "max_ms"] {
+            assert_eq!(metric[field], 0.0, "{method}.{phase}.{field}");
+        }
     }
 }
 
@@ -478,40 +569,26 @@ async fn isolated_task_reads_publish_a_file_backed_baseline() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn task_reads_measure_wait_behind_an_app_held_write() {
     let mut sample = Sample::new(2, None);
-    let (held, acquired) = mpsc::channel();
-    let (release, released) = mpsc::channel();
+    let (gate, acquired, mut release) = WorkGate::new();
     let state = Arc::clone(&sample.state);
     let clock = Arc::clone(&sample.clock);
-    let holder = std::thread::spawn(move || {
+    release.holder = Some(std::thread::spawn(move || {
         let timer = clock.frame("tasks.update");
         let _guard = timer.lock(&state);
-        held.send(()).unwrap();
-        released
-            .recv_timeout(PATIENCE)
-            .expect("the test releases the app mutex");
-    });
+        gate.wait();
+    }));
     acquired
         .recv_timeout(PATIENCE)
         .expect("the synthetic write holds the app mutex");
-    for i in 0..SAMPLE_COUNT {
-        sample.reads(i, false).await;
-    }
-    for _ in 0..2 {
-        sample
-            .task_started
-            .recv_timeout(PATIENCE)
-            .expect("both workers began task reads while the write held the app mutex");
-    }
-    tokio::time::sleep(GATE).await;
-    release.send(()).unwrap();
-    holder.join().unwrap();
-    sample.answers(READ_METHODS.len() * SAMPLE_COUNT).await;
+    sample.read_all_while_held().await;
+    release.assert_held();
+    release.finish();
     sample.baseline("app_held_write", "app mutex held for at least 75ms");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn task_reads_measure_queue_behind_off_lock_git_worker_work() {
-    let (git_gate, entered, release) = GitGate::new();
+    let (git_gate, entered, release) = WorkGate::new();
     let mut sample = Sample::new(1, Some(git_gate));
     sample
         .send("git.status", json!({ "project_id": sample.project_id }))
@@ -519,11 +596,9 @@ async fn task_reads_measure_queue_behind_off_lock_git_worker_work() {
     entered
         .recv_timeout(PATIENCE)
         .expect("the Git worker reached its gate");
-    for i in 0..SAMPLE_COUNT {
-        sample.reads(i, false).await;
-    }
-    tokio::time::sleep(GATE).await;
-    release.send(()).unwrap();
-    sample.answers(READ_METHODS.len() * SAMPLE_COUNT + 1).await;
+    sample.read_all_while_held().await;
+    release.assert_held();
+    release.finish();
+    sample.answers(1).await;
     sample.baseline("off_lock_git_worker", "Git worker held for at least 75ms");
 }

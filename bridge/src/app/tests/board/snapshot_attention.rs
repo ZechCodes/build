@@ -216,3 +216,27 @@ fn published_message_invalidates_dismissal_before_its_speaker_is_removed() {
         "removing the speaker must not restore a crossed dismissal line"
     );
 }
+
+#[test]
+fn failed_message_save_preserves_dismissal_after_unrelated_publication() {
+    let mut f = fixture();
+    mutate(
+        &mut f.state,
+        "entity.dismiss",
+        json!({"entity_id": f.owner}),
+    );
+    let mut run = f.state.take_run(&f.owner).unwrap();
+    run.agents
+        .by_id_mut(&f.agents[1])
+        .unwrap()
+        .thread
+        .post_agent("This message must not commit", None, now_rfc3339());
+    f.state.store.as_ref().unwrap().fail_next_write();
+    assert!(f.state.finish_run_mutation(f.owner.clone(), run).is_err());
+    assert_eq!(board_entry(&mut f.state, &f.owner)["dismissed"], true);
+    f.state.publish_all_snapshot_projection();
+    assert_eq!(board_entry(&mut f.state, &f.owner)["dismissed"], true);
+    for agent in &f.agents {
+        assert_unread(digest(&mut f.state, &f.owner, agent), 1, 0);
+    }
+}

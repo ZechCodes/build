@@ -25,6 +25,7 @@ struct Capture {
     phases: Arc<Mutex<Vec<Value>>>,
     records: Vec<Value>,
     trace: bool,
+    previous_stats: BTreeMap<usize, Value>,
 }
 
 impl Capture {
@@ -34,6 +35,7 @@ impl Capture {
             phases: Default::default(),
             records: Vec::new(),
             trace,
+            previous_stats: BTreeMap::new(),
         }
     }
 
@@ -55,6 +57,8 @@ impl Capture {
             "start_ns":start.duration_since(self.origin).as_nanos(),
             "duration_ns":start.elapsed().as_nanos(),"threads_before":threads_before,
             "threads_after":thread_count(),"phases":sample.setup}));
+        self.previous_stats
+            .insert(fixture, sample.sample.clock.stats());
         sample
     }
 
@@ -88,6 +92,54 @@ impl Capture {
         if let Some(holder) = holder {
             holder.join().unwrap();
         }
+        self.capture_queue_deltas(sample, fixture, scenario == "git_worker")
+            .await;
+    }
+
+    async fn capture_queue_deltas(&mut self, sample: &IoSample, fixture: usize, writer: bool) {
+        let previous = self.previous_stats.get(&fixture).unwrap();
+        // Timer drop may follow reply enqueue. Wait only after every client timestamp.
+        let current = tokio::time::timeout(PATIENCE, async {
+            loop {
+                let current = sample.sample.clock.stats();
+                let complete = sample.requests.iter().all(|(method, _)| {
+                    let before = served(previous, method);
+                    let after = served(&current, method);
+                    assert!(after <= before + 1, "one computation per method per batch");
+                    after == before + 1
+                        && ["queued", "lock_wait", "held"].iter().all(|phase| {
+                            current["methods"][method][phase]["count"]
+                                .as_u64()
+                                .unwrap_or(0)
+                                == previous["methods"][method][phase]["count"]
+                                    .as_u64()
+                                    .unwrap_or(0)
+                                    + 1
+                        })
+                }) && current["frames_served"].as_u64().unwrap()
+                    >= previous["frames_served"].as_u64().unwrap()
+                        + sample.requests.len() as u64
+                        + u64::from(writer);
+                if complete {
+                    break sample.sample.clock.stats();
+                }
+                tokio::time::sleep(Duration::from_micros(100)).await;
+            }
+        })
+        .await
+        .expect("all completed replies finish production timing bookkeeping");
+        for record in self.records.iter_mut().rev().take(sample.requests.len()) {
+            assert_eq!(record["kind"], "request");
+            assert_eq!(record["fixture"], fixture);
+            let method = record["method"].as_str().unwrap().to_string();
+            for phase in ["queued", "lock_wait", "held"] {
+                let before = sum_micros(previous, &method, phase);
+                let after = sum_micros(&current, &method, phase);
+                record[format!("frame_{phase}_ns")] = json!((after - before) * 1_000);
+            }
+            record["frame_count_delta"] = json!(1);
+        }
+        self.previous_stats.insert(fixture, current);
     }
 
     async fn answers(
@@ -126,6 +178,19 @@ impl Capture {
             }
         }
     }
+}
+
+fn served(stats: &Value, method: &str) -> u64 {
+    stats["methods"][method]["served"].as_u64().unwrap_or(0)
+}
+
+fn sum_micros(stats: &Value, method: &str, phase: &str) -> u64 {
+    // Production sums are integer microseconds exposed as milliseconds.
+    (stats["methods"][method][phase]["sum_ms"]
+        .as_f64()
+        .unwrap_or(0.0)
+        * 1_000.0)
+        .round() as u64
 }
 
 async fn gate(sample: &mut IoSample, scenario: &str) -> Option<std::thread::JoinHandle<()>> {

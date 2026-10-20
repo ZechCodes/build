@@ -307,3 +307,27 @@ async fn closing_mixed_preparation_waits_releases_io_slots_before_sql_connection
         "pool remains exhausted until after the probe"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn observation_handler_timing_ends_before_sealing_its_reply() {
+    let clock = FrameClock::new();
+    let (recorded, values) = std::sync::mpsc::channel();
+    let observed_clock = Arc::downgrade(&clock);
+    clock.observe_requests(Arc::new(move |_frame, phase, _at| {
+        if phase == "reply_start" {
+            let stats = observed_clock.upgrade().unwrap().stats();
+            recorded
+                .send(stats["methods"]["fs.list"]["served"].as_u64().unwrap_or(0))
+                .unwrap();
+        }
+    }));
+    let handler = FrameHandler::new(clock, |_, _, _| panic!("observation bypasses app"))
+        .with_observation_reads(None, |frame, _| {
+            Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+        });
+    let mut client = Client::new(handler);
+    client.send(1, "fs.list", json!({})).await;
+    assert_eq!(client.reply().await["id"], 1);
+    assert_eq!(values.recv_timeout(Duration::from_secs(1)).unwrap(), 1,
+        "FrameClock must use the legacy handler-complete endpoint; reply sealing is a separate measured phase");
+}

@@ -155,7 +155,7 @@ impl ReadDispatcher {
                 self.handler
                     .clock
                     .mark_observed(&observed, "admitted", std::time::Instant::now());
-                self.queue.changed.notify_waiters();
+                self.queue.notify_admitted();
                 return;
             }
             changed.await;
@@ -188,6 +188,10 @@ impl Drop for ReadDispatcher {
 }
 
 impl Queue {
+    fn notify_admitted(&self) {
+        self.changed.notify_waiters();
+    }
+
     /// A full queue keeps exactly the carrier's current intake future parked.
     /// Nothing has been moved into a worker or another internal queue yet.
     fn admit(&self, incoming: &mut Option<Job>) -> bool {
@@ -648,4 +652,42 @@ pub(super) fn call_observation(
         .expect("start direct observation read")
         .join()
         .unwrap_or_else(|_| json!({"ok":false,"error":"handler failed"}))
+}
+
+#[cfg(test)]
+mod queue_wakeup_tests {
+    use super::*;
+    use std::future::Future;
+    use std::task::Poll;
+
+    #[tokio::test]
+    async fn one_queued_read_wakes_one_idle_execution_coordinator() {
+        let queue = Queue::default();
+        let mut waiters = (0..IO_WORKERS)
+            .map(|_| Box::pin(queue.work_available()))
+            .collect::<Vec<_>>();
+        for waiter in &mut waiters {
+            let pending =
+                std::future::poll_fn(|cx| Poll::Ready(waiter.as_mut().poll(cx).is_pending())).await;
+            assert!(pending, "every coordinator is idle before admission");
+        }
+        let frame: Frame = serde_json::from_value(json!({"session_id":"s","message_id":"m","frame_type":"data","sender":"client","created_at":"","payload":{"id":1,"method":"fs.list"}})).unwrap();
+        let mut job = Some(Job {
+            sender: SessionSender::detached("s"),
+            frame,
+            queued: crate::timing::FrameClock::new().queued(),
+        });
+        assert!(queue.admit(&mut job));
+        queue.notify_admitted();
+        let mut awakened = 0;
+        for waiter in &mut waiters {
+            awakened += usize::from(
+                std::future::poll_fn(|cx| Poll::Ready(waiter.as_mut().poll(cx).is_ready())).await,
+            );
+        }
+        assert_eq!(
+            awakened, 1,
+            "one queued read must not wake all idle execution coordinators"
+        );
+    }
 }

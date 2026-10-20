@@ -22,6 +22,9 @@ use std::collections::{HashMap, HashSet};
 use crate::run::RunState;
 use serde_json::Value;
 
+#[cfg(test)]
+mod owned_rows_tests;
+
 /// The kinds of work item, as they ship on the wire. Branch and task are the
 /// work; a capture is the thing the user said that has not become work yet, and
 /// it holds a row of its own only until it does.

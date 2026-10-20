@@ -46,6 +46,9 @@ async fn answer(wire: &mut ChannelWire, key: &str) -> Value {
 async fn real_file_and_git_reads_finish_within_100ms_while_eight_mixed_reads_wait_for_sql() {
     let (directory, repository) = init_repo();
     let visible = "saturation-visible.txt";
+    let visible_directory = "saturation-directory";
+    std::fs::create_dir(repository.join(visible_directory)).unwrap();
+    let canonical_repository = repository.canonicalize().unwrap();
     std::fs::write(repository.join(visible), "visible during SQL saturation\n").unwrap();
     let mut app = qa_state(&repository, directory.path());
     let project = app.project_at(0).id.clone();
@@ -96,18 +99,13 @@ async fn real_file_and_git_reads_finish_within_100ms_while_eight_mixed_reads_wai
     }
     assert_eq!(clock.stats()["queue_depth"], READERS);
     let mut observations = Vec::new();
-    for (id, method) in [(100, "fs.list"), (101, "git.status")] {
+    for (id, method, params) in [
+        (100, "fs.list", json!({"path":repository})),
+        (101, "git.status", json!({"project_id":project})),
+    ] {
         let started = Instant::now();
         let result = tokio::time::timeout(Duration::from_secs(2), async {
-            send(
-                &wire,
-                &intake,
-                &key,
-                id,
-                method,
-                json!({"project_id":project}),
-            )
-            .await;
+            send(&wire, &intake, &key, id, method, params).await;
             answer(&mut wire, &key).await
         })
         .await;
@@ -129,16 +127,30 @@ async fn real_file_and_git_reads_finish_within_100ms_while_eight_mixed_reads_wai
             &reply["result"]["files"]
         };
         let field = if method == "fs.list" { "name" } else { "path" };
+        let expected = if method == "fs.list" {
+            visible_directory
+        } else {
+            visible
+        };
         assert!(
             entries
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|entry| entry[field] == visible),
+                .any(|entry| entry[field] == expected),
             "{reply}"
         );
-        if method == "git.status" {
-            assert_eq!(reply["result"]["branch"], "main");
+        if method == "fs.list" {
+            assert_eq!(
+                reply["result"]["path"],
+                canonical_repository.display().to_string()
+            );
+        } else {
+            // Validate the real wire contract, including StatusFile.path.
+            let status: crate::api::v1::git::StatusPayload =
+                serde_json::from_value(reply["result"].clone()).unwrap();
+            assert_eq!(status.branch, "main");
+            assert!(status.files.iter().any(|file| file.path == visible));
         }
         assert!(
             elapsed <= Duration::from_millis(100),

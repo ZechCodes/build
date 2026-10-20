@@ -11,14 +11,25 @@ for (const theme of ["light", "dark"]) {
   for (const width of [320, 390, 960]) {
     it(`uses borderless rows, keeps timing values whole and fits all three timing columns at ${width}px in ${theme}`, async () => {
       await session.withPage(async ({ page, basePath }) => {
-        await page.route("https://markdown-fixture.test/**", (route) => route.fulfill({ contentType: "image/svg+xml", body: FIXTURE_IMAGE }));
+        let imageRequests = 0;
+        await page.route("https://markdown-fixture.test/**", (route) => {
+          imageRequests += 1;
+          return route.fulfill({ contentType: "image/svg+xml", body: FIXTURE_IMAGE });
+        });
         await mountLayout(page, fixtureMarkup(markdownHtml(MARKDOWN_POLISH_FIXTURE)), { basePath, styles: FIXTURE_STYLES });
-        await loadBrowserModules(page, { tableFocus: "src/core/markdownTableFocus.js" }, basePath);
-        await page.evaluate(() => { window.__tableFocusDispose = window.__layoutModules.tableFocus.installMarkdownTableFocus(document); });
+        expect(await page.locator("img").count()).toBe(0);
+        expect(imageRequests).toBe(0);
+        await loadBrowserModules(page, { tableFocus: "src/core/markdownTableFocus.js", images: "src/core/markdownImages.js" }, basePath);
+        await page.evaluate(() => {
+          window.__tableFocusDispose = window.__layoutModules.tableFocus.installMarkdownTableFocus(document);
+          window.__imagesDispose = window.__layoutModules.images.installMarkdownImages(document);
+        });
         await page.evaluate((theme) => { document.documentElement.dataset.theme = theme; }, theme);
+        await page.locator(".md-image-load").click();
         await page.evaluate(async () => {
           for (const image of document.images) { image.loading = "eager"; await image.decode(); }
         });
+        expect(imageRequests).toBe(1);
         const metrics = await page.evaluate(() => {
           const table = document.querySelector(".mdtable");
           const cells = [...table.querySelectorAll("td")].map((cell) => {
@@ -56,7 +67,7 @@ for (const theme of ["light", "dark"]) {
         expect(metrics.imageWidth).toBeLessThanOrEqual(metrics.hostWidth);
         expect(metrics.pageWidth).toBeLessThanOrEqual(metrics.width);
         expect(await page.locator(".mdtable").getAttribute("tabindex")).toBeNull();
-        await page.evaluate(() => window.__tableFocusDispose());
+        await page.evaluate(() => { window.__tableFocusDispose(); window.__imagesDispose(); });
       }, { width, height: 600 });
     });
   }

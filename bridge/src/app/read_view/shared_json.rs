@@ -208,7 +208,7 @@ pub struct DigestPatch<'a> {
     generation: u64,
     sequence: u64,
     key: DigestKey,
-    memo: HashMap<(bool, usize), SharedJson>,
+    memo: HashMap<(bool, usize), (SharedJson, SharedJson)>,
     #[cfg(test)]
     copied_leaves: usize,
 }
@@ -242,7 +242,7 @@ impl<'a> DigestPatch<'a> {
             Kind::Leaf(leaf) => (true, Arc::as_ptr(leaf) as usize),
             _ => (false, Arc::as_ptr(&value.0) as usize),
         };
-        if let Some(patched) = self.memo.get(&identity) {
+        if let Some((_, patched)) = self.memo.get(&identity) {
             return Some(patched.clone());
         }
         let next = match &value.0.kind {
@@ -262,7 +262,8 @@ impl<'a> DigestPatch<'a> {
                     .map(|child| self.apply(child).unwrap_or_else(|| child.clone())),
             ),
         };
-        self.memo.insert(identity, next.clone());
+        // Retain the source allocation while its address is a memo key.
+        self.memo.insert(identity, (value.clone(), next.clone()));
         Some(next)
     }
 
@@ -338,3 +339,7 @@ pub fn patch_value_digests(
 #[cfg(test)]
 #[path = "shared_json/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "shared_json/lifetime_tests.rs"]
+mod lifetime_tests;

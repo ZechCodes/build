@@ -2220,17 +2220,29 @@ mod dispatcher_tests {
         let minimum_ms = minimum_age.elapsed().as_secs_f64() * 1000.0;
         gate.release();
 
-        assert_eq!(next_push(&mut newer_rx, &newer_key, PATIENTLY).await["id"], 0);
-        let new_answer = next_push(&mut newer_rx, &newer_key, PATIENTLY).await;
-        let old_answer = next_push(&mut older_rx, &older_key, PATIENTLY).await;
+        assert_reordered_replies(&mut newer_rx, &newer_key, &mut older_rx, &older_key).await;
+        assert_fold_accounting(&waiting, &clock.stats(), minimum_ms);
+    }
+
+    async fn assert_reordered_replies(
+        newer_rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
+        newer_key: &str,
+        older_rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
+        older_key: &str,
+    ) {
+        assert_eq!(next_push(newer_rx, newer_key, PATIENTLY).await["id"], 0);
+        let new_answer = next_push(newer_rx, newer_key, PATIENTLY).await;
+        let old_answer = next_push(older_rx, older_key, PATIENTLY).await;
         assert_eq!(new_answer["id"], 2);
         assert_eq!(old_answer["id"], 1);
         assert_eq!(new_answer["computed_for"], 1);
         assert_eq!(old_answer["computed_for"], 1);
+    }
+
+    fn assert_fold_accounting(waiting: &Value, completed: &Value, minimum_ms: f64) {
         assert_eq!(waiting["queue_depth"], 1);
         assert_eq!(waiting["queues"]["foreground"]["depth"], 1);
         assert_eq!(waiting["queues"]["background"]["depth"], 0);
-        let completed = clock.stats();
         assert_eq!(completed["queue_depth"], 0);
         let method = &completed["methods"]["board.list"];
         assert_eq!(method["served"], 1);

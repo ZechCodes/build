@@ -18,7 +18,7 @@ const HOSTS = {
 };
 
 /** The gap either side of the rule on each surface, with margins collapsed. */
-const GAP = { "task comment": 14, "chat message": 12 };
+const GAP = { "task comment": 12, "chat message": 12 };
 
 /** The rule's borders and box, the theme's --line2 resolved to a colour, and
  *  the gaps between the rule and the paragraphs either side of it. */
@@ -73,8 +73,8 @@ for (const theme of ["dark", "light"]) {
         expect(rule.contentHeight).toBe(0);
         expect(rule.boxHeight).toBe(1);
         expect(rule.margins).toEqual(["12px", "12px"]);
-        // A chat paragraph's margin is under 12px, so the rule's sets the gap;
-        // a task comment's paragraphs keep the browser's 1em, which wins.
+        // Shared markdown typography (#695) keeps both paragraph margins
+        // below the rule's 12px, giving chat and task comments one rhythm.
         expect(Math.abs(rule.gapAbove - rule.collapsedAbove)).toBeLessThanOrEqual(1);
         expect(Math.abs(rule.gapBelow - rule.collapsedBelow)).toBeLessThanOrEqual(1);
         expect(rule.collapsedAbove).toBe(GAP[host]);

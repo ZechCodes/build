@@ -28,8 +28,8 @@ pub(super) fn version(review: &Review, expected: u64) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn invalidates(app: &AppState, project: &str, task: &str, workspace: &str) {
-    app.note_tasks_changed(project, task);
+pub(super) fn invalidates(app: &mut AppState, project: &str, task: &str, workspace: &str) {
+    app.publish_review_observation(project, task, workspace);
     app.changes.note_kind(workspace, Kind::State);
     app.changes.note_kind(workspace, Kind::Git);
     app.changes.note_board_lists(BoardLists::WORKSPACES);
@@ -150,6 +150,18 @@ fn check_placement(current: &Workspace, expected: &Workspace) -> Result<(), Stri
 }
 
 impl AppState {
+    /// Services call this only after their SQL completion. Task invalidation
+    /// publishes both observations before any subscriber can refetch them.
+    pub(in crate::app) fn publish_review_observation(
+        &mut self,
+        project: &str,
+        task: &str,
+        workspace: &str,
+    ) {
+        self.refresh_workspace_review_observation(workspace);
+        self.note_tasks_changed(project, task);
+    }
+
     pub(super) fn pull_request(&mut self, task_id: &str) -> Result<(String, Task, Review), String> {
         let (project_id, task) = self.tracker_task(task_id)?;
         let review = self

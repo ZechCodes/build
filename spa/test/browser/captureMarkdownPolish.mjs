@@ -19,7 +19,7 @@ const plugins = sourceRef ? [{ name: "markdown-before", enforce: "pre", load(id)
 } }] : [];
 const session = await openLayoutSession({ plugins });
 try {
-  for (const width of [960, 390]) {
+  for (const width of [960, 390, 320]) {
     for (const theme of ["light", "dark"]) {
       await session.withPage(async ({ page, basePath }) => {
         await page.route("https://markdown-fixture.test/**", (route) => route.fulfill({ contentType: "image/svg+xml", body: FIXTURE_IMAGE }));
@@ -34,7 +34,7 @@ try {
           window.scrollTo(0, 0);
           await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
         });
-        await page.screenshot({ path: resolve(directory, `${phase}-${width === 960 ? "desktop" : "phone"}-${theme}.png`), fullPage: true });
+        await page.screenshot({ path: resolve(directory, `${phase}-${width === 960 ? "desktop" : width === 390 ? "phone" : "narrow"}-${theme}.png`), fullPage: true });
       }, { width, height: 900 });
     }
   }

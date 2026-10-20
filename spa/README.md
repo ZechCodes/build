@@ -144,7 +144,7 @@ nice -n 10 node test/browser/captureMarkdownPolish.mjs /tmp/markdown-review afte
 nice -n 10 node test/browser/captureMarkdownPolish.mjs /tmp/markdown-review before 54e8e1d79
 ```
 
-Both commands produce desktop/phone captures in light/dark. The before mode
+Both commands produce desktop, phone and 320px narrow captures in light/dark. The before mode
 uses Vite's loader and `git show`; it does not change the checkout. Layout tests
 add a 320px narrow-screen check, verify whole timing values and local table/code
 scrolling, and keep images inside the message. See the Markdown Rendering

@@ -306,49 +306,9 @@ impl AppState {
         let _phase = crate::timing::phase_samples::phase("publication.global");
         self.prepare_full_global_snapshot(delta, previous)
     }
-
-    fn prepare_workspace_lists(
-        &self,
-        mut delta: SnapshotDelta,
-        previous: &ReadView,
-        workspaces: &Value,
-    ) -> SnapshotDelta {
-        let projects = self
-            .projects
-            .iter()
-            .map(|project| project.id.as_str())
-            .collect::<BTreeSet<_>>();
-        for key in previous
-            .keys()
-            .filter(|key| key.method == "workspace.list" && !key.owner.is_empty())
-        {
-            if !projects.contains(key.owner.as_str()) {
-                delta = delta.remove(key.method, key.owner.clone());
-            }
-        }
-        for project in projects {
-            let rows = workspaces["workspaces"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|workspace| workspace["project_id"] == project)
-                .cloned()
-                .collect::<Vec<_>>();
-            delta = put_changed(
-                delta,
-                previous,
-                "workspace.list",
-                project,
-                Value::Object(serde_json::Map::from_iter([(
-                    "workspaces".into(),
-                    Value::Array(rows),
-                )])),
-            );
-        }
-        delta
-    }
 }
 
+#[cfg(test)]
 fn snapshot_push_workspace_rows(workspaces: &Value, summaries: &Value) -> Value {
     let mut by_workspace = HashMap::new();
     for summary in summaries.as_array().into_iter().flatten() {

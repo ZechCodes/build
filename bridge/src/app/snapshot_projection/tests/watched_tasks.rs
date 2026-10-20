@@ -35,7 +35,10 @@ fn watched_task_capture_shares_unchanged_rows_and_keeps_old_values() {
     assert_eq!(updated[1]["title"], "Updated");
     assert_eq!(
         app.snapshot_watched_task_rows(),
-        updated.iter().map(|row| row.as_ref().clone()).collect::<Vec<_>>()
+        updated
+            .iter()
+            .map(|row| row.as_ref().clone())
+            .collect::<Vec<_>>()
     );
 
     app.install_snapshot_watched_task(&project, "first", None);

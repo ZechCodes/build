@@ -16,14 +16,16 @@ fn fixture() -> PushFacts {
             "body": format!("{owner} immutable payload ").repeat(128),
             "thread": {"thread_id": thread, "thread_generation_revision": generation, "last_sequence": sequence}
         });
-        facts.states.insert(owner.into(), row.clone());
+        facts.states.insert(owner.into(), Arc::new(row.clone()));
         facts.terminals.insert(
             owner.into(),
-            json!({"tabs": [], "body": format!("{owner} terminal payload ").repeat(128)}),
+            Arc::new(json!({"tabs": [], "body": format!("{owner} terminal payload ").repeat(128)})),
         );
         workspaces.push(row);
     }
-    facts.lists = json!({"projects": [{"project_id": "project"}], "workspaces": workspaces, "usage_limits": {}});
+    facts.lists = Arc::new(
+        json!({"projects": [{"project_id": "project"}], "workspaces": workspaces, "usage_limits": {}}),
+    );
     facts
 }
 

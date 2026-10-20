@@ -17,10 +17,10 @@ pub(in crate::app) struct PushFacts {
     entities: BTreeMap<String, Arc<()>>,
     observation_generations: BTreeMap<String, Arc<()>>,
     pub(super) observed: BTreeMap<String, Arc<CheckoutObservation>>,
-    states: BTreeMap<String, Value>,
-    terminals: BTreeMap<String, Value>,
+    states: BTreeMap<String, Arc<Value>>,
+    terminals: BTreeMap<String, Arc<Value>>,
     threads: BTreeMap<String, Vec<PushThread>>,
-    lists: Value,
+    lists: Arc<Value>,
     pub(super) summaries: BTreeMap<String, (String, Vec<PathBuf>)>,
 }
 
@@ -292,7 +292,9 @@ impl PushFacts {
             .values_mut()
             .chain(std::iter::once(&mut self.lists))
         {
-            crate::app::read_view::history::patch_thread_digests(state, delta);
+            if crate::app::read_view::history::thread_digests_need_patch(state, delta) {
+                crate::app::read_view::history::patch_thread_digests(Arc::make_mut(state), delta);
+            }
         }
     }
 
@@ -330,14 +332,22 @@ impl PushFacts {
             state: if request.lists.is_empty() {
                 request
                     .state
-                    .then(|| self.states.get(&request.entity_id).cloned())
+                    .then(|| {
+                        self.states
+                            .get(&request.entity_id)
+                            .map(|state| state.as_ref().clone())
+                    })
                     .flatten()
             } else {
                 Some(self.lists(request.lists))
             },
             terminals: request
                 .terminals
-                .then(|| self.terminals.get(&request.entity_id).cloned())
+                .then(|| {
+                    self.terminals
+                        .get(&request.entity_id)
+                        .map(|terminals| terminals.as_ref().clone())
+                })
                 .flatten(),
             threads: if request.thread {
                 self.threads
@@ -468,12 +478,12 @@ impl AppState {
         let _phase = crate::timing::phase_samples::phase("publication.push_facts");
         let previous = self.read_view.load();
         let mut snapshot = PushFacts {
-            lists,
+            lists: Arc::new(lists),
             ..PushFacts::default()
         };
         for owner in self.plans.keys().chain(self.runs.keys()) {
             if let Some(state) = self.entity_state_item(owner) {
-                snapshot.states.insert(owner.clone(), state);
+                snapshot.states.insert(owner.clone(), Arc::new(state));
             }
             snapshot.threads.insert(
                 owner.clone(),
@@ -512,12 +522,12 @@ impl AppState {
         for (entity, subject) in self.checkout_subjects() {
             if let Entry::Vacant(entry) = snapshot.states.entry(entity.clone()) {
                 if let Some(state) = self.entity_state_item(&entity) {
-                    entry.insert(state);
+                    entry.insert(Arc::new(state));
                 }
             }
             snapshot.terminals.insert(
                 entity.clone(),
-                json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())}),
+                Arc::new(json!({"tabs": self.shell_tabs_for(&subject.terminal_scope())})),
             );
             if let Some(workspace) = self.workspace_snapshot_for_conversation(&entity, None) {
                 let repositories = workspace

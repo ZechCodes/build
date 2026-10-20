@@ -35,6 +35,7 @@ const RPC_METHODS: [&str; 5] = [
     "git.show",
 ];
 const REQUEST_PATIENCE: Duration = Duration::from_secs(600);
+const MAX_BUSY_LOCK_WAIT_MS: f64 = 5000.0;
 
 struct Busy {
     _home: tempfile::TempDir,
@@ -619,9 +620,15 @@ async fn busy_writers_keep_app_lock_holds_below_budget() {
     }
     done.store(true, Ordering::Relaxed);
     logger.abort();
+    let (worst_wait_method, overall_lock_wait_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.lock_wait");
+    let (worst_queued_method, overall_queued_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.queued");
+    let (worst_queue_and_lock_method, overall_queue_and_lock_wait_max_ms) =
+        overall_max_frame_sample(&measurements, "frame.queue_and_lock_wait");
     println!(
         "TASK709_BUSY_BASELINE {}",
-        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"measurements":measurements})
+        json!({"conversations":CONVERSATIONS,"watched_worktrees":WORKTREES,"workspace_aliases":busy.state.lock().unwrap().workspaces.list(None).len(),"initial_tasks":TASKS,"seeded_history_items_per_conversation":HISTORY_ITEMS,"delivered_handoffs":AGENTS*ROUNDS,"active_frames_at_capture":0,"simulated_running_agents":AGENTS,"mcp_calls_per_agent":ROUNDS*7,"phases_exclusive":true,"overall_lock_wait_max_ms":overall_lock_wait_max_ms,"worst_lock_wait_method":worst_wait_method,"lock_wait_limit_ms":MAX_BUSY_LOCK_WAIT_MS,"overall_queued_max_ms":overall_queued_max_ms,"worst_queued_method":worst_queued_method,"overall_queue_and_lock_wait_max_ms":overall_queue_and_lock_wait_max_ms,"worst_queue_and_lock_method":worst_queue_and_lock_method,"measurements":measurements})
     );
     assert!(
         failures.is_empty(),
@@ -653,6 +660,11 @@ fn assert_expected_samples(measurements: &Value) {
             >= 1,
         "delivery work must actually run"
     );
+    let (method, maximum) = overall_max_frame_sample(measurements, "frame.lock_wait");
+    assert!(
+        maximum <= MAX_BUSY_LOCK_WAIT_MS,
+        "whole busy fixture exceeded {MAX_BUSY_LOCK_WAIT_MS}ms frame lock-wait limit: {method} waited {maximum}ms"
+    );
     for method in expected
         .iter()
         .map(|(method, _)| method.as_str())
@@ -665,6 +677,30 @@ fn assert_expected_samples(measurements: &Value) {
             "app-lock hold budget exceeded for {method}: {held}"
         );
     }
+}
+
+fn overall_max_frame_sample<'a>(measurements: &'a Value, sample: &str) -> (&'a str, f64) {
+    measurements
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(method, phases)| {
+            let completed = phases["frame.held"]["count"]
+                .as_u64()
+                .expect("each captured method has completed frame samples");
+            let sampled = phases[sample]["count"]
+                .as_u64()
+                .expect("every completed frame has this sample, including zero waits");
+            assert!(completed > 0, "{method} completed at least one frame");
+            assert_eq!(sampled, completed, "{method} {sample} samples are complete");
+            let maximum = phases[sample]["max_ms"]
+                .as_f64()
+                .expect("each method has an exact sample maximum");
+            assert!(maximum.is_finite() && maximum >= 0.0);
+            (method.as_str(), maximum)
+        })
+        .max_by(|left, right| left.1.total_cmp(&right.1))
+        .expect("completed fixture frames include exact lock-wait samples")
 }
 
 fn assert_acknowledged_snapshot(

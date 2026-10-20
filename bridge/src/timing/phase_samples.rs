@@ -84,6 +84,7 @@ pub(super) fn record_frame(timer: &FrameTimer) {
             ("frame.held", spent.held),
             ("frame.lock_wait", spent.lock_wait),
             ("frame.queued", spent.queued),
+            ("frame.queue_and_lock_wait", spent.queued + spent.lock_wait),
             ("frame.total", spent.total),
         ] {
             samples.record(&method, name, elapsed);

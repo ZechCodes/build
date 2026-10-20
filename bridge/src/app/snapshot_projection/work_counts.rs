@@ -8,8 +8,22 @@ pub(in crate::app) struct Counts {
     pub owner_candidates: usize,
     pub external_candidates: usize,
     pub history_updates: usize,
+    pub workspace_details_full: usize,
+    pub workspace_details_scoped: usize,
 }
-thread_local! { static COUNTS: Cell<Counts> = const { Cell::new(Counts { branches: 0, agents: 0, owner_candidates: 0, external_candidates: 0, history_updates: 0 }) }; }
+thread_local! { static COUNTS: Cell<Counts> = const { Cell::new(Counts { branches: 0, agents: 0, owner_candidates: 0, external_candidates: 0, history_updates: 0, workspace_details_full: 0, workspace_details_scoped: 0 }) }; }
+
+pub(in crate::app) fn workspace_details(full: bool) {
+    COUNTS.with(|held| {
+        let mut count = held.get();
+        if full {
+            count.workspace_details_full += 1;
+        } else {
+            count.workspace_details_scoped += 1;
+        }
+        held.set(count);
+    });
+}
 
 pub(in crate::app) fn measure<T>(work: impl FnOnce() -> T) -> (T, Counts) {
     let previous = COUNTS.replace(Counts::default());

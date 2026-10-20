@@ -17,6 +17,8 @@ impl AppState {
     ) -> SnapshotDelta {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.workspace_details");
+        #[cfg(test)]
+        crate::app::snapshot_projection::work_counts::workspace_details(owner.is_none());
         let changed = self.snapshot_changed_agent_ids(previous, owner);
         let mut affected = BTreeSet::new();
         let mut retained = BTreeSet::new();

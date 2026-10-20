@@ -32,13 +32,16 @@ import { isAtLeastAsFresh, withCacheFreshness } from "./cacheFreshness.js";
 import { feedReferenceIndex } from "./referenceIndexFeed.js";
 import { AGENT_LINEAGE_SUPPORT_KIND, readAgentLineageSupport } from "./agentLineageSupport.js";
 import { withFeedAgentRollups } from "./agentLineageFeedModel.js";
+import { subscribeThreadReaders, threadReaderIsHere } from "./syncVisibleScopes.js";
 
 const subscribers = new Set();
 const byDevice = new Map(); // deviceId → that device's last snapshot
+const lineageSupport = new Map();
 const watchers = new Map(); // deviceId → the cache subscription behind it
 const readers = new Map(); // deviceId → the read queued or running for it
 let running = false; // whether startFeed has been called and not stopped
 let unwatchDevices = null;
+let unwatchReaders = null;
 
 /** The record kinds a device's snapshot is made of. Everything else under a
  *  device — a status, a diff, a conversation — moves several times a second
@@ -55,7 +58,12 @@ export function subscribeFeed(fn) {
   return () => subscribers.delete(fn);
 }
 
-const merged = () => mergeFeeds(byDevice, App.devices.map((device) => device.id));
+const merged = () => {
+  const displayed = new Map([...byDevice].map(([deviceId, snapshot]) => [deviceId,
+    withFeedAgentRollups(snapshot, { namesMakers: lineageSupport.get(deviceId),
+      isBeingRead: (identity) => threadReaderIsHere({ ...identity, deviceId }) })]));
+  return mergeFeeds(displayed, App.devices.map((device) => device.id));
+};
 
 /** Hand every subscriber the merge as it stands, with nothing read. The cache
  *  reads deliver after they land; this is for the other reason a surface's
@@ -128,7 +136,8 @@ async function readDeviceOnce(deviceId, live) {
   if (!watchers.has(deviceId)) return;
   const snapshot = feedSnapshot(record, view, live);
   if (!snapshot) return;
-  byDevice.set(deviceId, withFeedAgentRollups(snapshot, { namesMakers }));
+  byDevice.set(deviceId, snapshot);
+  lineageSupport.set(deviceId, namesMakers);
   deliverFeed();
 }
 
@@ -216,6 +225,7 @@ function startReferenceIndex() {
 export function startFeed() {
   stopFeed();
   running = true;
+  unwatchReaders = subscribeThreadReaders(deliverFeed);
   startReferenceIndex();
   unwatchDevices = subscribeCache(DEVICES_ADDRESS, () => void watchKnownDevices());
   liveContexts().forEach((context) => watchDevice(context.deviceId));
@@ -229,6 +239,8 @@ export function stopFeed() {
   running = false;
   if (unwatchDevices) unwatchDevices();
   unwatchDevices = null;
+  unwatchReaders?.();
+  unwatchReaders = null;
 }
 
 /** Forget a device: its records stop being heard, its rows leave the merge, and
@@ -237,6 +249,7 @@ export function dropFeedDevice(deviceId) {
   watchers.get(deviceId)?.();
   watchers.delete(deviceId);
   readers.delete(deviceId);
+  lineageSupport.delete(deviceId);
   if (byDevice.delete(deviceId)) deliverFeed();
 }
 

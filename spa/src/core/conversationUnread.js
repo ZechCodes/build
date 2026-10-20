@@ -3,8 +3,14 @@
 
 export const conversationIsWatched = (conversation) => conversation?.watched !== false;
 
+// A display-only overlay. Keep the bridge's raw unread_count for history
+// landing/read reports, and never serialize local reader presence to disk.
+const READING_HERE = Symbol("readingHere");
+export const withConversationReader = (conversation, reading) =>
+  reading ? { ...conversation, [READING_HERE]: true } : conversation;
+
 export function conversationUnreadCount(conversation) {
-  if (!conversationIsWatched(conversation)) return 0;
+  if (!conversationIsWatched(conversation) || conversation?.[READING_HERE]) return 0;
   return Math.max(0, Number(conversation?.unread_count) || 0);
 }
 

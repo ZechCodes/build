@@ -3148,6 +3148,15 @@ gate attachment display.
   fields. Identical results cause no cache write; cache announcements redraw
   badges. Passive clients on
   other devices need the bridge's state push.
+  Inbox uses the same mounted-thread visibility and focused-reader predicate
+  as `agentRail.reportRead` (`syncVisibleScopes.js`). While that conversation
+  is being read, a newly cached count is suppressed on every feed paint,
+  including before `entity.seen` answers. Presence changes synchronously
+  rederive the held feed; hidden, collapsed, TUI, overview and absent-reader
+  states restore normal cached unread. This is a display-only symbol on
+  derived agent digests, keyed by device, owner, canonical conversation and
+  thread generation. Raw counts remain unchanged for history landing and read
+  reports, and local presence is never written to the replicated cache.
   The bridge's read-window guard uses the same watch-scoped cursor and full
   conversation history as its unread count (#704). Pre-watch messages below
   the window do not block reading current news, while unread messages outside
@@ -3588,6 +3597,8 @@ and reduced-motion preferences disable the animation. Watched tasks read their
 assigned agent's running state from cached rosters. A folded project head
 summarizes watched activity, including tasks without a Needs you reason; an
 expanded head leaves status on the project agent’s own row.
+When only descendant news lights a coordinator's dot, its tooltip says
+"A worker has unread messages"; its own unread retains "Unread activity".
 The head offers Hide and New workspace directly.
 
 The Projects face lists every project in one list ordered by the oldest

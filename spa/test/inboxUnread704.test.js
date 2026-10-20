@@ -150,6 +150,51 @@ it("repaints cached unread immediately when the reader leaves and returns, with 
   expect(totals.at(-1)).toBe(0);
 });
 
+it("suppresses only the selected canonical worker, preserving siblings and ancestor unread", async () => {
+  const { registerSyncThread, notifyThreadReaders } = await import("../src/core/syncVisibleScopes.js");
+  let selected = selectedConversation();
+  const stop = registerSyncThread(() => selected, () => true);
+  cleanups.push(stop);
+  await writeRow(owner([agent("pin")]));
+  await cache.writeCached(address("project-agents-support"), { projectWorkers: true });
+  const roster = (siblingUnread) => ({ entity_id: "owner", pinned_agent_id: "pin",
+    agents: [agent("pin"), agent("old-worker", { conversation_id: "shared", unread_count: 9, created_by: "pin" }),
+      agent("worker", { conversation_id: "shared", unread_count: 1, created_by: "pin" }),
+      agent("sibling", { unread_count: siblingUnread, created_by: "pin" })] });
+  await cache.writeCached(address("project-agents", "owner"), roster(1));
+  await feed.startFeed();
+  // Reading the coordinator cannot hide news on either worker.
+  expect((await entries())[0].ownUnreadCount).toBe(2);
+  expect(await projectDot()).toBe(true);
+  selected = selectedConversation({ agentId: "old-worker", conversationId: "shared", threadId: "worker-thread" });
+  notifyThreadReaders();
+  expect((await entries())[0].ownUnreadCount).toBe(1);
+  expect(await projectDot()).toBe(true);
+  await cache.writeCached(address("project-agents", "owner"), roster(0));
+  await vi.waitFor(async () => expect(await projectDot()).toBe(false));
+  expect((await entries())[0].ownUnreadCount).toBe(0);
+  stop();
+  expect((await entries())[0].ownUnreadCount).toBe(1);
+  expect(await projectDot()).toBe(true);
+});
+
+it("restores unread when the document hides, without changing the cached count", async () => {
+  const { registerSyncThread } = await import("../src/core/syncVisibleScopes.js");
+  const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  cleanups.push(registerSyncThread(() => selectedConversation(), () => true));
+  await writeRow(owner([agent("pin", { unread_count: 1 })]));
+  const { paints, totals } = await recordInboxPaints();
+  await feed.startFeed();
+  hidden.mockReturnValue(true);
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(paints.at(-1)).toBe(true);
+  expect(totals.at(-1)).toBe(1);
+  hidden.mockReturnValue(false);
+  document.dispatchEvent(new Event("visibilitychange"));
+  expect(paints.at(-1)).toBe(false);
+  expect(totals.at(-1)).toBe(0);
+});
+
 it("includes watched project workers from the complete roster without reviving stale board counts", async () => {
   await writeRow(owner([agent("pin", { unread_count: 9 })]));
   await cache.writeCached(address("project-agents-support"), { projectWorkers: true });

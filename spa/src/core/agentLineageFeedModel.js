@@ -4,7 +4,7 @@ import { agentLineage, lineageMembers, withRollup } from "./agentLineageModel.js
 import { entityIdOf } from "./entityId.js";
 import { freshestRosters } from "./inboxRoster.js";
 import { projectRosterRows } from "./projectRosterFeed.js";
-import { conversationUnreadCount } from "./conversationUnread.js";
+import { conversationUnreadCount, withConversationReader } from "./conversationUnread.js";
 
 /** Only the canonical lineage's watched conversations can add unread. This
  * indicator travels up the cut forest; numeric counts stay with their owners. */
@@ -69,8 +69,9 @@ function projectRunningCount(agents, lineage) {
 
 /** Add activity rollups without changing each agent's own working flag or
  * unread count, or writing derived digests to disk. Spreads carry freshness. */
-export function withFeedAgentRollups(snapshot, { namesMakers = false } = {}) {
+export function withFeedAgentRollups(snapshot, { namesMakers = false, isBeingRead = () => false } = {}) {
   if (!snapshot) return snapshot;
+  snapshot = withReaders(snapshot, isBeingRead);
   const lineages = projectLineages(snapshot, namesMakers);
   const decorate = (row) => Array.isArray(row.agents)
     ? { ...row, agents: row.agents.map((agent) => withFeedRollup(agent, lineages.get(row.project_id))) } : row;
@@ -82,4 +83,19 @@ export function withFeedAgentRollups(snapshot, { namesMakers = false } = {}) {
       running_count: projectRunningCount(agents, lineage) } };
   });
   return { ...snapshot, projects, items: snapshot.items.map(decorate), runs: (snapshot.runs || []).map(decorate) };
+}
+
+/** Reader presence is applied before descendant totals, on the derived copy
+ * alone. Both complete project rosters and ordinary owner rows use it. */
+function withReaders(snapshot, isBeingRead) {
+  const roster = (row) => {
+    const entityId = entityIdOf(row);
+    if (!Array.isArray(row.agents)) return row;
+    return { ...row, agents: row.agents.map((agent) => withConversationReader(agent, isBeingRead({
+      entityId, agentId: agent.id, conversationId: agent.conversation_id, threadId: agent.thread_id,
+    }))) };
+  };
+  return { ...snapshot, items: snapshot.items.map(roster), runs: (snapshot.runs || []).map(roster),
+    projects: (snapshot.projects || []).map((project) => project.projectRoster
+      ? { ...project, projectRoster: roster(project.projectRoster) } : project) };
 }

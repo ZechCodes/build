@@ -2174,4 +2174,68 @@ mod dispatcher_tests {
             "wire two hears the answer to the read it joined with"
         );
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_fold_keeps_older_intake_from_another_carrier() {
+        reordered_carrier_intakes(Priority::Foreground).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_promoted_fold_keeps_older_intake_from_another_carrier() {
+        reordered_carrier_intakes(Priority::Background).await;
+    }
+
+    async fn reordered_carrier_intakes(creator_priority: Priority) {
+        let (gate, gated) = HandlerGate::new();
+        let clock = FrameClock::new();
+        let handler = FrameHandler::new(clock.clone(), move |_sender, frame, _timer| {
+            if frame.payload["id"] == 0 {
+                gated.hold();
+            }
+            json!({ "id": frame.payload["id"], "computed_for": frame.payload["id"] })
+        });
+        let dispatcher = Dispatcher::with_capacity(handler, 8, 1);
+        let (older, mut older_rx, older_key) = SessionSender::observable("s-reordered");
+        let (newer, mut newer_rx, newer_key) = SessionSender::observable("s-reordered");
+        dispatcher
+            .dispatch(newer.clone(), request(0, "term.list", json!({})))
+            .await;
+        gate.wait_until_held();
+
+        // The two carriers have independent admission queues. Stamp the older
+        // intake first, but deliver it to dispatch only after the newer one
+        // has created a fold. Exercise both the slot-free and promotion joins.
+        let older_intake = WaitTimer::start();
+        let minimum_age = WaitTimer::start();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut creator = request(2, "board.list", json!({}));
+        creator.payload["priority"] = json!(creator_priority.label());
+        dispatcher.dispatch(newer, creator).await;
+        dispatcher
+            .dispatch_since(older, request(1, "board.list", json!({})), older_intake)
+            .await;
+        let waiting = clock.stats();
+        let minimum_ms = minimum_age.elapsed().as_secs_f64() * 1000.0;
+        gate.release();
+
+        assert_eq!(next_push(&mut newer_rx, &newer_key, PATIENTLY).await["id"], 0);
+        let new_answer = next_push(&mut newer_rx, &newer_key, PATIENTLY).await;
+        let old_answer = next_push(&mut older_rx, &older_key, PATIENTLY).await;
+        assert_eq!(new_answer["id"], 2);
+        assert_eq!(old_answer["id"], 1);
+        assert_eq!(new_answer["computed_for"], 1);
+        assert_eq!(old_answer["computed_for"], 1);
+        assert_eq!(waiting["queue_depth"], 1);
+        assert_eq!(waiting["queues"]["foreground"]["depth"], 1);
+        assert_eq!(waiting["queues"]["background"]["depth"], 0);
+        let completed = clock.stats();
+        assert_eq!(completed["queue_depth"], 0);
+        let method = &completed["methods"]["board.list"];
+        assert_eq!(method["served"], 1);
+        assert_eq!(method["queued"]["count"], 1);
+        assert!(
+            method["queued"]["sum_ms"].as_f64().unwrap() >= minimum_ms - 0.001,
+            "{method}; oldest intake had already waited {minimum_ms} ms before release"
+        );
+    }
 }

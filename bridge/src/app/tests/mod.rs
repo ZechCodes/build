@@ -260,6 +260,7 @@ mod tracker_waiting_attention;
 mod tracker_waiting_on;
 mod tracker_watch_baselines;
 mod tracker_watching;
+mod transactions;
 mod updates;
 mod usage_limits;
 mod user_session;

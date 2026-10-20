@@ -23,6 +23,7 @@ pub(super) struct CheckoutObservation {
 pub(super) struct ObservationRequest {
     entity: String,
     subject: Arc<CheckoutSubject>,
+    generation: Arc<()>,
     summary: Option<(String, Vec<PathBuf>)>,
     git: bool,
     files: bool,
@@ -39,6 +40,7 @@ impl ObservationRequest {
         Self {
             entity: entity.into(),
             subject: Arc::clone(subject),
+            generation: facts.observation_generation(entity),
             summary: facts.summaries.get(entity).cloned(),
             git,
             files,
@@ -46,7 +48,9 @@ impl ObservationRequest {
     }
 
     fn merge(&mut self, newer: Self) {
-        if Arc::ptr_eq(&self.subject, &newer.subject) {
+        if Arc::ptr_eq(&self.subject, &newer.subject)
+            && Arc::ptr_eq(&self.generation, &newer.generation)
+        {
             self.git |= newer.git;
             self.files |= newer.files;
         } else {
@@ -54,8 +58,13 @@ impl ObservationRequest {
         }
     }
 
+    fn is_current(&self, facts: &PushFacts) -> bool {
+        facts.same_subject(&self.entity, &self.subject)
+            && facts.same_observation_generation(&self.entity, &self.generation)
+    }
+
     fn probe(self, facts: &PushFacts) -> Option<ProbeResult> {
-        if !facts.same_subject(&self.entity, &self.subject) {
+        if !self.is_current(facts) {
             return None;
         }
         let mut observation = facts
@@ -209,9 +218,7 @@ impl ObservationSink {
         let changed = observations
             .into_iter()
             .filter(|result| {
-                current
-                    .facts
-                    .same_subject(&result.request.entity, &result.request.subject)
+                result.request.is_current(&current.facts)
                     && current
                         .facts
                         .observed
@@ -225,9 +232,10 @@ impl ObservationSink {
         }
         let memberships = app.workspace_summary_memberships();
         app.sync_workspace_summaries(&memberships);
-        let summaries = changed.iter().fold(false, |summaries, result| {
-            apply_cache_observation(&mut app, result, &current.facts, &memberships) || summaries
-        });
+        let mut summaries = false;
+        for result in &changed {
+            summaries |= apply_cache_observation(&mut app, result, &current.facts, &memberships);
+        }
         app.publish_snapshot_projection();
         self.publish_observations(&changed);
         for result in changed {
@@ -245,18 +253,21 @@ impl ObservationSink {
     }
 
     fn publish_observations(&self, changed: &[ProbeResult]) {
-        let current = self.view.load();
-        let mut facts = (*current.facts).clone();
-        for result in changed {
-            if facts.same_subject(&result.request.entity, &result.request.subject) {
+        self.view.publish_current(|current, version| {
+            let mut facts = (*current.facts).clone();
+            let mut published = false;
+            for result in changed
+                .iter()
+                .filter(|result| result.request.is_current(&current.facts))
+            {
                 facts.observed.insert(
                     result.request.entity.clone(),
                     Arc::new(result.observation.clone()),
                 );
+                published = true;
             }
-        }
-        self.view
-            .publish_delta(SnapshotDelta::new(self.view.next_version()).set_facts(Arc::new(facts)));
+            published.then(|| SnapshotDelta::new(version).set_facts(Arc::new(facts)))
+        });
     }
 }
 
@@ -266,6 +277,9 @@ fn apply_cache_observation(
     previous: &PushFacts,
     memberships: &[(String, Vec<PathBuf>)],
 ) -> bool {
+    if let (true, Some(status)) = (result.request.git, &result.observation.facts.status) {
+        app.record_git_snapshot_branches(status);
+    }
     let old = previous.observed.get(&result.request.entity);
     if let Some(stat) = result
         .observation
@@ -301,4 +315,157 @@ fn apply_cache_observation(
         },
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::facts::snapshot_tests::test_app;
+    use crate::carrier::{FrameHandler, SessionSender};
+    use crate::git_fixture::{git_in, init_repo_named};
+    use serde_json::json;
+
+    fn call(handler: &FrameHandler, method: &str, params: Value) -> Value {
+        let reply = handler.call(
+            SessionSender::detached("facts-stale"),
+            crate::transport::Frame {
+                session_id: "facts-stale".into(),
+                message_id: "facts-stale".into(),
+                frame_type: "data".into(),
+                sender: "client".into(),
+                created_at: "now".into(),
+                payload: json!({"id":"facts-stale", "method":method, "params":params}),
+            },
+        );
+        assert_eq!(reply["ok"], true, "{reply:?}");
+        reply["result"].clone()
+    }
+
+    fn paused_observation(
+        state: &Arc<Mutex<AppState>>,
+        entity: &str,
+    ) -> (ObservationSink, ProbeResult) {
+        let view = state.lock().unwrap().read_view.clone();
+        let snapshot = view.load();
+        let subject = snapshot.facts.subjects.get(entity).unwrap();
+        let request = ObservationRequest::new(entity, subject, &snapshot.facts, true, true);
+        let result = request.probe(&snapshot.facts).unwrap();
+        (ObservationSink::new(view, Arc::downgrade(state)), result)
+    }
+
+    #[test]
+    fn a_completed_same_branch_commit_rejects_an_older_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_named(dir.path(), "repo");
+        let mut app = test_app(dir.path());
+        let project = app.add_project(repo.clone(), "main".into());
+        let state = app.shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        let (sink, old) = paused_observation(&state, &project);
+        let old_log = old.observation.facts.log.clone();
+        std::fs::write(repo.join("later.txt"), "changed").unwrap();
+        git_in(&repo, &["add", "later.txt"]);
+        call(
+            &handler,
+            "git.commit",
+            json!({"project_id":project,"message":"later"}),
+        );
+        sink.apply(vec![old]);
+        let current = sink.view.load();
+        assert!(
+            current
+                .facts
+                .observed
+                .get(&project)
+                .is_none_or(|observed| observed.facts.log != old_log),
+            "a pre-commit probe replaced the committed checkout observation"
+        );
+    }
+
+    #[test]
+    fn a_completed_file_mutation_rejects_an_older_root_listing() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = init_repo_named(dir.path(), "repo");
+        let mut app = test_app(dir.path());
+        let project = app.add_project(repo, "main".into());
+        let state = app.shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        let (sink, old) = paused_observation(&state, &project);
+        let old_listing = old.observation.facts.root_listing.clone();
+        call(
+            &handler,
+            "fs.createFile",
+            json!({"project_id":project,"parent":"","name":"later.txt"}),
+        );
+        sink.apply(vec![old]);
+        let current = sink.view.load();
+        assert!(
+            current
+                .facts
+                .observed
+                .get(&project)
+                .is_none_or(|observed| observed.facts.root_listing != old_listing),
+            "a pre-write probe replaced the committed root listing"
+        );
+    }
+
+    #[test]
+    fn mutating_a_workspace_dependency_rejects_an_older_summary_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = init_repo_named(dir.path(), "first");
+        let second = init_repo_named(dir.path(), "second");
+        let mut app = test_app(dir.path());
+        let project = app.add_project(first, "main".into());
+        let state = app.shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        call(
+            &handler,
+            "project.add_source",
+            json!({"project_id":project,"path":second,"name":"second"}),
+        );
+        let workspace = call(
+            &handler,
+            "workspace.create",
+            json!({"project_id":project,"name":"work","isolation":"worktree"}),
+        );
+        let workspace_id = workspace["workspace_id"].as_str().unwrap();
+        let owner = call(
+            &handler,
+            "workspace.ensure_conversation",
+            json!({"workspace_id":workspace_id}),
+        );
+        let entity = owner["entity_id"].as_str().unwrap();
+        let (sink, old) = paused_observation(&state, entity);
+        assert_eq!(old.request.summary.as_ref().unwrap().1.len(), 2);
+        let directory = workspace["directories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|directory| directory["source_id"] == "source-2")
+            .unwrap();
+        let root = PathBuf::from(directory["path"].as_str().unwrap());
+        assert_ne!(old.request.subject.root, root);
+        std::fs::write(root.join("later.txt"), "changed").unwrap();
+        git_in(&root, &["add", "later.txt"]);
+        call(
+            &handler,
+            "git.commit",
+            json!({"workspace_id":workspace_id,"source_id":"source-2","message":"later"}),
+        );
+        assert!(
+            !old.request.is_current(&sink.view.load().facts),
+            "a dependency mutation retained an older aggregate probe's token"
+        );
+        let old_summary = old.observation.summary.clone();
+        sink.apply(vec![old]);
+        assert!(
+            sink.view
+                .load()
+                .facts
+                .observed
+                .get(entity)
+                .is_none_or(|observed| observed.summary != old_summary),
+            "a pre-commit probe reinstalled a summary containing an older dependency"
+        );
+    }
 }

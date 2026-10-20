@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 pub(in crate::app) struct PushFacts {
     pub(super) subjects: BTreeMap<String, Arc<CheckoutSubject>>,
     entities: BTreeMap<String, Arc<()>>,
+    observation_generations: BTreeMap<String, Arc<()>>,
     pub(super) observed: BTreeMap<String, Arc<CheckoutObservation>>,
     states: BTreeMap<String, Value>,
     terminals: BTreeMap<String, Value>,
@@ -239,6 +240,28 @@ impl PushFacts {
             .chain(std::iter::once(&mut self.lists))
         {
             crate::app::read_view::history::patch_thread_digests(state, delta);
+        }
+    }
+
+    pub(super) fn observation_generation(&self, entity: &str) -> Arc<()> {
+        Arc::clone(
+            self.observation_generations
+                .get(entity)
+                .expect("every published checkout has an observation generation"),
+        )
+    }
+
+    pub(super) fn same_observation_generation(&self, entity: &str, generation: &Arc<()>) -> bool {
+        self.observation_generations
+            .get(entity)
+            .is_some_and(|current| Arc::ptr_eq(current, generation))
+    }
+
+    pub(super) fn invalidate_observations(&mut self, entities: &[String]) {
+        for entity in entities {
+            self.observation_generations
+                .insert(entity.clone(), Arc::new(()));
+            self.observed.remove(entity);
         }
     }
 
@@ -499,9 +522,18 @@ impl AppState {
                 same_subject
                     && same_threads(previous.threads.get(&entity), snapshot.threads.get(&entity))
             });
-            snapshot
+            let generation = retained.cloned().unwrap_or_else(|| Arc::new(()));
+            let observation_generation = previous
                 .entities
-                .insert(entity, retained.cloned().unwrap_or_else(|| Arc::new(())));
+                .get(&entity)
+                .filter(|old| Arc::ptr_eq(old, &generation))
+                .and_then(|_| previous.observation_generations.get(&entity))
+                .cloned()
+                .unwrap_or_else(|| Arc::new(()));
+            snapshot
+                .observation_generations
+                .insert(entity.clone(), observation_generation);
+            snapshot.entities.insert(entity, generation);
         }
     }
 }
@@ -625,6 +657,26 @@ mod tests {
             .iter()
             .all(|(_, value)| value["data"]["sequence"] != removed));
         assert!(recaptured.items.len() <= THREAD_PUSH_MAX_ITEMS);
+    }
+
+    #[test]
+    fn invalidating_observations_preserves_pending_canonical_facts() {
+        let mut before = PushFacts::default();
+        before.entities.insert("run".into(), Arc::new(()));
+        before
+            .observation_generations
+            .insert("run".into(), Arc::new(()));
+        let mut current = before.clone();
+        current.invalidate_observations(&["run".into()]);
+        assert!(!current.same_observation_generation("run", &before.observation_generation("run")));
+        let mut facts = vec![EntityFacts {
+            entity_id: "run".into(),
+            state: Some(json!({"title":"committed"})),
+            ..EntityFacts::default()
+        }];
+        before.withdraw_replaced(&current, &mut facts);
+        assert!(!facts[0].withdrawn);
+        assert_eq!(facts[0].state, Some(json!({"title":"committed"})));
     }
 
     #[test]

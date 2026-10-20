@@ -200,6 +200,38 @@ fn run_stat_of(subject: &CheckoutSubject) -> Option<Value> {
 }
 
 impl AppState {
+    /// Fence completed Build mutations against probes already running or
+    /// queued. A workspace aggregate depends on every directory it measured,
+    /// and aliases of the same checkout share the invalidation.
+    pub(in crate::app) fn invalidate_snapshot_checkout_observations(&self, root: &std::path::Path) {
+        let root = self.snapshot_root(root);
+        self.read_view.publish_current(|current, version| {
+            let entities =
+                current
+                    .facts
+                    .subjects
+                    .iter()
+                    .filter(|(entity, subject)| {
+                        self.snapshot_root(&subject.root) == root
+                            || current.facts.summaries.get(*entity).is_some_and(
+                                |(_, repositories)| {
+                                    repositories
+                                        .iter()
+                                        .any(|repository| self.snapshot_root(repository) == root)
+                                },
+                            )
+                    })
+                    .map(|(entity, _)| entity.clone())
+                    .collect::<Vec<_>>();
+            if entities.is_empty() {
+                return None;
+            }
+            let mut facts = (*current.facts).clone();
+            facts.invalidate_observations(&entities);
+            Some(super::read_view::SnapshotDelta::new(version).set_facts(Arc::new(facts)))
+        });
+    }
+
     /// Every entity with a checkout: a run's worktree, a project's primary
     /// checkout, each external worktree the last scan found, and each of a
     /// project's original sources, Git or plain.
@@ -506,7 +538,7 @@ impl AppState {
                     thread_id: Some(thread.id.clone()),
                     thread_generation_revision: Some(thread.generation_revision),
                     choice_revision: Some(agent.choice_revision),
-                    last_sequence: thread.last_sequence(),
+                    last_sequence: self.snapshot_thread_sequence(thread),
                     workspace_session,
                     project_session,
                     workspace_id: workspace_id.clone(),
@@ -524,7 +556,7 @@ mod snapshot_tests {
     use super::*;
     use crate::changes::FactsRequest;
 
-    fn test_app(root: &std::path::Path) -> AppState {
+    pub(super) fn test_app(root: &std::path::Path) -> AppState {
         let context =
             crate::harness::HarnessContext::resolved(root.join("mcp.sock"), root.into()).unwrap();
         AppState::new_unrooted_configured(root.join("worktrees"), "main", true, context)

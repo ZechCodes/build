@@ -14,7 +14,7 @@
 // Since #256 the renderer also writes web links (core/markdownWebLinks.js): an
 // `a.md-link` whose href is http:, https: or mailto:, opening in a new browsing
 // context with no opener or referrer. Nothing else may carry an href that is
-// not a route.
+// not a route or an exact generated document-local footnote fragment.
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -29,6 +29,7 @@ const ALLOWED = {
   BLOCKQUOTE: ["class"], DIV: ["class", "tabindex", "role", "aria-label"], TABLE: [], THEAD: [], TBODY: [], TR: [],
   TH: ["style", "scope"], TD: ["style", "class"], A: ["class", "href", "title", "target", "rel", "id", "aria-label"], SPAN: ["class", "title", "id"],
   IMG: ["src", "alt", "loading", "referrerpolicy", "title"], DETAILS: ["class"], SUMMARY: [], SUP: ["class"], SECTION: ["class", "aria-label"],
+  BUTTON: ["type", "class", "data-md-image-src", "data-md-image-alt", "data-md-image-title"],
 };
 
 const ENCODED_SCOPE = "(?:[0-9a-f]+(?:-[0-9a-f]+)*)?";
@@ -53,6 +54,7 @@ const FIXED_CLASSES = {
   BLOCKQUOTE: ["md-quote", ...["note", "tip", "important", "warning", "caution"].map((kind) => `md-alert md-alert-${kind}`)],
   DIV: ["mdtable", "md-code-block", "md-code-label"], TD: ["md-cell-short"], A: ["md-ref", "md-link", "md-footnote-backref"],
   DETAILS: ["md-details"], SUP: ["md-footnote-ref"], SECTION: ["md-footnotes"],
+  BUTTON: ["md-image-load"],
 };
 
 function checklistNameAllowed(input, host) {
@@ -64,16 +66,28 @@ function checklistNameAllowed(input, host) {
     && Boolean(labels[0].textContent.trim()) && !labels[0].querySelector("input");
 }
 
-function imageAllowed(element) {
+function imageAddressAllowed(value) {
   try {
-    const value = element.getAttribute("src");
     const url = new URL(value);
     return /^https?:\/\/[^/\\]/i.test(value) && Boolean(url.hostname) && !url.username && !url.password
-      && !/[\u0000- \u007f-\u009f]/.test(value) && element.hasAttribute("alt")
-      && element.getAttribute("loading") === "lazy" && element.getAttribute("referrerpolicy") === "no-referrer";
+      && !/^https?:\/\/[^/\\]*@/i.test(value)
+      && !/[\u0000- \u007f-\u009f]/.test(value);
   } catch {
     return false;
   }
+}
+
+function imageAllowed(element) {
+  return imageAddressAllowed(element.getAttribute("src")) && element.hasAttribute("alt")
+    && element.getAttribute("loading") === "lazy" && element.getAttribute("referrerpolicy") === "no-referrer";
+}
+
+function imagePlaceholderAllowed(element) {
+  const source = element.dataset.mdImageSrc;
+  if (!imageAddressAllowed(source) || element.getAttribute("type") !== "button" || element.className !== "md-image-load"
+    || !element.hasAttribute("data-md-image-alt") || element.children.length) return false;
+  const alt = element.dataset.mdImageAlt;
+  return element.textContent === `Load image from ${new URL(source).hostname}${alt ? ` — ${alt}` : ""}`;
 }
 
 function footnoteHrefAllowed(element, value, ids) {
@@ -157,9 +171,10 @@ function elementViolations(element, host) {
     || !/^\d+$/.test(element.dataset.taskIndex || "") || !/^\d+$/.test(element.dataset.taskOffset || "")
     || !checklistNameAllowed(element, host))) found.push("invalid checklist input");
   if (element.tagName === "IMG" && !imageAllowed(element)) found.push("invalid image");
+  if (element.tagName === "BUTTON" && !imagePlaceholderAllowed(element)) found.push("invalid image placeholder");
   if (element.tagName === "SECTION" && element.getAttribute("aria-label") !== "Footnotes") found.push("invalid footnote section");
   if (element.className === "mdtable" || element.hasAttribute("role") || element.hasAttribute("tabindex")) {
-    if (element.className !== "mdtable" || element.getAttribute("role") !== "region" || element.getAttribute("tabindex") !== "0"
+    if (element.className !== "mdtable" || element.getAttribute("role") !== "region" || ![null, "0"].includes(element.getAttribute("tabindex"))
       || element.getAttribute("aria-label") !== "Table") found.push("invalid table region");
   }
   return found;
@@ -188,6 +203,7 @@ function violations(html) {
 const PAYLOADS = [
   "<script>alert(1)</script>",
   '<img src=x onerror="alert(1)">',
+  '<button type="button" class="md-image-load" data-md-image-src="https://a.test/pixel">load</button>',
   "<a href=\"javascript:alert(1)\">x</a>",
   '"><svg onload=alert(1)>',
   "<iframe src=//evil.test></iframe>",
@@ -269,7 +285,7 @@ describe("hostile input through the one renderer", () => {
     const html = markdownHtml(source, { taskLabelScope: '\"><svg onload=alert(1)>' });
     const host = document.createElement("div");
     host.innerHTML = html;
-    for (const selector of ["em", "del", "kbd", "img", ".md-link", ".md-alert-caution", "details > summary", "code.language-javascript .token", ".md-footnotes", ".md-footnote-ref"]) {
+    for (const selector of ["em", "del", "kbd", "button.md-image-load", ".md-link", ".md-alert-caution", "details > summary", "code.language-javascript .token", ".md-footnotes", ".md-footnote-ref"]) {
       expect(host.querySelector(selector), selector).not.toBeNull();
     }
     expect(violations(html)).toEqual([]);
@@ -320,6 +336,7 @@ describe("hostile input through the one renderer", () => {
 
   it("rejects a web link that could reach its opener (violations() has teeth)", () => {
     expect(violations('<a class="md-link" href="https://a.test" target="_blank">x</a>')).toEqual(["href=https://a.test"]);
+    expect(violations('<a class="md-link" href="https://a.test" rel="noopener noreferrer nofollow">x</a>')).toEqual(["href=https://a.test"]);
     expect(violations('<a class="md-link" href="javascript:alert(1)" target="_blank" rel="noopener noreferrer nofollow">x</a>'))
       .toEqual(["href=javascript:alert(1)"]);
     expect(violations('<a class="md-ref" href="https://a.test" target="_blank" rel="noopener noreferrer nofollow">x</a>'))
@@ -329,9 +346,10 @@ describe("hostile input through the one renderer", () => {
   it("rejects image sources and attributes outside the generated image policy", () => {
     const image = (src, extra = '') => `<img src="${src}" alt="x" loading="lazy" referrerpolicy="no-referrer"${extra}>`;
     expect(violations(image("https://a.test/x.png"))).toEqual([]);
-    for (const src of ["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "//a.test/x", "file:///etc/passwd", "https://user:secret@a.test/x", "https:///"]) {
+    for (const src of ["javascript:alert(1)", "data:image/svg+xml,x", "mailto:a@b.test", "//a.test/x", "file:///etc/passwd", "https://user:secret@a.test/x", "https://@a.test/x", "https:///"]) {
       expect(violations(image(src)), src).toContain("invalid image");
       expect(markdownHtml(`![x](${src})`), src).not.toContain("<img ");
+      expect(markdownHtml(`![x](${src})`), src).not.toContain('class="md-image-load"');
     }
     expect(violations(image("https://a.test/x", ' onerror="evil()"'))).toContain("img[onerror]");
     expect(violations(image("https://a.test/x").replace('no-referrer', 'origin'))).toContain("invalid image");
@@ -347,13 +365,32 @@ describe("hostile input through the one renderer", () => {
     const html = markdownHtml(source);
     host.innerHTML = html;
     expect(violations(html)).toEqual([]);
-    expect(host.querySelector("img").getAttribute("alt")).toBe('**alt** literal <svg onload=evil()>[^n]');
-    expect(host.querySelector("img").getAttribute("src")).toBe('https://a.test/x_~~q~~_.png');
-    expect(host.querySelector("img").getAttribute("title")).toBe('#1 **title**');
+    expect(host.querySelector("button").dataset.mdImageAlt).toBe('**alt** literal <svg onload=evil()>[^n]');
+    expect(host.querySelector("button").dataset.mdImageSrc).toBe('https://a.test/x_~~q~~_.png');
+    expect(host.querySelector("button").dataset.mdImageTitle).toBe('#1 **title**');
     expect(host.querySelector("a").getAttribute("title")).toBe('#1 *title*');
     expect(host.querySelectorAll("a")).toHaveLength(1);
     expect(host.querySelector("kbd").innerHTML).toBe('[^n] **x** https://a.test');
     expect(host.querySelectorAll(".md-footnote-ref, .md-footnotes, svg")).toHaveLength(0);
+  });
+
+  it("keeps external image requests inert until explicit activation", () => {
+    const source = '![external](https://external.test/pixel.png "Title")';
+    const html = markdownHtml(source, { imageOrigin: "https://build.test" });
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    expect(host.querySelector("img, [src], [srcset]")).toBeNull();
+    expect(host.querySelector("button").type).toBe("button");
+    expect(host.querySelector("button").textContent).toBe("Load image from external.test — external");
+    expect(violations(html)).toEqual([]);
+    const local = markdownHtml('![local](https://build.test/local.png)', { imageOrigin: "https://build.test" });
+    host.innerHTML = local;
+    expect(host.querySelector("img").getAttribute("src")).toBe("https://build.test/local.png");
+    expect(violations(local)).toEqual([]);
+    expect(violations(html.replace('type="button"', 'type="submit"'))).toContain("invalid image placeholder");
+    expect(violations(html.replace('data-md-image-src="https://external.test/pixel.png"', 'data-md-image-src="javascript:evil()"')))
+      .toContain("invalid image placeholder");
+    expect(violations(html.replace('data-md-image-alt=', 'onclick="evil()" data-md-image-alt='))).toContain("button[onclick]");
   });
 
   it("keeps arbitrary HTML inert beside the exact keyboard and details productions", () => {
@@ -363,12 +400,13 @@ describe("hostile input through the one renderer", () => {
       '<details>\n<summary onclick="evil()">Title</summary>\nBody\n</details>',
       '<DETAILS>\n<summary>Title</summary>\nBody\n</DETAILS>',
       '<details>\n<summary>Title</summary>\nBody',
+      '<button type="button" class="md-image-load" data-md-image-src="https://a.test/pixel">load</button>',
     ]) {
       const host = document.createElement("div");
       const html = markdownHtml(source);
       host.innerHTML = html;
       expect(violations(html), source).toEqual([]);
-      expect(host.querySelector("kbd, details, summary, img"), source).toBeNull();
+      expect(host.querySelector("kbd, details, summary, img, button"), source).toBeNull();
       expect(host.textContent, source).toContain(source.split("\n")[0]);
     }
   });
@@ -383,7 +421,7 @@ describe("hostile input through the one renderer", () => {
       '<span class="token keyword">x</span>', '<iframe src="https://a.test"></iframe>',
       '<pre class="md-code"><code class="language-javascript"><span class="token attacker">x</span></code></pre>',
       '<kbd><em>x</em></kbd>', '<details><summary>x</summary></details>',
-      '<div class="mdtable"><table></table></div>',
+      '<div class="mdtable" role="region" aria-label="Table" tabindex="1"><table></table></div>',
       '<a class="md-link" href="https://a.test" target="_blank" rel="noopener noreferrer nofollow" aria-label="fake">x</a>',
       '<ol start="1e9"><li>x</li></ol>', '<div style="text-align:left;background:url(x)">x</div>',
       '<div class="md-code-label" role="region" tabindex="0" aria-label="Table">x</div>',
@@ -419,6 +457,42 @@ describe("hostile input through the one renderer", () => {
     });
     const ids = hosts.flatMap((host) => [...host.querySelectorAll("[id]")].map((element) => element.id));
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("preserves the refused-address boundaries while linking the allowed shape", () => {
+    const refused = ["javascript:alert(1)", "data:text/html,x", "vbscript:evil()", "file:///etc/passwd", "ftp://a.test/x",
+      "//a.test/x", "#42", "#/task/1", "src/a.js", "/a.js", "http:a.test", "https:/a.test", "https:///a.test", "https:\\\\a.test"];
+    for (const address of refused) {
+      const source = `[same](${address})`;
+      const host = document.createElement("div");
+      host.innerHTML = markdownHtml(source);
+      expect(host.querySelector("a"), address).toBeNull();
+      expect(host.textContent, address).toBe(source);
+    }
+    const html = markdownHtml('[same](https://a.test) [mail](mailto:a@b.test)');
+    expect((html.match(/<a class="md-link"/g) || []).length).toBe(2);
+    expect(violations(html)).toEqual([]);
+  });
+
+  it("normalizes web address controls without admitting hidden unsafe schemes", () => {
+    const host = document.createElement("div");
+    host.innerHTML = markdownHtml('[x](https://a.test/\u0000x)');
+    expect(host.querySelector("a").getAttribute("href")).toBe("https://a.test/x");
+    expect(markdownHtml('[x](java\u0000script:alert(1))')).not.toContain("<a ");
+    expect(violations(host.innerHTML)).toEqual([]);
+  });
+
+  it("emits only allowlisted fence languages while preserving unknown labels as text", () => {
+    for (const label of ["unknown", "constructor", "__proto__", 'js\"onmouseover=evil()', "javascript-extra"]) {
+      const html = markdownHtml(`\`\`\`${label}\n<script>evil()</script>\n\`\`\``);
+      const host = document.createElement("div");
+      host.innerHTML = html;
+      expect(host.querySelector("code").className, label).toBe("");
+      expect(host.querySelector("code").textContent, label).toBe('<script>evil()</script>\n');
+      expect(host.querySelector(".md-code-label").textContent, label).toBe(label);
+      expect(violations(html), label).toEqual([]);
+    }
+    expect(markdownHtml('```javascript\nconst x = 1;\n```')).toContain('class="language-javascript"');
   });
 
   it("answers plain text with no markup in plain mode", () => {

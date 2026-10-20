@@ -1,6 +1,6 @@
 # Bridge concurrency step 3 evidence
 
-Task #686; 2026-10-19. This report records deterministic temporary-fixture
+Task #686; 2026-10-20. This report records deterministic temporary-fixture
 measurements and the Step 3 acceptance matrix. It is not a production workload
 sample or a worker-count optimization study.
 
@@ -77,6 +77,8 @@ fixture, outside this persistent capture.
 | Run failed save survives unrelated success and same-owner retry | `transactions::failed_run_save_cannot_leak_through_an_unrelated_success_or_same_owner_retry` | Canonical state, durable SQL and the published agent chunk after unrelated success; the separate refreshed-push test pins retained thread content. |
 | Failed save emits no change/news | `transactions::failed_finishers_emit_no_change_or_news` | No immediate failed event; later unrelated success explicitly refreshes both owners and rejects the failed words in pushed content. |
 | Bounded rollback preserves history; multi-owner borrowing does not leak pending candidates | `transactions::retry_after_bounded_rollback_keeps_older_committed_history`; `borrowed_owner_defers_committed_events_until_failed_peer_is_restored` | Older SQL messages survive bounded in-memory rollback; borrowed peer failures delay publication/events until coherent completion. |
+| Failed config saves cannot leak through later successful publication | `configuration::snapshot_publication::{failed_settings_persistence_cannot_leak_through_a_later_publication,failed_compaction_persistence_cannot_leak_through_a_later_publication}` | Injected write/rename failures retain the root and canonical settings; a later unrelated success must preserve the last committed fields. |
+| Task board rows publish from their committed transaction, retaining unrelated rows and dependency digests | `tracker_finished::{failed_watched_task_observation_keeps_the_published_rows,a_task_write_publishes_its_owned_row_without_rereading_other_tasks,a_task_write_publishes_dependency_digests_with_its_own_row,task_creation_rolls_back_when_its_watched_row_cannot_be_prepared}` | Failed observations preserve prior rows; successful writes prepare affected task/dependency projections transactionally, and a failed candidate cannot leave a committed task without its board row. |
 | Git checkout publishes observed branch before reply, including detached fallback | `runtime::snapshot_publication::successful_checkout_reply_publishes_branch_to_board_and_workspace_snapshots`; `detached_checkout_publishes_the_recorded_branch_fallback` | Real checkout status and repository HEAD form the oracle; captured board/workspace snapshots must advance while detached HEAD retains the recorded branch fallback. |
 | Best-effort activity keeps live observation after persistence failure | `transactions::failed_user_activity_persistence_keeps_its_best_effort_observation` | Existing intentional live-versus-durable semantics. |
 | All migrated snapshot verbs complete with app held | `concurrency_timing::snapshot_reads_complete_while_app_held_write_is_gated` | Real encrypted intake; zero app wait/hold; nine verbs, eight computations each. |

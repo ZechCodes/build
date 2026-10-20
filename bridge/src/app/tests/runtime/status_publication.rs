@@ -100,7 +100,7 @@ impl Fixture {
             .store
             .as_ref()
             .unwrap()
-            .connection()
+            .writer_for_test()
             .execute_batch(sql)
             .unwrap();
     }

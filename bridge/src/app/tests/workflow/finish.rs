@@ -21,6 +21,8 @@ fn every_scanned_worktree_row_says_how_it_is_isolated() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     add_external_worktree(&repo, dir.path(), "labelled", "labelled");
+    let project = state.project_at(0).id.clone();
+    state.scan_external_worktrees_now(&project).unwrap();
 
     let rows = state.external_worktrees_json();
 

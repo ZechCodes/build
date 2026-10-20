@@ -933,7 +933,11 @@ fn a_legacy_repo_root_run_still_has_its_run_id_workspace_route() {
     let run_id = adopted_run(&mut state, &repo, tmp.path(), "was-a-worktree");
     // What a store written before workspaces holds: a run whose checkout is
     // the project's own repository.
+    state.workspaces.forget(&run_id);
     state.runs.get_mut(&run_id).unwrap().worktree.path = AppState::canonical_root(&repo);
+    state.refresh_workspace_snapshot_observations();
+    state.refresh_snapshot_observations();
+    state.publish_snapshot_projection();
 
     let detail = state.handle(req("workspace.get", json!({"workspace_id": run_id})));
     assert_eq!(detail["ok"], true, "{detail:?}");

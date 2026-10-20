@@ -128,6 +128,10 @@ fn adopted_review_run_is_finishable_from_the_rail() {
     let (dir, repo) = init_repo();
     let mut state = qa_state(&repo, dir.path());
     let run_id = adopted_run(&mut state, &repo, dir.path(), "finishable-run");
+    // The fixture has no daemon diff worker: install its first Git observation.
+    let refresh = state.run_stat_refresh(&run_id).unwrap();
+    state.store_diff_entry(refresh.compute(None).unwrap());
+    state.publish_snapshot_projection();
 
     let board = state.handle(req("board.list", json!({})));
     let run = board["result"]["runs"]

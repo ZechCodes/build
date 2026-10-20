@@ -67,6 +67,7 @@ fn external_worktree_json_sets_can_finish_for_an_idle_agent_tab() {
         .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
     let key = derived_agent_key(&root, "idle-agent-owner");
     state.session_registry.test_insert_tab(key.clone(), tab);
+    state.note_board_changed();
 
     let board = state.handle(req("board.list", json!({})));
     let entry = board["result"]["external_worktrees"]

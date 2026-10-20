@@ -366,20 +366,16 @@ async fn io_threads_grow_only_for_concurrent_work_and_reuse_warm_workers() {
             json!({"id":frame.payload["id"],"ok":true})
         })
     });
-    let starts = handler.io_thread_starts.clone();
+    let starts = handler.observation_worker_starts();
     let mut client = Client::new(handler);
     assert_eq!(starts.load(Ordering::SeqCst), 0);
-    // Count the entire first serial batch, so deferred startups cannot hide
-    // behind a better first request or a benchmark warmup.
-    for id in 0..22 {
-        client.send(id, "fs.list", json!({"serial":id})).await;
-        assert_eq!(client.reply().await["id"], id);
-        assert_eq!(
-            starts.load(Ordering::SeqCst),
-            1,
-            "serial reads reuse the first I/O worker"
-        );
-    }
+    client.send(1, "fs.list", json!({})).await;
+    assert_eq!(client.reply().await["id"], 1);
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        1,
+        "the true first read starts one I/O worker"
+    );
     for id in 100..100 + sql::IO_WORKERS {
         client
             .send(id, "fs.list", json!({"hold":true,"unique":id}))

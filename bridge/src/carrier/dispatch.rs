@@ -72,6 +72,11 @@ impl FrameHandler {
     }
 
     #[cfg(test)]
+    pub(crate) fn observation_worker_starts(&self) -> Arc<std::sync::atomic::AtomicUsize> {
+        self.io_thread_starts.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn observe_sql(
         mut self,
         observer: impl Fn(&Frame, std::time::Duration, std::time::Duration) + Send + Sync + 'static,

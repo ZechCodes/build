@@ -130,6 +130,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn serial_submissions_reuse_one_worker_after_actual_execution_completion() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let pool = IoExecutors::new(8, starts.clone());
+        for _ in 0..22 {
+            let complete = pool.submit(Box::new(|| {})).unwrap();
+            tokio::time::timeout(PATIENCE, complete)
+                .await
+                .expect("serial work finishes before the next submission")
+                .unwrap();
+            assert_eq!(counts(&pool), (1, 0));
+            assert_eq!(starts.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
     async fn panic_returns_outstanding_capacity_before_completion_and_reuses_worker() {
         let starts = Arc::new(AtomicUsize::new(0));
         let pool = IoExecutors::new(1, starts.clone());

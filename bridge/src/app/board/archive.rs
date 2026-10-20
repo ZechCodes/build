@@ -2,7 +2,7 @@ use super::super::AppState;
 use crate::app::{merge_archived_worktree_facts, plan_state_str, run_state_str};
 use crate::run::RunState;
 use crate::store::{PersistedArchivedWorktree, WorktreeFinishStatus};
-use im::OrdMap;
+use imbl::OrdMap;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

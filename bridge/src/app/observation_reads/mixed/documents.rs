@@ -1,7 +1,7 @@
 //! Canonical document inputs are frozen at committed snapshot publication.
 use crate::app::{require_str, AppState};
 use crate::plan::is_worktree_contained_path;
-use im::OrdMap;
+use imbl::OrdMap;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;

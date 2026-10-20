@@ -42,7 +42,7 @@ macro_rules! trace_phase {
 
 #[derive(Clone)]
 pub(in crate::app) struct ObservationContext {
-    versions: im::OrdMap<publication::InputKey, u64>,
+    versions: imbl::OrdMap<publication::InputKey, u64>,
     base_version: u64,
     pub scopes: scopes::ScopeReadContext,
     pub mixed: mixed::MixedReadContext,

@@ -1,6 +1,6 @@
 //! Attachment admission keeps identities and generations, never transcript items.
 use super::*;
-use im::OrdMap;
+use imbl::OrdMap;
 use std::sync::Arc;
 
 #[derive(Clone, Default)]

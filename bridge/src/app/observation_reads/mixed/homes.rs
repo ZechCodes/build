@@ -1,6 +1,6 @@
 //! Indexed task implementation homes. Owner changes never scan unrelated runs.
 use crate::app::{conversations::AttachmentHomes, AppState};
-use im::OrdMap;
+use imbl::OrdMap;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;

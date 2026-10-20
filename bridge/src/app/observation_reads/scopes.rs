@@ -7,7 +7,7 @@ use crate::app::{AppState, ReadSubject};
 use crate::run::StageProgress;
 use crate::workspace::Workspace;
 use crate::worktree::ExternalWorktree;
-use im::OrdMap;
+use imbl::OrdMap;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -43,8 +43,8 @@ pub(in crate::app) struct ScopeReadContext {
     runs: OrdMap<String, Arc<RunInput>>,
     lineages: OrdMap<String, Arc<Vec<String>>>,
     order: Arc<BTreeMap<String, usize>>,
-    workspace_dependents: OrdMap<String, im::OrdSet<String>>,
-    workspace_roots: OrdMap<PathBuf, im::OrdSet<String>>,
+    workspace_dependents: OrdMap<String, imbl::OrdSet<String>>,
+    workspace_roots: OrdMap<PathBuf, imbl::OrdSet<String>>,
     workspace_canonical: OrdMap<String, PathBuf>,
 }
 

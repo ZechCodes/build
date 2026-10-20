@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 #[derive(Clone, Default)]
 pub(in crate::app) struct TaskReadContext {
-    pub(super) project_paths: im::OrdMap<String, String>,
+    pub(super) project_paths: imbl::OrdMap<String, String>,
     pub(super) identities: super::read_identities::TaskIdentityContext,
     user_session: UserSession,
 }

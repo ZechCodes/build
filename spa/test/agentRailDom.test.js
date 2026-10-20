@@ -105,7 +105,7 @@ const { deviceModelsAddress } = await import("../src/core/settingsRecords.js");
 const pinnedAddress = uiAddress({ view: "agent-rail", kind: "fold", sub: "pinned" });
 const pinnedValue = async () => (await readUiRecord(pinnedAddress))?.value?.pinned;
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
-const { visibleSyncThread } = await import("../src/core/syncVisibleScopes.js");
+const { visibleSyncThread, threadReaderIsHere } = await import("../src/core/syncVisibleScopes.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { SURFACE_PILL_GRACE_MS } = await import("../src/core/agentSurfacesModel.js");
@@ -318,6 +318,124 @@ afterEach(async () => {
     deviceId: "dev-1", entityId: params.entity_id, kind: "thread",
     sub: params.conversation_id || params.agent_id || "",
   }, () => null)));
+});
+
+describe("shared mounted chat reader (#704)", () => {
+  const selectedIdentity = () => {
+    const identity = visibleSyncThread("dev-1");
+    expect(identity).toMatchObject({ deviceId: "dev-1", entityId: "run-3", agentId: "ag-1" });
+    return identity;
+  };
+
+  it("tracks window presence immediately while a visible chat's read report is pending", async () => {
+    payload = branchRow({
+      agents: [agent({ unread_count: 1, read_through_sequence: 0 })],
+      run: { run_id: "run-3", thread: { sessions: [], items: [
+        { id: "reader-704", type: "message", data: { sequence: 1, role: "agent", body: "Unread update" } },
+      ] } },
+    });
+    const focused = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const reportsWhileReading = [];
+    try {
+      markSeen.mockImplementation(() => {
+        reportsWhileReading.push(threadReaderIsHere(visibleSyncThread("dev-1")));
+        return new Promise(() => {});
+      });
+      await mount({ openAgentId: "ag-1", panelOpen: true });
+      const identity = selectedIdentity();
+      expect(threadReaderIsHere(identity)).toBe(false);
+      expect(markSeen).not.toHaveBeenCalled();
+
+      focused.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      expect(threadReaderIsHere(identity)).toBe(true);
+      await vi.waitFor(() => expect(markSeen).toHaveBeenCalledTimes(1), { timeout: 6000 });
+      expect(reportsWhileReading).toEqual([true]);
+      expect(threadReaderIsHere(identity)).toBe(true);
+
+      focused.mockReturnValue(false);
+      window.dispatchEvent(new Event("blur"));
+      expect(threadReaderIsHere(identity)).toBe(false);
+      focused.mockReturnValue(true);
+      window.dispatchEvent(new Event("focus"));
+      expect(threadReaderIsHere(identity)).toBe(true);
+      expect(markSeen).toHaveBeenCalledTimes(1);
+    } finally {
+      focused.mockRestore();
+    }
+  });
+
+  it("belongs only to the selected chat, leaving overview and the new-agent chooser unread", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    const first = selectedIdentity();
+    expect(threadReaderIsHere(first)).toBe(true);
+
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-2"]').click();
+    await flush();
+    const second = visibleSyncThread("dev-1");
+    expect(second).toMatchObject({ agentId: "ag-2" });
+    expect(threadReaderIsHere(first)).toBe(false);
+    expect(threadReaderIsHere(second)).toBe(true);
+
+    railHost().querySelector(".rail-overview-toggle").click();
+    await flush();
+    expect(panel().querySelector(".rail-overview-list")).toBeTruthy();
+    expect(threadReaderIsHere(second)).toBe(false);
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(panel().querySelector(".rail-newagent")).toBeTruthy();
+    expect(threadReaderIsHere(second)).toBe(false);
+  });
+
+  it("stops reading in TUI and resumes for the same chat", async () => {
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    const identity = selectedIdentity();
+    expect(threadReaderIsHere(identity)).toBe(true);
+    tuiToggle().click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBeNull();
+    expect(visibleSyncThread("dev-1")).toBeNull();
+    expect(threadReaderIsHere(identity)).toBe(false);
+    tuiToggle().click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(threadReaderIsHere(identity)).toBe(true);
+  });
+
+  it("stops reading on collapse and unregisters the disposed rail", async () => {
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    const identity = selectedIdentity();
+    expect(threadReaderIsHere(identity)).toBe(true);
+    rail.collapse();
+    await flush();
+    expect(threadReaderIsHere(identity)).toBe(false);
+    railHost().querySelector('[data-bubble="agent"][data-agent="ag-1"]').click();
+    await flush();
+    expect(threadReaderIsHere(identity)).toBe(true);
+    rail.dispose();
+    rail = null;
+    expect(visibleSyncThread("dev-1")).toBeNull();
+    expect(threadReaderIsHere(identity)).toBe(false);
+  });
+
+  it("leaves the old conversation unread while choosing its reset replacement", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "", kind: "conversation-reset-support", sub: "" }, { supported: true });
+    await mount({ openAgentId: "ag-1", panelOpen: true });
+    const identity = selectedIdentity();
+    expect(threadReaderIsHere(identity)).toBe(true);
+    panel().querySelector(".rail-surface-menu .caret").click();
+    panel().querySelector('[data-action="conversation:clear"]').click();
+    await vi.waitFor(() => expect(document.querySelector("[data-confirm-ok]")).toBeTruthy());
+    document.querySelector("[data-confirm-ok]").click();
+    await vi.waitFor(() => expect(panel().querySelector(".rail-reset-choice")).toBeTruthy());
+    expect(threadReaderIsHere(identity)).toBe(false);
+    panel().querySelector("[data-clear-cancel]").click();
+    await flush();
+    expect(panel().querySelector(".rail-reset-choice")).toBeNull();
+    expect(threadReaderIsHere(identity)).toBe(true);
+    expect(callsTo("conversation.reset")).toHaveLength(0);
+  });
 });
 
 describe("selected session usage limits (#573)", () => {

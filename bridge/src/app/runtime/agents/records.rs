@@ -839,19 +839,46 @@ impl AppState {
         agent_id: &str,
         snapshot: &crate::harness::SessionStatusSnapshot,
     ) {
+        if self.update_agent_status_snapshot(owner, agent_id, snapshot) {
+            self.persist_attention_for_owner(owner);
+            self.changes.note_entity(owner);
+        }
+    }
+
+    /// The private status observer always publishes this owner after applying
+    /// context and usage observations. Keep the independently committed roster
+    /// write, but let that final publication carry the attention stamp too.
+    pub(in crate::app) fn record_agent_status_snapshot_for_pump(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        snapshot: &crate::harness::SessionStatusSnapshot,
+    ) {
+        if self.update_agent_status_snapshot(owner, agent_id, snapshot) {
+            self.persist_status_attention_before_final_publication(owner);
+            self.changes.note_entity(owner);
+        }
+    }
+
+    /// Save the agent interval before deriving aggregate attention. Callers
+    /// decide when to publish the changed stamp, without combining its save
+    /// with the roster transaction or changing either failure boundary.
+    fn update_agent_status_snapshot(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        snapshot: &crate::harness::SessionStatusSnapshot,
+    ) -> bool {
         let working_since =
             matches!(snapshot.status, AgentStatus::Working).then(|| snapshot.changed_at.clone());
         self.record_agent_working_since(owner, agent_id, working_since);
         let working = self.entity_agents_working(owner);
-        if self.board.attention_mut().observe_status(
+        self.board.attention_mut().observe_status(
             owner,
             working,
             &snapshot.changed_at,
             snapshot.last_worked_at.as_deref(),
-        ) {
-            self.persist_attention_for_owner(owner);
-            self.changes.note_entity(owner);
-        }
+        )
     }
 
     /// Post one thing the agent reported doing into the conversation it speaks

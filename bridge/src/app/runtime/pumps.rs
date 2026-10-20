@@ -148,7 +148,7 @@ impl StatusPump {
                 return false;
             }
             let owner = &instance.entity_id;
-            app.record_agent_status_snapshot(owner, &instance.agent_id, snapshot);
+            app.record_agent_status_snapshot_for_pump(owner, &instance.agent_id, snapshot);
             if snapshot.context_reset_count > self.recorded_context_reset_count {
                 app.forget_agent_context(owner, &instance.agent_id);
                 self.recorded_context = None;

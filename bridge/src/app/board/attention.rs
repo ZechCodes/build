@@ -672,6 +672,29 @@ impl AppState {
         self.save_attention_map();
     }
 
+    /// Only StatusPump::observe may defer this wire projection: it publishes
+    /// the exact owner unconditionally before releasing its observation guard.
+    /// Persistence, admission metadata and change/watch notifications retain
+    /// their ordinary order and error behavior.
+    pub(in crate::app) fn persist_status_attention_before_final_publication(
+        &mut self,
+        owner: &str,
+    ) {
+        if !self.plans.contains_key(owner) && !self.runs.contains_key(owner) {
+            self.persist_attention();
+            return;
+        }
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("finisher.attention");
+        self.mark_snapshot_owner_pending(owner);
+        self.mark_observation_owner_changed(owner);
+        self.publish_read_metadata_only();
+        self.changes
+            .note_board_lists(crate::changes::BoardLists::default());
+        self.watchers.board_moved(self.worktree_roots());
+        self.save_attention_map();
+    }
+
     fn save_attention_map(&self) {
         let Ok(store) = self.require_store() else {
             return;

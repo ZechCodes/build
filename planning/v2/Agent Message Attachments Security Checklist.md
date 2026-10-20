@@ -60,8 +60,10 @@ DataChannel or the installed daemon.
 
 All gates run under `nice -n 10`, judged by their process exits:
 
-- Full, unfiltered bridge tests: exit 0; 5,366 passed and 14 existing ignores. The test process selects
-  the existing uv 0.12.15 with `BST_UV` and uses `RUST_TEST_THREADS=4` to reduce
+- Full, unfiltered bridge tests: exit 0; the log prints 5,371 passed and 14
+  existing ignores, including five passing subprocess test summaries. The
+  test process selects the existing uv 0.12.15 with `BST_UV` and uses
+  `RUST_TEST_THREADS=4` to reduce
   wall-clock fixture contention. `--no-fail-fast` retains every test binary.
 - Local and stable all-target Clippy with `-D warnings`, and formatting: exit 0.
 - Locked vendor library tests: exit 0, 226 passed and five existing ignores.
@@ -83,3 +85,20 @@ No complexity ratchets, scanner exceptions or new ignored tests were added.
 The final task handoff carries the gate logs, caller audit and headless Chromium
 screenshots. The Chat Isolation and Task checklists link to this extension;
 their existing controls and historical scores remain unchanged.
+
+### Review follow-up — #699
+
+The shared attachment description again asks for screenshots, recordings and
+logs that prove a claim, including before/after evidence. A regression checks
+that guidance on all four attachment tools on both working surfaces.
+
+The lightbox capture now waits for visible, fully opaque modal elements,
+returned inline styles and completed animations. Its settled-state assertion
+failed at the old image-only capture point on desktop and phone, then passed
+with the wait. All six reply, lightbox and expanded outgoing-message captures
+were regenerated and visually inspected.
+
+The affected gates passed: 64 MCP tests, local and stable all-target Clippy and
+formatting, pinned SPA lint, both attachment browser tests and all three capture
+checks. The full bridge total above corrects the original log's counting basis;
+the full bridge and SPA suites were not rerun for this wording/capture follow-up.

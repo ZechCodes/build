@@ -206,6 +206,36 @@ impl AppState {
         is_project_scratch(&self.state_root, &project_path, &active.worktree.path)
     }
 
+    pub(in crate::app) fn is_project_snapshot_conversation_owner(&self, run_id: &str) -> bool {
+        let Some(active) = self.runs.get(run_id) else {
+            return false;
+        };
+        let project_path = self
+            .projects
+            .project_id_of(run_id)
+            .and_then(|id| self.projects.get(id))
+            .map(|project| project.repo_path.clone())
+            .unwrap_or_else(|| PathBuf::from(self.projects.project_path_for(run_id)));
+        !project_path.as_os_str().is_empty()
+            && self.observed_same_path(
+                &active.worktree.path,
+                &scratch_dir(&self.state_root, &project_path),
+            )
+    }
+
+    pub(in crate::app) fn project_snapshot_scratch_path(&self, owner: &str) -> Option<PathBuf> {
+        let path = self.projects.project_id_of(owner).and_then(|id| self.projects.get(id))
+            .map(|project| project.repo_path.clone()).unwrap_or_else(|| PathBuf::from(self.projects.project_path_for(owner)));
+        (!path.as_os_str().is_empty()).then(|| scratch_dir(&self.state_root, &path))
+    }
+
+    pub(in crate::app) fn project_snapshot_scratch_paths(&self) -> Vec<PathBuf> {
+        self.projects
+            .iter()
+            .map(|project| scratch_dir(&self.state_root, &project.repo_path))
+            .collect()
+    }
+
     /// The live run that owns this project's scratch root. Read by path rather
     /// than by a stored id, so a boot that re-minted `proj-N` still finds the
     /// owner the last boot left, as does one that could bind it to no project
@@ -216,6 +246,15 @@ impl AppState {
         project_id: &str,
         scratch: &Path,
     ) -> Option<String> {
+        self.project_conversation_owner_using(project_id, scratch, false)
+    }
+
+    fn project_conversation_owner_using(
+        &self,
+        project_id: &str,
+        scratch: &Path,
+        observed: bool,
+    ) -> Option<String> {
         self.runs
             .iter()
             .find(|(run_id, active)| {
@@ -224,7 +263,11 @@ impl AppState {
                         .projects
                         .project_id_of(run_id)
                         .is_none_or(|bound| bound == project_id)
-                    && crate::app::workspaces::same_path(&active.worktree.path, scratch)
+                    && if observed {
+                        self.observed_same_path(&active.worktree.path, scratch)
+                    } else {
+                        crate::app::workspaces::same_path(&active.worktree.path, scratch)
+                    }
             })
             .map(|(run_id, _)| run_id.clone())
     }
@@ -266,6 +309,15 @@ impl AppState {
     /// project nobody has talked to yet — the lookup above, asked by project id
     /// alone. `project.list` carries the answer so a rail can show a project's
     /// agent without minting one to find out there is none.
+    pub(in crate::app) fn project_snapshot_conversation_run(
+        &self,
+        project_id: &str,
+    ) -> Option<String> {
+        let project = self.projects.get(project_id)?;
+        let scratch = scratch_dir(&self.state_root, &project.repo_path);
+        self.project_conversation_owner_using(project_id, &scratch, true)
+    }
+
     pub(in crate::app) fn project_conversation_run(&self, project_id: &str) -> Option<String> {
         let project = self.projects.get(project_id)?;
         let scratch = scratch_dir(&self.state_root, &project.repo_path);

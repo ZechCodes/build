@@ -94,6 +94,7 @@ impl DeferredGitWork for WorkspaceGitInitWork {
         for (outcome, (_, location)) in outcomes.iter_mut().zip(&self.locations) {
             settle_git_init_target(app, &self.workspace, &self.directory, location, outcome);
         }
+        app.refresh_workspace_snapshot_observation(&self.workspace.id);
         result["workspace"] = app
             .workspaces
             .get(&self.workspace.id)

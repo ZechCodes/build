@@ -451,6 +451,44 @@ impl AppState {
             .unwrap_or(Value::Null)
     }
 
+    pub(in crate::app) fn cached_external_worktrees_json(&self) -> ExternalWorktreeRows {
+        let mut rows = ExternalWorktreeRows::default();
+        for project in self.projects.iter().filter(|project| project.is_git) {
+            let scan = self.board.diff().external_scan(&project.id);
+            rows.scanning |= scan.settled_at.is_none();
+            rows.rows.extend(
+                scan.worktrees
+                    .iter()
+                    .filter_map(|worktree| self.external_worktree_row_of(&worktree.id)),
+            );
+        }
+        rows
+    }
+
+    fn cached_workspace_summaries_json(&self) -> Vec<Value> {
+        self.workspaces.list(None).into_iter().map(|workspace| {
+            let repositories = workspace.directories.iter()
+                .filter(|directory| directory.is_git)
+                .map(|directory| directory.path.clone()).collect::<Vec<_>>();
+            let summary = self.workspace_summary_of(&workspace.id, &repositories)
+                .map(|(_, summary)| summary.clone()).unwrap_or(Value::Null);
+            let mut blockers = Vec::new();
+            if self.snapshot_agent_working_at_root(&self.snapshot_root(&workspace.root)) {
+                blockers.push(crate::workspace::FINISH_BLOCKER_AGENT_WORKING);
+            }
+            if workspace.directories.iter().any(|directory| !directory.is_git) {
+                blockers.push(crate::workspace::FINISH_BLOCKER_PLAIN_DIRECTORY);
+            }
+            blockers.extend(git_finish_blockers(&summary, &repositories));
+            json!({
+                "workspace_id": workspace.id,
+                "work_summary": summary,
+                "can_finish": workspace.status == crate::workspace::WorkspaceStatus::Ready && blockers.is_empty(),
+                "finish_blockers": blockers,
+            })
+        }).collect()
+    }
+
     // ---- Board + views --------------------------------------------------------
 
     /// The board: workspace branches and runs (each run carries a live
@@ -462,6 +500,20 @@ impl AppState {
     /// `board.list` from here.
     pub(crate) fn board_list(&mut self) -> Value {
         self.sweep_vanished_runs();
+        let run_ids = self.runs.keys().cloned().collect::<Vec<_>>();
+        for id in run_ids {
+            self.run_stat(&id);
+        }
+        let checkouts = self.external_worktrees_json();
+        self.workspace_summaries_json();
+        self.observe_conversationless_rows(&checkouts.rows);
+        self.reconcile_crossed_dismissal_lines();
+        self.refresh_snapshot_task_observations();
+        self.board_snapshot()
+    }
+
+    /// Render already observed board state without starting maintenance.
+    pub(in crate::app) fn board_snapshot(&self) -> Value {
         let runs: Vec<Value> = {
             let ids: Vec<String> = self
                 .runs
@@ -471,7 +523,12 @@ impl AppState {
                 .collect();
             ids.into_iter()
                 .map(|id| {
-                    let stat = self.run_stat(&id).unwrap_or(Value::Null);
+                    let stat = self
+                        .board
+                        .diff()
+                        .run_stat(&id)
+                        .map(|entry| entry.value.clone())
+                        .unwrap_or(Value::Null);
                     let active = self.runs.get(&id).expect("listed above");
                     let mut view =
                         self.run_view(&id, active, ThreadDetail::Digest, DigestScope::List);
@@ -482,8 +539,8 @@ impl AppState {
                 })
                 .collect()
         };
-        let checkouts = self.external_worktrees_json();
-        let workspace_summaries = self.workspace_summaries_json();
+        let checkouts = self.cached_external_worktrees_json();
+        let workspace_summaries = self.cached_workspace_summaries_json();
         let projects = self
             .projects
             .iter()
@@ -506,7 +563,7 @@ impl AppState {
         // other row does — Done, deleted, or dismissed — never on its own.
         // This filter is the feed list's alone.
         let mut items: Vec<Value> = self
-            .work_items(&checkouts.rows)
+            .cached_work_items(&checkouts.rows)
             .into_iter()
             .filter(|row| {
                 row["kind"] != crate::branch::WorkItemKind::Branch.as_str()
@@ -516,7 +573,7 @@ impl AppState {
         // The tasks the user is watching, in the same list as the
         // conversations so the two interleave by `anchor` for free (spec:
         // Tasks → Watching). A row's absence is how unwatching shows.
-        items.extend(self.watched_task_rows());
+        items.extend(self.snapshot_watched_task_rows());
         crate::branch::sort_by_anchor(&mut items);
         json!({
             // The active feed contains workspace-backed work only. Legacy
@@ -559,9 +616,18 @@ impl AppState {
     /// The scans are passed in rather than taken again: `board_list` already
     /// paid for them, and re-running them here would double every poll's git
     /// work.
+    #[cfg(test)]
     pub(in crate::app) fn work_items(&mut self, external_worktrees: &[Value]) -> Vec<Value> {
         self.observe_conversationless_rows(external_worktrees);
         self.reconcile_crossed_dismissal_lines();
+        let run_ids = self.runs.keys().cloned().collect::<Vec<_>>();
+        for id in run_ids {
+            self.run_stat(&id);
+        }
+        self.cached_work_items(external_worktrees)
+    }
+
+    pub(in crate::app) fn cached_work_items(&self, external_worktrees: &[Value]) -> Vec<Value> {
         let run_ids: Vec<String> = self
             .runs
             .iter()
@@ -582,7 +648,12 @@ impl AppState {
         // Diffstats first: they are the one part of a row that needs `&mut`.
         let stats: HashMap<String, Value> = run_ids
             .iter()
-            .filter_map(|run_id| Some((run_id.clone(), self.run_stat(run_id)?)))
+            .filter_map(|run_id| {
+                Some((
+                    run_id.clone(),
+                    self.board.diff().run_stat(run_id)?.value.clone(),
+                ))
+            })
             .collect();
         let mut candidates: Vec<crate::branch::WorkItemCandidate> = run_ids
             .iter()
@@ -657,7 +728,7 @@ impl AppState {
         stat: &Value,
     ) -> crate::branch::WorkItemCandidate {
         let active = self.runs.get(run_id).expect("caller listed this run");
-        let branch = active.worktree.branch();
+        let branch = self.snapshot_run_branch(run_id, &active.worktree);
         let task_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let sync = WorkItemStat::from_run_stat(stat);
         let thread = self.conversation_thread_for_run(active);
@@ -674,12 +745,12 @@ impl AppState {
         };
         let project_id = self.projects.project_id_of(run_id).unwrap_or_default();
         let workspace = self
-            .surviving_workspace_of_run(run_id)
+            .surviving_workspace_snapshot_of_run(run_id)
             .and_then(|id| self.workspaces.get(&id));
         // Visibility still chooses the row's run id. Its lifecycle outcome
         // includes every run on the root, as workspace Finish does.
         let selected_state = self
-            .preferred_workspace_run_state(
+            .preferred_workspace_snapshot_run_state(
                 project_id,
                 workspace.map_or(active.worktree.path.as_path(), |ws| ws.root.as_path()),
                 workspace.map(|ws| ws.id.as_str()),
@@ -718,13 +789,13 @@ impl AppState {
             // would cost is `finish.warnings`, which the client confirms
             // through — never a refusal here.
             "can_finish": true,
-            "finish": { "warnings": sync.finish_warnings_json(&active.worktree.branch()) },
+            "finish": { "warnings": sync.finish_warnings_json(&branch) },
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the work speaks again. The client
             // hides the row on it; nothing here changes because of it.
             "dismissed": self.is_dismissed(run_id),
             "worktree_path": active.worktree.path.display().to_string(),
-            "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
+            "worktree_id": crate::worktree::external_worktree_id(&self.snapshot_root(&active.worktree.path)),
             "run_id": run_id,
             "task_id": task_id,
         });
@@ -736,7 +807,7 @@ impl AppState {
                     .project_id_of(run_id)
                     .unwrap_or_default()
                     .to_string(),
-                branch: active.worktree.branch(),
+                branch: branch.clone(),
             },
             source: Some(crate::branch::BranchSource::Run),
             task_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),

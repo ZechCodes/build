@@ -259,6 +259,7 @@ impl AppState {
         let mut row = self.project_json(project);
         row["checkouts_updated"] = checkouts_updated.into();
         row["checkouts_failed"] = checkouts_failed.into();
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(row)
     }
 }
@@ -282,11 +283,11 @@ impl AppState {
         if sync_base == Some(true) {
             self.request_source_sync(project_id.to_string(), source_id.to_string());
         }
-        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         let project = self.project_for(project_id)?;
         let mut row = self.project_json(project);
         row["checkouts_updated"] = 0.into();
         row["checkouts_failed"] = json!([]);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         Ok(row)
     }
 }

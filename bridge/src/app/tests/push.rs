@@ -816,6 +816,9 @@ async fn a_state_item_finds_a_checkout_past_a_project_nothing_has_scanned() {
         .id
         .clone();
     let first_id = app.project_at(0).id.clone();
+    // Startup warms every live project. Explicitly invalidate this fixture's
+    // earlier project to retain the unreadable/unobserved lookup regression.
+    app.board.diff_mut().clear_external_scan(&first_id);
     assert!(
         app.external_scan_of(&first_id).is_none(),
         "the fixture is a project nothing has scanned"

@@ -597,6 +597,13 @@ impl AppState {
         thread: &crate::thread::Thread,
         cursor: u64,
     ) -> crate::thread::UnreadSummary {
+        if self.snapshot_projection_initialized() {
+            let mut summary = thread.unread_since(cursor);
+            if let Some(history) = self.read_view.load().history(agent_id) {
+                summary.count = history.updated(thread).unread_since(cursor).count;
+            }
+            return summary;
+        }
         let mut summary = thread.unread_since(cursor);
         let floor = thread.resident_from_sequence();
         if floor == 0 || floor <= cursor {

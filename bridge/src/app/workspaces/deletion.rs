@@ -194,6 +194,7 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
         if let Err(error) = app.workspaces.reload() {
             eprintln!("reload workspaces after delete: {error}");
         }
+        app.refresh_workspace_snapshot_observation(&self.workspace_id);
         app.publish_read_metadata();
     }
 

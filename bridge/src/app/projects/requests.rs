@@ -501,13 +501,13 @@ impl AppState {
             "the project was just resolved"
         );
         self.persist();
-        // The source's watcher and subscriptions end with its membership.
-        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
         let project = self
             .projects
             .get(&project_id)
             .expect("the project was just resolved");
-        Ok(self.project_json(project))
+        let value = self.project_json(project);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(value)
     }
 
     /// `project.set_remote`, for clients that predate per-source remotes: a
@@ -562,6 +562,8 @@ impl AppState {
             .projects
             .get(&project_id)
             .expect("the project was just resolved");
-        Ok(self.project_json(project))
+        let value = self.project_json(project);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(value)
     }
 }

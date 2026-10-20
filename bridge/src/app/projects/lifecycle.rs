@@ -87,7 +87,9 @@ impl AppState {
             .projects
             .get(project_id)
             .expect("the project was just resolved");
-        Ok(self.project_json(project))
+        let value = self.project_json(project);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(value)
     }
 
     /// Register the repository opened by any project-creation door.
@@ -122,6 +124,8 @@ impl AppState {
             .iter()
             .find(|project| project.id == project_id)
             .ok_or_else(|| format!("unknown project: {project_id}"))?;
-        Ok(self.project_json(project))
+        let value = self.project_json(project);
+        self.note_board_lists_changed(crate::changes::BoardLists::PROJECTS);
+        Ok(value)
     }
 }

@@ -76,11 +76,11 @@ impl DeferredGitWork for AddWorkspaceDirectory {
     }
 
     fn invalidate(&self, app: &mut AppState) {
-        reload(app);
+        reload(app, &self.workspace_id);
     }
 
     fn settle(&self, app: &mut AppState, _: Value) -> Result<Value, String> {
-        reload(app);
+        reload(app, &self.workspace_id);
         app.workspace_get(&json!({ "workspace_id": self.workspace_id }))
     }
 }
@@ -202,11 +202,11 @@ impl DeferredGitWork for RemoveWorkspaceDirectory {
     }
 
     fn invalidate(&self, app: &mut AppState) {
-        reload(app);
+        reload(app, &self.workspace_id);
     }
 
     fn settle(&self, app: &mut AppState, _: Value) -> Result<Value, String> {
-        reload(app);
+        reload(app, &self.workspace_id);
         app.workspace_get(&json!({ "workspace_id": self.workspace_id }))
     }
 }
@@ -244,10 +244,11 @@ fn unmaterialize_directory(directory: &WorkspaceDirectory, rift_root: &Path) -> 
 
 /// The manifest was rewritten off the mutex, so the index is read again before
 /// anything answers from it.
-fn reload(app: &mut AppState) {
+fn reload(app: &mut AppState, workspace_id: &str) {
     if let Err(error) = app.workspaces.reload() {
         eprintln!("reload workspaces after a directory change: {error}");
     }
+    app.refresh_workspace_snapshot_observation(workspace_id);
     app.publish_read_metadata();
 }
 

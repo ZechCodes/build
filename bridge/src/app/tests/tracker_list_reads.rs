@@ -9,6 +9,60 @@ use crate::tracker::{Actor, Assignee, TaskComment, TaskEvent, TaskEventKind};
 
 const TASKS: usize = 50;
 
+#[test]
+fn task_reads_derive_legacy_fields_without_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project) = super::tracker::tracked(tmp.path());
+    let created = filed(&mut state, &project, "legacy done task");
+    let id = created["id"].as_str().unwrap();
+    let moved = state.handle(req("tasks.update", json!({"task_id":id,"status":"done"})));
+    assert_eq!(moved["ok"], true, "{moved}");
+    let done_at = moved["result"]["task"]["done_at"].clone();
+    let store = state.tracker_store().unwrap().clone();
+    let mut legacy = store.load_tracker_task(id).unwrap().unwrap();
+    legacy.done_at = None;
+    store.save_tracker_task_activity(&legacy, &[], &[]).unwrap();
+    let connection = rusqlite::Connection::open(tmp.path().join("store/build.db")).unwrap();
+    connection.execute_batch(
+        "CREATE TRIGGER forbid_read_backfill BEFORE UPDATE ON tracker_tasks
+         BEGIN SELECT RAISE(FAIL, 'read attempted a task write'); END;",
+    ).unwrap();
+
+    for (method, params) in [
+        ("tasks.get", json!({"task_id":id})),
+        ("tasks.list", json!({"project_id":project,"limit":1})),
+        ("tasks.waiting_on.blocks", json!({"task_id":id})),
+    ] {
+        let answer = state.handle(req(method, params));
+        assert_eq!(answer["ok"], true, "{method}: {answer}");
+        if method == "tasks.get" {
+            assert_eq!(answer["result"]["task"]["done_at"], done_at);
+        }
+        if method == "tasks.list" {
+            assert_eq!(answer["result"]["tasks"][0]["done_at"], done_at);
+        }
+    }
+    assert_eq!(store.load_tracker_task(id).unwrap().unwrap(), legacy);
+}
+
+#[tokio::test]
+async fn task_read_context_keeps_snapshot_and_sql_fields_separate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project) = super::tracker::tracked(tmp.path());
+    let task = filed(&mut state, &project, "before commit");
+    let context = state.task_read_context();
+    let store = state.tracker_store().unwrap().clone();
+    let mut updated = store.load_tracker_task(task["id"].as_str().unwrap()).unwrap().unwrap();
+    updated.title = "after commit".into();
+    store.save_tracker_task_activity(&updated, &[], &[]).unwrap();
+    drop(state);
+    let mut connection = store.read_pool().acquire().await;
+    let answer = connection.read(|tx| context.tasks_get(tx, &json!({"task_id":updated.id})))
+        .unwrap().unwrap();
+    assert_eq!(answer["task"]["title"], "after commit");
+    assert_eq!(answer["task"]["project_id"], project);
+}
+
 /// An agent on a checkout of its own, named so its identity has something to
 /// carry.
 fn agent_on_checkout(state: &mut AppState, project_id: &str, name: &str) -> (String, String) {

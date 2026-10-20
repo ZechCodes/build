@@ -18,7 +18,8 @@ impl ReadTransaction<'_> {
     }
 
     /// The durable skeleton plus count/sequence fields omitted by serialization.
-    /// Item bodies stay in SQLite until a bounded page explicitly asks for them.
+    /// History stays in SQLite; only indexed summary rows are decoded before
+    /// a bounded page explicitly asks for items.
     pub fn load_agent_skeleton(
         &self,
         agent_id: &str,
@@ -39,6 +40,7 @@ impl ReadTransaction<'_> {
         else {
             return Ok(None);
         };
+        agent.thread.rekey_to_agent(&agent.id);
         self.restore_thread_metadata(&mut agent)?;
         Ok(Some((owner, agent)))
     }

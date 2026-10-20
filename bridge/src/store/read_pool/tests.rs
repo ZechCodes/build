@@ -71,6 +71,10 @@ async fn read_only_queries_progress_while_the_writer_holds_an_uncommitted_change
                 .connection()
                 .execute("INSERT INTO meta VALUES ('forbidden', '1')", [])
                 .is_err());
+            assert!(read
+                .connection()
+                .execute("CREATE TEMP TABLE forbidden (id)", [])
+                .is_err());
         })
         .unwrap();
     write.commit().unwrap();

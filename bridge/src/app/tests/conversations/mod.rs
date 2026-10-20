@@ -1,5 +1,7 @@
 use super::*;
 
+mod reset_checkpoint;
+
 pub(in crate::app::tests) mod attachments;
 mod native_delivery;
 mod operations;

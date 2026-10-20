@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::json;
 
+mod combined_versions;
 mod shared_chunks;
 
 #[test]

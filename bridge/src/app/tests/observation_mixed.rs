@@ -75,3 +75,24 @@ async fn mixed_archive_preserves_finished_registry_rows() {
     let expected = state.archived_list();
     assert_eq!(prepared(&state, "archived.list", &json!({})).await.run().unwrap(), expected);
 }
+
+#[tokio::test]
+async fn mixed_review_delayed_work_keeps_its_selected_version_and_next_read_is_fresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_repo, mut state, project) = super::tracker::tracked(tmp.path());
+    let workspace = super::project_agent::workspace(&mut state, &project, "mixed-review");
+    let task = super::tracker::filed(&mut state, &project, "review version");
+    let first = state.handle(req("tasks.review.snapshot", json!({"task_id":task["id"],"workspace_id":workspace,"expected_version":0})));
+    assert_eq!(first["ok"], true, "{first}");
+    let params = json!({"task_id":task["id"]});
+    let old = prepared(&state, "tasks.review.get", &params).await;
+    let snapshot = &first["result"]["review"]["snapshots"][0];
+    let diff_params = json!({"task_id":task["id"],"snapshot_id":snapshot["id"],"directory_id":snapshot["directories"][0]["id"],"mode":"changes"});
+    let expected_diff = state.handle(req("tasks.review.diff", diff_params.clone()))["result"].clone();
+    let delayed_diff = prepared(&state, "tasks.review.diff", &diff_params).await;
+    let second = state.handle(req("tasks.review.snapshot", json!({"task_id":task["id"],"workspace_id":workspace,"expected_version":1})));
+    assert_eq!(second["ok"], true, "{second}");
+    assert_eq!(old.run().unwrap()["review"]["version"], 1);
+    assert_eq!(delayed_diff.run().unwrap(), expected_diff);
+    assert_eq!(prepared(&state, "tasks.review.get", &params).await.run().unwrap()["review"]["version"], 2);
+}

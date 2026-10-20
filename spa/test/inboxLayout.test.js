@@ -36,8 +36,8 @@ describe("#629 inbox row layout", () => {
     }
   });
 
-  it("keeps empty Recent project activity compact using the existing fallback", () => {
-    const row = dom(inboxRowHtml(entry(PROJECT_AGENT, { facts: "" }), { quiet: true }));
+  it("keeps Recent project activity compact when the model supplies its no-history fallback", () => {
+    const row = dom(inboxRowHtml(entry(PROJECT_AGENT, { facts: "Getting started" }), { quiet: true }));
     expect(row.querySelector(".inbox-facts-float").textContent).toBe("Getting started");
     const task = dom(inboxRowHtml(entry(TRACKER_TASK, { facts: "" }), { quiet: true }));
     expect(task.querySelector(".inbox-facts")).toBeNull();

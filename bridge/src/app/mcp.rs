@@ -1,3 +1,6 @@
+#[cfg(unix)]
+mod read_lane;
+
 use crate::app::{
     apply_thread_action, off_the_workers, AppState, DeferredJob, DeferredNext, DeliveryRunner,
     SessionRegistry,
@@ -84,6 +87,9 @@ impl ControlPlane {
     #[cfg(unix)]
     async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
         let timer = self.clock.frame(MCP_CONTROL_METHOD);
+        if let Some(action) = read_lane::action(&frame) {
+            return Some(read_lane::answer(state, frame, action, timer).await);
+        }
         let turn = Turn::take(self, &timer).await;
         answer_off_the_workers(state, frame, timer, turn).await
     }
@@ -238,7 +244,12 @@ pub(in crate::app) async fn serve_done_listener(
     let plane = {
         let state = Arc::clone(&state);
         ControlPlane::new(
-            off_the_workers(move || Arc::clone(&state.lock().unwrap().frame_clock)).await,
+            off_the_workers(move || {
+                let app = state.lock().unwrap();
+                app.initialize_read_context();
+                Arc::clone(&app.frame_clock)
+            })
+            .await,
         )
     };
     let mut accept_backoff =

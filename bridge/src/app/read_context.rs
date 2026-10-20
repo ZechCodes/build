@@ -1,6 +1,8 @@
 //! Immutable admission and identity overlays for independent SQL reads.
 //! Producers publish while already owning the app; readers never acquire it.
 
+pub(in crate::app) mod mcp_tasks;
+
 use super::conversations::sql_read::{ThreadReadContext, ThreadReadFence};
 use super::tracker::{TaskReadContext, TaskReadFence};
 use super::AppState;

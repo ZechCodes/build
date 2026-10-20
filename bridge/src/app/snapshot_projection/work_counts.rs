@@ -70,3 +70,6 @@ pub(in crate::app) fn history_update() {
 
 // Actual dependency-scan and row construction work for detail batching.
 pub(in crate::app) mod detail_scans;
+
+// Actual compaction wire rendering used to bound stable-layout capture work.
+pub(in crate::app) mod policy_observations;

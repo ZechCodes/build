@@ -42,6 +42,10 @@ impl AppState {
     }
 
     pub(in crate::app) fn scope_compaction_observation(&self, scope: &CompactionScope) -> Value {
+        #[cfg(test)]
+        if matches!(scope, CompactionScope::Workspace(_)) {
+            crate::app::snapshot_projection::work_counts::policy_observations::workspace_render();
+        }
         let parent = self.scope_parent(scope);
         let mut inherited = serde_json::Map::new();
         let mut effective = serde_json::Map::new();

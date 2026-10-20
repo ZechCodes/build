@@ -7,43 +7,74 @@ function updateFocus(wrapper, root) {
   else wrapper.removeAttribute("tabindex");
 }
 
+function elementsIn(node, selector) {
+  if (node.nodeType !== 1) return [];
+  return [...(node.matches(selector) ? [node] : []), ...node.querySelectorAll(selector)];
+}
+
+function addedWrappers(node, changed) {
+  for (const table of elementsIn(node, "table")) {
+    const wrapper = table.closest(".mdtable");
+    if (wrapper) changed.add(wrapper);
+  }
+}
+
+function removedWrappers(node, changed, owners) {
+  for (const wrapper of elementsIn(node, ".mdtable")) changed.add(wrapper);
+  for (const table of elementsIn(node, "table")) {
+    const wrapper = owners.get(table);
+    if (wrapper) changed.add(wrapper);
+  }
+}
+
 export function installMarkdownTableFocus(root = document) {
   const tracked = new Map();
+  const owners = new WeakMap();
   let disposed = false;
-  let queued = false;
   const resize = new ResizeObserver((entries) => {
     if (disposed) return;
-    for (const { target } of entries) updateFocus(target.closest(".mdtable"), root);
+    const changed = new Set(entries.map(({ target }) => target.closest(".mdtable")));
+    for (const wrapper of changed) if (tracked.has(wrapper)) updateFocus(wrapper, root);
   });
   const release = (wrapper, table) => {
     resize.unobserve(wrapper);
-    if (table) resize.unobserve(table);
+    // A table may already belong to a newly painted wrapper in this batch.
+    if (owners.get(table) === wrapper) {
+      resize.unobserve(table);
+      owners.delete(table);
+    }
     wrapper.removeAttribute("tabindex");
     tracked.delete(wrapper);
   };
   const track = (wrapper) => {
-    const table = wrapper.querySelector("table");
-    if (!tracked.has(wrapper) || tracked.get(wrapper) !== table) {
-      if (tracked.has(wrapper)) release(wrapper, tracked.get(wrapper));
-      tracked.set(wrapper, table);
-      resize.observe(wrapper);
-      if (table) resize.observe(table);
+    const previous = tracked.get(wrapper);
+    if (!root.contains(wrapper)) {
+      if (previous) release(wrapper, previous);
+      return;
     }
+    const table = wrapper.querySelector("table");
+    if (previous === table) return;
+    if (previous) release(wrapper, previous);
+    if (!table) return;
+    tracked.set(wrapper, table);
+    owners.set(table, wrapper);
+    resize.observe(wrapper);
+    resize.observe(table);
     updateFocus(wrapper, root);
   };
-  const refresh = () => {
+  const mutations = new MutationObserver((records) => {
     if (disposed) return;
-    const current = new Set(root.querySelectorAll(".mdtable"));
-    for (const [wrapper, table] of tracked) if (!current.has(wrapper)) release(wrapper, table);
-    current.forEach(track);
-  };
-  const mutations = new MutationObserver(() => {
-    if (queued || disposed) return;
-    queued = true;
-    queueMicrotask(() => { queued = false; refresh(); });
+    const changed = new Set();
+    for (const record of records) {
+      for (const node of record.removedNodes) removedWrappers(node, changed, owners);
+      for (const node of record.addedNodes) addedWrappers(node, changed);
+    }
+    changed.forEach(track);
   });
-  mutations.observe(root, { childList: true, subtree: true, characterData: true });
-  refresh();
+  // Text streaming and timer updates cannot introduce tables. Actual size
+  // changes are handled by ResizeObserver; only table ownership changes here.
+  mutations.observe(root, { childList: true, subtree: true });
+  root.querySelectorAll(".mdtable").forEach(track);
   return () => {
     if (disposed) return;
     disposed = true;

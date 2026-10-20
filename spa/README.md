@@ -135,10 +135,14 @@ activated; only that instance loads, and a cached repaint resets consent.
 Same-origin HTTP(S) images and Build attachments keep loading directly.
 All markdown images use `referrerpolicy="no-referrer"`. `markdownImages.js`
 delegates activation and revalidates the URL before creating the image.
+Images may be web-link labels: activating the load button does not follow the
+enclosing link, and following that link does not load its image.
 
 Table prose wraps; numeric/measurement cells and right-aligned columns keep
 their values together. `markdownTableFocus.js` measures rendered tables and
 adds a keyboard stop only while a table actually overflows.
+After the initial scan, only table additions and removals change observation;
+streamed text and timer updates rely on ResizeObserver for actual size changes.
 
 Pass a stable `taskLabelScope` for each document rendered alongside others;
 this scopes checkbox labels and footnotes. Chat messages and task bodies/comments

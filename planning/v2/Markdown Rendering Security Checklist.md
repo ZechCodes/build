@@ -48,6 +48,15 @@ and code output are protected from later emphasis, Build-reference and footnote
 expansion. `markdownImages.test.js` checks hostile latent sources, literal alt/title,
 per-instance activation, cached repaint reset, cleanup and existing attachments.
 
+Linked images retain a policy-checked external anchor around the image or
+placeholder. Activating a placeholder cancels navigation and propagation in
+the capture phase before validating its latent source; following the enclosing
+link does not activate the loader. `markdownWebLinks.test.js` covers nested
+image/link grammar, literal attributes and refused destinations;
+`markdownImagesLayout.test.js` verifies mouse, Enter and Space in Chromium
+with separate navigation and image-request counts. The permanent activation
+test asserts both `defaultPrevented` and absence of a containing-link handler.
+
 Footnotes use generated positive numbers and hex-codepoint document scopes:
 `md-fn:{scope}:{number}` and `md-fnref:{scope}:{number}:{occurrence}`. A caller's
 `taskLabelScope` is encoded injectively; the unscoped API uses a deterministic
@@ -81,9 +90,9 @@ Since #256 the renderer writes web links as well as Build routes (`spa/src/core/
 | 7 | Code and keyboard contents remain literal; references, links, footnotes and emphasis are not expanded there. Highlighted fences may add only constrained Prism token spans inside known code classes; malformed/unknown labels do not create attributes | 10/10 | `markdownSafety.test.js` fenced-language adversarial matrix, including nested markdown fences, plus protected contents test; `markdownInline.test.js` exact backtick runs and keyboard grammar; `markdownRichBlocks.test.js` highlighted and unknown fence labels |
 | 8 | Quotes, lists and details share an eight-level bound. Long mixed documents, blank lines, link punctuation, unmatched rich delimiters and large fenced source finish within fixed regression budgets | 10/10 | `markdownSafety.test.js` "nesting that tries to exhaust the reader": 40,000 blank lines, 100,000-character link punctuation, 200 nested details, 10,000 unmatched details openers, malformed keyboard/footnote/emphasis/image delimiters, and a large known-language fence. #238 and #256 earlier regressions remain covered #700: `markdownInline.test.js` has 15 closer-before-unmatched-opener cases, each in a Node 22 child bounded to 2 seconds with SIGKILL. The original two keyboard cases timed out (red suite exit 1, 2 failed/22 passed); after validating closer position and enforcing forward progress, the five-suite focused check passed 108/108, exit 0. Raw logs/exits: `/tmp/build-markdown-695-review/inline-700-{red,green}.{log,exit}`. |
 | 9 | Plain mode answers text with no markup, and its callers escape it | 10/10 | `markdownSafety.test.js` "answers plain text with no markup in plain mode"; `agentOverview.js` writes the snippet through `esc` |
-| 10 | Repository scanners are clean on the change | 10/10 | #701 integration scan at code head `8bb0eff859d3760129a9af2a9b0968957778f80e`: Semgrep checked all 35 changed JS/MJS/CSS files with 200 rules, zero findings, exit 0; Gitleaks scanned `main..HEAD`, zero leaks, exit 0. Raw output and exit footers are attached to the task handoff (`semgrep.log`, `gitleaks.log`); Gitleaks runs again after this evidence-only update and before push. |
+| 10 | Repository scanners are clean on the change | 10/10 | #701 final-delta integration scan at code/test head `86a10c56786dbc6f03317c758b976a7777e5bb04`: Semgrep checked all 38 changed JS/MJS/CSS files with 200 rules, zero findings, exit 0; Gitleaks scanned `main..HEAD`, zero leaks, exit 0. Raw output and exit footers are attached to the task handoff (`semgrep.log`, `gitleaks.log`); Gitleaks runs again after this evidence-only update and before push. |
 
-Actual mutation controls (#701) run against a temporary copy of the production
+Round-two actual mutation controls (#701) ran against a temporary copy of the production
 source, with each mutation applied separately and restored before the next run.
 Raw Vitest output, the exact source patch, the actual process exit and the
 unmutated baselines are retained in
@@ -112,5 +121,17 @@ mutation. No production files were mutated in the shared checkout.
 | External image consent | Treat an external origin as same-origin and emit an image before activation | Assertion failure, exit 1 |
 | Activation URL validation | Bypass source validation of a modified placeholder dataset | Eight hostile-source assertion failures, exit 1 |
 | Activated-image privacy | Omit `referrerpolicy="no-referrer"` from the activated image | Assertion failure, exit 1 |
+
+The final delta adds two independent linked-image action controls against code
+head `5dd749cd5767e4e1ea28344beed145190cbfafb2` and the permanent assertion added in
+`86a10c56786dbc6f03317c758b976a7777e5bb04`: remove `preventDefault`, then independently
+remove `stopPropagation`. Each produces two assertion failures and exits 1;
+clean before/after baselines pass 2/2 and exit 0. The full image-controller suite
+passes 22/22, exit 0. Commands, raw logs, patches and hashes are retained under
+`/tmp/build-markdown-695-round3/linked-action-mutations/` and attached to the
+handoff. The initial `preventDefault` mutation survived because the old test
+only checked propagation; that first probe remains labeled `first-probe/`.
+Adding the explicit canceled-event assertion closed the coverage gap before
+the final full-suite run.
 
 **Total: 100/100.**

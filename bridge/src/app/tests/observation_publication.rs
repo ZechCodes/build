@@ -178,25 +178,33 @@ fn observation_reset_first_publication_fences_canonical_and_cross_owner_aliases(
 
 #[test]
 fn observation_rejected_owner_delta_keeps_pending_wire_and_input_retry() {
+    use crate::app::observation_reads::ObservationPatch;
     use crate::app::read_view::SnapshotDelta;
     let (_dir, state, owner) = fixture();
     capture_metrics::take();
     let mut app = state.lock().unwrap();
     let older = app.prepare_owner_snapshot_projection(&owner).unwrap();
-    // An intervening publication wins this owner's wire key. The rejected
-    // candidate must retain its pending owner and dirty-input receipt.
-    assert!(app
-        .read_view
-        .publish_delta(SnapshotDelta::new(app.read_view.next_version()).put(
-            "agent.list",
-            &owner,
-            json!({"intervening":true})
-        )));
+    // The wire row is unchanged and may be omitted from `older`. Advance the
+    // actual observation owner key so rejection cannot depend on that wire row.
+    let initial = app.read_view.load().observations.clone().unwrap();
+    let mut newer_owner = ObservationPatch::default();
+    newer_owner.owner(&app, &owner, &initial);
+    // The rejected candidate must retain its pending owner and dirty receipt.
+    assert!(app.read_view.publish_delta(
+        SnapshotDelta::new(app.read_view.next_version())
+            .put("agent.list", &owner, json!({"intervening":true}))
+            .patch_observations(newer_owner)
+    ));
+    let installed = app.read_view.load();
     app.runs.remove(&owner);
     // A permanent removal also retires the committed checkpoint. Leaving it
     // installed would correctly defer publication as a temporarily borrowed owner.
     app.committed_entities.forget(&owner);
     app.publish_prepared_snapshot_projection(older);
+    assert!(
+        Arc::ptr_eq(&installed, &app.read_view.load()),
+        "same-owner input version must reject the entire older candidate"
+    );
     assert_eq!(
         app.read_view.load().get("agent.list", &owner),
         Some(&json!({"intervening":true}))

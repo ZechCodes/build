@@ -117,7 +117,7 @@ impl AppState {
             return;
         }
         self.user_session = updated;
-        self.publish_read_metadata();
+        self.publish_read_user_session();
         if let Some(store) = self.store.as_ref() {
             if let Err(error) = store.save_user_session(&updated) {
                 eprintln!("user session persist failed: {error}");

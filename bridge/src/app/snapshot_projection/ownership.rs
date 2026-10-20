@@ -1,7 +1,7 @@
 //! Share ownership resolution across every chunk prepared for one publication.
 use super::{AppState, Arc, BTreeSet, Mutex, ProjectionOwnership};
 
-pub(super) struct ProjectionOwnershipGuard<'a> {
+pub(in crate::app) struct ProjectionOwnershipGuard<'a> {
     slot: &'a Mutex<Option<Arc<ProjectionOwnership>>>,
     owns_context: bool,
 }
@@ -18,7 +18,7 @@ impl AppState {
     /// Candidate preparation runs under the app lock. Nested preparation
     /// reuses its context; the outer guard removes it before persistence or
     /// canonical fields can change, including a failed candidate's rollback.
-    pub(super) fn begin_snapshot_ownership(&self) -> ProjectionOwnershipGuard<'_> {
+    pub(in crate::app) fn begin_snapshot_ownership(&self) -> ProjectionOwnershipGuard<'_> {
         let slot = &self.snapshot_observations.ownership;
         let owns_context = slot.lock().unwrap().is_none();
         if owns_context {

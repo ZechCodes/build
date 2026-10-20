@@ -30,6 +30,7 @@ pub(super) struct ReadRosters {
 
 impl AppState {
     pub(super) fn task_identity_context(&self) -> TaskIdentityContext {
+        let _ownership = self.begin_snapshot_ownership();
         let live = self
             .plans
             .iter()
@@ -37,19 +38,8 @@ impl AppState {
             .chain(self.runs.iter().map(|(owner, run)| (owner, &run.agents)))
             .flat_map(|(owner, roster)| roster.agents().iter().map(move |agent| (owner, agent)))
             .filter_map(|(owner, agent)| {
-                self.live_task_identity(&agent.id)
-                    .map(|identity| (owner, identity))
-            })
-            .map(|(owner, identity)| {
-                (
-                    identity.agent_id,
-                    LiveTaskLocation {
-                        owner: owner.clone(),
-                        workspace_id: identity.workspace_id,
-                        workspace_name: identity.workspace_name,
-                        available: identity.available,
-                    },
-                )
+                self.task_live_location(owner, &agent.id)
+                    .map(|location| (agent.id.clone(), location))
             })
             .collect();
         let mut workspaces = HashMap::new();
@@ -57,22 +47,52 @@ impl AppState {
             workspaces
                 .entry(workspace.root.clone())
                 .or_insert_with(|| workspace.id.clone());
-            if let Ok(path) = std::fs::canonicalize(&workspace.root) {
-                workspaces
-                    .entry(path)
-                    .or_insert_with(|| workspace.id.clone());
-            }
+            workspaces
+                .entry(self.snapshot_root(&workspace.root))
+                .or_insert_with(|| workspace.id.clone());
         }
         // Retain aliases known at publication. SQL readers only compare these
         // immutable paths, even after the corresponding directory disappears.
         for run in self.runs.values() {
-            if let Ok(path) = std::fs::canonicalize(&run.worktree.path) {
-                if let Some(id) = workspaces.get(&path).cloned() {
-                    workspaces.entry(run.worktree.path.clone()).or_insert(id);
-                }
+            let path = self.snapshot_root(&run.worktree.path);
+            if let Some(id) = workspaces.get(&path).cloned() {
+                workspaces.entry(run.worktree.path.clone()).or_insert(id);
             }
         }
         TaskIdentityContext { live, workspaces }
+    }
+
+    fn task_live_location(&self, owner: &str, agent: &str) -> Option<LiveTaskLocation> {
+        let project_agent = crate::agent::is_project_agent(agent);
+        let workspace = if project_agent {
+            None
+        } else {
+            let root = &self.runs.get(owner)?.worktree.path;
+            let project_id = self.projects.project_id_of(owner)?;
+            self.workspaces
+                .list(Some(project_id))
+                .into_iter()
+                .find(|workspace| {
+                    self.observed_same_path(&workspace.root, root)
+                        && self
+                            .workspace_snapshot_conversation_owner(workspace)
+                            .as_deref()
+                            == Some(owner)
+                        && self.projects.get(project_id).is_some_and(|project| {
+                            !self.observed_same_path(&workspace.root, &project.repo_path)
+                        })
+                })
+        };
+        Some(LiveTaskLocation {
+            owner: owner.into(),
+            workspace_id: workspace.map(|workspace| workspace.id.clone()),
+            workspace_name: workspace.map(|workspace| workspace.name.clone()),
+            available: !self.session_registry.agent_binding_retired(agent)
+                && (project_agent
+                    || workspace.is_some_and(|workspace| {
+                        workspace.status == crate::workspace::WorkspaceStatus::Ready
+                    })),
+        })
     }
 }
 

@@ -79,7 +79,7 @@ impl AppState {
         self.read_context.store(Some(Arc::new(next)));
     }
 
-    /// Project/workspace links and user presence are published independently
+    /// Project/workspace links are published independently
     /// of roster admission. A board invalidation cannot expose a failed save.
     pub(in crate::app) fn publish_read_metadata(&self) {
         #[cfg(test)]
@@ -94,6 +94,17 @@ impl AppState {
             deleting_project: self.project_deletion_in_progress,
         };
         next.tasks.retain_live_owners(&previous.tasks, self, None);
+        self.read_context.store(Some(Arc::new(next)));
+    }
+
+    /// Presence changes only the session carried by task reads. Keep the
+    /// committed roster and path observations without preparing a new board.
+    pub(in crate::app) fn publish_read_user_session(&self) {
+        let Some(previous) = self.read_context.load_full() else {
+            return;
+        };
+        let mut next = (*previous).clone();
+        next.tasks.set_user_session(self.user_session);
         self.read_context.store(Some(Arc::new(next)));
     }
 

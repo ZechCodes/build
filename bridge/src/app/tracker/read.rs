@@ -35,6 +35,10 @@ impl AppState {
 }
 
 impl TaskReadContext {
+    pub(in crate::app) fn set_user_session(&mut self, session: UserSession) {
+        self.user_session = session;
+    }
+
     /// Only a successful owner save can admit a new live agent. Owners checked
     /// out by a surrounding mutation retain their last published observation.
     pub(in crate::app) fn retain_live_owners(

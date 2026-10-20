@@ -449,6 +449,7 @@ pub(crate) struct CarrierHandle {
     id: CarrierId,
     kind: CarrierKind,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
+    released: Arc<AtomicBool>,
 }
 
 impl CarrierHandle {
@@ -472,6 +473,7 @@ impl CarrierHandle {
                 id: CarrierId(NEXT_CARRIER_ID.fetch_add(1, Ordering::Relaxed)),
                 kind,
                 out,
+                released: Arc::new(AtomicBool::new(false)),
             },
             envelopes,
         )
@@ -628,6 +630,9 @@ impl SessionRegistry {
         carrier: &CarrierHandle,
     ) -> Result<(), CarrierError> {
         let mut sessions = self.sessions.lock().unwrap();
+        if carrier.released.load(Ordering::SeqCst) {
+            return Err(CarrierError::UnknownSession(session_id.to_string()));
+        }
         match sessions.get_mut(session_id) {
             Some(open) if open.key != session_key => {
                 Err(CarrierError::KeyMismatch(session_id.to_string()))
@@ -671,6 +676,9 @@ impl SessionRegistry {
         carrier: &CarrierHandle,
     ) -> Result<(Frame, SessionSender), CarrierError> {
         let mut sessions = self.sessions.lock().unwrap();
+        if carrier.released.load(Ordering::SeqCst) {
+            return Err(CarrierError::UnknownSession(envelope.session_id.clone()));
+        }
         let open = sessions
             .get_mut(&envelope.session_id)
             .ok_or_else(|| CarrierError::UnknownSession(envelope.session_id.clone()))?;
@@ -722,6 +730,9 @@ impl SessionRegistry {
     }
 
     fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd> {
+        // Fence a concurrent intake before taking the registry lock. A frame
+        // already inside the lock is pruned below; a later one cannot rebind.
+        carrier.released.store(true, Ordering::SeqCst);
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
             let Some(left) = open.carriers.remove(&carrier.id) else {

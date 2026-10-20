@@ -28,7 +28,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
-use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
+use webrtc::data_channel::{
+    DataChannel, DataChannelEvent, RTCDataChannelInit, RTCDataChannelState,
+};
 use webrtc::peer_connection::{
     HostCandidateSweepEvent, PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler,
     RTCConfiguration, RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceConnectionState,
@@ -1733,13 +1735,16 @@ async fn pump_channel_events(
                 diagnostic(&session_id, &format!("channel={label} opened"));
             }
             DataChannelEvent::OnMessage(message) => {
-                if riding
-                    .accept(&mut reassembler, &message.data)
-                    .await
-                    .is_err()
+                if !accept_channel_message(
+                    channel.as_ref(),
+                    &riding,
+                    &mut reassembler,
+                    &message.data,
+                    &session_id,
+                    label,
+                )
+                .await
                 {
-                    diagnostic(&session_id, &format!("channel={label} reassembly_failed"));
-                    let _ = channel.close().await;
                     break;
                 }
             }
@@ -1751,6 +1756,44 @@ async fn pump_channel_events(
         }
     }
     diagnostic(&session_id, &format!("channel={label} reader_ended"));
+}
+
+async fn accept_channel_message(
+    channel: &dyn DataChannel,
+    riding: &RidingChannel,
+    reassembler: &mut chunk::Reassembler,
+    message: &[u8],
+    session_id: &str,
+    label: &str,
+) -> bool {
+    // Poll the independent native state only while intake is parked. Polling
+    // the event stream here would read past the backpressured ordered frame.
+    let accepted = tokio::select! {
+        biased;
+        accepted = riding.accept(reassembler, message) => Some(accepted),
+        _ = channel_closed(channel) => None,
+    };
+    match accepted {
+        Some(Ok(())) => true,
+        None => false,
+        Some(Err(_)) => {
+            diagnostic(session_id, &format!("channel={label} reassembly_failed"));
+            let _ = channel.close().await;
+            false
+        }
+    }
+}
+
+async fn channel_closed(channel: &dyn DataChannel) {
+    loop {
+        if matches!(
+            channel.ready_state().await,
+            Ok(RTCDataChannelState::Closing | RTCDataChannelState::Closed) | Err(_)
+        ) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// This channel as one of the wires the intake's sessions ride. Dropping it —

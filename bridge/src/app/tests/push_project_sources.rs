@@ -154,10 +154,16 @@ async fn project_source_changes_keep_secondary_and_plain_roots_distinct() {
         items_of(pushes, "s-plain")
             .iter()
             .any(|item| names_path(item, "plain.txt"))
-            && second.iter().any(|item| names_path(item, "second.txt"))
-            && second
+            && items_of(pushes, "s-plain")
                 .iter()
-                .any(|item| item["git"]["status_key"].is_string())
+                .any(|item| root_lists(item, "plain.txt"))
+            && second.iter().any(|item| names_path(item, "second.txt"))
+            && second.iter().any(|item| root_lists(item, "second.txt"))
+            && second.iter().any(|item| {
+                item["git"]["status"]["files"]
+                    .as_array()
+                    .is_some_and(|files| files.iter().any(|file| file["path"] == "second.txt"))
+            })
     })
     .await;
 
@@ -205,7 +211,7 @@ async fn project_source_changes_keep_secondary_and_plain_roots_distinct() {
     );
     let file_item = second_items
         .iter()
-        .find(|item| names_path(item, "second.txt"))
+        .find(|item| root_lists(item, "second.txt"))
         .unwrap();
     assert!(root_lists(file_item, "second.txt"), "{file_item:?}");
     assert!(!root_lists(file_item, "plain.txt"), "{file_item:?}");
@@ -222,7 +228,7 @@ async fn project_source_changes_keep_secondary_and_plain_roots_distinct() {
     }
     let plain_files = plain_items
         .iter()
-        .find(|item| names_path(item, "plain.txt"))
+        .find(|item| root_lists(item, "plain.txt"))
         .unwrap();
     assert!(root_lists(plain_files, "plain.txt"), "{plain_files:?}");
 

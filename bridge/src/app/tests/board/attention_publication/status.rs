@@ -76,25 +76,36 @@ fn status_snapshot_attention_publishes_only_its_known_owner_and_preserves_clocks
     }
 }
 
-#[test]
-fn failed_status_owner_save_restores_working_roster_and_published_thread_admission() {
+#[tokio::test]
+async fn failed_status_owner_save_restores_working_roster_and_published_thread_admission() {
     let fixture = Fixture::new();
-    let mut app = fixture.state.lock().unwrap();
-    app.initialize_read_context();
+    let (reads, pool, roster, saved) = {
+        let app = fixture.state.lock().unwrap();
+        app.initialize_read_context();
+        let store = app.store.as_ref().unwrap();
+        (
+            app.read_service(),
+            store.read_pool(),
+            app.runs[&fixture.owner].agents.clone(),
+            store.load_all_runs().unwrap(),
+        )
+    };
     let params = json!({"entity_id":fixture.owner,"agent_id":fixture.agents[0],"conversation_id":fixture.agents[0]});
-    let before = app
-        .read_service()
-        .call(req("thread.page", params.clone()), None);
+    let before = reads.call(
+        req("thread.page", params.clone()),
+        Some(pool.acquire().await),
+    );
     assert_eq!(before["ok"], true, "{before}");
-    let roster = app.runs[&fixture.owner].agents.clone();
-    let saved = app.store.as_ref().unwrap().load_all_runs().unwrap();
-    let snapshot = SessionStatusSnapshot::new(AgentStatus::Working);
-    app.store.as_ref().unwrap().fail_next_write();
-    app.record_agent_status_snapshot(&fixture.owner, &fixture.agents[0], &snapshot);
-    assert_eq!(app.runs[&fixture.owner].agents, roster);
-    assert_eq!(app.store.as_ref().unwrap().load_all_runs().unwrap(), saved);
+    {
+        let mut app = fixture.state.lock().unwrap();
+        let snapshot = SessionStatusSnapshot::new(AgentStatus::Working);
+        app.store.as_ref().unwrap().fail_next_write();
+        app.record_agent_status_snapshot(&fixture.owner, &fixture.agents[0], &snapshot);
+        assert_eq!(app.runs[&fixture.owner].agents, roster);
+        assert_eq!(app.store.as_ref().unwrap().load_all_runs().unwrap(), saved);
+    }
     assert_eq!(
-        app.read_service().call(req("thread.page", params), None),
+        reads.call(req("thread.page", params), Some(pool.acquire().await)),
         before
     );
 }

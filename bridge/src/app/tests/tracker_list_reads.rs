@@ -210,13 +210,18 @@ async fn workspace_reads_publish_reopened_task_identity_availability() {
         std::fs::write(&manifest, serde_json::to_vec(&saved).unwrap()).unwrap();
         state.workspaces.reload().unwrap();
         state.initialize_read_context();
+        // Fixture setup changes the registry directly after RPCs initialized
+        // admission; publish the finished baseline before exercising refresh.
+        state.publish_read_metadata();
         let before = published_task(&state, &task).await;
         assert_eq!(before["identities"][&agent]["available"], false);
 
-        let refreshed = state.handle(req(
-            method,
-            json!({"project_id":project,"workspace_id":workspace.id}),
-        ));
+        let params = if method == "workspace.get" {
+            json!({"workspace_id":workspace.id})
+        } else {
+            json!({"project_id":project})
+        };
+        let refreshed = state.handle(req(method, params));
         assert_eq!(refreshed["ok"], true, "{refreshed}");
         assert_eq!(
             state.workspaces.get(&workspace.id).unwrap().status,

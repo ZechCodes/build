@@ -1190,6 +1190,17 @@ fn old_actor_falls_back_to_stored_agent_without_live_roster() {
             .unwrap()
             .load_tracker_task(&id)
             .unwrap()
+            .unwrap(),
+        old,
+        "reading a legacy actor leaves its durable task unchanged"
+    );
+    state.migrate_task_read_fields().unwrap();
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_task(&id)
+            .unwrap()
             .unwrap()
             .identities[&agent_id]
             .name

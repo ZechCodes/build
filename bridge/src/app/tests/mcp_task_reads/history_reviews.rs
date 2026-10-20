@@ -2,6 +2,7 @@
 use super::*;
 
 mod fallback;
+mod review_admission;
 
 struct PausedRead {
     gate: Option<OffLockGateHandle>,

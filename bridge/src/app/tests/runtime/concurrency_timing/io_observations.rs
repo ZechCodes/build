@@ -10,6 +10,7 @@ struct IoSample {
     requests: Vec<(&'static str, Value)>,
     pending: std::collections::BTreeMap<u64, &'static str>,
     setup: Vec<Value>,
+    worker_starts: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl IoSample {
@@ -31,6 +32,7 @@ impl IoSample {
         };
         benchmark::setup_mark(&mut setup, "extra_fixture_seed", &mut start);
         let handler = AppState::handler(Arc::clone(&sample.state));
+        let worker_starts = handler.observation_worker_starts();
         benchmark::setup_mark(&mut setup, "production_handler", &mut start);
         let transport = crate::transport::generate_transport_keypair();
         sample.intake = FrameIntake::with_pool(handler, transport.clone(), 128, 1);
@@ -50,6 +52,7 @@ impl IoSample {
         ));
         benchmark::setup_mark(&mut setup, "session_open", &mut start);
         Self {
+            worker_starts,
             setup,
             sample,
             requests,

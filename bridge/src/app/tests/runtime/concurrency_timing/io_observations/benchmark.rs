@@ -81,7 +81,8 @@ impl Capture {
             "scenario":scenario,"first_fixture_in_process":fixture == 1,
             "first_carrier_rpc_method":if scenario == "git_worker" {"git.stage"} else {order[0]},
             "first_observation_method":order[0],"actual_request_order":order,
-            "threads_after":thread_count(),"phases":sample.setup}));
+            "threads_after":thread_count(),"phases":sample.setup,
+            "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire)}));
         self.previous_stats
             .insert(fixture, sample.sample.clock.stats());
         sample
@@ -95,6 +96,7 @@ impl Capture {
         population: &str,
         batch: usize,
     ) {
+        let workers_before = sample.worker_starts.load(Ordering::Acquire);
         let holder = gate(sample, scenario).await;
         let mut pending = BTreeMap::new();
         for (position, (method, params)) in sample.requests.clone().into_iter().enumerate() {
@@ -114,11 +116,18 @@ impl Capture {
             self.answers(sample, &mut pending, replies).await;
         }
         assert!(pending.is_empty(), "all observation replies checked");
+        let workers_after_client_replies = sample.worker_starts.load(Ordering::Acquire);
         if let Some(holder) = holder {
             holder.join().unwrap();
         }
         self.capture_queue_deltas(sample, fixture, scenario == "git_worker")
             .await;
+        self.records.push(json!({"kind":"observation_workers","fixture":fixture,
+            "scenario":scenario,"population":population,"batch":batch,
+            "before_batch":workers_before,"after_client_replies":workers_after_client_replies,
+            "after_bookkeeping":sample.worker_starts.load(Ordering::Acquire),
+            "at_ns":Instant::now().duration_since(self.origin).as_nanos(),
+            "semantics":"actual successful dedicated I/O thread starts; client reply may precede execution completion; no quiescence forced"}));
     }
 
     async fn capture_queue_deltas(&mut self, sample: &IoSample, fixture: usize, writer: bool) {
@@ -285,6 +294,7 @@ async fn paired_observation_benchmark() {
     capture.records.push(json!({"kind":"configuration","unix_ns":unix_ns,
         "samples":samples,"warmups":warmups,"cold_batches":cold,"trace":trace,
         "requested_first_method":first_method,"requested_scenario":selected_scenario,
+        "observation_worker_starts_available":true,
         "scenarios":scenarios,"actual_request_order":null,
         "process_semantics":"cold batches reset app/handler/intake fixtures within one test process; they are not OS-process restarts. Only fixture1 carries this process's first encrypted carrier data RPC. Seed helpers invoke app logic before the carrier data RPC.",
         "cold_semantics":"actual_request_order[0] is the first encrypted observation RPC per fresh fixture; it is also the first carrier data RPC except git_worker, where gated git.stage precedes it. Other observations are first-use positions. Setup identifies the first fixture in the process; handler/intake reset is distinct from process restart.",
@@ -314,7 +324,8 @@ async fn paired_observation_benchmark() {
                 .await;
         }
         capture.records.push(json!({"kind":"frame_clock","scenario":scenario,
-            "fixture":fixture,"includes":"last cold + warmup + measured","stats":sample.sample.clock.stats()}));
+            "fixture":fixture,"includes":"last cold + warmup + measured","stats":sample.sample.clock.stats(),
+            "observation_worker_starts":sample.worker_starts.load(Ordering::Acquire)}));
     }
     capture
         .records

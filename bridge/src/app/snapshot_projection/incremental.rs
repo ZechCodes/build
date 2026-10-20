@@ -2,55 +2,62 @@
 use super::*;
 use crate::app::read_view::SharedJson;
 
-#[derive(Clone, Default)]
-pub(in crate::app) struct GlobalProjection {
-    fragments: BTreeMap<String, SharedJson>,
-}
+mod cache;
+mod layout;
+mod refresh;
+mod rows;
 
-impl GlobalProjection {
-    pub(in crate::app) fn patch_shared(
-        &self,
-        patch: &mut impl FnMut(&SharedJson) -> SharedJson,
-    ) -> Self {
-        Self {
-            fragments: self.fragments.iter().map(|(key, row)| (key.clone(), patch(row))).collect(),
-        }
-    }
-}
+pub(in crate::app) use cache::GlobalProjection;
 
 impl AppState {
     pub(in crate::app) fn prepare_incremental_owner_snapshot(
         &self,
-        _delta: SnapshotDelta,
-        _previous: &ReadView,
-        _owners: &BTreeSet<String>,
-    ) -> Option<SnapshotDelta> { None }
+        delta: SnapshotDelta,
+        previous: &ReadView,
+        requested: &BTreeSet<String>,
+    ) -> Option<SnapshotDelta> {
+        let (cache, owners) = previous.global.as_ref()?.refresh(self, requested)?;
+        let mut delta = cache.publish(self, delta, previous);
+        // The owner publisher already refreshes requested detail rows. Other
+        // clock, alias and shared-root dependents need the same incidental
+        // refresh that a full metadata publication would have supplied.
+        for owner in owners.difference(requested) {
+            delta = self.prepare_workspace_snapshot_details(delta, previous, Some(owner));
+        }
+        let facts = self.push_facts_incremental_snapshot(cache.lists(), &owners);
+        Some(delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache)))
+    }
 
     pub(in crate::app) fn prepare_incremental_task_snapshot(
         &self,
-        _delta: SnapshotDelta,
-        _previous: &ReadView,
-    ) -> Option<SnapshotDelta> { None }
+        delta: SnapshotDelta,
+        previous: &ReadView,
+    ) -> Option<SnapshotDelta> {
+        self.prepare_incremental_owner_snapshot(delta, previous, &BTreeSet::new())
+    }
 
     pub(in crate::app) fn prepare_full_global_snapshot(
         &self,
-        mut delta: SnapshotDelta,
+        delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
         let board = self.board_snapshot();
         let projects = self.snapshot_project_list();
-        let workspaces = self.workspace_list_snapshot(&json!({})).unwrap_or_else(|error| {
-            eprintln!("workspace snapshot: {error}");
-            previous.get_owned("workspace.list", "").expect("workspace observations warmed before publication")
-        });
-        let mut lists = json!({"projects": projects["projects"], "usage_limits": board["usage_limits"]});
-        lists["workspaces"] = snapshot_push_workspace_rows(&workspaces["workspaces"], &board["workspace_summaries"]);
-        delta = put_changed(delta, previous, "board.list", "", board);
-        delta = put_changed(delta, previous, "project.list", "", projects);
-        delta = self.prepare_workspace_lists(delta, previous, &workspaces);
-        delta = put_changed(delta, previous, "workspace.list", "", workspaces);
-        delta = put_changed(delta, previous, "settings.get", "", self.settings_get_observed(self.snapshot_account_availability()));
-        delta = put_changed(delta, previous, "models.list", "", self.models_list_snapshot());
-        delta.set_facts(Arc::new(self.push_facts_snapshot(lists)))
+        let (workspaces, reusable) = match self.workspace_list_snapshot(&json!({})) {
+            Ok(value) => (value, true),
+            Err(error) => {
+                eprintln!("workspace snapshot: {error}");
+                (
+                    previous
+                        .get_owned("workspace.list", "")
+                        .expect("workspace observations warmed before publication"),
+                    false,
+                )
+            }
+        };
+        let cache = GlobalProjection::seed(self, board, projects, workspaces, reusable);
+        let delta = cache.publish(self, delta, previous);
+        let facts = self.push_facts_shared_snapshot(cache.lists());
+        delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache))
     }
 }

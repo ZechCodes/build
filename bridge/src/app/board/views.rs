@@ -516,7 +516,7 @@ impl AppState {
         rows
     }
 
-    fn cached_workspace_summaries_json(&self) -> Vec<Value> {
+    pub(in crate::app) fn cached_workspace_summaries_json(&self) -> Vec<Value> {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.board_workspace_summaries");
         let workspaces = self.workspaces.list(None);

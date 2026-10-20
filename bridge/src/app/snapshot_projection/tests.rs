@@ -1,4 +1,5 @@
 use super::*;
+use std::path::Path;
 
 fn fixture(root: &Path) -> AppState {
     let context =

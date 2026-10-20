@@ -65,10 +65,17 @@ function conversationOf(project, rows, rosterOf) {
 const uniqueConversations = (agents = []) => [...new Map(agents.map((agent) =>
   [agent.conversation_id || agent.id, agent])).values()];
 
+/** An empty modern session is authoritative: legacy activity can fall back
+ * to creation time. Older rows instead carry their own activity timestamp. */
+function conversationHasHistory(row) {
+  if (row?.session_started_ms === null && row?.last_activity_ms === null) return false;
+  return conversationTimes(row).lastActivityMs !== null;
+}
+
 /** Keep Git and pending facts beside the project's cached activity count. */
 function conversationFacts(row, agents, hasRoster, roster) {
   const runningCount = roster?.running_count ?? runningAgentCount(agents);
-  const facts = entryFactsText(row) || (runningCount ? "" : GETTING_STARTED);
+  const facts = entryFactsText(row) || (runningCount || conversationHasHistory(row) ? "" : GETTING_STARTED);
   return hasRoster ? [facts, `${runningCount} running`].filter(Boolean).join(" · ") : facts;
 }
 

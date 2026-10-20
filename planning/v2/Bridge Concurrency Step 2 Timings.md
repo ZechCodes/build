@@ -252,6 +252,176 @@ These are directly measured isolated means, calculated as each phase sum divided
 | thread.activity | 0.0173 | 0.0545 | 0.0268 | 1.5289 | 0.0212 | 1.8920 |
 | thread.operation | 0.0160 | 0.0746 | 0.0253 | 1.2636 | 0.0172 | 1.4717 |
 
-For the three history verbs, these observations place checkout, worker handoff, setup and finish individually at roughly 0.013–0.075 ms on average, while the query closure averages 1.264–2.945 ms. That measures where the new lane spends time in this capture: it does not establish that a pool wait or the extra thread hop caused the earlier isolated regression. The earlier sample lacks these probes, so its exact additional cost cannot be retrospectively assigned. Independent query-count/decoded-row regression tests investigate repeated agent-roster reads and unnecessary conversation-summary restoration; their deterministic work counts, followed by a capture with the same probes, can assess that refinement without subtracting percentiles. The complete unbounded 501-task query in this preliminary run measured 20 µs checkout and 346,142 µs transaction; it remains a single synthetic sizing sample.
+For the three history verbs, these observations place checkout, worker handoff, setup and finish individually at roughly 0.013–0.075 ms on average, while the query closure averages 1.264–2.945 ms. That measures where the new lane spends time in this capture: it does not establish that a pool wait or the extra thread hop caused the earlier isolated regression. The earlier sample lacks these probes, so its exact additional cost cannot be retrospectively assigned. Three query-count/decoded-row regression tests confirmed repeated agent-roster reads and unnecessary conversation-summary restoration: all three failed before the fix (exit **101**, `/tmp/build-685-thread-read-work-red.log`). Commit `1e2c04fd4ced4f8d27d2254b51faca386b60622e` reuses the loaded roster for self-bound and same-owner aliases (two roster reads to one) and limits required metadata queries to two for page, one for activity and zero for operation. The focused thread-read filter passed 15 tests (exit **0**, `/tmp/build-685-thread-read-work-green.log`), and the Store readonly filter passed five (exit **0**, `/tmp/build-685-thread-readonly-green.log`). These deterministic work reductions are confirmed independently of the same-probe timing comparison below. The complete unbounded 501-task query in this preliminary run measured 20 µs checkout and 346,142 µs transaction; it remains a single synthetic sizing sample.
 
 There is also a source-level difference that remains after redundant queries are removed. In the legacy source, `conversations/read.rs::thread_page_at` uses `thread.wire_value_page` when the requested page is resident, and `activity_span` uses `thread.activity_between` when its range is resident. This fixture writes all eight messages and 64 activity rows into the same AppState before reading, so these small legacy reads use that resident history. With a Store present, `conversations/sql_read/pages.rs` instead reads the requested page or activity range from SQLite in the request transaction, alongside durable binding and required metadata. Legacy `thread.operation` resolves the binding from AppState and loads its receipt from Store; the new path also resolves its binding from the transaction. This is a code-derived reason to expect additional uncontended query work in exchange for independence from the app lock. It is not a measured numerical attribution of the earlier 1–2 ms percentile differences; the direct probes measure the new lane's actual phase costs separately.
+
+## Final paired legacy/optimized capture
+
+This fresh pair ran sequentially after the full bridge and SPA gates finished, with no other agent test/build workload active. The task worktree was clean before and after, and both revision checks equal `1e2c04fd4ced4f8d27d2254b51faca386b60622e`. No source or report changed during capture. Cargo reused distinct previously built test binaries: `build_bridge-b8e2b95bec2209d0` for the legacy archive and `build_bridge-ac9b11f48af68cec` for the optimized source. No bridge executable or live daemon was run.
+
+Legacy production source is still `502cfa9d3087ce72511ca0b26370c3436480b419`, with only the six-verb test overlay from `4e2ee700a1afa4ca6571f9c825eb88ac203b7274`. The overlay was checked byte-for-byte against that commit before recapture; its SHA-256 is `0ab69140ad61a472afa00b305288b436392a51d38fcc82832fe7e63e9c1ee659`. The archive intentionally emits `git_revision: "unknown"`; source provenance is recorded separately and no emitted fields were edited. The optimized records all identify `1e2c04fd4ced4f8d27d2254b51faca386b60622e`. Both sides use Rust 1.98.1 and crate 0.2.12. The optimized fixture has the test-only observers described above; the legacy fixture has no independent SQL lane or diagnostic probes.
+
+Commands, run from the task repository root:
+
+```sh
+BUILD_CONCURRENCY_BASELINE_DIR=/tmp/build-685-paired.LnKyAj/before CARGO_TARGET_DIR="$PWD/bridge/target" nice -n 10 cargo test --manifest-path /tmp/build-685-before-source.i4UwKX/bridge/Cargo.toml --lib concurrency_timing -- --nocapture --test-threads=1
+BUILD_CONCURRENCY_BASELINE_DIR=/tmp/build-685-paired.LnKyAj/after nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib concurrency_timing -- --nocapture --test-threads=1
+nice -n 10 cargo test --manifest-path bridge/Cargo.toml --lib readonly_unbounded_task_list_reports_checkout_and_transaction_duration -- --nocapture --test-threads=1
+```
+
+Actual exit codes: legacy capture **0** (seven tests), optimized capture **0** (eight tests), separate partial Store batch **0** (one test). Raw root: `/tmp/build-685-paired.LnKyAj/`. Its `before/` and `after/` directories each contain `capture.log`, `capture.exit`, `bridge-concurrency-baseline.jsonl` and `bridge-concurrency-baseline.md`; `after/` also contains `store-batch.log` and `store-batch.exit`. `source.json`, `revision.before`, `revision.after`, `worktree.before` and `worktree.after` preserve the provenance checks. Both JSON files include the existing total and queue/wait/hold fields. The optimized JSON also includes all six direct SQL phases, and its Markdown artifact includes total and diagnostic summaries.
+
+### Total latency beside queue latency
+
+All values are milliseconds; each verb has eight computations per scenario. Total means carrier intake to handler completion, including queueing, not client-observed round-trip latency. Queue ends when the handler starts and includes intake, admission, scheduling and checkout. In this fresh pair, **isolated total p95 remains higher for all six verbs**, including page 3.645→6.237 ms, activity 1.461→2.030 ms and operation 1.078→1.620 ms. The refinement did not eliminate that regression.
+
+The contention result remains substantial: app-held total p95 is 171.140–176.207 ms before and 10.769–18.412 ms after; Git-held total p95 is 220.253–235.465 ms before and 6.378–14.681 ms after. In both optimized held scenarios, all 48 SQL replies were collected before the app/Git gate was released, after at least 75 ms. The Git reply was collected separately after release.
+
+| Scenario | Verb | Total p50 before | Total p50 after | Queue p95 before | Total p95 before | Queue p95 after | Total p95 after |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| isolated | tasks.list | 9.708 | 9.954 | 0.585 | 9.708 | 1.083 | 9.954 |
+| isolated | tasks.get | 2.394 | 2.500 | 0.559 | 2.394 | 0.576 | 2.834 |
+| isolated | tasks.waiting_on.blocks | 1.518 | 1.710 | 0.510 | 1.518 | 0.658 | 1.710 |
+| isolated | thread.page | 3.645 | 5.000 | 0.482 | 3.645 | 0.512 | 6.237 |
+| isolated | thread.activity | 1.000 | 2.030 | 0.878 | 1.461 | 0.589 | 2.030 |
+| isolated | thread.operation | 1.000 | 1.620 | 0.740 | 1.078 | 0.557 | 1.620 |
+| app_held_write | tasks.list | 171.140 | 18.412 | 162.993 | 171.140 | 10.775 | 18.412 |
+| app_held_write | tasks.get | 172.566 | 12.418 | 167.063 | 172.566 | 9.931 | 12.418 |
+| app_held_write | tasks.waiting_on.blocks | 173.404 | 10.890 | 172.884 | 173.404 | 9.835 | 10.890 |
+| app_held_write | thread.page | 175.855 | 13.855 | 173.356 | 175.855 | 9.721 | 13.855 |
+| app_held_write | thread.activity | 175.584 | 12.073 | 173.619 | 175.584 | 10.291 | 12.073 |
+| app_held_write | thread.operation | 176.207 | 10.000 | 175.949 | 176.207 | 10.048 | 10.769 |
+| off_lock_git_worker | tasks.list | 200.000 | 14.681 | 210.041 | 220.253 | 3.530 | 14.681 |
+| off_lock_git_worker | tasks.get | 200.000 | 5.000 | 222.933 | 224.661 | 4.286 | 6.942 |
+| off_lock_git_worker | tasks.waiting_on.blocks | 200.000 | 5.000 | 225.236 | 225.914 | 4.596 | 6.819 |
+| off_lock_git_worker | thread.page | 200.000 | 10.000 | 225.991 | 229.432 | 4.148 | 10.113 |
+| off_lock_git_worker | thread.activity | 200.000 | 5.000 | 234.140 | 234.640 | 3.919 | 9.812 |
+| off_lock_git_worker | thread.operation | 200.000 | 5.000 | 235.156 | 235.465 | 4.514 | 6.378 |
+
+### Checkout and query tuning inputs
+
+All values are milliseconds. These are the direct optimized observations, with nearest-rank p50/p95, not the bridge histogram's bucket estimates. Count eight means eight measured computations. Checkout covers the assigned connection acquisition; time waiting earlier for a SQL worker remains part of queue time. Query includes the complete production transaction closure. Both are independently measured rather than derived from total or app-lock percentiles.
+
+| Scenario | Verb | Phase | Count | Sum | p50 | p95 | Maximum |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| isolated | tasks.list | checkout | 8 | 0.099107 | 0.010359 | 0.020679 | 0.020679 |
+| isolated | tasks.list | query | 8 | 42.433775 | 4.653427 | 8.544554 | 8.544554 |
+| isolated | tasks.get | checkout | 8 | 0.091351 | 0.010730 | 0.013536 | 0.013536 |
+| isolated | tasks.get | query | 8 | 10.665884 | 1.295289 | 1.801967 | 1.801967 |
+| isolated | tasks.waiting_on.blocks | checkout | 8 | 0.093367 | 0.010119 | 0.021922 | 0.021922 |
+| isolated | tasks.waiting_on.blocks | query | 8 | 6.105373 | 0.701046 | 0.961768 | 0.961768 |
+| isolated | thread.page | checkout | 8 | 0.082406 | 0.009859 | 0.012123 | 0.012123 |
+| isolated | thread.page | query | 8 | 21.178801 | 2.510887 | 3.710936 | 3.710936 |
+| isolated | thread.activity | checkout | 8 | 0.104329 | 0.011983 | 0.019767 | 0.019767 |
+| isolated | thread.activity | query | 8 | 7.283408 | 0.924237 | 1.012785 | 1.012785 |
+| isolated | thread.operation | checkout | 8 | 0.089991 | 0.010881 | 0.013035 | 0.013035 |
+| isolated | thread.operation | query | 8 | 4.300280 | 0.490066 | 0.740680 | 0.740680 |
+| app_held_write | tasks.list | checkout | 8 | 0.056026 | 0.005490 | 0.015239 | 0.015239 |
+| app_held_write | tasks.list | query | 8 | 63.213403 | 6.937225 | 12.919636 | 12.919636 |
+| app_held_write | tasks.get | checkout | 8 | 0.069310 | 0.006081 | 0.017403 | 0.017403 |
+| app_held_write | tasks.get | query | 8 | 31.274461 | 1.536255 | 11.684702 | 11.684702 |
+| app_held_write | tasks.waiting_on.blocks | checkout | 8 | 0.050635 | 0.005059 | 0.017743 | 0.017743 |
+| app_held_write | tasks.waiting_on.blocks | query | 8 | 15.989890 | 0.839056 | 10.210655 | 10.210655 |
+| app_held_write | thread.page | checkout | 8 | 0.037100 | 0.004618 | 0.008556 | 0.008556 |
+| app_held_write | thread.page | query | 8 | 27.622676 | 2.584296 | 9.540618 | 9.540618 |
+| app_held_write | thread.activity | checkout | 8 | 0.037541 | 0.004369 | 0.006222 | 0.006222 |
+| app_held_write | thread.activity | query | 8 | 17.654077 | 0.910622 | 11.404812 | 11.404812 |
+| app_held_write | thread.operation | checkout | 8 | 0.045237 | 0.004028 | 0.013225 | 0.013225 |
+| app_held_write | thread.operation | query | 8 | 13.976295 | 0.571581 | 10.042507 | 10.042507 |
+| off_lock_git_worker | tasks.list | checkout | 8 | 0.059249 | 0.006833 | 0.010149 | 0.010149 |
+| off_lock_git_worker | tasks.list | query | 8 | 58.654053 | 6.882242 | 10.397007 | 10.397007 |
+| off_lock_git_worker | tasks.get | checkout | 8 | 0.074681 | 0.008757 | 0.012434 | 0.012434 |
+| off_lock_git_worker | tasks.get | query | 8 | 18.125780 | 1.738888 | 6.297707 | 6.297707 |
+| off_lock_git_worker | tasks.waiting_on.blocks | checkout | 8 | 0.094978 | 0.011812 | 0.019286 | 0.019286 |
+| off_lock_git_worker | tasks.waiting_on.blocks | query | 8 | 12.219541 | 0.858984 | 6.140629 | 6.140629 |
+| off_lock_git_worker | thread.page | checkout | 8 | 0.079991 | 0.009708 | 0.017433 | 0.017433 |
+| off_lock_git_worker | thread.page | query | 8 | 27.655966 | 1.928897 | 8.045731 | 8.045731 |
+| off_lock_git_worker | thread.activity | checkout | 8 | 0.083259 | 0.007154 | 0.018485 | 0.018485 |
+| off_lock_git_worker | thread.activity | query | 8 | 15.330366 | 0.925630 | 9.085598 | 9.085598 |
+| off_lock_git_worker | thread.operation | checkout | 8 | 0.063518 | 0.008355 | 0.011722 | 0.011722 |
+| off_lock_git_worker | thread.operation | query | 8 | 8.662979 | 0.380680 | 5.689917 | 5.689917 |
+
+### Direct phase attribution and remaining cost
+
+The following isolated means are each phase's own sum divided by eight; no percentile differences are used. Pre-refinement query means come from `/tmp/build-685-sql-preopt.31xNzX`, using the same probes and seed data. Remaining columns are from the final optimized capture. Service includes the transaction phases, validation and connection return; it is not additive to query/setup/finish.
+
+| Verb | Query mean pre-refinement | Query mean optimized | Checkout mean optimized | Handoff mean optimized | Setup mean optimized | Finish mean optimized | Service mean optimized |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tasks.list | 5.181078 | 5.304222 | 0.012388 | 0.052015 | 0.024361 | 0.023213 | 5.962798 |
+| tasks.get | 1.305054 | 1.333236 | 0.011419 | 0.057443 | 0.017532 | 0.012857 | 1.618247 |
+| tasks.waiting_on.blocks | 0.684600 | 0.763172 | 0.011671 | 0.068125 | 0.018514 | 0.015451 | 0.914291 |
+| thread.page | 2.944793 | 2.647350 | 0.010301 | 0.044904 | 0.013086 | 0.017680 | 3.936951 |
+| thread.activity | 1.528937 | 0.910426 | 0.013041 | 0.055260 | 0.024413 | 0.019458 | 1.270316 |
+| thread.operation | 1.263588 | 0.537535 | 0.011249 | 0.049019 | 0.019915 | 0.015275 | 0.724513 |
+
+Direct history-query means fell after the deterministic work reduction: page 2.944793→2.647350 ms, activity 1.528937→0.910426 ms, operation 1.263588→0.537535 ms. The optimized history checkout/handoff/setup/finish means individually range from about 0.010 to 0.055 ms. These observed boundaries therefore place most measured service time in query/projection work and the remaining service work, not in pool checkout or the extra worker hop. Result validation and other service work outside the transaction were not separately split, and legacy resident-history work was not probed. The remaining page total regression is reported, not claimed to be completely attributed or removed. The code-derived resident-memory versus durable-transaction distinction above explains why additional query work is expected; it does not assign an exact portion of a percentile change.
+
+These are still small single captures, not repeated population estimates. The task-query means vary slightly while the refinement targets history reads, illustrating run-to-run variability. Eight reads at a time on eight SQL workers normally find a connection available; these short checkout observations do not measure a deliberately exhausted pool or establish an optimal worker count. The separate admission tests cover saturation behavior. Keep eight as the initial engineering size, supported by these tuning inputs, rather than claiming that this experiment selected eight as best.
+
+### Full unbounded query sizing in the final capture
+
+The complete production 501-task `TaskReadContext::tasks_list` transaction measured **14 µs checkout and 266,832 µs transaction (266.832 ms)**, with no wire limit and no next cursor. It includes scope validation, all row projections and per-task review/dependency/blocks/delivery reads. Normalization, post-query fence/result checking and transport remain outside this transaction duration. The JSON sizing record is in `after/capture.log`.
+
+The separately measured **partial Store batch** took **51 µs checkout and 110,316 µs transaction (110.316 ms)**, recorded in `after/store-batch.log`. It covers only tasks, timeline batches and waiting-on summaries. It is not the complete list query or a full RPC latency. Both fixtures returned 501 tasks and verified no writer changes. As with the original sizing run, these simple unassigned tasks do not represent every production relationship or cache state.
+
+### Complete final queue/app-lock comparison
+
+Every row has count eight before and after. Each duration cell is **sum / p50 / p95 / maximum**, in milliseconds, directly from the existing clock. App-lock wait/hold sums and percentiles becoming zero mean those reads no longer acquire that lock; read/query work continues in the independent SQL lane and is measured above.
+
+| Scenario | Verb | Phase | Count before/after | Before ms: sum / p50 / p95 / max | After ms: sum / p50 / p95 / max |
+| --- | --- | --- | ---: | --- | --- |
+| isolated | tasks.list | queued | 8 / 8 | 3.526 / 0.500 / 0.585 / 0.585 | 4.339 / 0.500 / 1.083 / 1.083 |
+| isolated | tasks.list | lock_wait | 8 / 8 | 0.001 / 0.001 / 0.001 / 0.001 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | tasks.list | held | 8 / 8 | 48.482 / 8.858 / 8.858 / 8.858 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | tasks.get | queued | 8 / 8 | 3.490 / 0.500 / 0.559 / 0.559 | 3.832 / 0.500 / 0.576 / 0.576 |
+| isolated | tasks.get | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | tasks.get | held | 8 / 8 | 13.548 / 1.919 / 1.919 / 1.919 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | tasks.waiting_on.blocks | queued | 8 / 8 | 3.519 / 0.500 / 0.510 / 0.510 | 3.933 / 0.500 / 0.658 / 0.658 |
+| isolated | tasks.waiting_on.blocks | lock_wait | 8 / 8 | 0.002 / 0.002 / 0.002 / 0.002 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | tasks.waiting_on.blocks | held | 8 / 8 | 5.914 / 0.937 / 0.937 / 0.937 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | thread.page | queued | 8 / 8 | 3.424 / 0.482 / 0.482 / 0.482 | 3.729 / 0.500 / 0.512 / 0.512 |
+| isolated | thread.page | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | thread.page | held | 8 / 8 | 13.175 / 2.500 / 2.549 / 2.549 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | thread.activity | queued | 8 / 8 | 4.690 / 0.878 / 0.878 / 0.878 | 4.422 / 0.589 / 0.589 / 0.589 |
+| isolated | thread.activity | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | thread.activity | held | 8 / 8 | 2.707 / 0.467 / 0.467 / 0.467 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | thread.operation | queued | 8 / 8 | 4.291 / 0.740 / 0.740 / 0.740 | 4.130 / 0.557 / 0.557 / 0.557 |
+| isolated | thread.operation | lock_wait | 8 / 8 | 0.001 / 0.001 / 0.001 / 0.001 | 0.000 / 0.000 / 0.000 / 0.000 |
+| isolated | thread.operation | held | 8 / 8 | 2.318 / 0.403 / 0.403 / 0.403 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | tasks.list | queued | 8 / 8 | 885.052 / 162.993 / 162.993 / 162.993 | 54.480 / 10.000 / 10.775 / 10.775 |
+| app_held_write | tasks.list | lock_wait | 8 / 8 | 91.109 / 0.100 / 91.109 / 91.109 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | tasks.list | held | 8 / 8 | 46.999 / 8.446 / 8.446 / 8.446 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | tasks.get | queued | 8 / 8 | 898.892 / 167.063 / 167.063 / 167.063 | 50.892 / 9.931 / 9.931 / 9.931 |
+| app_held_write | tasks.get | lock_wait | 8 / 8 | 121.841 / 5.000 / 93.174 / 93.174 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | tasks.get | held | 8 / 8 | 13.055 / 2.037 / 2.037 / 2.037 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | tasks.waiting_on.blocks | queued | 8 / 8 | 1034.954 / 172.884 / 172.884 / 172.884 | 60.101 / 9.835 / 9.835 / 9.835 |
+| app_held_write | tasks.waiting_on.blocks | lock_wait | 8 / 8 | 0.928 / 0.100 / 0.470 / 0.470 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | tasks.waiting_on.blocks | held | 8 / 8 | 5.658 / 1.000 / 1.033 / 1.033 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | thread.page | queued | 8 / 8 | 1038.438 / 173.356 / 173.356 / 173.356 | 59.090 / 9.721 / 9.721 / 9.721 |
+| app_held_write | thread.page | lock_wait | 8 / 8 | 1.493 / 0.100 / 0.666 / 0.666 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | thread.page | held | 8 / 8 | 12.171 / 2.064 / 2.064 / 2.064 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | thread.activity | queued | 8 / 8 | 1039.693 / 173.619 / 173.619 / 173.619 | 61.134 / 10.000 / 10.291 / 10.291 |
+| app_held_write | thread.activity | lock_wait | 8 / 8 | 9.812 / 1.799 / 1.799 / 1.799 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | thread.activity | held | 8 / 8 | 2.684 / 0.500 / 0.515 / 0.515 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | thread.operation | queued | 8 / 8 | 1056.443 / 175.949 / 175.949 / 175.949 | 59.939 / 10.000 / 10.048 / 10.048 |
+| app_held_write | thread.operation | lock_wait | 8 / 8 | 0.001 / 0.001 / 0.001 / 0.001 | 0.000 / 0.000 / 0.000 / 0.000 |
+| app_held_write | thread.operation | held | 8 / 8 | 2.266 / 0.363 / 0.363 / 0.363 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | tasks.list | queued | 8 / 8 | 1150.125 / 200.000 / 210.041 / 210.041 | 18.155 / 2.500 / 3.530 / 3.530 |
+| off_lock_git_worker | tasks.list | lock_wait | 8 / 8 | 0.001 / 0.001 / 0.001 / 0.001 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | tasks.list | held | 8 / 8 | 50.001 / 9.816 / 9.816 / 9.816 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | tasks.get | queued | 8 / 8 | 1214.797 / 200.000 / 222.933 / 222.933 | 18.829 / 2.500 / 4.286 / 4.286 |
+| off_lock_git_worker | tasks.get | lock_wait | 8 / 8 | 0.004 / 0.002 / 0.002 / 0.002 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | tasks.get | held | 8 / 8 | 13.799 / 2.013 / 2.013 / 2.013 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | tasks.waiting_on.blocks | queued | 8 / 8 | 1233.493 / 200.000 / 225.236 / 225.236 | 21.260 / 2.500 / 4.596 / 4.596 |
+| off_lock_git_worker | tasks.waiting_on.blocks | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | tasks.waiting_on.blocks | held | 8 / 8 | 5.301 / 0.712 / 0.712 / 0.712 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | thread.page | queued | 8 / 8 | 1239.525 / 200.000 / 225.991 / 225.991 | 19.008 / 2.500 / 4.148 / 4.148 |
+| off_lock_git_worker | thread.page | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | thread.page | held | 8 / 8 | 13.236 / 2.500 / 2.646 / 2.646 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | thread.activity | queued | 8 / 8 | 1283.241 / 200.000 / 234.140 / 234.140 | 20.633 / 3.919 / 3.919 / 3.919 |
+| off_lock_git_worker | thread.activity | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | thread.activity | held | 8 / 8 | 2.600 / 0.399 / 0.399 / 0.399 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | thread.operation | queued | 8 / 8 | 1288.730 / 200.000 / 235.156 / 235.156 | 21.546 / 2.500 / 4.514 / 4.514 |
+| off_lock_git_worker | thread.operation | lock_wait | 8 / 8 | 0.000 / 0.000 / 0.000 / 0.000 | 0.000 / 0.000 / 0.000 / 0.000 |
+| off_lock_git_worker | thread.operation | held | 8 / 8 | 2.286 / 0.313 / 0.313 / 0.313 | 0.000 / 0.000 / 0.000 / 0.000 |

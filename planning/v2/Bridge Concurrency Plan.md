@@ -1,23 +1,29 @@
 # Bridge Concurrency Plan
 
-Task #681 — revision 3, 2026-10-19. **Planning only.** Source baseline:
+Task #681 — revision 4, amended by #710, 2026-10-20. **Planning only.**
+Amendment baseline: `82b5ce0c47b3016fb237cd0a2db5376384d019c2`, wire 3.23.0.
+Steps 1–3 are on main; #694 is finishing step 4 and #709 is reducing write-path
+hold time. Their completion is not claimed here. Original inventory/timing baseline:
 `8257cba8bc737b622978ccda3c20e43b7feb9222`; incorporates reviews #682/#683. Paths below start at
 `bridge/src/` unless stated otherwise; app-area paths start at `bridge/src/app/`. New modules/functions
 are marked proposed. The [architecture amendment](../../ARCHITECTURE.md#app-state-and-its-lock) distinguishes this design from current behavior.
 
-Ship the read speed-up before splitting all writers. The sequence is:
+The [Write Acknowledgement Protocol](<Write Acknowledgement Protocol.md>)
+defines durable write ack/confirmation, bridge epochs, MCP outcomes, cache
+reconciliation and three explicit product decisions. **Ack means UI success;
+confirmation means canonical application and publication.** It supersedes
+the original plan's use of “ack” for a completed write. Reads never wait for
+an accepted command to finish. The amended sequence is:
 
 | Step | Shippable result |
 | --- | --- |
-| 1 | Minimal per-verb queue wait, app-lock wait and hold comparison. |
-| 2 | Independent SQL reads, bounded admission and SPA sender credits; snapshot/control intake bypass. |
-| 3 | Board/project/workspace/agent snapshots; failed saves cannot contaminate them or pushes. |
-| 4 | Remaining filesystem/Git reads use independent I/O execution. |
-| 5 | Global finisher maintenance becomes owner-scoped background work; all writers enter the compatibility gate. |
-| 6 | One SQL writer worker and common device/project/workspace writes without app-held SQL. |
-| 7 | Lifecycle, filesystem, Git, config and review write families migrate. |
-| 8 | Session/MCP and remaining autonomous writers leave the legacy gate. |
-| 9 | Remove compatibility paths and verify the complete contract. |
+| 1–3 (shipped) | Comparable timings, independent SQL reads, immutable snapshots and safe publication. |
+| 4 (#694) | Independent observation I/O; complete read dispatch avoids app-lock admission/apply/drain too. |
+| 5a (#709), then 5b | Cut write hold time first; remove global finisher maintenance, then establish universal compatibility ownership. Do not make 5a wait for the journal. |
+| 6a, then 6b | One short SQL writer boundary and durable command/epoch foundation, then ack/confirm on `mcp.control` hot writes, internal `agent.deliver`, `thread.post`, `entity.seen`, `user.present`, `tasks.comment` and `tasks.update`; persistent SPA overlays and recovery ship together. |
+| 7 | Extend ack/confirm and granular ownership to remaining task/conversation, lifecycle, filesystem, Git, config and review writes. |
+| 8 | Complete session/autonomous ownership, MCP action/report coverage and remaining bounded-read/cache contracts. |
+| 9 | Remove compatibility paths; prove the ≤100 ms read gate, fast durable acks and recovery contract. |
 
 ## 1. Contract and measurement
 
@@ -25,17 +31,22 @@ SQLite reads never acquire an app/domain/writer lock or share write/Git workers.
 load an immutable value without a reader lock. **Neither read kind returns `busy` for capacity.**
 SQL readers may wait for their own read connection, never the app lock or writer; storage/CPU still cost time.
 Independent workspace writes overlap except for short SQLite commits or a shared physical Git
-repository. A read issued after a successful write reply sees that write; an in-flight write may
-still yield the previous committed view.
+repository. A read issued after a successful **confirmation** sees that write
+or a later revision. After durable **ack**, canonical reads may still see the
+previous committed view; the originating client's effective cache retains
+its accepted overlay. Read-after-ack never waits behind execution.
 
-Today `carrier.rs::FrameIntake::accept` feeds a per-wire admitter (1,024), then
+At the original pre-step-1 baseline, `carrier.rs::FrameIntake::accept` fed a per-wire admitter (1,024), then
 `carrier/dispatch.rs::Dispatcher` (two queues of 256, eight workers, at most two background).
 `run_handler` uses `spawn_blocking`; a deferred Git job frees the app mutex but keeps its dispatch
 worker. Terminal lanes, immediate signaling, MCP and services are separate paths.
 `app/rpc.rs::routed` takes `Mutex<AppState>`; `api/v1/mod.rs::Handler::call` receives `&mut AppState`.
 `Store` clones share one `Arc<Mutex<Connection>>`; WAL is enabled, but reads and writes
 serialize on that connection. `runtime/off_the_workers.rs` protects Tokio workers; it does not
-remove either serialization point.
+remove either serialization point. Steps 1–3 have since separated six SQL
+reads, nine intake snapshots and stats; current behavior is in
+`ARCHITECTURE.md`. The table below records original measurement gaps,
+not a claim that those shipped changes are missing.
 
 | Evidence | What it establishes / what is missing |
 | --- | --- |
@@ -108,7 +119,8 @@ generations, and apply multi-owner changes together. No read refreshes caches, w
 Store or canonicalizes a filesystem path. Do not clone entire histories.
 
 Before a family moves, every producer of its canonical fields must publish successful changes
-before acknowledgement. Today `finish_plan_mutation` and `finish_run_mutation` save, then install
+before confirmation (the legacy completed-write reply). At the original
+baseline `finish_plan_mutation` and `finish_run_mutation` save, then install
 changed objects and emit news even when persistence failed. Fix both in step 3: stage durable
 fields/attention and the candidate projection; promote them and emit change/news only after save
 success. Keep the last committed canonical fields separate from live process handles, so a failed
@@ -167,19 +179,28 @@ awaits `RidingChannel::accept`). Carrier release/opening end clears queued work/
 close signal independent of blocked polling. **Opening end conditions stay unchanged:** closing A
 after B attaches keeps B usable. Only writes retain capacity refusals.
 
-Order successful mutations **commit → publish affected canonical views → stage change events →
-final reply**. Prebuild the projection before committing; the in-process publish operation applies
+For synchronous/legacy callers, order successful mutations **commit → publish
+affected canonical views → stage change events → final reply**. For negotiated
+ack/confirm, add **validate → persist intent → durable ack** before execution;
+the completed path is **commit applied marker + canonical SQL → publish
+affected views → persist terminal outcome/outbox → confirmation**. Prebuild
+the projection before committing; the in-process publish operation applies
 an owned delta without fallible I/O. Keep that short completion job alive after client disconnect.
-Preserve operation receipts and recovery contracts without generic failed-publication rebuild,
-universal replay identity or new sagas. Durable-acceptance replies show pending records, not fictional
-completion; transport receipts are not mutation acknowledgements.
+Preserve domain receipts/recovery contracts and link them to the new mutation
+journal. A command ID is not permission to replay an ambiguous external
+effect. Restart rebuilds committed projections before advertising readiness;
+no generic live failure callback rewrites history. Durable ack resolves the
+UI action through an accepted cache overlay, not fabricated canonical
+completion. Transport receipts are not durable mutation acknowledgements.
 
-A post-ack snapshot load or fresh SQL transaction therefore sees the write without new client
-tokens. Fold only compatible queued reads; never attach a post-ack caller to an older running
+A post-confirmation snapshot load or fresh SQL transaction sees the write.
+Already in-flight responses need generation/revision fences at the cache.
+Fold only compatible queued reads; never attach a post-confirmation caller to an older running
 read. Carry `SessionSender` and opening generation explicitly across workers. Preserve terminal
 verb order and close/reopen fences; an arbitrary `term_id` must not route a SQL read through a
 terminal lane. Push facts use committed projections/readonly SQL, outside bus locks; the existing
-250 ms coalescing and wire shapes stay. Failed-save finishers emit no change/news and publish no
+250 ms coalescing and existing change payload shapes stay; the new negotiated
+epoch envelope and confirmation stream are separate. Failed-save finishers emit no change/news and publish no
 failed canonical candidate. Independently completed live retirement and best-effort user-session
 observations retain their existing semantics, with separate tests: they must never carry failed
 durable fields. Network delivery does not delay the reply.
@@ -229,7 +250,9 @@ common-dir keys.
    update. Audit aliases/cross-operation order; a global native-lock order is
    not established by the code. Test a held tracking lock leaves the SQL writer
    and WAL readers free, and retain receiver-pin/version-fence regressions.
-6. Publish, stage notifications, then release operation ownership and reply.
+6. Publish, persist/stage the terminal outcome and notifications, then release
+   operation ownership and confirm (or send the legacy final reply).
+   Admission/ack does not release an executing command's conflict reservation.
    No blocking state guard crosses `.await`; config/bus/screen/metrics internals
    are leaf services. Existing reset, source, receipt and instance fences remain.
 
@@ -244,8 +267,10 @@ Snapshot/read lanes can ship while writers still use this conservative gate.
 Each step is a release; write tests first and observe failure. Add **no complexity-ratchet entries**:
 split new functions over Clippy's cognitive-complexity cap 15, never annotate them. Check
 `bridge/tests/complexity_ratchet.rs`, Clippy and fmt under `nice -n 10`; judge actual exit status.
-Tests use temporary paths/injected services; audit wider fixtures first. No bridge executable,
-live daemon, protected homes/env, browser or install scripts.
+Tests use temporary paths/injected services; audit wider fixtures first. No
+installed bridge, live daemon, protected homes/env or install scripts.
+Ack/cache slices add isolated browser fixtures with fake transport and
+temporary profiles; they never connect to a user's bridge.
 
 ### Step 1 — Minimal comparable timings
 
@@ -278,7 +303,7 @@ canonical identity publishers after save success and live availability after act
 retain the agent-removal failure semantics above. Tests: SQL reads finish with app lock/write
 workers/WAL writer held; two readers overlap and a ninth waits for its own pool without refusal.
 Pin readonly enforcement, fresh transactions, zero read-path writes, cursor/backfill parity,
-owner/alias/reset isolation, bounded history and post-ack visibility across connections; admission tests follow.
+owner/alias/reset isolation, bounded history and post-confirmation visibility across connections; admission tests follow.
 
 SPA: change `spa/src/core/sessionRpc.js::{createSessionRpc,call,takeEnvelope,createDeadline,
 readFrom,rideOn,close}` for carrier-tagged, exactly-once credit release; proposed `sqlReadCredits.js`
@@ -334,7 +359,20 @@ immutable context; extract resolver adoption/maintenance. Tests: gated filesyste
 occupy snapshot/SQL execution; path fences, bounded reads, review versions, existing
 deadlines/errors and RYOW hold.
 
-### Step 5 — Finisher maintenance and universal writer gating
+The complete read path must bypass `rpc.rs::dispatch_frame`'s app-held update
+admission, both `routed` lock acquisitions and `DeliveryRunner::drain`.
+Moving only the external job leaves these waits intact. Include `run.diff`
+and `task.stage_diff` aliases. Independent I/O is isolation, not evidence
+that cold Git/remote work completes in 100 ms; §7 closes that gap.
+
+### Step 5 — Write hold time first, then universal writer gating
+
+**5a ships #709's measured hold-time reduction immediately.** Remove repeated
+whole-roster/history/projection work and filesystem probes from finishers,
+using owner-local staged deltas and short publication. Capture before/after
+`mcp.control`, internal `agent.deliver`, `thread.post`, attention/presence and
+tracker-write counts, queue/app wait/hold and full reply duration. Do not
+claim the later ack protocol as the fix for a still multi-second lock hold.
 
 Remove `reap_orphaned_terminals` from `finish_plan_mutation`/`finish_run_mutation`. In
 `runtime/terminals.rs::{reap_orphaned_terminals,spawn_terminal_reaper}` and
@@ -342,7 +380,7 @@ Remove `reap_orphaned_terminals` from `finish_plan_mutation`/`finish_run_mutatio
 cleanup commands, checking owner/tab generation before effect. Move scan/probes outside state
 guards; never mutate B's session/board while finishing A. Notification/attention work belonging to
 other owners similarly becomes declared follow-up work. Keep required A-local publication before
-A's reply; unrelated cleanup is asynchronous. Add proposed
+A's reply; unrelated cleanup is asynchronous. **5b** then adds proposed
 `app/scopes.rs::{reserve_all,legacy_exclusive}`. Gate RPC, MCP, pumps/delivery/reclaim/source-sync
 and **PR sync/idle** before mutation; the concrete autonomous inventory is below. Their full
 legacy operation (not just AppState callback) holds the compatibility reservation until
@@ -350,12 +388,35 @@ publication. Tests: A finishes while B's checkout vanishes and B changes concurr
 waits/rechecks and cannot retire its replacement. Legacy background Store mutation conflicts with
 scoped work; migrated reads remain independent.
 
-### Step 6 — Common scoped writes and SQLite writer boundary
+Wire: **no bump or capability**, unchanged contract. Rollback a producer
+extraction only with committed-snapshot/failed-save tests still passing;
+never put migrated read execution back behind the app mutex. Universal
+writer gating remains a prerequisite to narrowing writer families.
+
+### Step 6 — Hot write ack/confirm and SQLite writer boundary
 
 Add proposed `store/writer.rs::StoreWriter` and `app/mutations.rs` owned command completion.
 Convert `store.rs::{connection,in_transaction,in_waiting_on_transaction}` and
 `store/{tracker,conversations,operations,waiting_on,delivery_intents,user_session,push_keys}.rs`
-incrementally through the same writer connection, never a second writer. Split owners out of
+incrementally through the same writer connection, never a second writer.
+**6a** adds the protocol's `store/mutations.rs`, schema migration, durable
+admission/owner ordering, status/outbox recovery and boot epoch. Journal
+admission bypasses application compatibility ownership; it records intent
+without mutating domain state. Execution still takes the appropriate
+reservation. Remove long SQL transactions/rewrite work before claiming fast
+journal admission. Preserve native review transaction fences.
+
+**6b** enables the hottest writes first and ships the SPA/MCP consumer
+simultaneously. `mcp.control` is a mixed local control-plane label:
+classify `BridgeAction`/`DoneReport`, route reads independently, and enable
+tracker comment/update, post/report/topic/name and agent-message writes first.
+`agent.deliver` is internal; retain stable child delivery IDs for
+`MessageAgent`/`MessageWorkspaceAgent` and existing transcript/assignment
+receipts. Public `thread.post`, `entity.seen`, `user.present`, `tasks.comment`
+and `tasks.update` get durable ack, then canonical confirmation. Enable an
+individual method only after its whole producer/recovery closure is tested.
+
+Split owners out of
 `app.rs::AppState`; change the transaction finishers,
 `tracker/mod.rs::{commit_task_write,publish_task_write,tasks_create,tasks_update,tasks_comment}`,
 tracking/waiting-on writes, `conversations/post.rs::thread_post`, conversation choice/watch
@@ -365,9 +426,31 @@ activity through its small service without a long device lock. Tests: sibling wo
 projects reach work barriers together; same-owner writes serialize; project deletion fences only
 its descendants; reverse-order multi-scope acquisition cannot deadlock; no app guard waits for
 SQL; failure leaves committed projections unchanged; disconnect after commit still publishes;
-receipts/preconditions and all affected post-ack reads hold.
+receipts/preconditions and all affected post-confirmation reads hold.
+Additional tests: ack before a held executor, no ack on journal failure,
+same-ID retry before/after restart, stable nested message IDs, per-owner MCP
+ordering, old-generation refusal, partial failure, lost/reordered confirms,
+reload before/after ack and cached paint throughout epoch changes. MCP reads
+must not wait for a write permit or app mutex.
 
-### Step 7 — Lifecycle and external writes, one patch per row
+Wire: proposed **3.24.0**, `bridge.epoch`, `writes.ackConfirm`, `writes.status`,
+`writes.subscribe`, exact `ack_confirm_methods` and MCP action allowlists.
+Add request metadata, typed ack/confirmation fixtures and all-push epoch
+stamping. Existing callers retain final replies unless they opt in. Rollback:
+remove methods from *new admission* allowlists, keep status/recovery/outbox
+and cache reconciliation alive for accepted commands; no downgrade to a
+schema-unaware binary. See protocol §7 for tests and version allocation.
+
+### Step 7 — Remaining semantic writes, one patch per family
+
+First finish common task/conversation/config setters from step 6's old
+scope (create/assign/watch/read marks/dependencies, roster/settings and
+notification keys); then the external families below. Each row in §5's
+policy inventory must have durable admission, an accepted cache projection,
+an applied-result validator and a crash recovery policy before activation.
+Short writes still obey ack/confirm; “already fast” does not mean bypass
+the journal. Retain acceptance-only meanings for service jobs such as size
+measurement; expose their job IDs and later domain progress separately.
 
 Make deferred outcome/reservation state request-owned in
 `runtime/deferred.rs::{dispatch_deferring,defer_job,reserve_row,release_row}`; remove
@@ -381,7 +464,16 @@ existing operation-specific rollback and §3's order.
 | `projects/requests.rs::project_*`, `projects/source_update.rs::project_update_source`, `projects/deletion.rs::project_delete`, `projects/conversation.rs::project_ensure_conversation`, `projects/base_sync.rs::project_sync_source`; `config/persistence.rs::{config_value_with_project,persist_config}`, `config/settings.rs::settings_set`, `config/compaction_wire.rs::{set_project_compaction,set_workspace_compaction}` | Config serialization retains concurrent project/workspace edits; disk failure, descendant deletion, parked IDs and stale source generations. |
 | `tracker/reviews.rs::review_*` and `tracker/reviews/{opening,publication,merge,lifecycle}.rs`; `captures/mod.rs::{capture_create,capture_answer,capture_cancel,capture_reroute}` | Explicit/background review conflicts and deletion, receiver-lock order, existing capture recovery, cross-owner destinations and version guards. |
 
-### Step 8 — Session and autonomous producers
+Wire: proposed **3.25.0**, extend `ack_confirm_methods` under
+`writes.ackConfirm` (and MCP action support) as each family is qualified.
+No generic “all writes supported” flag before registry coverage passes.
+Tests add process-death interleavings around each external claim/effect,
+staged attachment retention, upload offset/hash deduplication, partial
+effects, multi-owner deletion and terminal-outbox persistence failure.
+Rollback disables only new admissions for that family; keep its accepted
+work's recovery policy and schema until drained.
+
+### Step 8 — Session/autonomous completion and bounded read coverage
 
 Migrate each following producer from the step-5 compatibility gate to explicit scopes; no producer
 may bypass the gate while only its callback is coordinated.
@@ -394,6 +486,24 @@ may bypass the gate while only its callback is coordinated.
 | `runtime/terminals.rs::session_hello/term_*`, `runtime/agents/endpoints.rs::{agent_attach,agent_start,agent_interrupt}`, `app/mcp.rs::{Turn,answer_off_the_workers,apply_off_the_socket}`, session registry/reaper | Session owner plus canonical target owner; preserve terminal ordering and opening fences, move process spawning off state guards. Test close/reopen, MCP read isolation, no late attachment and one-worker runtime progress. |
 | `app/{updates,watchers,streams}.rs`, `api/v1/changes.rs::{with_session,changes_subscribe,changes_unsubscribe}`, `runtime/off_the_workers.rs::off_the_workers` | Explicit device/session/service ownership and source sets; tests cover subscriber teardown, service callbacks, source movement and liveness/push runtimes under held state locks. |
 
+Autonomous producers need scope/publication discipline but no invented
+client ack. Work induced by a journaled command retains its identity.
+Complete the MCP read/action/report manifest and session-bound policies from
+protocol §§3/6. The explicit real-time/bootstrap exception decision must be
+settled before session activation; no silent carveout. Finish §7's eight
+omitted legacy/snapshot reads and negotiated bounded, cached observation
+readers. Pull independent read fixes into earlier releases; do not wait
+for every external write to migrate.
+
+Wire: proposed **3.26.0**, extend write/MCP allowlists, add `reads.bounded`
+with an exact per-method support list for new paged/cached observation
+contracts. Epochs are already in 3.24.0; no new mechanism per carrier.
+Tests cover terminal order/load, ended openings, stale process handles,
+all MCP tools/reports, cold/large read values and old/new paging behavior.
+Rollback new bounded readers via negotiation while retaining legacy shapes;
+retain operation status/recovery for all accepted writes. Legacy unbounded
+paths are not certified ≤100 ms merely because the new mode is disabled.
+
 ### Step 9 — Remove compatibility and accept
 
 Remove remaining request/fact/service access to `Mutex<AppState>` and legacy Store guards from
@@ -402,9 +512,20 @@ slots only when no callers remain. Update `ARCHITECTURE.md` and older concurrenc
 shipped boundary. Tests: exact verb coverage, readonly contexts cannot acquire write services;
 repeat step-1 before/after samples plus bounded pool-wait/query checks; held writer/app/Git work
 cannot prevent snapshot/SQL reads; no capacity-refused reads; scoped parallelism/order,
-reset/delete/failure races and every affected post-ack view. Check WAL/memory growth under paged
+reset/delete/failure races and every affected post-confirmation view.
+**The quantitative ≤100 ms gate in §7 is required**, alongside hot durable-ack
+p99 ≤100 ms under the same mixed load. Show acceptance latency separately
+from execution/confirmation latency. Audit all 157 baseline RPCs, new verbs
+and every MCP action/report for one policy; no hidden read-side mutation.
+Check WAL/memory growth under paged
 load and preserve wire/cache rendering contracts. Run audited tests, ratchet, Clippy/fmt, Semgrep
 and Gitleaks.
+
+Wire: **no bump for internal removal**. If universal bounded reads require
+removing legacy full-result shapes, that is a separate **4.0.0** migration
+with a version gate, not a hidden 3.x change. Rollback keeps compatible
+readers, schemas and journal workers; restore a tested internal execution
+path only, never synchronous legacy replay of accepted IDs.
 
 ## 5. Verb inventory and known AppState effects
 
@@ -412,7 +533,10 @@ Registered inventory: **138 v1 names**, plus **16 legacy and 3 QA names**. M = i
 SQL read, W = write (including hidden maintenance), I/O = filesystem/Git/CLI observation. Mixed
 reads are named explicitly. Scopes are proposed ownership, not current locks. The table merges
 handler locations and known direct/helper fields; helpers with no direct field access inherit
-their effects from the named implementation, not an extra empty row. A group is a conservative
+their effects from the named implementation, not an extra empty row. The
+original table's “now” describes the pre-step-1 baseline, not today's shipped
+SQL/snapshot routing; use `api/effects.rs` and `ARCHITECTURE.md` for current
+behavior. The policy table below uses the amendment baseline. A group is a conservative
 field set, not proof every member is written by that verb. Unresolved transitive closures stay
 behind the compatibility gate.
 
@@ -500,7 +624,7 @@ behind the compatibility gate.
 | `term.list` | M + scope I/O/possible maintenance now; target M | none after extraction | `runtime/terminals.rs::{term_list,shell_tabs_for}` reads `session_registry`; `terminals/scope.rs::resolve_terminal_scope` traverses `projects`, `runs`, `workspaces` and external checkout/cache resolution. The same legacy-adoption/cache caveat applies as for file scope reads. |
 | `term.create` | W | project source or workspace; device terminal-cap reservation | `runtime/terminals.rs::term_create`: `project_deletion_in_progress`, scope fields above, `source_moves`/source guards, `reclaim_reserved`, `session_registry`, `term_shell`, `changes`; RPC success also touches `board`, `user_session`, `store`. It currently spawns shell/PTY under the app guard. Move spawning to reserve/work/apply without losing the cap or deletion recheck. |
 | `term.attach` | W | session + resolved project/workspace terminal | `runtime/terminals.rs::term_attach`: `session_registry`, source/owner scope validation; cloned terminal handle attaches/resizes its screen off app lock. Screen subscription is the mutation even when the registry itself is only read. |
-| `term.input`, `term.resize`, `term.ack` | W | addressed terminal/session within project or workspace | Same-named functions in `runtime/terminals.rs` resolve through `session_registry` and owner indices, then write PTY/resize/screen cursor off lock. These are not database writes and must not acquire the SQLite writer for bookkeeping. Preserve ordered lanes and detached-session behavior. |
+| `term.input`, `term.resize`, `term.ack` | W | addressed terminal/session within project or workspace | Same-named functions in `runtime/terminals.rs` resolve through `session_registry` and owner indices, then write PTY/resize/screen cursor off lock. The original plan excluded SQL bookkeeping. Protocol §3 describes the new literal all-writes journal and §8 requests an explicit real-time exception; until decided, do not silently omit these from coverage. Preserve ordered lanes and detached-session behavior. |
 | `term.close` | W | addressed project/workspace terminal | `runtime/terminals.rs::term_close` resolves `session_registry`/scope then `retire_tab`; registry, screen close/change effects and retirement. Agent tabs are refused. Exact retirement helper transitive field closure is an implementation audit gate. |
 | `agent.attach` | W | canonical project/workspace agent + client session | `runtime/agents/endpoints.rs::agent_attach`: resolves `plans`, `runs`, project/workspace binding and thread guard; `session_registry` may allocate a waiting screen, then attaches screen clients. Never classify this as a read because its result is a snapshot. |
 | `agent.start` | W | canonical project/workspace conversation | `runtime/agents/endpoints.rs::agent_start`: `plans`, addressed `runs`/owners/choices; `delivery_queue`, `board`, then `DeliveryRunner::drain`; RPC adds `user_session`/`store`/`changes`. Delivery's remaining fields are in R and require full closure audit before narrow admission. |
@@ -508,6 +632,54 @@ behind the compatibility gate.
 | `stream.start` | W, QA-only | device QA stream, then per stream | `app/streams.rs::stream_start` increments `next_stream`, inserts `streams`, background `append_event` mutates that stream. Reads `qa_agent` at dispatch. |
 | `stream.events`, `stream.state` | M, QA-only | none | Same-named `app/streams.rs` methods read `streams`, gated by `qa_agent`; `&mut self` signature alone does not make them writers. |
 | close frame (not a method) | W | ending session/device service ownership | `app/rpc.rs::dispatch_frame` → `runtime/terminals.rs::drop_session`: `uploads`, `peers`, `session_registry` screen detach; subscription maps for updates/models/harnesses, `changes`, `watchers`, FrameClock client registry. `FrameHandler::on_session_end` separately drops ended uploads. Preserve opening generation and ordering. |
+
+### #710 write acknowledgement policy (exhaustive)
+
+The first column below contains each of `api/effects.rs::WRITE_METHODS`'s
+**107 baseline names exactly once**. “Ack early” separates durable intent
+from potentially slow application. “Already fast” means a bounded/service
+operation can normally apply and publish at admission, then ack and confirm
+back-to-back; it is a design classification, **not measured latency evidence**.
+Both use the negotiated protocol, durability and failure policy. Old clients
+retain final replies. Session/terminal rows remain subject to protocol §8's
+explicit exception decision.
+
+| Write verbs | Policy | Acceptance/result and recovery boundary |
+| --- | --- | --- |
+| `thread.post`, `run.message`, `run.request_changes` | ack early | Save normalized message/IDs and existing delivery receipt; confirm transcript publication, not completion of the agent's turn. |
+| `tasks.comment`, `tasks.update`, `entity.seen`, `user.present` | ack early | Hot path first; save bounded intent/accepted projection, then canonical SQL and affected attention/session projections. |
+| `tasks.create`, `tasks.assign` | ack early | Reserve task/assignment/child operation IDs; preserve durable delivery authority and generations. |
+| `tasks.close`, `tasks.reopen`, `tasks.watch`, `tasks.unwatch`, `tasks.read_through`, `tasks.waiting_on.add`, `tasks.waiting_on.remove` | ack early | Apply transactional tracker change; separate induced delivery/notice work with stable identities. |
+| `entity.mute`, `entity.dismiss`, `conversation.watch`, `conversation.unwatch`, `conversation.settings` | ack early | Accepted attention/config overlay; confirm only after save/publication. |
+| `agent.add`, `agent.choose`, `agent.remove`, `agent.start`, `agent.interrupt`, `conversation.reset` | ack early | Reserve exact agent/session/generation; retain retirement/reset/interrupt fences and ambiguous-effect policy. |
+| `thread.attach`, `tasks.attach` | ack early | Ack only after durable bounded blob staging and descriptor allocation; no success based solely on a temporary source path. |
+| `project.create`, `project.delete`, `project.ensure_conversation`, `project.init_git`, `project.set_remote`, `project.add_source`, `project.remove_source`, `project.set_isolation`, `project.update_source` | ack early | Durable target/source set; external work and shared config publish under explicit scopes. |
+| `settings.set`, `project.set_compaction`, `workspace.set_compaction` | ack early | Validate and save intent, then atomically replace/reconcile config and publish canonical settings. |
+| `workspace.create`, `workspace.retry`, `workspace.ensure_conversation`, `workspace.init_git`, `workspace.add_directory`, `workspace.remove_directory`, `workspace.rename`, `workspace.set_locked`, `workspace.finish`, `workspace.delete`, `workspace.reclaim` | ack early | Stable workspace/source IDs and staged lifecycle; replay only proven unapplied steps. |
+| `branch.dispatch`, `branch.finish`, `run.abandon`, `run.adopt`, `run.git_action` | ack early | Persist complete owner/ref set and child IDs; preserve existing cleanup/review contracts. |
+| `git.stage`, `git.discard`, `git.commit`, `git.fetch`, `git.pull`, `git.push`, `git.stash`, `git.stash_pop`, `git.merge_abort`, `git.checkout_ref` | ack early | Expected refs/path identities, claim before effect, verb-specific reconciliation of uncertain outcomes. |
+| `fs.mkdir`, `fs.write`, `fs.createDirectory`, `fs.createFile`, `fs.uploadBegin`, `fs.uploadChunk`, `fs.uploadFinish`, `fs.uploadAbort` | ack early | Durable blob/offset/hash and exact owner opening; no stale-handle or changed-destination replay. |
+| `tasks.review.open`, `tasks.review.push`, `tasks.review.update`, `tasks.review.merge`, `tasks.review.close`, `tasks.review.reopen`, `tasks.review.refresh`, `tasks.review.snapshot`, `tasks.review.act`, `tasks.review.complete` | ack early | Preserve version/journal/native-ref locks and publication fences; reconcile partial external effects. |
+| `capture.create`, `capture.answer`, `capture.cancel`, `capture.reroute` | ack early | Save capture/router command and stable downstream identities; later routing is domain work. |
+| `term.create`, `term.close`, `term.input` | ack early | Exact terminal instance, durable claim, stream order; ambiguous PTY effects are never automatically repeated. |
+| `push.registerKey`, `push.revokeKey` | already fast | Bounded transactional key change and saved outcome; no unrelated finisher work. |
+| `project.sync_source`, `workspace.measure_sizes`, `harnesses.refresh`, `bridge.check_update`, `bridge.install_update` | already fast | Confirm durable service-job admission with job ID; later scan/download/install is separate observable domain state. |
+| `session.hello`, `changes.subscribe`, `changes.unsubscribe`, `term.attach`, `agent.attach`, `term.resize`, `term.ack`, `stream.start` | already fast | Session-bound result, exact opening/epoch, no restoration of ended handles; bootstrap hello remains synchronous. Screen/process work must still be measured. |
+
+Other §5 writes have explicit dispositions too:
+
+| Entry | Policy | Boundary |
+| --- | --- | --- |
+| `rtc.offer`, `rtc.ice`, `rtc.close` | already fast | Control/signaling service; bootstrap precedes capability negotiation. Keep existing synchronous final reply and epoch metadata. The proposed real-time exception needs explicit approval before claiming universal durable coverage. |
+| close frame | already fast | Transport teardown, not a retried RPC; fence/drain its accepted commands and terminate session-scoped unapplied ones. |
+| `mcp.control` write actions and coding/router reports | ack early | Classify nested `BridgeAction`/`DoneReport`, not the outer label. All semantic writes use journaled identity/owner order; reads bypass the write queue. Post/topic/name/report and agent messages ship with hot tracker writes in step 6, remaining actions in steps 7/8. |
+| internal `agent.deliver` | ack early | Link accepted message/assignment IDs to existing provider receipt; do not claim provider success at admission or duplicate a claimed delivery. |
+
+New protocol verbs also need effect entries and fixtures: `writes.status`
+and paged `writes.result` are SQL reads; `writes.subscribe` is a session write with the already-fast
+policy. New bounded-observation support must register each new method/action
+before capability announcement. A set-equality test against the registry and
+exhaustive MCP enum matches prevent omissions as main changes.
 
 ## 6. Top risks and remaining unknowns
 
@@ -519,3 +691,124 @@ behind the compatibility gate.
 3. **Contention moves:** pools, writer, config, publication and credits can queue. Workload/SQL
    share and sizing remain unmeasured; compare waits without hiding reads as refusals. PR fences
    may delay writes, never WAL reads.
+4. **Durable acceptance is a new contract:** generic retries must not duplicate
+   provider, Git, filesystem or PTY effects. Retain command tombstones, stable
+   child identities and per-verb recovery; failures may be partial/unknown.
+5. **Product decisions:** protocol §8 requests Zech's decision on real-time
+   control exceptions, the exact ≤100 ms service envelope and process-crash
+   versus power-loss durability. The recommendations are explicit; this
+   planning commit does not approve exceptions or claim measured compliance.
+
+## 7. ≤100 ms reads: remaining gaps and acceptance gate
+
+Steps 4/5 remove contention sources, not the cost of fresh arbitrary I/O.
+The amendment baseline contains no measured post-step-4/5 p99 result.
+Independent reads can still exceed 100 ms for these concrete reasons:
+
+| Read surface / evidence | What remains after isolation | Work required |
+| --- | --- | --- |
+| All remaining `app/rpc.rs::routed` reads; `runtime/delivery/runner.rs::DeliveryRunner::drain` | App-held admission/apply and unrelated delivery work can still delay a nominal read | Captured read services bypass the entire routed write lifecycle; pure read completion never invokes delivery or finishers. |
+| `capture.get`, `task.stages`, `tasks.columns`, `thread.revision`, `stream.events`, `stream.state` | Classified snapshot reads but absent from `INTAKE_SNAPSHOT_METHODS` | Publish immutable projections; incremental QA stream checksum, bounded stream pages, no per-read stage/comment rescans. |
+| `task.get`, `term.list`; `archived.list` already in step 4 | Optional SQL history, filesystem scope resolution and legacy registry scans | Capture admitted identities; independent SQL for history; published terminal scopes/archive records. No resolver adoption on read. |
+| Six SQL reads, especially `tasks.list/get`, plus `writes.status` | Read-pool checkout, transaction/projection cost and `read_pool.rs`'s five-second SQLite busy timeout; unlimited `tasks.list` default | Index/query-plan audit, bounded timeline/summary projection, short transactions and fair read-only workers. Introduce negotiated list/detail paging; keep old full-result semantics until explicitly retired. Bound/rework SQLite contention rather than masking it as `busy` or an empty result. |
+| `tasks.review.get/diff`, `tasks.attachment` | Existing `tracker_task`/review loading can use the writer Store before independent I/O | One readonly transaction for identity/revision; immutable source/reservation context; separate bounded blob/Git observations. A cloned Store is still the writer connection. |
+| `fs.list/tree/read`, `task.doc/stage_doc`, `thread.attachment` and task attachments | Whole-directory sorting, whole-document reads, legacy 32 MiB media and up-to-5 MiB attachment encoding | Paged directory indexes and body chunks, bounded decoding/encoding, no app/path locks. Benchmark valid maximum pages and malformed inputs; retain no-follow/root/source fences. |
+| Git/status/log/show/diff/refs/unpushed/changeset/worktree/run/stage reads; workspace Git-init options | Cold repository work, full diffs and source probes are not constant time | Versioned cached observations, immutable revision-bound body pages, background producers and explicit refresh commands. Keep canonical common-dir/source-generation fences. |
+| `github.repos` (`github.rs::GH_DEADLINE`, 20 s) | External CLI/network result cannot promise 100 ms freshness | Cached authorized repository pages and explicit refresh-job state; retain timeout/error evidence for refresh, not on the read path. |
+| Nine already-published reads, including full `workspace.get` history | JSON clone, result validation, serialization/encryption can dominate even an atomic root load | Cache typed bounded chunks/encoded stable pieces where safe; negotiated history/list paging. Measure full answer, not root-load time. |
+| MCP read actions in `mcp.rs` and `app/mcp.rs` | `ControlPlane::Turn`, authentication and action routing still take write permits/app locks | Capture immutable authenticated principal/thread-generation context and route reads to SQL/snapshot/I/O lanes before write permits; preserve all owner authorization. Ship this with step 6. |
+
+### Bounded/cached observation contract
+
+Under `reads.bounded`, a per-method support list negotiates bounded pages:
+initial limits of 100 list/directory entries and 256 KiB decoded body chunks,
+plus a 512 KiB total encoded application-result ceiling (tune downward if
+maximum-valid-page measurements miss budget). Large embedded strings,
+task timelines/details, review results and batched `writes.status` outcomes
+need cursors or revision-bound result references, not just item-count caps.
+Test maximum legal field sizes, including envelope/encoding overhead. Thread
+message/activity caps remain, with encoded-size limits added where needed.
+New params are sent only to capable bridges. Legacy full-result forms stay
+available in 3.x and appear separately in timing reports; they are not
+quietly truncated, silently capped or labelled compliant.
+
+An observation read returns its latest authoritative `value`, revision,
+observed time and freshness. A cold missing observation returns explicit
+`state: "pending"` with no fabricated empty value; a failed refresh retains
+the last value plus the real observation error. Watch/subscription interest,
+startup producers or a new journaled `observations.refresh` command schedule
+work; the read itself remains pure. The refresh ack contains its job ID;
+result publication updates the cache through normal events. File/Git body
+pages bind to a stable revision and reject mixed-version assembly. Interest
+and retained body caches have bounded quotas and eviction. Before confirming
+a file/Git/review write, advance every affected observation fence: publish
+new values or mark old ones stale. A post-confirmation current-value read
+must return that revision or explicit pending, never a pre-write cached value
+presented as current. Retained stale display data cannot remove an accepted
+overlay; this applies to `fs.read/tree`, Git status/diffs and review surfaces.
+
+The SPA continues drawing the previous cached value during refresh; a cold
+surface derives its missing-content state from the cache, never connection
+status. Fresh canonical SQL/snapshot values remain the default where already
+cheap. This is a proposed freshness/API choice requiring protocol §8's
+decision, not permission to pass the read gate with “pending” placeholders:
+report cold-job completion separately, and gate ready-value reads separately
+from bounded observation-status responses.
+
+### Measurement and release gate (step 9)
+
+Define **server read latency** from carrier intake (including decryption and
+admission) to the sealed **final** reply enqueued for the carrier. Include
+queue/pool wait, SQL/I/O, projection, typed validation, serialization and
+encryption. For MCP, use complete control-frame arrival through encoded
+reply flush, including authentication/admission. Receipt/ack latency is
+never read completion. Current `FrameTimer` handler totals end before
+`SessionSender::seal`/enqueue; extend measurement at that boundary and record
+each caller, including folded callers, rather than only shared computations.
+
+Record browser/MCP caller latency separately from dispatch through completed
+response: include SPA sender-credit wait and output/network transfer. A fast
+server metric must not hide a seconds-long unsent credit queue. Report read
+checkout/query/encoding intervals to diagnose breaches; do not subtract
+percentiles. Existing eight-sample per-verb p95 evidence cannot establish p99.
+
+Required evidence:
+
+1. Pin revision, toolchain, host/CPU/storage, page sizes, fixture cardinality,
+   client count and concurrency. Use temporary file-backed WAL data and
+   encrypted fake carriers; no installed bridge or real services. Start with
+   two project fixtures: 100 and 10,000 tasks, 10 and 200 workspaces, 1,000 and
+   100,000 thread items, plus maximum-valid pages, large directories/diffs and
+   fake slow providers. This is a declared test envelope, not a production
+   frequency claim.
+2. For every supported ready-value read method and MCP equivalent, collect
+   at least 1,000 requests per scenario in three runs. Require **p99 ≤100 ms**
+   in each run/scenario, including mixed hot writes and independent Git work.
+   Report p50/p95/p99/max, sample counts, errors, cancellations and every
+   >100 ms sample. No dropping slow/failing samples; valid success workloads
+   must have no errors. Report pending-observation replies, refresh time and
+   legacy unbounded calls as distinct cohorts, never blended into fast reads.
+3. Exercise warm/cold caches, foreground/background mixes, eight concurrent
+   reads per opening across four clients, journaled writes, SQL writer
+   contention, saturated ordinary dispatch/Git workers, and bounded read
+   bursts. Measure checkout pressure; tune batching/pool/query work before
+   increasing pool size. Infinite held read connections/legacy floods are
+   overload tests, not a false 100 ms promise.
+4. Deterministic isolation tests hold app/writer/compatibility/Git barriers
+   before read admission and again before completion. All independent
+   snapshot/SQL final replies must arrive **within 100 ms and before releasing
+   the unrelated barrier**, including MCP; use a suitable pinned timing
+   runner and record actual maxima. Slow injected external providers must
+   not prevent ready cached reads. No app/domain/writer lock acquisition is
+   allowed even when it happens to finish within budget.
+5. Retain bounded memory/WAL and read-pool backpressure tests; no read capacity
+   `busy`, no app/writer fallback, no old-query folding after confirmation,
+   no stale generation publication. Reads after confirmation see applied
+   state; reads after ack retain the local accepted overlay without waiting.
+
+The proposed product decision is p99 for realistic bounded workload plus a controlled
+max for lock independence, as recommended in protocol §8. Arbitrarily stalled
+storage, unbounded response sizes, all read workers held indefinitely and WAN
+transfer cannot satisfy a universal wall-clock maximum. If that literal
+requirement remains, step 9 stays unaccepted until the API/workload scope
+changes; a 100 ms timeout or capacity error does not satisfy it.

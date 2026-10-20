@@ -7,6 +7,7 @@
 //! The fresh directory receives `bridge-concurrency-baseline.jsonl` and
 //! `bridge-concurrency-baseline.md`. Ordinary runs write only to fixture temps.
 
+mod io_observations;
 mod measurements;
 
 use self::measurements::SqlMeasurements;

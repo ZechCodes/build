@@ -10,9 +10,10 @@
 
 mod project_bridge;
 
-use project_bridge::{ids, init_repo, private_path, scratch_of, Bridge};
+use project_bridge::{ids, init_repo, private_path, scratch_of, Bridge, PATIENCE};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// The project under test: a git home and a plain folder beside it.
 struct Project {
@@ -118,7 +119,25 @@ fn a_folder_away_at_boot_comes_back(project: &Project) {
     assert_eq!(listed["projects"], json!([]), "{listed}");
     bridge.ok("settings.set", json!({ "workspace_idle_secs": 86400 }));
     std::fs::rename(&away, &project.repo).unwrap();
-    let listed = bridge.ok("project.list", json!({}));
+    // The background producer observes the returned folder; list reads use
+    // the immutable snapshot published by that producer.
+    let deadline = Instant::now() + PATIENCE;
+    let listed = loop {
+        let listed = bridge.ok("project.list", json!({}));
+        if listed["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["project_id"] == json!(project.project_id))
+        {
+            break listed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "returned project was not published: {listed}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(
         listed["projects"][0]["project_id"],
         json!(project.project_id)

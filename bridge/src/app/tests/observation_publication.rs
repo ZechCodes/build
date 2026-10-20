@@ -15,11 +15,12 @@ fn fixture() -> (tempfile::TempDir, Arc<Mutex<AppState>>, String) {
                 dir.path(),
                 &format!("publication-{index}-{run_index}"),
             );
-            let run = app.runs.get_mut(&owner).unwrap();
+            let mut run = app.take_run(&owner).unwrap();
             run.run.plan_id = Some(crate::plan::PlanId::new(&plan));
             if run_index == 1 {
                 run.run.state = RunState::Archived;
             }
+            app.finish_run_mutation(owner.clone(), run).unwrap();
             owners.push(owner);
         }
     }
@@ -91,21 +92,22 @@ fn observation_sparse_versions_merge_disjoint_keys_and_reject_old_replacements()
     let second = app.runs.keys().find(|id| **id != first).unwrap().clone();
     let initial = app.read_view.load().observations.clone().unwrap();
     let slot = ReadViewSlot::default();
-    assert!(slot.publish_delta(SnapshotDelta::new(1).set_observations(initial.clone())));
+    let base = app.read_view.next_version();
+    assert!(slot.publish_delta(SnapshotDelta::new(base).set_observations(initial.clone())));
     let mut earlier = ObservationPatch::default();
     earlier.owner(&app, &first, &initial);
     let mut later = ObservationPatch::default();
     later.owner(&app, &second, &initial);
-    assert!(slot.publish_delta(SnapshotDelta::new(3).patch_observations(later)));
-    assert!(slot.publish_delta(SnapshotDelta::new(2).patch_observations(earlier)));
-    assert!(!slot.publish_delta(SnapshotDelta::new(2).set_observations(initial)));
+    assert!(slot.publish_delta(SnapshotDelta::new(base + 2).patch_observations(later)));
+    assert!(slot.publish_delta(SnapshotDelta::new(base + 1).patch_observations(earlier)));
+    assert!(!slot.publish_delta(SnapshotDelta::new(base + 1).set_observations(initial)));
     let current = slot.load().observations.clone().unwrap();
     // Replacing a prior sparse root establishes a floor for every key,
     // including keys whose old explicit version was lower than that floor.
-    assert!(slot.publish_delta(SnapshotDelta::new(5).set_observations(current.clone())));
+    assert!(slot.publish_delta(SnapshotDelta::new(base + 4).set_observations(current.clone())));
     let mut obsolete = ObservationPatch::default();
     obsolete.owner(&app, &first, &current);
-    assert!(!slot.publish_delta(SnapshotDelta::new(4).patch_observations(obsolete)));
+    assert!(!slot.publish_delta(SnapshotDelta::new(base + 3).patch_observations(obsolete)));
 }
 
 #[test]
@@ -191,6 +193,9 @@ fn observation_rejected_owner_delta_keeps_pending_wire_and_input_retry() {
             json!({"intervening":true})
         )));
     app.runs.remove(&owner);
+    // A permanent removal also retires the committed checkpoint. Leaving it
+    // installed would correctly defer publication as a temporarily borrowed owner.
+    app.committed_entities.forget(&owner);
     app.publish_prepared_snapshot_projection(older);
     assert_eq!(
         app.read_view.load().get("agent.list", &owner),

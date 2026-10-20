@@ -722,6 +722,9 @@ impl AppState {
                 next,
                 execution_error,
             ) {
+                if self.store.is_none() {
+                    self.publish_read_operations();
+                }
                 self.note_entity_changed(&entity_id);
             }
             let status = match (next, execution_error) {

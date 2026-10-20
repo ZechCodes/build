@@ -1,3 +1,4 @@
+use crate::store::ReadTransaction;
 mod newest_activity;
 
 use super::schema::{
@@ -49,14 +50,7 @@ impl Store {
         before_sequence: Option<u64>,
         limit: usize,
     ) -> Result<Vec<ThreadItem>, StoreError> {
-        // No bound means "from the newest", which the same seek expresses as a
-        // point past every sequence there could be.
-        let before = before_sequence
-            .and_then(|sequence| i64::try_from(sequence).ok())
-            .unwrap_or(i64::MAX);
-        let connection = self.connection();
-        let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
-        read_thread_page(&mut statement, agent_id, before, limit)
+        ReadTransaction::new(&self.connection()).thread_page(agent_id, before_sequence, limit)
     }
     /// One FORWARD page of a conversation: the oldest `limit` items strictly
     /// after `after_sequence`, in the order they happened.
@@ -71,19 +65,7 @@ impl Store {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<ThreadItem>, StoreError> {
-        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
-        let connection = self.connection();
-        let mut statement = connection.prepare(THREAD_FORWARD_PAGE_SQL)?;
-        // Read in the conversation's own order, so nothing is reversed after.
-        let page = decode_thread_items(
-            agent_id,
-            statement.query_map(rusqlite::params![agent_id, after, limit as i64], |row| {
-                row.get::<_, String>(0)
-            })?,
-        );
-        drop(statement);
-        drop(connection);
-        page
+        ReadTransaction::new(&self.connection()).thread_page_after(agent_id, after_sequence, limit)
     }
     /// One page of a conversation, measured in messages: the items down to and
     /// including the `limit`-th message below `before_sequence`, cut the way
@@ -101,68 +83,11 @@ impl Store {
         before_sequence: Option<u64>,
         limit: usize,
     ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
-        let span = self.conversation_span(agent_id, before_sequence, limit)?;
-        let cut = cut_activity_runs(span, limit, |from, through| {
-            self.run_census(agent_id, from, through)
-        })?;
-        // Off the page's own oldest item, never off the floor: the cap may have
-        // omitted the oldest of a run, and a page that claimed to reach the
-        // floor it asked for would tell a client to skip what it never sent.
-        let Some(shipped_floor) = cut.items.first().map(ThreadItem::sequence) else {
-            return Ok((cut, false));
-        };
-        let has_more = self
-            .connection()
-            .query_row(
-                "SELECT 1 FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 LIMIT 1",
-                rusqlite::params![agent_id, shipped_floor as i64],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        Ok((cut, has_more))
-    }
-    /// The span a page reaches over, newest-first: the conversation between the
-    /// floor and the seek, with the newest of each run of activity between two
-    /// of its items woven back in.
-    ///
-    /// The floor is a message, so the span's oldest item ends whatever run sits
-    /// above it — which is what lets the cut count a run it can see the edges
-    /// of.
-    ///
-    /// Nothing here reads a whole run. What comes back is what the page ships
-    /// plus each run's edge rows, so the cut has the same items and the same
-    /// digests to work from as a page cut out of memory, and the rows past the
-    /// cap are never fetched at all.
-    ///
-    /// The connection is held for the reads and let go before the JSON is
-    /// parsed. Deserializing a page of items is the expensive half of this
-    /// call, and every other store call — an append, a poll, another
-    /// conversation's page — waits behind the same mutex while it runs.
-    pub(super) fn conversation_span(
-        &self,
-        agent_id: &str,
-        before_sequence: Option<u64>,
-        limit: usize,
-    ) -> Result<Vec<ThreadItem>, StoreError> {
-        let before = before_sequence
-            .and_then(|sequence| i64::try_from(sequence).ok())
-            .unwrap_or(i64::MAX);
-        // A page of nothing is not a page; the callers clamp to at least one.
-        let limit = limit.max(1);
-        let connection = self.connection();
-        let floor: i64 = connection
-            .query_row(
-                THREAD_CONVERSATION_FLOOR_SQL,
-                rusqlite::params![agent_id, before, (limit - 1) as i64],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        let raw_items = RunReader::new(&connection, agent_id, page_activity_budget(limit))?
-            .span(before, floor)?;
-        drop(connection);
-        decode_thread_item_text(agent_id, raw_items)
+        ReadTransaction::new(&self.connection()).thread_conversation_page(
+            agent_id,
+            before_sequence,
+            limit,
+        )
     }
     /// The newest activity strictly between two sequences, oldest-first and
     /// bounded by `limit` — what an opened run renders, read out of the
@@ -179,23 +104,12 @@ impl Store {
         before_sequence: u64,
         limit: usize,
     ) -> Result<Vec<ThreadItem>, StoreError> {
-        let connection = self.connection();
-        let rows = read_sequenced_rows(
-            &mut connection.prepare(THREAD_ACTIVITY_RANGE_SQL)?,
-            rusqlite::params![
-                agent_id,
-                i64::try_from(after_sequence).unwrap_or(i64::MAX),
-                i64::try_from(before_sequence).unwrap_or(i64::MAX),
-                limit as i64
-            ],
-        )?;
-        drop(connection);
-        let mut page =
-            decode_thread_item_text(agent_id, rows.into_iter().map(|(_, item)| item).collect())?;
-        // Read newest-first off the seek, handed back in the order the run
-        // happened in — the way every other page is.
-        page.reverse();
-        Ok(page)
+        ReadTransaction::new(&self.connection()).thread_activity_range(
+            agent_id,
+            after_sequence,
+            before_sequence,
+            limit,
+        )
     }
     /// The newest `limit` **messages** of a conversation, oldest-first — what
     /// a resumed agent's catch-up packet carries.
@@ -224,10 +138,7 @@ impl Store {
         Ok(page)
     }
     pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
-        let count: i64 = self
-            .connection()
-            .query_row(THREAD_ITEM_COUNT_SQL, [agent_id], |row| row.get(0))?;
-        Ok(count as u64)
+        ReadTransaction::new(&self.connection()).thread_item_count(agent_id)
     }
 
     /// Find one durable notice even when it has left the resident tail. SQL
@@ -287,19 +198,7 @@ impl Store {
         agent_id: &str,
         after_sequence: u64,
     ) -> Result<Vec<ThreadItem>, StoreError> {
-        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
-        let connection = self.connection();
-        let mut statement = connection.prepare(THREAD_CURSOR_SQL)?;
-        let mut delta = decode_thread_items(
-            agent_id,
-            statement.query_map(rusqlite::params![agent_id, after], |row| {
-                row.get::<_, String>(0)
-            })?,
-        )?;
-        // Index order is mutation order; the conversation's own order is
-        // creation order, which is what a client merges its cache against.
-        delta.sort_by_key(ThreadItem::sequence);
-        Ok(delta)
+        ReadTransaction::new(&self.connection()).thread_items_after(agent_id, after_sequence)
     }
     /// The whole of one conversation, history included — the deliberate
     /// exception to paging.
@@ -630,3 +529,154 @@ pub(super) fn count_decoded_items(count: usize) {
 /// Nothing is counted outside the tests: only they ask what a read cost.
 #[cfg(not(test))]
 pub(super) fn count_decoded_items(_count: usize) {}
+
+impl ReadTransaction<'_> {
+    pub fn thread_page(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        // No bound means "from the newest", which the same seek expresses as a
+        // point past every sequence there could be.
+        let before = before_sequence
+            .and_then(|sequence| i64::try_from(sequence).ok())
+            .unwrap_or(i64::MAX);
+        let connection = self.connection();
+        let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
+        read_thread_page(&mut statement, agent_id, before, limit)
+    }
+    pub fn thread_page_after(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
+        let connection = self.connection();
+        let mut statement = connection.prepare(THREAD_FORWARD_PAGE_SQL)?;
+        // Read in the conversation's own order, so nothing is reversed after.
+        let page = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, after, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?,
+        );
+        drop(statement);
+
+        page
+    }
+    pub fn thread_conversation_page(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
+        let span = self.conversation_span(agent_id, before_sequence, limit)?;
+        let cut = cut_activity_runs(span, limit, |from, through| {
+            self.run_census(agent_id, from, through)
+        })?;
+        // Off the page's own oldest item, never off the floor: the cap may have
+        // omitted the oldest of a run, and a page that claimed to reach the
+        // floor it asked for would tell a client to skip what it never sent.
+        let Some(shipped_floor) = cut.items.first().map(ThreadItem::sequence) else {
+            return Ok((cut, false));
+        };
+        let has_more = self
+            .connection()
+            .query_row(
+                "SELECT 1 FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 LIMIT 1",
+                rusqlite::params![agent_id, shipped_floor as i64],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok((cut, has_more))
+    }
+    /// The span a page reaches over, newest-first: the conversation between the
+    /// floor and the seek, with the newest of each run of activity between two
+    /// of its items woven back in.
+    ///
+    /// The floor is a message, so the span's oldest item ends whatever run sits
+    /// above it — which is what lets the cut count a run it can see the edges
+    /// of.
+    ///
+    /// Nothing here reads a whole run. What comes back is what the page ships
+    /// plus each run's edge rows, so the cut has the same items and the same
+    /// digests to work from as a page cut out of memory, and the rows past the
+    /// cap are never fetched at all.
+    ///
+    pub(super) fn conversation_span(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let before = before_sequence
+            .and_then(|sequence| i64::try_from(sequence).ok())
+            .unwrap_or(i64::MAX);
+        // A page of nothing is not a page; the callers clamp to at least one.
+        let limit = limit.max(1);
+        let connection = self.connection();
+        let floor: i64 = connection
+            .query_row(
+                THREAD_CONVERSATION_FLOOR_SQL,
+                rusqlite::params![agent_id, before, (limit - 1) as i64],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let raw_items = RunReader::new(connection, agent_id, page_activity_budget(limit))?
+            .span(before, floor)?;
+        decode_thread_item_text(agent_id, raw_items)
+    }
+    pub fn thread_activity_range(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+        before_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let connection = self.connection();
+        let rows = read_sequenced_rows(
+            &mut connection.prepare(THREAD_ACTIVITY_RANGE_SQL)?,
+            rusqlite::params![
+                agent_id,
+                i64::try_from(after_sequence).unwrap_or(i64::MAX),
+                i64::try_from(before_sequence).unwrap_or(i64::MAX),
+                limit as i64
+            ],
+        )?;
+        let mut page =
+            decode_thread_item_text(agent_id, rows.into_iter().map(|(_, item)| item).collect())?;
+        // Read newest-first off the seek, handed back in the order the run
+        // happened in — the way every other page is.
+        page.reverse();
+        Ok(page)
+    }
+    pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
+        let count: i64 = self
+            .connection()
+            .query_row(THREAD_ITEM_COUNT_SQL, [agent_id], |row| row.get(0))?;
+        Ok(count as u64)
+    }
+    pub fn thread_items_after(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
+        let connection = self.connection();
+        let mut statement = connection.prepare(THREAD_CURSOR_SQL)?;
+        let mut delta = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, after], |row| {
+                row.get::<_, String>(0)
+            })?,
+        )?;
+        // Index order is mutation order; the conversation's own order is
+        // creation order, which is what a client merges its cache against.
+        delta.sort_by_key(ThreadItem::sequence);
+        Ok(delta)
+    }
+}

@@ -336,9 +336,10 @@ impl WorkspaceRegistry {
         if name.is_empty() {
             return Err("workspace.rename: name cannot be empty".to_string());
         }
-        let workspace = self
+        let mut workspace = self
             .workspaces
-            .get_mut(id)
+            .get(id)
+            .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         if !workspace.managed {
             return Err(
@@ -346,8 +347,9 @@ impl WorkspaceRegistry {
             );
         }
         workspace.name = name.to_string();
-        persist(workspace)?;
-        Ok(workspace.clone())
+        persist(&workspace)?;
+        self.workspaces.insert(id.to_string(), workspace.clone());
+        Ok(workspace)
     }
 
     /// Persist the user's removal guard before publishing it in memory. Adopted
@@ -427,15 +429,16 @@ impl WorkspaceRegistry {
     }
 
     pub fn reopen(&mut self, id: &str) -> Result<(), String> {
-        let workspace = self
+        let mut workspace = self
             .workspaces
-            .get_mut(id)
+            .get(id)
+            .cloned()
             .ok_or_else(|| format!("unknown workspace_id: {id}"))?;
         if workspace.status == WorkspaceStatus::Finished {
             workspace.status = WorkspaceStatus::Ready;
             workspace.archived_at = None;
             if workspace.managed {
-                persist(workspace)?;
+                persist(&workspace)?;
             } else {
                 let sidecar = self.root.join(".legacy").join(id);
                 match fs::remove_file(sidecar) {
@@ -444,6 +447,7 @@ impl WorkspaceRegistry {
                     Err(error) => return Err(format!("reopen legacy workspace {id}: {error}")),
                 }
             }
+            self.workspaces.insert(id.to_string(), workspace);
         }
         Ok(())
     }
@@ -1348,6 +1352,46 @@ mod tests {
             is_git: false,
             base_branch: "main".to_string(),
         }
+    }
+
+    #[test]
+    fn failed_workspace_rename_keeps_the_committed_label_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources = vec![source(temp.path(), "one", "one")];
+        let mut registry = WorkspaceRegistry::load(temp.path().join("workspaces")).unwrap();
+        let workspace = registry.begin("project", "committed", &sources).unwrap();
+        let manifest = workspace.root.join(MANIFEST_FILE);
+        let backup = workspace.root.join("manifest-backup");
+        fs::rename(&manifest, &backup).unwrap();
+        fs::create_dir(&manifest).unwrap();
+
+        assert!(registry.rename(&workspace.id, "failed candidate").is_err());
+        assert_eq!(registry.get(&workspace.id).unwrap().name, "committed");
+
+        fs::remove_dir(&manifest).unwrap();
+        fs::rename(&backup, &manifest).unwrap();
+        registry.reload().unwrap();
+        assert_eq!(registry.get(&workspace.id).unwrap().name, "committed");
+    }
+
+    #[test]
+    fn failed_workspace_reopen_keeps_the_committed_status_in_memory() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources = vec![source(temp.path(), "one", "one")];
+        let mut registry = WorkspaceRegistry::load(temp.path().join("workspaces")).unwrap();
+        let workspace = registry.begin("project", "finished", &sources).unwrap();
+        let finished = registry.workspaces.get_mut(&workspace.id).unwrap();
+        finished.status = WorkspaceStatus::Finished;
+        persist(finished).unwrap();
+        let manifest = workspace.root.join(MANIFEST_FILE);
+        fs::remove_file(&manifest).unwrap();
+        fs::create_dir(&manifest).unwrap();
+
+        assert!(registry.reopen(&workspace.id).is_err());
+        assert_eq!(
+            registry.get(&workspace.id).unwrap().status,
+            WorkspaceStatus::Finished
+        );
     }
 
     #[test]

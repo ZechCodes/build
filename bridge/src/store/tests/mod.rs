@@ -21,6 +21,7 @@ mod migrations;
 mod operations;
 mod pull_requests;
 mod push_keys;
+mod readonly;
 mod reviews;
 mod support;
 mod task_rename;

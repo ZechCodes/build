@@ -9,6 +9,232 @@ use crate::tracker::{Actor, Assignee, TaskComment, TaskEvent, TaskEventKind};
 
 const TASKS: usize = 50;
 
+#[test]
+fn task_reads_derive_legacy_fields_without_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project) = super::tracker::tracked(tmp.path());
+    let created = filed(&mut state, &project, "legacy done task");
+    let id = created["id"].as_str().unwrap();
+    let moved = state.handle(req("tasks.update", json!({"task_id":id,"status":"done"})));
+    assert_eq!(moved["ok"], true, "{moved}");
+    let done_at = moved["result"]["task"]["done_at"].clone();
+    let store = state.tracker_store().unwrap().clone();
+    let mut legacy = store.load_tracker_task(id).unwrap().unwrap();
+    legacy.done_at = None;
+    store.save_tracker_task_activity(&legacy, &[], &[]).unwrap();
+    let connection = rusqlite::Connection::open(tmp.path().join("store/build.db")).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER forbid_read_backfill BEFORE UPDATE ON tracker_tasks
+         BEGIN SELECT RAISE(FAIL, 'read attempted a task write'); END;",
+        )
+        .unwrap();
+
+    for (method, params) in [
+        ("tasks.get", json!({"task_id":id})),
+        ("tasks.list", json!({"project_id":project,"limit":1})),
+        ("tasks.waiting_on.blocks", json!({"task_id":id})),
+    ] {
+        let answer = state.handle(req(method, params));
+        assert_eq!(answer["ok"], true, "{method}: {answer}");
+        if method == "tasks.get" {
+            assert_eq!(answer["result"]["task"]["done_at"], done_at);
+        }
+        if method == "tasks.list" {
+            assert_eq!(answer["result"]["tasks"][0]["done_at"], done_at);
+        }
+    }
+    assert_eq!(store.load_tracker_task(id).unwrap().unwrap(), legacy);
+}
+
+#[tokio::test]
+async fn task_read_context_keeps_snapshot_and_sql_fields_separate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (_home, mut state, project) = super::tracker::tracked(tmp.path());
+    let task = filed(&mut state, &project, "before commit");
+    let context = state.task_read_context();
+    let store = state.tracker_store().unwrap().clone();
+    let mut updated = store
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    updated.title = "after commit".into();
+    store
+        .save_tracker_task_activity(&updated, &[], &[])
+        .unwrap();
+    drop(state);
+    let mut connection = store.read_pool().acquire().await;
+    let answer = connection
+        .read(|tx| context.tasks_get(tx, &json!({"task_id":updated.id})))
+        .unwrap()
+        .unwrap();
+    assert_eq!(answer["task"]["title"], "after commit");
+    assert_eq!(answer["task"]["project_id"], project);
+}
+
+#[tokio::test]
+async fn task_read_identity_names_use_committed_rosters_and_live_availability() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (entity, agent) = agent_on_checkout(&mut state, &project, "Committed name");
+    let task = filed(&mut state, &project, &format!("Ask @agent:{agent}"));
+    // Simulate the retained live candidate after a roster save failed. Its
+    // availability remains meaningful; its unsaved name must never publish.
+    state
+        .runs
+        .get_mut(&entity)
+        .unwrap()
+        .agents
+        .by_id_mut(&agent)
+        .unwrap()
+        .name = Some("Failed candidate".into());
+    let context = state.task_read_context();
+    let store = state.tracker_store().unwrap().clone();
+    let mut connection = store.read_pool().acquire().await;
+    let params = json!({"task_id":task["id"]});
+    let answer = connection
+        .read(|tx| context.tasks_get(tx, &params))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        answer["task"]["identities"][&agent]["name"],
+        "Committed name"
+    );
+    assert_eq!(answer["task"]["identities"][&agent]["available"], true);
+
+    state.runs.remove(&entity);
+    let retired = state.task_read_context();
+    let answer = connection
+        .read(|tx| retired.tasks_get(tx, &params))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        answer["task"]["identities"][&agent]["name"],
+        "Committed name"
+    );
+    assert_eq!(answer["task"]["identities"][&agent]["available"], false);
+}
+
+async fn published_task(state: &AppState, task: &Value) -> Value {
+    let connection = state.tracker_store().unwrap().read_pool().acquire().await;
+    let answer = state.read_service().call(
+        req("tasks.get", json!({"task_id":task["id"]})),
+        Some(connection),
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    answer["result"]["task"].clone()
+}
+
+#[tokio::test]
+async fn task_read_publication_preserves_another_checked_out_owner() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (first, first_agent) = agent_on_checkout(&mut state, &project, "first");
+    let (second, second_agent) = agent_on_checkout(&mut state, &project, "second");
+    let task = filed(
+        &mut state,
+        &project,
+        &format!("@agent:{first_agent} @agent:{second_agent}"),
+    );
+    state.initialize_read_context();
+    let checked_out = state.runs.remove(&first).unwrap();
+
+    state.publish_read_owner(&second, true);
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&first_agent]["available"], true);
+    assert_eq!(answer["identities"][&second_agent]["available"], true);
+
+    state.publish_read_metadata();
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&first_agent]["available"], true);
+    state.forget_read_owner(&first);
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&first_agent]["available"], false);
+    state.runs.insert(first, checked_out);
+}
+
+#[tokio::test]
+async fn task_read_publication_does_not_admit_a_failed_added_agent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut state, project) = tracked_with_origin(tmp.path());
+    let (owner, committed_agent) = agent_on_checkout(&mut state, &project, "committed");
+    let task = filed(&mut state, &project, &format!("@agent:{committed_agent}"));
+    state.initialize_read_context();
+    let active = state.runs.get_mut(&owner).unwrap();
+    let added = active.agents.add(
+        owner.as_str(),
+        active.model_choice.clone(),
+        &crate::store::now_rfc3339(),
+    );
+    let candidate = added.id.clone();
+    let store = state.tracker_store().unwrap();
+    let mut updated = store
+        .load_tracker_task(task["id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    updated.title = format!("@agent:{candidate} @agent:{committed_agent}");
+    store
+        .save_tracker_task_activity(&updated, &[], &[])
+        .unwrap();
+
+    state.publish_read_metadata();
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&candidate]["available"], false);
+    state.publish_read_owner(&owner, false);
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&candidate]["available"], false);
+    assert_eq!(answer["identities"][&committed_agent]["available"], true);
+    state.publish_read_metadata();
+    let answer = published_task(&state, &task).await;
+    assert_eq!(answer["identities"][&candidate]["available"], false);
+}
+
+#[tokio::test]
+async fn workspace_reads_publish_reopened_task_identity_availability() {
+    for method in ["workspace.get", "workspace.list"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut state, project) = tracked_with_origin(tmp.path());
+        let (owner, agent) = agent_on_checkout(&mut state, &project, "finished");
+        let task = filed(&mut state, &project, &format!("@agent:{agent}"));
+        let root = &state.runs[&owner].worktree.path;
+        let workspace = state
+            .workspaces
+            .list(Some(&project))
+            .into_iter()
+            .find(|workspace| workspace.root == *root)
+            .unwrap()
+            .clone();
+        let manifest = workspace.root.join(crate::workspace::MANIFEST_FILE);
+        let mut saved: Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        saved["status"] = json!("finished");
+        std::fs::write(&manifest, serde_json::to_vec(&saved).unwrap()).unwrap();
+        state.workspaces.reload().unwrap();
+        state.initialize_read_context();
+        // Fixture setup changes the registry directly after RPCs initialized
+        // admission; publish the finished baseline before exercising refresh.
+        state.publish_read_metadata();
+        let before = published_task(&state, &task).await;
+        assert_eq!(before["identities"][&agent]["available"], false);
+
+        let params = if method == "workspace.get" {
+            json!({"workspace_id":workspace.id})
+        } else {
+            json!({"project_id":project})
+        };
+        let refreshed = state.handle(req(method, params));
+        assert_eq!(refreshed["ok"], true, "{refreshed}");
+        assert_eq!(
+            state.workspaces.get(&workspace.id).unwrap().status,
+            crate::workspace::WorkspaceStatus::Ready
+        );
+        let after = published_task(&state, &task).await;
+        assert_eq!(
+            after["identities"][&agent]["available"], true,
+            "{method}: {after}"
+        );
+    }
+}
+
 /// An agent on a checkout of its own, named so its identity has something to
 /// carry.
 fn agent_on_checkout(state: &mut AppState, project_id: &str, name: &str) -> (String, String) {
@@ -91,8 +317,7 @@ fn activity(cast: &Cast, task_id: &str, index: usize) -> (Vec<TaskComment>, Vec<
     (comments, events)
 }
 
-/// Fifty tasks whose records predate identities, so the list is also the
-/// read that fills them in.
+/// Fifty tasks whose records predate identities, so the list derives them.
 fn history(state: &mut AppState, project_id: &str, cast: &Cast) -> Vec<String> {
     (0..TASKS)
         .map(|index| {
@@ -182,17 +407,13 @@ fn a_long_list_answers_what_each_task_answers_alone() {
             && row["identities"]["agent-ghost"]["name"].is_null()
     }));
     assert!(
-        filled
-            .iter()
-            .filter(|task| !task.identities.is_empty())
-            .count()
-            >= TASKS / 2,
-        "the list fills identities into the records it read"
+        filled.iter().all(|task| task.identities.is_empty()),
+        "read-derived identities do not mutate legacy records"
     );
     assert_eq!(
         stored_records(&state, &ids),
         filled,
-        "reading each task alone found nothing the list had not already filled"
+        "list and detail reads preserve the original records"
     );
 
     let (again, _) = listed_and_each_alone(&mut state, json!({ "project_id": project_id }));

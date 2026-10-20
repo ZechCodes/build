@@ -13,6 +13,7 @@ pub(in crate::app::tests) mod idle_sessions;
 pub(in crate::app::tests) mod off_the_workers;
 mod pi_compaction;
 pub(in crate::app::tests) mod run_agents;
+mod sql_reads;
 pub(in crate::app::tests) mod start_refused;
 pub(in crate::app::tests) mod terminal_lifecycle;
 pub(in crate::app::tests) mod terminals;

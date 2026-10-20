@@ -812,6 +812,8 @@ async function landSession(session, link, releaseInitialLease, attempt, authorit
   // subscriptions and no pushes (#123). The channel it rides has not changed,
   // so no carrier change greets it; this does, and reads everything again.
   link.onRestored(() => {
+    if (!lifetime.current()) return;
+    session.resetSqlReads();
     void greetLiveBridge(context, {
       isAuthoritative: () => lifetime.current(),
       lifetime,

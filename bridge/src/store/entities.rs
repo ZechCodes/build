@@ -16,6 +16,7 @@ use crate::plan::PlanState;
 use crate::plan::StageDoc;
 use crate::run::RunState;
 use crate::run::StageProgress;
+use crate::store::ReadTransaction;
 use crate::thread::RunCensus;
 use crate::thread::Thread;
 use crate::thread::ThreadItem;
@@ -649,19 +650,11 @@ impl Store {
         from_sequence: u64,
         through_sequence: u64,
     ) -> Result<RunCensus, StoreError> {
-        let connection = self.connection();
-        let count = |statement: &str| -> Result<u64, StoreError> {
-            let count: i64 = connection.query_row(
-                statement,
-                rusqlite::params![agent_id, from_sequence as i64, through_sequence as i64],
-                |row| row.get(0),
-            )?;
-            Ok(count as u64)
-        };
-        Ok(RunCensus {
-            tool_calls: count(THREAD_TOOL_CALL_COUNT_SQL)?,
-            rows: count(THREAD_ACTIVITY_COUNT_SQL)?,
-        })
+        ReadTransaction::new(&self.connection()).run_census(
+            agent_id,
+            from_sequence,
+            through_sequence,
+        )
     }
     /// How many items a conversation holds. A `COUNT(*)`, never a load — the
     /// client needs the total to know whether its cache is whole, and reading
@@ -852,15 +845,13 @@ impl Store {
     /// agents' conversations: who ran where, for a caller that only names
     /// agents — whose cost is then the agent rows, not their conversations.
     pub fn load_all_run_rosters(&self) -> Result<Vec<PersistedRun>, StoreError> {
-        let conn = self.connection();
-        Store::read_runs_with(&conn, None, Store::read_agent_records)
+        ReadTransaction::new(&self.connection()).load_all_run_rosters()
     }
     /// Every Task's own record with its agents but not their conversations,
     /// and without its implementations — the
     /// [`load_all_run_rosters`](Self::load_all_run_rosters) of Tasks.
     pub fn load_all_plan_rosters(&self) -> Result<Vec<PersistedPlan>, StoreError> {
-        let conn = self.connection();
-        Store::read_task_records(&conn, Store::read_agent_records)
+        ReadTransaction::new(&self.connection()).load_all_plan_rosters()
     }
     /// Every Task's own record, oldest first, without its implementations.
     pub fn load_all_plans(&self) -> Result<Vec<PersistedPlan>, StoreError> {
@@ -1172,4 +1163,35 @@ pub(super) fn materialize_agent_identity(
         changed = true;
     }
     changed
+}
+
+impl ReadTransaction<'_> {
+    pub fn run_census(
+        &self,
+        agent_id: &str,
+        from_sequence: u64,
+        through_sequence: u64,
+    ) -> Result<RunCensus, StoreError> {
+        let connection = self.connection();
+        let count = |statement: &str| -> Result<u64, StoreError> {
+            let count: i64 = connection.query_row(
+                statement,
+                rusqlite::params![agent_id, from_sequence as i64, through_sequence as i64],
+                |row| row.get(0),
+            )?;
+            Ok(count as u64)
+        };
+        Ok(RunCensus {
+            tool_calls: count(THREAD_TOOL_CALL_COUNT_SQL)?,
+            rows: count(THREAD_ACTIVITY_COUNT_SQL)?,
+        })
+    }
+    pub fn load_all_run_rosters(&self) -> Result<Vec<PersistedRun>, StoreError> {
+        let conn = self.connection();
+        Store::read_runs_with(conn, None, Store::read_agent_records)
+    }
+    pub fn load_all_plan_rosters(&self) -> Result<Vec<PersistedPlan>, StoreError> {
+        let conn = self.connection();
+        Store::read_task_records(conn, Store::read_agent_records)
+    }
 }

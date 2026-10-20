@@ -54,6 +54,7 @@ impl AppState {
 
     /// The entity has left the maps for good: nobody on it is resumed.
     pub(in crate::app) fn forget_live_roster_entity(&self, entity_id: &str) {
+        self.forget_read_owner(entity_id);
         if let Some(live) = &self.live_roster {
             live.forget_entity(entity_id);
         }

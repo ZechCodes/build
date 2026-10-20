@@ -956,6 +956,7 @@ impl AppState {
     /// next board item carries that list in full. Every other board note
     /// moves rows, which ride their own items.
     pub(in crate::app) fn note_board_lists_changed(&self, lists: crate::changes::BoardLists) {
+        self.publish_read_metadata();
         self.changes.note_board_lists(lists);
         // An entity may have arrived with a checkout or left with one: the
         // watchers follow the board, off this mutex.

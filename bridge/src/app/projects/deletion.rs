@@ -55,6 +55,7 @@ impl DeferredGitWork for DeleteProjectFiles {
         if let Err(error) = app.workspaces.reload() {
             eprintln!("reload deleted workspaces: {error}");
         }
+        app.publish_read_metadata();
     }
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
@@ -158,6 +159,7 @@ impl AppState {
         }
         self.revoke_project_agents(&run_ids);
         self.project_deletion_in_progress = true;
+        self.publish_read_metadata();
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
             call: Box::new(DeleteProjectFiles {
                 project_id: project_id.clone(),

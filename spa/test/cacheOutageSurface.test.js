@@ -8,6 +8,25 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { IDBDatabase, IDBFactory, IDBKeyRange, forceCloseDatabase } from "fake-indexeddb";
+import { createSessionRpc } from "../src/core/sessionRpc.js";
+import { normalizeError } from "../src/core/bridgeApi/index.js";
+import { task, columns } from "./trackerWireFixture.js";
+
+const notifyError = vi.fn();
+vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args) }));
+vi.mock("../src/core/changeEvents.js", () => ({
+  onBridgeGreeted: () => () => {},
+  bridgeCapabilities: () => ({ changes: { subscriptions: true, kinds: ["tasks"] } }),
+  watchChanges: () => ({ dispose: () => {} }),
+}));
+vi.mock("../src/core/deviceReconnect.js", () => ({
+  deviceSession: () => null,
+  deviceWatch: () => ({ away: () => true, reconnecting: () => true, moved: () => () => {} }),
+}));
+vi.mock("../src/core/deviceContexts.js", async (original) => ({
+  ...await original(), contextFor: () => ({}),
+  whenGreeted: async (_context, dispatch) => ({ sent: dispatch(() => true), stands: () => true }),
+}));
 
 const FAST_RECOVERY = { reopenDelaysMs: [0, 1, 2, 3], openTimeoutMs: 200, restMs: 60_000 };
 const address = { deviceId: "dev-1", entityId: "", kind: "settings" };
@@ -31,7 +50,75 @@ beforeEach(async () => {
   settings = await import("../src/core/settingsRecords.js");
   cache.setCacheRecoveryTiming(FAST_RECOVERY);
   vi.spyOn(console, "info").mockImplementation(() => {});
+  notifyError.mockClear();
   document.body.innerHTML = '<div id="agentname"></div>';
+});
+
+function heldSqlSession() {
+  const envelopes = new Set();
+  const closes = new Set();
+  const sent = [];
+  const wire = {
+    send(envelope) {
+      sent.push(envelope.payload);
+      if (envelope.payload.method === "tasks.get") return;
+      for (const deliver of envelopes) deliver({ payload: { id: envelope.payload.id, ok: true, result: {} } });
+    },
+    onEnvelope: (fn) => { envelopes.add(fn); return () => envelopes.delete(fn); },
+    onClose: (fn) => { closes.add(fn); return () => closes.delete(fn); },
+    close: () => closes.forEach((fn) => fn()),
+  };
+  const rpc = createSessionRpc({
+    transport: { encryptFrame: async ({ frameFields }) => frameFields, decryptEnvelope: async ({ envelope }) => envelope },
+    sessionId: "cache-opening", sessionKeyB64: "fixture", deviceId: "dev-1", timeoutMs: 0,
+  });
+  rpc.rideOn(wire);
+  return { rpc, wire, sent };
+}
+
+describe("a cached task during SQL sender recovery", () => {
+  it.each(["carrier close", "restore reset"])("keeps the real task page painted through credit waits and %s", async (event) => {
+    const tracker = await import("../src/core/trackerCache.js");
+    const { mountTaskPage } = await import("../src/core/trackerTaskPage.js");
+    const saved = { task: task({ id: "task-cache", title: "Cached task", body: "Cached body" }), timeline: [] };
+    await tracker.writeTaskRecord("dev-1", "proj-1", "task-cache", saved);
+    await tracker.writeTasksRecord("dev-1", "proj-1", tracker.tasksRecord([saved.task], columns()));
+    const { rpc, wire, sent } = heldSqlSession();
+    for (let index = 0; index < 8; index += 1) rpc.call("tasks.get", { task_id: `held-${index}` }).catch(() => {});
+    const errors = [];
+    const callRpc = vi.fn(async (...args) => {
+      try { return await rpc.call(...args); }
+      catch (error) { const normalized = normalizeError(error); errors.push(normalized); throw normalized; }
+    });
+    const host = document.querySelector("#agentname");
+    const page = mountTaskPage(host, {
+      deviceId: "dev-1", projectId: "proj-1", projectKey: "dev-1|proj-1", taskId: "task-cache", callRpc,
+      catalog: () => ({ providers: [] }), feed: () => ({ items: [], workspaces: [] }),
+    });
+    try {
+      await vi.waitFor(() => expect(host.textContent).toContain("Cached body"));
+      await vi.waitFor(() => expect(callRpc).toHaveBeenCalledWith("tasks.get", { task_id: "task-cache" }));
+      expect(sent.filter((request) => request.method === "tasks.get")).toHaveLength(8);
+      const body = host.querySelector(".task-page-body");
+      if (event === "carrier close") wire.close();
+      else rpc.resetSqlReads();
+      await vi.waitFor(() => expect(errors).toHaveLength(1));
+      expect(errors[0]).toMatchObject({ uncertain: true, retryable: true });
+      expect(notifyError).not.toHaveBeenCalled();
+      expect(host.querySelector(".task-page-body")).toBe(body);
+      expect(body.textContent).toContain("Cached body");
+      expect((await tracker.readTaskRecord("dev-1", "proj-1", "task-cache")).task.title).toBe("Cached task");
+
+      await tracker.writeTaskRecord("dev-1", "proj-1", "task-cache", {
+        ...saved, task: { ...saved.task, title: "Refreshed task", body: "Refreshed body" },
+      });
+      await vi.waitFor(() => expect(host.textContent).toContain("Refreshed body"));
+      expect(notifyError).not.toHaveBeenCalled();
+    } finally {
+      page.dispose();
+      rpc.close();
+    }
+  });
 });
 
 afterEach(() => {

@@ -202,11 +202,14 @@ fn a_done_task_from_before_done_at_reads_it_from_its_timeline() {
 
     let answer = listed(&mut state, &project_id);
     assert_eq!(answer["tasks"][0]["done_at"], done_at);
+    let (_, unchanged) = state.tracker_task(&id).unwrap();
+    assert_eq!(unchanged.done_at, None, "reading does not migrate storage");
+    state.migrate_task_read_fields().unwrap();
     let (_, kept) = state.tracker_task(&id).unwrap();
     assert_eq!(
         kept.done_at.as_deref(),
         done_at.as_str(),
-        "the backfill is kept"
+        "startup migration keeps the same derived timestamp"
     );
 }
 

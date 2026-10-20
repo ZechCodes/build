@@ -11,6 +11,7 @@
 //! than either half missing.
 
 use super::{Store, StoreError};
+use crate::store::ReadTransaction;
 use crate::tracker::{Task, TaskComment, TaskEvent, TaskState, TimelineEntry};
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::HashMap;
@@ -245,16 +246,7 @@ impl Store {
 
     /// One task, or `None` for an id nothing answers to.
     pub fn load_tracker_task(&self, task_id: &str) -> Result<Option<Task>, StoreError> {
-        let conn = self.connection();
-        let raw: Option<String> = conn
-            .query_row(
-                "SELECT record FROM tracker_tasks WHERE id = ?1",
-                [task_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        raw.map(|raw| decode(&raw, "tracker_tasks", task_id))
-            .transpose()
+        ReadTransaction::new(&self.connection()).load_tracker_task(task_id)
     }
 
     /// One project's tasks, newest first — `number` descending, which is the
@@ -264,8 +256,7 @@ impl Store {
         project_path: &str,
         filter: TaskFilter<'_>,
     ) -> Result<Vec<Task>, StoreError> {
-        self.list_tracker_tasks_below(project_path, filter, TaskSeek::default(), |_| true)
-            .map(|stretch| stretch.tasks)
+        ReadTransaction::new(&self.connection()).list_tracker_tasks(project_path, filter)
     }
 
     /// One stretch of a project's list, newest first: the tasks numbered
@@ -284,9 +275,14 @@ impl Store {
         project_path: &str,
         filter: TaskFilter<'_>,
         seek: TaskSeek,
-        mut keep: impl FnMut(&Task) -> bool,
+        keep: impl FnMut(&Task) -> bool,
     ) -> Result<TaskStretch, StoreError> {
-        self.list_tracker_tasks_below_using(project_path, filter, seek, |_, task| Ok(keep(task)))
+        ReadTransaction::new(&self.connection()).list_tracker_tasks_below(
+            project_path,
+            filter,
+            seek,
+            keep,
+        )
     }
 
     /// The saved target participates in filtering before the bounded page is
@@ -297,74 +293,20 @@ impl Store {
         project_path: &str,
         filter: TaskFilter<'_>,
         seek: TaskSeek,
-        mut keep: impl FnMut(&Task, Option<&serde_json::Value>) -> bool,
+        keep: impl FnMut(&Task, Option<&serde_json::Value>) -> bool,
     ) -> Result<TaskStretch, StoreError> {
-        self.list_tracker_tasks_below_using(project_path, filter, seek, |conn, task| {
-            let intent = super::delivery_intents::current(conn, &task.id)?;
-            let target = intent
-                .as_ref()
-                .filter(|intent| {
-                    matches!(
-                        intent.state.as_str(),
-                        "waiting" | "queued" | "provisioning" | "failed"
-                    )
-                })
-                .map(|intent| &intent.target);
-            Ok(keep(task, target))
-        })
+        ReadTransaction::new(&self.connection()).list_tracker_tasks_with_assignment_below(
+            project_path,
+            filter,
+            seek,
+            keep,
+        )
     }
 
-    fn list_tracker_tasks_below_using(
-        &self,
-        project_path: &str,
-        filter: TaskFilter<'_>,
-        seek: TaskSeek,
-        mut keep: impl FnMut(&rusqlite::Connection, &Task) -> Result<bool, StoreError>,
-    ) -> Result<TaskStretch, StoreError> {
-        let (sql, values) = stretch_query(project_path, filter, seek.below);
-        let conn = self.connection();
-        let mut statement = conn.prepare(&sql)?;
-        let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
-        let mut stretch = TaskStretch::default();
-        let mut scanned = 0;
-        let mut last_read = None;
-        while seek.take.is_none_or(|take| stretch.tasks.len() < take) {
-            let Some(row) = rows.next()? else { break };
-            // A row past the bound is only fetched, never decoded: it says
-            // there is more below, which is what the next stretch is for.
-            if seek.scan.is_some_and(|scan| scanned >= scan) {
-                stretch.scanned_to = last_read;
-                break;
-            }
-            scanned += 1;
-            let (id, number, raw): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
-            last_read = u64::try_from(number).ok();
-            let task = decode(&raw, "tracker_tasks", &id)?;
-            if keep(&conn, &task)? {
-                stretch.tasks.push(task);
-            }
-        }
-        Ok(stretch)
-    }
-
-    /// The key this store's list cursors are made under, minted the first
-    /// time one is asked for and kept for the life of the store (#85).
+    /// The key this store's list cursors are made under, minted at startup
+    /// and kept for the life of the store (#85).
     pub fn tracker_list_key(&self) -> Result<String, StoreError> {
-        let conn = self.connection();
-        let read = |conn: &rusqlite::Connection| {
-            conn.query_row("SELECT value FROM meta WHERE key = ?1", [LIST_KEY], |row| {
-                row.get::<_, String>(0)
-            })
-            .optional()
-        };
-        if let Some(key) = read(&conn)? {
-            return Ok(key);
-        }
-        conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
-            rusqlite::params![LIST_KEY, uuid::Uuid::new_v4().simple().to_string()],
-        )?;
-        Ok(read(&conn)?.unwrap_or_default())
+        ReadTransaction::new(&self.connection()).tracker_list_key()
     }
 
     /// One comment by its id, and the task it is on.
@@ -395,28 +337,7 @@ impl Store {
     /// time-ordered itself so two things stamped in the same second still have
     /// one order every reader agrees on.
     pub fn load_tracker_timeline(&self, task_id: &str) -> Result<Vec<TimelineEntry>, StoreError> {
-        let conn = self.connection();
-        let mut entries = read_records(
-            &conn,
-            "SELECT id, record FROM tracker_comments WHERE task_id = ?1",
-            task_id,
-            "tracker_comments",
-        )?
-        .into_iter()
-        .map(TimelineEntry::Comment)
-        .collect::<Vec<_>>();
-        entries.extend(
-            read_records(
-                &conn,
-                "SELECT id, record FROM tracker_events WHERE task_id = ?1",
-                task_id,
-                "tracker_events",
-            )?
-            .into_iter()
-            .map(TimelineEntry::Event),
-        );
-        in_timeline_order(&mut entries);
-        Ok(entries)
+        ReadTransaction::new(&self.connection()).load_tracker_timeline(task_id)
     }
 
     /// Many tasks' timelines, each exactly what [`Store::load_tracker_timeline`]
@@ -430,27 +351,7 @@ impl Store {
         &self,
         task_ids: &[String],
     ) -> Result<HashMap<String, Vec<TimelineEntry>>, StoreError> {
-        let mut timelines: HashMap<String, Vec<TimelineEntry>> = HashMap::new();
-        let mut unique = Vec::with_capacity(task_ids.len());
-        for id in task_ids {
-            if timelines.insert(id.clone(), Vec::new()).is_none() {
-                unique.push(id.as_str());
-            }
-        }
-        let conn = self.connection();
-        for chunk in unique.chunks(TIMELINE_IDS_PER_READ) {
-            // Comments before events, the way the one-task read gathers
-            // them, so the stable sort breaks any tie the same way.
-            let comments = read_records_of_tasks(&conn, "tracker_comments", chunk)?;
-            gather(&mut timelines, comments, TimelineEntry::Comment);
-            let events = read_records_of_tasks(&conn, "tracker_events", chunk)?;
-            gather(&mut timelines, events, TimelineEntry::Event);
-        }
-        drop(conn);
-        for timeline in timelines.values_mut() {
-            in_timeline_order(timeline);
-        }
-        Ok(timelines)
+        ReadTransaction::new(&self.connection()).load_tracker_timelines(task_ids)
     }
 
     /// Explicit history deletion, called by the review service off the app
@@ -681,4 +582,154 @@ pub(super) fn decode<T: serde::de::DeserializeOwned>(
         path: PathBuf::from(format!("{table}/{id}")),
         source,
     })
+}
+
+impl ReadTransaction<'_> {
+    pub fn load_tracker_task(&self, task_id: &str) -> Result<Option<Task>, StoreError> {
+        let conn = self.connection();
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT record FROM tracker_tasks WHERE id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| decode(&raw, "tracker_tasks", task_id))
+            .transpose()
+    }
+    pub fn list_tracker_tasks(
+        &self,
+        project_path: &str,
+        filter: TaskFilter<'_>,
+    ) -> Result<Vec<Task>, StoreError> {
+        self.list_tracker_tasks_below(project_path, filter, TaskSeek::default(), |_| true)
+            .map(|stretch| stretch.tasks)
+    }
+    pub fn list_tracker_tasks_below(
+        &self,
+        project_path: &str,
+        filter: TaskFilter<'_>,
+        seek: TaskSeek,
+        mut keep: impl FnMut(&Task) -> bool,
+    ) -> Result<TaskStretch, StoreError> {
+        self.list_tracker_tasks_below_using(project_path, filter, seek, |_, task| Ok(keep(task)))
+    }
+    pub fn list_tracker_tasks_with_assignment_below(
+        &self,
+        project_path: &str,
+        filter: TaskFilter<'_>,
+        seek: TaskSeek,
+        mut keep: impl FnMut(&Task, Option<&serde_json::Value>) -> bool,
+    ) -> Result<TaskStretch, StoreError> {
+        self.list_tracker_tasks_below_using(project_path, filter, seek, |conn, task| {
+            let intent = super::delivery_intents::current(conn, &task.id)?;
+            let target = intent
+                .as_ref()
+                .filter(|intent| {
+                    matches!(
+                        intent.state.as_str(),
+                        "waiting" | "queued" | "provisioning" | "failed"
+                    )
+                })
+                .map(|intent| &intent.target);
+            Ok(keep(task, target))
+        })
+    }
+    fn list_tracker_tasks_below_using(
+        &self,
+        project_path: &str,
+        filter: TaskFilter<'_>,
+        seek: TaskSeek,
+        mut keep: impl FnMut(&rusqlite::Connection, &Task) -> Result<bool, StoreError>,
+    ) -> Result<TaskStretch, StoreError> {
+        let (sql, values) = stretch_query(project_path, filter, seek.below);
+        let conn = self.connection();
+        let mut statement = conn.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values.iter()))?;
+        let mut stretch = TaskStretch::default();
+        let mut scanned = 0;
+        let mut last_read = None;
+        while seek.take.is_none_or(|take| stretch.tasks.len() < take) {
+            let Some(row) = rows.next()? else { break };
+            // A row past the bound is only fetched, never decoded: it says
+            // there is more below, which is what the next stretch is for.
+            if seek.scan.is_some_and(|scan| scanned >= scan) {
+                stretch.scanned_to = last_read;
+                break;
+            }
+            scanned += 1;
+            let (id, number, raw): (String, i64, String) = (row.get(0)?, row.get(1)?, row.get(2)?);
+            last_read = u64::try_from(number).ok();
+            let task = decode(&raw, "tracker_tasks", &id)?;
+            if keep(conn, &task)? {
+                stretch.tasks.push(task);
+            }
+        }
+        Ok(stretch)
+    }
+    pub fn tracker_list_key(&self) -> Result<String, StoreError> {
+        self.connection()
+            .query_row("SELECT value FROM meta WHERE key = ?1", [LIST_KEY], |row| {
+                row.get(0)
+            })
+            .map_err(StoreError::from)
+    }
+    pub fn load_tracker_timeline(&self, task_id: &str) -> Result<Vec<TimelineEntry>, StoreError> {
+        let conn = self.connection();
+        let mut entries = read_records(
+            conn,
+            "SELECT id, record FROM tracker_comments WHERE task_id = ?1",
+            task_id,
+            "tracker_comments",
+        )?
+        .into_iter()
+        .map(TimelineEntry::Comment)
+        .collect::<Vec<_>>();
+        entries.extend(
+            read_records(
+                conn,
+                "SELECT id, record FROM tracker_events WHERE task_id = ?1",
+                task_id,
+                "tracker_events",
+            )?
+            .into_iter()
+            .map(TimelineEntry::Event),
+        );
+        in_timeline_order(&mut entries);
+        Ok(entries)
+    }
+    pub fn load_tracker_timelines(
+        &self,
+        task_ids: &[String],
+    ) -> Result<HashMap<String, Vec<TimelineEntry>>, StoreError> {
+        let mut timelines: HashMap<String, Vec<TimelineEntry>> = HashMap::new();
+        let mut unique = Vec::with_capacity(task_ids.len());
+        for id in task_ids {
+            if timelines.insert(id.clone(), Vec::new()).is_none() {
+                unique.push(id.as_str());
+            }
+        }
+        let conn = self.connection();
+        for chunk in unique.chunks(TIMELINE_IDS_PER_READ) {
+            // Comments before events, the way the one-task read gathers
+            // them, so the stable sort breaks any tie the same way.
+            let comments = read_records_of_tasks(conn, "tracker_comments", chunk)?;
+            gather(&mut timelines, comments, TimelineEntry::Comment);
+            let events = read_records_of_tasks(conn, "tracker_events", chunk)?;
+            gather(&mut timelines, events, TimelineEntry::Event);
+        }
+        for timeline in timelines.values_mut() {
+            in_timeline_order(timeline);
+        }
+        Ok(timelines)
+    }
+}
+
+/// Make cursor identity durable at startup; a read never creates it.
+pub(super) fn initialize_list_key(conn: &rusqlite::Connection) -> Result<(), StoreError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![LIST_KEY, uuid::Uuid::new_v4().simple().to_string()],
+    )?;
+    Ok(())
 }

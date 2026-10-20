@@ -163,6 +163,7 @@ impl AppState {
             .attention_mut()
             .advance_conversation(thread_id, 0);
         for owner in owners {
+            self.publish_read_owner(&owner, true);
             self.note_entity_changed(&owner);
             self.publish_live_roster_for(&owner);
         }

@@ -849,7 +849,7 @@ fn task_identity_survives_workspace_finish() {
         )
         .expect("agent comments");
     // This record predates identity snapshots: the timeline still knows the
-    // author, and a read must persist the backfill before Done removes them.
+    // author. Reads derive it; startup/removal preparation persists it.
     let mut old = state
         .tracker_store()
         .unwrap()
@@ -865,6 +865,18 @@ fn task_identity_survives_workspace_finish() {
     let before = state.handle(req("tasks.get", json!({ "task_id": id })));
     let identity = &before["result"]["task"]["identities"][&agent_id];
     assert_historian_identity(identity, &ws, true);
+    assert!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_task(&id)
+            .unwrap()
+            .unwrap()
+            .identities
+            .is_empty(),
+        "read does not backfill the legacy record"
+    );
+    state.migrate_task_read_fields().unwrap();
     assert_eq!(
         state
             .tracker_store()
@@ -1172,6 +1184,17 @@ fn old_actor_falls_back_to_stored_agent_without_live_roster() {
     assert_eq!(identity["provider"], "pi");
     assert_eq!(identity["workspace_name"], "stored checkout");
     assert_eq!(identity["available"], false);
+    assert_eq!(
+        state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_task(&id)
+            .unwrap()
+            .unwrap(),
+        old,
+        "reading a legacy actor leaves its durable task unchanged"
+    );
+    state.migrate_task_read_fields().unwrap();
     assert_eq!(
         state
             .tracker_store()

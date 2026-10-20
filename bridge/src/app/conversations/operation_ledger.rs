@@ -67,6 +67,10 @@ impl OperationLedger {
         self.receipts.get(operation_id)
     }
 
+    pub(in crate::app) fn read_snapshot(&self) -> HashMap<String, OperationReceipt> {
+        self.receipts.clone()
+    }
+
     /// No-Store compare-and-set decision. Never use this as a second gate after
     /// an authoritative Store transition has succeeded.
     pub(in crate::app) fn cached_has_status(

@@ -781,7 +781,7 @@ fn names_bad_input(message: &str) -> bool {
 /// Name the code a thread refusal deserves, where the message makes it
 /// obvious. Everything [`ApiError::classify`] already named correctly is left
 /// alone, so this only sees what came back as `internal`.
-pub(super) fn refine(error: ApiError) -> ApiError {
+pub(crate) fn refine(error: ApiError) -> ApiError {
     if !matches!(error, ApiError::Internal { .. }) {
         return error;
     }

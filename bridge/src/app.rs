@@ -24,6 +24,7 @@ mod mcp;
 mod model_catalog;
 mod projects;
 mod push_keys;
+mod read_context;
 mod rpc;
 mod rtc;
 mod runs;
@@ -277,6 +278,7 @@ pub struct AppState {
     projects: ProjectRegistry,
     /// Prevent new mutations while project cleanup runs with the mutex released.
     project_deletion_in_progress: bool,
+    read_context: read_context::ReadContextSlot,
     /// Projects one of whose sources is moving; their workers wait (#533).
     source_moves: projects::SourceMoves,
     /// Deferred filesystem work claimed under the mutex and not yet applied.
@@ -655,6 +657,7 @@ impl AppState {
         let mut state = AppState {
             projects: ProjectRegistry::new(),
             project_deletion_in_progress: false,
+            read_context: Arc::new(arc_swap::ArcSwapOption::empty()),
             source_moves: projects::SourceMoves::default(),
             active_deferred_filesystem_jobs: 0,
             worktrees_root,
@@ -847,6 +850,9 @@ impl AppState {
     /// drive the same tasks. Stashes a weak self-handle so `&mut self` hooks
     /// can spawn pump tasks (see the `self_handle` field).
     pub fn shared(self) -> Arc<Mutex<AppState>> {
+        if let Err(error) = self.migrate_task_read_fields() {
+            eprintln!("task read metadata migration: {error}; retaining derived read fields");
+        }
         let state = Arc::new(Mutex::new(self));
         let (changes, watchers, push_runtime) = {
             let mut app = state.lock().unwrap();

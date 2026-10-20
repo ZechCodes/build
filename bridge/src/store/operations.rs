@@ -5,6 +5,7 @@ use super::{
 use crate::agent::Agent;
 use crate::operation::OperationReceipt;
 use crate::operation::OperationStatus;
+use crate::store::ReadTransaction;
 use crate::thread::{MessageDeliveryStatus, ThreadItem};
 use rusqlite::Connection;
 use rusqlite::OptionalExtension;
@@ -61,7 +62,7 @@ impl Store {
     }
     /// An immutable receipt by its client-generated id.
     pub fn operation(&self, operation_id: &str) -> Result<Option<OperationReceipt>, StoreError> {
-        read_operation(&self.connection(), operation_id)
+        ReadTransaction::new(&self.connection()).operation(operation_id)
     }
     /// Mark one authorized operation's exact historical messages seen without
     /// loading the rest of the conversation. The agent skeleton and selected
@@ -687,4 +688,10 @@ pub(super) fn same_operation(left: &OperationReceipt, right: &OperationReceipt) 
         && left.conversation_id == right.conversation_id
         && left.choice_revision == right.choice_revision
         && left.request_hash == right.request_hash
+}
+
+impl ReadTransaction<'_> {
+    pub fn operation(&self, operation_id: &str) -> Result<Option<OperationReceipt>, StoreError> {
+        read_operation(self.connection(), operation_id)
+    }
 }

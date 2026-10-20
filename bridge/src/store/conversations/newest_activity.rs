@@ -2,6 +2,7 @@
 //! digest from indexed metadata rather than decoding discarded item bodies.
 
 use super::{decode_thread_item_text, read_sequenced_rows};
+use crate::store::ReadTransaction;
 use crate::store::{Store, StoreError};
 use crate::thread::{
     page_activity_budget, run_items_shipped_with_activity, ActivityDigest, LastToolCall,
@@ -22,32 +23,13 @@ impl Store {
         limit: usize,
         newest: bool,
     ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
-        let after = after_sequence.map(sql_sequence).unwrap_or(0);
-        let before = before_sequence.map(sql_sequence).unwrap_or(i64::MAX);
-        let connection = self.connection();
-        let (floor, ceiling) = page_bounds(
-            &connection,
+        ReadTransaction::new(&self.connection()).thread_conversation_page_newest_activity(
             agent_id,
-            after,
-            before,
-            limit.max(1),
-            after_sequence.is_none() || newest,
-        )?;
-        let RawPage {
-            items: raw,
-            digests,
-        } = NewestRunReader::new(&connection, agent_id, limit)?.span(floor, ceiling)?;
-        let has_more = page_has_more(&connection, agent_id, &raw, after_sequence, newest)?;
-        drop(connection);
-        let mut items =
-            decode_thread_item_text(agent_id, raw.into_iter().map(|(_, item)| item).collect())?;
-        items.reverse();
-        let mut digests = digests
-            .into_iter()
-            .map(|digest| digest.decode(agent_id))
-            .collect::<Result<Vec<_>, _>>()?;
-        digests.reverse();
-        Ok((PageCut { items, digests }, has_more))
+            after_sequence,
+            before_sequence,
+            limit,
+            newest,
+        )
     }
 }
 
@@ -257,5 +239,43 @@ impl<'a> NewestRunReader<'a> {
             last_tool_call,
         });
         Ok(())
+    }
+}
+
+impl ReadTransaction<'_> {
+    pub fn thread_conversation_page_newest_activity(
+        &self,
+        agent_id: &str,
+        after_sequence: Option<u64>,
+        before_sequence: Option<u64>,
+        limit: usize,
+        newest: bool,
+    ) -> Result<(PageCut<ThreadItem>, bool), StoreError> {
+        let after = after_sequence.map(sql_sequence).unwrap_or(0);
+        let before = before_sequence.map(sql_sequence).unwrap_or(i64::MAX);
+        let connection = self.connection();
+        let (floor, ceiling) = page_bounds(
+            connection,
+            agent_id,
+            after,
+            before,
+            limit.max(1),
+            after_sequence.is_none() || newest,
+        )?;
+        let RawPage {
+            items: raw,
+            digests,
+        } = NewestRunReader::new(connection, agent_id, limit)?.span(floor, ceiling)?;
+        let has_more = page_has_more(connection, agent_id, &raw, after_sequence, newest)?;
+
+        let mut items =
+            decode_thread_item_text(agent_id, raw.into_iter().map(|(_, item)| item).collect())?;
+        items.reverse();
+        let mut digests = digests
+            .into_iter()
+            .map(|digest| digest.decode(agent_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        digests.reverse();
+        Ok((PageCut { items, digests }, has_more))
     }
 }

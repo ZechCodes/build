@@ -733,6 +733,7 @@ impl AppState {
             active.model_choice = choice;
             let persisted = self.persist_plan_record(entity_id, &active);
             self.plans.insert(entity_id.to_string(), active);
+            self.publish_read_owner(entity_id, persisted.is_ok());
             self.note_entity_changed(entity_id);
             return persisted;
         }
@@ -740,6 +741,7 @@ impl AppState {
         active.model_choice = choice;
         let persisted = self.persist_run_record(entity_id, &active);
         self.runs.insert(entity_id.to_string(), active);
+        self.publish_read_owner(entity_id, persisted.is_ok());
         self.note_entity_changed(entity_id);
         persisted
     }

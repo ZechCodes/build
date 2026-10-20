@@ -44,6 +44,7 @@ function bridgeWire() {
       listeners.add(fn);
       return () => listeners.delete(fn);
     },
+    onClose: () => () => {},
   };
 }
 

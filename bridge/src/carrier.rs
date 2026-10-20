@@ -29,6 +29,11 @@ use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionIn
 use crate::transport_ledger::{StderrLedger, TransportEvent, TransportLedger};
 
 mod dispatch;
+mod sql;
+#[cfg(test)]
+mod sql_measurements;
+#[cfg(test)]
+mod sql_tests;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 #[cfg(test)]
@@ -164,6 +169,9 @@ pub struct SessionSender {
     /// Whether the opening this sender was built for is still open — see
     /// [`OpenSession::still_open`].
     still_open: Arc<OpeningState>,
+    carrier_id: Option<CarrierId>,
+    carrier_open: Arc<AtomicBool>,
+    reply_gate: Arc<Mutex<()>>,
 }
 
 impl SessionSender {
@@ -176,6 +184,28 @@ impl SessionSender {
     /// fence the frames answered off the queue run behind too.
     pub(crate) fn session_is_open(&self) -> bool {
         self.still_open.is_open.load(Ordering::SeqCst)
+    }
+
+    fn read_is_live(&self) -> bool {
+        self.session_is_open()
+            && (self.carrier_id.is_none() || self.carrier_open.load(Ordering::SeqCst))
+    }
+
+    fn push_read_reply(&self, payload: Value) {
+        let Some(sealed) = self.seal(payload) else {
+            return;
+        };
+        let _reply = self.reply_gate.lock().unwrap();
+        if self.read_is_live() {
+            self.send_sealed(sealed);
+        }
+    }
+
+    fn on_carrier(mut self, carrier: &CarrierHandle, binding: &CarrierBinding) -> Self {
+        self.carrier_id = Some(carrier.id);
+        self.carrier_open = binding.open.clone();
+        self.reply_gate = binding.reply_gate.clone();
+        self
     }
 
     /// The opening this sender belongs to, as a token.
@@ -201,6 +231,9 @@ impl SessionSender {
             session_key,
             out,
             still_open,
+            carrier_id: None,
+            carrier_open: Arc::new(AtomicBool::new(true)),
+            reply_gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -418,6 +451,7 @@ pub(crate) struct CarrierHandle {
     id: CarrierId,
     kind: CarrierKind,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
+    released: Arc<AtomicBool>,
 }
 
 impl CarrierHandle {
@@ -441,6 +475,7 @@ impl CarrierHandle {
                 id: CarrierId(NEXT_CARRIER_ID.fetch_add(1, Ordering::Relaxed)),
                 kind,
                 out,
+                released: Arc::new(AtomicBool::new(false)),
             },
             envelopes,
         )
@@ -452,7 +487,7 @@ impl CarrierHandle {
 struct OpenSession {
     key: String,
     generation: u64,
-    carriers: HashMap<CarrierId, CarrierKind>,
+    carriers: HashMap<CarrierId, CarrierBinding>,
     /// Cleared when this opening ends, under the registry lock, and read by
     /// every sender built for it: a frame admitted before the end and run
     /// after it is told apart from the same id's next opening, so its handler
@@ -460,12 +495,33 @@ struct OpenSession {
     still_open: Arc<OpeningState>,
 }
 
+struct CarrierBinding {
+    kind: CarrierKind,
+    open: Arc<AtomicBool>,
+    reply_gate: Arc<Mutex<()>>,
+}
+
+impl CarrierBinding {
+    fn new(kind: CarrierKind) -> Self {
+        Self {
+            kind,
+            open: Arc::new(AtomicBool::new(true)),
+            reply_gate: Arc::new(Mutex::new(())),
+        }
+    }
+
+    fn release(&self) {
+        let _reply = self.reply_gate.lock().unwrap();
+        self.open.store(false, Ordering::SeqCst);
+    }
+}
+
 impl OpenSession {
     /// Whether a DataChannel is among the wires carrying this session.
     fn rides_a_channel(&self) -> bool {
         self.carriers
             .values()
-            .any(|kind| *kind == CarrierKind::Channel)
+            .any(|binding| binding.kind == CarrierKind::Channel)
     }
 
     /// End this opening: every sender built for it is told, so no handler runs
@@ -473,6 +529,9 @@ impl OpenSession {
     /// generation.
     fn end(&self, session_id: &str) -> SessionEnd {
         self.still_open.is_open.store(false, Ordering::SeqCst);
+        for binding in self.carriers.values() {
+            binding.release();
+        }
         SessionEnd {
             session_id: session_id.to_string(),
             generation: self.generation,
@@ -519,17 +578,21 @@ impl SessionRegistry {
     ) -> Option<SessionSender> {
         let sessions = self.sessions.lock().unwrap();
         let open = sessions.get(opening.session_id())?;
+        let binding = open.carriers.get(&carrier.id)?;
         if !Arc::ptr_eq(&open.still_open, &opening.still_open)
-            || open.carriers.get(&carrier.id) != Some(&CarrierKind::Channel)
+            || binding.kind != CarrierKind::Channel
         {
             return None;
         }
-        Some(SessionSender::keyed(
-            opening.session_id(),
-            open.key.clone(),
-            carrier.out.clone(),
-            open.still_open.clone(),
-        ))
+        Some(
+            SessionSender::keyed(
+                opening.session_id(),
+                open.key.clone(),
+                carrier.out.clone(),
+                open.still_open.clone(),
+            )
+            .on_carrier(carrier, binding),
+        )
     }
 
     fn with_ledger(ledger: Arc<dyn TransportLedger>) -> Self {
@@ -569,12 +632,17 @@ impl SessionRegistry {
         carrier: &CarrierHandle,
     ) -> Result<(), CarrierError> {
         let mut sessions = self.sessions.lock().unwrap();
+        if carrier.released.load(Ordering::SeqCst) {
+            return Err(CarrierError::UnknownSession(session_id.to_string()));
+        }
         match sessions.get_mut(session_id) {
             Some(open) if open.key != session_key => {
                 Err(CarrierError::KeyMismatch(session_id.to_string()))
             }
             Some(open) => {
-                open.carriers.insert(carrier.id, carrier.kind);
+                open.carriers
+                    .entry(carrier.id)
+                    .or_insert_with(|| CarrierBinding::new(carrier.kind));
                 Ok(())
             }
             None => {
@@ -583,7 +651,7 @@ impl SessionRegistry {
                     OpenSession {
                         key: session_key,
                         generation: self.minted.fetch_add(1, Ordering::Relaxed) + 1,
-                        carriers: HashMap::from([(carrier.id, carrier.kind)]),
+                        carriers: HashMap::from([(carrier.id, CarrierBinding::new(carrier.kind))]),
                         still_open: OpeningState::new(),
                     },
                 );
@@ -610,22 +678,30 @@ impl SessionRegistry {
         carrier: &CarrierHandle,
     ) -> Result<(Frame, SessionSender), CarrierError> {
         let mut sessions = self.sessions.lock().unwrap();
+        if carrier.released.load(Ordering::SeqCst) {
+            return Err(CarrierError::UnknownSession(envelope.session_id.clone()));
+        }
         let open = sessions
             .get_mut(&envelope.session_id)
             .ok_or_else(|| CarrierError::UnknownSession(envelope.session_id.clone()))?;
         let frame = transport::decrypt_envelope(&open.key, envelope)?;
-        if open.carriers.insert(carrier.id, carrier.kind).is_none() {
+        if !open.carriers.contains_key(&carrier.id) {
             crate::rtc::diagnostic(
                 &envelope.session_id,
                 &format!("carrier_bound kind={:?}", carrier.kind),
             );
         }
+        let binding = open
+            .carriers
+            .entry(carrier.id)
+            .or_insert_with(|| CarrierBinding::new(carrier.kind));
         let sender = SessionSender::keyed(
             &envelope.session_id,
             open.key.clone(),
             carrier.out.clone(),
             open.still_open.clone(),
-        );
+        )
+        .on_carrier(carrier, binding);
         Ok((frame, sender))
     }
 
@@ -637,6 +713,8 @@ impl SessionRegistry {
         let Some(left) = open.carriers.remove(&carrier.id) else {
             return Vec::new();
         };
+        left.release();
+        let left = left.kind;
         crate::rtc::diagnostic(
             session_id,
             &format!(
@@ -654,11 +732,16 @@ impl SessionRegistry {
     }
 
     fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd> {
+        // Fence a concurrent intake before taking the registry lock. A frame
+        // already inside the lock is pruned below; a later one cannot rebind.
+        carrier.released.store(true, Ordering::SeqCst);
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
             let Some(left) = open.carriers.remove(&carrier.id) else {
                 return true;
             };
+            left.release();
+            let left = left.kind;
             crate::rtc::diagnostic(
                 session_id,
                 &format!(
@@ -874,6 +957,10 @@ impl FrameIntake {
         if let Some(receipt) = receipt_for(&frame) {
             sender.push(receipt);
         }
+        if frame.payload["method"] == "bridge.stats" {
+            self.answer_stats(sender, frame, arrived);
+            return Ok(());
+        }
         // Signaling goes the same way as an attachment: an offer or a
         // candidate is answered from the peers alone, off the app lock
         // (`app/rpc.rs`), so nothing it could wait for in the queue is a wait
@@ -883,8 +970,23 @@ impl FrameIntake {
             self.answer_without_queueing(sender, frame, arrived);
             return Ok(());
         }
+        if crate::api::effects::is_sql_read(&frame.payload) {
+            self.dispatcher.dispatch_sql(sender, frame, arrived).await;
+            return Ok(());
+        }
         self.admit(carrier, sender, frame, arrived);
         Ok(())
+    }
+
+    /// Metrics only: avoid the shared blocking pool as well as dispatch queues.
+    fn answer_stats(&self, sender: SessionSender, frame: Frame, arrived: WaitTimer) {
+        if sender.session_is_open() {
+            let answer = self
+                .dispatcher
+                .handler()
+                .call_since(sender.clone(), frame, arrived);
+            sender.push(answer);
+        }
     }
 
     /// Put a frame in its wire's queue for the dispatcher, and come straight
@@ -1028,7 +1130,9 @@ impl FrameIntake {
     /// This carrier stops carrying this session — the relay's `session_closed`,
     /// or a channel that closed under one session.
     pub(crate) fn close_session(&self, session_id: &str, carrier: &CarrierHandle) {
-        self.close_ended(self.registry.release_session(session_id, carrier));
+        let ended = self.registry.release_session(session_id, carrier);
+        self.dispatcher.prune_sql();
+        self.close_ended(ended);
     }
 
     pub(crate) fn close_carrier(&self, carrier: &CarrierHandle) {
@@ -1040,10 +1144,13 @@ impl FrameIntake {
         if let Some(admitter) = self.admitters.lock().unwrap().remove(&carrier.id) {
             admitter.task.abort();
         }
-        self.close_ended(self.registry.release_carrier(carrier));
+        let ended = self.registry.release_carrier(carrier);
+        self.dispatcher.prune_sql();
+        self.close_ended(ended);
     }
 
     fn close_ended(&self, ended: Vec<SessionEnd>) {
+        self.dispatcher.prune_sql();
         for end in ended {
             self.forget_refusals(&end.session_id);
             let registry = self.registry.clone();

@@ -194,6 +194,7 @@ impl DeferredGitWork for DeleteWorkspaceFiles {
         if let Err(error) = app.workspaces.reload() {
             eprintln!("reload workspaces after delete: {error}");
         }
+        app.publish_read_metadata();
     }
 
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {

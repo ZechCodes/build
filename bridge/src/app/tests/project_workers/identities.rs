@@ -109,6 +109,18 @@ fn stored_project_worker_purpose_backfills_older_task_identities() {
     assert_worker_identity(identity, &worker, false);
     assert_eq!(identity["workspace_id"], Value::Null);
     assert_eq!(identity["workspace_name"], Value::Null);
+    assert_eq!(
+        project
+            .state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_task(&task)
+            .unwrap()
+            .unwrap(),
+        saved,
+        "reads derive legacy fields without persisting them"
+    );
+    project.state.migrate_task_read_fields().unwrap();
     let saved = project
         .state
         .tracker_store()
@@ -144,6 +156,18 @@ fn stored_project_purpose_removes_legacy_workspace_identity_fields() {
         &worker,
         false,
     );
+    assert_eq!(
+        project
+            .state
+            .tracker_store()
+            .unwrap()
+            .load_tracker_task(&task)
+            .unwrap()
+            .unwrap(),
+        saved,
+        "reads normalize old workspace fields without persisting them"
+    );
+    project.state.migrate_task_read_fields().unwrap();
     let saved = project
         .state
         .tracker_store()

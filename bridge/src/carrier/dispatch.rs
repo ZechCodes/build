@@ -1733,6 +1733,7 @@ mod dispatcher_tests {
         let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let (started, mut started_rx) = mpsc::unbounded_channel();
         let handler = counting_handler(gate.clone(), computed.clone(), started);
+        // Exercise the held ordinary pool; Git observations have an independent lane.
         let dispatcher = Dispatcher::with_capacity(handler, 256, 1);
         let (one, mut one_rx, one_key) = SessionSender::observable("s-one");
         let (two, mut two_rx, two_key) = SessionSender::observable("s-two");
@@ -1747,13 +1748,16 @@ mod dispatcher_tests {
         for id in 1..=3u64 {
             // Same client, same params: one compute.
             dispatcher
-                .dispatch(one.clone(), request(id, "git.log", json!({ "p": "a" })))
+                .dispatch(
+                    one.clone(),
+                    request(id, "project.list", json!({ "p": "a" })),
+                )
                 .await;
             // Same client, different params: a different answer, its own compute.
             dispatcher
                 .dispatch(
                     one.clone(),
-                    request(id + 10, "git.log", json!({ "p": "b" })),
+                    request(id + 10, "project.list", json!({ "p": "b" })),
                 )
                 .await;
             // A different client asking the same thing: its own compute, because a
@@ -1761,7 +1765,7 @@ mod dispatcher_tests {
             dispatcher
                 .dispatch(
                     two.clone(),
-                    request(id + 20, "git.log", json!({ "p": "a" })),
+                    request(id + 20, "project.list", json!({ "p": "a" })),
                 )
                 .await;
         }
@@ -1796,9 +1800,9 @@ mod dispatcher_tests {
         assert_eq!(
             ran,
             vec![
-                "git.log {\"p\":\"a\"}".to_string(),
-                "git.log {\"p\":\"a\"}".to_string(),
-                "git.log {\"p\":\"b\"}".to_string(),
+                "project.list {\"p\":\"a\"}".to_string(),
+                "project.list {\"p\":\"a\"}".to_string(),
+                "project.list {\"p\":\"b\"}".to_string(),
             ],
             "three distinct answers, three computes — one per (client, method, params)"
         );
@@ -2149,6 +2153,7 @@ mod dispatcher_tests {
         let computed: Arc<Mutex<Vec<(String, Value)>>> = Arc::new(Mutex::new(Vec::new()));
         let (started, mut started_rx) = mpsc::unbounded_channel();
         let handler = counting_handler(gate.clone(), computed.clone(), started);
+        // Exercise the held ordinary pool; Git observations have an independent lane.
         let dispatcher = Dispatcher::with_capacity(handler, 256, 1);
         let (sender, mut rx, key) = SessionSender::observable("s-cross-fold");
 
@@ -2160,12 +2165,12 @@ mod dispatcher_tests {
             .expect("the only worker is busy");
 
         dispatcher
-            .dispatch(sender.clone(), request(1, "git.status", json!({})))
+            .dispatch(sender.clone(), request(1, "board.list", json!({})))
             .await;
         dispatcher
             .dispatch(
                 sender.clone(),
-                background_request(2, "git.status", json!({})),
+                background_request(2, "board.list", json!({})),
             )
             .await;
         gate.store(false, Ordering::SeqCst);
@@ -2175,7 +2180,7 @@ mod dispatcher_tests {
         assert_eq!(ids, vec![json!(0), json!(1), json!(2)]);
         assert_eq!(
             *computed.lock().unwrap(),
-            vec![("git.status".to_string(), json!({}))],
+            vec![("board.list".to_string(), json!({}))],
             "the background pull cost no second compute"
         );
     }

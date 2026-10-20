@@ -1344,7 +1344,12 @@ impl AppState {
         // failed; never restore the process or a queued delivery from a copy.
         self.retire_agent(&root, &removed.id);
         if persisted.is_err() {
+            self.session_registry
+                .retire_agent_binding(&entity_id, &removed.id);
+            self.publish_read_owner(&entity_id, false);
             self.publish_owner_snapshot_projection(&entity_id);
+        } else {
+            self.session_registry.forget_retired_agent(&removed.id);
         }
         if let Some((project_id, task_ids)) = task_refresh {
             self.changes.note_tasks(&project_id, &task_ids);

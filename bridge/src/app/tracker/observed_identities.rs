@@ -25,6 +25,13 @@ impl AppState {
     }
 
     fn overlay_observed_task_identity(&self, identity: &mut TaskAgentIdentity) {
+        if self
+            .session_registry
+            .agent_binding_retired(&identity.agent_id)
+        {
+            identity.available = false;
+            return;
+        }
         let Some(owner) = self.entity_of_agent(&identity.agent_id) else {
             identity.available = false;
             return;

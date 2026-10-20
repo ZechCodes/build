@@ -88,7 +88,11 @@ impl TaskIdentityContext {
                 Some((_, true)) => true,
                 Some((_, false)) => match previous.live.get(id) {
                     Some(prior) => {
+                        // A roster rollback preserves committed association,
+                        // but cannot undo actual runtime retirement or start.
+                        let available = live.available;
                         *live = prior.clone();
+                        live.available = available;
                         true
                     }
                     None => false,

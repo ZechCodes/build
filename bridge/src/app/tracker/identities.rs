@@ -246,9 +246,10 @@ impl AppState {
                         })
                 })
         };
-        let available = workspace
-            .is_some_and(|workspace| workspace.status == crate::workspace::WorkspaceStatus::Ready)
-            || crate::agent::is_project_agent(agent_id);
+        let available = !self.session_registry.agent_binding_retired(agent_id)
+            && (workspace.is_some_and(|workspace| {
+                workspace.status == crate::workspace::WorkspaceStatus::Ready
+            }) || crate::agent::is_project_agent(agent_id));
         Some(TaskAgentIdentity {
             agent_id: agent_id.to_string(),
             name: agent.name.clone(),

@@ -298,10 +298,10 @@ fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
     let (dir, repo) = init_repo();
     let mut app = qa_state(&repo, dir.path());
     let fixture = seed(&mut app);
-    let (tab, session) = queue_and_install_live_agent(&mut app, &fixture);
     let state = app.shared();
     let handler = AppState::handler(Arc::clone(&state));
     assert_routed_availability(&handler, &fixture, true);
+    let (tab, session) = queue_and_install_live_agent(&mut state.lock().unwrap(), &fixture);
     rusqlite::Connection::open(dir.path().join("store/build.db"))
         .unwrap()
         .execute_batch(
@@ -346,4 +346,11 @@ fn failed_removal_retires_live_binding_without_reactivating_task_identity() {
         false
     );
     assert_routed_availability(&handler, &fixture, false);
+    {
+        let mut app = state.lock().unwrap();
+        let fresh = terminal_free_agent_tab(&tab.root, &fixture.entity, &fixture.removed);
+        app.session_registry.insert_opened(tab, fresh);
+        app.publish_read_metadata();
+    }
+    assert_routed_availability(&handler, &fixture, true);
 }

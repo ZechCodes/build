@@ -1,6 +1,6 @@
 //! Audited effects of every RPC entry. Migrated immutable snapshots execute
-//! at intake; SQL reads use dedicated workers, and other observations keep
-//! their existing routing.
+//! at intake; SQL reads use dedicated workers, and filesystem/Git observations
+//! use an independent bounded I/O lane.
 
 use serde_json::Value;
 

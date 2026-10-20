@@ -1046,8 +1046,9 @@ function rowOpenHtml(entry, ui, extra = []) {
 
 /** Project agents use the workspace shape, retaining their existing actions. */
 function projectAgentRowHtml(entry, ui) {
-  if (ui.quiet || entry.quiet) return quietRowHtml(entry, ui, ["inbox-project-agent"], entry.facts || GETTING_STARTED);
-  return twoLineRowHtml(entry, ui, ["inbox-project-agent"]);
+  const facts = entry.facts ?? GETTING_STARTED;
+  if (ui.quiet || entry.quiet) return quietRowHtml(entry, ui, ["inbox-project-agent"], facts);
+  return twoLineRowHtml(entry, ui, ["inbox-project-agent"], facts);
 }
 
 /** The kinds of row that paint in a shape of their own. */

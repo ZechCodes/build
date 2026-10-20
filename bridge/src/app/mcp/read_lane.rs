@@ -3,6 +3,7 @@ mod admission;
 mod guarded;
 mod history;
 mod job;
+mod mixed;
 mod snapshots;
 mod sql;
 
@@ -31,6 +32,8 @@ pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
             | "search_conversation"
             | "read_conversation"
             | "tracker_read_comment"
+            | "tracker_get_review"
+            | "tracker_read_review"
     ) {
         return None;
     }
@@ -44,7 +47,8 @@ pub(super) fn action(frame: &Value) -> Option<BridgeAction> {
     (sql::supports(&action)
         || guarded::supports(&action)
         || snapshots::supports(&action)
-        || history::supports(&action))
+        || history::supports(&action)
+        || mixed::supports(&action))
     .then_some(action)
 }
 
@@ -57,6 +61,7 @@ fn prepare(
         .or_else(|| guarded::prepare(app, session, action))
         .or_else(|| snapshots::prepare(app, session, action))
         .or_else(|| history::prepare(app, session, action))
+        .or_else(|| mixed::prepare(app, session, action))
         .unwrap_or_else(|| Err("invalid MCP action request".into()))
 }
 

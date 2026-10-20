@@ -49,17 +49,16 @@ impl McpConversationGeneration {
 /// gets a name of its own rather than borrowing one from the wire.
 pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 
-/// How many agents' control frames may be at the app mutex at once.
+/// How many mutation/report frames may enter the control plane's writer lane.
 ///
-/// Every tool call takes the lock, and off the workers nothing else limits how
-/// many wait for it together: a dozen busy agents would stand a dozen deep in
-/// front of every frame the user is waiting on. At this many at a time, the
-/// user's frame waits behind two agents' holds at most; the rest take their
-/// turn on the runtime, asleep, holding no thread.
+/// The remaining writers wait asynchronously instead of parking a dozen
+/// blocking threads at the app mutex. Explicit read adapters bypass these
+/// permits, using brief timed guards for session admission and final fences;
+/// their SQL and external work runs without the app guard.
 pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
 
-/// What every control stream shares: the clock its frames are timed by, and
-/// the turns they take at the app mutex.
+/// The arrival clock shared by every control stream and the bounded mutation
+/// turns used by writers and completion reports.
 pub(in crate::app) struct ControlPlane {
     clock: Arc<FrameClock>,
     turns: Arc<tokio::sync::Semaphore>,
@@ -81,9 +80,8 @@ impl ControlPlane {
         })
     }
 
-    /// Answer one frame on the blocking pool, once it is this frame's turn.
-    /// The frame is timed from its arrival, so the wait for a turn counts
-    /// against it the way a queued RPC's wait does.
+    /// Route exact supported reads independently; other frames take a writer
+    /// turn. The arrival timer includes permit, pool and app-lock waits.
     #[cfg(unix)]
     async fn answer(self: &Arc<Self>, state: Arc<Mutex<AppState>>, frame: Value) -> Option<Value> {
         let timer = self.clock.frame(MCP_CONTROL_METHOD);
@@ -94,7 +92,7 @@ impl ControlPlane {
         answer_off_the_workers(state, frame, timer, turn).await
     }
 
-    /// The most control frames that have been at the lock at once.
+    /// The most writer/report frames admitted to the mutation lane at once.
     #[cfg(test)]
     pub(in crate::app) fn most_at_the_lock(&self) -> usize {
         self.most_at_the_lock
@@ -102,7 +100,7 @@ impl ControlPlane {
     }
 }
 
-/// One control frame's turn at the app mutex.
+/// One mutation/report frame's turn in the bounded writer lane.
 ///
 /// Held while the frame is at the lock, and given back while it waits on the
 /// git it handed back: that git runs with the guard released, and a turn kept
@@ -294,13 +292,11 @@ pub(in crate::app) async fn handle_done_stream(
     }
 }
 
-/// Answer one control frame on the blocking pool.
+/// Answer one writer/report frame on the blocking pool after permit admission.
 ///
-/// Every tool call takes the app mutex, some of them for as long as the
-/// tracker takes to read, and a harness waiting on its answer must not park a
-/// runtime worker behind whichever frame holds the lock. The frame's own awaits
-/// — the git it hands back, run with the guard released — are driven from the
-/// same blocking thread.
+/// App-lock waits and synchronous writer work must not park a runtime worker.
+/// The frame's deferred awaits, including Git work with the guard released,
+/// are driven from the same blocking thread. Supported reads use read_lane.
 #[cfg(unix)]
 async fn answer_off_the_workers(
     state: Arc<Mutex<AppState>>,

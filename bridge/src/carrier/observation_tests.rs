@@ -331,3 +331,22 @@ async fn observation_handler_timing_ends_before_sealing_its_reply() {
     assert_eq!(values.recv_timeout(Duration::from_secs(1)).unwrap(), 1,
         "FrameClock must use the legacy handler-complete endpoint; reply sealing is a separate measured phase");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cold_pure_observation_does_not_initialize_sql_execution_threads() {
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| {
+        panic!("pure observation bypasses app")
+    })
+    .with_observation_reads(None, |frame, _| {
+        Box::new(move || json!({"id":frame.payload["id"],"ok":true}))
+    });
+    let sql_execution = handler.read_executors.clone();
+    assert!(sql_execution.get().is_none());
+    let mut client = Client::new(handler);
+    client.send(1, "fs.list", json!({})).await;
+    assert_eq!(client.reply().await["id"], 1);
+    assert!(
+        sql_execution.get().is_none(),
+        "a first pure read must not pay for SQL threads it never uses"
+    );
+}

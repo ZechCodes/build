@@ -27,6 +27,7 @@ impl AppState {
             delta = self.prepare_workspace_snapshot_details(delta, previous, Some(owner));
         }
         let facts = self.push_facts_incremental_snapshot(cache.lists(), &owners);
+        let delta = self.prepare_observation_inputs(delta, previous);
         Some(delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache)))
     }
 
@@ -60,6 +61,7 @@ impl AppState {
         let cache = GlobalProjection::seed(self, board, projects, workspaces, reusable);
         let delta = cache.publish(self, delta, previous);
         let facts = self.push_facts_shared_snapshot(cache.lists());
+        let delta = self.prepare_observation_inputs(delta, previous);
         delta.set_facts(Arc::new(facts)).set_global(Arc::new(cache))
     }
 }

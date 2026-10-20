@@ -22,12 +22,17 @@ export function installMarkdownImages(root = document) {
   const loaded = new WeakSet();
   const click = (event) => {
     const button = event.target?.closest?.("button.md-image-load");
-    if (!button || !root.contains(button) || !button.closest(HOST) || loaded.has(button)) return;
+    if (!button || !root.contains(button) || !button.closest(HOST)) return;
+    // Button activation is distinct from following an enclosing image link,
+    // including when hostile latent data makes the requested load invalid.
+    event.preventDefault();
+    event.stopPropagation();
+    if (loaded.has(button)) return;
     const src = safeImageSrc(button.dataset.mdImageSrc);
     if (!src) return;
     loaded.add(button);
     button.replaceWith(activatedImage(button, src));
   };
-  root.addEventListener("click", click);
-  return () => root.removeEventListener("click", click);
+  root.addEventListener("click", click, true);
+  return () => root.removeEventListener("click", click, true);
 }

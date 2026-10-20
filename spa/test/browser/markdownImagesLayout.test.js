@@ -89,3 +89,51 @@ for (const hostClass of ["thread-event-detail", "cc-body"]) {
     }, { width: 390, height: 600 });
   });
 }
+
+for (const activation of ["click", "Enter", "Space"]) {
+  it(`separates outer-link navigation from linked-image ${activation} activation`, async () => {
+    await session.withPage(async ({ page, basePath }) => {
+      let imageRequests = 0;
+      let navigations = 0;
+      await page.route("https://images.fixture.test/**", (route) => {
+        imageRequests += 1;
+        return route.fulfill({ contentType: "image/svg+xml", body: IMAGE });
+      });
+      await page.context().route("https://target.fixture.test/**", (route) => {
+        navigations += 1;
+        return route.fulfill({ contentType: "text/html", body: "<title>Linked target</title>Target" });
+      });
+      await loadBrowserModules(page, { markdown: "src/core/markdown.js", images: "src/core/markdownImages.js" }, basePath);
+      const html = await page.evaluate(() => window.__layoutModules.markdown.markdownHtml("[![Linked badge](https://images.fixture.test/badge.svg)](https://target.fixture.test/docs)"));
+      await mountLayout(page, `<div class="markdown">${html}</div>`, { basePath });
+      await page.evaluate(() => { window.__disposeImages = window.__layoutModules.images.installMarkdownImages(document); });
+      expect(imageRequests).toBe(0);
+      expect(await page.locator("img, [src]").count()).toBe(0);
+      expect(await page.locator("a.md-link > button.md-image-load").count()).toBe(1);
+
+      const opened = page.context().waitForEvent("page");
+      if (activation === "click") await page.locator("a.md-link").evaluate((link) => link.click());
+      else {
+        await page.locator("a.md-link").focus();
+        await page.keyboard.press("Enter");
+      }
+      const target = await opened;
+      await target.waitForLoadState();
+      expect(navigations).toBe(1);
+      expect(imageRequests).toBe(0);
+      expect(await page.locator("img").count()).toBe(0);
+      await target.close();
+
+      const button = page.getByRole("button", { name: "Load image from images.fixture.test — Linked badge" });
+      if (activation === "click") await button.click();
+      else await button.press(activation);
+      expect(await page.locator("a.md-link > img").count()).toBe(1);
+      await page.locator("img").evaluate(async (image) => { image.loading = "eager"; await image.decode(); });
+      expect(imageRequests).toBe(1);
+      expect(navigations).toBe(1);
+      expect(page.context().pages()).toHaveLength(1);
+      expect(await page.locator("a.md-link").getAttribute("href")).toBe("https://target.fixture.test/docs");
+      await page.evaluate(() => window.__disposeImages());
+    }, { width: 390, height: 600 });
+  });
+}

@@ -151,6 +151,14 @@ describe("the shared inline vocabulary", () => {
     expect(host.querySelectorAll("kbd, code, em, strong, del, img")).toHaveLength(0);
   });
 
+  it("bounds malformed linked-image nesting in the expendable child", () => {
+    const source = "[![badge](https://img.test/x.svg)](".repeat(1500) + "[";
+    const child = renderInChild(source);
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.signal).toBeNull();
+  });
+
   it("handles long unclosed marks in bounded time", () => {
     const source = "[!(**~~`<kbd>".repeat(12000);
     const started = performance.now();

@@ -141,6 +141,17 @@ function pastCode(html, at) {
   return close < 0 ? html.length : close + CODE_CLOSE.length;
 }
 
+/** The explicit `[![alt](image)](link)` production reuses both destination
+ * readers. Consuming its outer end prevents already copied text or targets
+ * from being scanned again. Other nested bracket syntax stays unchanged. */
+function enclosingImageLink(html, span, copied) {
+  const start = span.start - 1;
+  if (start < copied || html[start] !== "[" || !html.startsWith("](", span.end)) return span;
+  const destination = readDestination(html, span.end + 2);
+  const href = destination && safeWebHref(unesc(destination.url));
+  return href ? { start, end: destination.end, markup: anchor(href, span.markup, unesc(destination.title)) } : span;
+}
+
 /** The link whose label closes at `close`, written to `state` — or nothing,
  *  leaving it as written, when its address is refused. */
 function writeLink(html, close, destination, state) {
@@ -150,8 +161,11 @@ function writeLink(html, close, destination, state) {
   const label = html.slice(state.opener + 1, close);
   const title = unesc(destination.title);
   const markup = href ? (isImage ? image(href, label, title, state.imageOrigin) : anchor(href, state.formatLabel(label), title)) : html.slice(start, destination.end);
-  state.out += html.slice(state.copied, start) + markup;
-  state.copied = destination.end;
+  const imageSpan = { start, end: destination.end, markup };
+  const span = isImage ? enclosingImageLink(html, imageSpan, state.copied) : imageSpan;
+  state.out += html.slice(state.copied, span.start) + span.markup;
+  state.copied = span.end;
+  return span.end;
 }
 
 /** Literal inline spans and footnote notation inside a label are atomic. */
@@ -171,9 +185,9 @@ function readAt(html, index, state) {
   if (html[index] === "[") state.opener = index;
   if (html[index] !== "]") return index + 1;
   const destination = state.opener >= 0 && html[index + 1] === "(" ? readDestination(html, index + 2) : null;
-  if (destination) writeLink(html, index, destination, state);
+  const next = destination ? writeLink(html, index, destination, state) : index + 1;
   state.opener = -1;
-  return destination ? destination.end : index + 1;
+  return next;
 }
 
 /** Every `[label](address)` in one line of escaped HTML made a link, and

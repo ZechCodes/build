@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { markdownHtml } from "../src/core/markdown.js";
 import { installMarkdownImages } from "../src/core/markdownImages.js";
 
@@ -18,6 +18,36 @@ describe("external markdown image activation", () => {
     expect(host.querySelectorAll("img")).toHaveLength(0);
     host.querySelector("button").click();
     expect(host.querySelector("img")?.getAttribute("src")).toBe("https://images.test/a.png");
+  });
+
+  it.each([false, true])("cancels a containing link before activation validation (tampered source: %s)", (tampered) => {
+    const host = mount();
+    const button = host.querySelector("button");
+    const link = document.createElement("a");
+    link.href = "https://target.test";
+    button.replaceWith(link);
+    link.append(button);
+    const follow = vi.fn((event) => event.preventDefault());
+    link.addEventListener("click", follow);
+    if (tampered) button.dataset.mdImageSrc = "javascript:alert(1)";
+    button.click();
+    expect(follow).not.toHaveBeenCalled();
+    expect(host.querySelectorAll("img")).toHaveLength(tampered ? 0 : 1);
+    link.click();
+    expect(follow).toHaveBeenCalledTimes(1);
+    expect(host.querySelectorAll("img")).toHaveLength(tampered ? 0 : 1);
+  });
+
+  it("keeps linked-image activation per instance and resets both links on repaint", () => {
+    const source = "[![badge](https://images.test/a.png)](https://target.test)";
+    const host = mount(`${source} ${source}`);
+    expect(host.querySelectorAll("a.md-link > button")).toHaveLength(2);
+    host.querySelector("button").click();
+    expect(host.querySelectorAll("a.md-link > img")).toHaveLength(1);
+    expect(host.querySelectorAll("a.md-link > button")).toHaveLength(1);
+    host.innerHTML = markdownHtml(`${source} ${source}`);
+    expect(host.querySelectorAll("img")).toHaveLength(0);
+    expect(host.querySelectorAll("a.md-link > button")).toHaveLength(2);
   });
 
   it("loads exactly one button instance with fixed safe image attributes", () => {

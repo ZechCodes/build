@@ -163,7 +163,10 @@ Queued compatible callers may fold, but a new caller never joins a running
 query. Carrier release prunes its queued callers and fences running replies;
 a replacement carrier keeps its opening usable. Close signaling wakes a
 parked intake independently of the channel event pump. Stats and the existing
-ping/signaling fast paths bypass this lane.
+ping/signaling fast paths bypass this lane. The daemon calls
+`FrameHandler::start_read_workers` after creating its shared handler and before
+constructing intake or accepting relay/client work, so all eight SQL workers
+are ready before the first read. Handler clones share that executor.
 
 The nine published reads (`board.list`, `project.list`, `workspace.list`,
 `workspace.get`, `agent.list`, `settings.get`, `models.list`, `harnesses.list`
@@ -175,8 +178,9 @@ The 22 remaining observation reads (filesystem/Git, stage documents, review
 reads, attachments, archives, GitHub repositories and Git initialization
 options) enter an independent fair I/O lane before write admission. It reuses
 the SQL lane's bounded per-opening queue and queued-only folding, with its own
-16-caller backlog and eight dedicated I/O threads. Excess intake waits without
-capacity refusals. Review and task-attachment metadata preparation runs on the
+16-caller backlog and up to eight dedicated I/O threads. I/O threads start on
+demand and are reused; they are not all started before the first read. Excess
+intake waits without capacity refusals. Review and task-attachment metadata preparation runs on the
 same fixed SQL executor as ordinary SQL reads; its transaction and connection
 are released before any filesystem/Git work. Pure I/O reads take no SQL slot or
 connection. Carrier closure cancels preparation waits and suppresses replies
@@ -303,6 +307,15 @@ callers still serialize on the writer connection. Routed v1 handlers receive
 `off_the_workers` protects runtime workers from blocking; it does not remove
 these serialization points.
 
+Before publishing its eight readers, `ReadPool::open` initializes each SQLite
+schema by preparing and dropping `SELECT 1 FROM main.sqlite_schema LIMIT 0`.
+This is startup work, without an application-row/result cache or a retained
+statement. The pool also retains the private writer connection until its last
+reader closes, including cloned pools and outstanding borrowers. Closing the
+readers before the final writer permits SQLite's final WAL checkpoint and
+preserves database-file-only backups. Read paths do not acquire the retained
+writer's mutex.
+
 Task identity/done-at backfills and cursor key creation happen before reader
 admission; task reads retain pure derived fallbacks for older records.
 Parked-project revival, legacy workspace adoption, manifest refresh, board
@@ -329,6 +342,13 @@ Total duration, per-queue p95, slow-frame `total=`/`queued=` and the 200 ms
 slow-frame threshold now measure from intake, including decrypt and admission;
 compare them only against this change's baseline, not older logs.
 `bridge.stats` answers at intake without an app lock or dispatch worker.
+
+Fine-grained request-phase tracing is test-only: `timing/requests.rs`, its
+observer fields and its call sites compile under `cfg(test)`. The non-test
+`observation_reads::trace_phase!` expansion contains only the measured work.
+Diagnostic test binaries retain that tracer; production retains the ordinary
+FrameClock queue/wait/hold aggregates without request-phase observer locks,
+frame clones or diagnostic timestamps.
 
 **Independent SQL reads (#681 step 2).** `AppState::handler` captures the
 read pool, update-admission service and an atomic immutable `ReadContext` slot.

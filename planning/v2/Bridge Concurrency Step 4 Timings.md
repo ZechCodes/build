@@ -221,6 +221,8 @@ The app-held and Git-writer-held scenarios each improved all 22 client p95s in a
 | Baseline cold | 0.657 | 0.806 | 0.743 | 0.565 |
 | Selected cold | 0.638 | 0.612 | 0.638 | 0.619 |
 
+The isolated `git.unpushed` cold client p95 was also higher in **all four pairs**: median run p95 3.772 → 4.539 ms; its cold queue p95 was higher in three of four pairs. This is a separate disclosed residual, alongside the mixed-reader and app-held `git.log` offsets.
+
 The final isolated attachment warm client differences were +0.064, +0.474, +0.072 and +0.133 ms. Its warm queue differences were +0.029, +0.168, +0.100 and +0.083 ms. Review-diff warm queue differences were +0.030, +0.149, +0.054 and +0.081 ms; review-get +0.024, +0.152, +0.206 and +0.089 ms. Other positive pair counts and all cold tails are shown above. In particular, selected isolated cold review-get includes a 76.429 ms run maximum and Git-show queue a 5.877 ms maximum; neither is discarded or assigned a cause from these data.
 
 The actual process-first `git.log` samples are separate from those cold p95s:
@@ -242,6 +244,8 @@ The fixture uses a temporary file-backed Store, real encrypted FrameIntake and t
 The successful-resource fixture is `bridge/src/app/tests/runtime/concurrency_timing/io_observations.rs`; its opt-in client/queue collector is `io_observations/benchmark.rs`. The runner selects `app::tests::runtime::concurrency_timing::io_observations::benchmark::paired_observation_benchmark` with `--exact --ignored --nocapture --test-threads=1`.
 
 The full-client interval starts immediately before payload construction/encryption and ends after final result decryption and JSON decoding. It includes send/intake, execution, reply encryption/enqueue and client decoding. A receipt is not the result. Payload validation and metric bookkeeping follow the endpoint.
+
+The fine-grained tracer (`timing/requests.rs`, observer fields and phase calls) is compiled only for tests. The production `trace_phase!` macro expands to the work itself. Diagnostic tracing remains available in test binaries; tracing-off captures install no phase observer. This describes the compilation boundary rather than a removal of production instrumentation in this revision.
 
 Each batch has exactly one distinct computation per method. Exact production queue, app-wait and app-hold values come from existing FrameClock count/integer-microsecond-sum differences sampled after all client timestamps. Every count delta must equal one; every retained-fixture phase sum and served count must reconcile. Cumulative internal FrameClock totals are not substituted for the client endpoint or used to infer I/O cost by subtracting percentiles.
 
@@ -368,7 +372,7 @@ release before subsequent reads.
 
 | Startup/timing requirement | Coverage | Evidence |
 | --- | --- | --- |
-| One queued observation wakes one coordinator | `carrier::sql::tests::one_queued_read_wakes_one_idle_execution_coordinator` | Deterministic wake count, before/after regression |
+| One queued observation wakes one coordinator | `carrier::sql::queue_wakeup_tests::one_queued_read_wakes_one_idle_execution_coordinator` | Deterministic wake count, before/after regression |
 | Internal handler timer excludes reply sealing consistently | `carrier::observation_tests::observation_handler_timing_ends_before_sealing_its_reply` | Endpoint regression independent of full client timer |
 | I/O grows only with concurrent work and remains bounded | `carrier::observation_tests::io_threads_grow_only_for_concurrent_work_and_reuse_warm_workers`; `carrier::io::tests::serial_submissions_reuse_one_worker_after_actual_execution_completion` | First request, quiescent reuse, eight occupied workers and queued ninth; real client counters remain 1–2 |
 | SQL 8 is ready before intake and shared by handler clones | `carrier::observation_tests::eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones` | Preaccept 0→8, idempotence, shared pool; no warmup query |

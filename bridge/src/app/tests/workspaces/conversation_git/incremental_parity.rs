@@ -462,12 +462,25 @@ fn retained_projection_roots_do_not_retain_replaced_or_removed_sessions() {
     state.publish_owner_snapshot_projection("run-02");
     let replaced = state.read_view.load();
     assert_full_reference(&state, &replaced, &requests);
+    let replaced_before = image(&replaced, &requests);
     drop(state.session_registry.test_remove_tab(&key).unwrap());
     assert!(
         replacement_weak.upgrade().is_none(),
         "accepted or retained roots kept a removed session alive"
     );
+    let project = state.projects.project_id_of("run-00").unwrap().to_owned();
+    let task = state
+        .tasks_create(
+            &json!({"project_id":project, "title":"task publication after registry removal"}),
+        )
+        .unwrap();
+    assert_eq!(
+        task["task"]["title"],
+        "task publication after registry removal"
+    );
+    assert_full_reference(&state, &state.read_view.load(), &requests);
     state.publish_owner_snapshot_projection("run-02");
     assert_full_reference(&state, &state.read_view.load(), &requests);
     assert_eq!(before, image(&old, &requests));
+    assert_eq!(replaced_before, image(&replaced, &requests));
 }

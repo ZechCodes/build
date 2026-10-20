@@ -785,6 +785,8 @@ mod tests {
     }
 }
 
+mod owner_capture;
+
 #[cfg(test)]
 mod tail_tests;
 

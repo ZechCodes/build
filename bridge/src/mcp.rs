@@ -942,7 +942,7 @@ impl DoneServer {
         json!({
             "type": "array",
             "maxItems": 10,
-            "description": "Files shown with this message or task, including on a phone. Attach screenshots, recordings and logs instead of listing paths in the body. Pass an attachment's path through unchanged, or give the full path of a file you made on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
+            "description": "Files shown with this message or task, including on a phone. Use this for the screenshots, recordings and logs that prove a claim — a before/after, a failing run, a UI you changed — instead of listing their paths in the text, which nobody reading the message or task can open. Pass an attachment's path through unchanged, or give the full path of a file you made on this machine: images (png, jpg, webp, gif), videos (mp4, webm) and plain text or logs, up to 50 MB each. Build copies your file when the call lands, so you may delete it afterwards.",
             "items": {
                 "type": "object",
                 "properties": {
@@ -2992,6 +2992,36 @@ mod tests {
         fields.sort_unstable();
         assert_eq!(fields, ["attachments", "body", "options", "status"]);
         assert_eq!(schema["required"], json!(["status", "body"]));
+    }
+
+    #[test]
+    fn agent_attachment_schemas_preserve_evidence_guidance_on_both_working_surfaces() {
+        const EVIDENCE_GUIDANCE: &str = "the screenshots, recordings and logs that prove a claim — a before/after, a failing run, a UI you changed";
+        for owner in ["agent-evidence", "project-evidence"] {
+            let listed = DoneServer::for_owner(owner)
+                .handle_message(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#);
+            let reply = parse(&listed.reply.unwrap());
+            let tools = reply["result"]["tools"].as_array().unwrap();
+            for name in [
+                "create_task",
+                "comment_task",
+                "post_thread_message",
+                "message_agent",
+            ] {
+                let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+                let description = tool["inputSchema"]["properties"]["attachments"]["description"]
+                    .as_str()
+                    .unwrap();
+                assert!(
+                    description.contains(EVIDENCE_GUIDANCE),
+                    "{owner} {name} must request concrete evidence: {description}"
+                );
+                assert!(
+                    description.contains("this message or task"),
+                    "{owner} {name} must describe both attachment uses: {description}"
+                );
+            }
+        }
     }
 
     #[test]

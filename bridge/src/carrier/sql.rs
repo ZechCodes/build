@@ -127,7 +127,11 @@ impl ReadDispatcher {
             }
             ReadLane::Observation => {
                 for number in 0..IO_WORKERS {
-                    let executor = spawn_io_executor(number);
+                    let executor = spawn_io_executor(
+                        number,
+                        #[cfg(test)]
+                        &handler.io_thread_starts,
+                    );
                     tokio::spawn(coordinate_io(queue.clone(), handler.clone(), executor));
                 }
             }
@@ -460,7 +464,10 @@ impl Work {
     }
 }
 
-fn spawn_io_executor(number: usize) -> std::sync::mpsc::Sender<(Execution, oneshot::Sender<()>)> {
+fn spawn_io_executor(
+    number: usize,
+    #[cfg(test)] starts: &std::sync::atomic::AtomicUsize,
+) -> std::sync::mpsc::Sender<(Execution, oneshot::Sender<()>)> {
     let (send, receive) = std::sync::mpsc::channel::<(Execution, oneshot::Sender<()>)>();
     std::thread::Builder::new()
         .name(format!("bridge-io-{number}"))
@@ -471,6 +478,8 @@ fn spawn_io_executor(number: usize) -> std::sync::mpsc::Sender<(Execution, onesh
             }
         })
         .expect("start observation read worker");
+    #[cfg(test)]
+    starts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     send
 }
 

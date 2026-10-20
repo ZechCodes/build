@@ -350,3 +350,74 @@ async fn a_cold_pure_observation_does_not_initialize_sql_execution_threads() {
         "a first pure read must not pay for SQL threads it never uses"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn io_threads_grow_only_for_concurrent_work_and_reuse_warm_workers() {
+    let (gate, held) = OffLockGate::new();
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| {
+        panic!("observation bypasses app")
+    })
+    .with_observation_reads(None, move |frame, _| {
+        let gate = gate.clone();
+        Box::new(move || {
+            if frame.payload["params"]["hold"] == true {
+                gate.arrive();
+            }
+            json!({"id":frame.payload["id"],"ok":true})
+        })
+    });
+    let starts = handler.io_thread_starts.clone();
+    let mut client = Client::new(handler);
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    // Count the entire first serial batch, so deferred startups cannot hide
+    // behind a better first request or a benchmark warmup.
+    for id in 0..22 {
+        client.send(id, "fs.list", json!({"serial":id})).await;
+        assert_eq!(client.reply().await["id"], id);
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            1,
+            "serial reads reuse the first I/O worker"
+        );
+    }
+    for id in 100..100 + sql::IO_WORKERS {
+        client
+            .send(id, "fs.list", json!({"hold":true,"unique":id}))
+            .await;
+        held.wait_for_arrival();
+    }
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        sql::IO_WORKERS,
+        "all eight gated jobs have workers"
+    );
+    client
+        .send(108, "fs.list", json!({"hold":true,"unique":108}))
+        .await;
+    assert_eq!(
+        client.intake.dispatcher.observation_depths(),
+        (1, 1),
+        "the ninth job stays queued"
+    );
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        sql::IO_WORKERS,
+        "the worker limit is eight"
+    );
+    held.release();
+    held.wait_for_arrival();
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        sql::IO_WORKERS,
+        "the queued job reuses a released worker"
+    );
+    for _ in 0..sql::IO_WORKERS {
+        held.release();
+    }
+    let mut answered = std::collections::BTreeSet::new();
+    for _ in 0..sql::IO_WORKERS + 1 {
+        answered.insert(client.reply().await["id"].as_u64().unwrap());
+    }
+    assert_eq!(answered, (100..=108).collect());
+    assert_eq!(starts.load(Ordering::SeqCst), sql::IO_WORKERS);
+}

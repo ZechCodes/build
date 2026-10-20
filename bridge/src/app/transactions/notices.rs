@@ -56,8 +56,13 @@ impl AppState {
         for MutationNotice { owner, news, .. } in notices {
             self.publish_read_owner(&owner, true);
             self.push_agent_news(&owner, news);
-            self.reap_orphaned_terminals();
-            self.note_entity_changed(&owner);
+            if !self.reap_orphaned_terminals().is_empty() {
+                // A waiting screen or an agent without a recorded lineage can
+                // retire without a nested canonical mutation. Publish that
+                // actual runtime observation before notifying readers.
+                self.publish_all_snapshot_projection();
+            }
+            self.changes.note_entity(&owner);
             self.publish_live_roster_for(&owner);
         }
     }

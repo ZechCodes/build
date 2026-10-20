@@ -138,6 +138,7 @@ impl StatusPump {
             let retry_deferred = usage_limit_moved
                 || !matches!(snapshot.status, AgentStatus::Working)
                     && something_waits_for_the_turn(&mut app, owner, &instance.agent_id);
+            app.publish_owner_snapshot_projection(owner);
             (ended, retry_deferred, Arc::clone(&app.frame_clock))
         };
         if retry_deferred {
@@ -356,6 +357,7 @@ pub(in crate::app) fn end_of_session(
                 // session that replaces it paints onto the same screen, with
                 // the same clients still on it.
                 screen.session_ended("agent_session_ended");
+                s.publish_owner_snapshot_projection(&instance.entity_id);
                 Some(ended)
             }
             None => {
@@ -388,6 +390,7 @@ pub(in crate::app) fn end_of_session(
     // lineage closes — and where a turn the dead process was holding is closed,
     // so the row stops reading as working.
     s.record_agent_session_end(&instance.entity_id, &instance.agent_id, &instance);
+    s.publish_owner_snapshot_projection(&instance.entity_id);
 }
 
 /// Pump one session's reported activity and surface revisions.
@@ -541,6 +544,7 @@ impl ActivityPump {
             &instance.agent_id,
             report,
         );
+        s.publish_owner_snapshot_projection(&instance.entity_id);
         let timer = Arc::clone(&s.frame_clock).frame(AGENT_DELIVERY_METHOD);
         drop(s);
         if matches!(
@@ -613,6 +617,7 @@ impl ActivityPump {
         // lineage closes — and where a turn the dead process was holding is
         // closed, so the row stops reading as working.
         s.record_agent_session_end(&instance.entity_id, &instance.agent_id, instance);
+        s.publish_owner_snapshot_projection(&instance.entity_id);
     }
 }
 
@@ -735,6 +740,7 @@ pub(in crate::app) fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     for (key, instance, session, said) in moved {
         if still_pumping_instance(&s, &key, &session, &instance) {
             s.note_self_report(&instance.entity_id, &instance.agent_id, &instance, said);
+            s.publish_owner_snapshot_projection(&instance.entity_id);
         }
     }
 }

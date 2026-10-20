@@ -30,23 +30,18 @@ pub(in crate::app::tests) fn add_sources(
         std::fs::canonicalize(second).unwrap(),
         std::fs::canonicalize(plain).unwrap(),
     );
-    let mut app = state.lock().unwrap();
-    let project_id = app.project_at(0).id.clone();
-    let mut sources = app.project_at(0).sources.clone();
-    for (id, name, path, is_git) in [
-        ("source-2", "Second", &second, true),
-        ("source-3", "Plain", &plain, false),
-    ] {
-        sources.push(crate::app::projects::ProjectSource::added(
-            id.into(),
-            name.into(),
-            name.to_lowercase(),
-            path.clone(),
-            is_git,
-            "main".into(),
-        ));
+    let project_id = state.lock().unwrap().project_at(0).id.clone();
+    let handler = AppState::handler(Arc::clone(state));
+    for (name, path) in [("Second", &second), ("Plain", &plain)] {
+        let added = call(
+            &handler,
+            "project.add_source",
+            json!({
+                "project_id": project_id, "name": name, "path": path,
+            }),
+        );
+        assert_eq!(added["ok"], true, "{added:?}");
     }
-    assert!(app.projects.set_sources(&project_id, sources));
     SourcedProject {
         project_id,
         second,
@@ -399,7 +394,12 @@ async fn facts_for_a_moved_or_removed_source_are_withdrawn() {
     };
     let entities = [entity_of("source-2"), entity_of("source-3")];
     let handle: crate::app::facts::FactsHandle = Arc::new(std::sync::OnceLock::new());
-    assert!(handle.set(Arc::downgrade(&state)).is_ok());
+    assert!(handle
+        .set(crate::app::facts::FactsSource::new(
+            state.lock().unwrap().read_view.clone(),
+            Arc::downgrade(&state),
+        ))
+        .is_ok());
     let ask = || {
         entities
             .iter()
@@ -412,9 +412,19 @@ async fn facts_for_a_moved_or_removed_source_are_withdrawn() {
             })
             .collect::<Vec<_>>()
     };
-    let live = crate::app::facts::entity_facts(&handle, &ask());
-    assert!(live.iter().all(|fact| !fact.withdrawn), "{live:?}");
-    assert!(live[0].status_key.is_some() && live[1].root_listing.is_some());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let live = crate::app::facts::entity_facts(&handle, &ask());
+        assert!(live.iter().all(|fact| !fact.withdrawn), "{live:?}");
+        if live[0].status_key.is_some() && live[1].root_listing.is_some() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "source observations were not published: {live:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     let moved = dir.path().join("moved");
     git_in(

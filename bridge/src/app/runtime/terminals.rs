@@ -802,10 +802,15 @@ impl AppState {
             let mut app = state.lock().unwrap();
             // A router process that died mid-decision told nobody, and its
             // capture would otherwise read as being routed forever.
-            (
-                app.mark_idle_tasks(quiet_threshold),
-                app.reap_finished_router_sessions(),
-            )
+            let demoted = app.mark_idle_tasks(quiet_threshold);
+            let routers = app.reap_finished_router_sessions();
+            for owner in &demoted {
+                app.publish_owner_snapshot_projection(owner);
+            }
+            if !routers.is_empty() {
+                app.publish_snapshot_projection();
+            }
+            (demoted, routers)
         };
         for task_id in demoted {
             eprintln!("idle monitor: {task_id} went idle without a done report");

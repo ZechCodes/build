@@ -143,7 +143,13 @@ fn thread_push_facts_resolve_ownership_once_per_entity() {
     add_tip_agents(&mut state, 1);
     let state = Arc::new(Mutex::new(state));
     let handle = crate::app::facts::FactsHandle::default();
-    handle.set(Arc::downgrade(&state)).unwrap();
+    {
+        let mut app = state.lock().unwrap();
+        app.initialize_snapshot_projection();
+        assert!(handle.set(crate::app::facts::FactsSource::new(
+            app.read_view.clone(), Arc::downgrade(&state),
+        )).is_ok());
+    }
     let requests = owners
         .into_iter()
         .map(|(entity_id, _)| crate::changes::FactsRequest {
@@ -155,7 +161,11 @@ fn thread_push_facts_resolve_ownership_once_per_entity() {
     let (one, one_count) = crate::app::workspaces::count_path_comparisons(|| {
         crate::app::facts::entity_facts(&handle, &requests)
     });
-    add_tip_agents(&mut state.lock().unwrap(), 3);
+    {
+        let mut app = state.lock().unwrap();
+        add_tip_agents(&mut app, 3);
+        app.publish_snapshot_projection();
+    }
     let (four, four_count) = crate::app::workspaces::count_path_comparisons(|| {
         crate::app::facts::entity_facts(&handle, &requests)
     });

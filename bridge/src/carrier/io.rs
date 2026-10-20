@@ -114,3 +114,79 @@ impl IoExecutors {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::off_lock::OffLockGate;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    const PATIENCE: Duration = Duration::from_secs(5);
+
+    fn counts(pool: &IoExecutors) -> (usize, usize) {
+        let counts = pool.counts.lock().unwrap();
+        (counts.workers, counts.outstanding)
+    }
+
+    #[tokio::test]
+    async fn panic_returns_outstanding_capacity_before_completion_and_reuses_worker() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let pool = IoExecutors::new(1, starts.clone());
+        let complete = pool
+            .submit(Box::new(|| panic!("injected I/O execution failure")))
+            .unwrap();
+        tokio::time::timeout(PATIENCE, complete)
+            .await
+            .expect("panicking work releases its coordinator")
+            .unwrap();
+        assert_eq!(counts(&pool), (1, 0));
+        let ran = Arc::new(AtomicBool::new(false));
+        let observed = ran.clone();
+        let complete = pool
+            .submit(Box::new(move || observed.store(true, Ordering::SeqCst)))
+            .unwrap();
+        tokio::time::timeout(PATIENCE, complete)
+            .await
+            .expect("the worker survives execution failure")
+            .unwrap();
+        assert!(ran.load(Ordering::SeqCst));
+        assert_eq!(counts(&pool), (1, 0));
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dropping_executor_does_not_retain_its_sender_or_wait_for_active_work() {
+        let pool = Arc::new(IoExecutors::new(1, Arc::new(AtomicUsize::new(0))));
+        let executor = Arc::downgrade(&pool);
+        let receiver = Arc::downgrade(&pool.receive);
+        let accounting = pool.counts.clone();
+        let (gate, held) = OffLockGate::new();
+        let complete = pool.submit(Box::new(move || gate.arrive())).unwrap();
+        held.wait_for_arrival();
+        assert_eq!(counts(&pool), (1, 1));
+        drop(pool);
+        assert!(
+            executor.upgrade().is_none(),
+            "workers retain no executor owner"
+        );
+        assert_eq!(accounting.lock().unwrap().outstanding, 1);
+        held.release();
+        tokio::time::timeout(PATIENCE, complete)
+            .await
+            .expect("active work finishes after its owner is dropped")
+            .unwrap();
+        tokio::time::timeout(PATIENCE, async {
+            loop {
+                let retired = accounting.lock().unwrap().workers == 0;
+                if retired && receiver.upgrade().is_none() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("closing the executor closes and retires its worker receiver");
+        assert_eq!(accounting.lock().unwrap().outstanding, 0);
+    }
+}

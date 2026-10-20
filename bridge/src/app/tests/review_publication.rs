@@ -74,7 +74,8 @@ async fn merge_release_keeps_later_reads_notices_and_news_live() {
         let survivor = adopted_run(&mut app, &repo, dir.path(), "surviving-owner");
         (released, survivor)
     };
-    push::settled_pushes(&mut incoming, &key).await;
+    let initial = push::settled_pushes(&mut incoming, &key).await;
+    eprintln!("release initial pushes: {}", json!(initial));
     let control_tip = save_message(
         &mut state.lock().unwrap(),
         &survivor,

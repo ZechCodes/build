@@ -29,8 +29,6 @@ pub struct FrameHandler {
     #[cfg(test)]
     pub(super) sql_thread_starts: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
-    pub(super) observation_sql_startup_eager: bool,
-    #[cfg(test)]
     pub(super) sql_observer: Option<super::sql_measurements::SqlObserver>,
 }
 
@@ -71,8 +69,6 @@ impl FrameHandler {
             io_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             sql_thread_starts: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            #[cfg(test)]
-            observation_sql_startup_eager: false,
             snapshot: None,
             #[cfg(test)]
             sql_observer: None,
@@ -89,14 +85,10 @@ impl FrameHandler {
         self.sql_thread_starts.clone()
     }
 
-    /// Configure the experiment without creating threads before first use.
-    #[cfg(test)]
-    pub(crate) fn set_observation_sql_startup_eager(&mut self, eager: bool) {
-        assert!(
-            self.read_executors.get().is_none(),
-            "configure SQL startup before use"
-        );
-        self.observation_sql_startup_eager = eager;
+    /// Start the shared SQL workers before making the bridge reachable.
+    /// Handler clones and both read lanes reuse this executor.
+    pub fn start_read_workers(&self) -> std::io::Result<()> {
+        super::sql::start_read_workers(self)
     }
 
     #[cfg(test)]

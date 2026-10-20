@@ -47,15 +47,10 @@ impl ReadExecutors {
 
     fn for_handler(handler: &FrameHandler) -> &Self {
         handler.read_executors.get_or_init(|| {
-            let executors = Self::new(
+            Self::new(
                 #[cfg(test)]
                 handler.sql_thread_starts.clone(),
-            );
-            #[cfg(test)]
-            if handler.observation_sql_startup_eager {
-                executors.ensure_workers();
-            }
-            executors
+            )
         })
     }
 
@@ -90,6 +85,14 @@ impl ReadExecutors {
             .expect("SQL executors stay open");
         complete
     }
+}
+
+/// Each successful spawn has created its OS thread before this returns. No
+/// request or SQL query is needed to initialize the dedicated executor.
+pub(super) fn start_read_workers(handler: &FrameHandler) -> std::io::Result<()> {
+    ReadExecutors::for_handler(handler)
+        .executor
+        .ensure_workers(SQL_WORKERS)
 }
 
 struct Job {

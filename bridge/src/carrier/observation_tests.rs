@@ -530,7 +530,7 @@ async fn ordinary_sql_keeps_eight_workers_after_mixed_first_initialization() {
 async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones() {
     let root = tempfile::tempdir().unwrap();
     let store = crate::store::Store::new(root.path()).unwrap();
-    let mut handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
+    let handler = FrameHandler::new(FrameClock::new(), |_, _, _| panic!("reads bypass app"))
         .with_sql_reads(Some(store.read_pool()), |_, frame, _, connection| {
             assert!(connection.is_some());
             json!({"id":frame.payload["id"],"ok":true})
@@ -542,7 +542,7 @@ async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones(
         });
     let starts = handler.sql_worker_starts();
     assert_eq!(starts.load(Ordering::SeqCst), 0);
-    handler.set_observation_sql_startup_eager(true);
+    handler.start_read_workers().unwrap();
     assert_eq!(
         starts.load(Ordering::SeqCst),
         sql::SQL_WORKERS,
@@ -550,6 +550,12 @@ async fn eager_sql_workers_are_ready_before_intake_and_shared_by_handler_clones(
     );
     let clone = handler.clone();
     assert!(Arc::ptr_eq(&handler.read_executors, &clone.read_executors));
+    clone.start_read_workers().unwrap();
+    assert_eq!(
+        starts.load(Ordering::SeqCst),
+        sql::SQL_WORKERS,
+        "startup is idempotent across handler clones"
+    );
     let mut client = Client::new(handler);
     assert_eq!(
         starts.load(Ordering::SeqCst),

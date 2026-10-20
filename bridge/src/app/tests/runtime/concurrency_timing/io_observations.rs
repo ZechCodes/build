@@ -261,7 +261,11 @@ fn legacy_requests(app: &mut AppState, sample: &Sample, repo: &Path) -> Vec<(&'s
     // retain its saved lineage without starting a background delivery.
     app.delivery_queue.clear_queued();
     let stage = app.plans.get(&plan).unwrap().stages[0].id.clone();
-    app.plans.get_mut(&single).unwrap().plan.archived_at = Some("2026-10-20T12:00:00Z".into());
+    // Seed an acknowledged owner mutation; global publication deliberately
+    // does not recapture raw plan edits after projection initialization.
+    let mut archived = app.take_plan(&single).unwrap();
+    archived.plan.archived_at = Some("2026-10-20T12:00:00Z".into());
+    app.finish_plan_mutation(single.clone(), archived).unwrap();
     add_external_worktree(
         repo,
         sample._state_root.path(),

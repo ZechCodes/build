@@ -1,5 +1,11 @@
 //! File-backed task reads through the real carrier intake and worker pool.
 //! Each sample uses a bounded gate to make one source of delay observable.
+//!
+//! For a persistent recapture, from `bridge/` after committing the source:
+//! `capture_dir=$(mktemp -d /tmp/build-684-baseline.XXXXXX)`
+//! `BUILD_CONCURRENCY_BASELINE_DIR="$capture_dir" nice -n 10 cargo test --lib concurrency_timing -- --nocapture --test-threads=1`
+//! The fresh directory receives `bridge-concurrency-baseline.jsonl` and
+//! `bridge-concurrency-baseline.md`. Ordinary runs write only to fixture temps.
 
 use super::*;
 use crate::app::tests::tracker::{filed, tracked};
@@ -7,7 +13,8 @@ use crate::carrier::testing::{client_request, session_init, within_patience, Cha
 use crate::carrier::{FrameHandler, FrameIntake, OutboundEnvelope, SessionSender};
 use crate::timing::FrameClock;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
@@ -15,6 +22,9 @@ const SESSION: &str = "timing-sample";
 const GATE: Duration = Duration::from_millis(75);
 const PATIENCE: Duration = Duration::from_secs(5);
 const SAMPLE_COUNT: usize = 8;
+const JSONL_FILE: &str = "bridge-concurrency-baseline.jsonl";
+const MARKDOWN_FILE: &str = "bridge-concurrency-baseline.md";
+static EMIT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Occupies a dispatch worker before it takes the app lock, then scans the
 /// temporary repository. The bounded receive lets a failed test unwind.
@@ -51,6 +61,148 @@ impl GitGate {
     }
 }
 
+fn emit_baseline(
+    output_dir: &Path,
+    scenario: &str,
+    gate: &str,
+    dispatch_workers: usize,
+    methods: &Value,
+) -> Value {
+    let record = json!({
+        "kind": "bridge_concurrency_baseline",
+        "scenario": scenario,
+        "gate": gate,
+        "crate_version": env!("CARGO_PKG_VERSION"),
+        "git_revision": git_revision(),
+        "rust_toolchain": rust_toolchain(),
+        "dispatch_workers": dispatch_workers,
+        "methods": methods,
+    });
+    append_artifacts(output_dir, &record);
+    eprintln!("{record}");
+    record
+}
+
+fn git_revision() -> String {
+    git2::Repository::discover(env!("CARGO_MANIFEST_DIR"))
+        .unwrap()
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id()
+        .to_string()
+}
+
+fn rust_toolchain() -> String {
+    let output = std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .expect("the toolchain used by Cargo is available");
+    assert!(output.status.success(), "rustc --version failed");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
+}
+
+fn append_artifacts(output_dir: &Path, record: &Value) {
+    let _guard = EMIT_LOCK.lock().unwrap();
+    std::fs::create_dir_all(output_dir).unwrap();
+    let mut jsonl = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_dir.join(JSONL_FILE))
+        .unwrap();
+    writeln!(jsonl, "{record}").unwrap();
+
+    let mut markdown = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(output_dir.join(MARKDOWN_FILE))
+        .unwrap();
+    if markdown.metadata().unwrap().len() == 0 {
+        writeln!(markdown, "# Bridge concurrency baseline\n").unwrap();
+    }
+    markdown
+        .write_all(markdown_section(record).as_bytes())
+        .unwrap();
+}
+
+fn markdown_section(record: &Value) -> String {
+    let mut section = format!(
+        "## {}\n\n- Git revision: `{}`\n- Rust toolchain: `{}`\n- Dispatch workers: {}\n- Crate version: `{}`\n- Gate: {}\n\n| Method | Phase | Count | Sum ms | p50 ms | p95 ms | Max ms |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n",
+        record["scenario"].as_str().unwrap(),
+        record["git_revision"].as_str().unwrap(),
+        record["rust_toolchain"].as_str().unwrap(),
+        record["dispatch_workers"],
+        record["crate_version"].as_str().unwrap(),
+        record["gate"].as_str().unwrap(),
+    );
+    for (method, stats) in record["methods"].as_object().unwrap() {
+        for phase in ["queued", "lock_wait", "held"] {
+            let metric = &stats[phase];
+            section.push_str(&format!(
+                "| {method} | {phase} | {} | {} | {} | {} | {} |\n",
+                metric["count"],
+                metric["sum_ms"],
+                metric["p50_ms"],
+                metric["p95_ms"],
+                metric["max_ms"],
+            ));
+        }
+    }
+    section.push('\n');
+    section
+}
+
+fn baseline_output_dir(fixture: &Path) -> PathBuf {
+    // A fresh caller directory persists a recapture; ordinary test artifacts
+    // disappear with the file-backed fixture.
+    std::env::var_os("BUILD_CONCURRENCY_BASELINE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| fixture.join("baseline"))
+}
+
+#[test]
+fn baseline_emitter_writes_self_describing_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let metric = json!({ "count": 8, "sum_ms": 12.0, "p50_ms": 2.0,
+        "p95_ms": 5.0, "max_ms": 6.0 });
+    let methods = json!({ "tasks.list": { "served": 8, "queued": metric,
+        "lock_wait": metric, "held": metric } });
+    let record = emit_baseline(dir.path(), "isolated", "none", 2, &methods);
+    let revision = git2::Repository::discover(env!("CARGO_MANIFEST_DIR"))
+        .unwrap()
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .id()
+        .to_string();
+    let toolchain = std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(toolchain.status.success());
+    let toolchain = String::from_utf8(toolchain.stdout).unwrap();
+    let toolchain = toolchain.trim();
+    assert_eq!(record["git_revision"], revision);
+    assert_eq!(record["rust_toolchain"], toolchain);
+    assert_eq!(record["dispatch_workers"], 2);
+
+    let jsonl =
+        std::fs::read_to_string(dir.path().join("bridge-concurrency-baseline.jsonl")).unwrap();
+    assert_eq!(jsonl.lines().count(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(jsonl.lines().next().unwrap()).unwrap(),
+        record
+    );
+    let markdown =
+        std::fs::read_to_string(dir.path().join("bridge-concurrency-baseline.md")).unwrap();
+    assert!(markdown.contains(&revision));
+    assert!(markdown.contains(toolchain));
+    assert!(markdown.contains("Dispatch workers: 2"));
+    assert!(markdown.contains("| tasks.list | queued | 8 | 12.0 | 2.0 | 5.0 | 6.0 |"));
+}
+
 struct Sample {
     _state_root: tempfile::TempDir,
     _repo_home: tempfile::TempDir,
@@ -63,6 +215,7 @@ struct Sample {
     task_ids: Vec<String>,
     next_id: u64,
     task_started: mpsc::Receiver<()>,
+    dispatch_workers: usize,
 }
 
 impl Sample {
@@ -125,6 +278,7 @@ impl Sample {
             task_ids,
             next_id: 1,
             task_started,
+            dispatch_workers: workers,
         }
     }
 
@@ -192,10 +346,13 @@ impl Sample {
                 }
             }
         }
-        let sample = json!({ "kind": "bridge_concurrency_step1_baseline", "scenario": scenario,
-            "gate": gate, "crate_version": env!("CARGO_PKG_VERSION"), "methods": methods });
-        eprintln!("{sample}");
-        sample
+        emit_baseline(
+            &baseline_output_dir(self._state_root.path()),
+            scenario,
+            gate,
+            self.dispatch_workers,
+            methods,
+        )
     }
 }
 

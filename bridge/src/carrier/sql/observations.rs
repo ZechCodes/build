@@ -35,9 +35,15 @@ impl Reservation {
 }
 
 enum Entry {
-    Pending(Job),
+    Pending(Box<Job>),
     Preparing(Reservation),
     Ready(Reservation, Execution),
+}
+
+struct IoWork {
+    execution: Execution,
+    #[cfg(test)]
+    observed: Option<Frame>,
 }
 
 impl Entry {
@@ -154,11 +160,11 @@ impl Waiting {
         let Entry::Pending(job) = entries.remove(index).unwrap() else {
             unreachable!()
         };
-        let mut work = Work::new(job);
+        let mut work = Work::new(*job);
         let mut remaining = VecDeque::new();
         for entry in entries.drain(..) {
             match entry {
-                Entry::Pending(job) if work.matches(&job) => work.join(job),
+                Entry::Pending(job) if work.matches(&job) => work.join(*job),
                 entry => remaining.push_back(entry),
             }
         }
@@ -275,7 +281,7 @@ impl ObservationQueue {
         if entries.iter().map(Entry::weight).sum::<usize>() >= SQL_BACKLOG {
             return false;
         }
-        entries.push_back(Entry::Pending(job.take().unwrap()));
+        entries.push_back(Entry::Pending(Box::new(job.take().unwrap())));
         waiting.refresh(opening);
         #[cfg(test)]
         {
@@ -344,23 +350,25 @@ impl ObservationQueue {
     fn take_io(&self, handler: &FrameHandler) -> Option<Execution> {
         #[cfg(test)]
         let take_started = std::time::Instant::now();
-        let (execution, observed) = {
+        let io_work = {
             let mut waiting = self.waiting.lock().unwrap();
             let (opening, index) = waiting.select(Stage::Io)?;
             let pending = matches!(
                 waiting.openings[&opening].get(index),
                 Some(Entry::Pending(_))
             );
-            let (execution, observed) = if pending {
+            let io_work = if pending {
                 let work = waiting.take_pending(opening, index);
                 #[cfg(test)]
                 let observed = handler.clock.request_frame(&work.job.frame);
-                #[cfg(not(test))]
-                let observed = ();
                 let handler = handler.clone();
                 let execution: Execution =
                     Box::new(move || work.prepare_observation(&handler, None)());
-                (execution, observed)
+                IoWork {
+                    execution,
+                    #[cfg(test)]
+                    observed,
+                }
             } else {
                 let Entry::Ready(reservation, execution) = waiting
                     .openings
@@ -374,31 +382,33 @@ impl ObservationQueue {
                 #[cfg(test)]
                 let observed = reservation.observed;
                 #[cfg(not(test))]
-                let observed = ();
-                #[cfg(not(test))]
                 let _ = reservation;
-                (execution, observed)
+                IoWork {
+                    execution,
+                    #[cfg(test)]
+                    observed,
+                }
             };
             waiting.finish_take(opening);
-            (execution, observed)
+            io_work
         };
         #[cfg(test)]
         {
             handler
                 .clock
-                .mark_observed(&observed, "queue_take_start", take_started);
+                .mark_observed(&io_work.observed, "queue_take_start", take_started);
             handler
                 .clock
-                .mark_observed(&observed, "lane_pop", std::time::Instant::now());
-            handler
-                .clock
-                .mark_observed(&observed, "io_submitted", std::time::Instant::now());
+                .mark_observed(&io_work.observed, "lane_pop", std::time::Instant::now());
+            handler.clock.mark_observed(
+                &io_work.observed,
+                "io_submitted",
+                std::time::Instant::now(),
+            );
         }
-        #[cfg(not(test))]
-        let _ = observed;
         self.io.notify_one();
         self.changed.notify_waiters();
-        Some(execution)
+        Some(io_work.execution)
     }
 
     fn complete(&self, opening: u64, token: &Token, execution: Execution) {

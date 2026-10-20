@@ -36,9 +36,16 @@ impl AppState {
         sender: AgentSender<'_>,
         target_agent_id: &str,
         body: &str,
+        attachments: &[Value],
     ) -> Result<Value, String> {
         let target_entity_id = self.reachable_agent("message_agent", sender, target_agent_id)?;
-        self.post_from_agent_to_agent(sender, &target_entity_id, target_agent_id, body)
+        self.post_from_agent_to_agent_with_files(
+            sender,
+            &target_entity_id,
+            target_agent_id,
+            body,
+            attachments,
+        )
     }
 
     /// The same send, for a caller that has already resolved the target's
@@ -52,19 +59,52 @@ impl AppState {
         target_agent_id: &str,
         body: &str,
     ) -> Result<Value, String> {
+        self.post_from_agent_to_agent_with_files(
+            sender,
+            target_entity_id,
+            target_agent_id,
+            body,
+            &[],
+        )
+    }
+
+    fn post_from_agent_to_agent_with_files(
+        &mut self,
+        sender: AgentSender<'_>,
+        target_entity_id: &str,
+        target_agent_id: &str,
+        body: &str,
+        attachments: &[Value],
+    ) -> Result<Value, String> {
+        super::inputs::validate_agent_message_body(body)?;
         let requester = self.agent_requester(sender)?;
         self.refuse_self_send(&requester, target_entity_id, target_agent_id)?;
+        // Check both generations and reservations before any file is copied.
+        let target = self.resolve_conversation_address(target_entity_id, Some(target_agent_id))?;
+        self.guard_conversation_reservation(&target)?;
+        if !attachments.is_empty() {
+            self.agent_message_attachment_destination(target_entity_id, target_agent_id)?;
+        }
+        let outgoing =
+            self.take_in_agent_message_files(sender.entity_id, sender.agent_id, attachments)?;
+        let listed = outgoing
+            .iter()
+            .map(|attachment| serde_json::to_value(attachment).expect("attachment serializes"))
+            .collect::<Vec<_>>();
+        let incoming =
+            self.take_in_agent_message_files(target_entity_id, target_agent_id, &listed)?;
         let operation_id = format!("op-{}", uuid::Uuid::new_v4());
         let posted = self.thread_post_from_agent(
             &json!({
                 "entity_id": target_entity_id,
                 "agent_id": target_agent_id,
                 "body": body,
+                "attachments": incoming,
                 "operation_id": operation_id,
             }),
             requester,
         )?;
-        self.record_the_send(sender, target_entity_id, target_agent_id, body);
+        self.record_the_send(sender, target_entity_id, target_agent_id, body, outgoing);
         Ok(json!({
             "entity_id": posted["entity_id"].as_str().unwrap_or(target_entity_id),
             "agent_id": posted["agent_id"],
@@ -86,12 +126,15 @@ impl AppState {
         target_entity_id: &str,
         target_agent_id: &str,
         body: &str,
+        attachments: Vec<crate::thread::MessageAttachment>,
     ) {
         let recipient = self.agent_identity(target_entity_id, target_agent_id);
         let now = crate::store::now_rfc3339();
         let recorded =
             self.edit_agent_conversation(sender.entity_id, sender.agent_id, |thread, _| {
-                Ok(thread.post_agent_sent(body, recipient, &now))
+                let id = thread.post_agent_sent(body, recipient, &now);
+                thread.wear_attachments(attachments);
+                Ok(id)
             });
         if let Err(error) = recorded {
             eprintln!("record the send from {}: {error}", sender.agent_id);

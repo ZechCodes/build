@@ -87,7 +87,7 @@ describe("#103 inbox rows, from the cache", () => {
     const agentRow = rowByKey(`project-agent:${projectKey}`);
     expect(agentRow.querySelector(".stitle").textContent).toBe("Payments");
     expect(agentRow.querySelector(".inbox-project-line .inbox-tag").textContent).toBe("Payments");
-    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
+    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("0 running");
     expect(agentRow.querySelector("[data-workspace-done], [data-menu], [data-done]")).toBeNull();
     expect(dotIn(agentRow)?.classList.contains("inbox-status-unread")).toBe(true);
   });
@@ -129,7 +129,7 @@ describe("#103 inbox rows, from the cache", () => {
     const agentRow = rowByKey(`project-agent:${projectKey}`);
     expect(agentRow.querySelector(".inbox-project-line")).toBeNull();
     expect(agentRow.querySelector(".inbox-name .stitle").textContent).toBe("Payments");
-    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("Getting started · 0 running");
+    expect(agentRow.querySelector(".inbox-facts").textContent).toBe("0 running");
     expect(head().querySelector("[data-project-open]")).toBeNull();
 
     head().querySelector("[data-project-fold]").click();

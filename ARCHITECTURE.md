@@ -442,7 +442,18 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.22.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.23.0 populates the existing `attachments` descriptors on agent replies,
+  outgoing agent messages and the corresponding incoming messages (#696).
+  The thread page fixture shows all three. No new capability is needed:
+  the SPA paints the descriptors present in its cached thread records.
+  `thread.attachment` now caps an unranged response at 5,242,880 bytes too.
+  Its `size` remains the total file length and `offset` names the chunk start.
+  If `offset + decoded byte count < size`, the client must request the next
+  range at that sum before using the file. The SPA's shared attachment reader follows that metadata even before
+  it knows the paging capability, and checks offsets, size and progress.
+  User uploads remain capped at 5,242,880 bytes by `ATTACHMENT_MAX_BYTES`
+  and the size check in `app/conversations/attachments.rs::thread_attach`.
   1.24.0 carried `workspaces.lifecycle`, `params.strict`,
   `branches.finishDelete` and `changes.refusedKinds`; 1.25.0
   `workspaces.reclaimBranches`, `settings.workspaceLifecycle` and
@@ -2088,6 +2099,21 @@ A project's agents below). Each action is a `BridgeAction` variant. The tool lis
 `add_workspace_agent`, `list_project_agents`, `add_project_agent`, …) and the
 tracker (`get_task`, `comment_task`, `move_task`, `label_task`, …).
 
+`post_thread_message` and `message_agent` accept optional `attachments` entries
+with `path` and optional `name` (#696). They share the task tools' file intake
+in `app/tracker/agent_files.rs`: up to ten files of 50 MiB each, supported image
+and video signatures or UTF-8 text, and regular-file reads without following
+the source leaf symlink. Absolute agent-created paths are allowed by that
+existing policy; relative paths must identify an existing stored attachment.
+The bridge validates every source before copying bytes into its durable store.
+Conversation records and delivery payloads retain the existing
+`{path, name, mime, size}` descriptor, and receiving agents get readable copies
+through the conversation's normal attachment homes. User-supplied attachment
+paths retain their existing storage containment checks.
+`thread.attachment` bounds both default and explicit reads to 5 MiB while
+returning the full file size; the existing ranged SPA reader reconstructs
+larger agent recordings without exceeding the transport message limit.
+
 The task board's column and assignee carry routine status. Agent prompts and
 MCP descriptions tell agents to comment on tasks only for a decision or
 finding that changes the plan, a question, a handoff, or the final result with
@@ -2777,6 +2803,26 @@ path, so reading every worker roster never delays finding the selected
 conversation. The rail's `railWorkItem.js` reads the same complete
 record on project hosts and filters it to the exact pin on a workspace host.
 
+The inbox derives project activity from the same complete roster and cached
+lineage as chat, including workers absent from pinned-only board rows. Lineage
+deduplicates canonical conversations within their owner before building child
+lists or computing descendant totals, and resolves creator aliases to the same
+canonical member. Both chat's Agents entries and inbox counts therefore list a
+spawned conversation once, even when its roster repeats it. Derived
+rollups decorate feed copies of both board agents and complete project agents;
+they never rewrite cache records. A complete project's running count sums each
+independent roster agent's own running loop and running panel rows, counting
+roster descendants on their ancestor's panel only once. An idle pin with three
+running workers says “3 running”; its own running loop adds one. Independent
+project workers also contribute, while workspace and legacy roster counts keep
+their existing per-member meaning. Rows with running activity or conversation
+history omit the empty “Getting started” fallback, retaining any Git or
+pending-operation facts. History comes from the conversation's own session,
+with legacy activity timestamps used only when that session is not explicitly
+empty; project-wide activity and creation anchors do not establish history.
+Topic and ordering still come from the pinned identity and the project
+conversation's own session.
+
 Roster pulls use the sync planner and its two shared background wire slots.
 The selected project's roster has foreground authority; unrelated held roster
 replies cannot delay selected thread, Git or task recovery. Landing a complete
@@ -2851,6 +2897,12 @@ In practice:
   redraw.
 - No view waits on the wire to show what is already known.
 - No view branches on whether a device is connected, connecting or away.
+
+Thread attachment tiles use cached message descriptors and held media bodies
+for user messages, agent replies and expanded outgoing agent messages (#696).
+The shared attachment loader fills missing bodies; the same image lightbox and
+download controls serve all three. Message role and connection status do not
+gate attachment display.
 
 **How it is built:**
 

@@ -102,6 +102,7 @@ async fn mcp_generation_rejects_message_agent_authenticated_before_clear() {
         .unwrap()
         .to_string();
     let action = BridgeAction::MessageAgent {
+        attachments: Vec::new(),
         agent_id: target.clone(),
         body: "old private outbound answer".into(),
     };
@@ -174,6 +175,7 @@ async fn mcp_generation_accepts_the_fresh_endpoint_after_clear() {
     let agent = primary_agent_id(&app, &owner);
     clear_agent(&mut app, &owner, &agent);
     let action = BridgeAction::PostThreadMessage {
+        attachments: Vec::new(),
         body: "fresh answer".into(),
         still_working: false,
         options: Vec::new(),

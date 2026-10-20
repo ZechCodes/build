@@ -123,6 +123,7 @@ fn a_provider_failure_answers_the_dispatching_agent_without_forwarding_normal_re
             &requester_owner,
             &requester,
             crate::mcp::BridgeAction::MessageAgent {
+                attachments: Vec::new(),
                 agent_id: agent.clone(),
                 body: "repair the bridge".into(),
             },

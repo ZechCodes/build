@@ -3,6 +3,7 @@
 import { agentLineage, lineageMembers, withRollup } from "./agentLineageModel.js";
 import { entityIdOf } from "./entityId.js";
 import { freshestRosters } from "./inboxRoster.js";
+import { projectRosterRows } from "./projectRosterFeed.js";
 
 /** Use each conversation's newest roster, including runs absent from items. */
 function newestRosters(rows) {
@@ -14,7 +15,7 @@ function newestRosters(rows) {
 /** Each project gets its own lineage: an id or creator in another project
  * cannot make this project's parent run. The caller already scopes devices. */
 function projectLineages(snapshot, namesMakers) {
-  const rows = [...(snapshot.runs || []), ...snapshot.items];
+  const rows = projectRosterRows({ ...snapshot, items: [...(snapshot.runs || []), ...snapshot.items] });
   const projectIds = new Set(rows.map((row) => row.project_id));
   return new Map([...projectIds].map((projectId) => {
     const members = lineageMembers(newestRosters(rows.filter((row) => row.project_id === projectId)), {
@@ -24,6 +25,28 @@ function projectLineages(snapshot, namesMakers) {
   }));
 }
 
+/** Roster members already represented on another member's panel contribute
+ * there once. The lineage has cut maker cycles and respects cached support. */
+function rosterDescendants(agents, lineage) {
+  const descendants = new Set();
+  const pending = agents.flatMap((agent) => lineage.createdBy(agent.id));
+  for (const member of pending) {
+    if (descendants.has(member.agent.id)) continue;
+    descendants.add(member.agent.id);
+    pending.push(...lineage.createdBy(member.agent.id));
+  }
+  return descendants;
+}
+
+/** Count each project's independent agent's own loop and running panel rows.
+ * A waiting pin with three running workers therefore contributes three. */
+function projectRunningCount(agents, lineage) {
+  const conversations = [...new Map(agents.map((agent) => [agent.conversation_id || agent.id, agent])).values()];
+  const descendants = rosterDescendants(conversations, lineage);
+  return conversations.filter((agent) => !descendants.has(agent.id))
+    .reduce((count, agent) => count + Number(!!agent.working) + (agent.agents_running || 0), 0);
+}
+
 /** Add running rollups without changing each agent's own working flag or
  * writing the derived digests back to disk. Spreads carry cache freshness. */
 export function withFeedAgentRollups(snapshot, { namesMakers = false } = {}) {
@@ -31,5 +54,12 @@ export function withFeedAgentRollups(snapshot, { namesMakers = false } = {}) {
   const lineages = projectLineages(snapshot, namesMakers);
   const decorate = (row) => Array.isArray(row.agents)
     ? { ...row, agents: row.agents.map((agent) => withRollup(agent, lineages.get(row.project_id))) } : row;
-  return { ...snapshot, items: snapshot.items.map(decorate), runs: (snapshot.runs || []).map(decorate) };
+  const projects = (snapshot.projects || []).map((project) => {
+    if (!project.projectRoster) return project;
+    const lineage = lineages.get(project.id || project.project_id);
+    const agents = project.projectRoster.agents.map((agent) => withRollup(agent, lineage));
+    return { ...project, projectRoster: { ...project.projectRoster, agents,
+      running_count: projectRunningCount(agents, lineage) } };
+  });
+  return { ...snapshot, projects, items: snapshot.items.map(decorate), runs: (snapshot.runs || []).map(decorate) };
 }

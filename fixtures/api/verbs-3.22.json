@@ -1,6 +1,6 @@
 {
-  "api_version": "3.21.0",
-  "commit": "58f39ebc",
+  "api_version": "3.22.0",
+  "commit": "e4e85d04",
   "generated_by": "scripts/api-verbs-manifest.mjs",
   "verbs": [
     "agent.add",
@@ -67,6 +67,7 @@
     "project.init_git",
     "project.list",
     "project.remove_source",
+    "project.set_compaction",
     "project.set_isolation",
     "project.set_remote",
     "project.sync_source",
@@ -142,6 +143,7 @@
     "workspace.remove_directory",
     "workspace.rename",
     "workspace.retry",
+    "workspace.set_compaction",
     "workspace.set_locked",
     "worktree.diff"
   ],
@@ -179,6 +181,7 @@
     "changes.subscribe",
     "changes.subscriptions",
     "changes.unsubscribe",
+    "compaction.harnessThresholds",
     "conversation.reset",
     "conversation.settings",
     "conversation.unwatch",
@@ -238,6 +241,7 @@
     "project.init_git",
     "project.list",
     "project.remove_source",
+    "project.set_compaction",
     "project.set_isolation",
     "project.set_remote",
     "project.sync_source",
@@ -353,6 +357,7 @@
     "workspace.remove_directory",
     "workspace.rename",
     "workspace.retry",
+    "workspace.set_compaction",
     "workspace.set_locked",
     "workspaces.lifecycle",
     "workspaces.reclaimBranches",

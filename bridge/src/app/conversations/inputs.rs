@@ -95,9 +95,21 @@ impl PostOrigin {
 
 pub(in crate::app) const MAX_OPERATION_ID_BYTES: usize = 128;
 
+pub(in crate::app) fn validate_agent_message_body(body: &str) -> Result<&str, String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("message body must not be empty".to_string());
+    }
+    if body.len() > 32_000 {
+        return Err("message body exceeds 32000 bytes".to_string());
+    }
+    Ok(body)
+}
+
 pub(in crate::app) fn apply_thread_action(
     thread: &mut crate::thread::Thread,
     action: BridgeAction,
+    attachments: Vec<crate::thread::MessageAttachment>,
     now: &str,
 ) -> Result<Value, String> {
     match action {
@@ -105,15 +117,11 @@ pub(in crate::app) fn apply_thread_action(
             body,
             still_working,
             options,
+            ..
         } => {
-            let body = body.trim();
-            if body.is_empty() {
-                return Err("message body must not be empty".to_string());
-            }
-            if body.len() > 32_000 {
-                return Err("message body exceeds 32000 bytes".to_string());
-            }
+            let body = validate_agent_message_body(&body)?;
             let message_id = thread.post_agent_offering(body, options, now, still_working);
+            thread.wear_attachments(attachments);
             Ok(json!({ "message_id": message_id }))
         }
         // A search spans every conversation the agent may read, which one

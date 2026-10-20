@@ -26,7 +26,7 @@ pub(in crate::app) use attachments::{
 };
 pub(in crate::app) use inputs::{
     append_user_thread_messages, apply_thread_action, optional_operation_id, parse_thread_inputs,
-    parse_viewing_context, with_post_receipt,
+    parse_viewing_context, validate_agent_message_body, with_post_receipt,
 };
 pub use read::LATEST_THREAD_ITEMS;
 pub(in crate::app) use read::{thread_cursor, thread_detail, view_thread_detail, ReadReport};

@@ -244,7 +244,7 @@ async fn mixed_archive_uses_published_branch_without_reopening_git() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mixed_attachment_external_gate_releases_every_sql_connection() {
     let (dir, repo) = init_repo();
-    let mut state = qa_state(&repo, dir.path());
+    let mut state = qa_state_before_admission(&repo, dir.path());
     let project = state.project_at(0).id.clone();
     let task = super::tracker::filed(&mut state, &project, "release SQL before attachment I/O");
     let attached = state.handle(req(
@@ -253,7 +253,7 @@ async fn mixed_attachment_external_gate_releases_every_sql_connection() {
     ));
     let (gate, held) = OffLockGate::new();
     state.off_lock_gate = Some(gate);
-    state.publish_snapshot_projection();
+    state.initialize_snapshot_projection();
     let pool = state.require_store().unwrap().read_pool();
     let connection = pool.acquire().await;
     let read = state.observation_service().prepare(

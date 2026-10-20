@@ -13,6 +13,28 @@ use crate::transport::Frame;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+// Diagnostic phases disappear entirely outside test builds.
+#[cfg(test)]
+macro_rules! trace_phase {
+    ($clock:expr, $frame:expr, $start:literal, $end:literal, $work:expr) => {{
+        if let Some(frame) = ($frame).as_ref() {
+            ($clock).mark_request(frame, $start, std::time::Instant::now());
+        }
+        let measured = $work;
+        if let Some(frame) = ($frame).as_ref() {
+            ($clock).mark_request(frame, $end, std::time::Instant::now());
+        }
+        measured
+    }};
+}
+
+#[cfg(not(test))]
+macro_rules! trace_phase {
+    ($clock:expr, $frame:expr, $start:literal, $end:literal, $work:expr) => {
+        $work
+    };
+}
+
 pub(in crate::app) struct ObservationContext {
     pub scopes: scopes::ScopeReadContext,
     pub mixed: mixed::MixedReadContext,
@@ -21,11 +43,26 @@ pub(in crate::app) struct ObservationContext {
 
 impl ObservationContext {
     pub fn capture(app: &AppState) -> Self {
-        Self {
-            scopes: scopes::ScopeReadContext::capture(app),
-            mixed: mixed::MixedReadContext::capture(app),
-            deleting_project: app.project_deletion_in_progress,
-        }
+        #[cfg(test)]
+        let observed = app.frame_clock.observes_requests().then(|| Frame {
+            session_id: "observation-diagnostic".into(),
+            message_id: "observation.capture".into(),
+            sender: "bridge".into(),
+            created_at: String::new(),
+            frame_type: "diagnostic".into(),
+            payload: json!({"id":0,"method":"observation.capture"}),
+        });
+        trace_phase!(
+            &app.frame_clock,
+            &observed,
+            "publication_capture_start",
+            "publication_capture_end",
+            Self {
+                scopes: scopes::ScopeReadContext::capture(app),
+                mixed: mixed::MixedReadContext::capture(app),
+                deleting_project: app.project_deletion_in_progress,
+            }
+        )
     }
 }
 
@@ -36,6 +73,8 @@ pub(in crate::app) struct ObservationService {
     github: crate::github::GithubCli,
     #[cfg(test)]
     gate: Option<crate::test_support::off_lock::OffLockGate>,
+    #[cfg(test)]
+    clock: Arc<crate::timing::FrameClock>,
 }
 
 enum Job {
@@ -58,6 +97,8 @@ impl AppState {
             github: self.github.clone(),
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
+            #[cfg(test)]
+            clock: self.frame_clock.clone(),
         }
     }
 }
@@ -72,28 +113,68 @@ impl ObservationService {
             .get("params")
             .cloned()
             .unwrap_or_else(|| json!({}));
-        let prepared = self.prepare_job(&method, &params, connection);
+        #[cfg(test)]
+        let observed = self.clock.request_frame(&frame);
+        let prepared = trace_phase!(
+            &self.clock,
+            &observed,
+            "prepare_start",
+            "prepare_end",
+            self.prepare_job(
+                &method,
+                &params,
+                connection,
+                #[cfg(test)]
+                &observed
+            )
+        );
         let service = self.clone();
         Box::new(move || {
             api::reply(
                 id,
                 prepared.and_then(|(job, fence, _lease)| {
-                    let result = match job {
-                        Job::Scope(job) => {
-                            #[cfg(test)]
-                            if let Some(gate) = &service.gate {
-                                gate.arrive();
+                    let result = trace_phase!(
+                        &service.clock,
+                        &observed,
+                        "external_start",
+                        "external_end",
+                        match job {
+                            Job::Scope(job) => {
+                                #[cfg(test)]
+                                if let Some(gate) = &service.gate {
+                                    gate.arrive();
+                                }
+                                job.run()
                             }
-                            job.run()
+                            Job::Mixed(job) => job.run(),
+                            Job::Github(github) => github
+                                .list_repos()
+                                .map(|repos| json!({"repos":repos}))
+                                .map_err(ApiError::classify),
                         }
-                        Job::Mixed(job) => job.run(),
-                        Job::Github(github) => github
-                            .list_repos()
-                            .map(|repos| json!({"repos":repos}))
-                            .map_err(ApiError::classify),
-                    }?;
-                    service.validate(&method, &fence)?;
-                    api::v1::check_read_result(&method, result)
+                    )?;
+                    trace_phase!(
+                        &service.clock,
+                        &observed,
+                        "validation_start",
+                        "validation_end",
+                        service
+                            .validate(
+                                &method,
+                                &fence,
+                                #[cfg(test)]
+                                &observed
+                            )
+                            .and_then(|()| {
+                                trace_phase!(
+                                    &service.clock,
+                                    &observed,
+                                    "result_check_start",
+                                    "result_check_end",
+                                    api::v1::check_read_result(&method, result)
+                                )
+                            })
+                    )
                 }),
             )
         })
@@ -104,6 +185,7 @@ impl ObservationService {
         method: &str,
         params: &Value,
         mut connection: Option<ReadConnection>,
+        #[cfg(test)] observed: &Option<Frame>,
     ) -> Result<(Job, Fence, Option<crate::update::AdmissionLease>), ApiError> {
         let lease = self
             .admission
@@ -113,12 +195,29 @@ impl ObservationService {
                     .ok_or_else(|| ApiError::busy("bridge update handoff in progress"))
             })
             .transpose()?;
-        let params = api::v1::normalize_read_params(method, params)?;
-        let context = self.context()?;
+        let params = trace_phase!(
+            &self.clock,
+            observed,
+            "prepare_normalize_start",
+            "prepare_normalize_end",
+            api::v1::normalize_read_params(method, params)
+        )?;
+        let context = trace_phase!(
+            &self.clock,
+            observed,
+            "prepare_context_start",
+            "prepare_context_end",
+            self.context()
+        )?;
         if context.deleting_project && !super::rpc::allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(
                 super::rpc::PROJECT_DELETION_IN_PROGRESS,
             ));
+        }
+        #[cfg(test)]
+        if let Some(frame) = observed {
+            self.clock
+                .mark_request(frame, "prepare_family_start", std::time::Instant::now());
         }
         let (job, fence) = if method == "github.repos" {
             (Job::Github(self.github.clone()), Fence::Github)
@@ -139,7 +238,28 @@ impl ObservationService {
             let fence = job.fence();
             (Job::Mixed(job), Fence::Mixed(fence))
         };
+        #[cfg(test)]
+        if let Some(frame) = observed {
+            self.clock
+                .mark_request(frame, "prepare_family_end", std::time::Instant::now());
+        }
+        #[cfg(test)]
+        if let Some(frame) = observed {
+            self.clock.mark_request(
+                frame,
+                "prepare_connection_release_start",
+                std::time::Instant::now(),
+            );
+        }
         drop(connection);
+        #[cfg(test)]
+        if let Some(frame) = observed {
+            self.clock.mark_request(
+                frame,
+                "prepare_connection_release_end",
+                std::time::Instant::now(),
+            );
+        }
         Ok((job, fence, lease))
     }
 
@@ -151,18 +271,35 @@ impl ObservationService {
             .ok_or_else(|| ApiError::unavailable("observation context is not initialized"))
     }
 
-    fn validate(&self, method: &str, fence: &Fence) -> Result<(), ApiError> {
-        let context = self.context()?;
+    fn validate(
+        &self,
+        method: &str,
+        fence: &Fence,
+        #[cfg(test)] observed: &Option<Frame>,
+    ) -> Result<(), ApiError> {
+        let context = trace_phase!(
+            &self.clock,
+            observed,
+            "validation_context_start",
+            "validation_context_end",
+            self.context()
+        )?;
         if context.deleting_project && !super::rpc::allowed_during_project_deletion(method) {
             return Err(ApiError::unavailable(
                 super::rpc::PROJECT_DELETION_IN_PROGRESS,
             ));
         }
-        match fence {
-            Fence::Scope(fence) => context.scopes.validate(fence),
-            Fence::Mixed(fence) => context.mixed.validate(fence),
-            Fence::Github => Ok(()),
-        }
+        trace_phase!(
+            &self.clock,
+            observed,
+            "validation_fence_start",
+            "validation_fence_end",
+            match fence {
+                Fence::Scope(fence) => context.scopes.validate(fence),
+                Fence::Mixed(fence) => context.mixed.validate(fence),
+                Fence::Github => Ok(()),
+            }
+        )
     }
 }
 

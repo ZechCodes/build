@@ -226,6 +226,8 @@ pub(in crate::app) fn term_create(
 
     let (key, pumps) = {
         let mut s = timer.lock(state);
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("term.create.reserve");
         // RPC admission can precede deletion's retirement collection. Recheck
         // under the spawn guard so a shell cannot appear after that collection.
         if s.project_deletion_in_progress {
@@ -249,12 +251,18 @@ pub(in crate::app) fn term_create(
             root: root.clone(),
             tab_id: tab_id.clone(),
         };
+        #[cfg(test)]
+        let spawn_phase = crate::timing::phase_samples::phase("term.create.spawn");
         let (mut tab, rx) = Tab::spawn_shell(
             &shell_harness_spec(&shell),
             tab_id,
             root,
             terminal_size(cols, rows),
         )?;
+        #[cfg(test)]
+        drop(spawn_phase);
+        #[cfg(test)]
+        let _commit_phase = crate::timing::phase_samples::phase("term.create.commit");
         tab.project_source = scope.source;
         let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
         s.note_terminals_at(&key.root);

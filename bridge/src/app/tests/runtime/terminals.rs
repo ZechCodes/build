@@ -980,3 +980,57 @@ async fn project_source_terminal_cannot_attach_sibling() {
         "a refused selector opened a shell"
     );
 }
+
+/// A shell only changes terminal facts. It must not refresh the board,
+/// workspace details or retained conversations while holding the app mutex.
+#[tokio::test]
+async fn term_create_publishes_only_terminal_facts_with_named_guard_phases() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let (project, before, samples) = {
+        let app = state.lock().unwrap();
+        (app.project_at(0).id.clone(), app.read_view.load(), app.frame_clock.capture_phases())
+    };
+    let created = call(&handler, "term.create", json!({"project_id": project}));
+    assert_eq!(created["ok"], true, "{created}");
+    let phases = samples.snapshot();
+    let phases = &phases["term.create"];
+    assert!(phases.get("entered.publication.global").is_none(), "{phases}");
+    for phase in ["term.create.reserve", "term.create.commit", "terminals.publish"] {
+        assert!(phases.get(phase).is_some(), "missing {phase}: {phases}");
+    }
+    let app = state.lock().unwrap();
+    let after = app.read_view.load();
+    assert!(Arc::ptr_eq(before.global.as_ref().unwrap(), after.global.as_ref().unwrap()));
+    for key in before.keys() {
+        assert_eq!(before.get_owned(key.method, &key.owner), after.get_owned(key.method, &key.owner));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let project = state.lock().unwrap().project_at(0).id.clone();
+    let (gate, held) = OffLockGate::new();
+    state.lock().unwrap().terminal_create_spawn_gate = Some(gate);
+    let create = {
+        let handler = handler.clone();
+        let project = project.clone();
+        std::thread::spawn(move || call(&handler, "term.create", json!({"project_id": project})))
+    };
+    held.wait_for_arrival();
+    let app = state.try_lock().expect("spawn must release the app mutex");
+    assert_eq!(app.active_deferred_filesystem_jobs, 1);
+    assert_eq!(app.session_registry.pending_shell_count(), 1);
+    assert!(app.refuse_source_shells_at(&repo).is_err());
+    drop(app);
+    let listed = call(&handler, "term.list", json!({"project_id": project}));
+    assert!(listed_ids(&listed).is_empty(), "a pending spawn is not a tab: {listed}");
+    held.release();
+    let created = create.join().unwrap();
+    assert_eq!(created["ok"], true, "{created}");
+    let app = state.lock().unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert_eq!(app.session_registry.pending_shell_count(), 0);
+}

@@ -247,6 +247,10 @@ impl SessionRegistry {
         id
     }
 
+    pub(in crate::app) fn pending_shell_count(&self) -> usize {
+        self.spawn_claims.iter().filter(|key| !key.is_agent()).count()
+    }
+
     pub(in crate::app) fn shell_count(&self) -> usize {
         self.tabs
             .values()

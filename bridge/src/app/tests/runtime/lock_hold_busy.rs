@@ -57,6 +57,10 @@ struct Busy {
 
 impl Busy {
     fn new() -> Self {
+        Self::with_history_items(HISTORY_ITEMS)
+    }
+
+    fn with_history_items(history_items: usize) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (home, mut app, project) = tracked(root.path());
         let repo = app.project_at(0).repo_path.clone();
@@ -130,7 +134,7 @@ impl Busy {
         }
         for (owner, _) in &owners {
             let mut active = app.take_run(owner).unwrap();
-            seed_history(&mut active.agents.primary_mut().unwrap().thread);
+            seed_history(&mut active.agents.primary_mut().unwrap().thread, history_items);
             app.persist_run_record(owner, &active).unwrap();
             app.runs.insert(owner.clone(), active);
         }
@@ -247,8 +251,8 @@ impl Busy {
     }
 }
 
-fn seed_history(thread: &mut crate::thread::Thread) {
-    for i in 0..HISTORY_ITEMS / 2 {
+fn seed_history(thread: &mut crate::thread::Thread, items: usize) {
+    for i in 0..items / 2 {
         thread.post_user(format!("Busy request {i}: inspect the project files and preserve the established task and conversation identity while preparing the next review."),None,"2026-10-20T12:00:00Z");
         thread.post_agent(format!("Busy answer {i}: the implementation records the committed result, and the next request should observe that result through the saved task timeline and conversation history."),None,"2026-10-20T12:00:01Z");
     }
@@ -971,4 +975,20 @@ async fn wait_for_fixture_idle(busy: &Busy) -> Value {
     })
     .await
     .expect("queued/settling/in-flight deliveries and sampled frames all finished")
+}
+
+/// Keep terminal admission independent of retained workspace and history size.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "realistic 200-conversation/190-worktree/700-task terminal hold fixture"]
+async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
+    let busy = Busy::with_history_items(500);
+    let handler = AppState::handler(Arc::clone(&busy.state));
+    let workspace = busy.owners[AGENTS + 1].0.clone();
+    let created = call(&handler, "term.create", json!({"workspace_id": workspace}));
+    assert_eq!(created["ok"], true, "{created}");
+    let measurements = busy.samples.snapshot();
+    eprintln!("term.create busy phases: {}", serde_json::to_string_pretty(&measurements["term.create"]).unwrap());
+    let held = measurements["term.create"]["frame.held"]["max_ms"].as_f64().unwrap();
+    assert!(held < 50.0, "term.create held the app mutex for {held:.3}ms");
+    call(&handler, "term.close", json!({"term_id": created["result"]["term_id"]}));
 }

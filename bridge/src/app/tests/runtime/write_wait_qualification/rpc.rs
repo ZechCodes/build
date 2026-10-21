@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
+mod attach;
 mod cleanup;
 mod receive;
 mod tests;
@@ -88,13 +89,7 @@ impl RpcHarness {
     }
 
     pub(super) fn attach_client_watch(&mut self, watch: ClientWatch) {
-        assert!(
-            self.offered.lock().unwrap().is_empty(),
-            "attach before requests"
-        );
-        let mut attachment = self.watch.lock().unwrap();
-        assert!(attachment.is_none(), "one watch per RPC harness");
-        *attachment = Some(watch);
+        attach::install(self, watch);
     }
 
     pub async fn request(

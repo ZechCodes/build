@@ -101,3 +101,142 @@ async fn mcp_open_review_refreshes_initialized_workspace_observation_before_repl
 
     assert_workspace_review(&handler, &workspace, &answer["result"]);
 }
+
+fn deferred_open(
+    shared: &Arc<Mutex<AppState>>,
+    workspace: &str,
+) -> crate::app::runtime::deferred::DeferredJob {
+    let (result, job) = shared
+        .lock()
+        .unwrap()
+        .dispatch_deferring("tasks.review.open", &open_params(workspace));
+    result.unwrap();
+    job.unwrap()
+}
+
+#[test]
+fn delayed_opening_observation_preserves_newer_close_and_replacement_review() {
+    for replace in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let (_repository, mut app, project) = tracked(home.path());
+        let workspace = workspace(&mut app, &project, "delayed discovery");
+        let (shared, handler) = shared_handler(app);
+        let opened = call(&handler, "tasks.review.open", open_params(&workspace));
+        let delayed = deferred_open(&shared, &workspace).run();
+        call(
+            &handler,
+            "tasks.review.close",
+            json!({"task_id":opened["task"]["id"], "expected_version":opened["review"]["version"], "description":"Superseded"}),
+        );
+        if replace {
+            let mut params = open_params(&workspace);
+            params["request_id"] = json!("replacement-review");
+            let replacement = call(&handler, "tasks.review.open", params);
+            assert_ne!(replacement["task"]["id"], opened["task"]["id"]);
+            assert_eq!(replacement["review"]["version"], 1);
+            assert_workspace_review(&handler, &workspace, &replacement);
+        }
+        let expected = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
+        assert_eq!(
+            expected["active_review"]["status"],
+            if replace { "open" } else { "closed" }
+        );
+        shared
+            .lock()
+            .unwrap()
+            .apply_deferred("tasks.review.open", &open_params(&workspace), delayed)
+            .unwrap();
+
+        let actual = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
+        assert_eq!(actual["active_review"], expected["active_review"]);
+    }
+}
+
+#[test]
+fn opening_observation_sql_finishes_while_app_mutex_is_held() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace = workspace(&mut app, &project, "off-lock discovery");
+    let store = app.store.clone().unwrap();
+    let (gate, paused) = OffLockGate::new();
+    app.off_lock_review_open_observation_gate = Some(gate);
+    let (shared, handler) = shared_handler(app);
+    let job = deferred_open(&shared, &workspace);
+    let (sent, completed) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || sent.send(job.run()).unwrap());
+    paused.wait_for_arrival();
+    let writer = store.writer_for_test();
+    let app_guard = shared
+        .try_lock()
+        .expect("observation does not hold app mutex");
+    paused.release();
+    assert!(matches!(
+        completed.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    drop(writer);
+    let done = completed
+        .recv_timeout(Duration::from_secs(5))
+        .expect("observation SQL finishes without acquiring app mutex");
+    drop(app_guard);
+    worker.join().unwrap();
+    let opened = shared
+        .lock()
+        .unwrap()
+        .apply_deferred("tasks.review.open", &open_params(&workspace), done)
+        .unwrap();
+
+    assert_workspace_review(&handler, &workspace, &opened);
+}
+
+#[test]
+fn failed_opening_observation_preserves_cache_and_same_request_retry_repairs_it() {
+    let home = tempfile::tempdir().unwrap();
+    let (_repository, mut app, project) = tracked(home.path());
+    let workspace = workspace(&mut app, &project, "repair discovery");
+    let store = app.store.clone().unwrap();
+    let (gate, paused) = OffLockGate::new();
+    let (shared, handler) = shared_handler(app);
+    let opened = call(&handler, "tasks.review.open", open_params(&workspace));
+    let before = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
+    assert_eq!(before["active_review"]["task_id"], opened["task"]["id"]);
+    shared.lock().unwrap().off_lock_review_open_observation_gate = Some(gate);
+    let job = deferred_open(&shared, &workspace);
+    let worker = std::thread::spawn(move || job.run());
+    paused.wait_for_arrival();
+    let (task, record): (String, String) = {
+        let writer = store.writer_for_test();
+        let row = writer
+            .query_row("SELECT task_id, record FROM reviews", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        writer
+            .execute("UPDATE reviews SET record = '{}'", [])
+            .unwrap();
+        row
+    };
+    paused.release();
+    let done = worker.join().unwrap();
+    let error = shared
+        .lock()
+        .unwrap()
+        .apply_deferred("tasks.review.open", &open_params(&workspace), done)
+        .unwrap_err();
+    assert!(error.contains("review"), "{error}");
+    let after = call(&handler, "workspace.get", json!({"workspace_id":workspace}));
+    assert_eq!(after["active_review"], before["active_review"]);
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE reviews SET record = ?1 WHERE task_id = ?2",
+            [&record, &task],
+        )
+        .unwrap();
+    shared.lock().unwrap().off_lock_review_open_observation_gate = None;
+
+    let retried = call(&handler, "tasks.review.open", open_params(&workspace));
+
+    assert_eq!(retried["task"]["id"], task);
+    assert_workspace_review(&handler, &workspace, &retried);
+}

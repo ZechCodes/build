@@ -169,27 +169,6 @@ impl AppState {
             }
         }
     }
-    pub(in crate::app) fn refresh_workspace_review_observation(&mut self, id: &str) {
-        let mut row = json!({});
-        match self.load_workspace_review_summary(id, &mut row) {
-            Ok(()) => {
-                self.snapshot_observations
-                    .workspace_reviews
-                    .insert(id.to_owned(), row);
-            }
-            Err(error) => eprintln!("workspace review observation {id}: {error}"),
-        }
-    }
-    pub(in crate::app) fn snapshot_workspace_review(&self, id: &str, row: &mut Value) {
-        if let Some(summary) = self
-            .snapshot_observations
-            .workspace_reviews
-            .get(id)
-            .and_then(|row| row.get("active_review"))
-        {
-            row["active_review"] = summary.clone();
-        }
-    }
     pub(in crate::app) fn refresh_snapshot_task_observations(&self) -> Result<(), String> {
         let projects = self
             .projects

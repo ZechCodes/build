@@ -116,8 +116,10 @@ pub const CHANGES_EVENT: &str = "changes";
 /// The change events a browser session can be told about, announced in the
 /// `session.hello` greeting so a client knows what it may hear. `changes` is
 /// what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 6] = [
+pub const ANNOUNCED_EVENTS: [&str; 8] = [
     CHANGES_EVENT,
+    "bridge.restarting",
+    "writes.confirmed",
     "bridge.update_status",
     MODELS_CHANGED_EVENT,
     "rtc.diagnostics",

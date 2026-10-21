@@ -205,7 +205,7 @@ fn scoped_uploads_and_entry_creation_have_separate_typed_contracts() {
 #[test]
 fn media_page_features_are_announced_together() {
     let advertised: BTreeSet<&str> = capabilities(false).into_iter().collect();
-    assert_eq!(API_VERSION, "3.23.0");
+    assert_eq!(API_VERSION, "3.24.0");
     assert!(advertised.contains("thread.attachmentChunks"));
     assert!(advertised.contains("fs.mediaRawPages"));
     let greeting = read_json(&fixtures_root().join("v1/session.hello.json"));
@@ -361,7 +361,7 @@ fn the_harness_inventory_is_announced_with_its_push() {
 #[test]
 fn pull_requests_announce_their_new_mutations_without_retiring_snapshot_reviews() {
     let advertised = capabilities(false);
-    assert_eq!(API_VERSION, "3.23.0");
+    assert_eq!(API_VERSION, "3.24.0");
     assert!(advertised.contains(&"tasks.review.pullRequests"));
     assert!(!advertised.contains(&"tasks.pullRequests"));
     for verb in [
@@ -911,7 +911,7 @@ fn event_examples() -> Vec<Value> {
 }
 
 /// The receipt the intake pushes the moment it admits a request, as
-/// `events.json` states it: the request's id, `accepted: true`, and no
+/// `events.json` states it: the request's id, epoch, `accepted: true`, and no
 /// verdict. The absence of `ok` is load-bearing — it is what tells a client
 /// that this settles nothing and its answer is still coming.
 #[test]
@@ -923,6 +923,7 @@ fn a_receipt_names_a_request_and_settles_nothing() {
         "{receipt:?}"
     );
     assert_eq!(receipt["accepted"], Value::Bool(true), "{receipt:?}");
+    assert!(receipt["bridge_epoch"].is_string(), "{receipt:?}");
     assert!(
         receipt.get("ok").is_none(),
         "a receipt carries no verdict: {receipt:?}"
@@ -930,8 +931,8 @@ fn a_receipt_names_a_request_and_settles_nothing() {
     assert!(receipt.get("result").is_none(), "{receipt:?}");
     assert_eq!(
         receipt.as_object().expect("an object").len(),
-        2,
-        "a receipt is the id and the word, and nothing else: {receipt:?}"
+        3,
+        "a receipt carries only the id, transport acceptance, and epoch: {receipt:?}"
     );
 }
 
@@ -1116,7 +1117,14 @@ fn check_untyped_push(event: &Value, keys: &[&str]) {
 fn every_event_example_is_what_the_bridge_serialises() {
     let examples = event_examples();
     assert!(!examples.is_empty(), "events.json states no examples");
-    for event in &examples {
+    for envelope in &examples {
+        assert!(
+            envelope["bridge_epoch"].is_string(),
+            "every authenticated push carries its bridge epoch"
+        );
+        let mut payload = envelope.clone();
+        payload.as_object_mut().unwrap().remove("bridge_epoch");
+        let event = &payload;
         match event["type"].as_str().expect("an event names its type") {
             changes::CHANGES_EVENT => {
                 assert!(event["subscription_id"].is_string(), "changes: id");
@@ -1128,6 +1136,12 @@ fn every_event_example_is_what_the_bridge_serialises() {
             "term.reset" => check_untyped_push(event, &["term_id", "data", "cursor"]),
             "term.closed" => check_untyped_push(event, &["term_id", "reason"]),
             "rtc.ice" => check_untyped_push(event, &["candidate"]),
+            "bridge.restarting" => assert_eq!(event.as_object().unwrap().len(), 1),
+            "writes.confirmed" => {
+                let confirmation: build_bridge::api::writes::WriteConfirmation =
+                    typed(envelope, "write confirmation");
+                assert_eq!(serde_json::to_value(confirmation).unwrap(), *envelope);
+            }
             "rtc.diagnostics" => check_untyped_push(event, &["event", "reason", "candidates"]),
             "bridge.update_status" => {
                 let mut status = event.clone();
@@ -1303,7 +1317,7 @@ fn thread_page_activity_mode_is_typed_and_optional() {
 
 #[test]
 fn lean_activity_is_announced_with_newest_item_and_exact_digest() {
-    assert_eq!(API_VERSION, "3.23.0");
+    assert_eq!(API_VERSION, "3.24.0");
     assert!(capabilities(false).contains(&"threads.leanActivity"));
     let fixture = read_json(&fixtures_root().join("v1/thread.page.json"));
     assert_eq!(fixture["lean_activity"]["since"], "3.20.0");
@@ -1486,7 +1500,7 @@ fn project_source_changes_are_announced_with_a_scope_and_an_item() {
 /// accepts. The legacy shape is the pinned coordinator alone.
 #[test]
 fn project_workers_are_announced_with_their_roster_read_and_purposes() {
-    assert_eq!(API_VERSION, "3.23.0");
+    assert_eq!(API_VERSION, "3.24.0");
     let advertised = capabilities(false);
     assert!(advertised.contains(&"agents.projectWorkers"));
     assert!(advertised.contains(&"agent.list"));
@@ -1574,7 +1588,7 @@ fn sync_base_path_precondition_is_announced_and_typed() {
 /// echoes the client's id.
 #[test]
 fn project_worker_assignment_is_announced_with_its_kind_and_operation_id() {
-    assert_eq!(API_VERSION, "3.23.0");
+    assert_eq!(API_VERSION, "3.24.0");
     assert!(capabilities(false).contains(&"tasks.assignProjectAgent"));
     let assign = read_json(&fixtures_root().join("v1/tasks.assign.json"));
     let example = &assign["project_agent_assignment"];

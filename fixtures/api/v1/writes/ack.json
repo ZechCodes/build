@@ -12,7 +12,8 @@
       {
         "kind": "project",
         "id": "proj-1",
-        "sequence": 42
+        "sequence": 42,
+        "generation": 0
       }
     ]
   },

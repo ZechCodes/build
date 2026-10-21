@@ -2,6 +2,9 @@
 use super::*;
 use std::collections::BTreeSet;
 
+#[cfg(test)]
+mod workspace_dependents_tests;
+
 #[derive(Default)]
 pub(in crate::app::observation_reads) struct ScopePatch {
     runs: BTreeMap<String, Option<Arc<RunInput>>>,
@@ -266,6 +269,8 @@ impl ScopeReadContext {
                     .get(&workspace)
                     .cloned()
                     .unwrap_or_default();
+                #[cfg(test)]
+                super::super::capture_metrics::record("scope_membership_remove", id);
                 owners.remove(id);
                 self.workspace_dependents.insert(workspace, owners);
             }
@@ -275,6 +280,8 @@ impl ScopeReadContext {
                     .get(workspace)
                     .cloned()
                     .unwrap_or_default();
+                #[cfg(test)]
+                super::super::capture_metrics::record("scope_membership_insert", id);
                 owners.insert(id.clone());
                 self.workspace_dependents.insert(workspace.clone(), owners);
             }

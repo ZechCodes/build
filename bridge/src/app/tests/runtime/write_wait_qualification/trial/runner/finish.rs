@@ -2,7 +2,9 @@
 use super::*;
 impl RunState<'_> {
     pub(super) fn finish(mut self) -> Result<TrialRun, String> {
-        self.producers.stop();
+        if self.failed || self.infrastructure.is_some() {
+            self.producers.stop();
+        }
         if let Some(watchdog) = self.watchdog.take() {
             watchdog.finish();
         }

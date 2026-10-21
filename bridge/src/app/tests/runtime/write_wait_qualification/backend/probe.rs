@@ -75,6 +75,13 @@ impl IndependentProbe for Probe {
                     started: producer.started,
                     completed: producer.completed,
                     failed: producer.failed,
+                    pending_not_started: producer.pending_not_started,
+                    missed_at_stop: producer.missed_at_stop,
+                    active_ordinal: producer.active_ordinal,
+                    maximum_start_lag_us: producer.maximum_start_lag_us,
+                    maximum_return_lag_us: producer.maximum_return_lag_us,
+                    oldest_owed_ordinal: producer.oldest_owed_ordinal,
+                    oldest_owed_age_us: producer.oldest_owed_age_us,
                 },
             );
             if let Some(ordinal) = producer.active_ordinal {
@@ -83,6 +90,9 @@ impl IndependentProbe for Probe {
                     .push(format!("{}/{ordinal}", producer.name));
             }
             if let Some(error) = producer.first_error {
+                output.producer_failures.push(error);
+            }
+            if let Some(error) = producer.deadline_breach {
                 output.producer_failures.push(error);
             }
             if producer.stop_requested && producer.missed_at_stop > 0 {

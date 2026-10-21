@@ -35,8 +35,13 @@ impl RunState<'_> {
         }
     }
     pub(super) fn enter_drain(&mut self, now: Instant) {
-        if (self.failed || now >= self.end) && self.drain_deadline.is_none() {
+        // Normal offer exhaustion drains each producer's immutable finite plan.
+        // An actual failure stops future callbacks even if normal drain began
+        // earlier; accepted/active callback bodies are never cancelled here.
+        if self.failed {
             self.producers.stop();
+        }
+        if (self.failed || now >= self.end) && self.drain_deadline.is_none() {
             self.drain_deadline = Some(now + CLEANUP_BOUND);
             self.at_600 = (now >= self.end).then(|| {
                 counts(

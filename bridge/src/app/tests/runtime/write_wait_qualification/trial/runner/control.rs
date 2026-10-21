@@ -66,7 +66,9 @@ pub async fn run_pipeline_control(
 }
 impl RunState<'_> {
     fn finish_control(mut self) -> Result<PipelineControlRun, String> {
-        self.producers.stop();
+        if self.failed || self.infrastructure.is_some() {
+            self.producers.stop();
+        }
         if let Some(watchdog) = self.watchdog.take() {
             watchdog.finish();
         }

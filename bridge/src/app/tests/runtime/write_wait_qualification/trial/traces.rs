@@ -112,4 +112,11 @@ pub struct ProducerCounts {
     pub started: u64,
     pub completed: u64,
     pub failed: u64,
+    pub pending_not_started: u64,
+    pub missed_at_stop: u64,
+    pub active_ordinal: Option<u64>,
+    pub maximum_start_lag_us: u64,
+    pub maximum_return_lag_us: u64,
+    pub oldest_owed_ordinal: Option<u64>,
+    pub oldest_owed_age_us: Option<u64>,
 }

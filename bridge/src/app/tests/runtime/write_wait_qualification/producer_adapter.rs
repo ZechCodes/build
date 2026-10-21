@@ -2,10 +2,13 @@
 //! No timer/counter is counted as production work. Callbacks MUST execute the
 //! real producer body and return errors for its actual verification failures.
 use super::trial_complete::{ProducerHandle, ProducerSet, TrialName};
-use crate::timing::write_wait::WriteWaitRegistry;
+use crate::timing::write_wait::{WriteWaitRegistry, WAIT_BUDGET};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+#[path = "producer_adapter/tests.rs"]
+mod tests;
 
 pub type ActualBody = Box<dyn FnMut(u64) -> Result<(), String> + Send + 'static>;
 pub struct ProductionBodies {
@@ -67,6 +70,10 @@ pub struct ProducerSnapshot {
     pub missed_at_stop: u64,
     pub active_ordinal: Option<u64>,
     pub maximum_start_lag_us: u64,
+    pub maximum_return_lag_us: u64,
+    pub oldest_owed_ordinal: Option<u64>,
+    pub oldest_owed_age_us: Option<u64>,
+    pub deadline_breach: Option<String>,
     pub stop_requested: bool,
     pub body_released: bool,
     pub joined: bool,
@@ -85,6 +92,8 @@ struct State {
     failed: AtomicU64,
     active: AtomicU64,
     maximum_start_lag_ns: AtomicU64,
+    maximum_return_lag_ns: AtomicU64,
+    next_unsettled: AtomicU64,
     body_released: AtomicBool,
     joined: AtomicBool,
     first_error: OnceLock<String>,
@@ -108,6 +117,61 @@ fn bounded_error(message: String) -> String {
 }
 
 impl State {
+    fn due(&self, ordinal: u64) -> Option<Instant> {
+        self.start
+            .get()
+            .map(|start| *start + Duration::from_nanos(ns(self.config.period) * ordinal))
+    }
+    fn oldest_owed(&self, now: Instant) -> Option<(u64, Duration)> {
+        let ordinal = self.next_unsettled.load(Ordering::Acquire);
+        if ordinal >= self.intended(now)
+            || (self.stop_requested.load(Ordering::Acquire)
+                && self.active.load(Ordering::Acquire) != ordinal)
+        {
+            return None;
+        }
+        Some((ordinal, now.saturating_duration_since(self.due(ordinal)?)))
+    }
+    fn deadline_error(&self, ordinal: u64, elapsed: Duration) -> Option<String> {
+        (elapsed > WAIT_BUDGET).then(|| {
+            format!(
+                "{} ordinal{ordinal}: original due deadline exceeded: {}us > {}us",
+                self.config.name,
+                elapsed.as_micros(),
+                WAIT_BUDGET.as_micros()
+            )
+        })
+    }
+    fn await_due(&self, ordinal: u64, due: Instant) -> Option<Instant> {
+        loop {
+            if self.stop_requested.load(Ordering::Acquire) {
+                return None;
+            }
+            let now = Instant::now();
+            if now < due {
+                std::thread::park_timeout(due - now);
+                continue;
+            }
+            if let Some(error) = self.deadline_error(ordinal, now.duration_since(due)) {
+                self.fail(error);
+                self.stop(now);
+                return None;
+            }
+            return Some(now);
+        }
+    }
+    fn returned(&self, ordinal: u64, due: Instant, returned: Instant) {
+        let elapsed = returned.saturating_duration_since(due);
+        self.maximum_return_lag_ns
+            .fetch_max(ns(elapsed), Ordering::Release);
+        self.next_unsettled.store(ordinal + 1, Ordering::Release);
+        if let Some(error) = self.deadline_error(ordinal, elapsed) {
+            // The actual body outcome remains completed/failed independently.
+            // A late return is a schedule violation, never a fresh five seconds.
+            self.fail(error);
+            self.stop(returned);
+        }
+    }
     // Independent snapshots read only atomics/immutable OnceLocks. Never app,
     // registry writer, collector, callback/body or join-handle mutexes.
     fn intended(&self, now: Instant) -> u64 {
@@ -173,6 +237,8 @@ impl ActualProducer {
             active: AtomicU64::new(NO_ACTIVE),
             counters_epoch: AtomicU64::new(0),
             maximum_start_lag_ns: AtomicU64::new(0),
+            maximum_return_lag_ns: AtomicU64::new(0),
+            next_unsettled: AtomicU64::new(0),
             body_released: AtomicBool::new(false),
             joined: AtomicBool::new(false),
             first_error: OnceLock::new(),
@@ -202,24 +268,11 @@ impl ActualProducer {
                                 .checked_mul(ordinal)
                                 .expect("fixed600s ordinal fits u64 nanoseconds"),
                         );
-                    loop {
-                        if worker_state.stop_requested.load(Ordering::Acquire)
-                            || Instant::now() >= finish
-                        {
-                            break;
-                        }
-                        let now = Instant::now();
-                        if now >= due {
-                            break;
-                        }
-                        std::thread::park_timeout(due - now);
-                    }
-                    if worker_state.stop_requested.load(Ordering::Acquire)
-                        || Instant::now() >= finish
-                    {
+                    // The finite plan itself excludes due >= finish. A body
+                    // crossing finish does not cancel an already-offered slot.
+                    let Some(actual_start) = worker_state.await_due(ordinal, due) else {
                         break;
-                    }
-                    let actual_start = Instant::now();
+                    };
                     worker_state.maximum_start_lag_ns.fetch_max(
                         ns(actual_start.saturating_duration_since(due)),
                         Ordering::Relaxed,
@@ -244,6 +297,7 @@ impl ActualProducer {
                         drop(binding);
                         result
                     }));
+                    let returned = Instant::now();
                     match outcome {
                         Ok(Ok(())) => {
                             root.complete();
@@ -279,6 +333,7 @@ impl ActualProducer {
                             worker_state.stop(Instant::now());
                         }
                     }
+                    worker_state.returned(ordinal, due, returned);
                     worker_state.active.store(NO_ACTIVE, Ordering::Release);
                     worker_state.counters_epoch.fetch_add(1, Ordering::Release);
                 }
@@ -298,7 +353,13 @@ impl ActualProducer {
         }))
     }
     pub fn snapshot(&self) -> ProducerSnapshot {
+        self.snapshot_at(Instant::now())
+    }
+    fn snapshot_at(&self, now: Instant) -> ProducerSnapshot {
         let state = &self.state;
+        // Observe stop before counters: a completed producer's release must
+        // not be paired with an older started count and invent missed slots.
+        let stopped = state.stop_requested.load(Ordering::Acquire);
         // Bounded retries: the independent watchdog never waits for a stopped
         // or preempted producer writer. Final joined snapshots are coherent.
         let mut counters_coherent = false;
@@ -327,9 +388,9 @@ impl ActualProducer {
             }
         }
         let (started, completed, failed, active) = observed;
-        let intended = state.intended(Instant::now());
-        let stopped = state.stop_requested.load(Ordering::Acquire);
+        let intended = state.intended(now);
         let remaining = intended.saturating_sub(started);
+        let owed = state.oldest_owed(now);
         ProducerSnapshot {
             name: state.config.name,
             period_us: ns(state.config.period) / 1000,
@@ -342,6 +403,11 @@ impl ActualProducer {
             missed_at_stop: if stopped { remaining } else { 0 },
             active_ordinal: (active != NO_ACTIVE).then_some(active),
             maximum_start_lag_us: state.maximum_start_lag_ns.load(Ordering::Relaxed) / 1000,
+            maximum_return_lag_us: state.maximum_return_lag_ns.load(Ordering::Acquire) / 1000,
+            oldest_owed_ordinal: owed.map(|(ordinal, _)| ordinal),
+            oldest_owed_age_us: owed.map(|(_, elapsed)| ns(elapsed) / 1000),
+            deadline_breach: owed
+                .and_then(|(ordinal, elapsed)| state.deadline_error(ordinal, elapsed)),
             stop_requested: stopped,
             body_released: state.body_released.load(Ordering::Acquire),
             joined: state.joined.load(Ordering::Acquire),

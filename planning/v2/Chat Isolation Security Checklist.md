@@ -301,3 +301,31 @@ intake, persistence, reset-reference and bounded-read verification is scoped in
 [Agent Message Attachments Security Checklist](Agent%20Message%20Attachments%20Security%20Checklist.md).
 This extension does not change the authentication or reset deletion controls
 scored above.
+
+## #740 authenticated shell account identity — 2026-10-21
+
+This section covers only the server-supplied account identity used to scope
+the SPA's local records. Pending write reconciliation and client-side identity
+admission are verified separately; this metadata does not authorize an API call.
+
+| Control | Evidence in `skriftapp/buildapp/test_app_shell_cache.py` | Score |
+| --- | --- | ---: |
+| The browser shell names the authenticated session's parsed UUID; request query, header and competing request-state values cannot select another account. | `test_the_shell_names_only_the_authenticated_account` | 20/20 |
+| Missing or malformed browser authentication redirects before rendering an account-bearing shell. | `test_a_signed_out_request_carries_no_account_id`, both cases | 20/20 |
+| Only the exact `{{ACCOUNT_ID}}` placeholder is replaced, with HTML attribute escaping. | `test_the_shell_names_only_the_authenticated_account`, `test_the_account_placeholder_is_encoded_as_an_html_attribute` | 20/20 |
+| The SPA source declares the `build-account-id` meta field, and the existing application mount survives rendering. | `test_the_spa_source_declares_the_account_placeholder`, `test_the_shell_still_carries_the_app` | 20/20 |
+| Account-bearing shell responses are never cached. | `test_the_app_shell_is_never_cached` | 20/20 |
+
+**Scoped shell score: 100/100.** The seven focused tests passed after the
+three new rendering/template assertions failed first. The literal placeholder
+in an unrendered development template is unavailable account identity, not an
+account id. Production rendering also retains the guarded desktop route's
+existing authenticated-user resolution.
+
+The full skriftapp gates passed under `nice -n 10`: frozen Ruff (exit 0) and
+frozen pytest (957 passed, one existing skip, exit 0). Both used the real uv
+0.12.15 executable and the dedicated `/tmp/build-740-sk-venv` environment.
+Logs: `/tmp/build-740-sk-ruff.log` and `/tmp/build-740-sk-pytest.log`.
+Semgrep scanned the changed controller, tests and HTML template with 304 rules,
+zero findings and approximately 100% parsed lines (exit 0;
+`/tmp/build-740-sk-semgrep.log`).

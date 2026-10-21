@@ -27,7 +27,6 @@ pub struct WriteMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct StatusParams {
     #[serde(deserialize_with = "operation_set")]
     pub operation_ids: Vec<String>,
@@ -36,7 +35,6 @@ pub struct StatusParams {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct SubscribeParams {
     #[serde(deserialize_with = "operation_set")]
     pub operation_ids: Vec<String>,

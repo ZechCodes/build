@@ -4,9 +4,9 @@ Task #710, amendment to [Bridge Concurrency Plan](<Bridge Concurrency Plan.md>),
 2026-10-20; compatibility decision amended 2026-10-21. **Implementation contract;
 Step 6a foundation in #739, SPA in #740.** Original baseline
 `82b5ce0c47b3016fb237cd0a2db5376384d019c2`, wire 3.23.0, Store schema 17.
-Names below are proposed unless identified as existing. This document does
-not describe shipped behavior. Implementation releases and gates are in the
-plan's steps 5–9. Zech accepted the three scope decisions in §8 on
+The Step 6a foundation is implemented by #739; semantic method enablement and
+its later contracts remain planned. Implementation boundaries are explicit
+below and releases and gates are in the plan's steps 5–9. Zech accepted the three scope decisions in §8 on
 2026-10-20 at 19:08 UTC, recorded on #710; those decisions are settled.
 
 ## 1. Outcome and existing boundaries
@@ -281,7 +281,7 @@ Example request:
 The existing transport receipt may precede this durable ack:
 
 ```json
-{"id":"r-17","ok":true,"bridge_epoch":"boot-B","write":{"phase":"ack","operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a","revision":1,"state":"accepted","accepted_epoch":"boot-B","owners":[{"kind":"project","id":"project-A","sequence":42}]},"result":{"task_id":"task-A","comment_id":"comment-R","accepted_at":"2026-10-20T19:00:00Z","overlay":[{"kind":"task_comment","task_id":"task-A","comment_id":"comment-R","body":"Ready for review"}]}}
+{"id":"r-17","ok":true,"bridge_epoch":"boot-B","write":{"phase":"ack","operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a","revision":1,"state":"accepted","accepted_epoch":"boot-B","owners":[{"kind":"project","id":"project-A","generation":0,"sequence":42}]},"result":{"task_id":"task-A","comment_id":"comment-R","accepted_at":"2026-10-20T19:00:00Z","overlay":[{"kind":"task_comment","task_id":"task-A","comment_id":"comment-R","body":"Ready for review"}]}}
 ```
 
 `result` here is an acceptance result, not the old full task detail response.
@@ -294,7 +294,7 @@ leave a spinner pending execution. No extra success toast is necessary.
 After application and publication:
 
 ```json
-{"type":"writes.confirmed","bridge_epoch":"boot-B","operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a","revision":2,"state":"succeeded","result":{"comment_id":"comment-R","task_id":"task-A"},"published":[{"kind":"project","id":"project-A","sequence":42}],"refresh":[{"kind":"task","id":"task-A"}]}
+{"type":"writes.confirmed","bridge_epoch":"boot-B","operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a","revision":2,"state":"succeeded","result":{"comment_id":"comment-R","task_id":"task-A"},"published":[{"kind":"project","id":"project-A","generation":0,"sequence":42}],"refresh":[{"kind":"task","id":"task-A"}]}
 ```
 
 This abbreviated example omits the verb's full existing result. Implementation
@@ -310,9 +310,9 @@ overlay before those records arrive. For a failure:
 `writes.status` is a bounded authenticated read of up to 128 operation IDs,
 returning latest ack/terminal summaries, including `not_found`/`result_expired`.
 Cap total encoded results at 512 KiB; return a stable cursor when summaries
-do not fit. Large final results use revision-bound result references fetched
-through a paged `writes.result` read, never 128 unbounded embedded histories.
-Both reads use the independent SQL read lane and its sender credits.
+do not fit. Step 6a keeps confirmation results inline; paged `writes.result`
+and revision-bound result references belong to a later step, as specified in
+§7. Status and subscribe use the independent SQL read lane and its sender credits.
 A `not_found` result in the same journal incarnation, for an operation
 **never acknowledged to this client** and under the documented intact-store
 process-restart contract, permits retransmission of the exact original

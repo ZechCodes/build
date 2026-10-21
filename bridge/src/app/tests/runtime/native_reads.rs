@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 mod owner_commit;
 mod plan_docs;
 mod task_history;
+mod update_admission;
 
 const SESSION: &str = "remaining-native-reads";
 
@@ -29,6 +30,13 @@ impl NativeReads {
     }
 
     fn configured(qa: bool) -> Self {
+        Self::configured_with_updates(qa, None)
+    }
+
+    fn configured_with_updates(
+        qa: bool,
+        updates: Option<Arc<crate::update::UpdateService>>,
+    ) -> Self {
         let (directory, repository) = init_repo();
         let mut app = qa_state_before_admission(&repository, directory.path());
         app.qa_agent = qa;
@@ -70,7 +78,17 @@ impl NativeReads {
                     observed.lock().unwrap().push((phase, at));
                 }
             }));
-        let state = app.shared();
+        // Controlled update probes use the same direct shared-state fixture
+        // as updates::routed_admission; shared() installs its own runtime probe.
+        let state = match updates {
+            Some(updates) => {
+                app = app.with_update_service(updates);
+                app.migrate_task_read_fields().unwrap();
+                app.initialize_snapshot_projection();
+                Arc::new(Mutex::new(app))
+            }
+            None => app.shared(),
+        };
         let handler = AppState::handler(Arc::clone(&state));
         let transport = crate::transport::generate_transport_keypair();
         let intake = FrameIntake::with_pool(handler, transport.clone(), 128, 2);

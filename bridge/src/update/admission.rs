@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
+#[cfg(test)]
+mod tests;
+
 pub type ResumeWork = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Default)]

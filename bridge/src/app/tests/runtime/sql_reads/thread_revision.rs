@@ -61,6 +61,11 @@ async fn thread_revision_sql_lane_answers_with_zero_app_lock_time() {
     let answer =
         tokio::time::timeout(Duration::from_millis(100), final_answer(&mut wire, &key)).await;
     let elapsed = started.elapsed();
+    eprintln!(
+        "{}",
+        json!({"method":"thread.revision", "reply_us":elapsed.as_micros(),
+        "app_mutex_held_through_reply":answer.is_ok(), "deadline_us":100_000})
+    );
     release.send(()).unwrap();
     holder.join().unwrap();
     let answer = answer.expect("revision must reply while the application mutex remains held");

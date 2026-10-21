@@ -3171,6 +3171,9 @@ gate attachment display.
   A confirmation invalidation retains its layer until a fresh, guarded canonical
   read covers the publication's owner kind, ID, generation and sequence.
   Failed/unapplied removes only its layer; partial/unknown retains evidence.
+  Named refresh obligations survive reload independently of overlays. This
+  foundation consumes inline results; an unknown result reference remains
+  unresolved and cannot become success or authorize retransmission.
   Task comments and thread posts display cached operation errors beside the
   composer, retain the draft, and distinguish a new-action Retry from same-ID
   Check again. The method allowlist is empty until bridge execution slices enable

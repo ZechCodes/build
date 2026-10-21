@@ -146,7 +146,7 @@ export function createWriteOperationService(options) {
       const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after }, assertCurrent: () => assertLease(leaseActive) });
       if (current(held)) await handleFrame(frame, held);
     } catch (error) {
-      if (current(held) && definitiveRefusal(error)) await refused(row, error);
+      if (current(held) && definitiveRefusal(error)) await refused(row, error, held);
     } finally {
       if (sending.get(row.operationId) === held) sending.delete(row.operationId);
       worker.wake();
@@ -156,10 +156,10 @@ export function createWriteOperationService(options) {
     const local = ["scope_ended", "local_wait_ended"].includes(error.error_code);
     return !local && error.retryable === false && !error.uncertain;
   }
-  async function refused(row, error) {
+  async function refused(row, error, held) {
     const confirmation = { type: "writes.confirmed", operation_id: row.operationId, state: "failed", effect: "unapplied",
       error: { code: error.error_code, message: error.message, retryable: error.retryable }, revision: row.revision + 1 };
-    await cache.confirm(row.operationId, { confirmation, revision: confirmation.revision });
+    await cache.confirm(row.operationId, { confirmation, revision: confirmation.revision, accept: () => current(held) });
     await refreshSnapshot();
   }
   function handleFrame(frame, held = binding) {
@@ -209,7 +209,8 @@ export function createWriteOperationService(options) {
     const stored = await cache.confirm(row.operationId, { ...effects, confirmation: frame, revision: frame.revision,
       owners: row.owners || frame.published, published: frame.published || [],
       refreshPending: Boolean(frame.refresh?.length), accept: () => current(held) });
-    if (options.onRefresh && frame.refresh?.length) {
+    if (!current(held) || stored?.revision !== frame.revision || !stored.refreshPending) return;
+    if (options.onRefresh) {
       const entry = { frame, row: stored, held, running: false };
       refreshes.set(row.operationId, entry);
       startRefresh(entry);
@@ -353,7 +354,14 @@ export function createWriteOperationService(options) {
   return {
     submit, bind, handleFrame, supports,
     reconcile: () => worker.reconcile(),
-    checkAgain(id) {if (id) checks.add(id); return worker.reconcile();},
+    async checkAgain(id) {
+      if (id) {
+        checks.add(id);
+        const row = await cache.get(id);
+        if (row?.confirmation?.refresh?.length) await cache.update(id, value => ({ ...value, refreshPending: true }));
+      }
+      return worker.reconcile();
+    },
     observePublication: input => cache.observePublication(input),
     get: id => cache.get(id), list: () => cache.list(), readOperations: () => snapshot,
     subscribe(listener) {listeners.add(listener); return () => listeners.delete(listener);},

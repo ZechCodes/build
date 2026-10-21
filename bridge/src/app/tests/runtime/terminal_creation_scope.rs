@@ -166,3 +166,71 @@ async fn terminal_creation_physical_scope_probe_releases_the_app_lock() {
         true
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_creation_discovers_unregistered_external_workspace_offlock() {
+    let f = Fixture::new();
+    let repo = f
+        .state
+        .lock()
+        .unwrap()
+        .projects
+        .get(&f.projects[0])
+        .unwrap()
+        .repo_path
+        .clone();
+    add_external_worktree(&repo, f._dir.path(), "fresh-external", "fresh-external");
+    let root = std::fs::canonicalize(f._dir.path().join("fresh-external")).unwrap();
+    let workspace_id = crate::worktree::external_worktree_id(&root);
+    assert!(f
+        .state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&workspace_id)
+        .is_none());
+    let (gate, held) = OffLockGate::new();
+    f.state.lock().unwrap().terminal_create_scope_probe_gate = Some(gate);
+    let creating = {
+        let handler = f.handler.clone();
+        std::thread::spawn(move || {
+            call(
+                &handler,
+                "term.create",
+                json!({"workspace_id":workspace_id}),
+            )
+        })
+    };
+    held.wait_for_arrival();
+    let (sent, received) = std::sync::mpsc::channel();
+    let concurrent = {
+        let handler = f.handler.clone();
+        std::thread::spawn(move || {
+            let _ = sent.send(call(&handler, "session.hello", json!({})));
+        })
+    };
+    let reply = received.recv_timeout(Duration::from_millis(100));
+    held.release();
+    let created = creating.join().unwrap();
+    let actual_root = if created["ok"] == true {
+        let app = f.state.lock().unwrap();
+        Some(
+            app.tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+                .unwrap()
+                .root,
+        )
+    } else {
+        None
+    };
+    f.close(&created);
+    concurrent.join().unwrap();
+    assert_eq!(
+        created["ok"], true,
+        "a valid Git worktree must remain addressable before legacy adoption: {created}"
+    );
+    assert_eq!(actual_root, Some(root));
+    assert_eq!(
+        reply.expect("legacy Git discovery held the app mutex")["ok"],
+        true
+    );
+}

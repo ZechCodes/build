@@ -205,6 +205,17 @@ impl CapturedScope {
         })
     }
 
+    fn adoption_revalidates(&self, current: &Self) -> bool {
+        match (&self.adoption, &current.adoption) {
+            (Some(previous), Some(current)) => previous == current,
+            // A previously registered workspace cannot disappear into a
+            // legacy fallback while this request retains its old identity.
+            (None, Some(_)) => false,
+            // A concurrent actual adoption keeps its own newer registry row.
+            _ => true,
+        }
+    }
+
     pub fn revalidates(&self, current: &Self, resolved: &ResolvedScope, app: &AppState) -> bool {
         match (&self.discovery, &current.discovery) {
             (Some(old), Some(current)) => {
@@ -218,6 +229,7 @@ impl CapturedScope {
                 selected(old).is_some()
                     && selected(old) == selected(current)
                     && old.state_root == current.state_root
+                    && old.registry_root == current.registry_root
                     && !current
                         .held_paths
                         .iter()
@@ -234,6 +246,7 @@ impl CapturedScope {
                     && self.raw_root == current.raw_root
                     && self.source == current.source
                     && self.kind == current.kind
+                    && self.adoption_revalidates(current)
                     && !current
                         .denied_roots
                         .iter()

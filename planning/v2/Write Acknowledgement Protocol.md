@@ -555,6 +555,11 @@ together. Keep `bridge.epoch`; the exact `ack_confirm_methods` list is internal
 and initially empty. Method capabilities for the actual status/subscribe
 reads remain ordinary registry entries. A forward schema migration suffices.
 
+Step 6a (#739) keeps every confirmation result inline: it never emits a
+revision-bound `result_ref` and does not serve `writes.result`. Paged result
+retrieval is a later method-enablement step with its own wire contract and
+fixtures; it is not part of the 3.24.0 foundation consumed by #740.
+
 Durable acceptance, same-ID idempotency, crash recovery, epoch stamping,
 retained status and atomic subscribe reconciliation remain required. The
 compatibility simplification does not weaken those guarantees.

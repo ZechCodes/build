@@ -927,7 +927,7 @@ command service; identity/outcome tombstones remain, and unresolved partial/unkn
 evidence is retained until reconciliation. Active owner fences and the
 principal/cursor outbox index keep settled lifetime history out of claim and
 caught-up subscription queries. Admission limits are 128 nonterminal commands
-per principal, 4,096 per store and 64 KiB per admitted intent; terminal outcomes
+per principal, 4,096 per store and 64 KiB per admission payload; terminal outcomes
 are limited to 256 KiB, checked before committing canonical SQL.
 
 `app/mutations.rs` reads journal status using the existing independent SQL lane

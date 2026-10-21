@@ -8,9 +8,10 @@ The task tools are about YOUR project — there is nothing to pass and no other
 project is reachable — and the bridge knows who you are, so what you write is
 signed by you.
 
-`list_tasks` returns one page in task-number descending order:
-`{project_id, tasks, user_session, next_cursor?}`. It defaults to 20 tasks;
-optional `limit` must be 1–20. Pass `next_cursor` as `cursor` to continue
+`list_tasks` returns one page in task-number descending order, with
+`project_id`, `tasks`, `user_session`, and optional `next_cursor` fields.
+It defaults to 20 tasks; optional `limit` must be 1–20.
+Pass `next_cursor` as `cursor` to continue
 with the same `state`, `status`, and `label` filters. A filtered page can be
 empty and still have `next_cursor`; finish only when `next_cursor` is absent.
 Every listed row remains a full task record. Use `get_task` for its full

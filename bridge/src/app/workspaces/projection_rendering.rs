@@ -25,6 +25,8 @@ pub(in crate::app) struct ProjectionRendering {
 impl ProjectionRendering {
     pub(super) fn capture(app: &AppState) -> Self {
         #[cfg(test)]
+        super::ownership::work_counts::render_index_build();
+        #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.ownership_render_indexes");
         let mut captured = Self::default();
         // Match entity_of_agent's plans-before-runs traversal, including an
@@ -36,6 +38,8 @@ impl ProjectionRendering {
             .chain(app.runs.iter().map(|(owner, run)| (owner, &run.agents)))
         {
             for agent in roster.iter() {
+                #[cfg(test)]
+                super::ownership::work_counts::source_row();
                 captured
                     .agent_owners
                     .entry(agent.id.clone())
@@ -43,6 +47,8 @@ impl ProjectionRendering {
             }
         }
         for (owner, active) in &app.runs {
+            #[cfg(test)]
+            super::ownership::work_counts::source_row();
             let state = active.run.state;
             captured.run_states.insert(owner.clone(), state);
             if let Some(project) = app.projects.project_id_of(owner) {

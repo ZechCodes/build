@@ -5,6 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 mod inputs;
+#[cfg(test)]
+pub(in crate::app) mod work_counts;
 
 #[derive(Default)]
 pub(in crate::app) struct ProjectionOwnership {
@@ -20,6 +22,13 @@ pub(in crate::app) struct ProjectionOwnership {
 }
 
 impl ProjectionOwnership {
+    /// Keep the context alive when comparing identities: this is the actual
+    /// structural map's storage, not a synthesized capture generation.
+    #[cfg(test)]
+    pub(in crate::app) fn structural_identity_for_test(&self) -> usize {
+        std::ptr::from_ref(&self.workspace_owners) as usize
+    }
+
     pub(in crate::app) fn is_project_owner(&self, owner: &str) -> bool {
         self.project_owners.contains(owner)
     }
@@ -133,6 +142,8 @@ impl AppState {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.ownership_capture");
         let inputs = inputs::Inputs::capture(self);
+        #[cfg(test)]
+        work_counts::map_build();
         let mut context = ProjectionOwnership {
             rendering: super::projection_rendering::ProjectionRendering::capture(self),
             project_owners: inputs

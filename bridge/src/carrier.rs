@@ -1792,7 +1792,7 @@ mod registry_tests {
         let outbound = out.try_recv().expect("the push rode the carrier");
         assert_eq!(
             SessionSender::decrypt_push(&key, &outbound),
-            json!({ "id": 1, "ok": true })
+            json!({ "id": 1, "ok": true, "bridge_epoch": sender.bridge_epoch() })
         );
     }
 

@@ -237,6 +237,11 @@ async fn the_greeting_announces_push_events() {
     assert_eq!(hello["ok"], true, "{hello:?}");
     assert_eq!(hello["result"]["push_events"], true, "{hello:?}");
     assert_eq!(
+        hello["result"]["bridge_epoch"],
+        crate::bridge_epoch::current(),
+        "{hello:?}"
+    );
+    assert_eq!(
         hello["result"]["message_context"]["version"], 1,
         "{hello:?}"
     );
@@ -253,6 +258,8 @@ async fn the_greeting_announces_push_events() {
         hello["result"]["events"],
         json!([
             "changes",
+            "bridge.restarting",
+            "writes.confirmed",
             "bridge.update_status",
             "models.changed",
             "rtc.diagnostics",

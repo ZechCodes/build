@@ -95,20 +95,16 @@ impl TaskDeliveryService {
             Ok((work, notices))
         })();
         #[cfg(test)]
-        let running = prepared
-            .as_ref()
-            .ok()
-            .and_then(|(work, _)| work.as_ref())
-            .and_then(|work| work.attempt.as_ref())
-            .map(|attempt| attempt.start());
+        let mut prepared = prepared;
         #[cfg(test)]
-        let selected = crate::store::delivery_origins::Run::joined(
-            running
-                .as_ref()
-                .and_then(|run| run.context())
-                .into_iter()
-                .chain(background),
-        );
+        let selected = prepared
+            .as_mut()
+            .ok()
+            .and_then(|(work, _)| work.as_mut())
+            .and_then(|work| work.execution.take())
+            .unwrap_or_else(|| crate::store::delivery_origins::Run::joined(background));
+        // Retain the exact lease created before app unlock through settlement
+        // and the native drain, even if publication retires its principal.
         #[cfg(test)]
         timer.set_write_context(selected.context());
         #[cfg(test)]

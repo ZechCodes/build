@@ -47,6 +47,9 @@ pub(in crate::app) struct TaskDeliveryWork {
     pub git: Option<DeferredGit>,
     #[cfg(test)]
     pub attempt: Option<std::sync::Arc<crate::store::delivery_origins::Attempt>>,
+    /// Ownership selected under the app lock survives principal retirement.
+    #[cfg(test)]
+    pub execution: Option<crate::store::delivery_origins::Run>,
 }
 
 impl AppState {
@@ -121,6 +124,8 @@ impl AppState {
                 git: None,
                 #[cfg(test)]
                 attempt,
+                #[cfg(test)]
+                execution: Some(selected),
             }));
         }
         match self.prepare_delivery_resource(&mut intent) {
@@ -136,6 +141,8 @@ impl AppState {
                     git,
                     #[cfg(test)]
                     attempt,
+                    #[cfg(test)]
+                    execution: Some(selected),
                 }))
             }
             Err(error) => {
@@ -183,6 +190,11 @@ impl AppState {
         work: TaskDeliveryWork,
         result: Option<Result<Value, String>>,
     ) -> Result<(), String> {
+        #[cfg(test)]
+        let _binding = work
+            .execution
+            .as_ref()
+            .and_then(|execution| execution.bind());
         // Settlement still holds the app mutex, including every error path.
         if work.git.is_some() {
             self.active_deferred_filesystem_jobs -= 1;

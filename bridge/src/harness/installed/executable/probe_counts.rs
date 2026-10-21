@@ -39,16 +39,18 @@ pub(crate) fn measure<T>(work: impl FnOnce() -> T) -> (T, Counts) {
 }
 
 pub(super) fn metadata_attempt() {
-    COUNTS.update(|mut count| {
+    COUNTS.with(|held| {
+        let mut count = held.get();
         count.metadata_attempts += 1;
-        count
+        held.set(count);
     });
 }
 
 pub(super) fn canonicalize_attempt() {
-    COUNTS.update(|mut count| {
+    COUNTS.with(|held| {
+        let mut count = held.get();
         count.canonicalize_attempts += 1;
-        count
+        held.set(count);
     });
 }
 

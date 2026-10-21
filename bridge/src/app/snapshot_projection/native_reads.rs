@@ -180,6 +180,11 @@ impl AppState {
     }
 
     pub(super) fn refresh_plan_doc_observations(&mut self) {
+        // A producer may retain a committed plan outside the live map while
+        // preparing work. Its absence is not retirement of its durable docs.
+        if self.committed_entities.has_borrowed(self) {
+            return;
+        }
         let observed = self
             .plans
             .keys()

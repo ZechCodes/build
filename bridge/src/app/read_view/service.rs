@@ -256,17 +256,29 @@ fn owner_detail(
     let thread = if canonical_agent.is_empty() {
         empty_thread(params)
     } else {
-        view.history(canonical_agent)
-            .ok_or_else(|| {
-                ApiError::internal(format!("conversation snapshot missing: {canonical_agent}"))
-            })?
-            .render(params)
+        history_detail(view, params, method, canonical_agent)?
     };
     if method == "workspace.get" {
         answer["run"]["thread"] = thread.clone();
     }
     answer["thread"] = thread;
     Ok(answer)
+}
+
+fn history_detail(
+    view: &ReadView,
+    params: &Value,
+    method: &str,
+    agent: &str,
+) -> Result<Value, ApiError> {
+    let history = view
+        .history(agent)
+        .ok_or_else(|| ApiError::internal(format!("conversation snapshot missing: {agent}")))?;
+    Ok(if method == "task.get" {
+        history.render_task(params)
+    } else {
+        history.render(params)
+    })
 }
 
 #[cfg(test)]

@@ -529,6 +529,14 @@ async fn project_deletion_retires_its_published_captures() {
         .held_read("capture.get", json!({"capture_id":reads.capture}))
         .await;
     assert_eq!(after["ok"], false, "{after}");
+    assert_eq!(after["error_code"], "not_found", "{after}");
+    assert!(
+        after["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown capture_id"),
+        "{after}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

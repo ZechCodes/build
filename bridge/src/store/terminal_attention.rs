@@ -120,6 +120,7 @@ mod tests {
         let store = Store::new(directory.path()).unwrap();
         let stamp = "2026-01-02T00:00:00Z";
         let captured = store.terminal_attention_epoch();
+        let delayed = store.clone();
         store
             .save_terminal_interaction("external", stamp, Some(stamp), false, Some(captured))
             .unwrap();
@@ -132,7 +133,7 @@ mod tests {
         store
             .save_attention(&Default::default(), &Default::default())
             .unwrap();
-        store
+        delayed
             .save_terminal_interaction("external", stamp, Some(stamp), false, Some(captured))
             .unwrap();
         assert!(!store.load_attention().contains_key("external"));

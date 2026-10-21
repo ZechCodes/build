@@ -198,7 +198,7 @@ impl WarmTarget {
             .iter()
             .find(|session| session.id == lineage.id)
             .unwrap();
-        assert_eq!(session.provider, choice.provider.wire_id());
+        assert_eq!(session.provider, choice.provider.label());
         assert_eq!(session.model, choice.model);
         assert_eq!(session.effort, choice.effort);
         assert_eq!(session.checkout.as_deref(), Some(root.to_str().unwrap()));

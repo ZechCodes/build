@@ -1,5 +1,5 @@
 //! Native temporary residents for the declared total qualification envelope.
-//! The history/read-input stage remains explicitly incomplete until its RED control.
+//! Cardinalities include primary checkouts and every supplemental history.
 use super::rpc::RpcHarness;
 use crate::app::tests::project_agent::{added_project, rooted};
 use crate::app::tests::runtime::idle_sessions::fake_run_record;
@@ -62,6 +62,7 @@ pub(super) struct WorkspaceContext {
     pub directory: PathBuf,
     pub owner: String,
     pub agent_id: String,
+    pub conversation_id: String,
     pub thread_id: String,
 }
 
@@ -74,11 +75,86 @@ pub(super) struct QualificationFixture {
     pub active_workspaces: Vec<WorkspaceContext>,
     pub sessions: Vec<(TabKey, Arc<dyn AgentSession>)>,
     pub logs: Vec<SessionLog>,
+    pub read_inputs: Option<Arc<super::read_recipes::ReadyReadInputs>>,
     _root: tempfile::TempDir,
+}
+
+struct NativeFixture {
+    app: AppState,
+    root: tempfile::TempDir,
+    projects: Vec<ProjectContext>,
+    residents: Vec<WorkspaceContext>,
+    active_workspaces: Vec<WorkspaceContext>,
+    logs: Vec<SessionLog>,
 }
 
 impl QualificationFixture {
     pub(super) fn new(envelope: Envelope) -> Self {
+        let mut native = NativeFixture::prepare(envelope);
+        super::history_fill::fill(&mut native.app, envelope.thread_items());
+        native.finish()
+    }
+
+    /// Actual full read prerequisites, including the bounded real Router boot.
+    /// #726 remains a prerequisite; this constructor never substitutes a fake
+    /// successful Router startup or a missing read recipe.
+    pub(super) async fn ready(envelope: Envelope) -> Self {
+        let mut native = NativeFixture::prepare(envelope);
+        let project = &native.projects[0];
+        let workspace = &native.active_workspaces[0];
+        let bounded = super::read_recipes::SeededReadInputs::seed(
+            &mut native.app,
+            super::read_recipes::SeedContext {
+                project: &project.project_id,
+                workspace: &workspace.workspace_id,
+                owner: &workspace.owner,
+                agent: &workspace.agent_id,
+                task: &project.tasks[project.tasks.len() - 2],
+                dependent: &project.tasks[project.tasks.len() - 1],
+            },
+        );
+        let prepared = super::read_recipes::PreparedReadInputs::prepare(
+            &mut native.app,
+            native.root.path(),
+            bounded,
+            &native.projects,
+            &native.residents,
+            &native.active_workspaces,
+        );
+        let remaining = envelope
+            .thread_items()
+            .checked_sub(prepared.reserved_tail_items())
+            .expect("read tail is inside the global history budget");
+        super::history_fill::fill(&mut native.app, remaining);
+        prepared.finish_history(&mut native.app, envelope.thread_items() as u64);
+        let mut fixture = native.finish();
+        use futures_util::FutureExt;
+        let outcome = std::panic::AssertUnwindSafe(prepared.finalize(&fixture.rpc))
+            .catch_unwind()
+            .await;
+        match outcome {
+            Ok(ready) => {
+                fixture.read_inputs = Some(Arc::new(ready));
+                fixture
+            }
+            Err(original) => {
+                // The read prerequisite's own guard retires its planned
+                // Router/shell before this catch boundary. Keep native roots
+                // until actual carrier receivers/shared work also finish;
+                // preserve the original #726/startup failure afterward.
+                fixture.shutdown().await;
+                std::panic::resume_unwind(original)
+            }
+        }
+    }
+
+    pub(super) async fn shutdown(self) {
+        self.counts_and_shutdown().await;
+    }
+}
+
+impl NativeFixture {
+    fn prepare(envelope: Envelope) -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut app = rooted(root.path())
             .with_task_store(root.path().join("store"))
@@ -137,12 +213,9 @@ impl QualificationFixture {
                 );
                 record.agents[0].watched = true;
                 let active = crate::orchestrator::ActiveRun::reattach(&record, String::new());
-                let thread_id = active
-                    .agents
-                    .primary()
-                    .unwrap()
-                    .conversation_id()
-                    .to_string();
+                let primary = active.agents.primary().unwrap();
+                let conversation_id = primary.conversation_id().to_string();
+                let thread_id = primary.thread.id.clone();
                 app.projects.bind_entity(owner.clone(), project.clone());
                 app.persist_run_record(&owner, &active).unwrap();
                 app.runs.insert(owner.clone(), active);
@@ -153,6 +226,7 @@ impl QualificationFixture {
                     directory: path,
                     owner,
                     agent_id: agent,
+                    conversation_id,
                     thread_id,
                 };
                 if resident < 2 {
@@ -233,6 +307,25 @@ impl QualificationFixture {
         app.seed_anchors_for_records_without_one();
         // Install fake CLI/catalogue/update/GitHub inputs from reusable read
         // builders BEFORE warm/listener capture; no real executable probe.
+        Self {
+            app,
+            root,
+            projects,
+            residents,
+            active_workspaces,
+            logs,
+        }
+    }
+
+    fn finish(self) -> QualificationFixture {
+        let Self {
+            app,
+            root,
+            projects,
+            residents,
+            active_workspaces,
+            logs,
+        } = self;
         let state = app.shared();
         let registry = WriteWaitRegistry::new();
         let sessions = {
@@ -251,7 +344,7 @@ impl QualificationFixture {
                 .collect()
         };
         let rpc = RpcHarness::new(Arc::clone(&state), Arc::clone(&registry));
-        Self {
+        QualificationFixture {
             state,
             registry,
             rpc,
@@ -260,6 +353,7 @@ impl QualificationFixture {
             active_workspaces,
             sessions,
             logs,
+            read_inputs: None,
             _root: root,
         }
     }
@@ -311,7 +405,7 @@ struct NativeCounts {
 }
 
 impl QualificationFixture {
-    async fn counts_and_shutdown(self) -> NativeCounts {
+    async fn counts_and_shutdown(mut self) -> NativeCounts {
         let counts = {
             let app = self.state.lock().unwrap();
             let mut canonical = std::collections::BTreeMap::new();
@@ -394,6 +488,9 @@ impl QualificationFixture {
             }
         };
         eprintln!("qualification_native_fixture_counts={counts:?}");
+        if let Some(reads) = self.read_inputs.take() {
+            reads.shutdown(&self.rpc).await;
+        }
         let Self {
             state, rpc, _root, ..
         } = self;

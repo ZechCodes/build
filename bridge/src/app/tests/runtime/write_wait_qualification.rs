@@ -9,6 +9,7 @@ mod client_watch;
 mod coverage;
 mod finite_watch;
 mod fixture;
+mod history_fill;
 mod post_reply;
 mod rare;
 mod read_and_exempt;

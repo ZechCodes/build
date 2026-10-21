@@ -74,6 +74,16 @@ impl DictatedSession {
         }
     }
 
+    /// Opt in to a bounded per-turn Working/Waiting protocol.
+    /// Test-first scaffold: actual finite transitions await the observed RED.
+    pub(in crate::app::tests) fn finishing_turns_after(self, delay: Duration) -> Self {
+        assert!(
+            delay <= Duration::from_millis(500),
+            "finite turns must complete within 500ms"
+        );
+        self
+    }
+
     /// Own the final activity sender so end closes the normal activity pump.
     pub(in crate::app::tests) fn reporting_activity(
         self,
@@ -405,4 +415,116 @@ pub(in crate::app::tests) async fn wait_for_agent_tab(state: &Arc<Mutex<AppState
     })
     .await
     .unwrap_or_else(|| panic!("the delivery never opened {key:?}"));
+}
+
+#[test]
+fn finite_waiting_session_reports_exit_only_after_its_own_retirement() {
+    let shared_log = SessionLog::default();
+    let (activity, mut output) =
+        tokio::sync::broadcast::channel::<crate::harness::ActivityReport>(8);
+    let retiring = Arc::new(
+        DictatedSession::reporting(AgentStatus::Waiting)
+            .recording_into(&shared_log)
+            .reporting_activity(activity),
+    );
+    let (peer_activity, _) = tokio::sync::broadcast::channel::<crate::harness::ActivityReport>(8);
+    let peer = DictatedSession::reporting(AgentStatus::Waiting)
+        .recording_into(&shared_log)
+        .reporting_activity(peer_activity);
+    assert!(!retiring.exited_within(Duration::ZERO));
+    assert!(!peer.exited_within(Duration::ZERO));
+    let session: Arc<dyn AgentSession> = retiring.clone();
+    let retirement = crate::reaper::Retirement::begin(session);
+    let reaped = retirement.wait(Duration::from_secs(2));
+    let closed = matches!(
+        output.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Closed)
+    );
+    let retired_exited = retiring.exited_within(Duration::ZERO);
+    let peer_exited = peer.exited_within(Duration::ZERO);
+    // Finish owned cleanup before exposing the intended missing exit-state RED.
+    peer.end();
+    assert!(reaped, "the real retirement receipt did not settle");
+    assert!(closed, "retirement must close the owned activity stream");
+    assert!(shared_log.ended(), "the actual end call was not recorded");
+    assert!(
+        !peer_exited,
+        "another session's retirement cannot end a live peer"
+    );
+    assert!(
+        retired_exited,
+        "a finite Waiting session still reports no exit after its actual retirement"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finite_turns_report_actual_working_then_waiting_and_join_on_retirement() {
+    let log = SessionLog::default();
+    let (receipts, watched_receipts) =
+        tokio::sync::watch::channel(crate::harness::TurnReceiptSnapshot::default());
+    let (activity, _) = tokio::sync::broadcast::channel::<crate::harness::ActivityReport>(8);
+    let session = Arc::new(
+        DictatedSession::reporting(AgentStatus::Waiting)
+            .recording_into(&log)
+            .watching_receipts(watched_receipts)
+            .reporting_activity(activity)
+            .finishing_turns_after(Duration::from_millis(25)),
+    );
+    let status = session.status_changed();
+    let started = std::time::Instant::now();
+    session
+        .send_turn(
+            &Turn::new("complete this actual finite turn")
+                .with_operation_id("finite-turn-operation"),
+        )
+        .unwrap();
+    let working_after_send = session.status() == AgentStatus::Working;
+    let completed = if let Some(status) = status.as_ref() {
+        wait_for(Duration::from_millis(500), || {
+            let snapshot = status.borrow();
+            (snapshot.status == AgentStatus::Waiting && snapshot.last_worked_at.is_some())
+                .then_some(snapshot.clone())
+        })
+        .await
+    } else {
+        None
+    };
+    let completion_elapsed = started.elapsed();
+    let recorded = log.turns();
+    let receipt_snapshot = session.turn_receipts().unwrap().borrow().clone();
+    let retiring: Arc<dyn AgentSession> = session;
+    let retirement = crate::reaper::Retirement::begin(retiring);
+    let retired = tokio::task::spawn_blocking(move || retirement.wait(Duration::from_secs(2)))
+        .await
+        .unwrap();
+    drop(receipts);
+    let status_closed_after_retirement = status
+        .as_ref()
+        .is_some_and(|status| status.has_changed().is_err());
+    assert!(
+        retired,
+        "finite worker did not join through actual retirement"
+    );
+    assert_eq!(recorded, vec!["complete this actual finite turn"]);
+    assert_eq!(
+        receipt_snapshot,
+        crate::harness::TurnReceiptSnapshot::default(),
+        "finite timing must not invent provider consumption receipts"
+    );
+    assert!(
+        working_after_send,
+        "actual send did not transition the opted-in Waiting session to Working"
+    );
+    assert!(
+        completed.is_some(),
+        "owned status stream did not finish the actual turn as Waiting"
+    );
+    assert!(
+        completion_elapsed <= Duration::from_millis(500),
+        "finite turn exceeded its declared bound"
+    );
+    assert!(
+        status_closed_after_retirement,
+        "retirement left an owned status producer able to update after teardown"
+    );
 }

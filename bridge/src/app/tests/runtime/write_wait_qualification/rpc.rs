@@ -1,9 +1,9 @@
 //! Actual encrypted server-side SPA-role RPC adapter for qualification.
 use crate::app::AppState;
-use crate::carrier::testing::{client_request, session_init, ChannelWire};
+use crate::carrier::testing::{ChannelWire, client_request, session_init};
 use crate::carrier::{FrameIntake, OutboundEnvelope, SessionSender};
 use crate::timing::write_wait::WriteWaitRegistry;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -126,6 +126,11 @@ impl RpcHarness {
         }
     }
 
+    pub(super) fn attach_client_watch(&mut self, _watch: super::client_watch::ClientWatch) {
+        // TEST-FIRST seam. The actual encrypted attachment control must fail
+        // before receiver/request callbacks drive the supplied watch.
+    }
+
     pub async fn request(
         &self,
         caller: usize,
@@ -188,10 +193,11 @@ impl RpcHarness {
         // admitted original and mandatory child, verify client/watchdog rows,
         // then explicitly close wire handles and join receiver tasks. A dropped
         // task or oneshot must remain an error, not success-by-disappearance.
-        assert!(self
-            .openings
-            .iter()
-            .all(|opening| opening.waiting.lock().unwrap().is_empty()));
+        assert!(
+            self.openings
+                .iter()
+                .all(|opening| opening.waiting.lock().unwrap().is_empty())
+        );
         for opening in self.openings {
             assert!(opening.receive_errors.lock().unwrap().is_empty());
             let wire = Arc::try_unwrap(opening.wire)

@@ -1,233 +1,236 @@
-//! Caller deadlines are independent of server registration and completion.
+//! Independent client deadlines, including unsent scheduled originals.
+//!
+//! Register the complete immutable schedule before waking any Tokio caller.
+//! Call `offer` at the scheduler's actual release, before acquiring a caller's
+//! two writer credits. `sent`, `server_registered`, `admitted`, and `complete`
+//! record distinct observed boundaries; this module invents no server rows.
+//!
+//! The std watchdog owns its deadline index. It never locks Registry, Evidence,
+//! AppState, a collector, or a writer. Its clock must also be independent of
+//! those locks (use Arc::new(Instant::now) in actual trials). Archival snapshots
+//! may take caller-evidence locks and are deliberately outside its poll path.
+
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+pub(super) type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
+const LIMIT: Duration = Duration::from_secs(5);
+// A memory safety bound, not a workload credit or a mechanism to drop intents.
+// Exceeding it fails setup explicitly. The driver can specify its exact bound.
+const DEFAULT_MAX_ORIGINALS: usize = 1_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) enum TrafficCohort {
+    SemanticWrite,
+    Read,
+    Exempt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FinalOutcome {
+    Reply,
+    ProtocolError,
+    TransportError,
+}
 
 #[derive(Clone, Debug)]
-struct ClientRow {
-    original_id: String,
-    intended_at: Instant,
+pub(super) struct ClientRow {
+    pub original_id: String,
+    pub cohort: TrafficCohort,
+    pub intended_at: Instant,
+    pub registered_at: Instant,
+    /// Compatibility-only enrollment through offer(). Qualification rejects it.
+    pub implicit_schedule: bool,
+    pub offered_at: Option<Instant>,
+    pub sent_at: Option<Instant>,
+    pub server_registered_at: Option<Instant>,
+    pub admitted_at: Option<Instant>,
+    /// The observed final encoded reply/transport terminal, never a cancellation.
+    pub final_at: Option<Instant>,
+    pub final_outcome: Option<FinalOutcome>,
+    pub cancelled_at: Option<Instant>,
+    /// Settlement timestamp retained for the original four-control API.
+    pub finished_at: Option<Instant>,
+    pub cancelled: bool,
+    pub breached: bool,
+}
+
+struct Evidence {
+    row: Mutex<Lifecycle>,
+    deadline: Arc<Deadline>,
+}
+
+/// Actual mutable observations only. No placeholder absolute due time is stored
+/// for a relative schedule before its single common start has been published.
+struct Lifecycle {
+    registered_at: Instant,
+    implicit_schedule: bool,
     offered_at: Option<Instant>,
     sent_at: Option<Instant>,
+    server_registered_at: Option<Instant>,
+    admitted_at: Option<Instant>,
+    final_at: Option<Instant>,
+    final_outcome: Option<FinalOutcome>,
+    cancelled_at: Option<Instant>,
     finished_at: Option<Instant>,
-    cancelled: bool,
-    breached: bool,
 }
 
-struct ClientWatch {
+#[derive(Clone)]
+enum Schedule {
+    Absolute(Instant),
+    Relative {
+        offset: Duration,
+        base: Arc<OnceLock<Instant>>,
+    },
+}
+
+impl Schedule {
+    fn intended_at(&self) -> Option<Instant> {
+        match self {
+            Self::Absolute(at) => Some(*at),
+            Self::Relative { offset, base } => base.get().map(|base| {
+                base.checked_add(*offset)
+                    .expect("validated schedule instant")
+            }),
+        }
+    }
+
+    fn deadline_key(&self) -> DeadlineKey {
+        match self {
+            Self::Absolute(at) => {
+                DeadlineKey::Absolute(at.checked_add(LIMIT).expect("deadline is representable"))
+            }
+            Self::Relative { offset, .. } => DeadlineKey::Relative(
+                offset
+                    .checked_add(LIMIT)
+                    .expect("relative deadline is representable"),
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+enum DeadlineKey {
+    Absolute(Instant),
+    Relative(Duration),
+}
+
+/// Immutable identity/schedule plus independently readable terminal evidence.
+/// settled_ns is zero while open; otherwise it is elapsed nanoseconds + 1
+/// from Inner.epoch. One atomic publication records the terminal timestamp.
+struct Deadline {
+    original_id: String,
+    cohort: TrafficCohort,
+    schedule: Schedule,
+    settled_ns: AtomicU64,
+    breached: AtomicBool,
+    notified: AtomicBool,
+}
+
+enum Event {
+    Registered(Arc<Deadline>),
+    Settled(Arc<Deadline>),
+}
+
+struct Registry {
+    rows: BTreeMap<String, Arc<Evidence>>,
+    receiver: Option<mpsc::Receiver<Event>>,
+    latest_registration: Instant,
+    maximum_relative_offset: Duration,
+}
+
+struct Inner {
     clock: Clock,
-    rows: BTreeMap<String, ClientRow>,
+    epoch: Instant,
+    maximum_originals: usize,
+    registry: Mutex<Registry>,
+    sender: mpsc::Sender<Event>,
+    // Retain a thread handle for unparking; no caller mutex is read by watchdog.
+    watchdog_thread: Mutex<Option<thread::Thread>>,
+    relative_base: Arc<OnceLock<Instant>>,
+    ready: AtomicBool,
+    unmatched_replies: Mutex<Vec<String>>,
 }
 
-impl ClientWatch {
-    fn new(clock: Clock) -> Self {
-        Self {
-            clock,
-            rows: BTreeMap::new(),
-        }
-    }
-
-    fn register_at(&mut self, original_id: &str, intended: Instant) {
-        assert!(
-            !self.rows.contains_key(original_id),
-            "original schedule identity is unique"
-        );
-        // Intended schedule time survives scheduler, socket and credit delay.
-        let at = intended;
-        self.rows.insert(
-            original_id.into(),
-            ClientRow {
-                original_id: original_id.into(),
-                intended_at: at,
-                offered_at: None,
-                sent_at: None,
-                finished_at: None,
-                cancelled: false,
-                breached: false,
-            },
-        );
-    }
-
-    fn offer(&mut self, original_id: &str) {
-        if !self.rows.contains_key(original_id) {
-            self.register_at(original_id, (self.clock)());
-        }
-        let row = self.rows.get_mut(original_id).unwrap();
-        assert!(row.offered_at.is_none(), "original is offered once");
-        row.offered_at = Some((self.clock)());
-    }
-
-    fn sent(&mut self, original_id: &str) {
-        self.rows.get_mut(original_id).unwrap().sent_at = Some((self.clock)());
-    }
-
-    fn complete(&mut self, original_id: &str) {
-        let now = (self.clock)();
-        let row = self.rows.get_mut(original_id).unwrap();
-        assert!(row.finished_at.is_none(), "original settles once");
-        row.finished_at = Some(now);
-        row.breached |= now.saturating_duration_since(row.intended_at) > Duration::from_secs(5);
-    }
-
-    fn cancel(&mut self, original_id: &str) {
-        self.complete(original_id);
-        self.rows.get_mut(original_id).unwrap().cancelled = true;
-    }
-
-    fn watch(&self) -> ClientWatchGuard {
-        // TEST-FIRST seam: the independently running deadline observer is not
-        // installed yet. A snapshot caller is not an independent watchdog.
-        ClientWatchGuard
-    }
-
-    fn snapshot(&self) -> Vec<ClientRow> {
-        let now = (self.clock)();
-        self.rows
-            .values()
-            .cloned()
-            .map(|mut row| {
-                row.breached |= row
-                    .finished_at
-                    .unwrap_or(now)
-                    .saturating_duration_since(row.intended_at)
-                    > Duration::from_secs(5);
-                row
-            })
-            .collect()
-    }
+#[derive(Clone)]
+pub(super) struct ClientWatch {
+    inner: Arc<Inner>,
 }
 
-fn fixture() -> (ClientWatch, Arc<std::sync::Mutex<Instant>>) {
-    let at = Arc::new(std::sync::Mutex::new(Instant::now()));
-    let clock = Arc::clone(&at);
-    (
-        ClientWatch::new(Arc::new(move || *clock.lock().unwrap())),
-        at,
-    )
+pub(super) struct ClientSnapshot {
+    pub sampled_at: Instant,
+    pub rows: Vec<ClientRow>,
 }
 
-#[test]
-fn unfinished_client_before_server_registration_breaches_original_deadline() {
-    let (mut watch, clock) = fixture();
-    watch.offer("qual/small/trial1/write/00000");
-    *clock.lock().unwrap() += Duration::from_secs(5);
-    assert!(!watch.snapshot()[0].breached, "five seconds is inclusive");
-    *clock.lock().unwrap() += Duration::from_nanos(1);
-    let rows = watch.snapshot();
-    assert!(
-        rows[0].sent_at.is_none(),
-        "server registration need not exist"
-    );
-    assert!(
-        rows[0].breached,
-        "unfinished caller cannot disappear from completed histograms"
-    );
+pub(super) struct ScheduledIdentity {
+    pub cohort: TrafficCohort,
+    /// None means the immutable relative schedule is registered but unreleased.
+    pub intended_at: Option<Instant>,
 }
 
-#[test]
-fn late_completion_without_a_prior_poll_retains_breach_and_original_times() {
-    let (mut watch, clock) = fixture();
-    let original = "qual/small/trial1/write/00001";
-    watch.offer(original);
-    let offered = *clock.lock().unwrap();
-    *clock.lock().unwrap() += Duration::from_secs(1);
-    watch.sent(original);
-    let sent = *clock.lock().unwrap();
-    *clock.lock().unwrap() += Duration::from_secs(5);
-    watch.complete(original);
-    let row = watch
-        .snapshot()
-        .pop()
-        .expect("completed callers remain archived");
-    assert_eq!(row.original_id, original);
-    assert_eq!(row.offered_at, Some(offered));
-    assert_eq!(row.sent_at, Some(sent));
-    assert!(row.finished_at.is_some());
-    assert!(
-        row.breached,
-        "late completion is a failure even without earlier polling"
-    );
+pub(super) struct FinalReconciliation {
+    pub sampled_at: Instant,
+    pub rows: Vec<ClientRow>,
+    pub violations: Vec<String>,
 }
 
-#[test]
-fn cancellation_and_cleanup_cannot_erase_an_already_overdue_caller() {
-    let (mut watch, clock) = fixture();
-    let original = "qual/large/trial3/write/00002";
-    watch.offer(original);
-    watch.sent(original);
-    *clock.lock().unwrap() += Duration::from_secs(6);
-    watch.cancel(original);
-    let row = watch
-        .snapshot()
-        .pop()
-        .expect("cancelled caller remains evidence");
-    assert!(row.cancelled);
-    assert!(row.breached);
+#[derive(Clone, Debug)]
+pub(super) struct Breach {
+    pub original_id: String,
+    pub cohort: TrafficCohort,
+    pub intended_at: Instant,
+    pub observed_at: Instant,
+    pub settled_at: Option<Instant>,
 }
 
-#[test]
-fn intended_due_time_detects_late_scheduler_before_actual_offer_or_server_registration() {
-    let (mut watch, clock) = fixture();
-    let base = *clock.lock().unwrap();
-    let original = "qual/small/trial1/write/00040";
-    watch.register_at(original, base + Duration::from_secs(10));
-    *clock.lock().unwrap() = base + Duration::from_secs(6);
-    assert!(
-        !watch.snapshot()[0].breached,
-        "future due time has zero age"
-    );
-    *clock.lock().unwrap() = base + Duration::from_secs(15);
-    assert!(
-        !watch.snapshot()[0].breached,
-        "exact five seconds is inclusive"
-    );
-    *clock.lock().unwrap() += Duration::from_nanos(1);
-    assert!(
-        watch.snapshot()[0].breached,
-        "no offer or server origin is needed"
-    );
-    watch.offer(original);
-    watch.sent(original);
-    let row = &watch.snapshot()[0];
-    assert_eq!(row.intended_at, base + Duration::from_secs(10));
-    assert!(row.offered_at.unwrap() > row.intended_at);
-    assert!(
-        row.breached,
-        "late offer cannot reset the original deadline"
-    );
+struct WatchState {
+    stop: AtomicBool,
+    failed: AtomicBool,
+    polls: AtomicU64,
+    inspected_deadlines: AtomicU64,
+    indexed: AtomicU64,
 }
 
-struct ClientWatchGuard;
-impl ClientWatchGuard {
-    fn failed(&self) -> bool {
-        false
-    }
-    fn finish(self) -> bool {
-        self.failed()
-    }
+pub(super) struct ClientWatchGuard {
+    state: Arc<WatchState>,
+    handle: Option<JoinHandle<()>>,
+    breaches: mpsc::Receiver<Breach>,
 }
 
-#[test]
-fn independent_client_watch_observes_unregistered_pending_without_snapshot_or_runtime_poll() {
-    let (mut watch, clock) = fixture();
-    let original = "qual/small/trial1/write/independent";
-    let due = *clock.lock().unwrap();
-    watch.register_at(original, due);
-    watch.offer(original);
-    let guard = watch.watch();
-    // Only the fake clock changes. Neither a collector/app lock nor a caller
-    // snapshot or Tokio task drives the watchdog's observation.
-    *clock.lock().unwrap() += Duration::from_secs(5) + Duration::from_nanos(1);
-    let deadline = Instant::now() + Duration::from_millis(250);
-    while !guard.failed() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let observed = guard.failed();
-    let joined = guard.finish();
-    assert!(
-        observed && joined,
-        "independent watchdog must retain unfinished client breach before server registration"
-    );
+#[derive(Debug)]
+pub(super) struct WatchReport {
+    pub failed: bool,
+    pub panicked: bool,
+    pub polls: u64,
+    pub inspected_deadlines: u64,
+    pub still_indexed: u64,
+    pub breaches: Vec<Breach>,
 }
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct CohortCounts {
+    pub elapsed: Duration,
+    pub archived: usize,
+    pub intended: usize,
+    pub registered: usize,
+    pub offered: usize,
+    pub sent: usize,
+    pub server_registered: usize,
+    pub admitted: usize,
+    pub final_replies: usize,
+    pub protocol_errors: usize,
+    pub transport_errors: usize,
+    pub cancelled: usize,
+    pub unfinished: usize,
+    pub breached: usize,
+    pub implicit_schedules: usize,
+}
+
+mod lifecycle;
+mod observations;
+#[cfg(test)]
+mod tests;
+mod watchdog;

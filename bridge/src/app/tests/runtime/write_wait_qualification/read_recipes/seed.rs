@@ -7,6 +7,7 @@ pub(super) const LABEL: &str = "qualification-read-witness";
 pub(super) const COMMENT: &str = "qualification immutable comment with saved attachment";
 pub(super) const IMAGE: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR qualification file witness";
 
+#[derive(Clone)]
 pub(in crate::app::tests::runtime) struct TaskReviewFiles {
     pub project: String,
     pub workspace: String,

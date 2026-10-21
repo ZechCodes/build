@@ -73,14 +73,28 @@ pub(in crate::app::tests::runtime) enum ReadOutcome {
     LegacyFull,
 }
 
-/// The initial adapter preserves the old harness's success-envelope
-/// classification. The distinct placeholder/legacy contract is test-first.
-pub(super) fn classify(_method: &str, reply: &Value) -> ReadOutcome {
+/// Keep incomplete and legacy replies visible without crediting them as
+/// ready values. Native case-specific oracles still validate every complete
+/// response before the caller records its outcome.
+pub(super) fn classify(method: &str, reply: &Value) -> ReadOutcome {
     if reply.get("accepted").is_some() {
         return ReadOutcome::AdmissionReceipt;
     }
     if reply["ok"] != true {
         return ReadOutcome::Refused;
+    }
+    let value = &reply["result"];
+    if value.is_null() || value["pending"] == true {
+        return ReadOutcome::Pending;
+    }
+    if value["status"] == "unavailable" {
+        return ReadOutcome::Unavailable;
+    }
+    if matches!(
+        method,
+        "task.doc" | "task.stage_doc" | "archived.list" | "task.get" | "term.list"
+    ) {
+        return ReadOutcome::LegacyFull;
     }
     ReadOutcome::Ready
 }
@@ -91,7 +105,7 @@ pub(in crate::app::tests::runtime) fn assert_rpc_reply(
     inputs: &SeededReadInputs,
 ) -> ReadOutcome {
     let outcome = classify(case.method, reply);
-    if outcome != ReadOutcome::Ready {
+    if !matches!(outcome, ReadOutcome::Ready | ReadOutcome::LegacyFull) {
         return outcome;
     }
     let value = &reply["result"];

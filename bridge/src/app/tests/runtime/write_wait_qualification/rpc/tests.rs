@@ -70,3 +70,62 @@ async fn concurrent_identical_reads_keep_each_original_final_reply() {
     }
     rpc.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn actual_encrypted_driver_settles_the_attached_original_client_watch() {
+    use super::super::client_watch::ClientWatch;
+    let root = tempfile::tempdir().unwrap();
+    let (_repo, app, project) = tracked(root.path());
+    let registry = WriteWaitRegistry::new();
+    let state = app.shared();
+    let released = Arc::downgrade(&state);
+    let mut rpc = RpcHarness::new(state, registry);
+    let watch = ClientWatch::new(Arc::new(Instant::now));
+    let original = "qual/driver-watch/write/00000";
+    watch.register_at(original, Instant::now());
+    let guard = watch.watch();
+    rpc.attach_client_watch(watch.clone());
+    // This actual offer precedes transport/credit waiting; the adapter may not
+    // reset it or turn an acceptance receipt into a final response.
+    watch.offer(original);
+    let proof = rpc
+        .request(
+            0,
+            original,
+            "tasks.create",
+            json!({
+                "project_id":project,"title":"actual attached-watch mutation"
+            }),
+        )
+        .await;
+    // Join actual carrier receivers before checking missing instrumentation.
+    rpc.finish().await;
+    let cleanup_deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while released.upgrade().is_some() && Instant::now() < cleanup_deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
+    let state_released = released.upgrade().is_none();
+    let report = guard.finish();
+    let rows = watch.snapshot();
+    let row = rows.iter().find(|row| row.original_id == original).unwrap();
+    let reconciliation = watch.reconcile_final();
+    assert_eq!(proof.reply["ok"], true, "{}", proof.reply);
+    assert_eq!(
+        proof.reply["result"]["task"]["title"],
+        "actual attached-watch mutation"
+    );
+    assert!(
+        state_released,
+        "temporary root remains owned until shared work exits"
+    );
+    assert!(!report.panicked);
+    assert!(
+        row.sent_at.is_some() && row.final_at.is_some(),
+        "actual wire send/decrypted-final callbacks must drive the attached watch: {row:?}"
+    );
+    assert!(
+        reconciliation.violations.is_empty(),
+        "{:?}",
+        reconciliation.violations
+    );
+}

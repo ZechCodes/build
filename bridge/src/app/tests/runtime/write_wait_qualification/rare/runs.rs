@@ -1,7 +1,7 @@
 use super::{RareFixture, VerifiedStep};
 use crate::app::tests::support::{
     add_external_worktree, dictated_agent_tab, planned_run_in_review, primary_agent_id, qa_state,
-    DictatedSession, SessionLog,
+    wait_for, DictatedSession, SessionLog,
 };
 use crate::app::{AppState, TabKey};
 use crate::git_fixture::init_repo;
@@ -11,6 +11,7 @@ use crate::store::PersistedRun;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub(super) async fn execute() -> Vec<VerifiedStep> {
     let mut steps = adoption_and_abandon().await;
@@ -95,7 +96,14 @@ async fn abandon(fixture: &mut RareFixture, id: &str, source: &Path) {
         .await;
 }
 
-fn install_session(app: &mut AppState, owner: &str) -> (String, SessionLog) {
+struct ExistingSession {
+    agent: String,
+    log: SessionLog,
+    key: TabKey,
+    instance: String,
+}
+
+fn install_session(app: &mut AppState, owner: &str) -> ExistingSession {
     let agent = primary_agent_id(app, owner);
     let checkout = app.runs[owner].worktree.path.clone();
     let choice = app.runs[owner].agents.by_id(&agent).unwrap().choice.clone();
@@ -108,25 +116,28 @@ fn install_session(app: &mut AppState, owner: &str) -> (String, SessionLog) {
     );
     tab.session_instance =
         app.record_agent_session_start(owner, &agent, &checkout, &choice, "qualification-existing");
-    assert!(tab.session_instance.is_some());
-    app.session_registry.test_insert_tab(
-        TabKey::agent(&AppState::canonical_root(&checkout), &agent),
-        tab,
-    );
+    let instance = tab.session_instance.as_ref().unwrap().id.clone();
+    let key = TabKey::agent(&AppState::canonical_root(&checkout), &agent);
+    app.session_registry.test_insert_tab(key.clone(), tab);
     app.session_locator_factory =
         Arc::new(|_, _| panic!("qualification must deliver to seeded existing session"));
     app.delivery_queue.clear_queued();
-    (agent, log)
+    ExistingSession {
+        agent,
+        log,
+        key,
+        instance,
+    }
 }
 
 async fn review_actions() -> Vec<VerifiedStep> {
     let (root, repo) = init_repo();
     let mut app = qa_state(&repo, root.path());
     let (_, run) = planned_run_in_review(&mut app, "Qualification review actions");
-    let (agent, log) = install_session(&mut app, &run);
+    let session = install_session(&mut app, &run);
     let mut fixture = RareFixture::new("run", app);
     commit(&mut fixture, &run).await;
-    request_changes(&mut fixture, &run, &agent, &log).await;
+    request_changes(&mut fixture, &run, &session).await;
     fixture.finish().await
 }
 
@@ -175,22 +186,49 @@ fn persisted_message(fixture: &RareFixture, run: &str, agent: &str, body: &str) 
     message
 }
 
-async fn request_changes(fixture: &mut RareFixture, run: &str, agent: &str, log: &SessionLog) {
-    let before = log.turns().len();
+async fn delivered_message(
+    fixture: &RareFixture,
+    run: &str,
+    session: &ExistingSession,
+    before: usize,
+    body: &str,
+) -> Value {
+    wait_for(Duration::from_secs(10), || {
+        let app = fixture.state().lock().unwrap();
+        (session.log.turns().len() == before + 1 && app.delivery_queue.is_idle()).then_some(())
+    })
+    .await
+    .expect("the actual queued run turn reached its existing session");
+    let message = persisted_message(fixture, run, &session.agent, body);
+    assert_eq!(message["data"]["delivery_status"], "sent");
+    let turns = session.log.turns();
+    assert_eq!(turns.len(), before + 1);
+    let turn = &turns[before];
+    assert!(
+        turn.contains(body),
+        "the actual turn contains the accepted body"
+    );
+    assert!(turn.contains(crate::operation::NATIVE_REVIEWER_MESSAGES_HEADING));
+    assert!(turn.contains(message["data"]["id"].as_str().unwrap()));
+    assert!(turn.contains(&format!("\"sequence\": {}", message["data"]["sequence"])));
+    let app = fixture.state().lock().unwrap();
+    let tab = app.session_registry.test_tab(&session.key).unwrap();
+    assert_eq!(tab.session_instance.as_ref().unwrap().id, session.instance);
+    assert!(tab.last_delivered_at.is_some());
+    message
+}
+
+async fn request_changes(fixture: &mut RareFixture, run: &str, session: &ExistingSession) {
+    let before = session.log.turns().len();
     let body = "Qualification requested changes";
     let proof = fixture
         .call(
             "run.request_changes",
-            json!({"run_id":run,"agent_id":agent,
+            json!({"run_id":run,"agent_id":session.agent,
         "messages":[{"body":body,"anchor":null}]}),
         )
         .await;
-    let message = persisted_message(fixture, run, agent, body);
-    assert_eq!(
-        log.turns().len(),
-        before + 1,
-        "the actual session consumed the queued turn"
-    );
+    let message = delivered_message(fixture, run, session, before, body).await;
     assert_eq!(
         saved(fixture, run).state,
         RunState::Review,
@@ -199,7 +237,8 @@ async fn request_changes(fixture: &mut RareFixture, run: &str, agent: &str, log:
     fixture
         .verify(
             proof,
-            json!({"persisted_message":message,"session_turns":log.turns().len()}),
+            json!({"persisted_message":message,"session_turns":session.log.turns().len(),
+                "session_instance":session.instance}),
         )
         .await;
 }
@@ -211,22 +250,18 @@ async fn message() -> Vec<VerifiedStep> {
     let mut active = app.take_run(&run).unwrap();
     active.run.state = RunState::Building;
     app.finish_run_mutation(run.clone(), active).unwrap();
-    let (agent, log) = install_session(&mut app, &run);
+    let session = install_session(&mut app, &run);
     let mut fixture = RareFixture::new("run", app);
     let body = "Qualification live instruction";
     let proof = fixture
         .call("run.message", json!({"run_id":run,"message":body}))
         .await;
-    let message = persisted_message(&fixture, &run, &agent, body);
-    assert_eq!(
-        log.turns().len(),
-        1,
-        "the actual session consumed the instruction"
-    );
+    let message = delivered_message(&fixture, &run, &session, 0, body).await;
     fixture
         .verify(
             proof,
-            json!({"persisted_message":message,"session_turns":log.turns().len()}),
+            json!({"persisted_message":message,"session_turns":session.log.turns().len(),
+                "session_instance":session.instance}),
         )
         .await;
     fixture.finish().await

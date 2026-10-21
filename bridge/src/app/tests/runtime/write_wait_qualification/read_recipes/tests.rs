@@ -8,35 +8,32 @@ use std::sync::{Arc, Mutex};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn native_read_seed_returns_saved_wire_values_without_adding_tasks_or_workspaces() {
-    assert_eq!(verified_native_case_methods(false).await.len(), 9);
+    assert_eq!(verified_native_case_methods().await.len(), 9);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_registered_rpc_read_has_a_verified_native_case() {
-    let executed = verified_native_case_methods(true).await;
-    let actual = executed
-        .iter()
-        .copied()
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(
-        actual.len(),
-        executed.len(),
-        "duplicate native read recipes"
+    use super::super::fixture::{Envelope, QualificationFixture};
+    let fixture = QualificationFixture::ready(Envelope::Small).await;
+    let ready = Arc::clone(
+        fixture
+            .read_inputs
+            .as_ref()
+            .expect("actual complete read inputs"),
     );
-    let expected = super::rpc::registered_methods();
-    assert_eq!(
-        expected.len(),
-        45,
-        "audit changes to deployed read registry"
-    );
-    let unsupported = expected.difference(&actual).copied().collect::<Vec<_>>();
-    assert_eq!(
-        actual, expected,
-        "unsupported native read methods: {unsupported:?}"
-    );
+    use futures_util::FutureExt;
+    let collected =
+        std::panic::AssertUnwindSafe(super::collect_native_rpc_reads(&fixture.rpc, &ready))
+            .catch_unwind()
+            .await;
+    fixture.shutdown().await;
+    match collected {
+        Ok(replies) => super::verify_native_rpc_reads(&ready, &replies),
+        Err(original) => std::panic::resume_unwind(original),
+    }
 }
 
-async fn verified_native_case_methods(all_registered: bool) -> Vec<&'static str> {
+async fn verified_native_case_methods() -> Vec<&'static str> {
     let root = tempfile::tempdir().unwrap();
     let (_repository, mut app, project) = tracked(root.path());
     let task = filed(&mut app, &project, "Reserved qualification read witness")["id"]
@@ -122,11 +119,9 @@ async fn verified_native_case_methods(all_registered: bool) -> Vec<&'static str>
     let state = Arc::new(Mutex::new(app));
     let rpc = super::super::rpc::RpcHarness::new(state, WriteWaitRegistry::new());
     let mut cases: Vec<super::RpcCase> = super::rpc_cases(&inputs);
-    if !all_registered {
-        // Keep the original nine saved-value controls intact as the full
-        // registry grows; new families append after this established prefix.
-        cases.truncate(9);
-    }
+    // Keep the original nine saved-value controls independent of the full
+    // fixture and its Router/service lifecycle prerequisites.
+    cases.truncate(9);
     let mut replies = Vec::new();
     for (index, case) in cases.iter().enumerate() {
         let id = format!("qual/read-seed/{index}");

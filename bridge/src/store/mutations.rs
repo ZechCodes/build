@@ -102,8 +102,10 @@ CREATE TABLE IF NOT EXISTS mutation_reservations (
  record TEXT NOT NULL, PRIMARY KEY(kind, resource_id));
 CREATE TABLE IF NOT EXISTS mutation_outbox (
  cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+ principal TEXT NOT NULL,
  command_id INTEGER NOT NULL REFERENCES mutation_commands(command_id), revision INTEGER NOT NULL,
  UNIQUE(command_id, revision));
+CREATE INDEX IF NOT EXISTS mutation_outbox_principal_cursor ON mutation_outbox(principal, cursor);
 ";
 
 pub(super) fn initialize(connection: &Connection) -> Result<String, StoreError> {

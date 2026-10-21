@@ -7,12 +7,11 @@ fn require(
 ) -> Result<MutationRecord, StoreError> {
     load(transaction, principal, id)?.ok_or_else(|| invalid("unknown command"))
 }
-fn terminal(
-    transaction: &Transaction<'_>,
-    record: &mut MutationRecord,
+fn validate_outcome(
+    record: &MutationRecord,
     state: &str,
     outcome: Value,
-) -> Result<(), StoreError> {
+) -> Result<Value, StoreError> {
     let mut outcome = outcome;
     outcome["state"] = json!(state);
     if outcome.get("refresh").is_none() {
@@ -34,6 +33,15 @@ fn terminal(
     if outcome.to_string().len() > 256 * 1024 {
         return Err(invalid("result byte limit exceeded"));
     }
+    Ok(outcome)
+}
+fn terminal(
+    transaction: &Transaction<'_>,
+    record: &mut MutationRecord,
+    state: &str,
+    outcome: Value,
+) -> Result<(), StoreError> {
+    let outcome = validate_outcome(record, state, outcome)?;
     record.state = state.into();
     record.revision += 1;
     record.outcome = Some(outcome);
@@ -49,8 +57,8 @@ fn terminal(
         [record.command_id],
     )?;
     transaction.execute(
-        "INSERT OR IGNORE INTO mutation_outbox(command_id,revision) VALUES(?1,?2)",
-        params![record.command_id, record.revision as i64],
+        "INSERT OR IGNORE INTO mutation_outbox(principal,command_id,revision) VALUES(?1,?2,?3)",
+        params![record.principal, record.command_id, record.revision as i64],
     )?;
     Ok(())
 }
@@ -130,7 +138,12 @@ impl StoreWriter {
             if result.to_string().len() > 256 * 1024 {
                 return Err(invalid("result byte limit exceeded"));
             }
-            record.outcome = Some(json!({"result":result}));
+            let outcome = json!({"result":result});
+            // Reserve room for the mandatory confirmation envelope before
+            // committing effects. The saved result can always be confirmed
+            // with conservative owner refresh addresses and no extra payload.
+            validate_outcome(&record, "succeeded", outcome.clone())?;
+            record.outcome = Some(outcome);
             record.state = "committed".into();
             record.revision += 1;
             save(transaction, &record)?;
@@ -209,7 +222,7 @@ impl StoreWriter {
             let records=statement.query_map([],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
             drop(statement);let mut recovery=MutationRecovery::default();
             for raw in records {recover_one(transaction,decode(raw)?,&mut recovery)?;}
-            transaction.execute("INSERT OR IGNORE INTO mutation_outbox(command_id,revision) SELECT command_id,CAST(json_extract(record,'$.revision') AS INTEGER) FROM mutation_commands WHERE state IN ('succeeded','failed')",[])?;
+            transaction.execute("INSERT OR IGNORE INTO mutation_outbox(principal,command_id,revision) SELECT principal,command_id,CAST(json_extract(record,'$.revision') AS INTEGER) FROM mutation_commands WHERE state IN ('succeeded','failed')",[])?;
             Ok(recovery)
         })?;
         self.wakeup.notify_waiters();

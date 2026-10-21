@@ -1,4 +1,14 @@
 use super::*;
+#[cfg(test)]
+thread_local! {
+    pub(super) static OUTBOX_QUERY_STEPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+fn record_steps(statement: &rusqlite::Statement<'_>) {
+    OUTBOX_QUERY_STEPS.with(|steps| {
+        steps.set(steps.get() + statement.get_status(rusqlite::StatementStatus::VmStep) as u64)
+    });
+}
 impl ReadTransaction<'_> {
     pub fn journal_incarnation(&self) -> Result<String, StoreError> {
         Ok(self.connection().query_row(
@@ -31,7 +41,13 @@ impl ReadTransaction<'_> {
         Ok(records)
     }
     pub fn mutation_cursor(&self, principal: &str) -> Result<u64, StoreError> {
-        Ok(self.connection().query_row("SELECT coalesce(max(cursor),0) FROM mutation_outbox JOIN mutation_commands USING(command_id) WHERE principal=?1",[principal],|row|row.get::<_,i64>(0))? as u64)
+        let mut statement = self
+            .connection()
+            .prepare("SELECT coalesce(max(cursor),0) FROM mutation_outbox WHERE principal=?1")?;
+        let cursor = statement.query_row([principal], |row| row.get::<_, i64>(0))? as u64;
+        #[cfg(test)]
+        record_steps(&statement);
+        Ok(cursor)
     }
     pub fn mutation_outbox(
         &self,
@@ -42,7 +58,7 @@ impl ReadTransaction<'_> {
         if limit > 256 {
             return Err(invalid("outbox limit exceeded"));
         }
-        let mut statement=self.connection().prepare("SELECT cursor,record FROM mutation_outbox JOIN mutation_commands USING(command_id) WHERE principal=?1 AND cursor>?2 ORDER BY cursor LIMIT ?3")?;
+        let mut statement=self.connection().prepare("SELECT o.cursor,c.record FROM mutation_outbox o JOIN mutation_commands c USING(command_id) WHERE o.principal=?1 AND o.cursor>?2 ORDER BY o.cursor LIMIT ?3")?;
         let rows = statement.query_map(
             params![
                 principal,
@@ -64,6 +80,8 @@ impl ReadTransaction<'_> {
                 operation: decode(record)?,
             });
         }
+        #[cfg(test)]
+        record_steps(&statement);
         Ok(result)
     }
     pub fn mutation_reservation(

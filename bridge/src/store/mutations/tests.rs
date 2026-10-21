@@ -225,3 +225,81 @@ fn settled_owner_history_is_not_loaded_when_claiming_the_next_command() {
     writer.admit_mutation(&next).unwrap();
     assert!(writer.claim_mutation("test", &next.operation_id).unwrap());
 }
+
+#[test]
+fn canonical_commit_reserves_confirmation_envelope_space_before_effect_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let writer = store.writer();
+    let command = command();
+    writer.admit_mutation(&command).unwrap();
+    writer
+        .claim_mutation("test", &command.operation_id)
+        .unwrap();
+    let refused = writer.commit_mutation("test", &command.operation_id, |tx| {
+        tx.execute(
+            "INSERT INTO meta(key,value) VALUES('oversized-effect','must-rollback')",
+            [],
+        )?;
+        Ok(json!("x".repeat(256 * 1024 - 2)))
+    });
+    assert!(refused.is_err());
+    assert_eq!(
+        store
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM meta WHERE key='oversized-effect'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        load(&store.connection(), "test", &command.operation_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        "executing"
+    );
+    writer
+        .commit_mutation("test", &command.operation_id, |_| {
+            Ok(json!("x".repeat(256 * 1024 - 1024)))
+        })
+        .unwrap();
+    writer
+        .confirm_mutation("test", &command.operation_id, json!({}))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn caught_up_outbox_and_cursor_queries_ignore_retained_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let writer = store.writer();
+    let command = command();
+    writer.admit_mutation(&command).unwrap();
+    writer
+        .fail_mutation(
+            "test",
+            &command.operation_id,
+            "unapplied",
+            json!({"code":"failed","message":"test","retryable":false}),
+        )
+        .unwrap();
+    store.connection().execute_batch("WITH RECURSIVE nums(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM nums WHERE n<10000) INSERT INTO mutation_commands(principal,operation_id,state,accepted_at,terminal_at,intent,record) SELECT 'test',printf('retained-%d',n),'failed',0,0,'', '{}' FROM nums;INSERT INTO mutation_outbox(principal,command_id,revision) SELECT principal,command_id,1 FROM mutation_commands WHERE operation_id LIKE 'retained-%';").unwrap();
+    let mut reader = store.read_pool().acquire().await;
+    reads::OUTBOX_QUERY_STEPS.with(|steps| steps.set(0));
+    reader
+        .read(|read| {
+            let cursor = read.mutation_cursor("test").unwrap();
+            assert_eq!(cursor, 10001);
+            assert!(read.mutation_outbox("test", cursor, 1).unwrap().is_empty());
+        })
+        .unwrap();
+    let steps = reads::OUTBOX_QUERY_STEPS.with(|steps| steps.get());
+    assert!(
+        steps < 200,
+        "caught-up queries executed {steps} SQLite VM steps"
+    );
+}

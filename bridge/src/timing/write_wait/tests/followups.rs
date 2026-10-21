@@ -304,3 +304,45 @@ fn context_registry_identity_cannot_be_inferred_from_colliding_write_ids() {
     one.complete();
     other.complete();
 }
+
+#[test]
+fn coalescing_requires_live_owners_even_when_originals_have_other_children() {
+    let case = Case::new();
+    let first = case.begin("first-original");
+    let second = case.begin("second-original");
+    let ids = [first.id(), second.id()];
+    let stale_root = first.context();
+    let left = first.child();
+    let right = second.child();
+    first.complete();
+    second.complete();
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        WriteContext::coalesced(&[stale_root, right.context()]);
+    }));
+    assert!(
+        rejected.is_err(),
+        "another live child cannot resurrect a finished root context"
+    );
+    assert_eq!(case.row(ids[0]).outstanding, vec![left.id()]);
+    assert_eq!(case.row(ids[1]).outstanding, vec![right.id()]);
+    // The rejected call must leave the collector lock usable.
+    let unrelated = case.begin("still-usable-after-rejection");
+    unrelated.complete();
+    let joined = WriteContext::coalesced(&[left.context(), right.context(), left.context()]);
+    let joined_id = joined.id();
+    left.complete();
+    right.complete();
+    let wait = lock(&joined.context());
+    case.seconds(2);
+    drop(wait);
+    for id in ids {
+        let row = case.row(id);
+        assert!(row.root_finished);
+        assert_eq!(row.outstanding, vec![joined_id]);
+        assert_eq!(row.known_wait_union, Duration::from_secs(2));
+        assert!(!row.abandoned && !row.cancelled);
+    }
+    joined.complete();
+    assert!(case.registry.active_snapshot().is_empty());
+    assert_eq!(case.registry.snapshot().len(), 3);
+}

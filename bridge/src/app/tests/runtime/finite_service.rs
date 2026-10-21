@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::finite_service::{self, FixtureServices, PlannedService, ServiceKind};
-use crate::timing::write_wait::WriteWaitRegistry;
+use crate::timing::write_wait::{IntervalCategory, WriteWaitRegistry};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -14,6 +14,15 @@ fn service_plan(id: &str, kind: ServiceKind, target_ms: u64) -> PlannedService {
 
 fn with_origin<T>(id: &str, method: &str, work: impl FnOnce() -> T) -> T {
     let registry = WriteWaitRegistry::new();
+    with_registry_origin(&registry, id, method, work)
+}
+
+fn with_registry_origin<T>(
+    registry: &Arc<WriteWaitRegistry>,
+    id: &str,
+    method: &str,
+    work: impl FnOnce() -> T,
+) -> T {
     let original = registry.begin(id, method, Instant::now());
     let result = {
         let _bound = original.context().bind_sync();
@@ -84,6 +93,10 @@ fn finite_filesystem_service_keeps_real_revision_effect_and_app_guard() {
     let (state, _) = frame_locks::shared_state_and_handler(&repo, dir.path());
     let project_id = state.lock().unwrap().project_at(0).id.clone();
     let seen_guard = Arc::new(AtomicBool::new(false));
+    let seen_finite_service = Arc::new(AtomicBool::new(false));
+    let registry = WriteWaitRegistry::new();
+    let observed_registry = Arc::clone(&registry);
+    let observed_service = Arc::clone(&seen_finite_service);
     let observed_state = Arc::clone(&state);
     let observed_guard = Arc::clone(&seen_guard);
     let services = FixtureServices::install(
@@ -94,6 +107,13 @@ fn finite_filesystem_service_keeps_real_revision_effect_and_app_guard() {
         ],
         Some(Arc::new(move |_, _| {
             observed_guard.store(observed_state.try_lock().is_err(), Ordering::Release);
+            let finite = observed_registry.active_snapshot().iter().any(|write| {
+                write
+                    .active
+                    .iter()
+                    .any(|interval| interval.category == IntervalCategory::FiniteService)
+            });
+            observed_service.fetch_or(finite, Ordering::Release);
         })),
     );
     let params = json!({
@@ -102,7 +122,7 @@ fn finite_filesystem_service_keeps_real_revision_effect_and_app_guard() {
         "content_b64": b64encode(b"after\n"),
         "expected_revision": sha256_hex(b"before\n"),
     });
-    let replaced = with_origin("replace", "fs.write", || {
+    let replaced = with_registry_origin(&registry, "replace", "fs.write", || {
         state
             .lock()
             .unwrap()
@@ -120,6 +140,10 @@ fn finite_filesystem_service_keeps_real_revision_effect_and_app_guard() {
     assert!(
         seen_guard.load(Ordering::Acquire),
         "actual service retains AppState guard"
+    );
+    assert!(
+        seen_finite_service.load(Ordering::Acquire),
+        "the actual filesystem hook exposes its distinct unfinished service boundary"
     );
     let samples = services.samples();
     assert_eq!(samples.len(), 2, "both actual service outcomes are visible");

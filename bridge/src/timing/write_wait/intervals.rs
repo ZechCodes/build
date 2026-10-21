@@ -23,8 +23,9 @@ impl ClosedIntervals {
         match interval.category {
             IntervalCategory::KnownWait(_) => self.known.push(span),
             IntervalCategory::SqlService => self.sql.push(span),
-            IntervalCategory::OwnExternal => self.external.push(span),
-            IntervalCategory::FiniteService => {}
+            IntervalCategory::OwnExternal | IntervalCategory::FiniteService => {
+                self.external.push(span)
+            }
         }
         if matches!(
             interval.category,
@@ -51,8 +52,9 @@ impl ClosedIntervals {
             match interval.category {
                 IntervalCategory::KnownWait(_) => known.push(span),
                 IntervalCategory::SqlService => sql.push(span),
-                IntervalCategory::OwnExternal => external.push(span),
-                IntervalCategory::FiniteService => {}
+                IntervalCategory::OwnExternal | IntervalCategory::FiniteService => {
+                    external.push(span)
+                }
             }
             if matches!(
                 interval.category,

@@ -85,8 +85,22 @@ impl Drop for Obligation {
     }
 }
 impl WriteContext {
-    pub(crate) fn same_registry(&self, _other: &Self) -> bool {
-        true
+    pub(crate) fn same_registry(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.registry, &other.registry)
+    }
+    /// The callers retain the owning tokens until this joined child exists.
+    /// Registry-local IDs are never merged across collector epochs.
+    pub(crate) fn coalesced(contexts: &[Self]) -> Obligation {
+        let first = contexts.first().expect("coalesced work needs an origin");
+        assert!(
+            contexts.iter().all(|context| first.same_registry(context)),
+            "coalesced work must use one logical-write registry"
+        );
+        let origins: Vec<_> = contexts
+            .iter()
+            .flat_map(|context| context.origins.iter().copied())
+            .collect();
+        first.registry.coalesced_contexts(&origins, contexts)
     }
     pub(crate) fn original_ids(&self) -> Vec<String> {
         let active = self.registry.active.load_full();

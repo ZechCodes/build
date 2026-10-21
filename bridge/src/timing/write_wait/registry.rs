@@ -129,6 +129,30 @@ impl WriteWaitRegistry {
         origins: &[WriteId],
         parent: Option<ObligationId>,
     ) -> Obligation {
+        self.add_child_checked(origins, |state| {
+            origins.iter().all(|id| {
+                state.active.get(id).is_some_and(|record| {
+                    parent.map_or(!record.outstanding.is_empty(), |parent| {
+                        record.outstanding.contains(&parent)
+                    })
+                })
+            })
+        })
+    }
+    pub(super) fn coalesced_contexts(
+        self: &Arc<Self>,
+        origins: &[WriteId],
+        contexts: &[WriteContext],
+    ) -> Obligation {
+        self.add_child_checked(origins, |state| {
+            contexts.iter().all(|context| state.context_live(context))
+        })
+    }
+    fn add_child_checked(
+        self: &Arc<Self>,
+        origins: &[WriteId],
+        live: impl FnOnce(&RegistryState) -> bool,
+    ) -> Obligation {
         let origins: Vec<_> = origins
             .iter()
             .copied()
@@ -137,15 +161,7 @@ impl WriteWaitRegistry {
             .collect();
         let obligation = ObligationId(self.next());
         self.mutate(|state| {
-            if origins.is_empty()
-                || !origins.iter().all(|id| {
-                    state.active.get(id).is_some_and(|record| {
-                        parent.map_or(!record.outstanding.is_empty(), |parent| {
-                            record.outstanding.contains(&parent)
-                        })
-                    })
-                })
-            {
+            if origins.is_empty() || !live(state) {
                 return Err("child requires live owning obligations");
             }
             for id in &origins {

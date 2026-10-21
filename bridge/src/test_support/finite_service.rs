@@ -175,7 +175,7 @@ impl ServiceRun {
             "coalesced services need one target"
         );
         let started = Instant::now();
-        let interval = Some(context.interval(IntervalCategory::OwnExternal));
+        let interval = Some(context.interval(IntervalCategory::FiniteService));
         let service = Self {
             control,
             plans,

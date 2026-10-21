@@ -179,6 +179,7 @@ pub struct SessionSender {
     /// [`OpenSession::still_open`].
     still_open: Arc<OpeningState>,
     carrier_id: Option<CarrierId>,
+    request_order: u64,
     carrier_open: Arc<AtomicBool>,
     reply_gate: Arc<Mutex<()>>,
 }
@@ -191,6 +192,16 @@ impl SessionSender {
     /// The sending daemon's identity, shared across every session and carrier.
     pub(crate) fn bridge_epoch(&self) -> &str {
         &self.bridge_epoch
+    }
+
+    /// Assigned by authenticated intake before SQL checkout or scheduling.
+    pub(crate) fn request_order(&self) -> u64 {
+        self.request_order
+    }
+
+    /// Internal identity for opening/carrier-bound declarative subscriptions.
+    pub(crate) fn read_scope(&self) -> (u64, Option<u64>) {
+        (self.still_open.ordinal, self.carrier_id.map(|id| id.0))
     }
 
     /// Whether the opening this sender was built for is still open. The
@@ -263,6 +274,15 @@ impl SessionSender {
         Opening(Arc::clone(&self.still_open))
     }
 
+    /// Bind an observable fixture to a carrier with a controllable release fence.
+    #[cfg(test)]
+    pub(crate) fn scoped_for_test(self) -> (Self, impl FnOnce() + Send) {
+        let (carrier, _outbound) = CarrierHandle::open_channel();
+        let binding = CarrierBinding::new(CarrierKind::Channel);
+        let sender = self.on_carrier(&carrier, &binding);
+        (sender, move || binding.release())
+    }
+
     /// Test-only: what the registry does to every sender of an opening that
     /// ended.
     #[cfg(test)]
@@ -283,6 +303,7 @@ impl SessionSender {
             out,
             still_open,
             carrier_id: None,
+            request_order: 0,
             carrier_open: Arc::new(AtomicBool::new(true)),
             reply_gate: Arc::new(Mutex::new(())),
         }
@@ -751,13 +772,15 @@ impl SessionRegistry {
             .carriers
             .entry(carrier.id)
             .or_insert_with(|| CarrierBinding::new(carrier.kind));
-        let sender = SessionSender::keyed(
+        let mut sender = SessionSender::keyed(
             &envelope.session_id,
             open.key.clone(),
             carrier.out.clone(),
             open.still_open.clone(),
         )
         .on_carrier(carrier, binding);
+        static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+        sender.request_order = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
         Ok((frame, sender))
     }
 
@@ -999,6 +1022,10 @@ impl FrameIntake {
             let clock = &self.dispatcher.handler().clock;
             clock.mark_request(&frame, "intake", arrived.started_at());
             clock.mark_request(&frame, "decrypted", std::time::Instant::now());
+        }
+        if let Err(error) = crate::api::v1::validate_write_metadata(&frame.payload) {
+            sender.push(error.into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null)));
+            return Ok(());
         }
         if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             crate::rtc::diagnostic(&envelope.session_id, "client_close_frame");

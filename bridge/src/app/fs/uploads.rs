@@ -535,6 +535,11 @@ fn finish_upload(
         .staged
         .validate_parent(root)
         .map_err(|error| (error, true))?;
+    #[cfg(test)]
+    {
+        super::service_test::before_publish();
+        super::service_test::after_publish_claim();
+    }
     let path = active
         .staged
         .finish(upload.size)

@@ -413,6 +413,8 @@ fn replace_scoped_file(root: &std::path::Path, params: &Value) -> Result<Value, 
         return Err("file is not editable UTF-8 text".into());
     }
     replace_text(root, &path, &expected_revision, &replacement)?;
+    #[cfg(test)]
+    service_test::after_replace();
     read_scoped_file(root, params)
 }
 

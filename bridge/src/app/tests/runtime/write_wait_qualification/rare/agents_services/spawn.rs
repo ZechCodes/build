@@ -72,6 +72,7 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
             Ok(OpenedSession {
                 session: Arc::new(
                     DictatedSession::reporting(AgentStatus::Waiting)
+                        .ending_finitely()
                         .recording_into(&logged)
                         .reporting_activity(activity),
                 ),

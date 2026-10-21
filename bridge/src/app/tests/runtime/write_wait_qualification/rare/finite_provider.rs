@@ -41,6 +41,7 @@ impl FiniteProvider {
                 Ok(OpenedSession {
                     session: Arc::new(
                         DictatedSession::reporting(AgentStatus::Waiting)
+                            .ending_finitely()
                             .reporting_activity(activity)
                             .recording_into(&logged)
                             .watching_status(watched_status.clone())

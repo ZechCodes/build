@@ -1,5 +1,7 @@
 use super::super::*;
 
+mod finite_turns;
+
 /// What a dictated session was asked to do, still readable once the daemon
 /// owns the session itself — an `Arc<dyn AgentSession>` in a tab cannot be
 /// looked inside, so the record lives beside it.
@@ -40,6 +42,8 @@ impl SessionLog {
 /// here at all. Only a caller that asks the session gets one.
 pub(in crate::app::tests) struct DictatedSession {
     status: AgentStatus,
+    finite_exit: Option<std::sync::atomic::AtomicBool>,
+    finite_turns: Option<finite_turns::FiniteTurns>,
     activity: Mutex<Option<tokio::sync::broadcast::Sender<crate::harness::ActivityReport>>>,
     quiet: Duration,
     log: SessionLog,
@@ -59,6 +63,8 @@ impl DictatedSession {
     pub(in crate::app::tests) fn reporting(status: AgentStatus) -> DictatedSession {
         DictatedSession {
             status,
+            finite_exit: None,
+            finite_turns: None,
             activity: Mutex::new(None),
             quiet: Duration::ZERO,
             log: SessionLog::default(),
@@ -74,13 +80,30 @@ impl DictatedSession {
         }
     }
 
-    /// Opt in to a bounded per-turn Working/Waiting protocol.
-    /// Test-first scaffold: actual finite transitions await the observed RED.
-    pub(in crate::app::tests) fn finishing_turns_after(self, delay: Duration) -> Self {
+    /// Give this process-free session its own completed-retirement state.
+    pub(in crate::app::tests) fn ending_finitely(mut self) -> Self {
+        self.finite_exit = Some(std::sync::atomic::AtomicBool::new(false));
+        self
+    }
+
+    /// Complete each actual send through an owned bounded status producer.
+    pub(in crate::app::tests) fn finishing_turns_after(mut self, delay: Duration) -> Self {
         assert!(
-            delay <= Duration::from_millis(500),
-            "finite turns must complete within 500ms"
+            delay > Duration::ZERO && delay <= Duration::from_millis(500),
+            "finite turns must complete within 500ms with a positive work interval"
         );
+        assert!(
+            self.watched_status.is_none() && self.finite_turns.is_none(),
+            "finite turns own their status producer"
+        );
+        assert_eq!(
+            self.status,
+            AgentStatus::Waiting,
+            "finite turns start Waiting"
+        );
+        let (turns, watched) = finite_turns::FiniteTurns::start(delay);
+        self.finite_turns = Some(turns);
+        self.watched_status = Some(watched);
         self
     }
 
@@ -120,6 +143,10 @@ impl DictatedSession {
         mut self,
         watched: tokio::sync::watch::Receiver<crate::harness::SessionStatusSnapshot>,
     ) -> Self {
+        assert!(
+            self.finite_turns.is_none(),
+            "finite turns own their status producer"
+        );
         self.watched_status = Some(watched);
         self
     }
@@ -180,6 +207,9 @@ impl AgentSession for DictatedSession {
                 .as_ref()
                 .map(|choice| choice.model_choice.clone()),
         );
+        if let Some(turns) = &self.finite_turns {
+            turns.sent()?;
+        }
         Ok(())
     }
     fn accepts_turn_choice(&self) -> bool {
@@ -239,12 +269,22 @@ impl AgentSession for DictatedSession {
     }
     fn exited_within(&self, _timeout: Duration) -> bool {
         matches!(self.status, AgentStatus::Ended { .. })
+            || self
+                .finite_exit
+                .as_ref()
+                .is_some_and(|ended| ended.load(std::sync::atomic::Ordering::Acquire))
     }
     fn end(&self) {
+        if let Some(turns) = &self.finite_turns {
+            turns.end();
+        }
         self.activity.lock().unwrap().take();
         self.log
             .ended
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(ended) = &self.finite_exit {
+            ended.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
     fn backdate_last_output(&self, _ago: Duration) {}
     fn start_refused(&self) -> Option<String> {
@@ -424,11 +464,13 @@ fn finite_waiting_session_reports_exit_only_after_its_own_retirement() {
         tokio::sync::broadcast::channel::<crate::harness::ActivityReport>(8);
     let retiring = Arc::new(
         DictatedSession::reporting(AgentStatus::Waiting)
+            .ending_finitely()
             .recording_into(&shared_log)
             .reporting_activity(activity),
     );
     let (peer_activity, _) = tokio::sync::broadcast::channel::<crate::harness::ActivityReport>(8);
     let peer = DictatedSession::reporting(AgentStatus::Waiting)
+        .ending_finitely()
         .recording_into(&shared_log)
         .reporting_activity(peer_activity);
     assert!(!retiring.exited_within(Duration::ZERO));
@@ -465,6 +507,7 @@ async fn finite_turns_report_actual_working_then_waiting_and_join_on_retirement(
     let (activity, _) = tokio::sync::broadcast::channel::<crate::harness::ActivityReport>(8);
     let session = Arc::new(
         DictatedSession::reporting(AgentStatus::Waiting)
+            .ending_finitely()
             .recording_into(&log)
             .watching_receipts(watched_receipts)
             .reporting_activity(activity)

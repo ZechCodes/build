@@ -58,6 +58,11 @@ pub(in crate::app) const MCP_CONTROL_METHOD: &str = "mcp.control";
 pub(in crate::app) const CONTROL_FRAMES_AT_THE_LOCK: usize = 2;
 
 #[cfg(all(test, unix))]
+pub(in crate::app) fn is_independent_read(frame: &Value) -> bool {
+    read_lane::action(frame).is_some()
+}
+
+#[cfg(all(test, unix))]
 pub(in crate::app) fn probe_guarded_mcp_read(
     state: &Arc<Mutex<AppState>>,
     frame: &Value,

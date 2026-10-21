@@ -8,6 +8,8 @@ use std::time::Duration;
 const SESSION_ID: &str = "timing-session";
 const PATIENCE: Duration = Duration::from_secs(5);
 
+mod write_wait;
+
 fn blocked_handler(
     clock: Arc<FrameClock>,
 ) -> (FrameHandler, std_mpsc::Receiver<()>, std_mpsc::Sender<()>) {

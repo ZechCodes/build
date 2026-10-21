@@ -12,6 +12,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+mod policy;
+mod reads;
+
 const WORKTREES: usize = 190;
 const CONVERSATIONS: usize = 200;
 const TASKS: usize = 700;

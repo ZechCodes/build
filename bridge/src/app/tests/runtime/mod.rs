@@ -25,3 +25,4 @@ mod terminal_reaper;
 pub(in crate::app::tests) mod terminals;
 
 mod lock_hold_busy;
+mod write_wait_qualification;

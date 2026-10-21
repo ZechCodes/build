@@ -28,6 +28,8 @@ use crate::logline::Throttle;
 
 #[cfg(test)]
 pub(crate) mod phase_samples;
+#[cfg(test)]
+pub(crate) mod write_wait;
 
 /// A frame that takes longer than this, end to end and queue wait included, is
 /// worth one line of stderr on its own. Below it the histograms are the record;
@@ -193,6 +195,8 @@ pub struct FrameClock {
     request_observer: RwLock<Option<Arc<RequestObserver>>>,
     #[cfg(test)]
     request_observed: AtomicBool,
+    #[cfg(test)]
+    write_wait_registry: RwLock<Option<Arc<write_wait::WriteWaitRegistry>>>,
 }
 
 impl FrameClock {
@@ -232,7 +236,16 @@ impl FrameClock {
             request_observer: RwLock::new(None),
             #[cfg(test)]
             request_observed: AtomicBool::new(false),
+            #[cfg(test)]
+            write_wait_registry: RwLock::new(None),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn capture_write_waits(&self) -> Arc<write_wait::WriteWaitRegistry> {
+        let registry = write_wait::WriteWaitRegistry::new();
+        *self.write_wait_registry.write().unwrap() = Some(Arc::clone(&registry));
+        registry
     }
 
     /// A frame has joined the dispatch queue. It counts against the queue depth

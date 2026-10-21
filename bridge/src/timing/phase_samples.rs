@@ -53,6 +53,12 @@ impl PhaseSamples {
         }
         Value::Object(methods)
     }
+
+    /// Test-first adapter for the busy qualification's existing summary-only
+    /// capture. Raw samples are required by the new policy regression below.
+    pub(crate) fn snapshot_with_holds(&self) -> (Value, BTreeMap<String, Vec<f64>>) {
+        (self.snapshot(), BTreeMap::new())
+    }
 }
 
 impl FrameClock {
@@ -273,4 +279,48 @@ fn phase_capture_records_permit_wait_and_combines_the_same_frame_only() {
             .unwrap()
             < independent_maxima
     );
+}
+
+#[test]
+fn busy_capture_retains_actual_raw_holds_alongside_the_same_summaries() {
+    let samples = PhaseSamples::default();
+    samples.record("writer", "frame.held", Duration::from_millis(20));
+    samples.record("writer", "frame.held", Duration::from_millis(5));
+    samples.record("independent-read", "frame.held", Duration::ZERO);
+    samples.record("writer", "client.total", Duration::from_millis(99));
+    let (summary, raw) = samples.snapshot_with_holds();
+    assert_eq!(summary["writer"]["frame.held"]["count"], 2);
+    assert_eq!(summary["writer"]["frame.held"]["p95_ms"], 20.0);
+    assert_eq!(raw.get("writer"), Some(&vec![20.0, 5.0]));
+    assert_eq!(raw.get("independent-read"), Some(&vec![0.0]));
+    assert_eq!(
+        raw.len(),
+        2,
+        "other phase samples must not enter the raw hold population"
+    );
+}
+
+#[test]
+fn busy_summary_and_raw_holds_are_captured_at_one_atomic_cut() {
+    let samples = PhaseSamples::default();
+    samples.record("writer", "frame.held", Duration::from_millis(1));
+    let recording = samples.clone();
+    let worker = std::thread::spawn(move || {
+        for _ in 0..500 {
+            recording.record("writer", "frame.held", Duration::from_millis(1));
+        }
+    });
+    let captures = (0..64)
+        .map(|_| samples.snapshot_with_holds())
+        .collect::<Vec<_>>();
+    worker.join().unwrap();
+    for (summary, raw) in captures {
+        let expected = summary["writer"]["frame.held"]["count"].as_u64().unwrap() as usize;
+        assert!(expected > 0);
+        assert_eq!(
+            raw.get("writer").map(Vec::len),
+            Some(expected),
+            "summary and raw pool came from different cuts"
+        );
+    }
 }

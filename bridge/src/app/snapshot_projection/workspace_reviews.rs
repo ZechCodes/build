@@ -66,3 +66,48 @@ impl AppState {
         }
     }
 }
+
+/// Owned inputs captured at admission/startup; querying never needs AppState.
+pub(in crate::app) struct WorkspaceReviewReader {
+    read_view: ReadViewSlot,
+    store: Option<Store>,
+    #[cfg(test)]
+    before: Option<crate::app::OffLockGate>,
+    #[cfg(test)]
+    loaded: Option<crate::app::OffLockGate>,
+}
+
+impl WorkspaceReviewReader {
+    pub(in crate::app) fn load(&self, workspace: &str) -> Option<WorkspaceReviewObservation> {
+        #[cfg(test)]
+        if let Some(gate) = &self.before {
+            gate.arrive();
+        }
+        let observed =
+            WorkspaceReviewObservation::load(&self.read_view, self.store.as_ref(), workspace);
+        #[cfg(test)]
+        if let Some(gate) = &self.loaded {
+            gate.arrive();
+        }
+        match observed {
+            Ok(observed) => Some(observed),
+            Err(error) => {
+                eprintln!("workspace review observation {workspace}: {error}");
+                None
+            }
+        }
+    }
+}
+
+impl AppState {
+    pub(in crate::app) fn workspace_review_reader(&self) -> WorkspaceReviewReader {
+        WorkspaceReviewReader {
+            read_view: self.read_view.clone(),
+            store: self.store.clone(),
+            #[cfg(test)]
+            before: self.off_lock_review_observation_gate.clone(),
+            #[cfg(test)]
+            loaded: self.off_lock_review_observation_loaded.clone(),
+        }
+    }
+}

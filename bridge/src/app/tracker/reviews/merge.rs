@@ -1,6 +1,7 @@
 //! Resolve saved merge destinations; explicit retries resume one durable plan.
 use super::super::StoredAnswer;
-use super::lifecycle::{invalidates, version};
+use super::lifecycle::version;
+use super::observation::ReviewInvalidation;
 use crate::api::v1::reviews::{errors, ReviewMergeParams};
 use crate::app::git::deferred::DeferredGitWork;
 use crate::app::{AppState, DeferredGit, DeferredWork};
@@ -25,26 +26,24 @@ struct MergeWork {
     refresh: Option<ReviewMergeRequest>,
     changes: Arc<crate::changes::ChangeBus>,
     state: Option<Weak<Mutex<AppState>>>,
+    observation: ReviewInvalidation,
 }
 
 impl DeferredGitWork for MergeWork {
     fn run(&self, _: &Value) -> Result<Value, String> {
-        let review = crate::reviews::merge::merge_with_refresh(&self.store, &self.job, self.refresh.as_ref(), || {
+        let result = crate::reviews::merge::merge_with_refresh(&self.store, &self.job, self.refresh.as_ref(), || {
             self.publish_progress();
         }).map_err(|message| errors::service(message, json!({
             "task_id":self.job.request.task_id,"snapshot_id":self.job.request.snapshot_id,
             "recovery":"Read tasks.review.get and retry the saved merge plan after resolving its reported failure."
-        })))?;
-        super::projection::result(&self.store, review)
+        }))).and_then(|review| super::projection::result(&self.store, review));
+        self.observation.prepare();
+        result
     }
 
     fn invalidate(&self, app: &mut AppState) {
-        invalidates(
-            app,
-            &self.project_id,
-            &self.job.request.task_id,
-            &self.workspace_id,
-        );
+        self.observation
+            .invalidate(app, &self.project_id, &self.job.request.task_id);
     }
 
     fn invalidates_on_error(&self) -> bool {
@@ -55,11 +54,13 @@ impl DeferredGitWork for MergeWork {
 impl MergeWork {
     fn publish_progress(&self) {
         if let Some(state) = self.state.as_ref().and_then(Weak::upgrade) {
+            let observed = self.observation.load();
             let mut app = state.lock().unwrap();
             app.publish_review_observation(
                 &self.project_id,
                 &self.job.request.task_id,
                 &self.workspace_id,
+                observed,
             );
         } else {
             self.changes.note_tasks(
@@ -89,6 +90,7 @@ impl AppState {
         let (request_id, request, refresh) = resolve_plan(&store, &review, &params, actor)?;
         let sources = self.review_action_sources(&project_id, &review);
         let work = MergeWork {
+            observation: ReviewInvalidation::new(self, &review.workspace_id),
             store,
             project_id,
             workspace_id: review.workspace_id.clone(),

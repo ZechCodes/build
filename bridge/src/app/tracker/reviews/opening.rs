@@ -192,10 +192,15 @@ impl DeferredGitWork for OpeningJob {
             .publish()
             .and_then(opened_value)
             .map_err(|error| self.error(error));
-        let observed = self
-            .observe_invalidation(&result)
-            .map_err(|error| self.error(error));
-        result.and_then(|value| observed.map(|()| value))
+        // The publication is already durable. Cache maintenance must not turn
+        // success into a refusal or prevent watch/reviewer settlement.
+        if let Err(error) = self.observe_invalidation(&result) {
+            eprintln!(
+                "workspace review observation {}: {error}",
+                self.request.workspace.id
+            );
+        }
+        result
     }
     fn settle(&self, app: &mut AppState, result: Value) -> Result<Value, String> {
         let task_id = result["task"]["id"]

@@ -4,6 +4,7 @@
   "params": {},
   "result": {
     "api_version": "3.24.0",
+    "ack_confirm_methods": [],
     "capabilities": [
       "agent.add",
       "agent.attach",

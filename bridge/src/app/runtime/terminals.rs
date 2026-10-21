@@ -171,6 +171,7 @@ pub(in crate::app) fn session_hello(
         "bridge_epoch": sender.bridge_epoch(),
         "journal_incarnation": journal_incarnation,
         "capabilities": crate::api::capabilities(qa_agent),
+        "ack_confirm_methods": crate::api::writes::ACK_CONFIRM_METHODS,
         "push_events": true,
         "events": ANNOUNCED_EVENTS,
         "coalesce_window_ms": changes.window().as_millis() as u64,

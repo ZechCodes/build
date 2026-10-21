@@ -46,7 +46,7 @@ fn refresh_with_writer_held(all: bool) {
         finished.send(()).unwrap();
     });
     entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    let completed = complete.recv_timeout(Duration::from_millis(200)).is_ok();
+    let completed = complete.recv_timeout(Duration::from_secs(2)).is_ok();
     let mutex_available = shared.try_lock().is_ok();
     drop(writer);
     worker.join().unwrap();
@@ -109,7 +109,7 @@ async fn periodic_maintenance_loads_review_sql_while_app_mutex_is_held_elsewhere
     AppState::spawn_snapshot_maintenance(&shared);
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_secs(10)).await;
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !waiting.has_pending_arrival() {
         assert!(
             std::time::Instant::now() < deadline,

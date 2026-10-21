@@ -63,6 +63,22 @@ fn capability_comparison_retains_exact_length_and_byte_behavior() {
 }
 
 #[test]
+fn a_token_map_key_cannot_authorize_a_different_issued_agent() {
+    let mut registry = SessionRegistry::new();
+    registry.install_mcp_token(
+        "different-agent".into(),
+        "valid-bytes".into(),
+        coding("thread-old"),
+    );
+    assert!(registry.token_matches("different-agent", "valid-bytes"));
+    assert!(registry
+        .mcp_read_authority()
+        .load()
+        .authenticate_token("different-agent", "valid-bytes")
+        .is_none());
+}
+
+#[test]
 fn conditional_revoke_preserves_rotation_and_retains_same_byte_lease_semantics() {
     let mut registry = SessionRegistry::new();
     let authority = registry.mcp_read_authority();

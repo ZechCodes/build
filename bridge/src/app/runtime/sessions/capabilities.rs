@@ -134,6 +134,13 @@ impl McpAuthoritySnapshot {
         if !constant_time_token_eq(supplied, &held.secret) {
             return None;
         }
+        let issued_agent = match &held.issuer {
+            McpIssuer::Coding(address) => &address.agent,
+            McpIssuer::Router(router) => &router.agent,
+        };
+        if issued_agent != agent {
+            return None;
+        }
         match &held.issuer {
             McpIssuer::Router(router) if !self.router_is_current(router) => None,
             issuer => Some(issuer.clone()),

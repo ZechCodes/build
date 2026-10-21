@@ -7,6 +7,7 @@ use std::time::Instant;
 /// observations are refreshed through the owner closure instead.
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct Layout {
+    state_root: PathBuf,
     owners: Vec<OwnerLayout>,
     projects: Vec<Value>,
     parked_projects: Vec<Value>,
@@ -64,6 +65,7 @@ impl Layout {
         #[cfg(test)]
         drop(_workspace_shape_phase);
         Self {
+            state_root: app.state_root.clone(),
             owners: owner_layouts(app),
             projects: project_layouts(app),
             parked_projects: app.projects.parked().to_vec(),

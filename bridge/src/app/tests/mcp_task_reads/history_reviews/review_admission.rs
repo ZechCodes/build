@@ -8,7 +8,11 @@ async fn mcp_review_deletion_admission_refuses_before_sql_capacity_or_external_w
     let pool = {
         let mut app = fixture.state.lock().unwrap();
         app.project_deletion_in_progress = true;
-        app.publish_task_snapshot_projection();
+        app.publish_read_metadata();
+        assert!(
+            app.read_service().mcp_input_snapshot().2,
+            "the production deletion publisher must expose admission before SQL is held"
+        );
         app.require_store().unwrap().read_pool()
     };
     let mut connections = Vec::new();

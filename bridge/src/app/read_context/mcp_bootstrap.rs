@@ -75,18 +75,6 @@ impl McpBootstrap {
     pub fn workspace_project(&self, id: &str) -> Option<&str> {
         self.workspaces.get(id).map(String::as_str)
     }
-
-    pub fn project(&self, owner: &str) -> Result<(&str, &Path), String> {
-        let id = self
-            .bindings
-            .get(owner)
-            .ok_or_else(|| format!("{owner} belongs to no project"))?;
-        let path = self
-            .projects
-            .get(id)
-            .ok_or_else(|| format!("unknown project_id: {id}"))?;
-        Ok((id, path))
-    }
 }
 
 impl HarnessSettings {

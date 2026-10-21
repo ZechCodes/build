@@ -11,11 +11,13 @@ const SQL_READERS: usize = 8;
 
 mod cancellation;
 mod classification;
+mod cold_catalogue;
 mod guardfree;
 mod history_reviews;
 mod immediate_authority;
 mod metadata;
 mod races;
+mod reset_retirement;
 mod roster_observations;
 mod snapshot_reads;
 

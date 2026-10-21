@@ -188,13 +188,7 @@ impl ReadService {
         )
     }
 
-    pub(in crate::app) fn mcp_deleting_project(&self) -> bool {
-        self.context
-            .load_full()
-            .expect("initialized read context")
-            .deleting_project
-    }
-
+    #[cfg(test)]
     pub(in crate::app) fn mcp_addresses(&self) -> Arc<McpAddresses> {
         Arc::clone(
             &self
@@ -202,18 +196,6 @@ impl ReadService {
                 .load_full()
                 .expect("initialized read context")
                 .addresses,
-        )
-    }
-
-    /// Only for genuinely cold setup: readers must not use this after an
-    /// accepted observation/settings root exists or has been invalidated.
-    pub(in crate::app) fn mcp_bootstrap(&self) -> Arc<McpBootstrap> {
-        Arc::clone(
-            &self
-                .context
-                .load_full()
-                .expect("initialized read context")
-                .bootstrap,
         )
     }
 

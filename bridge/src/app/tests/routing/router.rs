@@ -1,5 +1,79 @@
 use super::*;
 
+#[tokio::test]
+async fn capture_create_opens_router_and_delivers_its_decision_turn() {
+    use crate::harness::{ActivityReport, OpenedSession, SessionOutput};
+    use crate::harness::test_session_factory;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (dir, repo) = init_repo();
+    let opens = Arc::new(AtomicUsize::new(0));
+    let log = SessionLog::default();
+    let counted = Arc::clone(&opens);
+    let recorded = log.clone();
+    let _provider = test_session_factory::install(
+        std::fs::canonicalize(dir.path()).unwrap(),
+        Arc::new(move |provider, request| {
+            assert_eq!(provider, AgentProvider::Claude);
+            assert!(request.recovery_context.is_none(), "a router has no canonical thread");
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (activity, _) = tokio::sync::broadcast::channel::<ActivityReport>(16);
+            let output = SessionOutput::reporting(activity.subscribe(), None);
+            Ok(OpenedSession {
+                session: Arc::new(
+                    DictatedSession::reporting(AgentStatus::Waiting)
+                        .reporting_activity(activity)
+                        .recording_into(&recorded),
+                ),
+                output,
+            })
+        }),
+    );
+    let mut app = qa_state(&repo, dir.path());
+    app.default_harness = AgentProvider::Claude;
+    app.router_choice = Some(ModelChoice {
+        provider: AgentProvider::Claude,
+        model: None,
+        effort: Some("low".into()),
+    });
+    let state = app.shared();
+    let handler = AppState::handler(Arc::clone(&state));
+    let text = "route the login redirect";
+    let created = call(&handler, "capture.create", json!({"text": text}));
+    assert_eq!(created["ok"], true, "{created:?}");
+    let capture_id = created["result"]["id"].as_str().unwrap();
+    let delivered = wait_for(Duration::from_secs(3), || {
+        let app = state.lock().unwrap();
+        let router = app.router_sessions.get(capture_id)?;
+        let key = TabKey::agent(&AppState::canonical_root(router.scratch_dir()), router.agent_id());
+        let tab = app.session_registry.test_tab(&key)?;
+        (router.started()
+            && tab.session_is_live()
+            && tab.session_instance.is_none()
+            && log.turns().iter().any(|turn| turn.contains(text)))
+        .then_some(())
+    })
+    .await;
+    wait_for_deliveries(&state).await;
+    let status = {
+        let app = state.lock().unwrap();
+        (app.captures[capture_id].state, opens.load(Ordering::SeqCst), log.turns())
+    };
+    state.lock().unwrap().abandon_router_session(capture_id);
+    let scratch = dir.path().join(crate::router::ROUTER_SCRATCH_DIR_NAME);
+    let reaped = wait_for(Duration::from_secs(3), || {
+        let empty = std::fs::read_dir(&scratch)
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(true);
+        empty.then_some(())
+    })
+    .await;
+    assert!(reaped.is_some(), "router scratch was not reaped");
+    assert!(delivered.is_some(), "router was not opened and sent its turn: {status:?}");
+    assert_eq!(status.1, 1, "one capture opens one router");
+    assert_eq!(created["result"]["state"], "routing");
+}
+
 // ==== the router: what decides where a capture goes ======================
 
 /// Take a capture and hand back its id and the router session deciding it —

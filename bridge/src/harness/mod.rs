@@ -471,8 +471,15 @@ pub fn open_session(
     provider: AgentProvider,
     request: SessionOpenRequest,
 ) -> Result<OpenedSession, HarnessError> {
+    #[cfg(test)]
+    if let Some(open) = test_session_factory::for_root(&request.root) {
+        return open(provider, request);
+    }
     open_session_with_harness(harness_for(provider), request)
 }
+
+#[cfg(test)]
+pub(crate) mod test_session_factory;
 
 fn open_session_with_harness(
     harness: &dyn Harness,

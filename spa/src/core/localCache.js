@@ -1,4 +1,4 @@
-// The local cache: one IndexedDB store holding what each surface last saw.
+// The local cache: IndexedDB replicas plus isolated durable write-operation stores.
 // Surfaces paint from it while the sync layer asks the bridge for newer data.
 // A suspended browser can close its connection without losing those records;
 // the next operation reopens it instead of making the records disappear.
@@ -34,8 +34,12 @@ const DB_NAME = "build-cache";
 // reaches. A browser that ran a build before that split still holds `ui-*`
 // records in this store; an upgrade keeps them (see `upgrade`) until the UI
 // store has taken them across.
-const DB_VERSION = 4;
+// v5 adds durable pending-operation and tab-lease stores without resetting v4 replicas.
+const DB_VERSION = 5;
 const STORE = "records";
+import {
+  WRITE_OPERATION_STORE, WRITE_LEASE_STORE, activeOperationNamespaces, composeOperationRecords,
+} from "./writeOperationProjection.js";
 
 /** The index on each record's write time. It exists so "how old is what this
  *  workspace holds" can be answered from index keys alone: a key cursor
@@ -55,13 +59,21 @@ const createReplicaStore = (db) => {
   return store;
 };
 
-/** Rebuild the replica store in the new format — keeping every `ui-*` record
+/** Add durable stores independently from replica format resets. Rebuild an
+ * obsolete replica format — keeping every `ui-*` record
  *  it held. Those are a user's unsent drafts, written by a build that kept
  *  them here, and possibly by an older tab still running one: they are read
  *  inside the upgrade's own transaction and put back into the rebuilt store,
  *  so the upgrade commits with them or not at all. */
-function upgrade(request) {
+function upgrade(request, event) {
   const db = request.result;
+  for (const name of [WRITE_OPERATION_STORE, WRITE_LEASE_STORE]) {
+    if (!db.objectStoreNames.contains(name)) {
+      const store = db.createObjectStore(name);
+      if (name === WRITE_OPERATION_STORE) store.createIndex("namespace", "namespace");
+    }
+  }
+  if (event.oldVersion >= 4) return;
   if (!db.objectStoreNames.contains(STORE)) {
     createReplicaStore(db);
     return;
@@ -83,9 +95,10 @@ function upgrade(request) {
 export const CACHE_DIAGNOSTIC = "local-cache";
 
 const database = createIdbDatabase({
-  name: DB_NAME, version: DB_VERSION, store: STORE, upgrade, diagnostic: CACHE_DIAGNOSTIC, label: "local cache",
-  // Every record here but the `ui-*` ones not yet carried is a copy.
-  dropNewer: true,
+  name: DB_NAME, version: DB_VERSION, store: STORE,
+  transactionStores: [STORE, WRITE_OPERATION_STORE, WRITE_LEASE_STORE], upgrade, diagnostic: CACHE_DIAGNOSTIC, label: "local cache",
+  // Pending writes are durable user intent: never delete an unfamiliar version.
+  dropNewer: false,
 });
 
 /** For tests: a faster recovery schedule. Answers the one it replaced. */
@@ -118,9 +131,24 @@ export const announceCacheEvidence = (address, evidence) => announce(addressPart
 
 /** Read one record: `{ at, value }`, or undefined when it was never written,
  *  the cache is unavailable, or anything went wrong. */
-export function readCached(address) {
+export function readCanonicalCached(address) {
   return inStore("readonly", (store) => store.get(recordKey(address)));
 }
+
+export function readCached(address) {
+  return readCachedMany([address]).then((records) => records[0]);
+}
+
+/** Shared transaction boundary for durable operations, layers and replicas. */
+export const transactWriteOperations = (mode, run) => transact(mode, (records) => run({
+  records,
+  operations: records.transaction.objectStore(WRITE_OPERATION_STORE),
+  leases: records.transaction.objectStore(WRITE_LEASE_STORE),
+}));
+
+export const announceWriteOperationCache = (addresses) => {
+  for (const address of addresses) announce(addressParts(address));
+};
 
 /** Admission checks must distinguish a confirmed absent record from a failed
  * read. Keep the transaction's committed verdict alongside its result. */
@@ -132,7 +160,7 @@ export function readCachedOutcome(address) {
  *  everything it draws at once rather than a round trip per surface. Answers
  *  one slot per address, in the order asked, undefined where there is no
  *  record. */
-export function readCachedMany(addresses) {
+export function readCanonicalCachedMany(addresses) {
   const keys = addresses.map(recordKey);
   if (!keys.length) return Promise.resolve([]);
   const records = new Array(keys.length);
@@ -146,6 +174,22 @@ export function readCachedMany(addresses) {
     });
     return null;
   }).then(() => records);
+}
+
+/** Read base and accepted layers in one snapshot, including after reload. */
+export async function readCachedMany(addresses) {
+  if (!addresses.length) return [];
+  let canonical = [], operations = [];
+  await transactWriteOperations("readonly", (stores) => {
+    readRecordsInStore(stores.records, addresses.map(recordKey), (records) => { canonical = records; });
+    operations = [];
+    for (const namespace of activeOperationNamespaces(addresses)) {
+      const read = stores.operations.index("namespace").getAll(namespace);
+      read.onsuccess = () => { operations.push(...read.result); };
+    }
+    return null;
+  });
+  return composeOperationRecords(addresses, canonical, operations);
 }
 
 /** Every feed write goes through this transaction. A local rewrite carries
@@ -195,11 +239,11 @@ function readRecordsInStore(store, keys, read) {
 
 /** Write one record, stamped with when. A local UI writer may also stamp its
  * owner and edit sequence for page-exit journal ordering. */
-export function writeCached(address, value, { source, sequence, observedFeedRows = false } = {}) {
+export function writeCached(address, value, { source, sequence, observedFeedRows = false, publication } = {}) {
   if (address.kind === "feed") return writeFeed(address, () => value, { observedFeedRows });
   if (address.kind === "bridge-update") return writeBridgeUpdate(address, value);
   const key = recordKey(address);
-  const record = { ...writeStamp(), value, ...(source ? { source, sequence } : {}) };
+  const record = { ...writeStamp(), value, ...(source ? { source, sequence } : {}), ...(publication ? { publication } : {}) };
   return wroteStore((store) => {
     store.put(record, key);
     return null;
@@ -345,7 +389,7 @@ function inRecoveryWriteOrder(keys, run) {
 export function mergeCached(address, merge) {
   const key = recordKey(address);
   const run = async () => {
-    const next = merge((await readCached(address))?.value);
+    const next = merge((await readCanonicalCached(address))?.value);
     if (next) await writeCached(address, next);
   };
   const ran = (merges.get(key) || Promise.resolve()).then(run, run);
@@ -655,7 +699,7 @@ export function deleteCached(addresses) {
   });
 }
 
-/** Drop the whole database. For sign-out, and for a format change. Announced
+/** Clear replica records, preserving durable operation intent. Announced
  *  as the empty address, which every listener is under: nothing anyone holds
  *  is still there. */
 export function wipeCache() {

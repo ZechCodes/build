@@ -342,7 +342,7 @@ describe("an open blocked by another tab", () => {
   it("steps aside when a newer version opens in another tab", async () => {
     await cache.writeCached(address, { head: "stored" });
     const newer = await new Promise((resolve, reject) => {
-      const request = indexedDB.open("build-cache", 5);
+      const request = indexedDB.open("build-cache", 6);
       request.onblocked = () => reject(new Error("the cache's connection blocked the newer version"));
       request.onsuccess = () => resolve(request.result);
     });
@@ -371,8 +371,8 @@ describe("a cache written before tasks were renamed (#190)", () => {
 
 // A browser that ran a later build and was then served this one (a rollback)
 // finds a database newer than it can open. That is VersionError, which no
-// reopen fixes — so the cache drops the newer database and starts cold rather
-// than standing down for every page load from then on.
+// reopen fixes. Durable pending writes may live beside replicas, so a rollback
+// refuses the unfamiliar schema and preserves all records.
 describe("a cache written by a newer build", () => {
   const newerBuild = () => new Promise((resolve) => {
     const request = indexedDB.open("build-cache", 99);
@@ -385,17 +385,28 @@ describe("a cache written by a newer build", () => {
     };
   });
 
-  it("drops it and starts cold, and keeps what this build writes", async () => {
+  it("preserves an unfamiliar newer schema instead of deleting durable intent", async () => {
     await newerBuild();
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
     expect(await cache.readCached(address)).toBeUndefined();
     await cache.writeCached(address, { head: "after-the-rollback" });
 
-    expect((await cache.readCached(address))?.value).toEqual({ head: "after-the-rollback" });
-    expect(cache.cacheHealth().state).toBe("ready");
-    expect(eventNames()).toContain("cache-dropped-newer");
-    expect(eventNames()).not.toContain("cache-stood-down");
+    expect(await cache.readCached(address)).toBeUndefined();
+    expect(cache.cacheHealth().state).toBe("stood-down");
+    expect(eventNames()).not.toContain("cache-dropped-newer");
+    expect(eventNames()).toContain("cache-stood-down");
+    const preserved = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("build-cache", 99);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const transaction = db.transaction("records", "readonly");
+        const read = transaction.objectStore("records").get("dev-1|run-1|status|");
+        transaction.oncomplete = () => { db.close(); resolve(read.result); };
+      };
+    });
+    expect(preserved.value).toEqual({ head: "written-by-a-newer-build" });
   });
 });
 

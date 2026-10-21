@@ -1081,6 +1081,7 @@ async fn failed_shell_spawn_releases_its_capacity_and_filesystem_hold() {
         app.term_shell = dir.path().join("missing-shell").display().to_string();
         app.project_at(0).id.clone()
     };
+    let samples = state.lock().unwrap().frame_clock.capture_phases();
     let refused = call(&handler, "term.create", json!({"project_id": project}));
     assert_eq!(refused["ok"], false, "{refused}");
     let app = state.lock().unwrap();
@@ -1088,6 +1089,11 @@ async fn failed_shell_spawn_releases_its_capacity_and_filesystem_hold() {
     assert_eq!(app.session_registry.pending_shell_count(), 0);
     assert_eq!(app.shell_tab_count(), 0);
     assert!(app.refuse_source_shells_at(&repo).is_ok());
+    let phases = samples.snapshot();
+    assert_eq!(
+        phases["term.create"]["term.create.cancel"]["count"], 1,
+        "{phases}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

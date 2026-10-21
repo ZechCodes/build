@@ -1,0 +1,20 @@
+{
+  "id": "r-17",
+  "method": "tasks.comment",
+  "params": {
+    "task_id": "task-01K5ZQ8M4T0J7WQ2R6X3YB9C4D",
+    "body": "Reproduced: the drop handler writes before the column read settles.",
+    "refs": [
+      {
+        "kind": "file",
+        "path": "spa/src/views/board.js",
+        "line_start": 88,
+        "line_end": 94
+      }
+    ]
+  },
+  "write": {
+    "operation_id": "5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a",
+    "after": []
+  }
+}

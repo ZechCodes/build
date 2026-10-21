@@ -34,6 +34,7 @@ pub(super) struct ResolvedScope {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProbeKind {
+    Primary,
     Workspace,
     Run,
     Source,
@@ -103,7 +104,7 @@ impl Selector {
                 Ok(CapturedScope::new(
                     project_id,
                     &project.repo_path,
-                    ProbeKind::Checkout,
+                    ProbeKind::Primary,
                 ))
             }
             Self::Legacy(TermScope::ProjectSource(source)) => capture_source(app, source),
@@ -181,15 +182,18 @@ impl CapturedScope {
                 self.workspace_id.as_deref().unwrap_or_default()
             ));
         }
-        let root = std::fs::canonicalize(&raw_root).map_err(|error| match self.kind {
-            ProbeKind::Workspace => {
+        let root = match self.kind {
+            // Legacy primary selectors retain their raw key when the checkout
+            // is unavailable, just as term.list and the terminal reaper do.
+            ProbeKind::Primary => AppState::canonical_root(&raw_root),
+            ProbeKind::Workspace => std::fs::canonicalize(&raw_root).map_err(|error| {
                 format!("resolve workspace root {}: {error}", raw_root.display())
-            }
-            ProbeKind::Run => "worktree no longer exists".into(),
-            ProbeKind::Source | ProbeKind::Checkout => {
-                format!("cannot resolve scope root: {error}")
-            }
-        })?;
+            })?,
+            ProbeKind::Run => std::fs::canonicalize(&raw_root)
+                .map_err(|_| "worktree no longer exists".to_string())?,
+            ProbeKind::Source | ProbeKind::Checkout => std::fs::canonicalize(&raw_root)
+                .map_err(|error| format!("cannot resolve scope root: {error}"))?,
+        };
         Ok(ResolvedScope {
             project_id,
             workspace_id: self

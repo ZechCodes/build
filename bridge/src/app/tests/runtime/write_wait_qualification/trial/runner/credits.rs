@@ -44,4 +44,5 @@ impl CallerCredits {
 }
 
 #[cfg(test)]
+#[path = "credits/tests.rs"]
 mod tests;

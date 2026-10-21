@@ -94,3 +94,34 @@ fn maintenance_review_refresh_native_hold_samples() {
     }
     println!("TASK735_REFRESH_NATIVE_HOLDS {}", samples.snapshot());
 }
+
+#[tokio::test(start_paused = true)]
+async fn periodic_maintenance_loads_review_sql_while_app_mutex_is_held_elsewhere() {
+    let (_home, _repository, shared, _workspace) = fixture();
+    let (before, waiting) = OffLockGate::new();
+    let (after, loaded) = OffLockGate::new();
+    {
+        let mut app = shared.lock().unwrap();
+        app.off_lock_review_observation_gate = Some(before);
+        app.off_lock_review_observation_loaded = Some(after);
+    }
+    AppState::spawn_snapshot_maintenance(&shared);
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(10)).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while !waiting.has_pending_arrival() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "periodic maintenance did not reach the off-lock review reader"
+        );
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let held = shared.try_lock();
+    let mutex_available = held.is_ok();
+    waiting.release();
+    loaded.wait_for_arrival();
+    loaded.release();
+    drop(held);
+    assert!(mutex_available, "maintenance held the app mutex during review SQL");
+}

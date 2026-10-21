@@ -1025,6 +1025,23 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
     assert_eq!(app.session_registry.pending_shell_count(), 1);
     assert!(app.refuse_source_shells_at(&repo).is_err());
     drop(app);
+    let (done, answered) = std::sync::mpsc::channel();
+    let concurrent = {
+        let handler = handler.clone();
+        std::thread::spawn(move || {
+            let reply = call(&handler, "session.hello", json!({}));
+            done.send(reply).unwrap();
+        })
+    };
+    let reply = answered.recv_timeout(Duration::from_millis(100));
+    // Always release the child before asserting, so a failure cannot strand it.
+    if reply.is_err() {
+        held.release();
+        create.join().unwrap();
+        panic!("session.hello waited behind the external terminal spawn");
+    }
+    assert_eq!(reply.unwrap()["ok"], true);
+    concurrent.join().unwrap();
     let listed = call(&handler, "term.list", json!({"project_id": project}));
     assert!(listed_ids(&listed).is_empty(), "a pending spawn is not a tab: {listed}");
     held.release();
@@ -1033,4 +1050,22 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
     let app = state.lock().unwrap();
     assert_eq!(app.active_deferred_filesystem_jobs, 0);
     assert_eq!(app.session_registry.pending_shell_count(), 0);
+}
+
+#[tokio::test]
+async fn failed_shell_spawn_releases_its_capacity_and_filesystem_hold() {
+    let (dir, repo) = init_repo();
+    let (state, handler) = shared_state_and_handler(&repo, dir.path());
+    let project = {
+        let mut app = state.lock().unwrap();
+        app.term_shell = dir.path().join("missing-shell").display().to_string();
+        app.project_at(0).id.clone()
+    };
+    let refused = call(&handler, "term.create", json!({"project_id": project}));
+    assert_eq!(refused["ok"], false, "{refused}");
+    let app = state.lock().unwrap();
+    assert_eq!(app.active_deferred_filesystem_jobs, 0);
+    assert_eq!(app.session_registry.pending_shell_count(), 0);
+    assert_eq!(app.shell_tab_count(), 0);
+    assert!(app.refuse_source_shells_at(&repo).is_ok());
 }

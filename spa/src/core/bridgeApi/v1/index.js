@@ -1,14 +1,9 @@
 // The adapter for API major 3: everything this SPA knows about the wire. The
-// module keeps its v1 name — 2.0.0 broke one thing, the task rename (#190):
-// every tracker and plan verb and feature name moved to `tasks.*` or
-// `task.*`, so a 1.x bridge is gated as behind rather than served names it
-// does not know. 3.0.0 only removed verbs and pushes this SPA never used
-// (#207), so the same adapter still serves every 2.x bridge: the app can roll
-// before the bridge restarts.
+// module keeps its v1 name. The coordinated 3.24 release establishes durable
+// write acceptance and requires the matching bridge before dispatch.
 //
 // A surface never asks what version the bridge reports — it asks the adapter's
-// `capabilities`, the names in the greeting. Every 2.x and 3.x bridge sends the list;
-// the minor table that stood in for it on bridges before 1.22 went with 1.x.
+// `capabilities`, the names in the current greeting.
 //
 // The adapter also owns error normalisation. A refusal carries `error_code`,
 // `retryable` and `details` beside the string; one that is the string alone
@@ -16,11 +11,11 @@
 // `error.code` whatever it is talking to.
 
 import { satisfies } from "../semver.js";
-import { legacyThreadParams } from "./threadParams.js";
 import { compactionWriteError } from "./compactionParams.js";
+import { ackConfirmMethods, submitWrite } from "./writeMethods.js";
 
 /** The range of bridge versions this adapter claims. */
-export const range = ">=2.0.0 <4.0.0";
+export const range = ">=3.24.0 <4.0.0";
 
 /** The API major it is the adapter for. */
 export const major = 3;
@@ -77,7 +72,7 @@ export const EVENT_TYPES = Object.freeze([
 
 /** A refusal, whichever shape it arrived in. */
 export class ApiError extends Error {
-  constructor(code, message, { retryable = false, details = {}, cause, timedOut = false, uncertain = false } = {}) {
+  constructor(code, message, { retryable = false, details = {}, cause, timedOut = false, uncertain = false, deadline } = {}) {
     super(message || code);
     this.name = "ApiError";
     this.code = code;
@@ -85,6 +80,7 @@ export class ApiError extends Error {
     this.details = details;
     this.timedOut = timedOut;
     this.uncertain = uncertain;
+    if (deadline !== undefined) this.deadline = deadline;
     if (cause !== undefined) this.cause = cause;
   }
 }
@@ -105,6 +101,7 @@ function fieldsOf(thrown) {
     details,
     timedOut: source.timedOut === true,
     uncertain: source.uncertain === true,
+    deadline: source.deadline,
   };
 }
 
@@ -152,6 +149,7 @@ export function capabilitiesOf(greeting, version = greeting?.api_version || "0.0
   const subscriptions = names.has("changes.subscriptions");
   const kinds = greeting?.changes?.kinds;
   return {
+    writes: { epoch: names.has("bridge.epoch"), ackConfirmMethods: ackConfirmMethods(greeting, names.has("bridge.epoch")) },
     changes: {
       subscriptions,
       kinds: subscriptions && Array.isArray(kinds) ? kinds.filter((kind) => typeof kind === "string") : [],
@@ -213,19 +211,19 @@ function eventsOf(greeting) {
  *   `{ok:false}` reply. Either becomes an ApiError.
  * @param greeting the `session.hello` reply this adapter was selected for.
  */
-export function create(call, greeting) {
+export function create(call, greeting, { writeOperations } = {}) {
   const reported = greeting?.api_version;
   const version = typeof reported === "string" && reported ? reported : "0.0.0";
   const capabilities = capabilitiesOf(greeting, version);
-  // Keep arity and options intact: only the params added with conversation
-  // reset need adapting when this greeting does not advertise it.
   const wrapped = async (...args) => {
     const refusal = compactionWriteError(args[0], args[1], capabilities.compaction.harnessThresholds);
     if (refusal) throw new ApiError(refusal.code, refusal.message);
-    if (!capabilities.conversations.reset && args.length > 1) args[1] = legacyThreadParams(args[0], args[1]);
     let reply;
     try {
-      reply = await call(...args);
+      if (capabilities.writes.ackConfirmMethods.includes(args[0])) {
+        if (typeof writeOperations?.submit !== "function") throw new ApiError("unavailable", "Write operations are not ready.");
+        reply = await submitWrite(writeOperations, ...args);
+      } else reply = await call(...args);
     } catch (thrown) {
       throw normalizeError(thrown);
     }

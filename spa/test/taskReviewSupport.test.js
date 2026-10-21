@@ -59,7 +59,7 @@ describe("review operation support", () => {
   });
 
   it.each(prVerbs)("requires the PR feature and the exact %s verb", (verb) => {
-    for (const api_version of ["2.0.0", "3.15.0", "3.99.0"]) {
+    for (const api_version of ["3.24.0", "3.24.1", "3.99.0"]) {
       const capabilities = (names) => adapter.capabilitiesOf({ api_version, capabilities: names }).reviews;
       expect(reviewSupport.canReviewOperation(capabilities([`tasks.review.${verb}`]), verb)).toBe(false);
       expect(reviewSupport.canReviewOperation(capabilities(["tasks.review.pullRequests"]), verb)).toBe(false);

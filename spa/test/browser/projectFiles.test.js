@@ -19,13 +19,13 @@ it("opens a project source through Files on the project rail", async () => {
       window.__fsCalls = [];
       const call = async (method, params) => {
         window.__fsCalls.push({ method, params });
-        if (method === "session.hello") return { api_version: "3.9.0", capabilities: ["fs.projectSources"] };
+        if (method === "session.hello") return { api_version: "3.24.0", capabilities: ["fs.projectSources"] };
         if (method === "fs.tree") return { path: params.path, entries: [{ name: "README.md", kind: "file", size: 20 }] };
         if (method === "fs.read") return { path: params.path, mime: "text/markdown", size: 20, content_b64: btoa(`# ${params.source_id} source`), editable: true, encoding: "utf-8", revision: "r1" };
         return {};
       };
       const context = contexts.adoptDeviceSession({ deviceId: "d", call, close() {}, peer() {}, onCarrier() {}, onPush() {} });
-      const greeting = { api_version: "3.9.0", capabilities: ["fs.projectSources"] };
+      const greeting = { api_version: "3.24.0", capabilities: ["fs.projectSources"] };
       const selected = adapter.create(call, greeting);
       contexts.adoptBridgeSelection(context, { version: "3.9.0" }, selected);
       await changes.greetBridge(call, { deviceId: "d" });

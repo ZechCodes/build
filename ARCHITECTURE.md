@@ -3267,6 +3267,38 @@ gate attachment display.
   `subscribeCache(prefix, listener)` announces every write to listeners on a
   matching prefix, and a `BroadcastChannel` carries the announcements to other
   tabs.
+- **Pending writes** (#740, wire 3.24.0). `writeOperations.js` persists each
+  normalized intent before transport in separate versioned operation/lease
+  stores inside `build-cache`. The authenticated app shell supplies only the
+  account UUID; operations are keyed by account, paired device, user principal
+  and operation UUID. Without that identity the pending service is unavailable.
+  Boot activates the account's projections before mounting cache readers.
+  `readCached`/`readCachedMany` compose ordered local layers over canonical
+  records; mutation helpers read the canonical records separately. Replica
+  eviction never deletes pending intent. Explicit account reset clears it.
+  BroadcastChannel announces committed operation changes, and an IndexedDB
+  per-device tab lease suppresses duplicate transport. A single worker polls
+  status in batches of at most 128 with jittered 1/2/5/10/30-second backoff.
+  Each subscription replaces the whole set with the oldest 128 outstanding
+  submissions; overflow stays on status polling, and terminal outcomes refill
+  the set. Subscribe pagination continues through status with the same IDs.
+  Subscriptions belong to the opening and carrier, so even a same-epoch carrier
+  change re-establishes status and subscription coverage.
+  Durable ack resolves the action successfully; a receipt does not. Loss,
+  timeout and restart retain the same operation identity and accepted layers.
+  A confirmation invalidation retains its layer until a fresh, guarded canonical
+  read covers the publication's owner kind, ID, generation and sequence.
+  Failed/unapplied removes only its layer; partial/unknown retains evidence.
+  Named refresh obligations survive reload independently of overlays. This
+  foundation consumes inline results; an unknown result reference remains
+  unresolved and cannot become success or authorize retransmission.
+  Expired-result tombstones retain their outcome and effect. Proven
+  failed/unapplied tombstones remove only their layer and restore the draft;
+  the expired operation ID never resolves successfully or executes again.
+  Task comments and thread posts display cached operation errors beside the
+  composer, retain the draft, and distinguish a new-action Retry from same-ID
+  Check again. The method allowlist is empty until bridge execution slices enable
+  methods; typed domain effects are extended together with those slices.
 - **Compaction observations** (`compactionCache.js`, wire 3.22.0) refresh from
   authoritative scope reads and `agent.list` after `compaction.changed` or
   subscription acceptance. The invalidation names no replicated values.
@@ -3748,6 +3780,15 @@ the current lifetime. Affected promises receive retryable uncertain-delivery
 errors; late replies cannot release replacement credits. Cache rendering and
 read coordination remain independent of these admission waits.
 
+`bridgeEpoch.js` accepts epoch/incarnation authority only from a current
+greeting. Application calls await that greeting, and every later app/terminal
+frame is fenced before correlation or push delivery. An unexpected UUID asks
+for a fresh greeting; it does not establish a newer epoch. Replacing an epoch
+settles unsent calls as `scope_ended` and handed-off calls as
+`uncertain_delivery`, releases reservations once, and never replays terminal
+input. `sessionRpc.js` routes durable acks and late confirmations separately
+from transport receipts, including after the original caller timed out.
+
 A surface calls the bridge through its device context: `context.rpc(method,
 params)` from `contextFor(deviceId)` or `routeContext(route)`. `context.rpc`
 refuses when that device cannot answer.
@@ -3758,12 +3799,15 @@ refuses when that device cannot answer.
   client's `api_range`. `greetBridge()` then selects an adapter and arms the
   change subscriptions.
 - `selectAdapter()` in `spa/src/core/bridgeApi/index.js` checks the bridge's
-  `api_version` against `SPA_API_RANGE` (`>=2.0.0 <4.0.0`). A greeting with
+  `api_version` against `SPA_API_RANGE` (`>=3.24.0 <4.0.0`). A greeting with
   no version, or no greeting at all, reads as `PRE_ALPHA_API_VERSION`
-  (`0.0.0`). For compatibility, that is matched at the lowest adapter's floor
-  rather than rejected. Any other version outside the range returns
+  (`0.0.0`), which is rejected. A version outside the range returns
   `{unsupported: "bridge" | "app"}`, and `spa/src/views/versionGate.js` says
   which side needs updating.
+- `bridge.epoch` and the greeting's exact `ack_confirm_methods` select the
+  durable write service. Every listed semantic method uses it; there is no
+  `write.mode` or separate ack-confirm negotiation. Session controls are
+  excluded. The SPA and bridge ship together; #739 rolls before the #740 SPA.
 - `capabilitiesOf()` in `spa/src/core/bridgeApi/v1/index.js` turns the greeting's
   `capabilities` array into feature flags. Every bridge the adapter admits sends
   one; the minor-version table that stood in for it went with 1.x. New features
@@ -3780,15 +3824,10 @@ refuses when that device cannot answer.
   requirement. No new source selectors go to an older bridge. Sync base uses
   `sources.syncBase`; its captured-path precondition additionally requires
   `sources.syncBasePath`.
-- `conversation.reset` also gates the generation fields added to existing
-  conversation requests in wire 3.11. The adapter restores their old shapes
-  with `spa/src/core/bridgeApi/v1/threadParams.js` when the greeting lacks the
-  capability, retaining established selectors and paging parameters. Sessions
-  read their device's cached reset capability from `conversationResetSupport.js`
-  before hello: a cleared conversation keeps its required generation fields on
-  reconnect, and a device without cached support uses legacy shapes. A greeting
-  that settles during that read takes precedence at dispatch. Revision reads
-  retain `agent_id` and `conversation_id`, which older bridges already accept.
+- Conversation requests preserve their captured generation and exact agent,
+  conversation and thread selectors. App dispatch waits for the current
+  greeting and adapter; there is no pre-greeting legacy-shape conversion.
+  `conversation.reset` still controls whether the reset action is offered.
 - The task and conversation watch switches, task attachment buttons, and
   conversation compaction settings are available before a greeting (#182).
   Their values come from cached task and agent records. A late greeting does

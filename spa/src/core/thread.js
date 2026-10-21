@@ -2768,6 +2768,14 @@ export function wireThreadComposer(root, {
   return {
     setCanInterrupt,
     setBlocked,
+    syncDraft() {
+      if (!input.value && readDraft()) {
+        input.value = readDraft();
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      tray?.restoreDraft();
+      paintAction();
+    },
     /// Put files in the tray as a drop on the box would — for a drop that
     /// landed somewhere else and was carried here.
     addFiles: (files) => {

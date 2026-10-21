@@ -68,6 +68,7 @@ export async function renderTrackerTask() {
     taskId: route.taskId,
     commentId: route.commentId || null,
     callRpc: context.rpc,
+    writeOperations: context.writeOperations,
     catalog: () => context.modelCatalog(),
     refreshCatalog: () => context.refreshModelCatalog(),
     feed: () => feed,

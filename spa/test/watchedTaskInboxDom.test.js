@@ -24,7 +24,7 @@ const DEVICE = "watch-device";
 const PROJECT = "proj-1";
 const WAIT = { timeout: 5000, interval: 20 };
 const GREETING = {
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   push_events: true,
   capabilities: ["tasks.watching", "tasks.attachments"],
   tasks: { watching: true, attachments: true },
@@ -432,7 +432,7 @@ describe("Stop watching a task an agent asked the user about (#144)", () => {
   beforeEach(() => boot({
     tasks: [asked],
     timelines: { [asked.id]: [question] },
-    hello: { api_version: "2.0.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
+    hello: { api_version: "3.24.0", push_events: true, capabilities: ["tasks.watching", "tasks.commentUserNotifies"] },
   }));
   afterEach(() => pane?.dispose());
 

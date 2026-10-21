@@ -17,7 +17,7 @@ const SUBSCRIBING_CAPABILITIES = ["changes.subscriptions", "requests.priority", 
 
 const SUBSCRIBING_GREETING = {
   push_events: true,
-  api_version: "2.0.0",
+  api_version: "3.24.0",
   capabilities: SUBSCRIBING_CAPABILITIES,
   events: ["changes"],
   changes: {
@@ -42,10 +42,10 @@ const subscribingBridge = () => {
   return call;
 };
 
-const legacyBridge = () => {
+const withoutSubscriptionsBridge = () => {
   call = vi.fn(async (method, params) => {
     calls.push([method, params]);
-    if (method === "session.hello") return { push_events: true };
+    if (method === "session.hello") return { api_version: "3.24.0", capabilities: [], push_events: true };
     return {};
   });
   return call;
@@ -87,7 +87,7 @@ describe("negotiating the contract", () => {
 
   it("subscribes to nothing on a bridge that does not advertise subscriptions", async () => {
     changeEvents.watchChanges({ refresh: () => {}, entity: "run-7", kinds: ["state", "git"] });
-    await changeEvents.greetBridge(legacyBridge());
+    await changeEvents.greetBridge(withoutSubscriptionsBridge());
     await settle();
     expect(hellos()).toHaveLength(1);
     expect(hellos()[0].changes).toBe("subscriptions");
@@ -100,7 +100,7 @@ describe("negotiating the contract", () => {
     await changeEvents.greetBridge(subscribingBridge());
     await settle();
     calls.length = 0;
-    await changeEvents.greetBridge(legacyBridge());
+    await changeEvents.greetBridge(withoutSubscriptionsBridge());
     await settle();
     expect(changeEvents.subscriptionsActive()).toBe(false);
     expect(subscribes()).toEqual([]);
@@ -477,7 +477,7 @@ describe("telling the cache layer which contract is live", () => {
     const flips = [];
     const stop = changeEvents.onSubscriptionsChange((deviceId, active) => flips.push([deviceId, active]));
     await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-1" });
-    await changeEvents.greetBridge(legacyBridge(), { deviceId: "dev-1" });
+    await changeEvents.greetBridge(withoutSubscriptionsBridge(), { deviceId: "dev-1" });
     stop();
     expect(flips).toEqual([
       ["dev-1", true],
@@ -490,7 +490,7 @@ describe("telling the cache layer which contract is live", () => {
     const stop = changeEvents.onSubscriptionsChange((deviceId, active) => flips.push([deviceId, active]));
     await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-1" });
     await changeEvents.greetBridge(subscribingBridge(), { deviceId: "dev-2" });
-    await changeEvents.greetBridge(legacyBridge(), { deviceId: "dev-2" });
+    await changeEvents.greetBridge(withoutSubscriptionsBridge(), { deviceId: "dev-2" });
     stop();
     expect(flips).toEqual([
       ["dev-1", true],

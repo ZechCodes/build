@@ -30,7 +30,9 @@ const DB_NAME = "build-cache";
 // rules sweep. A format change is a cold start by design — the records a
 // previous version wrote are not this version's shapes, and one sync pass
 // refills what the reader is looking at.
-const DB_VERSION = 4;
+// Follow the current schema in this harness while preserving the historical
+// writer's equal-tick records without write IDs.
+const DB_VERSION = 5;
 const STORE = "records";
 // A board record and a row can be written in the same clock millisecond.
 // Keep their order beside the timestamp without changing the timestamp used

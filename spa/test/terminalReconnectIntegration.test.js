@@ -4,6 +4,8 @@
 // channels share a peer connection in production, so a terminal probe failure
 // must never close that carrier from inside the terminal stack.
 
+import { transportEpoch } from "./transportEpoch.js";
+import { createBridgeEpoch } from "../src/core/bridgeEpoch.js";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -48,7 +50,11 @@ const { followTerminalDevice, provideTerminalSessions, resetTerminalManager, sub
 const { App } = await import("../src/app.js");
 const { connectionDiagnosticHistory } = await import("../src/core/connectionDiagnostics.js");
 
-function answeringCarrier(name, { answerImmediately = true } = {}) {
+function answeringCarrier(name, {
+  answerImmediately = true,
+  bridgeEpoch = null,
+  resultFor = (method) => method === "ping" ? { pong: true } : {},
+} = {}) {
   const envelopeListeners = new Set();
   const closeListeners = new Set();
   const carrier = {
@@ -74,10 +80,13 @@ function answeringCarrier(name, { answerImmediately = true } = {}) {
     },
     answer(envelope = carrier.sent.at(-1)) {
       const { id, method } = envelope.frameFields.payload;
-      const reply = { id, ok: true, result: method === "ping" ? { pong: true } : {} };
+      const reply = { id, ok: true, result: resultFor(method), ...(bridgeEpoch ? { bridge_epoch: bridgeEpoch.current().bridge_epoch } : {}) };
       for (const listener of envelopeListeners) {
         listener({ key: envelope.key, frameFields: { payload: reply } });
       }
+    },
+    push(payload, key) {
+      for (const listener of envelopeListeners) listener({ key, frameFields: { payload } });
     },
   };
   return carrier;
@@ -98,6 +107,55 @@ describe("terminal session handoff after a bridge restart", () => {
     App.route = { name: "branch", deviceId: "dev-a", projectId: "project-a" };
   });
 
+  it("automatically remints and reattaches after an authoritative epoch change on the same channel", async () => {
+    vi.useFakeTimers();
+    const epoch = createBridgeEpoch();
+    const greet = (bridge_epoch) => epoch.acceptGreeting({ bridge_epoch, journal_incarnation: "journal", capabilities: ["bridge.epoch"] });
+    greet("boot-A");
+    try {
+      provideTerminalSessions(async (deviceId) => {
+        const number = sessions.length + 1;
+        const session = { sessionId: `epoch-${number}`, sessionKeyB64: `key-${number}`, deviceId, bridgeEpoch: epoch, release: vi.fn() };
+        sessions.push(session);
+        return session;
+      });
+      const term = answeringCarrier("same", {
+        bridgeEpoch: epoch,
+        resultFor: (method) => method === "term.attach"
+          ? { snapshot: btoa(epoch.current().bridge_epoch), cursor: epoch.current().bridge_epoch === "boot-A" ? 100 : 0 }
+          : {},
+      });
+      contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { app: { close: vi.fn() }, term } });
+      const socket = terminalManager();
+      await settle();
+      await vi.advanceTimersByTimeAsync(0);
+      const snapshots = [];
+      const outputs = [];
+      const attached = socket.attachTerminal("term-epoch", {
+        onSnapshot: (bytes) => snapshots.push(new TextDecoder().decode(bytes)),
+        onOutput: (bytes) => outputs.push(new TextDecoder().decode(bytes)),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await attached;
+
+      greet("boot-B");
+      await settle();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sessions).toHaveLength(2);
+      expect(term.sent.map((frame) => frame.frameFields.payload.method)).toEqual(["ping", "term.attach", "ping", "term.attach"]);
+      expect(snapshots).toEqual(["boot-A", "boot-B"]);
+      term.push({ type: "term.output", term_id: "term-epoch", cursor: 1, data: btoa("new stream"), bridge_epoch: "boot-B" }, sessions.at(-1).sessionKeyB64);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(outputs).toEqual(["new stream"]);
+      expect(term.sent.filter((frame) => frame.frameFields.payload.method === "term.ack").map((frame) => frame.frameFields.payload.params.cursor)).toEqual([1]);
+      expect(term.close).not.toHaveBeenCalled();
+      expect(sessions.every((session) => session.release.mock.calls.length === 1)).toBe(true);
+    } finally {
+      resetTerminalManager();
+      vi.useRealTimers();
+    }
+  });
+
   it("remints, proves the replacement session before releasing its lease, and stays live past five seconds", async () => {
     vi.useFakeTimers();
     try {
@@ -105,7 +163,7 @@ describe("terminal session handoff after a bridge restart", () => {
         const number = sessions.length + 1;
         const lease = {
           sessionId: `terminal-${number}`,
-          sessionKeyB64: `key-${number}`,
+          bridgeEpoch: transportEpoch(), sessionKeyB64: `key-${number}`,
           deviceId,
           release: vi.fn(() => events.push(`lease-${number}:release`)),
         };
@@ -161,7 +219,7 @@ describe("terminal session handoff after a bridge restart", () => {
       const number = sessions.length + 1;
       const lease = {
         sessionId: `terminal-${number}`,
-        sessionKeyB64: `key-${number}`,
+        bridgeEpoch: transportEpoch(), sessionKeyB64: `key-${number}`,
         deviceId,
         release: vi.fn(),
       };
@@ -294,7 +352,7 @@ describe("terminal session handoff after a bridge restart", () => {
         const number = sessions.length + 1;
         const lease = {
           sessionId: `overlap-${number}`,
-          sessionKeyB64: `overlap-key-${number}`,
+          bridgeEpoch: transportEpoch(), sessionKeyB64: `overlap-key-${number}`,
           deviceId,
           release: vi.fn(() => events.push(`overlap-${number}:release`)),
         };
@@ -344,7 +402,7 @@ describe("terminal session handoff after a bridge restart", () => {
       provideTerminalSessions(async (deviceId) => {
         const lease = {
           sessionId: "unacknowledged",
-          sessionKeyB64: "unacknowledged-key",
+          bridgeEpoch: transportEpoch(), sessionKeyB64: "unacknowledged-key",
           deviceId,
           release: vi.fn(() => events.push("unacknowledged:release")),
         };
@@ -385,7 +443,7 @@ describe("terminal session handoff after a bridge restart", () => {
       const number = sessions.length + 1;
       const lease = {
         sessionId: `${deviceId}-${number}`,
-        sessionKeyB64: `${deviceId}-key-${number}`,
+        bridgeEpoch: transportEpoch(), sessionKeyB64: `${deviceId}-key-${number}`,
         deviceId,
         release: vi.fn(),
       };
@@ -413,7 +471,7 @@ describe("terminal session handoff after a bridge restart", () => {
     const oldMint = new Promise((resolve) => { resolveOld = resolve; });
     const oldLease = {
       sessionId: "old-account",
-      sessionKeyB64: "old-key",
+      bridgeEpoch: transportEpoch(), sessionKeyB64: "old-key",
       deviceId: "dev-a",
       release: vi.fn(),
     };
@@ -435,7 +493,7 @@ describe("terminal session handoff after a bridge restart", () => {
     contexts.set("dev-a", { deviceId: "dev-a", call: async () => ({}), peerLink: { term: replacement } });
     provideTerminalSessions(async () => ({
       sessionId: "new-account",
-      sessionKeyB64: "new-key",
+      bridgeEpoch: transportEpoch(), sessionKeyB64: "new-key",
       deviceId: "dev-a",
       release: vi.fn(),
     }));
@@ -458,7 +516,7 @@ describe("terminal session handoff after a bridge restart", () => {
     let resolveB;
     const waitingB = new Promise((resolve) => { resolveB = resolve; });
     provideTerminalSessions((deviceId) => deviceId === "dev-a"
-      ? Promise.resolve({ sessionId: "reentrant-a", sessionKeyB64: "key-a", deviceId, release: vi.fn() })
+      ? Promise.resolve({ sessionId: "reentrant-a", bridgeEpoch: transportEpoch(), sessionKeyB64: "key-a", deviceId, release: vi.fn() })
       : waitingB);
 
     const statuses = [];
@@ -476,7 +534,7 @@ describe("terminal session handoff after a bridge restart", () => {
     expect(events).not.toContain("reentrant-a:ping");
     expect(statuses).not.toContain("connected");
 
-    resolveB({ sessionId: "reentrant-b", sessionKeyB64: "key-b", deviceId: "dev-b", release: vi.fn() });
+    resolveB({ sessionId: "reentrant-b", bridgeEpoch: transportEpoch(), sessionKeyB64: "key-b", deviceId: "dev-b", release: vi.fn() });
     await settle();
     expect(events).toContain("reentrant-b:ping");
     unsubscribe();
@@ -503,7 +561,7 @@ it("guards project source reattach against a downgraded app greeting on the repl
     { id: "p1", sources: [{ id: "plain", path: "/original/plain" }] },
   ]);
   let number = 0;
-  provideTerminalSessions(async (deviceId) => ({ sessionId: `source-${++number}`, sessionKeyB64: `key-${number}`, deviceId, release: vi.fn() }));
+  provideTerminalSessions(async (deviceId) => ({ sessionId: `source-${++number}`, bridgeEpoch: transportEpoch(), sessionKeyB64: `key-${number}`, deviceId, release: vi.fn() }));
   try {
     const socket = terminalManager();
     await socket.whenConnected();

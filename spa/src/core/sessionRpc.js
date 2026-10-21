@@ -10,6 +10,7 @@
 // timeout, and the rule that tells a reply from a push.
 
 import { createSqlReadCredits, isSqlRead, SQL_READ_LIMIT } from "./sqlReadCredits.js";
+import { createBridgeEpoch, endedOpeningError } from "./bridgeEpoch.js";
 
 /** How long a call waits for its answer before it is not coming.
  *
@@ -127,12 +128,14 @@ export function createSessionRpc({
   noCarrier = () => new Error("nothing is carrying this session"),
   timeoutMs: defaultTimeoutMs = DEFAULT_RPC_TIMEOUT_MS,
   sqlReadLimit = SQL_READ_LIMIT, // saturation fixtures inject N=B; production stays at eight
+  bridgeEpoch = createBridgeEpoch(),
 }) {
   const pending = new Map();
   const sqlReads = createSqlReadCredits(sqlReadLimit);
   const readers = new WeakSet();
   const closedCarriers = new WeakSet();
   const pushListeners = new Set();
+  const writeListeners = new Set();
   let carrier = null;
   let requestId = 0;
   let lastFrameAt = 0;
@@ -148,12 +151,39 @@ export function createSessionRpc({
     } catch {
       return;
     }
-    lastFrameAt = Date.now(); // whatever it says, the bridge reached us
+    if (closed || !acceptCarrier(frame.payload, source) || !acceptEpoch(frame.payload)) return;
+    lastFrameAt = Date.now();
     takePayload(frame.payload, source);
+  };
+
+  // A hello is the correlated answer to an explicit authority check. It can
+  // report a different epoch, but only connection's current greeting may adopt
+  // it. No uncorrelated frame, including an unsolicited hello, changes authority.
+  const acceptEpoch = (payload) => {
+    const method = pending.get(payload?.id)?.method;
+    if (method === "session.hello") return true;
+    if (!bridgeEpoch.current() && bootstrapMethod(method)) return true;
+    return bridgeEpoch.accepts(payload);
+  };
+
+  // A subscription belongs to its carrier as well as its session opening.
+  // Correlated write replies can finish on their captured carrier after a
+  // migration. Uncorrelated outcomes only belong to the current subscription.
+  const acceptCarrier = (payload, source) => {
+    const waiting = pending.get(payload?.id);
+    if (!writeFrame(payload) && !writeCall(waiting)) return true;
+    return source === (waiting ? waiting.sendingCarrier : carrier);
+  };
+
+  const routeWriteFrame = (payload) => {
+    if (payload?.write?.phase === "ack" || payload?.type === "writes.confirmed") {
+      for (const listener of [...writeListeners]) listener(payload);
+    }
   };
 
   const takePayload = (payload, source) => {
     if (!acceptSqlReply(payload, source)) return;
+    routeWriteFrame(payload);
     const answered = payload && payload.id !== undefined ? pending.get(payload.id) : null;
     if (answered) {
       // A receipt settles nothing: it says the device has the request, which
@@ -214,9 +244,21 @@ export function createSessionRpc({
     pending.clear();
   };
 
+  const stopEpoch = bridgeEpoch.onChange((_current, previous) => {
+    if (!previous) return;
+    for (const waiting of pending.values()) waiting.reject(endedOpeningError(waiting.method, waiting.handoffAttempted));
+    pending.clear();
+    resetSqlReads(endedOpeningError("sql", true));
+  });
+
   return {
     sessionId,
     deviceId,
+    bridgeEpoch,
+    onWriteFrame(fn) {
+      writeListeners.add(fn);
+      return () => writeListeners.delete(fn);
+    },
 
     /** Read this carrier's frames. Every carrier the session holds is read
      *  from, not only the one it sends on: signaling is pinned to the relay, so
@@ -265,7 +307,7 @@ export function createSessionRpc({
     async call(
       method,
       params = {},
-      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null, assertCurrent = () => {}, signal } = {},
+      { timeoutMs = defaultTimeoutMs, carrier: wire = carrier, priority = "foreground", onReceipt = null, assertCurrent = () => {}, signal, write } = {},
     ) {
       if (closed) throw noCarrier();
       const id = "r" + ++requestId;
@@ -273,10 +315,13 @@ export function createSessionRpc({
       const deadline = createDeadline(method, timeoutMs, onReceipt);
       const answer = new Promise((resolve, reject) => {
         waiting = {
+          method,
+          write: Boolean(write),
+          sendingCarrier: null,
           handoffAttempted: false,
           reject,
           receipt: () => deadline.receipted(waiting.handoffAttempted),
-          ok: (payload) => (payload.ok ? resolve(payload.result) : reject(refusalError(payload))),
+          ok: (payload) => (payload.ok ? resolve(write ? payload : payload.result) : reject(refusalError(payload))),
         };
         pending.set(id, waiting);
       });
@@ -301,7 +346,7 @@ export function createSessionRpc({
           frameFields: {
             frame_type: "data",
             sender: "client",
-            payload: { method, id, params, ...(priority === "background" ? { priority } : {}) },
+            payload: { method, id, params, ...(priority === "background" ? { priority } : {}), ...(write ? { write: writeMetadata(write) } : {}) },
           },
         });
         // The session may have been failed, closed, or timed out while its
@@ -309,6 +354,7 @@ export function createSessionRpc({
         // its request must never cross later and mutate the old scope.
         if (closed || pending.get(id) !== waiting) return;
         assertCurrent();
+        waiting.sendingCarrier = sending;
         waiting.handoffAttempted = true;
         sqlReads.sent(id);
         await sending.send(envelope);
@@ -342,8 +388,19 @@ export function createSessionRpc({
      *  better answer than "nothing is carrying". */
     close(reason) {
       closed = true;
+      stopEpoch();
       carrier = null;
       fail(reason || noCarrier());
     },
   };
 }
+
+// The wire carries the durable identity and dependencies beside params. Mode
+// selection belongs to the greeting's allowlist; callers cannot override it.
+function writeMetadata(write) {
+  return { operation_id: write.operation_id, ...(write.after === undefined ? {} : { after: write.after }) };
+}
+
+const bootstrapMethod = (method) => method === "ping" || method?.startsWith("rtc.");
+const writeFrame = (payload) => payload?.write?.phase === "ack" || payload?.type === "writes.confirmed";
+const writeCall = (waiting) => waiting?.write || waiting?.method.startsWith("writes.");

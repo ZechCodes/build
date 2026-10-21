@@ -47,6 +47,17 @@ pub(in crate::app) struct CompactionLedger {
 }
 
 impl CompactionLedger {
+    #[cfg(test)]
+    pub(in crate::app) fn sent_context_before_for_test(
+        &self,
+        owner: &str,
+        agent_id: &str,
+    ) -> Option<Option<u64>> {
+        self.sent
+            .get(&key(owner, agent_id))
+            .map(|sent| sent.detail.context_before)
+    }
+
     pub(in crate::app) fn forget(&mut self, owner: &str, agent_id: &str) {
         self.requested.remove(&key(owner, agent_id));
         self.sent.remove(&key(owner, agent_id));

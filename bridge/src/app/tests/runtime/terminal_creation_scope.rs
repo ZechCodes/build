@@ -247,3 +247,57 @@ async fn terminal_creation_discovers_unregistered_external_workspace_offlock() {
         true
     );
 }
+
+/// A physical probe must not commit legacy metadata captured for a source
+/// that was replaced while the app mutex was available to another operation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_creation_revalidates_prepared_legacy_source_identity() {
+    let f = Fixture::new();
+    let workspace_id = format!("legacy-{}", f.projects[0]);
+    let (gate, held) = OffLockGate::new();
+    {
+        let mut app = f.state.lock().unwrap();
+        app.workspaces.remove_staged_adoption(&workspace_id);
+        app.terminal_create_scope_probe_gate = Some(gate);
+    }
+    let creating = {
+        let handler = f.handler.clone();
+        let workspace_id = workspace_id.clone();
+        std::thread::spawn(move || {
+            call(
+                &handler,
+                "term.create",
+                json!({"workspace_id": workspace_id}),
+            )
+        })
+    };
+    held.wait_for_arrival();
+    let replaced = {
+        let mut app = f.state.lock().unwrap();
+        let mut sources = app.projects.get(&f.projects[0]).unwrap().sources.clone();
+        // A fresh source identity may reuse the exact same physical checkout.
+        sources[0].id = format!("{}-replacement", sources[0].id);
+        app.projects.set_sources(&f.projects[0], sources)
+    };
+    held.release();
+    let created = creating.join().unwrap();
+    let stale_alias = f
+        .state
+        .lock()
+        .unwrap()
+        .workspaces
+        .get(&workspace_id)
+        .cloned();
+    // The unfixed path succeeds, so terminate/reap its exact owned shell before
+    // reporting the stale-identity failure.
+    f.close(&created);
+    assert!(replaced);
+    assert_eq!(
+        created["ok"], false,
+        "a replaced source must invalidate its prepared legacy adoption: {created}"
+    );
+    assert!(
+        stale_alias.is_none(),
+        "a rejected create installed stale source metadata: {stale_alias:?}"
+    );
+}

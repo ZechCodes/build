@@ -19,8 +19,18 @@ export function createWriteOperationWorker({ cache, tabId, run, hasWork, random,
   function renewLease(lease) {
     if (!lease.active) return;
     cache.renewLease(lease.id, 15000).then((owned) => {
+      if (!owned) loseLease(lease);
       if (owned && lease.active) lease.heartbeat = schedule(() => renewLease(lease), 5000);
-    }).catch(() => {});
+    }).catch(() => loseLease(lease));
+  }
+  function loseLease(lease) {
+    lease.active = false;
+    cancel(lease.heartbeat);
+    if (holder !== lease) return;
+    holder = null;
+    running = null;
+    generation++;
+    arm();
   }
   async function leasedRun(lease) {
     if (!await cache.acquireLease(lease.id, 15000)) return;
@@ -29,18 +39,40 @@ export function createWriteOperationWorker({ cache, tabId, run, hasWork, random,
     lease.heartbeat = schedule(() => renewLease(lease), 5000);
     const tasks = queued;
     queued = [];
-    for (const task of tasks) task();
-    try { await run(); }
+    for (const task of tasks) dispatchTask(lease, task);
+    try {
+      await runPass(lease);
+      while (lease.pending.size || lease.pass) {
+        const work = [...lease.pending];
+        if (lease.pass) work.push(lease.pass);
+        await Promise.all(work);
+      }
+    }
     finally {
       lease.active = false;
       cancel(lease.heartbeat);
       await cache.releaseLease(lease.id);
     }
   }
+  function runPass(lease) {
+    if (lease.pass) return lease.pass;
+    const pass = Promise.resolve().then(() => run(() => lease.active)).catch(() => {}).finally(() => {
+      if (lease.pass === pass) lease.pass = null;
+      arm();
+    });
+    lease.pass = pass;
+    return pass;
+  }
+  function dispatchTask(lease, task) {
+    let result;
+    try { result = task(() => lease.active); } catch (error) { result = Promise.reject(error); }
+    const work = Promise.resolve(result).catch(() => {}).finally(() => lease.pending.delete(work));
+    lease.pending.add(work);
+  }
   function reconcile() {
     if (stopped) return Promise.resolve();
-    if (running) return running;
-    const lease = { id: `${tabId}:${generation}`, active: true, heartbeat: null };
+    if (running) return holder?.active && holder.acquired ? runPass(holder) : running;
+    const lease = { id: `${tabId}:${generation}`, active: true, heartbeat: null, pending: new Set() };
     holder = lease;
     const pass = leasedRun(lease).catch(() => {}).finally(() => {
       if (running === pass) { running = null; holder = null; arm(); }
@@ -63,7 +95,11 @@ export function createWriteOperationWorker({ cache, tabId, run, hasWork, random,
   return {
     reconcile, restart, reset,
     dispatch(task) {
-      if (holder?.active && holder.acquired) { task(); return; }
+      if (holder?.active && holder.acquired) {
+        const lease = holder;
+        dispatchTask(lease, task);
+        return;
+      }
       queued.push(task);
       void reconcile();
     },

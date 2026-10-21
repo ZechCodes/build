@@ -43,3 +43,28 @@ describe('one durable write status worker per device',()=>{
     await worker.close();
   });
 });
+
+it('continues status passes while an acknowledged RPC response is still missing',async()=>{
+  vi.useFakeTimers();
+  let finishWrite;
+  const {worker,run,cache}=setup();
+  worker.dispatch(()=>new Promise(resolve=>{finishWrite=resolve;}));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(run).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(run).toHaveBeenCalledTimes(2);
+  expect(cache.acquireLease).toHaveBeenCalledTimes(1);
+  finishWrite();await vi.advanceTimersByTimeAsync(0);await worker.close();
+});
+
+it('invalidates transport authority when another tab takes the lease',async()=>{
+  vi.useFakeTimers();
+  let authority;
+  let finish;
+  const {worker,cache}=setup();
+  cache.renewLease.mockResolvedValue(false);
+  worker.dispatch(active=>{authority=active;return new Promise(resolve=>{finish=resolve;});});
+  await vi.advanceTimersByTimeAsync(0);expect(authority()).toBe(true);
+  await vi.advanceTimersByTimeAsync(5000);expect(authority()).toBe(false);
+  finish();await vi.advanceTimersByTimeAsync(0);await worker.close();
+});

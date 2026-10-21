@@ -18,7 +18,10 @@ const ack = id => ({ ok:true,bridge_epoch:'epoch-A',write:{phase:'ack',operation
 const confirmation = (id, extra = {}) => ({type:'writes.confirmed',bridge_epoch:'epoch-A',operation_id:id,revision:2,state:'succeeded',result:{saved:id},...extra});
 function setup(call, extra={}) {
   const cache = memoryCache();
-  const session = {callRaw:vi.fn(call),onWriteFrame:() => () => {}};
+  const session = {callRaw:vi.fn(async (method,...args)=>{
+    const result=await call(method,...args);
+    return method.startsWith('writes.')?{journal_incarnation:'journal-A',...result}:result;
+  }),onWriteFrame:() => () => {}};
   const service = createWriteOperationService({cache,randomUUID:()=> 'op-A',setTimeout:()=> 1,clearTimeout:()=>{},random:()=>.5,...extra});
   return {cache,session,service,bind:()=>service.bind({session,greeting})};
 }
@@ -217,5 +220,64 @@ it('persists raw durable ack and resolves success when effect normalization fail
   await bind();
   await expect(service.submit({method:'tasks.update',params:{}})).resolves.toEqual({saved:'op-A'});
   expect(cache.rows.get('op-A').ack).toEqual(ack('op-A'));
+  await service.close();
+});
+
+it('does not resolve an expired result or result reference as an acknowledged action',async()=>{
+  for (const summary of [{state:'result_expired'},{state:'succeeded',result_ref:{revision:2,cursor:'result-page'}}]) {
+    const {service,bind}=setup(async(method,params)=>method==='writes.status'?{operations:params.operation_ids.map(operation_id=>({operation_id,...summary}))}:method==='writes.subscribe'?{operations:[]}:Promise.reject(Object.assign(new Error('ack lost'),{timedOut:true,uncertain:true})));
+    await bind();
+    await expect(service.submit({method:'tasks.update',params:{}})).rejects.toMatchObject({uncertain:true,error_code:summary.state==='result_expired'?'result_expired':'outcome_unknown'});
+    await service.close();
+  }
+});
+
+it('distinguishes an explicit empty dependency override from an omitted saved dependency set',async()=>{
+  const {service,cache,bind}=setup(async()=>({operations:[]}));await bind();
+  await cache.put({operationId:'saved',request:{method:'tasks.update',params:{}},state:'accepted',revision:1,acknowledged:true,ack:ack('saved'),journalIncarnation:'journal-A'});
+  await expect(service.submit({method:'tasks.update',params:{},operationId:'saved',after:[]})).rejects.toMatchObject({error_code:'operation_conflict'});
+  await expect(service.submit({method:'tasks.update',params:{},operationId:'saved'})).resolves.toEqual({saved:'saved'});
+  await service.close();
+});
+
+it('keeps a status retry leased through delayed encryption and transport handoff',async()=>{
+  let handoff;
+  const {service,cache,bind}=setup((method,params,options)=>{
+    if(method==='writes.status') return {operations:params.operation_ids.map(operation_id=>({operation_id,state:'not_found'}))};
+    if(method==='writes.subscribe') return {operations:[],cursor:'12'};
+    return new Promise((resolve,reject)=>{handoff=()=>{try {options.assertCurrent();resolve(ack('retry'));} catch(error) {reject(error);}};});
+  });
+  const released=vi.spyOn(cache,'releaseLease');
+  await cache.put({operationId:'retry',request:{method:'tasks.update',params:{task_id:'T'}},revision:0,state:'queued',acknowledged:false,journalIncarnation:'journal-A'});
+  const opening=bind();await flush();
+  expect(handoff).toBeTypeOf('function');
+  await flush();
+  expect(released).not.toHaveBeenCalled();
+  handoff();await opening;
+  expect(cache.rows.get('retry').state).toBe('accepted');
+  await service.close();
+});
+
+it('persists a refresh obligation for failure before ack without an overlay',async()=>{
+  const refresh=vi.fn().mockRejectedValue(new Error('named read unavailable'));
+  const {service,cache,bind}=setup(method=>method.startsWith('writes.')?{operations:[]}:new Promise(()=>{}),{onRefresh:refresh});
+  await bind();
+  const pending=service.submit({method:'tasks.comment',params:{task_id:'T',body:'draft'}}).catch(error=>error);await flush();
+  await service.handleFrame(confirmation('op-A',{state:'failed',effect:'unapplied',error:{message:'Comment refused'},refresh:[{kind:'task',id:'T'}]}));
+  await pending;await flush();
+  expect(cache.rows.get('op-A')).toMatchObject({state:'failed',refreshPending:true});
+  expect(cache.rows.get('op-A').overlay).toEqual([]);
+  expect(refresh).toHaveBeenCalled();
+  await service.close();
+});
+
+it('retries persisted refresh obligations after reload even with a retired overlay',async()=>{
+  const refresh=vi.fn().mockResolvedValue(undefined);
+  const {service,cache,bind}=setup(async()=>({operations:[]}),{onRefresh:refresh});
+  const frame=confirmation('failed',{state:'failed',effect:'unknown',refresh:[{kind:'task',id:'T'}]});
+  await cache.put({operationId:'failed',request:{method:'tasks.update',params:{task_id:'T'}},state:'failed',revision:2,acknowledged:true,overlayActive:false,overlay:[],unresolved:true,refreshPending:true,confirmation:frame,journalIncarnation:'journal-A'});
+  await bind();await flush();
+  expect(refresh).toHaveBeenCalledTimes(1);
+  expect(cache.rows.get('failed')).toMatchObject({refreshPending:false,unresolved:true,state:'failed'});
   await service.close();
 });

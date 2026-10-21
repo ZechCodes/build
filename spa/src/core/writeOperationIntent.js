@@ -50,6 +50,6 @@ export function operationFailure(frame) {
   return Object.assign(new Error(message || "Your change was not saved"), {
     error_code: detail?.code || frame.error_code,
     retryable: detail?.retryable ?? frame.retryable ?? false,
-    effect: frame.effect, operation_id: wireOperationId(frame),
+    effect: frame.effect, uncertain: ["partial", "unknown"].includes(frame.effect), operation_id: wireOperationId(frame),
   });
 }

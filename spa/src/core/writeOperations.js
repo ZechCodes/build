@@ -22,7 +22,7 @@ export function createWriteOperationService(options) {
   let serial = Promise.resolve();
   let stopped = false;
   let detach = () => {};
-  const worker = createWriteOperationWorker({ cache, tabId, run: statusPass, hasWork: () => Boolean(binding) && (snapshot.some(needsWriteStatus) || checks.size > 0 || refreshes.size > 0),
+  const worker = createWriteOperationWorker({ cache, tabId, run: statusPass, hasWork: () => Boolean(binding) && current(binding) && (snapshot.some(needsWriteStatus) || snapshot.some(refreshRequired) || checks.size > 0 || refreshes.size > 0),
     random: options.random || Math.random, setTimeout: options.setTimeout || globalThis.setTimeout, clearTimeout: options.clearTimeout || globalThis.clearTimeout });
   cache.activateProjection?.();
   const unsubscribe = cache.subscribe(() => {void refreshSnapshot().catch(() => {});});
@@ -39,7 +39,13 @@ export function createWriteOperationService(options) {
   function settleKnown() {
     for (const row of snapshot) {
       const waiting = pending.get(row.operationId);
-      if (!waiting || !row.acknowledged) continue;
+      if (!waiting) continue;
+      if (row.unresolved) {
+        pending.delete(row.operationId);
+        waiting.reject(unresolvedError(row));
+        continue;
+      }
+      if (!row.acknowledged) continue;
       pending.delete(row.operationId);
       if (row.state === "failed") waiting.reject(operationFailure(row.confirmation));
       else waiting.resolve(row.ack?.result ?? row.confirmation?.result);
@@ -70,7 +76,7 @@ export function createWriteOperationService(options) {
     if (!supports(request.method)) throw writeRefusal("This bridge does not support durable acceptance for this action");
     const operationId = input.operationId || randomUUID();
     const old = await cache.get(operationId);
-    if (old) return waitLocally(existingSubmit(old, request), input);
+    if (old) return waitLocally(existingSubmit(old, request, input), input);
     const after = writeDependencies({ ...input, params: request.params }, await cache.list());
     if (after?.includes(operationId)) throw writeRefusal("A write cannot depend on itself", "invalid_dependency");
     const held = binding;
@@ -82,7 +88,7 @@ export function createWriteOperationService(options) {
     await cache.put(row);
     await refreshSnapshot();
     const result = waitFor(operationId);
-    worker.dispatch(() => {void send(row, held);});
+    worker.dispatch(leaseActive => send(row, held, leaseActive));
     return waitLocally(result, input);
   }
   function waitLocally(result, input) {
@@ -102,13 +108,27 @@ export function createWriteOperationService(options) {
     const effects = await options.normalizeIntentEffects?.(row);
     if (effects) Object.assign(row, effects);
   }
-  async function existingSubmit(row, request) {
+  async function existingSubmit(row, request, input) {
+    verifyRetryAfter(row, input);
+    if (row.unresolved) throw unresolvedError(row);
     if (JSON.stringify(row.request) !== JSON.stringify(request)) throw writeRefusal("This operation ID already belongs to another intent", "operation_conflict");
     if (row.state === "failed") throw operationFailure(row.confirmation);
     if (row.acknowledged) return row.ack?.result ?? row.confirmation?.result;
     const result = waitFor(row.operationId);
     void worker.reconcile();
     return result;
+  }
+  function verifyRetryAfter(row, input) {
+    if (input.after === undefined) return;
+    const after = [...new Set(input.after)].sort();
+    const saved = row.after === undefined ? undefined : [...new Set(row.after)].sort();
+    if (JSON.stringify(after) !== JSON.stringify(saved)) throw writeRefusal("This operation ID has different dependencies", "operation_conflict");
+  }
+  function unresolvedError(row) {
+    return Object.assign(new Error(row.error?.message || "The outcome of this change needs checking"), {
+      error_code: row.state === "result_expired" ? "result_expired" : "outcome_unknown",
+      uncertain: true, operation_id: row.operationId,
+    });
   }
   function waitFor(id) {
     const previous = pending.get(id);
@@ -119,18 +139,22 @@ export function createWriteOperationService(options) {
     settleKnown();
     return promise;
   }
-  async function send(row, held) {
+  async function send(row, held, leaseActive = () => true) {
     if (!current(held) || !supports(row.request.method) || sending.get(row.operationId) === held) return;
     sending.set(row.operationId, held);
     try {
-      const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after } });
+      const frame = await raw(held, row.request.method, row.request.params, { write: { operation_id: row.operationId, after: row.after }, assertCurrent: () => assertLease(leaseActive) });
       if (current(held)) await handleFrame(frame, held);
     } catch (error) {
-      if (current(held) && error.retryable === false && !error.uncertain) await refused(row, error);
+      if (current(held) && definitiveRefusal(error)) await refused(row, error);
     } finally {
       if (sending.get(row.operationId) === held) sending.delete(row.operationId);
       worker.wake();
     }
+  }
+  function definitiveRefusal(error) {
+    const local = ["scope_ended", "local_wait_ended"].includes(error.error_code);
+    return !local && error.retryable === false && !error.uncertain;
   }
   async function refused(row, error) {
     const confirmation = { type: "writes.confirmed", operation_id: row.operationId, state: "failed", effect: "unapplied",
@@ -183,7 +207,8 @@ export function createWriteOperationService(options) {
     const effects = await normalizedEffects(normalize, frame, row);
     if (!current(held)) return;
     const stored = await cache.confirm(row.operationId, { ...effects, confirmation: frame, revision: frame.revision,
-      owners: row.owners || frame.published, published: frame.published || [], accept: () => current(held) });
+      owners: row.owners || frame.published, published: frame.published || [],
+      refreshPending: Boolean(frame.refresh?.length), accept: () => current(held) });
     if (options.onRefresh && frame.refresh?.length) {
       const entry = { frame, row: stored, held, running: false };
       refreshes.set(row.operationId, entry);
@@ -202,9 +227,21 @@ export function createWriteOperationService(options) {
     Promise.resolve().then(() => options.onRefresh(frame.refresh, frame, row, {
       active: () => current(held), call: (method, params, extra) => raw(held, method, params, extra),
       session: held.session, greeting: held.greeting,
-    })).then(() => {
-      if (refreshes.get(row.operationId) === entry) refreshes.delete(row.operationId);
-    }).catch(() => {}).finally(() => {entry.running = false; worker.wake();});
+    })).then(() => finishRefresh(entry)).catch(() => {}).finally(() => {entry.running = false; worker.wake();});
+  }
+  async function finishRefresh(entry) {
+    const { row, frame, held } = entry;
+    const saved = await cache.update(row.operationId, value => {
+      if (value?.revision !== frame.revision) return null;
+      return { ...value, refreshPending: false };
+    }, { accept: () => current(held) });
+    if (!current(held) || saved?.refreshPending !== false) return;
+    if (refreshes.get(row.operationId) === entry) refreshes.delete(row.operationId);
+    await refreshSnapshot();
+  }
+  function refreshRequired(row) {
+    if (row.refreshPending === false) return false;
+    return Boolean(row.confirmation?.refresh?.length);
   }
   async function quarantine(row, reason) {
     await cache.update(row.operationId, value => ({ ...value, state: "outcome_unknown", unresolved: true, unresolvedReason: reason }));
@@ -218,23 +255,30 @@ export function createWriteOperationService(options) {
       else retries.add(id);
       return;
     }
+    if (summary.result_ref) {
+      await quarantine(row, "result_reference");
+      return;
+    }
     if (summary.state === "result_expired") {
       await cache.update(id, value => ({ ...value, state: "result_expired", acknowledged: true, unresolved: true }));
       return;
     }
     await handleFrame(writeSummaryFrame(summary, held.greeting.bridge_epoch), held);
   }
-  async function readPages(method, ids, held, retries) {
+  function assertLease(leaseActive) {
+    if (!leaseActive()) throw writeRefusal("The write worker lease ended", "scope_ended");
+  }
+  async function readPages(method, ids, held, retries, leaseActive) {
     let cursor;
     const seen = new Set();
     do {
-      const result = await raw(held, method, { operation_ids: ids, ...(cursor ? { cursor } : {}) });
+      const result = await raw(held, method, { operation_ids: ids, ...(cursor ? { cursor } : {}) }, { assertCurrent: () => assertLease(leaseActive) });
       if (!current(held)) return;
       if (!await verifyJournal(result, ids, held)) return;
       for (const summary of result.operations || []) await processSummary(summary, held, retries);
       cursor = nextCursor(result.next_cursor, seen);
       if (method === "writes.subscribe") rememberCursor(held, result.cursor);
-    } while (cursor && current(held));
+    } while (cursor && current(held) && leaseActive());
   }
   function nextCursor(cursor, seen) {
     if (!cursor) return null;
@@ -247,34 +291,38 @@ export function createWriteOperationService(options) {
     if (held.cursor === null || BigInt(cursor) > BigInt(held.cursor)) held.cursor = cursor;
   }
   async function verifyJournal(result, ids, held) {
-    if (!result.journal_incarnation || result.journal_incarnation === held.greeting.journal_incarnation) return true;
+    if (result.journal_incarnation === held.greeting.journal_incarnation) return true;
     for (const id of ids) await quarantine(await cache.get(id), "journal_changed");
     return false;
   }
-  async function statusBatch(rows, held) {
+  async function statusBatch(rows, held, leaseActive) {
     const ids = rows.map(row => row.operationId);
     const retries = new Set();
-    await readPages("writes.status", ids, held, retries);
-    await readPages("writes.subscribe", ids, held, retries);
+    await readPages("writes.status", ids, held, retries, leaseActive);
+    if (!leaseActive()) return;
+    await readPages("writes.subscribe", ids, held, retries, leaseActive);
     for (const id of retries) {
       const row = await cache.get(id);
-      if (row && !row.acknowledged && !terminalWrite(row) && !row.unresolved) void send(row, held);
+      if (row && !row.acknowledged && !terminalWrite(row) && !row.unresolved) {
+        worker.dispatch(active => send(row, held, active));
+      }
     }
   }
-  function restoreRefreshes(rows, held) {
+  async function restoreRefreshes(rows, held) {
     if (!options.onRefresh) return;
     for (const row of rows) {
       if (row.journalIncarnation !== held.greeting.journal_incarnation) continue;
-      if (!row.overlayActive || !row.confirmation?.refresh?.length || refreshes.has(row.operationId)) continue;
-      refreshes.set(row.operationId, { frame: row.confirmation, row, held, running: false });
+      if (!refreshRequired(row) || refreshes.has(row.operationId)) continue;
+      const stored = await cache.update(row.operationId, value => ({ ...value, refreshPending: true }), { accept: () => current(held) });
+      if (current(held)) refreshes.set(row.operationId, { frame: stored.confirmation, row: stored, held, running: false });
     }
   }
-  async function statusPass() {
+  async function statusPass(leaseActive) {
     await ready;
     const held = binding;
     if (!held) return;
     const all = await cache.list();
-    restoreRefreshes(all, held);
+    await restoreRefreshes(all, held);
     for (const entry of refreshes.values()) startRefresh(entry);
     const rows = all.filter(row => needsWriteStatus(row) || checks.has(row.operationId));
     checks.clear();
@@ -284,7 +332,7 @@ export function createWriteOperationService(options) {
       else if (row.journalIncarnation !== held.greeting.journal_incarnation) await quarantine(row, "journal_changed");
       else compatible.push(row);
     }
-    for (let at = 0; at < compatible.length && current(held); at += WRITE_STATUS_LIMIT) await statusBatch(compatible.slice(at, at + WRITE_STATUS_LIMIT), held);
+    for (let at = 0; at < compatible.length && current(held) && leaseActive(); at += WRITE_STATUS_LIMIT) await statusBatch(compatible.slice(at, at + WRITE_STATUS_LIMIT), held, leaseActive);
     await refreshSnapshot();
   }
   function rebindRefreshes(held) {

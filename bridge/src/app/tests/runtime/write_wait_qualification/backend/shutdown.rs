@@ -3,6 +3,9 @@ use super::super::trial_complete::ProducerHandle;
 use super::*;
 use futures_util::FutureExt;
 use std::time::Duration;
+
+#[path = "shutdown/tests.rs"]
+mod tests;
 impl PreparedBackend {
     pub async fn shutdown(mut self) -> Result<CleanupEvidence, RetainedSetup> {
         if let Some(producers) = &self.producers {

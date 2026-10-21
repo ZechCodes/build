@@ -130,3 +130,67 @@ idle_probe_read!(task_stages_succeeds_during_idle_probe, "task.stages");
 idle_probe_read!(tasks_columns_succeeds_during_idle_probe, "tasks.columns");
 idle_probe_read!(stream_events_succeeds_during_idle_probe, "stream.events");
 idle_probe_read!(stream_state_succeeds_during_idle_probe, "stream.state");
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn active_sql_read_prevents_idle_probe_from_closing_admission() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let directory = tempfile::tempdir().unwrap();
+    let updates = scheduled_update(directory.path()).await;
+    let (probe, held_probe) = OffLockGate::new();
+    let first = AtomicBool::new(true);
+    assert!(updates
+        .set_working_agents_probe(Arc::new(move || {
+            if first.swap(false, Ordering::SeqCst) {
+                probe.arrive();
+            }
+            false
+        }))
+        .is_ok());
+    let reads = NativeReads::configured_with_updates(true, Some(Arc::clone(&updates)));
+    let (service, pool) = {
+        let app = reads.state.lock().unwrap();
+        (app.read_service(), app.store.as_ref().unwrap().read_pool())
+    };
+    let mut connection = pool.acquire().await;
+    let (query, held_query) = OffLockGate::new();
+    let (entered, arrived) = mpsc::channel();
+    connection.observe_transactions(move |_, _, _| {
+        entered.send(()).unwrap();
+        query.arrive();
+    });
+    let ticking = Arc::clone(&updates);
+    let ticker = std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(ticking.tick(false))
+    });
+    held_probe.wait_for_arrival();
+    let task = reads.task.clone();
+    let reader = std::thread::spawn(move || {
+        service.call(
+            req("thread.page", json!({"entity_id":task})),
+            Some(connection),
+        )
+    });
+    let entered_during_probe = arrived.recv_timeout(Duration::from_millis(100));
+    drop(held_probe);
+    let tick = ticker.join();
+    // This observer runs after the SQL commit, before ReadService can release
+    // its admission lease. Always let it finish before checking either result.
+    drop(held_query);
+    let reply = reader.join();
+    assert!(
+        entered_during_probe.is_ok(),
+        "SQL read waited for the busy callback"
+    );
+    assert_eq!(tick.unwrap().unwrap().state, UpdateState::ScheduledWhenIdle);
+    let reply = reply.unwrap();
+    assert_eq!(reply["ok"], true, "{reply}");
+    assert_eq!(
+        updates.tick(false).await.unwrap().state,
+        UpdateState::Installing
+    );
+}

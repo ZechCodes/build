@@ -3,7 +3,7 @@
 
 export async function fetchGatewayToken() {
   const response = await fetch("/api/gateway-token", { method: "POST" });
-  if (!response.ok) throw new Error("could not mint a gateway token");
+  if (!response.ok) throw Object.assign(new Error("could not mint a gateway token"), { status: response.status });
   return (await response.json()).token;
 }
 

@@ -43,7 +43,7 @@ describe("dialFailureDetail", () => {
   });
 
   it("says nothing it cannot know", () => {
-    expect(dialFailureDetail(undefined, { online: undefined })).toEqual({
+    expect(dialFailureDetail(undefined, { online: null })).toEqual({
       step: null,
       error: null,
       message: null,

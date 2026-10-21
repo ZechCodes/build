@@ -165,6 +165,13 @@ impl AppState {
                 (owner, receipt)
             })
             .collect();
+        #[cfg(test)]
+        let publication_work = self.begin_publication_coverage_work(
+            &publication_receipts
+                .iter()
+                .filter_map(|(_, receipt)| receipt.clone())
+                .collect::<Vec<_>>(),
+        );
         self.committed_entities
             .apply_conversation_reset(&agents, &summary_owners);
         // Once the database commits, no later failure may restore resumable
@@ -209,9 +216,18 @@ impl AppState {
         }
         self.note_board_changed();
         #[cfg(test)]
-        for (owner, receipt) in publication_receipts {
-            self.finish_publication_metadata(receipt.as_ref(), &owner);
+        for (owner, receipt) in &publication_receipts {
+            self.finish_publication_metadata(receipt.as_ref(), owner);
         }
+        #[cfg(test)]
+        self.postpone_publication_coverage(
+            &publication_receipts
+                .iter()
+                .filter_map(|(_, receipt)| receipt.clone())
+                .collect::<Vec<_>>(),
+        );
+        #[cfg(test)]
+        publication_work.complete();
         cleanup_result?;
         let agent = self
             .entity_agents(&address.entity_id)?

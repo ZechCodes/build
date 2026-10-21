@@ -28,9 +28,11 @@ impl AppState {
             news,
             attention_dirty,
             #[cfg(test)]
-            publication_receipt,
+            publication_receipt: publication_receipt.clone(),
         });
         if self.committed_entities.has_borrowed(self) {
+            #[cfg(test)]
+            self.postpone_publication_debt(publication_receipt.as_ref());
             return;
         }
         if let Some(projection) = projection {
@@ -56,6 +58,13 @@ impl AppState {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.notices");
         let notices = self.committed_entities.take_notices();
+        #[cfg(test)]
+        let publication_work = self.begin_publication_coverage_work(
+            &notices
+                .iter()
+                .filter_map(|notice| notice.publication_receipt.clone())
+                .collect::<Vec<_>>(),
+        );
         // Attention persistence prunes absent owners. All borrowed owners must
         // be back before writing, while their in-memory anchors were committed
         // before preparing the combined snapshot.
@@ -65,6 +74,8 @@ impl AppState {
         for notice in notices {
             #[cfg(test)]
             let receipt = notice.publication_receipt.clone();
+            #[cfg(test)]
+            let metadata_work = self.begin_publication_metadata_work(receipt.as_ref());
             let MutationNotice { owner, news, .. } = notice;
             self.publish_read_owner(&owner, true);
             self.push_agent_news(&owner, news);
@@ -72,7 +83,11 @@ impl AppState {
             self.publish_live_roster_for(&owner);
             #[cfg(test)]
             self.finish_publication_metadata(receipt.as_ref(), &owner);
+            #[cfg(test)]
+            metadata_work.complete();
         }
+        #[cfg(test)]
+        publication_work.complete();
     }
 }
 

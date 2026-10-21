@@ -1,44 +1,53 @@
-//! Test-only required owner-publication receipts. Accounting is scaffolded
-//! until the real borrowed/stale/metadata-tail controls have failed.
+//! Test-only revisioned required owner publication, independent of frame ACK.
 use super::*;
 use crate::timing::write_wait::WriteContext;
 use std::cell::RefCell;
+mod ledger;
+mod scope;
+pub(super) use ledger::PublicationDebts;
+use scope::intent_context;
+pub(in crate::app) use scope::{PublicationStage, PublicationWork};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(in crate::app) struct PublicationReceipt {
     pub owner: String,
     pub revision: u64,
 }
 
-#[derive(Default)]
-pub(super) struct PublicationDebts;
-pub(in crate::app) struct PublicationStage;
-impl Drop for PublicationStage {
-    fn drop(&mut self) {}
-}
-
 impl AppState {
-    pub(in crate::app) fn begin_publication_stage(&self, _owner: &str) -> PublicationStage {
-        let _debts = &self.snapshot_observations.publication_debts;
-        PublicationStage
+    pub(in crate::app) fn begin_publication_stage(&self, owner: &str) -> PublicationStage {
+        self.snapshot_observations.publication_debts.stage(owner)
     }
     pub(in crate::app) fn commit_publication_debt(
         &self,
-        _owner: &str,
+        owner: &str,
     ) -> Option<PublicationReceipt> {
-        None
+        self.snapshot_projection_initialized()
+            .then(|| self.snapshot_observations.publication_debts.commit(owner))
     }
     pub(super) fn capture_publication_coverage(
         &self,
         delta: SnapshotDelta,
-        _covered: Option<&BTreeSet<String>>,
+        covered: Option<&BTreeSet<String>>,
     ) -> SnapshotDelta {
-        delta.set_publication_coverage(vec![])
+        delta.set_publication_coverage(
+            covered
+                .map(|owners| {
+                    self.snapshot_observations
+                        .publication_debts
+                        .coverage(owners)
+                })
+                .unwrap_or_default(),
+        )
     }
-    pub(super) fn accept_publication_coverage(&self, _receipts: &[PublicationReceipt]) {}
+    pub(super) fn accept_publication_coverage(&self, receipts: &[PublicationReceipt]) {
+        self.snapshot_observations
+            .publication_debts
+            .accept(receipts);
+    }
     pub(in crate::app) fn finish_publication_metadata(
         &self,
-        _receipt: Option<&PublicationReceipt>,
+        receipt: Option<&PublicationReceipt>,
         owner: &str,
     ) {
         METADATA_TAIL.with(|observer| {
@@ -46,13 +55,62 @@ impl AppState {
                 callback(self, owner);
             }
         });
+        if let Some(receipt) = receipt {
+            self.snapshot_observations
+                .publication_debts
+                .metadata(receipt);
+        }
     }
     pub(in crate::app) fn origin_publication_complete(
         &self,
-        _context: &WriteContext,
-        _owner: &str,
+        context: &WriteContext,
+        owner: &str,
     ) -> bool {
-        false
+        self.snapshot_observations
+            .publication_debts
+            .proof(context, owner)
+    }
+    pub(in crate::app) fn postpone_publication_debt(&self, receipt: Option<&PublicationReceipt>) {
+        if let Some(receipt) = receipt {
+            self.snapshot_observations
+                .publication_debts
+                .postpone(std::slice::from_ref(receipt));
+        }
+    }
+    pub(in crate::app) fn postpone_publication_coverage(&self, receipts: &[PublicationReceipt]) {
+        self.snapshot_observations
+            .publication_debts
+            .postpone(receipts);
+    }
+    pub(in crate::app) fn begin_publication_coverage_work(
+        &self,
+        receipts: &[PublicationReceipt],
+    ) -> PublicationWork {
+        self.snapshot_observations
+            .publication_debts
+            .work_coverage(receipts)
+    }
+    pub(in crate::app) fn begin_publication_owner_work(
+        &self,
+        owners: &BTreeSet<String>,
+    ) -> PublicationWork {
+        self.snapshot_observations
+            .publication_debts
+            .work_owners(owners)
+    }
+    pub(in crate::app) fn begin_publication_metadata_work(
+        &self,
+        receipt: Option<&PublicationReceipt>,
+    ) -> PublicationWork {
+        self.snapshot_observations
+            .publication_debts
+            .work_receipt(receipt)
+    }
+    pub(super) fn begin_pending_publication_work(&self) -> PublicationWork {
+        let owners = crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
+            .unwrap()
+            .clone();
+        self.begin_publication_owner_work(&owners)
     }
 }
 

@@ -100,6 +100,8 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return;
         }
+        #[cfg(test)]
+        let publication_work = self.begin_pending_publication_work();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let delta = self
@@ -110,6 +112,8 @@ impl AppState {
             .clone();
         let delta = self.prepare_snapshot_owner_rows(delta, &previous, &owners, false);
         self.publish_prepared_snapshot_projection(delta);
+        #[cfg(test)]
+        publication_work.complete();
     }
 
     /// A committed task observation changes the watched-task rows. Keep the
@@ -156,6 +160,8 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return None;
         }
+        #[cfg(test)]
+        let publication_work = self.begin_pending_publication_work();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let delta = self
@@ -168,6 +174,8 @@ impl AppState {
         for owner in pending_histories {
             delta = self.prepare_snapshot_histories(delta, Some(&owner));
         }
+        #[cfg(test)]
+        publication_work.complete();
         Some(delta)
     }
 
@@ -237,12 +245,14 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return None;
         }
+        #[cfg(test)]
+        let publication_work = self.begin_pending_publication_work();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let owners = crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .clone();
-        Some(
+        let prepared = Some(
             match self.prepare_incremental_owner_snapshot(
                 SnapshotDelta::new(self.read_view.next_version()),
                 &previous,
@@ -251,7 +261,10 @@ impl AppState {
                 Some(delta) => self.prepare_snapshot_owner_rows(delta, &previous, &owners, false),
                 None => self.prepare_fallback_snapshot_projection(&previous),
             },
-        )
+        );
+        #[cfg(test)]
+        publication_work.complete();
+        prepared
     }
 
     fn prepare_fallback_snapshot_projection(&self, previous: &ReadView) -> SnapshotDelta {
@@ -267,11 +280,16 @@ impl AppState {
                     .map(|key| key.owner.clone()),
             )
             .collect();
+        #[cfg(test)]
+        let publication_work = self.begin_publication_owner_work(&owners);
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), previous);
         let delta = self.prepare_workspace_snapshot_details(delta, previous, None);
         let delta = self.prepare_snapshot_agent_rows(delta, previous, &owners);
-        self.prepare_snapshot_histories(delta, None)
+        let prepared = self.prepare_snapshot_histories(delta, None);
+        #[cfg(test)]
+        publication_work.complete();
+        prepared
     }
 
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
@@ -279,6 +297,8 @@ impl AppState {
         let _phase = crate::timing::phase_samples::phase("publication.install");
         #[cfg(test)]
         let publication_coverage = delta.take_publication_coverage();
+        #[cfg(test)]
+        let publication_work = self.begin_publication_coverage_work(&publication_coverage);
         let receipts = delta.take_observation_receipts();
         let attention_notices = delta.take_attention_notice_receipts();
         if self.read_view.publish_delta(delta) {
@@ -293,7 +313,12 @@ impl AppState {
             self.publish_attention_notice_receipts(&attention_notices);
             #[cfg(test)]
             self.accept_publication_coverage(&publication_coverage);
+        } else {
+            #[cfg(test)]
+            self.postpone_publication_coverage(&publication_coverage);
         }
+        #[cfg(test)]
+        publication_work.complete();
     }
 
     fn can_publish_snapshot_projection(&self) -> bool {

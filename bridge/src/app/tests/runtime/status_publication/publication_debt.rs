@@ -519,3 +519,122 @@ fn borrowed_publication_wait_is_visible_to_independent_watchdog_after_ack() {
         .unwrap()
         .breached());
 }
+
+#[test]
+fn same_origin_outer_borrow_is_own_work_not_predecessor_wait() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+    let fixture = fixture();
+    let base = Instant::now();
+    let ticks = Arc::new(AtomicU64::new(0));
+    let clock = Arc::clone(&ticks);
+    let registry = WriteWaitRegistry::with_clock(Arc::new(move || {
+        base + Duration::from_millis(clock.load(Ordering::Acquire))
+    }));
+    let write = registry.begin("publication-own-outer-borrow", "thread.post", base);
+    let id = write.id();
+    let context = write.context();
+    let (held, committed) = {
+        let _bound = context.bind_sync();
+        let mut app = fixture.state.lock().unwrap();
+        let held = app.take_run(OTHER).unwrap();
+        let mut active = app.take_run(OWNER).unwrap();
+        active.run.goal = "nested own-origin goal".into();
+        let committed = app.finish_run_mutation(OWNER.into(), active);
+        (held, committed)
+    };
+    let committed_goal = durable_goal(&fixture);
+    let accepted_goal = goal(&fixture);
+    write.acknowledged();
+    write.complete();
+    ticks.store(6_000, Ordering::Release);
+    let delayed = registry
+        .active_snapshot()
+        .into_iter()
+        .find(|row| row.id == id);
+    restore(&fixture, held);
+    fixture.state.lock().unwrap().settle_failed_mutation(OTHER);
+    committed.unwrap();
+    assert_eq!(committed_goal, "nested own-origin goal");
+    assert_ne!(accepted_goal, "nested own-origin goal");
+    let delayed = delayed.expect("publication still owes the nested owner");
+    assert_eq!(delayed.known_wait_union, Duration::ZERO);
+    assert_eq!(delayed.own_external_union, Duration::from_secs(6));
+    assert!(
+        !delayed.breached(),
+        "the origin's own outer work is not lock contention"
+    );
+    assert!(proof(&fixture, &context));
+    assert!(registry.active_snapshot().is_empty());
+    fixture.assert_full_oracle();
+}
+
+#[test]
+fn retry_resource_origins_are_not_authors_of_nested_owner_mutations() {
+    let mut outcomes = Vec::new();
+    for has_current_origin in [false, true] {
+        let fixture = fixture();
+        let registry = WriteWaitRegistry::new();
+        let held = borrow(&fixture);
+        let old = commit(&fixture, &registry, "old-debt-author", "old debt goal");
+        restore(&fixture, held);
+        let current = has_current_origin.then(|| {
+            registry.begin(
+                "current-mutation-author",
+                "thread.post",
+                std::time::Instant::now(),
+            )
+        });
+        let current_context = current.as_ref().map(|write| write.context());
+        let (nested_commit, old_is_author, current_is_author) = {
+            let _current = current_context.as_ref().map(WriteContext::bind_sync);
+            let mut app = fixture.state.lock().unwrap();
+            let retry_work =
+                app.begin_publication_owner_work(&[OWNER.to_owned()].into_iter().collect());
+            let mut peer = app.take_run(OTHER).unwrap();
+            peer.run.goal = "nested retry mutation".into();
+            let committed = app.finish_run_mutation(OTHER.into(), peer);
+            let old_is_author = app.origin_publication_complete(&old, OTHER);
+            let current_is_author = current_context
+                .as_ref()
+                .map(|context| app.origin_publication_complete(context, OTHER));
+            retry_work.complete();
+            app.settle_failed_mutation(OWNER);
+            (committed, old_is_author, current_is_author)
+        };
+        if let Some(current) = current {
+            current.complete();
+        }
+        nested_commit.unwrap();
+        {
+            let app = fixture.state.lock().unwrap();
+            assert_eq!(
+                app.store
+                    .as_ref()
+                    .unwrap()
+                    .load_all_runs()
+                    .unwrap()
+                    .into_iter()
+                    .find(|run| run.id == OTHER)
+                    .unwrap()
+                    .goal,
+                "nested retry mutation"
+            );
+            assert_eq!(
+                app.read_view.load().get_owned("entity.get", OTHER).unwrap()["goal"],
+                "nested retry mutation"
+            );
+        }
+        assert!(proof(&fixture, &old));
+        assert!(registry.active_snapshot().is_empty());
+        fixture.assert_full_oracle();
+        outcomes.push((has_current_origin, old_is_author, current_is_author));
+    }
+    for (has_current_origin, old_is_author, current_is_author) in outcomes {
+        assert!(
+            !old_is_author,
+            "resource attribution cannot invent mutation intent"
+        );
+        assert_eq!(current_is_author, has_current_origin.then_some(true));
+    }
+}

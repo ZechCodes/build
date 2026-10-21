@@ -70,6 +70,18 @@ impl WriteWaitRegistry {
             WriteCohort::BackgroundWork,
         )
     }
+    pub(crate) fn now(&self) -> Instant {
+        (self.clock)()
+    }
+    pub(super) fn begin_optional_notice(
+        self: &Arc<Self>,
+        original_id: String,
+        method: String,
+        intake: Instant,
+    ) -> LogicalWrite {
+        // Test-first scaffold: a notice remains required until policy accounting is verified.
+        self.begin(original_id, method, intake)
+    }
     pub(crate) fn begin_pending(
         self: &Arc<Self>,
         correlation_id: impl Into<String>,
@@ -99,6 +111,7 @@ impl WriteWaitRegistry {
             intake,
             admitted_at: None,
             acknowledged_at: None,
+            completed_at: None,
             root_finished: false,
             outstanding: vec![],
             active: vec![],
@@ -260,6 +273,7 @@ impl WriteWaitRegistry {
     }
     pub(super) fn start_interval(
         &self,
+        owner: &WriteContext,
         context: &WriteContext,
         category: IntervalCategory,
     ) -> (WaitId, Arc<OnceLock<Instant>>) {
@@ -267,7 +281,7 @@ impl WriteWaitRegistry {
         let started = (self.clock)();
         let ended = Arc::new(OnceLock::new());
         self.mutate(|state| {
-            if !state.context_live(context) {
+            if !state.context_live(owner) {
                 return Err("interval requires live owning obligation");
             }
             for origin in &context.origins {

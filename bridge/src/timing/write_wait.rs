@@ -27,6 +27,7 @@ pub(crate) enum WriteCohort {
     PendingIntake,
     SemanticWrite,
     BackgroundWork,
+    OptionalNotice,
     ExemptRead,
     ExemptProtocol,
 }
@@ -52,6 +53,7 @@ pub(crate) enum WaitKind {
     StoreWriter,
     ResourceLock,
     Retirement,
+    Publication,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +84,7 @@ pub(crate) struct WriteSnapshot {
     pub intake: Instant,
     pub admitted_at: Option<Instant>,
     pub acknowledged_at: Option<Instant>,
+    pub completed_at: Option<Instant>,
     pub root_finished: bool,
     pub outstanding: Vec<ObligationId>,
     pub active: Vec<ActiveInterval>,

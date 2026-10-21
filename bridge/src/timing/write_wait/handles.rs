@@ -85,6 +85,18 @@ impl Drop for Obligation {
     }
 }
 impl WriteContext {
+    pub(crate) fn belongs_to(&self, registry: &Arc<WriteWaitRegistry>) -> bool {
+        Arc::ptr_eq(&self.registry, registry)
+    }
+    pub(crate) fn begin_optional_notice(
+        &self,
+        original_id: impl Into<String>,
+        method: impl Into<String>,
+        intake: Instant,
+    ) -> LogicalWrite {
+        self.registry
+            .begin_optional_notice(original_id.into(), method.into(), intake)
+    }
     pub(crate) fn same_registry(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.registry, &other.registry)
     }
@@ -127,12 +139,31 @@ impl WriteContext {
             .add_child(&self.origins, Some(self.obligation))
     }
     pub(crate) fn interval(&self, category: IntervalCategory) -> WaitGuard {
-        let (id, ended) = self.registry.start_interval(self, category);
-        WaitGuard {
-            id,
-            context: self.clone(),
-            ended,
-        }
+        self.interval_for(&self.origins, category)
+    }
+    /// Attribute one interval to a subset without changing its owning obligation.
+    pub(crate) fn interval_for(
+        &self,
+        origins: &[WriteId],
+        category: IntervalCategory,
+    ) -> WaitGuard {
+        let origins: Vec<_> = origins
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        assert!(
+            !origins.is_empty() && origins.iter().all(|id| self.origins.contains(id)),
+            "interval subset must be nonempty and contained in its owning context"
+        );
+        let context = Self {
+            registry: Arc::clone(&self.registry),
+            origins,
+            obligation: self.obligation,
+        };
+        let (id, ended) = self.registry.start_interval(self, &context, category);
+        WaitGuard { id, context, ended }
     }
     /// Bind only inside a synchronous section. Explicitly carry context across await.
     pub(crate) fn bind_sync(&self) -> SyncContextGuard {

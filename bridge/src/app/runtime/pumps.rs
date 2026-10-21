@@ -154,7 +154,11 @@ impl StatusPump {
         };
         #[cfg(test)]
         let admission = self.compaction_attribution.as_ref().and_then(|table| {
-            table.status_admission(&self.key, &self.instance, &self.session, snapshot.context)
+            let context_after = snapshot.context.filter(|context| {
+                snapshot.context_reset_count > self.recorded_context_reset_count
+                    || self.recorded_context != Some(*context)
+            });
+            table.status_admission(&self.key, &self.instance, &self.session, context_after)
         });
         #[cfg(test)]
         let _admission_binding = admission.as_ref().map(|admission| admission.bind());
@@ -171,7 +175,14 @@ impl StatusPump {
             #[cfg(test)]
             let mut measured_guard = status_timer.as_ref().map(|timer| timer.lock(&state));
             #[cfg(test)]
+            let plain_wait = status_timer
+                .is_none()
+                .then(|| admission.as_ref().map(|admission| admission.app_wait()))
+                .flatten();
+            #[cfg(test)]
             let mut plain_guard = status_timer.is_none().then(|| state.lock().unwrap());
+            #[cfg(test)]
+            drop(plain_wait);
             #[cfg(test)]
             let app: &mut AppState = match measured_guard.as_mut() {
                 Some(guard) => guard,
@@ -239,6 +250,10 @@ impl StatusPump {
         };
         #[cfg(test)]
         drop(status_timer);
+        #[cfg(test)]
+        drop(_admission_binding);
+        #[cfg(test)]
+        drop(admission);
         if retry_deferred {
             let timer = clock.frame(AGENT_DELIVERY_METHOD);
             DeliveryRunner::drain(&state, &timer);

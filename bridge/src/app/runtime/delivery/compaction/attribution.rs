@@ -1,4 +1,4 @@
-//! OFFSOURCE cfg(test) required compaction ownership. No AppState/session resource ownership.
+//! Required compaction ownership without retaining AppState or session resources.
 use crate::app::TabKey;
 use crate::harness::AgentSession;
 use crate::thread::SessionInstance;
@@ -325,25 +325,66 @@ impl CompactionAttribution {
             stamped: None,
         })
     }
-    /// Explicit TESTFIRST frontier: lookup/ownership before status app acquire
-    /// remains absent until the actual held-AppState completion control RED.
+    /// Freeze only the sent compactions this exact context-after callback can
+    /// finish. Entry Arcs keep their owning tokens live until the admission
+    /// child exists, even if another callback cancels the table entry.
     pub(in crate::app) fn status_admission(
         &self,
-        _key: &TabKey,
-        _instance: &SessionInstance,
-        _session: &Weak<dyn AgentSession>,
-        _context: Option<crate::harness::TurnContext>,
+        key: &TabKey,
+        instance: &SessionInstance,
+        session: &Weak<dyn AgentSession>,
+        context: Option<crate::harness::TurnContext>,
     ) -> Option<StatusAdmission> {
-        None
+        context?;
+        let entries: Vec<_> = self
+            .0
+            .current
+            .load()
+            .get(&(instance.entity_id.clone(), instance.agent_id.clone()))
+            .into_iter()
+            .flat_map(|slot| &slot.sent)
+            .filter(|entry| {
+                entry.identity.key == *key
+                    && entry.identity.instance == *instance
+                    && entry.identity.session.ptr_eq(session)
+                    && entry.outcome.load(Ordering::Acquire) == UNSET
+            })
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            return None;
+        }
+        let mut contexts: Vec<_> = entries.iter().map(|entry| entry.context()).collect();
+        contexts.extend(current_context());
+        Some(StatusAdmission {
+            child: Some(WriteContext::coalesced(&contexts)),
+        })
     }
 }
 
 pub(in crate::app) struct StatusAdmission {
-    child: Obligation,
+    child: Option<Obligation>,
 }
 impl StatusAdmission {
     pub(in crate::app) fn bind(&self) -> SyncContextGuard {
-        self.child.context().bind_sync()
+        self.child.as_ref().unwrap().context().bind_sync()
+    }
+    pub(in crate::app) fn app_wait(&self) -> WaitGuard {
+        self.child
+            .as_ref()
+            .unwrap()
+            .interval(IntervalCategory::KnownWait(WaitKind::AppLock))
+    }
+}
+impl Drop for StatusAdmission {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.take() {
+            if std::thread::panicking() {
+                drop(child);
+            } else {
+                child.complete();
+            }
+        }
     }
 }
 

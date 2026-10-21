@@ -83,6 +83,11 @@ async fn capture_create_opens_router_and_delivers_its_decision_turn() {
         delivered.is_some(),
         "router was not opened and sent its turn: {status:?}"
     );
+    assert_ne!(
+        status.0,
+        crate::capture::CaptureState::Failed,
+        "a delivered router turn must not fail its capture: {status:?}"
+    );
     assert_eq!(status.1, 1, "one capture opens one router");
     assert_eq!(created["result"]["state"], "routing");
 }

@@ -32,7 +32,7 @@ impl DeliveryRunner {
     pub(in crate::app) fn drain(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
         #[cfg(test)]
         timer.mark_request("delivery_admission_start");
-        let admission = state.lock().unwrap().update_admission();
+        let admission = timer.lock(state).update_admission();
         let lease = match admission {
             Some(gate) => match gate.try_enter() {
                 Some(lease) => Some(lease),

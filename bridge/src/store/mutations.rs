@@ -213,7 +213,7 @@ fn check_quota(
     principal: &str,
     added_bytes: usize,
 ) -> Result<(), StoreError> {
-    let (total, own, bytes, own_bytes):(i64,i64,i64,i64)=transaction.query_row("SELECT count(*),coalesce(sum(principal=?1),0),coalesce(sum(length(intent)),0),coalesce(sum(CASE WHEN principal=?1 THEN length(intent) ELSE 0 END),0) FROM mutation_commands WHERE state IN ('accepted','executing','committed')",[principal],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
+    let (total, own, bytes, own_bytes):(i64,i64,i64,i64)=transaction.query_row("SELECT count(*),coalesce(sum(principal=?1),0),coalesce(sum(length(CAST(intent AS BLOB))),0),coalesce(sum(CASE WHEN principal=?1 THEN length(CAST(intent AS BLOB)) ELSE 0 END),0) FROM mutation_commands WHERE state IN ('accepted','executing','committed')",[principal],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
     if total >= 4096
         || own >= 128
         || bytes + added_bytes as i64 > 128 * 1024 * 1024

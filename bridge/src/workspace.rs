@@ -969,11 +969,27 @@ impl WorkspaceRegistry {
         if let Some(existing) = self.workspaces.get(&id) {
             return existing.clone();
         }
+        let workspace =
+            Self::prepare_root_adoption(&self.root, project_id, id, name, path, source_id, is_git);
+        self.install_prepared_root_adoption(workspace)
+    }
+
+    /// Read the metadata for one legacy checkout outside the application lock.
+    /// Preparing does not alter the checkout or publish a registry row.
+    pub(crate) fn prepare_root_adoption(
+        registry_root: &Path,
+        project_id: &str,
+        id: String,
+        name: String,
+        path: PathBuf,
+        source_id: String,
+        is_git: bool,
+    ) -> Workspace {
         let branch = is_git
             .then(|| git_output(&path, &["branch", "--show-current"]).ok())
             .flatten()
             .filter(|branch| !branch.is_empty());
-        let proof = fs::read(self.root.join(".legacy").join(&id))
+        let proof = fs::read(registry_root.join(".legacy").join(&id))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Workspace>(&bytes).ok());
         let status = if proof.is_some() {
@@ -1005,13 +1021,21 @@ impl WorkspaceRegistry {
             isolation: Isolation::default(),
             managed: false,
             created_by_agent: false,
-            locked: self.root.join(".locks").join(&id).is_file(),
+            locked: registry_root.join(".locks").join(&id).is_file(),
         };
         if let Some(proof) = proof {
             workspace.directories[0].finished_head = proof
                 .directories
                 .first()
                 .and_then(|directory| directory.finished_head.clone());
+        }
+        workspace
+    }
+
+    /// Install a validated memory-only adoption without filesystem work.
+    pub(crate) fn install_prepared_root_adoption(&mut self, workspace: Workspace) -> Workspace {
+        if let Some(existing) = self.workspaces.get(&workspace.id) {
+            return existing.clone();
         }
         self.install_workspace(workspace.clone());
         workspace

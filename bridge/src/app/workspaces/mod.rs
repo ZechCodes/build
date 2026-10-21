@@ -1013,6 +1013,7 @@ impl AppState {
         if self.deferred_work.is_some()
             || self.active_deferred_filesystem_jobs > 0
             || self.workspace_reserved(&workspace_id)
+            || self.workspace_has_pending_shell(&workspace_id)
         {
             return Err(crate::reclaim::BUSY.to_string());
         }
@@ -1031,7 +1032,9 @@ impl AppState {
             return Err("another filesystem operation is still running".to_string());
         }
         let workspace_id = require_str(params, "workspace_id")?;
-        if self.workspace_reserved(&workspace_id) {
+        if self.workspace_reserved(&workspace_id)
+            || self.workspace_contains_pending_shell(&workspace_id)
+        {
             return Err(crate::reclaim::BUSY.to_string());
         }
         let workspace = self.workspaces.claim_retry(&workspace_id)?;
@@ -1347,7 +1350,7 @@ impl AppState {
 /// `None` when the repository cannot be read at all. That is not the same
 /// answer as "no checkouts" — a project whose repository is briefly
 /// unreadable must not have the rows it already has taken away.
-fn external_checkouts(
+pub(in crate::app) fn external_checkouts(
     repo_path: &Path,
     legacy_root: &Path,
     state_root: &Path,

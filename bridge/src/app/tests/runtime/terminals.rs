@@ -1091,7 +1091,7 @@ async fn pending_shell_spawn_releases_the_app_lock_and_holds_lifecycle_admission
     assert_eq!(created["ok"], true, "{created}");
     assert_eq!(
         held_facts,
-        Some((1, 1, true)),
+        Some((0, 1, true)),
         "spawn must release the app lock and retain its holds"
     );
     assert_eq!(

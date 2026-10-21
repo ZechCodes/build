@@ -518,6 +518,12 @@ share their unchanged JSON subtrees; dependency scans borrow fields from either
 composed or legacy rows without materializing an aggregate. Active-owner and
 elapsed-time fields are still rendered afresh on each publication.
 
+Each incremental refresh discovers current active owners once and builds one
+owner dependency index. Two independent closure walks compute dirty owners and
+the next active set. Previous active owners and explicit state/stat changes join
+the dirty set only; an idle owner receives its cleanup refresh without staying
+active. Failed saves retain pending-owner retries until an accepted publication.
+
 Within one candidate, an incremental board winner and its push state share the
 same normalized branch wire row, keyed by owner and exact stat input. The raw
 fold candidate remains separate, and losing owners retain their own push state.

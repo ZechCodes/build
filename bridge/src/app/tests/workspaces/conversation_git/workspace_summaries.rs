@@ -80,6 +80,8 @@ fn workspace_summaries_keep_working_aliases_delivery_and_fresh_statuses() {
             .test_insert_tab(crate::app::TabKey::agent(&path, &agent), tab);
     }
     let turn = crate::app::PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: state.runs["run-01"].worktree.path.clone(),
         owner: "run-01".into(),

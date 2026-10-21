@@ -173,7 +173,7 @@ fn refresh_projects(
         .filter_map(|owner| app.projects.project_id_of(owner))
         .chain(owners.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
-    let observed = app.snapshot_observations.projects.lock().unwrap();
+    let observed = crate::timing::resource_lock!(app.snapshot_observations.projects).unwrap();
     let mut captured = captured
         .into_iter()
         .filter(|row| projects.contains(row.project_id.as_str()))

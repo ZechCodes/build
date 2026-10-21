@@ -3,6 +3,7 @@ use crate::harness::{OpenedSession, SessionOutput};
 use crate::test_support::agent_session::FixtureSessions;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
@@ -79,23 +80,30 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
     let mut fixture = RareFixture::new("agent-start-factory", app);
     let _cleanup = EndFixtureSessions(Arc::clone(fixture.state()));
     let proof = fixture.call("agent.start", address).await;
-    let (claims, lineage, registered) = {
+    let facts = wait_for(Duration::from_secs(2), || {
         let app = fixture.state().lock().unwrap();
-        let tab = app.session_registry.test_tab(&tab_key).unwrap();
-        assert!(matches!(
-            tab.role,
-            TabRole::Agent {
-                provider: AgentProvider::Claude,
-                ..
-            }
-        ));
-        (
+        if !app.delivery_queue.is_idle() {
+            return None;
+        }
+        let tab = app.session_registry.test_tab(&tab_key)?;
+        Some((
             app.session_registry.test_counts().claims,
-            tab.session_instance.clone(),
+            tab.session_instance.clone()?,
             tab.wire_id(),
-        )
+            tab.role.clone(),
+            agent_pid(tab),
+        ))
+    })
+    .await;
+    let diagnostic = {
+        let app = fixture.state().lock().unwrap();
+        json!({
+            "claims":app.session_registry.test_counts().claims,
+            "delivery_idle":app.delivery_queue.is_idle(),
+            "tabs":app.session_registry.test_tabs().map(|(key,_)|format!("{key:?}")).collect::<Vec<_>>(),
+            "start_error":app.entity_agents(&owner).ok().and_then(|roster|roster.by_id(&agent_id)).and_then(|agent|agent.start_error.clone()),
+        })
     };
-    assert_eq!(proof.reply["result"]["term_id"], registered);
     // The RED scaffold still opens the private absolute drain child. Retire it
     // before asserting the missing hook so a failed test owns no live child.
     fixture
@@ -104,12 +112,41 @@ async fn actual_agent_start_uses_finite_factory_after_real_spawn_claim() {
             json!({"entity_id": owner, "agent_id": agent_id}),
         )
         .await;
+    let delivery_idle = wait_for(Duration::from_secs(2), || {
+        fixture
+            .state()
+            .lock()
+            .unwrap()
+            .delivery_queue
+            .is_idle()
+            .then_some(())
+    })
+    .await
+    .is_some();
+    let reaped = match facts.as_ref().and_then(|facts| facts.4) {
+        Some(pid) => tokio::task::spawn_blocking(move || process_reaped(pid))
+            .await
+            .unwrap(),
+        None => true,
+    };
+    assert!(delivery_idle, "private delivery did not drain: {diagnostic}");
+    assert!(reaped, "owned private fallback child was not reaped");
+    let (claims, lineage, registered, role, _) = facts.unwrap_or_else(|| {
+        panic!("real start delivery never published its tab/lineage: {diagnostic}")
+    });
+    assert!(matches!(
+        role,
+        TabRole::Agent {
+            provider: AgentProvider::Claude,
+            ..
+        }
+    ));
+    assert_eq!(proof.reply["result"]["term_id"], registered);
     let calls = opened.load(Ordering::SeqCst);
-    assert_eq!(calls, 1, "actual agent.start bypassed its finite factory");
     assert_eq!(claims, 0, "the real spawn reservation must settle");
-    let lineage = lineage.expect("the real publish path records lineage");
     assert_eq!(lineage.entity_id, owner);
     assert_eq!(lineage.agent_id, agent_id);
+    assert_eq!(calls, 1, "actual agent.start bypassed its finite factory");
     fixture
         .verify(
             proof,

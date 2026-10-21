@@ -406,6 +406,8 @@ async fn done_then_a_warm_turn_stays_in_one_open_session() {
             .unwrap()
             .delivery_queue
             .enqueue(PendingAgentTurn {
+                #[cfg(test)]
+                logical_obligations: Vec::new(),
                 operation_id: None,
                 root: AppState::canonical_root(&root),
                 owner: "run-lineage".into(),
@@ -724,6 +726,8 @@ fn ended_native_session_with_a_changed_choice_restarts_fresh() {
         .choice_revision;
     let state = app.shared();
     let turn = PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: AppState::canonical_root(&root),
         owner: run_id,

@@ -740,3 +740,6 @@ fn cancel_preserves_all_setup_and_claim_when_original_branch_has_another_holder(
         Some("refs/heads/build/work")
     );
 }
+
+#[cfg(unix)]
+mod write_wait_tests;

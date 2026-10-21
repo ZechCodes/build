@@ -11,6 +11,7 @@ mod terminal;
 mod updater;
 mod provider;
 mod conversation;
+mod captures;
 
 struct EndFixtureSessions(Arc<Mutex<AppState>>);
 
@@ -19,7 +20,7 @@ impl Drop for EndFixtureSessions {
         let sessions: Vec<_> = self
             .0
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .session_registry
             .test_tabs()
             .map(|(_, tab)| Arc::clone(&tab.session))
@@ -61,7 +62,13 @@ const METHODS: &[&str] = &[
 ];
 
 pub(super) async fn execute() -> Vec<VerifiedStep> {
-    Vec::new()
+    let mut steps = local::execute().await;
+    steps.extend(terminal::execute().await);
+    steps.extend(inventory::execute().await);
+    steps.extend(updater::execute().await);
+    steps.extend(conversation::execute().await);
+    steps.extend(captures::execute().await);
+    steps
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

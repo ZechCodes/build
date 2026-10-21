@@ -20,6 +20,8 @@ pub struct AdmissionLease(Arc<LeaseInner>);
 
 struct LeaseInner {
     gate: Arc<AdmissionGate>,
+    #[cfg(test)]
+    context: Option<crate::timing::write_wait::WriteContext>,
 }
 
 impl Clone for AdmissionLease {
@@ -30,11 +32,26 @@ impl Clone for AdmissionLease {
 
 impl Drop for LeaseInner {
     fn drop(&mut self) {
-        self.gate.state.lock().unwrap().active -= 1;
+        #[cfg(test)]
+        let _scope = self.context.as_ref().map(|context| context.bind_sync());
+        self.gate.lock_state().active -= 1;
     }
 }
 
 impl AdmissionGate {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, AdmissionState> {
+        #[cfg(test)]
+        let waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::Admission,
+            ),
+        );
+        let result = self.state.lock();
+        #[cfg(test)]
+        drop(waiting);
+        result.unwrap()
+    }
+
     pub(super) fn new(closed: bool) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(AdmissionState { active: 0, closed }),
@@ -43,17 +60,25 @@ impl AdmissionGate {
     }
 
     pub fn try_enter(self: &Arc<Self>) -> Option<AdmissionLease> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         if state.closed {
             return None;
         }
         state.active += 1;
         Some(AdmissionLease(Arc::new(LeaseInner {
             gate: Arc::clone(self),
+            #[cfg(test)]
+            context: crate::timing::write_wait::current_context(),
         })))
     }
 
     pub async fn enter_when_open(self: &Arc<Self>) -> AdmissionLease {
+        #[cfg(test)]
+        {
+            self.enter_when_open_with_context(crate::timing::write_wait::current_context())
+                .await
+        }
+        #[cfg(not(test))]
         loop {
             let opened = self.opened.notified();
             tokio::pin!(opened);
@@ -65,18 +90,34 @@ impl AdmissionGate {
         }
     }
 
-    // Test-first companion delegates the actual legacy Notify path unchanged.
-    // The accounting implementation follows an observed missing-wait baseline.
+    // Carry attribution explicitly; the synchronous binding ends before await.
     #[cfg(test)]
     pub(crate) async fn enter_when_open_with_context(
         self: &Arc<Self>,
-        _context: Option<crate::timing::write_wait::WriteContext>,
+        context: Option<crate::timing::write_wait::WriteContext>,
     ) -> AdmissionLease {
-        self.enter_when_open().await
+        loop {
+            let opened = self.opened.notified();
+            tokio::pin!(opened);
+            opened.as_mut().enable();
+            let lease = {
+                let _scope = context.as_ref().map(|context| context.bind_sync());
+                self.try_enter()
+            };
+            if let Some(lease) = lease {
+                return lease;
+            }
+            let _waiting = context.as_ref().map(|context| {
+                context.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+                    crate::timing::write_wait::WaitKind::Admission,
+                ))
+            });
+            opened.await;
+        }
     }
 
     pub(super) fn claim_idle(&self, busy: impl FnOnce() -> bool) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.lock_state();
         if state.closed || state.active != 0 {
             return false;
         }
@@ -95,7 +136,7 @@ impl AdmissionGate {
 
     pub(super) fn reopen(&self) {
         let resumed = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.lock_state();
             if !state.closed {
                 false
             } else {

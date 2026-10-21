@@ -99,6 +99,8 @@ pub(super) fn sentry(fixture: &Fixture) {
     let mut app = fixture.state.lock().unwrap();
     app.delivery_queue.clear_queued();
     app.delivery_queue.enqueue(PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: fixture._root.path().join("missing-sentry-root"),
         owner: "missing-history-read-sentry".into(),

@@ -7,8 +7,11 @@
 mod client_watch;
 mod coverage;
 mod finite_watch;
+mod fixture;
+mod post_reply;
 mod rare;
 mod read_and_exempt;
+pub(super) mod read_recipes;
 mod rpc;
 mod scheduler;
 

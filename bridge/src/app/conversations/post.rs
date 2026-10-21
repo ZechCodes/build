@@ -660,6 +660,8 @@ impl AppState {
             })
         });
         self.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id,
             root,
             owner: delivery.owner_id.clone(),

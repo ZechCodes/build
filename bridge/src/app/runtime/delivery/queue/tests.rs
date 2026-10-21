@@ -4,6 +4,8 @@ use crate::operation::{DeliveryIntent, OperationPayload, OperationReceipt, Opera
 
 fn turn(owner: &str, agent: &str, says: bool, survives_refusal: bool) -> PendingAgentTurn {
     PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: std::path::PathBuf::from("/tmp/stage8-queue"),
         owner: owner.into(),
@@ -210,6 +212,8 @@ fn catch_up(owner: &str, agent: &str) -> PendingAgentTurn {
 
 fn operation_turn(owner: &str, agent: &str) -> PendingAgentTurn {
     PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: Some(format!("op-{agent}")),
         ..turn(owner, agent, true, true)
     }
@@ -374,3 +378,6 @@ fn removing_an_agent_removes_its_settling_turn() {
     queue.lapse_settle_windows();
     assert!(queue.take_ready(|_| false).is_empty());
 }
+
+#[path = "tests/write_origins.rs"]
+mod write_origins;

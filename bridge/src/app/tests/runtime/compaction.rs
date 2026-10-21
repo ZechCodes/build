@@ -259,6 +259,8 @@ impl CompactingAgent {
     pub(super) fn turn(&self, interrupt: bool) -> PendingAgentTurn {
         let agent = self.agent();
         PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: AppState::canonical_root(&self.root),
             owner: RUN.to_string(),

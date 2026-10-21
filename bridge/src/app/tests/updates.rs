@@ -144,6 +144,8 @@ fn update_fixture_replaceable(
 
 fn pending_turn(root: &Path) -> PendingAgentTurn {
     PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: root.to_path_buf(),
         owner: "run-test".into(),

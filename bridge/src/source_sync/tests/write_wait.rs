@@ -53,3 +53,43 @@ fn deep_source_sync_condvar_timeout_and_drop_keep_resource_waits() {
     drop(fresh);
     tracked.complete();
 }
+
+#[test]
+fn deep_source_sync_final_cleanup_retains_an_obligation_after_root_completion() {
+    let directory = tempfile::tempdir().unwrap();
+    let identity = sync_lock_identity(directory.path());
+    let tracked = TrackedWrite::new("source-sync-post-root-cleanup");
+    let registry = std::sync::Arc::clone(&tracked.registry);
+    let returned = {
+        let _scope = tracked.context().bind_sync();
+        SyncLock::acquire(directory.path(), Duration::ZERO)
+            .unwrap()
+            .0
+    };
+    tracked.complete();
+    let after_ack = registry.snapshot().remove(0);
+    // A dead captured context must not strand this test's source identity.
+    // Catch only its drop and remove that exact hold before any assertion.
+    let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(returned)));
+    if cleanup.is_err() {
+        let (held, released) = held_checkouts();
+        held.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&identity);
+        released.notify_all();
+    }
+    let available = SyncLock::acquire(directory.path(), Duration::ZERO);
+    let released = available.is_some();
+    drop(available);
+    let after_cleanup = registry.snapshot().remove(0);
+    assert!(
+        released,
+        "the exact source hold was removed before assertions"
+    );
+    assert!(crate::timing::write_wait::current_context().is_none());
+    assert!(cleanup.is_ok(), "cleanup reused a finished root context");
+    assert!(after_ack.root_finished);
+    assert_eq!(after_ack.outstanding.len(), 1, "cleanup owns a live child");
+    assert!(after_cleanup.outstanding.is_empty() && after_cleanup.active.is_empty());
+    assert!(!after_cleanup.abandoned && !after_cleanup.cancelled);
+}

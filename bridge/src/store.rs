@@ -80,6 +80,8 @@ mod waiting_on;
 pub use waiting_on::{DependencyDigest, DependencySummary, DependentsPage, WaitingOnPage};
 mod user_session;
 mod workspace_lifecycle;
+#[cfg(test)]
+mod write_wait;
 
 #[cfg(test)]
 pub use conversations::items_decoded;
@@ -400,16 +402,23 @@ impl Store {
     /// poison as fatal would turn one panic into a permanent one: every later
     /// store call would panic too, and the daemon would sit there up and
     /// connected while it could neither read nor write state.
+    #[cfg(not(test))]
     fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+    #[cfg(test)]
+    fn connection(&self) -> write_wait::ConnectionGuard<'_> {
+        write_wait::acquire(&self.conn)
+    }
     /// Fixture access to the actual writer mutex; production readers cannot
     /// obtain this guard.
     #[cfg(test)]
     pub(crate) fn writer_for_test(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.connection()
+        self.conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Only task/graph/delivery writes can make reconciliation work available.

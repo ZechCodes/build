@@ -103,10 +103,7 @@ impl AppState {
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
         let delta = self.prepare_workspace_snapshot_details(delta, &previous, None);
-        let owners = self
-            .snapshot_observations
-            .pending_owners
-            .lock()
+        let owners = crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .clone();
         let delta = self.prepare_snapshot_owner_rows(delta, &previous, &owners, false);
@@ -119,12 +116,10 @@ impl AppState {
         if !self.can_publish_snapshot_projection() {
             return;
         }
-        let owners_pending = !self
-            .snapshot_observations
-            .pending_owners
-            .lock()
-            .unwrap()
-            .is_empty();
+        let owners_pending =
+            !crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
+                .unwrap()
+                .is_empty();
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
         let delta = if owners_pending {
@@ -149,15 +144,11 @@ impl AppState {
         if !self.snapshot_observations.ready {
             return None;
         }
-        let pending_histories = self
-            .snapshot_observations
-            .pending_owners
-            .lock()
-            .unwrap()
-            .clone();
-        self.snapshot_observations
-            .pending_owners
-            .lock()
+        let pending_histories =
+            crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
+                .unwrap()
+                .clone();
+        crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .extend(self.snapshot_owner_ids());
         if !self.can_publish_snapshot_projection() {
@@ -168,10 +159,7 @@ impl AppState {
         let delta = self
             .prepare_global_snapshot(SnapshotDelta::new(self.read_view.next_version()), &previous);
         let delta = self.prepare_workspace_snapshot_details(delta, &previous, None);
-        let owners = self
-            .snapshot_observations
-            .pending_owners
-            .lock()
+        let owners = crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .clone();
         let mut delta = self.prepare_snapshot_agent_rows(delta, &previous, &owners);
@@ -182,10 +170,7 @@ impl AppState {
     }
 
     pub(in crate::app) fn flush_pending_snapshot_projection(&self) {
-        if self
-            .snapshot_observations
-            .pending_owners
-            .lock()
+        if crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .is_empty()
         {
@@ -197,9 +182,7 @@ impl AppState {
     /// Include this owner's agent rows in the next atomic metadata publication.
     pub(in crate::app) fn mark_snapshot_owner_pending(&self, owner: &str) {
         if self.snapshot_observations.ready {
-            self.snapshot_observations
-                .pending_owners
-                .lock()
+            crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
                 .unwrap()
                 .insert(owner.to_owned());
         }
@@ -246,9 +229,7 @@ impl AppState {
             return None;
         }
         self.mark_observation_owner_changed(owner);
-        self.snapshot_observations
-            .pending_owners
-            .lock()
+        crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .extend(self.snapshot_affected_owner_ids(owner));
         if !self.can_publish_snapshot_projection() {
@@ -256,10 +237,7 @@ impl AppState {
         }
         let _ownership = self.begin_snapshot_ownership();
         let previous = self.read_view.load();
-        let owners = self
-            .snapshot_observations
-            .pending_owners
-            .lock()
+        let owners = crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
             .unwrap()
             .clone();
         Some(
@@ -303,9 +281,7 @@ impl AppState {
             if let Some(receipts) = receipts {
                 receipts.acknowledge(self);
             }
-            self.snapshot_observations
-                .pending_owners
-                .lock()
+            crate::timing::resource_lock!(self.snapshot_observations.pending_owners)
                 .unwrap()
                 .clear();
             self.publish_attention_notice_receipts(&attention_notices);

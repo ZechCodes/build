@@ -691,6 +691,8 @@ fn unreachable_turn(state: &mut AppState, owner: &str) -> PendingAgentTurn {
         .primary()
         .expect("the unreachable fixture has a primary agent");
     PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root,
         owner: owner.to_string(),
@@ -1159,6 +1161,8 @@ fn a_message_posted_during_a_textless_start_queues_its_own_turn() {
     let root = app.entity_agent_root("run-started-bare").unwrap();
     let agent_id = primary_agent_id(&app, "run-started-bare");
     app.delivery_queue.enqueue(PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: root.clone(),
         owner: "run-started-bare".into(),

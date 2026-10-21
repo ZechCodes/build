@@ -134,6 +134,8 @@ mod untimed {
         super::super::deliver(
             state,
             &PendingAgentTurn {
+                #[cfg(test)]
+                logical_obligations: Vec::new(),
                 operation_id: None,
                 root: AppState::canonical_root(root),
                 owner: owner.to_string(),

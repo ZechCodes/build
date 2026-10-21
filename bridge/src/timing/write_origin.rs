@@ -2,6 +2,19 @@
 use super::*;
 use write_wait::{IntervalCategory, LogicalWrite, WaitGuard, WaitKind, WriteCohort, WriteContext};
 
+// Section 8's audited protocol writes; suffixes inherit no exemption.
+const PROTOCOL_WRITES: &[&str] = &[
+    "session.hello",
+    "changes.subscribe",
+    "changes.unsubscribe",
+    "term.attach",
+    "agent.attach",
+    "term.input",
+    "term.resize",
+    "term.ack",
+    "stream.start",
+];
+
 /// Shared attribution does not create descendants. The outer reply path owns
 /// completion; dropping its last handle without completion preserves abandonment.
 pub(crate) struct WriteOrigin {
@@ -30,6 +43,7 @@ impl WriteOrigin {
             .unwrap_or(&frame.frame_type);
         use crate::api::effects::{effect, Effect};
         let cohort = match effect(method) {
+            Some(Effect::Write) if PROTOCOL_WRITES.contains(&method) => WriteCohort::ExemptProtocol,
             Some(Effect::Write) => WriteCohort::SemanticWrite,
             Some(Effect::Control) => WriteCohort::ExemptProtocol,
             Some(_) => WriteCohort::ExemptRead,

@@ -201,6 +201,8 @@ pub(in crate::app) fn agent_start(
         }
         let agent = s.addressed_agent(params)?;
         s.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: agent.root.clone(),
             owner: agent.entity_id.clone(),

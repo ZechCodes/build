@@ -4,14 +4,30 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-fn active_service_breaches(
-    _rows: &[WriteSnapshot],
-    _ceilings: &BTreeMap<String, Duration>,
-    _now: Instant,
+pub(super) fn active_service_breaches(
+    rows: &[WriteSnapshot],
+    ceilings: &BTreeMap<String, Duration>,
+    now: Instant,
 ) -> Vec<String> {
-    // Implement after the actual open-interval control produces RED. Completed
-    // service samples cannot prove an unfinished effect stayed in its bound.
-    Vec::new()
+    let mut failures = std::collections::BTreeSet::new();
+    for row in rows {
+        for interval in &row.active {
+            if interval.category != IntervalCategory::FiniteService {
+                continue;
+            }
+            let Some(ceiling) = ceilings.get(&row.original_id) else {
+                failures.insert(format!(
+                    "unplanned finite service original {}",
+                    row.original_id
+                ));
+                continue;
+            };
+            if now.saturating_duration_since(interval.started) > *ceiling {
+                failures.insert(row.original_id.clone());
+            }
+        }
+    }
+    failures.into_iter().collect()
 }
 
 fn fixture() -> (Arc<WriteWaitRegistry>, Arc<Mutex<Instant>>) {

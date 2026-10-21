@@ -1664,8 +1664,7 @@ impl ChangeBus {
     /// in Off mode deliberately holds changes until it is enabled again.
     #[cfg(test)]
     fn has_test_pending(&self) -> bool {
-        self.subscriptions
-            .lock()
+        crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .iter()
             .any(|sub| sub.spec.mode != Mode::Off && !sub.pending.is_empty())
@@ -1691,7 +1690,7 @@ impl ChangeBus {
     pub fn subscribe(&self, session: &SessionSender, sub: SubscriptionSpec) -> SubscribeOutcome {
         let watch = self.watch_state(&sub);
         let now = Instant::now();
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         match subscriptions
             .iter_mut()
             .find(|existing| existing.is(session.session_id(), &sub.id))
@@ -1719,16 +1718,14 @@ impl ChangeBus {
 
     /// Stop hearing anything — the session closed.
     pub fn unsubscribe(&self, session_id: &str) {
-        self.subscriptions
-            .lock()
+        crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .retain(|sub| sub.session.session_id() != session_id);
     }
 
     /// Drop one subscription (`changes.unsubscribe`).
     pub fn unsubscribe_one(&self, session_id: &str, sub_id: &str) {
-        self.subscriptions
-            .lock()
+        crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .retain(|sub| !sub.is(session_id, sub_id));
     }
@@ -1737,8 +1734,7 @@ impl ChangeBus {
     /// tests read back.
     #[cfg(test)]
     pub fn list(&self, session_id: &str) -> Vec<SubscriptionSpec> {
-        self.subscriptions
-            .lock()
+        crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .iter()
             .filter(|sub| sub.session.session_id() == session_id)
@@ -1751,7 +1747,7 @@ impl ChangeBus {
     /// against the board's current list.
     pub fn covered_worktrees(&self) -> BTreeSet<String> {
         let mut covered = BTreeSet::new();
-        let subscriptions = self.subscriptions.lock().unwrap();
+        let subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         let wants_all = subscriptions
             .iter()
             .any(|sub| sub.spec.kinds.needs_worktree() && sub.spec.scope == Scope::All);
@@ -1773,12 +1769,16 @@ impl ChangeBus {
     /// A worktree whose watcher could not start: every subscription covering
     /// it answers `watch: "polled"` from now on.
     pub fn mark_polled(&self, entity_id: &str) {
-        self.polled.lock().unwrap().insert(entity_id.to_string());
+        crate::timing::resource_lock!(self.polled)
+            .unwrap()
+            .insert(entity_id.to_string());
     }
 
     /// Its watcher started after all.
     pub fn clear_polled(&self, entity_id: &str) {
-        self.polled.lock().unwrap().remove(entity_id);
+        crate::timing::resource_lock!(self.polled)
+            .unwrap()
+            .remove(entity_id);
     }
 
     /// What a subscription's `watch` answer is right now: `polled` when a
@@ -1787,7 +1787,7 @@ impl ChangeBus {
         if !sub.kinds.needs_worktree() {
             return WatchState::Live;
         }
-        let polled = self.polled.lock().unwrap();
+        let polled = crate::timing::resource_lock!(self.polled).unwrap();
         let covered = match &sub.scope {
             Scope::All => !polled.is_empty(),
             scope => scope.watched_entity().is_some_and(|id| polled.contains(id)),
@@ -1826,7 +1826,7 @@ impl ChangeBus {
     pub fn note_compaction(&self, scope: &str, owner: Option<&str>) {
         let now = Instant::now();
         let payload = compaction_changed_payload(scope, owner);
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         for sub in subscriptions
             .iter_mut()
             .filter(|sub| sub.accepts_compaction())
@@ -1855,9 +1855,7 @@ impl ChangeBus {
     /// The feed moved, and so did one of the lists a client caches whole:
     /// the next board item carries that list in full.
     pub fn note_board_lists(&self, lists: BoardLists) {
-        for sub in self
-            .subscriptions
-            .lock()
+        for sub in crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .iter_mut()
             .filter(|sub| sub.wants(BOARD_ITEM_ID, Kind::State))
@@ -1893,7 +1891,7 @@ impl ChangeBus {
     /// Resolve one note to every subscription that asked for it.
     fn note_subscriptions(&self, entity_id: &str, kind: Kind, paths: &[String]) {
         let now = Instant::now();
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         let mut noted = false;
         for sub in subscriptions
             .iter_mut()
@@ -1910,8 +1908,7 @@ impl ChangeBus {
 
     /// Whether anything is waiting to go out.
     pub fn has_pending(&self) -> bool {
-        self.subscriptions
-            .lock()
+        crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .iter()
             .any(|sub| !sub.pending.is_empty())
@@ -1946,8 +1943,7 @@ impl ChangeBus {
     /// The earliest instant any subscription wants to be flushed at.
     fn next_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
-        self.subscriptions
-            .lock()
+        crate::timing::resource_lock!(self.subscriptions)
             .unwrap()
             .iter()
             .filter_map(|sub| sub.due_at(self.window, now))
@@ -1962,7 +1958,7 @@ impl ChangeBus {
         // Read before the subscriptions lock: the board's list is somebody
         // else's leaf lock, and this module nests none.
         let covered: BTreeSet<String> = (self.board_entities)().into_iter().collect();
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         for sub in subscriptions.iter_mut() {
             let Some(items) = sub.take_due(self.window, now) else {
                 continue;
@@ -2057,7 +2053,7 @@ impl ChangeBus {
     /// A stale frame's items the new scope still covers, and its board
     /// lists, go back on the subscription for its next frame.
     fn send_if_current(&self, frame: &DueFrame, sealed: crate::carrier::OutboundEnvelope) -> Sent {
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) else {
             return Sent::Stale;
         };
@@ -2091,7 +2087,7 @@ impl ChangeBus {
         if missing.is_empty() {
             return;
         }
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         if let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) {
             sub.pending_lists.merge(missing);
         }
@@ -2115,7 +2111,7 @@ impl ChangeBus {
             return;
         }
         let now = Instant::now();
-        let mut subscriptions = self.subscriptions.lock().unwrap();
+        let mut subscriptions = crate::timing::resource_lock!(self.subscriptions).unwrap();
         let Some(sub) = subscriptions.iter_mut().find(|sub| sub.took(frame)) else {
             return;
         };

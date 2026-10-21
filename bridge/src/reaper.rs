@@ -131,3 +131,6 @@ fn retiring_name(dir: &std::path::Path) -> PathBuf {
         std::process::id()
     ))
 }
+
+#[cfg(test)]
+mod write_origins;

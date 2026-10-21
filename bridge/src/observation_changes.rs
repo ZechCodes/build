@@ -11,14 +11,13 @@ pub(crate) struct ChangeKeys {
 
 impl ChangeKeys {
     pub(crate) fn mark(&self, key: impl Into<String>) {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = crate::timing::resource_lock!(self.pending).unwrap();
         let revision = self.sequence.fetch_add(1, Ordering::Relaxed) + 1;
         pending.insert(key.into(), revision);
     }
 
     pub(crate) fn snapshot(&self) -> Vec<(String, u64)> {
-        self.pending
-            .lock()
+        crate::timing::resource_lock!(self.pending)
             .unwrap()
             .iter()
             .map(|(key, revision)| (key.clone(), *revision))
@@ -26,7 +25,7 @@ impl ChangeKeys {
     }
 
     pub(crate) fn acknowledge(&self, captured: &[(String, u64)]) {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = crate::timing::resource_lock!(self.pending).unwrap();
         for (key, revision) in captured {
             if pending.get(key) == Some(revision) {
                 pending.remove(key);

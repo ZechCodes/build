@@ -596,6 +596,8 @@ async fn first_user_turn_after_exact_reopen_compacts_with_the_saved_context_befo
             .unwrap();
         assert!(agent.working_since.is_none());
         let turn = PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: fixture.key.root.clone(),
             owner: OWNER.into(),

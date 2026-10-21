@@ -7,7 +7,8 @@ impl AppState {
         id: &str,
         candidate: &mut Option<ProjectObservation>,
     ) {
-        let mut observations = self.snapshot_observations.projects.lock().unwrap();
+        let mut observations =
+            crate::timing::resource_lock!(self.snapshot_observations.projects).unwrap();
         let previous = observations.remove(id);
         if let Some(candidate) = candidate.take() {
             observations.insert(id.to_owned(), candidate);
@@ -25,7 +26,7 @@ impl AppState {
         rows: Vec<(String, Value)>,
     ) {
         let version = self.read_view.next_version();
-        *self.snapshot_observations.projects.lock().unwrap() = rows
+        *crate::timing::resource_lock!(self.snapshot_observations.projects).unwrap() = rows
             .into_iter()
             .map(|(id, value)| (id, ProjectObservation { version, value }))
             .collect();
@@ -41,7 +42,8 @@ impl AppState {
         refresh: RenderedProjectSnapshotRefresh,
     ) {
         let current = self.project_list_rows();
-        let mut observations = self.snapshot_observations.projects.lock().unwrap();
+        let mut observations =
+            crate::timing::resource_lock!(self.snapshot_observations.projects).unwrap();
         for (row, value) in refresh.rows {
             let unchanged = current.iter().any(|current| {
                 current.project_id == row.project_id
@@ -68,7 +70,8 @@ impl AppState {
         &self,
         project: &crate::app::projects::Project,
     ) -> bool {
-        let observations = self.snapshot_observations.projects.lock().unwrap();
+        let observations =
+            crate::timing::resource_lock!(self.snapshot_observations.projects).unwrap();
         let Some(observed) = observations.get(&project.id) else {
             return false;
         };
@@ -86,22 +89,22 @@ impl AppState {
             })
     }
     pub(in crate::app) fn record_project_snapshot_observation(&self, project: &str, value: &Value) {
-        self.snapshot_observations.projects.lock().unwrap().insert(
-            project.to_owned(),
-            ProjectObservation {
-                version: self.read_view.next_version(),
-                value: value.clone(),
-            },
-        );
+        crate::timing::resource_lock!(self.snapshot_observations.projects)
+            .unwrap()
+            .insert(
+                project.to_owned(),
+                ProjectObservation {
+                    version: self.read_view.next_version(),
+                    value: value.clone(),
+                },
+            );
     }
     pub(super) fn snapshot_account_availability(&self) -> Value {
         self.projects
             .iter()
             .next()
             .and_then(|project| {
-                self.snapshot_observations
-                    .projects
-                    .lock()
+                crate::timing::resource_lock!(self.snapshot_observations.projects)
                     .unwrap()
                     .get(&project.id)
                     .map(|observed| observed.value["isolation_available"].clone())
@@ -113,7 +116,7 @@ impl AppState {
             })
     }
     pub(super) fn snapshot_project_list(&self) -> Value {
-        let observed = self.snapshot_observations.projects.lock().unwrap();
+        let observed = crate::timing::resource_lock!(self.snapshot_observations.projects).unwrap();
         let projects = self
             .project_list_rows()
             .iter()

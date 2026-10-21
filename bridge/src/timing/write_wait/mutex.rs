@@ -2,10 +2,11 @@
 use super::WaitKind;
 use std::sync::{LockResult, Mutex, MutexGuard};
 
-pub(crate) fn acquire_mutex<T>(mutex: &Mutex<T>, _kind: WaitKind) -> LockResult<MutexGuard<'_, T>> {
-    // Test-first passthrough: attribution is added after the real contention
-    // controls demonstrate that uninstrumented acquisition is invisible.
-    mutex.lock()
+pub(crate) fn acquire_mutex<T>(mutex: &Mutex<T>, kind: WaitKind) -> LockResult<MutexGuard<'_, T>> {
+    let wait = super::current_interval(super::IntervalCategory::KnownWait(kind));
+    let result = mutex.lock();
+    drop(wait);
+    result
 }
 
 /// Run a real leaf operation on this thread while another thread holds its

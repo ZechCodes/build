@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::*;
+mod service_origins;
 use crate::harness::installed::{CliProbe, CliReading};
 use crate::isolation::test_fixture::write_executable;
 

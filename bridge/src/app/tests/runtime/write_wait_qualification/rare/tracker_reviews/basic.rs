@@ -180,8 +180,21 @@ async fn read_through(fixture: &mut RareFixture, task: &str, comment: &str) {
         .await;
 }
 
+fn saved_watched(fixture: &RareFixture, task: &str) -> bool {
+    fixture
+        .state()
+        .lock()
+        .unwrap()
+        .tracker_store()
+        .unwrap()
+        .load_tracker_task(task)
+        .unwrap()
+        .unwrap()
+        .watched
+}
+
 async fn watching(fixture: &mut RareFixture, task: &str, watched: bool) {
-    assert_ne!(saved(fixture, task)["watched"], watched);
+    assert_ne!(saved_watched(fixture, task), watched);
     let (method, kind) = if watched {
         ("tasks.watch", "watched")
     } else {
@@ -189,7 +202,7 @@ async fn watching(fixture: &mut RareFixture, task: &str, watched: bool) {
     };
     let proof = fixture.call(method, json!({"task_id":task})).await;
     let persisted = saved(fixture, task);
-    assert_eq!(persisted["watched"], watched);
+    assert_eq!(saved_watched(fixture, task), watched);
     let event = assert_event(fixture, task, kind);
     if watched {
         assert_eq!(persisted["watch_started_after"], event["id"]);

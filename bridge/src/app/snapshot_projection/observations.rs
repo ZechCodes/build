@@ -196,9 +196,7 @@ impl AppState {
             .iter()
             .map(|project| project.id.clone())
             .collect::<Vec<_>>();
-        self.snapshot_observations
-            .watched_tasks
-            .lock()
+        crate::timing::resource_lock!(self.snapshot_observations.watched_tasks)
             .unwrap()
             .retain(|id, _| projects.contains(id));
         for id in projects {
@@ -211,9 +209,7 @@ impl AppState {
         project: &str,
     ) -> Result<(), String> {
         let rows = self.watched_task_rows_for_project(project)?;
-        self.snapshot_observations
-            .watched_tasks
-            .lock()
+        crate::timing::resource_lock!(self.snapshot_observations.watched_tasks)
             .unwrap()
             .insert(project.to_owned(), rows.into_iter().map(Arc::new).collect());
         Ok(())
@@ -224,7 +220,8 @@ impl AppState {
         task: &str,
         row: Option<Value>,
     ) {
-        let mut projects = self.snapshot_observations.watched_tasks.lock().unwrap();
+        let mut projects =
+            crate::timing::resource_lock!(self.snapshot_observations.watched_tasks).unwrap();
         let rows = projects.entry(project.to_owned()).or_default();
         match row {
             Some(row) => match rows.iter_mut().find(|row| row["task_id"] == task) {
@@ -241,9 +238,7 @@ impl AppState {
             .collect()
     }
     pub(in crate::app) fn snapshot_watched_task_shared_rows(&self) -> Vec<Arc<Value>> {
-        self.snapshot_observations
-            .watched_tasks
-            .lock()
+        crate::timing::resource_lock!(self.snapshot_observations.watched_tasks)
             .unwrap()
             .iter()
             .filter(|(id, _)| self.projects.get(id).is_some())

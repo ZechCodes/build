@@ -88,3 +88,45 @@ async fn deep_admission_notify_uses_explicit_context_without_tls_across_await() 
     assert!(tracked.row().active.is_empty());
     tracked.complete();
 }
+
+#[test]
+fn deep_admission_final_cleanup_retains_an_obligation_after_root_completion() {
+    let gate = AdmissionGate::new(false);
+    let tracked = TrackedWrite::new("admission-post-root-cleanup");
+    let registry = Arc::clone(&tracked.registry);
+    let lease = {
+        let _scope = tracked.context().bind_sync();
+        gate.try_enter().unwrap()
+    };
+    assert_eq!(gate.state.lock().unwrap().active, 1);
+    tracked.complete();
+    let after_ack = registry.snapshot().remove(0);
+    // The baseline's captured dead context panics before locking the gate.
+    // Catch that one destructor here, with no root/child left to double-panic.
+    let cleanup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(lease)));
+    if cleanup.is_err() {
+        let mut state = gate
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active == 1 {
+            state.active -= 1;
+        }
+    }
+    let active = gate
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .active;
+    let after_cleanup = registry.snapshot().remove(0);
+    assert_eq!(active, 0, "the owned lease was released before assertions");
+    assert!(
+        current_context().is_none(),
+        "cleanup restored the caller TLS"
+    );
+    assert!(cleanup.is_ok(), "cleanup reused a finished root context");
+    assert!(after_ack.root_finished);
+    assert_eq!(after_ack.outstanding.len(), 1, "cleanup owns a live child");
+    assert!(after_cleanup.outstanding.is_empty() && after_cleanup.active.is_empty());
+    assert!(!after_cleanup.abandoned && !after_cleanup.cancelled);
+}

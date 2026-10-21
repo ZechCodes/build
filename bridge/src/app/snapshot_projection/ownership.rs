@@ -9,7 +9,7 @@ pub(in crate::app) struct ProjectionOwnershipGuard<'a> {
 impl Drop for ProjectionOwnershipGuard<'_> {
     fn drop(&mut self) {
         if self.owns_context {
-            *self.slot.lock().unwrap() = None;
+            *crate::timing::resource_lock!(self.slot).unwrap() = None;
         }
     }
 }
@@ -20,16 +20,18 @@ impl AppState {
     /// canonical fields can change, including a failed candidate's rollback.
     pub(in crate::app) fn begin_snapshot_ownership(&self) -> ProjectionOwnershipGuard<'_> {
         let slot = &self.snapshot_observations.ownership;
-        let owns_context = slot.lock().unwrap().is_none();
+        let owns_context = crate::timing::resource_lock!(slot).unwrap().is_none();
         if owns_context {
             let context = Arc::new(self.capture_snapshot_ownership());
-            *slot.lock().unwrap() = Some(context);
+            *crate::timing::resource_lock!(slot).unwrap() = Some(context);
         }
         ProjectionOwnershipGuard { slot, owns_context }
     }
 
     pub(in crate::app) fn snapshot_ownership_context(&self) -> Option<Arc<ProjectionOwnership>> {
-        self.snapshot_observations.ownership.lock().unwrap().clone()
+        crate::timing::resource_lock!(self.snapshot_observations.ownership)
+            .unwrap()
+            .clone()
     }
 
     /// Pure structure is retained only by the delta's accepted global cache.

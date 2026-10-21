@@ -110,6 +110,8 @@ impl AppState {
         })?;
         self.delivery_queue
             .enqueue_with_next_delivery(PendingAgentTurn {
+                #[cfg(test)]
+                logical_obligations: Vec::new(),
                 operation_id: None,
                 root: addressed.root.clone(),
                 owner: addressed.entity_id.clone(),

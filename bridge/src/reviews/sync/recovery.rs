@@ -250,6 +250,8 @@ fn lock_capture(directory: &File, _task_id: &str, wait: Duration) -> Result<(), 
                 if remaining.is_zero() {
                     return Err("busy: review sync capture".into());
                 }
+                #[cfg(test)]
+                crate::timing::write_wait::native_retry::observed("review.sync.capture");
                 std::thread::sleep(remaining.min(Duration::from_millis(25)));
             }
             Err(error) => return Err(format!("review sync capture lock failed: {error}")),
@@ -330,3 +332,6 @@ pub(super) fn checkpoint(task_id: &str, phase: &str) {
     #[cfg(not(test))]
     let _ = (task_id, phase);
 }
+
+#[cfg(all(test, unix))]
+mod write_wait_tests;

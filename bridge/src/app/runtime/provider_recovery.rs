@@ -346,6 +346,8 @@ impl AppState {
             self.current_service_agent(&recipient.scope.entity_id, &recipient.scope.agent_id)?;
         self.delivery_queue
             .enqueue_after_settle_window(PendingAgentTurn {
+                #[cfg(test)]
+                logical_obligations: Vec::new(),
                 operation_id: None,
                 root: addressed.root,
                 owner: addressed.entity_id,

@@ -225,7 +225,13 @@ async fn every_busy_read_recipe_returns_its_real_saved_witness() {
     ));
     assert_eq!(selected["ok"], true, "{selected}");
     let owner = selected["result"]["entity_id"].as_str().unwrap().to_owned();
-    let agent = primary_agent_id(&app, &owner);
+    let added = app.handle(req("agent.add", json!({"entity_id":owner})));
+    assert_eq!(added["ok"], true, "{added}");
+    let agent = added["result"]["agent"]["id"]
+        .as_str()
+        .expect("actual agent.add returns the workspace agent")
+        .to_owned();
+    assert_eq!(primary_agent_id(&app, &owner), agent);
     let mut active = app.take_run(&owner).unwrap();
     seed_history(&mut active.agents.by_id_mut(&agent).unwrap().thread);
     app.finish_run_mutation(owner.clone(), active).unwrap();
@@ -248,7 +254,31 @@ async fn every_busy_read_recipe_returns_its_real_saved_witness() {
     let mut server = tokio::spawn(handle_done_stream(state.clone(), daemon, plane));
     let mut client = tokio::io::BufReader::new(client);
     let mut replies = Vec::new();
-    for (_, action) in cases(&fixture.ids(&owner, &agent)) {
+    let shared_inputs =
+        crate::app::tests::runtime::write_wait_qualification::read_recipes::McpReadInputs {
+            owner: owner.clone(),
+            agent: agent.clone(),
+            workspace: fixture.workspace.clone(),
+            task: fixture.task.clone(),
+            comment: fixture.comment.clone(),
+            snapshot: fixture.snapshot.clone(),
+            directory: fixture.directory.clone(),
+            path: "README.md".into(),
+            search_text: "Busy request 0:".into(),
+        };
+    let shared_cases =
+        crate::app::tests::runtime::write_wait_qualification::read_recipes::mcp_cases(
+            &shared_inputs,
+        );
+    assert_eq!(
+        shared_cases
+            .iter()
+            .map(|(_, action)| action.tool_name())
+            .collect::<Vec<_>>(),
+        TOOLS,
+        "the actual shared socket cohort must contain every read exactly once"
+    );
+    for (_, action) in shared_cases {
         let reply = tokio::time::timeout(
             Duration::from_secs(5),
             control_reply(&mut client, fixture.frame(&agent, &action)),
@@ -273,8 +303,27 @@ async fn every_busy_read_recipe_returns_its_real_saved_witness() {
         TOOLS.len(),
         "all real recipes must complete before inspecting their results"
     );
+    let expected =
+        crate::app::tests::runtime::write_wait_qualification::read_recipes::McpExpected {
+            project: fixture.project.clone(),
+            workspace: fixture.workspace.clone(),
+            workspace_agent: fixture.workspace_agent.clone(),
+            project_agent: fixture.project_agent.clone(),
+            task: fixture.task.clone(),
+            dependent: fixture.dependent.clone(),
+            comment: fixture.comment.clone(),
+            comment_body: fixture::COMMENT_BODY.into(),
+            snapshot: fixture.snapshot.clone(),
+            blob: fixture.blob_bytes.clone(),
+            search_text: "Busy request 0:".into(),
+            harness: "claude".into(),
+        };
     for (action, reply) in replies {
-        fixture.assert_reply(&action, &reply.expect("saved read recipe timed out"));
+        let reply = reply.expect("saved read recipe timed out");
+        fixture.assert_reply(&action, &reply);
+        crate::app::tests::runtime::write_wait_qualification::read_recipes::assert_mcp_reply(
+            &action, &reply, &expected,
+        );
     }
     assert!(state
         .lock()

@@ -85,6 +85,10 @@ impl SizeRequests {
 }
 
 #[cfg(test)]
+#[path = "sizes/service_origins_tests.rs"]
+mod service_origins_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

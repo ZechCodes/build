@@ -15,8 +15,10 @@ pub(crate) mod deep_test_support;
 mod handles;
 mod intervals;
 pub(crate) mod mutex;
+pub(crate) mod native_retry;
 mod records;
 mod registry;
+pub(crate) mod service;
 #[cfg(test)]
 mod tests;
 
@@ -48,6 +50,7 @@ pub(crate) enum WaitKind {
     AppLock,
     StoreWriter,
     ResourceLock,
+    Retirement,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

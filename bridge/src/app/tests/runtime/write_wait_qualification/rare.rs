@@ -5,6 +5,7 @@ use crate::timing::write_wait::{
     Watchdog, WriteCohort, WriteSnapshot, WriteWaitRegistry, WAIT_BUDGET,
 };
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -12,6 +13,11 @@ use std::time::{Duration, Instant};
 mod agents_services;
 mod filesystem_git;
 mod lifecycle;
+mod mcp;
+mod mcp_compaction;
+mod mcp_coverage;
+mod mcp_lifecycle;
+mod mcp_tracker;
 mod runs;
 mod tracker_reviews;
 
@@ -23,6 +29,7 @@ pub(super) struct VerifiedStep {
     pub effect: Value,
     pub reply: Value,
     pub wait: WriteSnapshot,
+    pub mcp_action: Option<Value>,
 }
 
 pub(super) struct RareFixture {
@@ -33,6 +40,7 @@ pub(super) struct RareFixture {
     _watchdog: Watchdog,
     breached: Arc<AtomicBool>,
     verified: Vec<VerifiedStep>,
+    mcp_actions: Mutex<BTreeMap<String, Value>>,
 }
 
 impl RareFixture {
@@ -59,6 +67,7 @@ impl RareFixture {
             _watchdog: watchdog,
             breached,
             verified: Vec::new(),
+            mcp_actions: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -117,6 +126,10 @@ impl RareFixture {
     /// The family supplies actual independently asserted before/after evidence.
     /// This method cannot turn a receipt or an unfinished origin into success.
     pub(super) async fn verify(&mut self, proof: ReplyProof, effect: Value) {
+        assert_eq!(
+            proof.reply["ok"], true,
+            "a refused operation is not positive coverage"
+        );
         assert!(effect.is_object() && !effect.as_object().unwrap().is_empty());
         let wait = self.settled_origin(&proof.original_id).await;
         assert_eq!(wait.method, proof.method);
@@ -137,12 +150,28 @@ impl RareFixture {
             proof.original_id
         );
         self.verified.push(VerifiedStep {
+            mcp_action: self.mcp_actions.lock().unwrap().remove(&proof.original_id),
             method: proof.method,
             original_id: proof.original_id,
             effect,
             reply: proof.reply,
             wait,
         });
+    }
+
+    /// Refusals still need terminal accounting, but never count as a successful
+    /// executable recipe or satisfy the positive semantic-method inventory.
+    pub(super) async fn verify_refusal(&self, proof: ReplyProof) -> WriteSnapshot {
+        assert_eq!(proof.reply["ok"], false);
+        let wait = self.settled_origin(&proof.original_id).await;
+        assert_eq!(wait.method, proof.method);
+        assert_eq!(wait.cohort, WriteCohort::SemanticWrite);
+        assert!(wait.admitted_at.is_some());
+        assert!(!wait.cancelled && !wait.abandoned && !wait.breached());
+        assert!(wait.conservative_upper <= WAIT_BUDGET);
+        assert!(wait.max_chargeable_interval <= WAIT_BUDGET);
+        self.mcp_actions.lock().unwrap().remove(&proof.original_id);
+        wait
     }
 
     async fn settled_origin(&self, original_id: &str) -> WriteSnapshot {
@@ -186,6 +215,7 @@ impl RareFixture {
                 "rare_verified={}",
                 json!({
                     "method":step.method,"original_id":step.original_id,"effect":step.effect,
+                    "mcp_action":step.mcp_action,
                     "reply":step.reply,"known_wait_ms":step.wait.known_wait_union.as_secs_f64()*1000.0,
                     "sqlite_service_ms":step.wait.sql_service_union.as_secs_f64()*1000.0,
                     "conservative_upper_ms":step.wait.conservative_upper.as_secs_f64()*1000.0,

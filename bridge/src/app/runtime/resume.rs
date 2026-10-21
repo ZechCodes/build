@@ -252,6 +252,8 @@ impl AppState {
             Ok(serde_json::Value::Null)
         })?;
         self.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: addressed.root.clone(),
             owner: addressed.entity_id.clone(),

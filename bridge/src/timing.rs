@@ -26,6 +26,11 @@ use serde_json::{json, Value};
 use crate::api::clients::ClientRegistry;
 use crate::logline::Throttle;
 
+mod resource_lock;
+pub(crate) use resource_lock::resource_lock;
+
+#[cfg(test)]
+mod lock_observer;
 #[cfg(test)]
 pub(crate) mod phase_samples;
 #[cfg(test)]
@@ -204,6 +209,8 @@ pub struct FrameClock {
     write_wait_registry: RwLock<Option<Arc<write_wait::WriteWaitRegistry>>>,
     #[cfg(test)]
     intake_observer: RwLock<Option<Arc<IntakeObserver>>>,
+    #[cfg(test)]
+    lock_wait_observer: RwLock<Option<Arc<lock_observer::LockWaitObserver>>>,
 }
 
 impl FrameClock {
@@ -247,6 +254,8 @@ impl FrameClock {
             write_wait_registry: RwLock::new(None),
             #[cfg(test)]
             intake_observer: RwLock::new(None),
+            #[cfg(test)]
+            lock_wait_observer: RwLock::new(None),
         })
     }
 
@@ -586,6 +595,8 @@ impl FrameTimer {
         #[cfg(test)]
         self.mark_request("app_wait_start");
         let asked_at = Instant::now();
+        #[cfg(test)]
+        self.clock.mark_lock_wait(&self.method.method, asked_at);
         #[cfg(test)]
         let wait = self.write_wait(write_wait::WaitKind::AppLock);
         let guard = state.lock().unwrap();

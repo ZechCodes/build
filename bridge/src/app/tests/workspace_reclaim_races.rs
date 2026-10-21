@@ -44,6 +44,8 @@ fn agent_in(state: &Arc<Mutex<AppState>>, ws: &str) -> (String, String) {
 /// A turn for `agent` rooted at `root`, the way one in flight is counted.
 fn turn_at(root: &Path, (owner, agent_id): &(String, String)) -> PendingAgentTurn {
     PendingAgentTurn {
+        #[cfg(test)]
+        logical_obligations: Vec::new(),
         operation_id: None,
         root: std::fs::canonicalize(root).unwrap(),
         owner: owner.clone(),

@@ -373,6 +373,12 @@ fn lock_recovery_directory(file: &File) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
+        #[cfg(test)]
+        let _waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::ResourceLock,
+            ),
+        );
         loop {
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
                 return Ok(());

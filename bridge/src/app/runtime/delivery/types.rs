@@ -16,6 +16,9 @@ use std::sync::Arc;
 /// [`dispatch_frame`] — which holds the `Arc` and no guard — sends it the moment
 /// the verb returns.
 pub(in crate::app) struct PendingAgentTurn {
+    /// Opt-in test attribution, initially empty until runtime propagation RED.
+    #[cfg(test)]
+    pub(in crate::app) logical_obligations: Vec<crate::timing::write_wait::Obligation>,
     /// Durable reviewer operation this turn delivers. Lifecycle turns predate
     /// operation receipts and carry none.
     pub(in crate::app) operation_id: Option<String>,
@@ -66,6 +69,8 @@ impl PendingAgentTurn {
         let delivery = receipt.delivery.as_ref()?;
         let payload = delivery.payload.as_ref()?;
         Some(Self {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: Some(receipt.operation_id.clone()),
             root: AppState::canonical_root(&delivery.root),
             owner: delivery.owner_id.clone(),
@@ -160,6 +165,8 @@ impl PendingAgentTurn {
             .by_id(agent_id)
             .expect("a run turn is addressed to one of its agents");
         PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: AppState::canonical_root(&active.worktree.path),
             owner: owner.to_string(),
@@ -190,6 +197,8 @@ impl PendingAgentTurn {
         let workspace = active.workspace.as_ref()?;
         let agent_id = active.agents.sole().id.clone();
         Some(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: AppState::canonical_root(&workspace.checkout),
             owner: owner.to_string(),

@@ -25,6 +25,8 @@ pub(super) fn lock(request: &OpenReviewRequest) -> Result<File, String> {
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                #[cfg(test)]
+                crate::timing::write_wait::native_retry::observed("review.opening.journal");
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(format!("busy: review opening lock: {error}")),

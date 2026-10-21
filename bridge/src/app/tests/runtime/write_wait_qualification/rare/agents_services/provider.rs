@@ -14,6 +14,13 @@ pub(super) struct FiniteProvider {
 }
 
 impl FiniteProvider {
+    pub(super) fn require_enrolled(&self) {
+        assert!(
+            self._sessions.is_enrolled(),
+            "finite provider factory is absent; refusing provider-dependent qualification dispatch"
+        );
+    }
+
     pub(super) fn install(root: &Path) -> Self {
         let log = SessionLog::default();
         let logged = log.clone();

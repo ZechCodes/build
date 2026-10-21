@@ -1,5 +1,20 @@
 use super::*;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acknowledged_size_measurement_retains_original_until_real_service_finishes() {
+    let (directory, repo) = init_repo();
+    let root = std::fs::canonicalize(directory.path()).unwrap();
+    let app = configured(&repo, &root);
+    let project = app.project_at(0).id.clone();
+    let mut fixture = RareFixture::new("lifecycle-size-origin", app);
+    let workspace = workspace_setup(&fixture, &project, "size-origin");
+    let id = workspace["workspace_id"].as_str().unwrap();
+    measure(&mut fixture, id).await;
+    let steps = fixture.finish().await;
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].method, "workspace.measure_sizes");
+}
+
 pub(super) async fn execute() -> Vec<VerifiedStep> {
     let (directory, repo, _origin) = init_repo_with_origin();
     let root = std::fs::canonicalize(directory.path()).unwrap();

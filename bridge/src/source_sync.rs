@@ -411,6 +411,8 @@ fn same_directory(left: &Path, right: &Path) -> bool {
 /// service, cuts and review merges hold the same canonical Git directory.
 pub struct SyncLock {
     path: PathBuf,
+    #[cfg(test)]
+    context: Option<crate::timing::write_wait::WriteContext>,
 }
 
 fn held_checkouts() -> &'static (
@@ -452,7 +454,15 @@ impl SyncLock {
         let path = sync_lock_identity(path);
         let (held, released) = held_checkouts();
         let expiry = std::time::Instant::now() + within;
+        #[cfg(test)]
+        let waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::ResourceLock,
+            ),
+        );
         let mut guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(test)]
+        drop(waiting);
         let mut waited = false;
         while guard.contains(&path) {
             waited = true;
@@ -460,13 +470,28 @@ impl SyncLock {
             if left.is_zero() {
                 return None;
             }
+            #[cfg(test)]
+            let waiting = crate::timing::write_wait::current_interval(
+                crate::timing::write_wait::IntervalCategory::KnownWait(
+                    crate::timing::write_wait::WaitKind::ResourceLock,
+                ),
+            );
             guard = released
                 .wait_timeout(guard, left)
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;
+            #[cfg(test)]
+            drop(waiting);
         }
         guard.insert(path.clone());
-        Some((Self { path }, waited))
+        Some((
+            Self {
+                path,
+                #[cfg(test)]
+                context: crate::timing::write_wait::current_context(),
+            },
+            waited,
+        ))
     }
 }
 
@@ -479,10 +504,20 @@ pub(crate) fn sync_lock_identity(path: &Path) -> PathBuf {
 
 impl Drop for SyncLock {
     fn drop(&mut self) {
+        #[cfg(test)]
+        let _scope = self.context.as_ref().map(|context| context.bind_sync());
         let (held, released) = held_checkouts();
-        held.lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.path);
+        #[cfg(test)]
+        let waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::ResourceLock,
+            ),
+        );
+        let mut guard = held.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        #[cfg(test)]
+        drop(waiting);
+        guard.remove(&self.path);
+        drop(guard);
         released.notify_all();
     }
 }

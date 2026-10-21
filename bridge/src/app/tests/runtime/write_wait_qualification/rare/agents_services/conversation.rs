@@ -38,6 +38,7 @@ fn agent_news(fixture: &RareFixture, owner: &str, id: &str, body: &str) -> u64 {
 pub(super) async fn execute() -> Vec<VerifiedStep> {
     let (directory, repository) = init_repo();
     let provider = FiniteProvider::install(directory.path());
+    provider.require_enrolled();
     let mut app = qa_state(&repository, directory.path());
     app.default_harness = AgentProvider::Claude;
     let owner = adopted_run(&mut app, &repository, directory.path(), "rare-conversations");
@@ -73,14 +74,19 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
     let mut start = selector(&fixture, &owner, &id);
     start["id"] = json!(owner);
     let started = fixture.call("agent.start", start).await;
-    let (root, lineage) = {
+    let published = wait_for(Duration::from_secs(2), || {
         let app = fixture.state().lock().unwrap();
-        let root = AppState::canonical_root(&app.runs[&owner].worktree.path);
+        let root = AppState::canonical_root(&app.runs.get(&owner)?.worktree.path);
+        let tab = app.session_registry.test_tab(&TabKey::agent(&root, &id))?;
+        app.delivery_queue.is_idle().then_some((root, tab.session_instance.clone()?))
+    }).await;
+    let (root, lineage) = published.expect("finite start did not publish its tab and lineage");
+    {
+        let app = fixture.state().lock().unwrap();
         let tab = app.session_registry.test_tab(&TabKey::agent(&root, &id)).unwrap();
         assert_eq!(app.session_registry.test_counts().claims, 0);
         assert_eq!(json!(tab.wire_id()), started.reply["result"]["term_id"]);
-        (root, tab.session_instance.clone().unwrap())
-    };
+    }
     assert_eq!(provider.opens.load(Ordering::SeqCst), 1);
     fixture.verify(started, json!({"agent_id":id,"root":root,"session_instance":lineage.id,"settled_spawn_claims":0})).await;
 
@@ -139,15 +145,16 @@ pub(super) async fn execute() -> Vec<VerifiedStep> {
     post["attachments"]=json!([attachment]);
     post["operation_id"]=json!("rare-post-operation");
     let posted=fixture.call("thread.post",post).await;
-    assert!(provider.log.turns().iter().any(|turn|turn.contains("read the qualification file")));
+    wait_for(Duration::from_secs(2), || {
+        provider.log.turns().iter().any(|turn|turn.contains("read the qualification file")).then_some(())
+    }).await.expect("finite provider did not receive the actual posted turn");
     provider.consumed("rare-post-operation");
     let deadline=Instant::now()+Duration::from_secs(2);
     loop {
         let consumed={
             let app=fixture.state().lock().unwrap();
             let operation=app.operation_receipt("rare-post-operation").unwrap().unwrap();
-            assert_eq!(operation.status,OperationStatus::Delivered);
-            app.agent_conversation(&owner,Some(&id)).unwrap().items.iter().any(|item|matches!(item,ThreadItem::Message(message) if message.operation_id.as_deref()==Some("rare-post-operation") && message.delivery_status==Some(MessageDeliveryStatus::Seen)))
+            operation.status==OperationStatus::Delivered && app.agent_conversation(&owner,Some(&id)).unwrap().items.iter().any(|item|matches!(item,ThreadItem::Message(message) if message.operation_id.as_deref()==Some("rare-post-operation") && message.delivery_status==Some(MessageDeliveryStatus::Seen)))
         };
         if consumed {break;}
         assert!(Instant::now()<deadline,"native receipt did not settle posted message");

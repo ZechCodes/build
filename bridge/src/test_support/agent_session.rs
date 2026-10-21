@@ -18,6 +18,13 @@ impl FixtureSessions {
     pub(crate) fn install(_owned_root: PathBuf, _factory: SessionFactory) -> Self {
         Self
     }
+
+    /// The actual enrollment remains absent in this test-first scaffold.
+    /// Provider-dependent scripts must fail before dispatch until its real
+    /// scoped factory hook has a recorded RED and is implemented.
+    pub(crate) fn is_enrolled(&self) -> bool {
+        false
+    }
 }
 
 pub(crate) fn open(

@@ -108,10 +108,7 @@ impl Layout {
                     (scan.settled_at, scan.has_readable_scan)
                 })
                 .collect(),
-            project_versions: app
-                .snapshot_observations
-                .projects
-                .lock()
+            project_versions: crate::timing::resource_lock!(app.snapshot_observations.projects)
                 .unwrap()
                 .iter()
                 .map(|(id, observed)| (id.clone(), observed.version))

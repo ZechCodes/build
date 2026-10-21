@@ -143,6 +143,8 @@ impl AppState {
         self.projects
             .bind_entity(capture_id.to_string(), project_id);
         self.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: Self::canonical_root(session.scratch_dir()),
             owner: capture_id.to_string(),

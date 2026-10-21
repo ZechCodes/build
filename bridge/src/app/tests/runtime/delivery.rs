@@ -525,6 +525,8 @@ async fn direct_task_notice_asks_an_unnamed_agent_on_its_first_turn() {
             .post_user_from_build("Task moved", crate::store::now_rfc3339());
         let conversation_id = agent.conversation_id().to_string();
         app.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: AppState::canonical_root(&root),
             owner: owner.to_string(),
@@ -618,6 +620,8 @@ async fn an_immediately_exiting_harness_leaves_one_closed_session() {
     {
         let mut app = state.lock().unwrap();
         app.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root: AppState::canonical_root(&root),
             owner: "run-exits".into(),

@@ -291,6 +291,8 @@ impl AppState {
         // reconstruct. The spawn itself happens in `DeliveryRunner`, with the
         // state lock free and this frame already answered.
         self.delivery_queue.enqueue(PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
             operation_id: None,
             root,
             owner: run_id.to_string(),

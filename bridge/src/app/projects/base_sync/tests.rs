@@ -3,6 +3,7 @@
 //! and a cut that ran out of time leaves the source's status as it was.
 
 use super::*;
+mod service_origins;
 use crate::git_fixture::{git_command, git_in, init_repo_named};
 
 const MINUTE_MS: i64 = 60_000;

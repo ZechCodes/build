@@ -41,10 +41,12 @@ async fn assert_unpublished_terminal_pushes(case: Unpublished) {
         Unpublished::Run => {
             app.initialize_snapshot_projection();
             let alias = "run-new-terminal-alias";
+            let alias_root = directory.path().join("new-run-checkout-link");
+            std::os::unix::fs::symlink(&repo, &alias_root).unwrap();
             let active = crate::orchestrator::ActiveRun::workspace_conversation(
                 crate::run::RunId::new(alias),
                 "New checkout alias".into(),
-                repo,
+                alias_root,
                 Default::default(),
             );
             app.projects.bind_entity(alias.into(), project);
@@ -91,7 +93,7 @@ async fn assert_unpublished_terminal_pushes(case: Unpublished) {
         let timer = clock.frame("term.create");
         crate::app::runtime::terminals::term_create(&state, &selector, &timer).unwrap()
     };
-    if matches!(case, Unpublished::Workspace) {
+    if !matches!(case, Unpublished::Initial) {
         state.lock().unwrap().publish_snapshot_projection();
     }
     bus.flush();
@@ -109,7 +111,7 @@ async fn assert_unpublished_terminal_pushes(case: Unpublished) {
         .term_close(&json!({"term_id":created["term_id"]}));
     child.end();
     let reaped = child.exited_within(std::time::Duration::from_secs(2));
-    if matches!(case, Unpublished::Workspace) {
+    if !matches!(case, Unpublished::Initial) {
         state.lock().unwrap().publish_snapshot_projection();
     }
     bus.flush();

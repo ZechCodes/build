@@ -5,17 +5,18 @@ import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 
 const scriptUrl = new URL("../../scripts/build-desktop.mjs", import.meta.url);
-const source = readFileSync(scriptUrl, "utf8")
-  .replace(/^import .*;\n/gm, "")
-  .replaceAll("import.meta.url", JSON.stringify(scriptUrl.href));
+const source = readFileSync(scriptUrl, "utf8");
 
-function runBuild(version) {
+function runBuild(version, scriptSource = source) {
+  const vmSource = scriptSource
+    .replace(/^import .*;\r?\n/gm, "")
+    .replaceAll("import.meta.url", JSON.stringify(scriptUrl.href));
   const commands = [];
   const errors = [];
   const stopped = {};
   let exitCode = 0;
   try {
-    runInNewContext(source, {
+    runInNewContext(vmSource, {
       URL,
       fileURLToPath,
       spawnSync: (command, args) => {
@@ -36,6 +37,15 @@ function runBuild(version) {
   }
   return { commands, errors, exitCode };
 }
+
+test("desktop build harness strips imports from CRLF source", () => {
+  const crlfSource = source.replace(/\r?\n/g, "\r\n");
+  assert.match(crlfSource, /^import .*;\r\n/m);
+  const result = runBuild("22.23.4", crlfSource);
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.commands.length, 2);
+});
 
 for (const version of [
   "20.20.0", "21.99.99", "22.12.0", "22.22.99", "22.23.0", "22.23.3",

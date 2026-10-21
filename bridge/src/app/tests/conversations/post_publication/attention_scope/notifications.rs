@@ -61,6 +61,57 @@ impl Subscriber {
         // Encryption/facts lookup run on a worker holding no app guard. The
         // test may deliberately retain the guard while this worker flushes.
         std::thread::spawn(move || bus.flush()).join().unwrap();
+        self.drain()
+    }
+
+    fn consume_before_final_publication(&mut self, app: &AppState, owner: &str) -> Value {
+        let bus = Arc::clone(&self.bus);
+        let facts = Arc::clone(&app.facts_handle);
+        let owner = owner.to_owned();
+        let old_attention = std::thread::spawn(move || {
+            bus.flush();
+            // An early board invalidation is a refetch hint, not an owner
+            // state item. Read its immutable facts on this same off-lock
+            // worker, exactly where a subscriber's immediate refetch lands.
+            crate::app::facts::entity_facts(
+                &facts,
+                &[FactsRequest {
+                    entity_id: owner,
+                    state: true,
+                    ..Default::default()
+                }],
+            )[0]
+            .state
+            .as_ref()
+            .unwrap()["attention"]
+                .clone()
+        })
+        .join()
+        .unwrap();
+        let early = self.drain();
+        assert!(
+            early.iter().any(|event| {
+                event["type"] == "changes"
+                    && event["items"].as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
+                    })
+            }),
+            "the actual early board invalidation must be consumed: {early:?}"
+        );
+        assert!(
+            !self.bus.has_pending(),
+            "the early notes were actually consumed"
+        );
+        assert!(
+            old_attention.is_object(),
+            "immutable owner attention exists"
+        );
+        old_attention
+    }
+
+    fn drain(&mut self) -> Vec<Value> {
         let mut events = Vec::new();
         while let Ok(envelope) = self.receiver.try_recv() {
             events.push(SessionSender::decrypt_push(&self.key, &envelope));
@@ -112,16 +163,7 @@ fn rpc_post_notifies_accepted_attention_after_the_early_note_was_consumed() {
             assert!(answer.is_ok(), "{answer:?}");
             assert!(job.is_none());
             let current = app.attention_json(&fixture.owner);
-            let early = reader.flush_on_worker();
-            assert!(early
-                .iter()
-                .any(|event| event["items"].as_array().is_some_and(|items| {
-                    items
-                        .iter()
-                        .any(|item| item["entity_id"] == crate::changes::BOARD_ITEM_ID)
-                })));
-            let before = pushed_attention(&early, "board", &fixture.owner)
-                .expect("the committed append really notified the board subscriber");
+            let before = reader.consume_before_final_publication(app, &fixture.owner);
             assert_ne!(
                 before, current,
                 "early facts must precede the final interaction stamp"
@@ -158,9 +200,7 @@ fn rpc_alias_post_notifies_each_accepted_owner_after_the_early_union_was_consume
             let (answer, job) = app.dispatch_deferring("thread.post", &params);
             assert!(answer.is_ok(), "{answer:?}");
             assert!(job.is_none());
-            let early = reader.flush_on_worker();
-            let before = pushed_attention(&early, "board", &fixture.peer)
-                .expect("the addressed append really notified its subscriber");
+            let before = reader.consume_before_final_publication(app, &fixture.peer);
             assert_ne!(before, app.attention_json(&fixture.peer));
             assert!(!reader.bus.has_pending());
             expected.extend(
@@ -209,9 +249,7 @@ fn rpc_partial_alias_error_still_notifies_the_committed_attention_after_early_fl
             let (answer, job) = app.dispatch_deferring("thread.post", &params);
             assert!(answer.is_err(), "{answer:?}");
             assert!(job.is_none());
-            let early = reader.flush_on_worker();
-            let before = pushed_attention(&early, "board", &fixture.owner)
-                .expect("the independently committed message really notified its subscriber");
+            let before = reader.consume_before_final_publication(app, &fixture.owner);
             assert_ne!(before, app.attention_json(&fixture.owner));
             assert!(!reader.bus.has_pending());
             assert_eq!(app.attention_json(&fixture.peer)["interacted"], false);

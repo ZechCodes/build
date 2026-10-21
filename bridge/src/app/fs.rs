@@ -14,6 +14,10 @@ use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState
 
 pub(in crate::app) mod uploads;
 
+#[cfg(test)]
+#[path = "fs/service_test.rs"]
+pub(in crate::app) mod service_test;
+
 /// The refusal when a caller's `source_path` no longer names the folder its
 /// project source resolves to: the source moved after the caller opened it.
 pub(crate) const MOVED_SOURCE: &str =
@@ -263,6 +267,8 @@ impl AppState {
         params: FsCreateDirectoryParams,
     ) -> Result<FsCreateDirectoryResult, ApiError> {
         let (scope, root) = self.file_mutation_scope(&params.scope)?;
+        #[cfg(test)]
+        service_test::service();
         let destination =
             crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
         destination.create_directory()?;
@@ -280,6 +286,8 @@ impl AppState {
         params: FsCreateDirectoryParams,
     ) -> Result<FsCreateDirectoryResult, ApiError> {
         let (scope, root) = self.file_mutation_scope(&params.scope)?;
+        #[cfg(test)]
+        service_test::service();
         let destination =
             crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
         destination.create_file()?;
@@ -329,6 +337,8 @@ impl AppState {
     /// child separately keeps traversal and implicit parent creation out of the
     /// mutation surface.
     pub(crate) fn fs_mkdir(&self, params: &Value) -> Result<Value, String> {
+        #[cfg(test)]
+        service_test::service();
         let parent_value = require_str(params, "parent")?;
         let parent = std::fs::canonicalize(expand_tilde(&parent_value))
             .map_err(|error| format!("cannot open parent folder: {error}"))?;
@@ -381,6 +391,8 @@ impl AppState {
     /// the editor opened. The descriptor-relative helper holds the fenced
     /// parent through the atomic rename, defeating ancestor symlink swaps.
     pub(crate) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
+        #[cfg(test)]
+        service_test::service();
         let scope = FileScope::parse(params)?;
         let root = scope.resolve_root(self)?;
         let path = require_str(params, "path")?;

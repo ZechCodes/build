@@ -2089,3 +2089,9 @@ fn project_source_files_refuse_nul_backslash_and_case_variant_paths_without_writ
         "git source\n"
     );
 }
+
+#[path = "../fs/lock_tests.rs"]
+mod lock_tests;
+
+#[path = "../fs/race_tests.rs"]
+mod race_tests;

@@ -101,6 +101,8 @@ impl AppState {
         params: FsUploadIdParams,
         caller: &SessionSender,
     ) -> Result<FsUploadAbortResult, ApiError> {
+        #[cfg(test)]
+        super::service_test::service();
         self.owned_upload(&params.upload_id, caller)?;
         self.uploads.remove(&params.upload_id);
         Ok(FsUploadAbortResult {})
@@ -111,6 +113,8 @@ impl AppState {
         params: FsUploadIdParams,
         caller: &SessionSender,
     ) -> Result<FsUploadFinishResult, ApiError> {
+        #[cfg(test)]
+        super::service_test::service();
         self.owned_upload(&params.upload_id, caller)?;
         if let Err(error) = self.validate_upload_scope(&params.upload_id, caller) {
             if error.code() != "busy" {
@@ -171,6 +175,8 @@ impl AppState {
         params: FsUploadChunkParams,
         caller: &SessionSender,
     ) -> Result<FsUploadChunkResult, ApiError> {
+        #[cfg(test)]
+        super::service_test::service();
         self.validate_upload_scope(&params.upload_id, caller)?;
         let upload = self
             .uploads
@@ -211,6 +217,8 @@ impl AppState {
         params: FsUploadBeginParams,
         caller: &SessionSender,
     ) -> Result<FsUploadBeginResult, ApiError> {
+        #[cfg(test)]
+        super::service_test::service();
         self.reap_idle_uploads_at(Instant::now());
         if !caller.session_is_open() {
             return Err(ApiError::not_found("client session has ended"));

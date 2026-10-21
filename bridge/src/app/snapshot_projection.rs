@@ -15,6 +15,8 @@ pub(in crate::app) struct SnapshotObservations {
     pub(in crate::app) observation_owners: crate::observation_changes::ChangeKeys,
     pub(in crate::app) observation_reservations: crate::observation_changes::ChangeKeys,
     pending_owners: Mutex<BTreeSet<String>>,
+    #[cfg(test)]
+    publication_debts: Arc<publication_debt::PublicationDebts>,
     deferred_attention_notices: crate::observation_changes::ChangeKeys,
     ownership: Mutex<Option<Arc<ProjectionOwnership>>>,
     paths: BTreeMap<PathBuf, PathBuf>,
@@ -275,9 +277,13 @@ impl AppState {
     pub(in crate::app) fn publish_prepared_snapshot_projection(&self, mut delta: SnapshotDelta) {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.install");
+        #[cfg(test)]
+        let publication_coverage = delta.take_publication_coverage();
         let receipts = delta.take_observation_receipts();
         let attention_notices = delta.take_attention_notice_receipts();
         if self.read_view.publish_delta(delta) {
+            #[cfg(test)]
+            publication_debt::before_install_receipts(self);
             if let Some(receipts) = receipts {
                 receipts.acknowledge(self);
             }
@@ -285,6 +291,8 @@ impl AppState {
                 .unwrap()
                 .clear();
             self.publish_attention_notice_receipts(&attention_notices);
+            #[cfg(test)]
+            self.accept_publication_coverage(&publication_coverage);
         }
     }
 
@@ -323,6 +331,8 @@ impl AppState {
                 Err(_) => delta.remove("agent.list", owner),
             };
         }
+        #[cfg(test)]
+        let delta = self.capture_publication_coverage(delta, Some(owners));
         delta
     }
 
@@ -399,3 +409,6 @@ pub(in crate::app) mod work_counts;
 
 #[cfg(test)]
 pub(in crate::app) mod summary_counts;
+
+#[cfg(test)]
+pub(in crate::app) mod publication_debt;

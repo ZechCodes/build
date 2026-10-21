@@ -181,6 +181,8 @@ impl AppState {
             .board
             .attention()
             .mutation_clock(&plan_id, &state, &now);
+        #[cfg(test)]
+        let _publication_stage = self.begin_publication_stage(&plan_id);
         let (active, projection) =
             self.prepare_plan_mutation_snapshot(&plan_id, active, &state, &now);
         if let Err(error) = self.persist_plan_record_at(&plan_id, &active, clock) {
@@ -242,6 +244,8 @@ impl AppState {
         let now = now_rfc3339();
         let state = run_state_str(&active.run.state);
         let clock = self.board.attention().mutation_clock(&run_id, &state, &now);
+        #[cfg(test)]
+        let _publication_stage = self.begin_publication_stage(&run_id);
         let (active, projection) =
             self.prepare_run_mutation_snapshot(&run_id, active, &state, &now);
         if let Err(error) = self.persist_run_record_at(&run_id, &active, clock) {

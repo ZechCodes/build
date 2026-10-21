@@ -244,11 +244,15 @@ pub(in crate::app) async fn apply_off_the_socket(
 ) -> Result<Value, String> {
     loop {
         let waiting = WaitTimer::start();
+        #[cfg(test)]
+        let logical_wait = deferred.blocking_wait();
         let (done, pool_wait) = turn
             .aside(
                 timer,
                 tokio::task::spawn_blocking(move || {
                     let waited = waiting.elapsed();
+                    #[cfg(test)]
+                    drop(logical_wait);
                     (deferred.run(), waited)
                 }),
             )

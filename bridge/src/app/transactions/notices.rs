@@ -8,6 +8,9 @@ pub(super) struct MutationNotice {
     pub owner: String,
     pub news: Vec<AgentNews>,
     pub attention_dirty: bool,
+    #[cfg(test)]
+    pub publication_receipt:
+        Option<crate::app::snapshot_projection::publication_debt::PublicationReceipt>,
 }
 
 impl AppState {
@@ -18,10 +21,14 @@ impl AppState {
         attention_dirty: bool,
         projection: Option<SnapshotDelta>,
     ) {
+        #[cfg(test)]
+        let publication_receipt = self.commit_publication_debt(&owner);
         self.committed_entities.queue_notice(MutationNotice {
             owner,
             news,
             attention_dirty,
+            #[cfg(test)]
+            publication_receipt,
         });
         if self.committed_entities.has_borrowed(self) {
             return;
@@ -55,11 +62,23 @@ impl AppState {
         if notices.iter().any(|notice| notice.attention_dirty) {
             self.persist_attention();
         }
-        for MutationNotice { owner, news, .. } in notices {
+        for notice in notices {
+            #[cfg(test)]
+            let receipt = notice.publication_receipt.clone();
+            let MutationNotice { owner, news, .. } = notice;
             self.publish_read_owner(&owner, true);
             self.push_agent_news(&owner, news);
             self.changes.note_entity(&owner);
             self.publish_live_roster_for(&owner);
+            #[cfg(test)]
+            self.finish_publication_metadata(receipt.as_ref(), &owner);
         }
+    }
+}
+
+#[cfg(test)]
+impl AppState {
+    pub(in crate::app) fn flush_publication_metadata_for_test(&mut self) {
+        self.flush_committed_mutation_notices();
     }
 }

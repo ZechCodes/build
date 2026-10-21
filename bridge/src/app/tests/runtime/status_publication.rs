@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 mod metadata;
 mod notifications;
+mod publication_debt;
 
 const OWNER: &str = "run-status-publication";
 const START: &str = "2030-01-01T00:00:00Z";

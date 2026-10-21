@@ -185,6 +185,8 @@ pub(in crate::app) struct SnapshotDelta {
     observation_patch: Option<super::observation_reads::ObservationPatch>,
     observation_receipts: Option<super::observation_reads::ObservationReceipts>,
     attention_notice_receipts: Vec<(String, u64)>,
+    #[cfg(test)]
+    publication_coverage: Vec<super::snapshot_projection::publication_debt::PublicationReceipt>,
     global: Option<Option<Arc<super::snapshot_projection::incremental::GlobalProjection>>>,
 }
 
@@ -199,6 +201,8 @@ impl SnapshotDelta {
             observation_patch: None,
             observation_receipts: None,
             attention_notice_receipts: Vec::new(),
+            #[cfg(test)]
+            publication_coverage: Vec::new(),
             global: None,
         }
     }
@@ -285,6 +289,26 @@ impl SnapshotDelta {
         std::mem::take(&mut self.attention_notice_receipts)
     }
 
+    #[cfg(test)]
+    pub(in crate::app) fn set_publication_coverage(
+        mut self,
+        coverage: Vec<super::snapshot_projection::publication_debt::PublicationReceipt>,
+    ) -> Self {
+        self.publication_coverage = coverage;
+        self
+    }
+    #[cfg(test)]
+    pub(in crate::app) fn publication_coverage(
+        &self,
+    ) -> &[super::snapshot_projection::publication_debt::PublicationReceipt] {
+        &self.publication_coverage
+    }
+    #[cfg(test)]
+    pub(in crate::app) fn take_publication_coverage(
+        &mut self,
+    ) -> Vec<super::snapshot_projection::publication_debt::PublicationReceipt> {
+        std::mem::take(&mut self.publication_coverage)
+    }
     pub fn set_facts(mut self, facts: Arc<super::facts::PushFacts>) -> Self {
         self.facts = Some(facts);
         self

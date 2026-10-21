@@ -277,3 +277,72 @@ fn logical_write_retirement_exclusion_mutex_wait_is_always_known() {
     );
     assert_clean(&finished);
 }
+
+/// A shared condition has different causal attribution for its two originals.
+#[test]
+fn logical_write_retirement_joined_originals_split_own_and_predecessor_condition() {
+    use crate::timing::write_wait::WriteContext;
+    let registry = WriteWaitRegistry::new();
+    let owner = root(&registry, "joined-cause");
+    let peer = root(&registry, "joined-peer");
+    let (session, held) = pending_session();
+    let retirement = {
+        let _binding = owner.context().bind_sync();
+        Retirement::begin(session)
+    };
+    held.wait_for_arrival();
+    let joined = WriteContext::coalesced(&[owner.context(), peer.context()]);
+    let caller = joined.id();
+    let context = joined.context();
+    let waiting = std::thread::spawn(move || {
+        let _binding = context.bind_sync();
+        retirement.wait(SAFETY)
+    });
+    let blocked = observe(&registry, "joined-peer", |row| {
+        row.active.iter().any(|interval| {
+            interval.obligation == caller
+                && interval.category == IntervalCategory::KnownWait(WaitKind::Retirement)
+        })
+    });
+    let own = row(&registry, "joined-cause");
+    held.release();
+    let reaped = waiting.join().expect("joined condition caller joined");
+    joined.complete();
+    owner.complete();
+    peer.complete();
+    let owner_finished = observe(&registry, "joined-cause", |row| row.outstanding.is_empty());
+    let peer_finished = row(&registry, "joined-peer");
+    assert!(reaped);
+    assert!(
+        own.active
+            .iter()
+            .any(|interval| interval.obligation == caller
+                && interval.category == IntervalCategory::OwnExternal),
+        "{own:?}"
+    );
+    assert!(
+        !own.active
+            .iter()
+            .any(|interval| interval.obligation == caller
+                && matches!(interval.category, IntervalCategory::KnownWait(_))),
+        "{own:?}"
+    );
+    assert!(
+        blocked
+            .active
+            .iter()
+            .any(|interval| interval.obligation == caller
+                && interval.category == IntervalCategory::KnownWait(WaitKind::Retirement)),
+        "{blocked:?}"
+    );
+    assert!(
+        !blocked
+            .active
+            .iter()
+            .any(|interval| interval.obligation == caller
+                && interval.category == IntervalCategory::OwnExternal),
+        "{blocked:?}"
+    );
+    assert_clean(&owner_finished);
+    assert_clean(&peer_finished);
+}

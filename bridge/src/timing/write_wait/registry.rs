@@ -344,10 +344,16 @@ impl WriteWaitRegistry {
     pub(crate) fn collector_overhead(&self) -> CollectorOverhead {
         self.overhead.snapshot()
     }
-    pub(crate) fn active_snapshot(&self) -> Vec<WriteSnapshot> {
+    pub(crate) fn active_snapshot_with_time(&self) -> (Instant, Vec<WriteSnapshot>) {
         let active = self.active.load_full();
         let now = (self.clock)();
-        active.values().map(|record| record.snapshot(now)).collect()
+        (
+            now,
+            active.values().map(|record| record.snapshot(now)).collect(),
+        )
+    }
+    pub(crate) fn active_snapshot(&self) -> Vec<WriteSnapshot> {
+        self.active_snapshot_with_time().1
     }
     pub(crate) fn has_breaches(&self) -> bool {
         self.ever_breached.load(Ordering::Acquire)

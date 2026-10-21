@@ -40,6 +40,8 @@ pub(crate) struct ServiceSample {
     pub original_id: String,
     pub kind: ServiceKind,
     pub target: Duration,
+    /// Real operation wall time before any target padding.
+    pub operation_before_padding: Duration,
     /// Observed wall time, including target padding; never a configured value.
     pub actual: Duration,
     pub succeeded: bool,
@@ -212,6 +214,7 @@ impl ServiceRun {
                 original_id: plan.original_id.clone(),
                 kind: plan.kind,
                 target: plan.target,
+                operation_before_padding: Duration::ZERO,
                 actual,
                 succeeded,
                 abandoned,

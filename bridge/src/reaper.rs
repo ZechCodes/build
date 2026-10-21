@@ -25,6 +25,8 @@ use crate::harness::AgentSession;
 #[derive(Clone)]
 pub struct Retirement {
     reaped: Arc<(Mutex<bool>, Condvar)>,
+    #[cfg(test)]
+    cause: Option<crate::timing::write_wait::WriteContext>,
 }
 
 impl Retirement {
@@ -33,15 +35,48 @@ impl Retirement {
     pub fn begin(session: Arc<dyn AgentSession>) -> Retirement {
         let reaped = Arc::new((Mutex::new(false), Condvar::new()));
         let signal = Arc::clone(&reaped);
+        #[cfg(test)]
+        let cause = crate::timing::write_wait::current_context();
+        #[cfg(test)]
+        let child = cause.as_ref().map(|context| context.child());
+        #[cfg(test)]
+        let queued = child.as_ref().map(|child| {
+            child.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::Dispatch,
+            ))
+        });
         // A std thread and not a spawned task: the synchronous unit tests run
         // with no runtime under them, and a tab still has to end there.
         std::thread::spawn(move || {
-            session.end();
+            #[cfg(test)]
+            drop(queued);
+            #[cfg(test)]
+            let binding = child.as_ref().map(|child| child.context().bind_sync());
+            {
+                #[cfg(test)]
+                let _service = crate::timing::write_wait::current_interval(
+                    crate::timing::write_wait::IntervalCategory::OwnExternal,
+                );
+                session.end();
+            }
             let (done, waiting) = &*signal;
-            *done.lock().unwrap() = true;
+            {
+                let mut done = crate::timing::resource_lock!(done).unwrap();
+                *done = true;
+            }
             waiting.notify_all();
+            #[cfg(test)]
+            drop(binding);
+            #[cfg(test)]
+            if let Some(child) = child {
+                child.complete();
+            }
         });
-        Retirement { reaped }
+        Retirement {
+            reaped,
+            #[cfg(test)]
+            cause,
+        }
     }
 
     /// Whether the process is reaped, waiting up to `timeout` for it.
@@ -51,8 +86,13 @@ impl Retirement {
     /// are the ones that say so.
     pub fn wait(&self, timeout: Duration) -> bool {
         let (done, waiting) = &*self.reaped;
+        let done = crate::timing::resource_lock!(done).unwrap();
+        #[cfg(test)]
+        let _condition = (!*done)
+            .then(|| write_attribution::condition(&self.cause))
+            .flatten();
         let (done, _) = waiting
-            .wait_timeout_while(done.lock().unwrap(), timeout, |done| !*done)
+            .wait_timeout_while(done, timeout, |done| !*done)
             .expect("a retirement's thread never panics while holding this");
         *done
     }
@@ -134,3 +174,6 @@ fn retiring_name(dir: &std::path::Path) -> PathBuf {
 
 #[cfg(test)]
 mod write_origins;
+
+#[cfg(test)]
+mod write_attribution;

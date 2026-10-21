@@ -240,3 +240,30 @@ fn finite_git_service_retains_real_source_exclusion_preflight_and_index_effect()
     );
     assert_eq!(samples[0].original_id, "stage");
 }
+
+#[test]
+fn finite_service_records_real_operation_separately_from_target_padding() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("actual-effect.txt");
+    let services = FixtureServices::install(
+        vec![root.path().to_path_buf()],
+        vec![service_plan("effect-and-padding", ServiceKind::Filesystem, 100)],
+        None,
+    );
+    with_origin("effect-and-padding", "fs.write", || {
+        finite_service::run(root.path(), ServiceKind::Filesystem, || {
+            std::fs::write(&file, "real effect")?;
+            std::thread::sleep(Duration::from_millis(20));
+            Ok::<_, std::io::Error>(())
+        }).unwrap();
+    });
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "real effect");
+    let samples = services.samples();
+    assert_eq!(samples.len(), 1);
+    let sample = &samples[0];
+    assert_eq!(sample.original_id, "effect-and-padding");
+    assert!(sample.succeeded && !sample.abandoned);
+    assert!(sample.operation_before_padding >= Duration::from_millis(20), "{sample:?}");
+    assert!(sample.actual >= Duration::from_millis(100), "{sample:?}");
+    assert!(sample.operation_before_padding < sample.actual, "padding is a separate interval: {sample:?}");
+}

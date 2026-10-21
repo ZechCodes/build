@@ -9,6 +9,8 @@
 use super::*;
 use crate::app::runtime::deferred::{spawn_off_lock, OffLockJob};
 
+mod write_origins;
+
 /// The period of the timer-driven tasks under test: several ticks fall due
 /// inside one hold.
 const TICK: Duration = Duration::from_millis(20);

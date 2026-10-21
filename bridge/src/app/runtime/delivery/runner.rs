@@ -202,8 +202,18 @@ impl DeliveryRunner {
     /// already open.
     pub(in crate::app) fn run(state: &Arc<Mutex<AppState>>, mut turns: PendingTurns) {
         let timer = turns.clock.frame(AGENT_DELIVERY_METHOD);
+        #[cfg(test)]
+        let mut timer = timer;
         let mut completed_delivery_freed_capacity = false;
         while let Some((turn, mark)) = turns.next_turn() {
+            #[cfg(test)]
+            let mut turn = turn;
+            #[cfg(test)]
+            let mut mark = mark;
+            #[cfg(test)]
+            timer.set_write_context(mark.begin());
+            #[cfg(test)]
+            let _delivery_binding = timer.write_context().map(|context| context.bind_sync());
             if let Some(operation_id) = turn.operation_id.as_deref() {
                 let claimed = timer.lock(state).transition_delivery_operation(
                     operation_id,
@@ -215,6 +225,8 @@ impl DeliveryRunner {
                     Ok(true) => {}
                     Ok(false) => {
                         mark.settle(&mut timer.lock(state));
+                        #[cfg(test)]
+                        turn.complete_logical_origins();
                         completed_delivery_freed_capacity = true;
                         continue;
                     }
@@ -260,9 +272,20 @@ impl DeliveryRunner {
                 // which is emphatically not a place to spawn a replacement for
                 // work nobody is doing. The turn stays on its thread; the
                 // agent says why nothing opened.
-                Ok(DeliveryOutcome::Delivered(None)) => s.record_agent_start_declined(&turn),
-                Ok(DeliveryOutcome::Delivered(Some(_))) => {}
-                Ok(DeliveryOutcome::Refused(why)) => s.record_agent_start_unrunnable(&turn, &why),
+                Ok(DeliveryOutcome::Delivered(None)) => {
+                    s.record_agent_start_declined(&turn);
+                    #[cfg(test)]
+                    turn.complete_logical_origins();
+                }
+                Ok(DeliveryOutcome::Delivered(Some(_))) => {
+                    #[cfg(test)]
+                    turn.complete_logical_origins();
+                }
+                Ok(DeliveryOutcome::Refused(why)) => {
+                    s.record_agent_start_unrunnable(&turn, &why);
+                    #[cfg(test)]
+                    turn.complete_logical_origins();
+                }
                 Ok(DeliveryOutcome::Deferred) => {
                     s.delivery_queue.requeue(turn);
                 }
@@ -274,6 +297,8 @@ impl DeliveryRunner {
                 Err(error) => {
                     eprintln!("deliver to {}: {error}", turn.owner);
                     s.record_agent_delivery_failure(&turn, &error);
+                    #[cfg(test)]
+                    turn.complete_logical_origins();
                 }
             }
             // Off the queue and out of flight: from here the entity's agent tab
@@ -281,6 +306,8 @@ impl DeliveryRunner {
             mark.settle(&mut s);
             completed_delivery_freed_capacity |= completed;
         }
+        #[cfg(test)]
+        timer.set_write_context(None);
         if completed_delivery_freed_capacity {
             DeliveryRunner::drain(state, &timer);
         }

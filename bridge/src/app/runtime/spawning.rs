@@ -129,11 +129,18 @@ impl SettlingHandle {
         let Some(state) = self.0.as_ref().and_then(std::sync::Weak::upgrade) else {
             return;
         };
-        settle(
-            &mut state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        #[cfg(test)]
+        let waiting = crate::timing::write_wait::current_interval(
+            crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::AppLock,
+            ),
         );
+        let mut app = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        #[cfg(test)]
+        drop(waiting);
+        settle(&mut app);
     }
 }
 

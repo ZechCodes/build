@@ -14,6 +14,8 @@ pub struct AdmissionGate {
     state: Mutex<AdmissionState>,
     opened: Notify,
     resume_work: OnceLock<ResumeWork>,
+    #[cfg(test)]
+    state_observer: OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub struct AdmissionLease(Arc<LeaseInner>);
@@ -49,6 +51,10 @@ impl Drop for LeaseInner {
 
 impl AdmissionGate {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, AdmissionState> {
+        #[cfg(test)]
+        if let Some(observer) = self.state_observer.get() {
+            observer();
+        }
         #[cfg(test)]
         let waiting = crate::timing::write_wait::current_interval(
             crate::timing::write_wait::IntervalCategory::KnownWait(
@@ -169,3 +175,7 @@ impl AdmissionGate {
 #[cfg(test)]
 #[path = "admission/write_wait_tests.rs"]
 mod write_wait_tests;
+
+#[cfg(test)]
+#[path = "admission/test_support.rs"]
+pub(crate) mod test_support;

@@ -69,6 +69,8 @@ impl AppState {
         self.plans.insert(owner.to_string(), active);
         self.refresh_owner_snapshot_observations(owner);
         let projection = self.prepare_owner_snapshot_projection(owner);
+        #[cfg(test)]
+        self.record_prepared_publication(owner, projection.as_ref());
         let active = self
             .plans
             .remove(owner)
@@ -97,6 +99,8 @@ impl AppState {
         self.runs.insert(owner.to_string(), active);
         self.refresh_owner_snapshot_observations(owner);
         let projection = self.prepare_owner_snapshot_projection(owner);
+        #[cfg(test)]
+        self.record_prepared_publication(owner, projection.as_ref());
         let active = self
             .runs
             .remove(owner)

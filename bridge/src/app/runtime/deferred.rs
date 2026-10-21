@@ -66,14 +66,40 @@ pub(in crate::app) enum DeferredNext {
 pub(in crate::app) struct DeferredJob {
     work: DeferredWork,
     check: Option<DeferredResultCheck>,
+    #[cfg(test)]
+    logical: Option<crate::timing::write_wait::Obligation>,
 }
 
 impl DeferredJob {
     /// The lock-free phase, keeping the check for the write-back.
+    #[cfg(test)]
+    pub(in crate::app) fn blocking_wait(&self) -> Option<crate::timing::write_wait::WaitGuard> {
+        self.logical.as_ref().map(|child| {
+            child.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::BlockingPool,
+            ))
+        })
+    }
     pub(in crate::app) fn run(self) -> DeferredDone {
+        #[cfg(test)]
+        let binding = self
+            .logical
+            .as_ref()
+            .map(|child| child.context().bind_sync());
+        let outcome = {
+            #[cfg(test)]
+            let _service = crate::timing::write_wait::current_interval(
+                crate::timing::write_wait::IntervalCategory::OwnExternal,
+            );
+            self.work.run()
+        };
+        #[cfg(test)]
+        drop(binding);
         DeferredDone {
-            outcome: self.work.run(),
+            outcome,
             check: self.check,
+            #[cfg(test)]
+            logical: self.logical,
         }
     }
 }
@@ -83,6 +109,8 @@ impl DeferredJob {
 pub(in crate::app) struct DeferredDone {
     outcome: DeferredOutcome,
     check: Option<DeferredResultCheck>,
+    #[cfg(test)]
+    logical: Option<crate::timing::write_wait::Obligation>,
 }
 
 #[cfg(test)]
@@ -555,26 +583,98 @@ impl ProjectListRow {
 /// or a bounded fetch, and it must not sit on a runtime worker the relay's read
 /// loop needs. Returns the job back when there is no runtime to spawn onto
 /// (the synchronous unit tests), so the caller can decide what to do with it.
+#[cfg(test)]
+pub(in crate::app) type SpawnedOffLock = tokio::task::JoinHandle<()>;
+#[cfg(not(test))]
+pub(in crate::app) type SpawnedOffLock = ();
+
 pub(in crate::app) fn spawn_off_lock<J: OffLockJob>(
     state: Arc<Mutex<AppState>>,
     mut job: J,
-) -> Result<(), J> {
+) -> Result<SpawnedOffLock, J> {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         return Err(job);
     };
-    runtime.spawn(async move {
-        let claim = job.claim();
-        let decided = tokio::task::spawn_blocking(move || job.decide()).await;
+    #[cfg(test)]
+    let logical = crate::timing::write_wait::current_context().map(|context| context.child());
+    #[cfg(test)]
+    let queued = logical.as_ref().map(|child| {
+        child.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+            crate::timing::write_wait::WaitKind::Dispatch,
+        ))
+    });
+    let spawned = runtime.spawn(async move {
+        #[cfg(test)]
+        drop(queued);
+        let claim = {
+            #[cfg(test)]
+            let _binding = logical.as_ref().map(|child| child.context().bind_sync());
+            job.claim()
+        };
+        #[cfg(test)]
+        let pool_wait = logical.as_ref().map(|child| {
+            child.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::BlockingPool,
+            ))
+        });
+        #[cfg(test)]
+        let deciding_context = logical.as_ref().map(|child| child.context());
+        let decided = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            drop(pool_wait);
+            #[cfg(test)]
+            let _binding = deciding_context.map(|context| context.bind_sync());
+            #[cfg(test)]
+            let _service = crate::timing::write_wait::current_interval(
+                crate::timing::write_wait::IntervalCategory::OwnExternal,
+            );
+            job.decide()
+        })
+        .await;
+        #[cfg(test)]
+        let apply_wait = logical.as_ref().map(|child| {
+            child.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::BlockingPool,
+            ))
+        });
         off_the_workers(move || {
+            #[cfg(test)]
+            drop(apply_wait);
+            #[cfg(test)]
+            let binding = logical.as_ref().map(|child| child.context().bind_sync());
+            #[cfg(test)]
+            let waiting = crate::timing::write_wait::current_interval(
+                crate::timing::write_wait::IntervalCategory::KnownWait(
+                    crate::timing::write_wait::WaitKind::AppLock,
+                ),
+            );
             let mut app = state.lock().unwrap();
+            #[cfg(test)]
+            drop(waiting);
             match decided {
                 Ok(decided) => J::apply(&mut app, claim, decided),
                 Err(_) => J::abandon(&mut app, claim),
             }
+            drop(app);
+            #[cfg(test)]
+            {
+                drop(binding);
+                if let Some(child) = logical {
+                    child.complete();
+                }
+            }
         })
         .await;
     });
-    Ok(())
+    #[cfg(test)]
+    {
+        Ok(spawned)
+    }
+    #[cfg(not(test))]
+    {
+        drop(spawned);
+        Ok(())
+    }
 }
 
 impl AppState {
@@ -659,7 +759,11 @@ impl AppState {
         let DeferredDone {
             outcome: done,
             check,
+            #[cfg(test)]
+            logical,
         } = done;
+        #[cfg(test)]
+        let binding = logical.as_ref().map(|child| child.context().bind_sync());
         // Whether the git that just ran off-lock CHANGED anything. A read
         // deferred its work to keep the mutex free and writes nothing back, so
         // nothing about it is worth telling a browser; a mutating git verb
@@ -698,7 +802,15 @@ impl AppState {
         // only the reply is refused. A mismatch is this bridge's own bug —
         // an implementation that drifted from the type `api/v1` declares for
         // its verb — and reads as `internal` to the client.
-        Self::checked_reply(method, check, applied)
+        let result = Self::checked_reply(method, check, applied);
+        #[cfg(test)]
+        {
+            drop(binding);
+            if let Some(child) = logical {
+                child.complete();
+            }
+        }
+        result
     }
 
     /// [`AppState::apply_deferred`], and whatever the write-back handed on.
@@ -713,17 +825,32 @@ impl AppState {
         params: &Value,
         done: DeferredDone,
     ) -> DeferredNext {
+        #[cfg(test)]
+        let mut done = done;
+        #[cfg(test)]
+        let logical = done.logical.take();
+        #[cfg(test)]
+        let binding = logical.as_ref().map(|child| child.context().bind_sync());
         let applied = self.apply_deferred(method, params, done);
-        if applied.is_err() {
+        let next = if applied.is_err() {
             // A refused write-back hands nothing on.
             self.deferred_work = None;
             self.deferred_result_check = None;
-            return DeferredNext::Answered(applied);
+            DeferredNext::Answered(applied)
+        } else {
+            match self.take_deferred() {
+                Some(next) => DeferredNext::Again(next),
+                None => DeferredNext::Answered(applied),
+            }
+        };
+        #[cfg(test)]
+        {
+            drop(binding);
+            if let Some(child) = logical {
+                child.complete();
+            }
         }
-        match self.take_deferred() {
-            Some(next) => DeferredNext::Again(next),
-            None => DeferredNext::Answered(applied),
-        }
+        next
     }
 
     /// Hold a deferred reply to the result type its verb declares. Runs in
@@ -755,7 +882,12 @@ impl AppState {
         // Claim before either the relay or MCP drain releases the mutex.
         // All variants can observe filesystem state that deletion would remove.
         self.active_deferred_filesystem_jobs += 1;
-        Some(DeferredJob { work, check })
+        Some(DeferredJob {
+            work,
+            check,
+            #[cfg(test)]
+            logical: crate::timing::write_wait::current_context().map(|context| context.child()),
+        })
     }
 
     /// Name the result type the verb just dispatched declares, for the work

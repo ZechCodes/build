@@ -299,29 +299,78 @@ impl Drop for PendingTurns {
         if undelivered.is_empty() {
             return;
         }
+        #[cfg(test)]
+        let cleanup = {
+            let contexts: Vec<_> = undelivered
+                .iter()
+                .filter_map(|(_, mark)| mark.logical.as_ref().map(|child| child.context()))
+                .collect();
+            (!contexts.is_empty())
+                .then(|| crate::timing::write_wait::WriteContext::coalesced(&contexts))
+        };
+        #[cfg(test)]
+        let binding = cleanup.as_ref().map(|child| child.context().bind_sync());
         self.state.settle(|app| {
-            for (_, mark) in undelivered {
+            for (_turn, mark) in undelivered {
+                // Keep the primary tokens alive through mark settlement.
                 mark.settle(app);
             }
         });
+        #[cfg(test)]
+        {
+            drop(binding);
+            if let Some(child) = cleanup {
+                child.complete();
+            }
+        }
     }
 }
 
 pub(in crate::app) struct TurnMark {
     ticket: Option<super::queue::DeliveryTicket>,
     state: SettlingHandle,
+    #[cfg(test)]
+    logical: Option<crate::timing::write_wait::Obligation>,
+    #[cfg(test)]
+    queued: Option<crate::timing::write_wait::WaitGuard>,
 }
 
 impl TurnMark {
-    fn new(ticket: super::queue::DeliveryTicket, state: SettlingHandle) -> Self {
+    fn new(
+        ticket: super::queue::DeliveryTicket,
+        state: SettlingHandle,
+        #[cfg(test)] logical: Option<crate::timing::write_wait::Obligation>,
+    ) -> Self {
+        #[cfg(test)]
+        let queued = logical.as_ref().map(|child| {
+            child.interval(crate::timing::write_wait::IntervalCategory::KnownWait(
+                crate::timing::write_wait::WaitKind::Dispatch,
+            ))
+        });
         Self {
             ticket: Some(ticket),
             state,
+            #[cfg(test)]
+            logical,
+            #[cfg(test)]
+            queued,
         }
+    }
+    #[cfg(test)]
+    pub(in crate::app) fn begin(&mut self) -> Option<crate::timing::write_wait::WriteContext> {
+        self.queued.take();
+        self.logical.as_ref().map(|child| child.context())
     }
     pub(in crate::app) fn settle(mut self, app: &mut AppState) {
         if let Some(ticket) = self.ticket.take() {
             app.delivery_queue.settle(ticket);
+        }
+        #[cfg(test)]
+        {
+            self.queued.take();
+            if let Some(child) = self.logical.take() {
+                child.complete();
+            }
         }
     }
 }
@@ -331,8 +380,21 @@ impl Drop for TurnMark {
         let Some(ticket) = self.ticket.take() else {
             return;
         };
+        #[cfg(test)]
+        self.queued.take();
+        #[cfg(test)]
+        let binding = self
+            .logical
+            .as_ref()
+            .map(|child| child.context().bind_sync());
         self.state
             .settle(move |app| app.delivery_queue.settle(ticket));
+        #[cfg(test)]
+        drop(binding);
+        #[cfg(test)]
+        if let Some(child) = self.logical.take() {
+            child.complete();
+        }
     }
 }
 
@@ -405,8 +467,20 @@ impl AppState {
         let state = self.settling_handle();
         let mut turns = std::collections::VecDeque::with_capacity(ready.len());
         for turn in ready {
+            // Reject mixed collector epochs before changing execution counters.
+            #[cfg(test)]
+            let logical = {
+                let contexts = turn.logical_contexts();
+                (!contexts.is_empty())
+                    .then(|| crate::timing::write_wait::WriteContext::coalesced(&contexts))
+            };
             let ticket = self.delivery_queue.start(&turn);
-            let mark = TurnMark::new(ticket, state.clone());
+            let mark = TurnMark::new(
+                ticket,
+                state.clone(),
+                #[cfg(test)]
+                logical,
+            );
             turns.push_back((turn, mark));
         }
         PendingTurns {

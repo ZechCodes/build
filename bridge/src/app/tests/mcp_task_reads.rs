@@ -9,6 +9,7 @@ const WATCHDOG: Duration = Duration::from_secs(5);
 // ReadPool keeps eight fixed connections; capacity is intentionally private.
 const SQL_READERS: usize = 8;
 
+mod admission;
 mod cancellation;
 mod classification;
 mod cold_catalogue;

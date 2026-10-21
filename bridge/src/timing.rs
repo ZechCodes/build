@@ -30,6 +30,8 @@ mod resource_lock;
 pub(crate) use resource_lock::resource_lock;
 
 #[cfg(test)]
+pub(crate) mod completed_frames;
+#[cfg(test)]
 mod lock_observer;
 #[cfg(test)]
 pub(crate) mod phase_samples;
@@ -204,6 +206,8 @@ pub struct FrameClock {
     #[cfg(test)]
     request_observer: RwLock<Option<Arc<RequestObserver>>>,
     #[cfg(test)]
+    completed_observer: RwLock<Option<Arc<completed_frames::CompletedObserver>>>,
+    #[cfg(test)]
     request_observed: AtomicBool,
     #[cfg(test)]
     write_wait_registry: RwLock<Option<Arc<write_wait::WriteWaitRegistry>>>,
@@ -248,6 +252,8 @@ impl FrameClock {
             phase_samples: Mutex::new(None),
             #[cfg(test)]
             request_observer: RwLock::new(None),
+            #[cfg(test)]
+            completed_observer: RwLock::new(None),
             #[cfg(test)]
             request_observed: AtomicBool::new(false),
             #[cfg(test)]
@@ -491,6 +497,8 @@ impl QueuedFrame {
             request: None,
             #[cfg(test)]
             write_origin: self.write_origin.take(),
+            #[cfg(test)]
+            write_context: None,
         }
     }
 }
@@ -551,6 +559,8 @@ pub struct FrameTimer {
     request: Option<crate::transport::Frame>,
     #[cfg(test)]
     write_origin: Option<Arc<write_origin::WriteOrigin>>,
+    #[cfg(test)]
+    write_context: Option<write_wait::WriteContext>,
 }
 
 /// A wait whose endpoint may run on a different thread from its frame.
@@ -697,9 +707,13 @@ impl<'a, T> LockedFor<'a, T> {
             .held_micros
             .fetch_add(micros(self.acquired_at.elapsed()), Ordering::Relaxed);
         let asked_at = Instant::now();
+        #[cfg(test)]
+        let write_wait = self.timer.write_wait(write_wait::WaitKind::Dispatch);
         let (guard, _) = condvar
             .wait_timeout_while(guard, timeout, |state| !ready(state))
             .expect("the app mutex is never poisoned by a waiter");
+        #[cfg(test)]
+        drop(write_wait);
         self.timer
             .lock_wait_micros
             .fetch_add(micros(asked_at.elapsed()), Ordering::Relaxed);

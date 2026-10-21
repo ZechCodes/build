@@ -69,6 +69,7 @@ impl AppState {
                 refusal,
             };
             let settle = move |state: &mut AppState, outcome: Result<ResetArtifacts, String>| {
+                let mut held = held;
                 state
                     .resetting_conversations
                     .remove(&address.conversation_id);
@@ -86,9 +87,13 @@ impl AppState {
                         .conversation_at(&address)
                         .is_ok_and(|thread| thread.id == expected)
                 {
-                    if let Some(held) = held {
+                    if let Some(held) = held.take() {
                         state.delivery_queue.restore_conversation(held);
                     }
+                }
+                #[cfg(test)]
+                if let Some(held) = held {
+                    held.cancel();
                 }
                 // Keep independent readers fenced through the complete commit
                 // (including committed cleanup errors) or failure restoration.
@@ -149,6 +154,17 @@ impl AppState {
                 )
                 .map_err(|error| format!("conversation.reset store: {error}"))?;
         }
+        #[cfg(test)]
+        let publication_receipts: Vec<_> = agents
+            .iter()
+            .map(|agent| agent.owner_id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .map(|owner| {
+                let receipt = self.commit_publication_debt(&owner);
+                (owner, receipt)
+            })
+            .collect();
         self.committed_entities
             .apply_conversation_reset(&agents, &summary_owners);
         // Once the database commits, no later failure may restore resumable
@@ -158,8 +174,13 @@ impl AppState {
         // A retiring delivery may have deferred/requeued before its ticket
         // settled. Its captured callbacks are finished now, and its old turn
         // must leave with the history rather than run on the replacement.
-        self.delivery_queue
+        let discarded = self
+            .delivery_queue
             .take_conversation(&address.conversation_id);
+        #[cfg(test)]
+        discarded.cancel();
+        #[cfg(not(test))]
+        drop(discarded);
         self.operation_ledger
             .forget_conversation(&address.conversation_id);
         self.board.attention_mut().replace_entries(attention);
@@ -187,6 +208,10 @@ impl AppState {
             self.publish_live_roster_for(&owner);
         }
         self.note_board_changed();
+        #[cfg(test)]
+        for (owner, receipt) in publication_receipts {
+            self.finish_publication_metadata(receipt.as_ref(), &owner);
+        }
         cleanup_result?;
         let agent = self
             .entity_agents(&address.entity_id)?

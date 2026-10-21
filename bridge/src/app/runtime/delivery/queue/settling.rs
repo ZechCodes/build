@@ -63,11 +63,15 @@ impl SettlingTurns {
     }
     /// Wait `turn` until `until`, or for the next delivery when `None`.
     pub(super) fn add(&mut self, turn: PendingAgentTurn, until: Option<Instant>) {
+        #[cfg(test)]
+        let mut turn = turn;
         if let Some(joined) = self
             .waiting
             .iter_mut()
             .find(|waiting| waiting.turn.carries(&turn))
         {
+            #[cfg(test)]
+            joined.turn.absorb_logical_origins(&mut turn);
             joined.until = earlier(joined.until, until);
             return;
         }
@@ -94,7 +98,12 @@ impl SettlingTurns {
             });
         self.waiting = waiting;
         for released in going {
-            if !ready.iter().any(|turn| turn.carries(&released.turn)) {
+            #[cfg(test)]
+            let mut released = released;
+            if let Some(_turn) = ready.iter_mut().find(|turn| turn.carries(&released.turn)) {
+                #[cfg(test)]
+                _turn.absorb_logical_origins(&mut released.turn);
+            } else {
                 ready.push(released.turn);
             }
         }
@@ -142,15 +151,43 @@ impl SettlingTurns {
     /// Drop what a refused request queued since `earlier_len`, the way the
     /// queue does. A turn that joined one already waiting cannot be taken back
     /// out of it; its line stays unread on the thread either way.
-    pub(super) fn refuse_since(&mut self, earlier_len: usize) {
+    pub(super) fn refuse_since(
+        &mut self,
+        earlier_len: usize,
+        #[cfg(test)] mut discard: impl FnMut(&mut PendingAgentTurn),
+    ) {
         let earlier_len = earlier_len.min(self.waiting.len());
         let mut appended = self.waiting.split_off(earlier_len);
-        appended.retain(|waiting| waiting.turn.survives_refusal);
+        appended.retain_mut(|waiting| {
+            let keep = waiting.turn.survives_refusal;
+            #[cfg(test)]
+            if !keep {
+                discard(&mut waiting.turn);
+            }
+            keep
+        });
         self.waiting.append(&mut appended);
     }
 
-    pub(super) fn retain(&mut self, mut keep: impl FnMut(&PendingAgentTurn) -> bool) {
-        self.waiting.retain(|waiting| keep(&waiting.turn));
+    pub(super) fn retain(
+        &mut self,
+        mut keep: impl FnMut(&PendingAgentTurn) -> bool,
+        #[cfg(test)] mut discard: impl FnMut(&mut PendingAgentTurn),
+    ) {
+        self.waiting.retain_mut(|waiting| {
+            let retain = keep(&waiting.turn);
+            #[cfg(test)]
+            if !retain {
+                discard(&mut waiting.turn);
+            }
+            retain
+        });
+    }
+    #[cfg(test)]
+    pub(super) fn cancel_logical_origins(&mut self) {
+        for waiting in &mut self.waiting {
+            waiting.turn.cancel_logical_origins();
+        }
     }
 
     /// End every open window now, for a test that cannot wait thirty seconds.

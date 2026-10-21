@@ -11,11 +11,15 @@ use crate::app::TabKey;
 use crate::operation::OperationReceipt;
 
 mod settling;
+#[cfg(test)]
+mod write_attribution;
 
 pub(in crate::app) use settling::NOTICE_SETTLE_WINDOW;
 
 #[derive(Default)]
 pub(in crate::app) struct DeliveryQueue {
+    #[cfg(test)]
+    logical_waits: Vec<write_attribution::QueuedWait>,
     queued: Vec<PendingAgentTurn>,
     /// Turns that do not wake their agent yet. Not "on their way" to anyone:
     /// [`Self::holds_owner`] and [`Self::holds_agent`] do not count them, so no
@@ -36,12 +40,12 @@ pub(in crate::app) struct DeliveryCompletion(Arc<(Mutex<usize>, Condvar)>);
 impl DeliveryCompletion {
     fn start(&self) {
         let (count, _) = &*self.0;
-        *count.lock().unwrap() += 1;
+        *crate::timing::resource_lock!(count).unwrap() += 1;
     }
 
     fn settle(&self) -> bool {
         let (count, waiting) = &*self.0;
-        let mut count = count.lock().unwrap();
+        let mut count = crate::timing::resource_lock!(count).unwrap();
         *count -= 1;
         let complete = *count == 0;
         if complete {
@@ -52,14 +56,27 @@ impl DeliveryCompletion {
 
     pub(in crate::app) fn wait(&self, timeout: Duration) -> bool {
         let (count, waiting) = &*self.0;
+        let count = crate::timing::resource_lock!(count).unwrap();
+        #[cfg(test)]
+        let _predecessor = (*count > 0)
+            .then(|| {
+                crate::timing::write_wait::current_interval(
+                    crate::timing::write_wait::IntervalCategory::KnownWait(
+                        crate::timing::write_wait::WaitKind::Dispatch,
+                    ),
+                )
+            })
+            .flatten();
         let (count, _) = waiting
-            .wait_timeout_while(count.lock().unwrap(), timeout, |count| *count > 0)
+            .wait_timeout_while(count, timeout, |count| *count > 0)
             .unwrap();
         *count == 0
     }
 }
 
 pub(in crate::app) struct HeldConversationTurns {
+    #[cfg(test)]
+    logical_waits: Vec<write_attribution::QueuedWait>,
     queued: Vec<PendingAgentTurn>,
     settling: settling::SettlingTurns,
 }
@@ -91,6 +108,11 @@ impl DeliveryQueue {
             .partition(|turn: &PendingAgentTurn| turn.conversation_id == conversation_id);
         self.queued = remaining;
         HeldConversationTurns {
+            #[cfg(test)]
+            logical_waits: write_attribution::take_conversation(
+                &mut self.logical_waits,
+                conversation_id,
+            ),
             queued,
             settling: self.settling.take_conversation(conversation_id),
         }
@@ -104,9 +126,18 @@ impl DeliveryQueue {
             turn.survives_refusal = true;
         }
         self.queued.append(&mut held.queued);
+        #[cfg(test)]
+        self.logical_waits.append(&mut held.logical_waits);
         self.settling.restore(held.settling);
     }
     pub(in crate::app) fn enqueue(&mut self, turn: PendingAgentTurn) {
+        #[cfg(test)]
+        let mut turn = turn;
+        #[cfg(test)]
+        {
+            turn.capture_logical_origin();
+            write_attribution::begin(&mut self.logical_waits, &turn);
+        }
         self.queued.push(turn);
     }
 
@@ -123,7 +154,16 @@ impl DeliveryQueue {
     }
 
     fn enqueue_waiting(&mut self, turn: PendingAgentTurn, until: Option<Instant>) {
-        if self.queued.iter().any(|queued| queued.carries(&turn)) {
+        #[cfg(test)]
+        let mut turn = turn;
+        #[cfg(test)]
+        {
+            turn.capture_logical_origin();
+            write_attribution::begin(&mut self.logical_waits, &turn);
+        }
+        if let Some(_queued) = self.queued.iter_mut().find(|queued| queued.carries(&turn)) {
+            #[cfg(test)]
+            _queued.absorb_logical_origins(&mut turn);
             return;
         }
         self.settling.add(turn, until);
@@ -139,9 +179,20 @@ impl DeliveryQueue {
     pub(in crate::app) fn refuse_since(&mut self, checkpoint: DeliveryCheckpoint) {
         let earlier_len = checkpoint.queued.min(self.queued.len());
         let mut appended = self.queued.split_off(earlier_len);
-        appended.retain(|turn| turn.survives_refusal);
+        appended.retain_mut(|turn| {
+            let keep = turn.survives_refusal;
+            #[cfg(test)]
+            if !keep {
+                write_attribution::discard(&mut self.logical_waits, turn);
+            }
+            keep
+        });
         self.queued.append(&mut appended);
-        self.settling.refuse_since(checkpoint.settling);
+        self.settling.refuse_since(
+            checkpoint.settling,
+            #[cfg(test)]
+            |turn| write_attribution::discard(&mut self.logical_waits, turn),
+        );
     }
 
     /// Partition under the caller's existing AppState guard.
@@ -165,6 +216,10 @@ impl DeliveryQueue {
             |turn| !hold(turn) && !agents_in_flight.contains_key(&turn.tab_key()),
             Instant::now(),
         );
+        #[cfg(test)]
+        for turn in &ready {
+            write_attribution::end(&mut self.logical_waits, turn);
+        }
         ready
     }
 
@@ -217,6 +272,8 @@ impl DeliveryQueue {
 
     /// Re-entry happens before settling the old ticket under the same app lock.
     pub(in crate::app) fn requeue(&mut self, turn: PendingAgentTurn) {
+        #[cfg(test)]
+        write_attribution::begin(&mut self.logical_waits, &turn);
         self.queued.push(turn);
     }
 
@@ -261,8 +318,19 @@ impl DeliveryQueue {
         &mut self,
         mut keep: impl FnMut(&PendingAgentTurn) -> bool,
     ) {
-        self.queued.retain(|turn| keep(turn));
-        self.settling.retain(keep);
+        self.queued.retain_mut(|turn| {
+            let retain = keep(turn);
+            #[cfg(test)]
+            if !retain {
+                write_attribution::discard(&mut self.logical_waits, turn);
+            }
+            retain
+        });
+        self.settling.retain(
+            keep,
+            #[cfg(test)]
+            |turn| write_attribution::discard(&mut self.logical_waits, turn),
+        );
     }
 
     /// Attach an accepted plan operation to the newest unassigned turn for its
@@ -354,6 +422,10 @@ impl DeliveryQueue {
 
     #[cfg(test)]
     pub(in crate::app) fn clear_queued(&mut self) {
+        #[cfg(test)]
+        for turn in &mut self.queued {
+            write_attribution::discard(&mut self.logical_waits, turn);
+        }
         self.queued.clear();
     }
 

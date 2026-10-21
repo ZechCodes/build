@@ -156,11 +156,22 @@ impl QueuedFrame {
     }
 }
 impl FrameTimer {
+    pub(crate) fn with_write_context(mut self, context: Option<WriteContext>) -> Self {
+        self.set_write_context(context);
+        self
+    }
+    pub(crate) fn set_write_context(&mut self, context: Option<WriteContext>) {
+        self.write_context = context;
+    }
+
     pub(crate) fn write_context(&self) -> Option<WriteContext> {
-        self.write_origin.as_ref().map(|origin| origin.context())
+        self.write_context
+            .clone()
+            .or_else(|| self.write_origin.as_ref().map(|origin| origin.context()))
     }
     pub(crate) fn write_wait(&self, kind: WaitKind) -> Option<WaitGuard> {
-        self.write_origin.as_ref().map(|origin| origin.wait(kind))
+        self.write_context()
+            .map(|context| context.interval(IntervalCategory::KnownWait(kind)))
     }
 }
 

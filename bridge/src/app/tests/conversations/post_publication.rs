@@ -1,5 +1,7 @@
 use super::*;
 
+mod attention_scope;
+
 fn counted_post(state: &Arc<Mutex<AppState>>, params: Value) -> (Value, Value) {
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
     let samples = clock.capture_phases();

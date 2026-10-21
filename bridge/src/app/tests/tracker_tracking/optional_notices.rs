@@ -369,7 +369,7 @@ fn optional_enrollment_never_exempts_a_comment_to_the_actual_or_pending_holder()
             let reply = fixture.state.handle(req(
                 "tasks.comment",
                 json!({
-                    "task_id":fixture.task,"body":"Question for the task holder","notify_user":false
+                    "task_id":fixture.task,"body":"Question for the task holder"
                 }),
             ));
             assert_eq!(reply["ok"], true, "{reply}");

@@ -6,7 +6,7 @@ use crate::timing::write_wait::WriteContext;
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn completed_frames_pair_raw_rpc_ids_with_all_of_their_actual_holds() {
     let clock = FrameClock::reporting_to(Arc::new(|_| {}));
-    clock.capture_write_waits();
+    let registry = clock.capture_write_waits();
     let observed = Arc::new(Mutex::new(Vec::<CompletedFrame>::new()));
     let record = observed.clone();
     // No request-phase observer is installed: pairing has its own opt-in.
@@ -79,7 +79,25 @@ async fn completed_frames_pair_raw_rpc_ids_with_all_of_their_actual_holds() {
         assert!(row.total >= row.held + row.lock_wait);
         assert!(row.total >= row.queued);
         assert!(row.permit_wait.is_none());
-        assert!(row.pool_wait.is_some());
+        // Ordinary RPC starts this timer after blocking-pool entry. Its pool
+        // residence is part of `queued`, not the MCP-only optional metric.
+        assert!(row.pool_wait.is_none());
+        let original = registry
+            .snapshot()
+            .into_iter()
+            .find(|write| row.original_ids == [write.original_id.as_str()])
+            .unwrap();
+        assert!(
+            registry.completed_intervals().iter().any(|interval| {
+                interval.origins.contains(&original.id)
+                    && interval.category
+                        == crate::timing::write_wait::IntervalCategory::KnownWait(
+                            crate::timing::write_wait::WaitKind::BlockingPool,
+                        )
+            }),
+            "RPC pool residence remains measured for {}",
+            original.original_id
+        );
     }
 }
 

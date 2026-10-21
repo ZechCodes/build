@@ -108,26 +108,35 @@ impl AppState {
             thread.post_user_from_build(body, &now);
             Ok(serde_json::Value::Null)
         })?;
-        self.delivery_queue
-            .enqueue_with_next_delivery(PendingAgentTurn {
-                #[cfg(test)]
-                logical_obligations: Vec::new(),
-                operation_id: None,
-                root: addressed.root.clone(),
-                owner: addressed.entity_id.clone(),
-                agent_id: addressed.agent_id.clone(),
-                conversation_id: addressed.conversation_id.clone(),
-                model_choice: addressed.model_choice.clone(),
-                choice_revision: addressed.choice_revision,
-                interrupt: false,
-                say: Some(TurnText {
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                }),
-                phase: "task_reminder",
-                wants_catch_up: true,
-                survives_refusal: false,
-            });
+        let turn = PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
+            operation_id: None,
+            root: addressed.root.clone(),
+            owner: addressed.entity_id.clone(),
+            agent_id: addressed.agent_id.clone(),
+            conversation_id: addressed.conversation_id.clone(),
+            model_choice: addressed.model_choice.clone(),
+            choice_revision: addressed.choice_revision,
+            interrupt: false,
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
+            phase: "task_reminder",
+            wants_catch_up: true,
+            survives_refusal: false,
+        };
+        #[cfg(test)]
+        let turn = {
+            let mut turn = turn;
+            self.qualify_optional_notice(
+                Some(crate::timing::optional_notices::OptionalNoticeKind::CompleteReminder),
+                &mut turn,
+            );
+            turn
+        };
+        self.delivery_queue.enqueue_with_next_delivery(turn);
         Ok(())
     }
 }

@@ -96,7 +96,24 @@ impl AppState {
                     holds_it: holder.as_deref() == Some(&agent_id),
                 },
             );
-            if let Err(why) = self.deliver_notice(&agent_id, &envelope, &notice, &body) {
+            // The existing non-comment path already excluded pending holders.
+            // Comments lack that authoritative observation and remain required.
+            #[cfg(test)]
+            let optional = (write.comments.is_empty()
+                && !matches!(
+                    write.task.assignee,
+                    Some(crate::tracker::Assignee::ProjectAgent)
+                )
+                && holder.as_deref() != Some(agent_id.as_str()))
+            .then_some(crate::timing::optional_notices::OptionalNoticeKind::TrackerWatchNotice);
+            if let Err(why) = self.deliver_notice(
+                &agent_id,
+                &envelope,
+                &notice,
+                &body,
+                #[cfg(test)]
+                optional,
+            ) {
                 eprintln!("notify {agent_id} about task #{}: {why}", write.task.number);
             }
         }
@@ -161,6 +178,7 @@ impl AppState {
         envelope: &TaskEnvelope,
         notice: &TaskNotice,
         body: &str,
+        #[cfg(test)] optional: Option<crate::timing::optional_notices::OptionalNoticeKind>,
     ) -> Result<(), String> {
         let entity_id = self
             .entity_of_agent(agent_id)
@@ -168,14 +186,21 @@ impl AppState {
         let body = body.to_string();
         let envelope = envelope.clone();
         let notice = notice.clone();
-        self.post_from_build_and_wake(&entity_id, agent_id, "task_notice", |thread, now| {
-            thread.post_user_from_build(body, now);
-            // Both: the envelope says WHICH task, the notice says what
-            // happened to it, and one line that links the right thing needs
-            // the two together.
-            thread.wear_task(envelope);
-            thread.wear_task_notice(notice);
-        })
+        self.post_from_build_and_wake_rule(
+            &entity_id,
+            agent_id,
+            "task_notice",
+            |thread, now| {
+                thread.post_user_from_build(body, now);
+                // Both: the envelope says WHICH task, the notice says what
+                // happened to it, and one line that links the right thing needs
+                // the two together.
+                thread.wear_task(envelope);
+                thread.wear_task_notice(notice);
+            },
+            #[cfg(test)]
+            optional,
+        )
     }
 
     /// Write something Build has to say on one agent's conversation, then
@@ -192,34 +217,58 @@ impl AppState {
         phase: &'static str,
         write: impl FnOnce(&mut crate::thread::Thread, &str),
     ) -> Result<(), String> {
+        self.post_from_build_and_wake_rule(
+            entity_id,
+            agent_id,
+            phase,
+            write,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    fn post_from_build_and_wake_rule(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        phase: &'static str,
+        write: impl FnOnce(&mut crate::thread::Thread, &str),
+        #[cfg(test)] optional: Option<crate::timing::optional_notices::OptionalNoticeKind>,
+    ) -> Result<(), String> {
         let addressed = self.current_service_agent(entity_id, agent_id)?;
         let now = crate::store::now_rfc3339();
         self.edit_agent_conversation(entity_id, agent_id, |thread, _| {
             write(thread, &now);
             Ok(serde_json::Value::Null)
         })?;
-        self.delivery_queue
-            .enqueue_after_settle_window(PendingAgentTurn {
-                #[cfg(test)]
-                logical_obligations: Vec::new(),
-                operation_id: None,
-                root: addressed.root.clone(),
-                owner: addressed.entity_id.clone(),
-                agent_id: addressed.agent_id.clone(),
-                conversation_id: addressed.conversation_id.clone(),
-                model_choice: addressed.model_choice.clone(),
-                choice_revision: addressed.choice_revision,
-                interrupt: false,
-                // The message is already on the thread, so the turn says what
-                // every other unread message says: go and read it.
-                say: Some(TurnText {
-                    cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
-                    warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
-                }),
-                phase,
-                wants_catch_up: true,
-                survives_refusal: false,
-            });
+        let turn = PendingAgentTurn {
+            #[cfg(test)]
+            logical_obligations: Vec::new(),
+            operation_id: None,
+            root: addressed.root.clone(),
+            owner: addressed.entity_id.clone(),
+            agent_id: addressed.agent_id.clone(),
+            conversation_id: addressed.conversation_id.clone(),
+            model_choice: addressed.model_choice.clone(),
+            choice_revision: addressed.choice_revision,
+            interrupt: false,
+            // The message is already on the thread, so the turn says what
+            // every other unread message says: go and read it.
+            say: Some(TurnText {
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
+                warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            }),
+            phase,
+            wants_catch_up: true,
+            survives_refusal: false,
+        };
+        #[cfg(test)]
+        let turn = {
+            let mut turn = turn;
+            self.qualify_optional_notice(optional, &mut turn);
+            turn
+        };
+        self.delivery_queue.enqueue_after_settle_window(turn);
         Ok(())
     }
 }

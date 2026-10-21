@@ -1,139 +1,54 @@
-//! Ownership shared by every row in one immutable projection. This context
-//! lives only while its candidate is rendered; it never survives a mutation.
+//! One guard owns fresh render memos and may share validated pure structure.
 use super::{AppState, Workspace};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 mod inputs;
+mod structure;
 #[cfg(test)]
 pub(in crate::app) mod work_counts;
+pub(in crate::app) use structure::ProjectionStructure;
 
-#[derive(Default)]
 pub(in crate::app) struct ProjectionOwnership {
     pub(in crate::app) rendering: super::projection_rendering::ProjectionRendering,
-    project_owners: BTreeSet<String>,
-    workspace_owners: BTreeMap<String, Option<String>>,
-    owner_workspaces: BTreeMap<String, String>,
-    owner_project_workspaces: BTreeMap<(String, String), String>,
-    surviving_workspaces: BTreeMap<String, String>,
-    compaction_workspaces: BTreeMap<String, String>,
-    task_workspaces: HashMap<String, String>,
-    task_paths: HashMap<PathBuf, String>,
+    structure: Arc<ProjectionStructure>,
 }
 
 impl ProjectionOwnership {
-    /// Keep the context alive when comparing identities: this is the actual
-    /// structural map's storage, not a synthesized capture generation.
+    pub(in crate::app) fn structure(&self) -> Arc<ProjectionStructure> {
+        Arc::clone(&self.structure)
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn structural_identity_for_test(&self) -> usize {
-        std::ptr::from_ref(&self.workspace_owners) as usize
+        Arc::as_ptr(&self.structure) as usize
     }
 
     pub(in crate::app) fn is_project_owner(&self, owner: &str) -> bool {
-        self.project_owners.contains(owner)
+        self.structure.is_project_owner(owner)
     }
-
     pub(in crate::app) fn workspace_owner(&self, workspace: &str) -> Option<Option<&String>> {
-        self.workspace_owners.get(workspace).map(Option::as_ref)
+        self.structure.workspace_owner(workspace)
     }
-
     pub(in crate::app) fn workspace_for_owner(
         &self,
         owner: &str,
         project: Option<&str>,
     ) -> Option<&str> {
-        match project {
-            Some(project) => self
-                .owner_project_workspaces
-                .get(&(owner.into(), project.into())),
-            None => self.owner_workspaces.get(owner),
-        }
-        .map(String::as_str)
+        self.structure.workspace_for_owner(owner, project)
     }
-
     pub(in crate::app) fn surviving_workspace(&self, owner: &str) -> Option<&str> {
-        self.surviving_workspaces.get(owner).map(String::as_str)
+        self.structure.surviving_workspace(owner)
     }
-
     pub(in crate::app) fn compaction_workspace(&self, owner: &str) -> Option<&str> {
-        self.compaction_workspaces.get(owner).map(String::as_str)
+        self.structure.compaction_workspace(owner)
     }
-
     pub(in crate::app) fn task_workspace(&self, owner: &str) -> Option<&str> {
-        self.task_workspaces.get(owner).map(String::as_str)
+        self.structure.task_workspace(owner)
     }
-
     pub(in crate::app) fn task_paths(&self) -> &HashMap<PathBuf, String> {
-        &self.task_paths
-    }
-
-    fn capture_workspace(&mut self, inputs: &inputs::Inputs<'_>, index: usize) {
-        let workspace = inputs.workspaces[index];
-        let owner = inputs.owner(index);
-        if let Some(owner) = owner {
-            self.owner_workspaces
-                .entry(owner.into())
-                .or_insert_with(|| workspace.id.clone());
-            self.owner_project_workspaces
-                .entry((owner.into(), workspace.project_id.clone()))
-                .or_insert_with(|| workspace.id.clone());
-            self.capture_task_workspace(inputs, index, owner);
-        }
-        self.workspace_owners
-            .insert(workspace.id.clone(), owner.map(str::to_owned));
-        self.task_paths
-            .entry(workspace.root.clone())
-            .or_insert_with(|| workspace.id.clone());
-        self.task_paths
-            .entry(inputs.workspace_roots[index].clone())
-            .or_insert_with(|| workspace.id.clone());
-    }
-
-    fn capture_task_workspace(&mut self, inputs: &inputs::Inputs<'_>, index: usize, owner: &str) {
-        #[cfg(test)]
-        crate::workspace::read_work_counts::task_candidate();
-        let workspace = inputs.workspaces[index];
-        let run = &inputs.runs[inputs.runs_by_owner[owner]];
-        let root = &inputs.workspace_roots[index];
-        // A direct id may own a different root or project. Task association
-        // still requires the old path/project checks and excludes repo roots.
-        let matches = run.project == Some(workspace.project_id.as_str())
-            && run.root == *root
-            && inputs
-                .project_roots
-                .get(&workspace.project_id)
-                .is_some_and(|project| project != root);
-        if matches {
-            self.task_workspaces
-                .entry(owner.into())
-                .or_insert_with(|| workspace.id.clone());
-        }
-    }
-
-    fn capture_run_scopes(&mut self, inputs: &inputs::Inputs<'_>, run: &inputs::RunInput<'_>) {
-        #[cfg(test)]
-        crate::workspace::read_work_counts::scope_candidate();
-        if let Some(index) = inputs.surviving(run) {
-            self.surviving_workspaces
-                .insert(run.owner.into(), inputs.workspaces[index].id.clone());
-        }
-        if let Some(workspace) = self.task_paths.get(&run.root).cloned() {
-            self.task_paths
-                .entry(run.raw_root.to_owned())
-                .or_insert(workspace);
-        }
-        if run.project_owner {
-            return;
-        }
-        let workspace = self
-            .owner_workspaces
-            .get(run.owner)
-            .map(String::as_str)
-            .or_else(|| inputs.parked_workspace(run));
-        if let Some(workspace) = workspace {
-            self.compaction_workspaces
-                .insert(run.owner.into(), workspace.into());
-        }
+        self.structure.task_paths()
     }
 }
 
@@ -141,34 +56,21 @@ impl AppState {
     pub(in crate::app) fn capture_snapshot_ownership(&self) -> ProjectionOwnership {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.ownership_capture");
-        let inputs = inputs::Inputs::capture(self);
-        #[cfg(test)]
-        work_counts::map_build();
-        let mut context = ProjectionOwnership {
-            rendering: super::projection_rendering::ProjectionRendering::capture(self),
-            project_owners: inputs
-                .runs
-                .iter()
-                .filter(|run| run.project_owner)
-                .map(|run| run.owner.to_owned())
-                .collect(),
-            ..ProjectionOwnership::default()
-        };
-        {
-            #[cfg(test)]
-            let _phase =
-                crate::timing::phase_samples::phase("publication.ownership_workspace_owners");
-            for index in 0..inputs.workspaces.len() {
-                context.capture_workspace(&inputs, index);
-            }
+        let accepted = self
+            .read_view
+            .load()
+            .global
+            .as_ref()
+            .and_then(|global| global.ownership_structure())
+            .cloned();
+        let structure = accepted
+            .filter(|structure| structure.matches(self))
+            .unwrap_or_else(|| Arc::new(ProjectionStructure::capture(self)));
+        let rendering =
+            super::projection_rendering::ProjectionRendering::new(Arc::clone(&structure.indexes));
+        ProjectionOwnership {
+            rendering,
+            structure,
         }
-        {
-            #[cfg(test)]
-            let _phase = crate::timing::phase_samples::phase("publication.ownership_run_scopes");
-            for run in &inputs.runs {
-                context.capture_run_scopes(&inputs, run);
-            }
-        }
-        context
     }
 }

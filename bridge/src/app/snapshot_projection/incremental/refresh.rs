@@ -48,6 +48,7 @@ impl GlobalProjection {
             crate::timing::phase_samples::phase("publication.incremental.cache_clone");
         let mut next = self.clone();
         next.layout = Some(current);
+        next.structure = app.snapshot_projection_structure();
         next.active_owners = active_owners;
         next.stat_versions = Arc::new(stat_versions);
         next.agent_states = Arc::new(agent_states);

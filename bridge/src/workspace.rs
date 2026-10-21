@@ -457,6 +457,12 @@ impl WorkspaceRegistry {
         Ok(())
     }
 
+    /// Borrowed membership for exact structural validation; callers preserve
+    /// their separately captured name/id ordering rather than using this order.
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &Workspace> {
+        self.workspaces.values()
+    }
+
     pub fn list(&self, project_id: Option<&str>) -> Vec<&Workspace> {
         #[cfg(test)]
         read_work_counts::workspace_list(self.workspaces.len());

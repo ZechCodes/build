@@ -111,18 +111,25 @@ impl AppState {
     /// user spent on their phone. Activity inside a session pushes nothing;
     /// no client decides anything from `last_activity_ms` alone for long.
     pub(in crate::app) fn note_user_activity(&mut self, ts: i64) {
+        if let Some(updated) = self.observe_user_activity(ts) {
+            if let Some(store) = self.store.as_ref() {
+                if let Err(error) = store.save_user_session(&updated) {
+                    eprintln!("user session persist failed: {error}");
+                }
+            }
+        }
+    }
+
+    /// Publish presence in memory; callers that release the app mutex before
+    /// persistence must use the store's conditional save to preserve newer activity.
+    pub(in crate::app) fn observe_user_activity(&mut self, ts: i64) -> Option<UserSession> {
         let before = self.user_session;
         let updated = before.updated(ts);
         if updated == before {
-            return;
+            return None;
         }
         self.user_session = updated;
         self.publish_read_user_session();
-        if let Some(store) = self.store.as_ref() {
-            if let Err(error) = store.save_user_session(&updated) {
-                eprintln!("user session persist failed: {error}");
-            }
-        }
         let new_boundary = updated.session_started_ms != before.session_started_ms
             || updated.previous_session_ended_ms != before.previous_session_ended_ms;
         if new_boundary {
@@ -130,6 +137,7 @@ impl AppState {
                 self.changes.note_tasks(&project.id, &[]);
             }
         }
+        Some(updated)
     }
 
     #[cfg(test)]

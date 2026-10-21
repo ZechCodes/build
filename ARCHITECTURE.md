@@ -452,6 +452,17 @@ receipt before replying. Merge prune uses the same registration checks after
 successful removal; its existing synchronous filesystem work remains guarded.
 Process kill and reap still run separately through `reaper.rs::Retirement`.
 
+User shell creation reserves a terminal slot and a checkout lifecycle hold,
+opens the PTY outside the app mutex, then revalidates the scope before committing
+the tab. Pending shells count toward the cap and prevent source movement. A
+failed or invalidated spawn releases its reservation and retires any opened
+child. Terminal open, close and cleanup publish only terminal rows for the
+affected accepted checkout subjects, preserving unrelated snapshot chunks and
+using cached path observations for notification aliases. Opening a terminal no
+longer promotes board attention; it still records user activity and pushes the
+terminal row. Its user-session persistence runs outside the app mutex, with a
+conditional save that cannot overwrite newer activity.
+
 Task creation, updates and dependency edits capture their watched board rows
 and affected neighbors inside the SQL transaction. A failed projection read
 rolls back the write. Background observation failures retain the previous

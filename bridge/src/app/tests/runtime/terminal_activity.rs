@@ -23,15 +23,15 @@ async fn terminal_activity_waits_for_store_without_holding_app_state() {
     let writer = store.writer_for_test();
     let creating = handler.clone();
     let scope = workspace.clone();
-    let worker = std::thread::spawn(move || {
-        call(&creating, "term.create", json!({"workspace_id": scope}))
-    });
+    let worker =
+        std::thread::spawn(move || call(&creating, "term.create", json!({"workspace_id": scope})));
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let mut observed = false;
     while std::time::Instant::now() < deadline {
-        if state.try_lock().is_ok_and(|app| {
-            app.shell_tab_count() == 1 && app.user_session() != before_session
-        }) {
+        if state
+            .try_lock()
+            .is_ok_and(|app| app.shell_tab_count() == 1 && app.user_session() != before_session)
+        {
             observed = true;
             break;
         }
@@ -44,7 +44,9 @@ async fn terminal_activity_waits_for_store_without_holding_app_state() {
     assert_eq!(created["ok"], true, "{created}");
     let (session, attention, child) = {
         let app = state.lock().unwrap();
-        let key = app.tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap()).unwrap();
+        let key = app
+            .tab_key_of_wire_id(created["result"]["term_id"].as_str().unwrap())
+            .unwrap();
         (
             app.user_session(),
             app.board.attention().attention(&workspace).cloned(),
@@ -52,11 +54,21 @@ async fn terminal_activity_waits_for_store_without_holding_app_state() {
         )
     };
     let persisted = store.load_user_session().unwrap();
-    let closed = call(&handler, "term.close", json!({"term_id": created["result"]["term_id"]}));
+    let closed = call(
+        &handler,
+        "term.close",
+        json!({"term_id": created["result"]["term_id"]}),
+    );
     child.end();
     assert!(child.exited_within(Duration::from_secs(2)));
     assert_eq!(closed["ok"], true, "{closed}");
-    assert!(observed, "terminal presence must publish while SQLite is unavailable, with the app mutex released");
-    assert_eq!(attention, before_attention, "opening a terminal does not promote board attention");
+    assert!(
+        observed,
+        "terminal presence must publish while SQLite is unavailable, with the app mutex released"
+    );
+    assert_eq!(
+        attention, before_attention,
+        "opening a terminal does not promote board attention"
+    );
     assert_eq!(persisted, Some(session));
 }

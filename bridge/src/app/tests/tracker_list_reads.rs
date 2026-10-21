@@ -7,6 +7,8 @@ use super::tracker::{filed, tracked_with_origin};
 use super::*;
 use crate::tracker::{Actor, Assignee, TaskComment, TaskEvent, TaskEventKind};
 
+mod ownership_wrappers;
+
 const TASKS: usize = 50;
 
 #[test]

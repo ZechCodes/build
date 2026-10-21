@@ -147,7 +147,8 @@ async fn final_report_rejects_cleanly_joined_early_stop() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn final_report_retains_actual_callback_failure_after_watchdog_stops() {
+async fn final_report_retains_actual_callback_failure_without_watchdog_sampling() {
+    // No watchdog runs here; the final report must independently retain the real callback error.
     let report = actual_report(false, true).await;
     assert_eq!(report.producer_counts["status_observations"].failed, 1);
     assert!(report

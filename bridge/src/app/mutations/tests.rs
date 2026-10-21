@@ -34,6 +34,10 @@ impl Fixture {
     }
 
     fn admit(&self, principal: &str, id: &str, body: &str) {
+        self.admit_in_project(principal, id, body, "project-test");
+    }
+
+    fn admit_in_project(&self, principal: &str, id: &str, body: &str, project: &str) {
         self.store
             .writer()
             .admit_mutation(&MutationAdmission {
@@ -41,10 +45,10 @@ impl Fixture {
                 operation_id: id.into(),
                 method: "test.command".into(),
                 params: json!({}),
-                scope: json!({"project_id":"project-test"}),
+                scope: json!({"project_id":project}),
                 owners: vec![MutationOwner {
                     kind: "project".into(),
-                    id: "project-test".into(),
+                    id: project.into(),
                     generation: 0,
                 }],
                 resources: vec![],
@@ -326,5 +330,154 @@ async fn replaced_subscription_cannot_deliver_an_old_set_after_waiting_for_sql()
     assert!(
         rx.try_recv().is_err(),
         "a replaced set cannot emit its old operation"
+    );
+}
+
+#[tokio::test]
+async fn subscribe_pages_fit_budget_and_replay_retains_the_entire_operation_set() {
+    let fixture = Fixture::new();
+    let ids: Vec<_> = (1..=12).map(id).collect();
+    for id in &ids {
+        fixture.admit(DEVICE_USER, id, &"x".repeat(60 * 1024));
+    }
+    let (sender, mut rx, key) = SessionSender::observable("subscribe-pages");
+    let answer = fixture
+        .call(
+            sender.clone(),
+            "writes.subscribe",
+            json!({"operation_ids":ids}),
+        )
+        .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    let encoded_bytes = serde_json::to_vec(&answer["result"]).unwrap().len();
+    assert!(
+        encoded_bytes <= writes::MAX_STATUS_BYTES,
+        "subscribe snapshot encoded {encoded_bytes} bytes"
+    );
+    let first = answer["result"]["operations"].as_array().unwrap();
+    assert!(
+        first.len() < ids.len(),
+        "the snapshot must exercise pagination"
+    );
+    let cursor = answer["result"]["next_cursor"]
+        .as_str()
+        .expect("bounded subscribe snapshot");
+    let continuation = fixture
+        .call(
+            sender,
+            "writes.status",
+            json!({"operation_ids":ids,"cursor":cursor}),
+        )
+        .await;
+    assert_eq!(continuation["ok"], true, "{continuation}");
+    let resumed_ids: Vec<_> = first
+        .iter()
+        .chain(continuation["result"]["operations"].as_array().unwrap())
+        .map(|operation| operation["operation_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        resumed_ids, ids,
+        "subscribe cursor must neither skip nor duplicate operations"
+    );
+    let off_page_id = ids.last().unwrap();
+    assert!(!first
+        .iter()
+        .any(|operation| operation["operation_id"] == off_page_id.as_str()));
+    fixture.store.writer().fail_mutation(DEVICE_USER, off_page_id, "unapplied", json!({"code":"scope_ended","message":"off-page operation completed","retryable":false})).unwrap();
+    let pushed = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let pushed = SessionSender::decrypt_push(&key, &pushed);
+    assert_eq!(pushed["type"], "writes.confirmed", "{pushed}");
+    assert_eq!(
+        pushed["operation_id"],
+        off_page_id.as_str(),
+        "pagination must retain subscriptions for operations outside the initial snapshot"
+    );
+}
+
+#[tokio::test]
+async fn subscribe_and_replay_preserve_principal_and_current_scope_authority() {
+    let fixture = Fixture::new();
+    let mut context = (*fixture.service.inner.context.load_full().unwrap()).clone();
+    context
+        .mutations
+        .owners
+        .insert(("project".into(), "project-retained".into()));
+    fixture.service.inner.context.store(Some(Arc::new(context)));
+    fixture.admit(DEVICE_USER, &id(1), "revoked scope private acceptance");
+    fixture.admit_in_project(
+        "another_actor",
+        &id(2),
+        "other principal private acceptance",
+        "project-retained",
+    );
+    fixture.admit_in_project(
+        DEVICE_USER,
+        &id(3),
+        "authorized sentinel",
+        "project-retained",
+    );
+    let (sender, mut rx, key) = SessionSender::observable("subscribe-authority");
+    let answer = fixture
+        .call(
+            sender,
+            "writes.subscribe",
+            json!({"operation_ids":[id(1),id(2),id(3)]}),
+        )
+        .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert_eq!(answer["result"]["operations"][0]["state"], "accepted");
+    assert_eq!(answer["result"]["operations"][1]["state"], "not_found");
+    assert_eq!(answer["result"]["operations"][2]["state"], "accepted");
+    assert!(!answer
+        .to_string()
+        .contains("other principal private acceptance"));
+    let mut context = (*fixture.service.inner.context.load_full().unwrap()).clone();
+    context
+        .mutations
+        .owners
+        .remove(&("project".into(), "project-test".into()));
+    fixture.service.inner.context.store(Some(Arc::new(context)));
+    let (after_revoke, _rx, _) = SessionSender::observable("after-revoke");
+    let answer = fixture
+        .call(
+            after_revoke,
+            "writes.subscribe",
+            json!({"operation_ids":[id(1),id(2)]}),
+        )
+        .await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    assert!(answer["result"]["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|operation| operation["state"] == "not_found"));
+    let writer = fixture.store.writer();
+    for (principal, operation, message) in [
+        ("another_actor", id(2), "other principal private outcome"),
+        (DEVICE_USER, id(1), "revoked scope private outcome"),
+        (DEVICE_USER, id(3), "authorized sentinel outcome"),
+    ] {
+        writer
+            .fail_mutation(
+                principal,
+                &operation,
+                "unapplied",
+                json!({"code":"scope_ended","message":message,"retryable":false}),
+            )
+            .unwrap();
+    }
+    let pushed = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let pushed = SessionSender::decrypt_push(&key, &pushed);
+    assert_eq!(pushed["operation_id"], id(3), "only the authorized sentinel may be emitted after replay passes both private outcomes: {pushed}");
+    assert!(!pushed.to_string().contains("private outcome"));
+    assert!(
+        rx.try_recv().is_err(),
+        "private operations must not follow the authorized sentinel"
     );
 }

@@ -151,7 +151,7 @@ export function createSessionRpc({
     } catch {
       return;
     }
-    if (closed || !acceptEpoch(frame.payload)) return;
+    if (closed || !acceptCarrier(frame.payload, source) || !acceptEpoch(frame.payload)) return;
     lastFrameAt = Date.now();
     takePayload(frame.payload, source);
   };
@@ -164,6 +164,15 @@ export function createSessionRpc({
     if (method === "session.hello") return true;
     if (!bridgeEpoch.current() && bootstrapMethod(method)) return true;
     return bridgeEpoch.accepts(payload);
+  };
+
+  // A subscription belongs to its carrier as well as its session opening.
+  // Correlated write replies can finish on their captured carrier after a
+  // migration. Uncorrelated outcomes only belong to the current subscription.
+  const acceptCarrier = (payload, source) => {
+    const waiting = pending.get(payload?.id);
+    if (!writeFrame(payload) && !writeCall(waiting)) return true;
+    return source === (waiting ? waiting.sendingCarrier : carrier);
   };
 
   const routeWriteFrame = (payload) => {
@@ -307,6 +316,8 @@ export function createSessionRpc({
       const answer = new Promise((resolve, reject) => {
         waiting = {
           method,
+          write: Boolean(write),
+          sendingCarrier: null,
           handoffAttempted: false,
           reject,
           receipt: () => deadline.receipted(waiting.handoffAttempted),
@@ -343,6 +354,7 @@ export function createSessionRpc({
         // its request must never cross later and mutate the old scope.
         if (closed || pending.get(id) !== waiting) return;
         assertCurrent();
+        waiting.sendingCarrier = sending;
         waiting.handoffAttempted = true;
         sqlReads.sent(id);
         await sending.send(envelope);
@@ -390,3 +402,5 @@ function writeMetadata(write) {
 }
 
 const bootstrapMethod = (method) => method === "ping" || method?.startsWith("rtc.");
+const writeFrame = (payload) => payload?.write?.phase === "ack" || payload?.type === "writes.confirmed";
+const writeCall = (waiting) => waiting?.write || waiting?.method.startsWith("writes.");

@@ -65,6 +65,31 @@ describe("epoch fences and durable acknowledgements", () => {
   const greeting = (bridge_epoch) => ({ bridge_epoch, journal_incarnation: "journal-A", capabilities: ["bridge.epoch"], ack_confirm_methods: ["tasks.comment"] });
   const ack = (id, bridge_epoch = "boot-A") => ({ id, ok: true, bridge_epoch, write: { phase: "ack", operation_id: "op-A", revision: 1, state: "accepted" }, result: { comment_id: "comment-A" } });
 
+  it("preserves correlated same-epoch write replies on their captured carrier during migration", async () => {
+    const old = fakeCarrier();
+    const next = fakeCarrier();
+    const epoch = createBridgeEpoch();
+    epoch.acceptGreeting(greeting("boot-A"));
+    const rpc = rpcOn(old, { bridgeEpoch: epoch, timeoutMs: 0 });
+    const frames = vi.fn();
+    rpc.onWriteFrame(frames);
+    const write = rpc.call("tasks.comment", {}, { write: { operation_id: "op-A" } });
+    const subscription = rpc.call("writes.subscribe", { operation_ids: ["op-A"] });
+    await tick();
+    const [writeRequest, subscribeRequest] = old.sent.map((entry) => entry.frameFields.payload);
+    rpc.rideOn(next);
+    next.deliver(ack(writeRequest.id)); // a different carrier cannot answer the old request
+    old.deliver(ack(writeRequest.id));
+    old.deliver({ id: subscribeRequest.id, ok: true, bridge_epoch: "boot-A", result: { cursor: "1" } });
+    await expect(write).resolves.toEqual(ack(writeRequest.id));
+    await expect(subscription).resolves.toEqual({ cursor: "1" });
+    old.deliver(ack("late-old-subscription"));
+    await tick();
+    expect(frames).toHaveBeenCalledExactlyOnceWith(ack(writeRequest.id));
+    expect(epoch.current()).toMatchObject({ bridge_epoch: "boot-A", opening: 1 });
+    rpc.close();
+  });
+
   it("accepts only handshake correlation until a greeting establishes epoch authority", async () => {
     const wire = fakeCarrier();
     const epoch = createBridgeEpoch();

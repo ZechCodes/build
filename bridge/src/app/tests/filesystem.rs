@@ -1931,6 +1931,7 @@ fn project_source_files_refuse_host_paths_and_traversal_without_writing() {
                 response["error"].as_str().unwrap().contains("path"),
                 "{response:?}"
             );
+            assert_eq!(response["error"], "path escapes the worktree", "{response}");
         }
     }
     let forged = state.handle(req(
@@ -1963,6 +1964,7 @@ fn project_source_files_refuse_symlink_escape_without_writing() {
                 response["error"].as_str().unwrap().contains("path"),
                 "{response:?}"
             );
+            assert_eq!(response["error"], "path escapes the worktree", "{response}");
         }
     }
     let tree = project_file_rpc(
@@ -1974,6 +1976,7 @@ fn project_source_files_refuse_symlink_escape_without_writing() {
     );
     assert_file_refusal(&tree, "internal");
     assert!(tree["error"].as_str().unwrap().contains("path"), "{tree:?}");
+    assert_eq!(tree["error"], "path escapes the worktree", "{tree}");
     assert_eq!(
         std::fs::read_to_string(repo.join("notes.md")).unwrap(),
         "git source\n"

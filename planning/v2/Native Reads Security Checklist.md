@@ -5,10 +5,13 @@ Scope: #752 moves `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
 read lanes. Authentication, pairing, write authorization, and deployment are
 unchanged and are outside this score.
 
-Status: implementation review and gates pending. Each control is worth ten
-points; the final score is recorded only after its evidence passes.
+Focused review checkpoint (2026-10-21): **90/100**. Controls 1–9 passed the
+focused checks below. Control 10 remains pending because full bridge tests,
+both Clippy toolchains, and the vendored gate are explicitly held by the
+assigning agent. This is not a completed 100/100 checklist. Each control is
+worth ten points.
 
-| # | Control | Evidence to verify |
+| # | Control | Verified focused evidence (control 10 pending) |
 |---|---|---|
 | 1 | Every enrolled native read replies within 100 ms while another thread holds the application mutex; timing records exist and app-lock wait and hold are zero. | `app::tests::runtime::native_reads` and `thread_revision_sql_lane_answers_with_zero_app_lock_time`; real carrier intake, encrypted replies, and `timing.rs` hooks. |
 | 2 | Existing typed input/result validation and legacy refusal behavior remain in place. Unknown and malformed scopes cannot select another owner. | Native malformed/unknown scope tests, API contract suite, and terminal refusal comparisons against the existing route. |
@@ -25,3 +28,33 @@ The no-app-lock assertion on #722's unmerged qualification branch was inspected
 before writing these tests. These focused tests model its requirements without
 importing or changing that harness. They do not claim the full #722 workload
 qualification has run on this branch.
+
+Focused validation used `nice -n 10` throughout, with actual process exits:
+
+- Native carrier tests: exit 0, 18/18. Fifty-five encrypted replies across the
+  six snapshot verbs and `term.list` completed while the app mutex was held;
+  the maximum was 28.595 ms and recorded lock wait/hold were zero.
+- SQL revision tests: exit 0, 5/5, including the eighth verb's held-mutex
+  carrier test, its 100 ms bound, and nonempty zero-wait/hold timing samples.
+- Existing read-view, snapshot projection/publication, conversation SQL,
+  runtime SQL, admission, and observation filters: exits 0 (38/10/7/16/2/8/1
+  tests respectively). Terminal and QA stream tests also passed.
+- Targeted integrations: exit 0; API contract 46/46, complexity ratchet 2/2,
+  cargo-built CLI version 2/2, and Pi extension 25/25. No integration target
+  was skipped on account of launching its cargo-built binary.
+- Pi fixture install, compaction tests, and typecheck: exits 0. Format check:
+  initial exit 1 for module declaration ordering; corrected check exit 0.
+
+The observed red runs exited 101 before their corresponding fixes. The resumed
+red-first sequence established `term.list`'s app-lock wait and then three
+lifecycle defects: capture retirement, borrowed-task document availability,
+and resident task history after reload. A test-only expectation of a
+`reply_sealed` hook was corrected because snapshot intake has no such hook;
+the decrypted final reply is the completion witness. The held mutex, 100 ms
+bound, and nonempty zero-lock timing assertions remain unchanged. No focused
+failure was attributed to load and no sleeps or relaxed limits were added.
+
+The task handoff records security scan exits and the pushed head. Full tests,
+both Clippy gates, and the stopped vendored build must still pass before
+control 10 can be awarded and this checklist can score 100/100. SPA gates are
+not applicable because no SPA source changed.

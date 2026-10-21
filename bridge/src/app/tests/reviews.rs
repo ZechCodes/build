@@ -8,6 +8,7 @@ mod merge_contracts;
 mod merge_recovery;
 mod merge_selection;
 mod opening;
+mod opening_observations;
 mod pull_requests;
 #[path = "reviews/pull_requests/reopen_version.rs"]
 mod reopen_version;

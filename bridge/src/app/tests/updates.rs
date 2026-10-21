@@ -248,6 +248,7 @@ async fn update_status_rpc_push_probe() {
     let handler = AppState::handler(state);
     let (legacy, mut legacy_rx, legacy_key) = SessionSender::observable("legacy");
     let (subscribed, mut subscribed_rx, subscribed_key) = SessionSender::observable("subscribed");
+    let epoch = subscribed.bridge_epoch().to_owned();
 
     for (sender, params) in [
         (legacy.clone(), json!({})),
@@ -263,6 +264,7 @@ async fn update_status_rpc_push_probe() {
     let initial_legacy = update_event(&mut legacy_rx, &legacy_key, "idle").await;
     let initial_subscribed = update_event(&mut subscribed_rx, &subscribed_key, "idle").await;
     assert_eq!(initial_legacy, initial_subscribed);
+    assert_eq!(initial_legacy["bridge_epoch"], epoch);
     let initial_reply = handler.call(legacy.clone(), req("bridge.update_status", json!({})));
     assert_eq!(initial_reply["result"]["state"], "idle", "{initial_reply}");
 
@@ -273,10 +275,10 @@ async fn update_status_rpc_push_probe() {
     assert_eq!(legacy_event, subscribed_event);
     let reply = handler.call(subscribed, req("bridge.update_status", json!({})));
     assert_eq!(reply["ok"], true, "{reply}");
-    let mut event_status = legacy_event.clone();
-    event_status.as_object_mut().unwrap().remove("type");
-    event_status.as_object_mut().unwrap().remove("bridge_epoch");
-    assert_eq!(reply["result"], event_status);
+    let mut expected_event = reply["result"].clone();
+    expected_event["type"] = json!("bridge.update_status");
+    expected_event["bridge_epoch"] = json!(epoch);
+    assert_eq!(legacy_event, expected_event);
     println!(
         "BRIDGE_UPDATE_WIRE={}",
         json!({"initial_reply":initial_reply,"reply":reply,"event":legacy_event})

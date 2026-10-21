@@ -65,7 +65,7 @@ pub(super) fn create(
     {
         return Err(MOVED_TERMINAL_SOURCE.into());
     }
-    let pumps = {
+    let (pumps, attention_save) = {
         let mut app = timer.lock(state);
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("term.create.commit");
@@ -83,8 +83,19 @@ pub(super) fn create(
         }
         app.record_snapshot_root_observation(&resolved.raw_root, &resolved.terminal.root);
         app.note_terminals_at(&reserved.key.root);
-        pumps
+        // Capture attention with registration, before a later close/removal
+        // can prune the owner and advance its durable-map epoch.
+        let attention_save = params
+            .get("workspace_id")
+            .or_else(|| params.get("run_id"))
+            .or_else(|| params.get("worktree_id"))
+            .and_then(Value::as_str)
+            .and_then(|owner| app.touch_terminal_attention(owner));
+        (pumps, attention_save)
     };
+    if let Some(save) = attention_save {
+        save.spawn();
+    }
     spawn_tab_pumps(state, reserved.key.clone(), pumps);
     Ok(json!({"term_id":reserved.key.tab_id,"kind":SHELL_TAB_KIND,"cols":cols,"rows":rows}))
 }

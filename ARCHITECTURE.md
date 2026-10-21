@@ -460,7 +460,7 @@ shells count toward the cap and prevent movement, deletion, locking and reclaim
 of their own checkout. Other checkouts remain available. A failed or invalidated
 spawn retires its opened child before releasing the reservation.
 
-Terminal open, close and cleanup publish only terminal rows for the affected
+Terminal open, close and cleanup update terminal rows only for the affected
 checkout aliases, including aliases awaiting their first full publication.
 They preserve unrelated snapshot chunks and use stored path observations for
 notification aliases. Full publications refresh any terminal-only aliases that

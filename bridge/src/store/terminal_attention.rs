@@ -19,6 +19,9 @@ impl Store {
         external_epoch: Option<u64>,
     ) -> Result<(), StoreError> {
         self.in_transaction(|transaction| {
+            if external_epoch.is_some_and(|epoch| epoch != self.terminal_attention_epoch()) {
+                return Ok(());
+            }
             if durable_owner
                 && !transaction.query_row(
                     "SELECT EXISTS(SELECT 1 FROM implementations WHERE id = ?1) \

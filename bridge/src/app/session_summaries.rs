@@ -132,6 +132,12 @@ impl AppState {
         }
     }
 
+    /// Deterministic native-source control only; no outcome emitter yet.
+    #[cfg(test)]
+    pub(in crate::app) fn test_note_presence_at(&mut self, ts: i64) {
+        self.note_user_activity(ts);
+    }
+
     #[cfg(test)]
     pub(in crate::app) fn user_session(&self) -> UserSession {
         self.user_session

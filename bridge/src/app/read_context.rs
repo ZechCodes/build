@@ -44,6 +44,16 @@ pub(in crate::app) struct ReadService {
 }
 
 impl AppState {
+    /// Read the actual committed memory publication; no SQL or mutation.
+    #[cfg(test)]
+    pub(in crate::app) fn test_published_user_session(
+        &self,
+    ) -> Option<crate::session_summary::UserSession> {
+        self.read_context
+            .load_full()
+            .map(|context| context.tasks.test_user_session())
+    }
+
     pub(in crate::app) fn initialize_read_context(&self) {
         if self.read_context.load().is_some() {
             return;

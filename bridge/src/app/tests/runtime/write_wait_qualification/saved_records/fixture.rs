@@ -75,10 +75,11 @@ impl SavedFixture {
         app.delivery_queue.clear_queued();
         let token = "saved-record-issued-coding-capability".to_owned();
         app.test_install_mcp_token(caller.clone(), token.clone());
+        let store = app.store.as_ref().unwrap().clone();
+        records.seed_known_durable_user_session(store.load_user_session().unwrap());
         app.test_capture_accepted_records(Arc::clone(&records));
         app.initialize_read_context();
         app.initialize_snapshot_projection();
-        let store = app.store.as_ref().unwrap().clone();
         // These controls mutate records only; no background provider service is needed.
         let state = Arc::new(Mutex::new(app));
         let rpc = RpcHarness::new(Arc::clone(&state), WriteWaitRegistry::new());

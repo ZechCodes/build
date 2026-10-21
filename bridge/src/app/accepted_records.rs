@@ -3,6 +3,7 @@
 //! Native topic/name records have no product revision. The task timestamp is
 //! retained as-is and is not promoted into a monotonic revision.
 use super::AppState;
+use crate::session_summary::UserSession;
 use crate::tracker::{Task, TaskEvent, TaskEventKind, TaskPriority, TaskState};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -52,19 +53,66 @@ pub(crate) struct TaskRecordWitness {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct SeenRecordWitness {
+    pub original_ids: Vec<String>,
+    pub owner: String,
+    pub agent: String,
+    pub conversation_owner: String,
+    pub conversation_id: String,
+    pub thread_id: String,
+    pub generation_revision: u64,
+    pub actual_reached_sequence: u64,
+    pub saved_through_sequence: u64,
+    pub published_through_sequence: u64,
+    pub native_revision: Option<u64>, // Always None for this record.
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub(crate) enum PresencePersistence {
+    Saved,
+    SaveFailed,
+    NoStore,
+    UnchangedNoSave,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct PresenceRecordWitness {
+    pub original_ids: Vec<String>,
+    pub local: UserSession,
+    pub published: UserSession,
+    pub persistence: PresencePersistence,
+    // Exact preceding authoritative durable coverage or exact successful
+    // native payload at THIS execution. Never a later SQL summary.
+    pub durable_at_execution: Option<UserSession>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) enum AcceptedRecord {
     Agent(AgentRecordWitness),
     Task(TaskRecordWitness),
+    Seen(SeenRecordWitness),
+    Presence(PresenceRecordWitness),
 }
 
 #[derive(Default)]
 pub(crate) struct AcceptedRecords {
     by_original: Mutex<BTreeMap<String, Vec<AcceptedRecord>>>,
+    // Outer None means unseeded; Some(None) is an actual absent setup row.
+    known_durable_user_session: Mutex<Option<Option<UserSession>>>,
 }
 
 impl AcceptedRecords {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Seed exactly once from the actual setup Store load before listener setup.
+    /// No producer writes or emits Presence outcomes in this TESTFIRST scaffold.
+    pub(crate) fn seed_known_durable_user_session(&self, session: Option<UserSession>) {
+        let mut known = self.known_durable_user_session.lock().unwrap();
+        assert!(
+            known.is_none(),
+            "durable user session setup already captured"
+        );
+        *known = Some(session);
     }
 
     /// Consumers must reject both missing and duplicate records. This is not
@@ -81,6 +129,8 @@ impl AcceptedRecords {
         let originals = match &record {
             AcceptedRecord::Agent(witness) => &witness.original_ids,
             AcceptedRecord::Task(witness) => &witness.original_ids,
+            AcceptedRecord::Seen(witness) => &witness.original_ids,
+            AcceptedRecord::Presence(witness) => &witness.original_ids,
         };
         let mut captured = self.by_original.lock().unwrap();
         for original in originals {

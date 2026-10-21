@@ -3,3 +3,7 @@ mod agents;
 mod fixture;
 mod task_control;
 mod tasks;
+
+mod effects_test_helpers;
+mod presence;
+mod seen;

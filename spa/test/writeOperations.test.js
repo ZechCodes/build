@@ -7,7 +7,7 @@ function memoryCache() {
     rows, activateProjection() {}, deactivateProjection() {}, subscribe: () => () => {},
     list: async () => [...rows.values()], get: async id => rows.get(id),
     put: vi.fn(async row => { rows.set(row.operationId, structuredClone(row)); return row; }),
-    update: async (id, update) => { const row = update(rows.get(id)); if (row) rows.set(id, row); return rows.get(id); },
+    update: async (id, update, options={}) => { if(options.accept && !options.accept()) return rows.get(id); const row = update(rows.get(id)); if (row) rows.set(id, row); return rows.get(id); },
     accept: async (id, fields) => { const row = rows.get(id); Object.assign(row, fields, {acknowledged:true,state:'accepted'}); return row; },
     confirm: async (id, fields) => { const row = rows.get(id); Object.assign(row, fields, {acknowledged:true,state:fields.confirmation.state}); return row; },
     acquireLease: async () => true, renewLease: async () => true, releaseLease: async () => true,
@@ -119,12 +119,18 @@ describe('write recovery protocol', () => {
   });
   it('bounds status batches to 128 and follows cursor pages before subscribing', async()=>{
     const {service,session,cache,bind}=setup(async(method,params)=> method==='writes.status' && !params.cursor ? {operations:[],next_cursor:'page-2'} : {operations:[],cursor:'42'});
-    for (let n=0;n<260;n++) await cache.put({operationId:`id-${n}`,request:{method:'tasks.update',params:{}},revision:1,state:'accepted',acknowledged:true,journalIncarnation:'journal-A'});
+    for (let n=0;n<260;n++) await cache.put({operationId:`id-${n}`,request:{method:'tasks.update',params:{}},revision:1,state:'accepted',acknowledged:true,journalIncarnation:'journal-A',localOrder:n});
     await bind();
     const status=session.callRaw.mock.calls.filter(([method])=>method==='writes.status');
     expect(status.map(([,params])=>params.operation_ids.length)).toEqual([128,128,128,128,4,4]);
     expect(status[1][1].cursor).toBe('page-2');
-    expect(session.callRaw.mock.calls.filter(([method])=>method==='writes.subscribe')).toHaveLength(3);
+    const subscriptions=session.callRaw.mock.calls.filter(([method])=>method==='writes.subscribe');
+    expect(subscriptions).toHaveLength(1);
+    expect(subscriptions[0][1].operation_ids).toEqual(Array.from({length:128},(_,n)=>`id-${n}`));
+    await service.handleFrame(confirmation('id-0'));
+    await service.reconcile();
+    const refilled=session.callRaw.mock.calls.filter(([method])=>method==='writes.subscribe').at(-1);
+    expect(refilled[1].operation_ids).toEqual(Array.from({length:128},(_,n)=>`id-${n+1}`));
     await service.close();
   });
   it('settles durable ack without waiting for canonical refresh', async()=>{
@@ -195,7 +201,7 @@ it('checks an unresolved acknowledged operation by ID without replaying it',asyn
   expect(session.callRaw).not.toHaveBeenCalled();
   await service.checkAgain('unknown');
   expect(cache.rows.get('unknown').state).toBe('succeeded');
-  expect(session.callRaw.mock.calls.map(([method])=>method)).toEqual(['writes.status','writes.subscribe']);
+  expect(session.callRaw.mock.calls.map(([method])=>method)).toEqual(['writes.status']);
   await service.close();
 });
 
@@ -291,5 +297,203 @@ it('checks an uncertain result with a fresh named read after an earlier refresh 
   await service.checkAgain('uncertain');await flush();
   expect(refresh).toHaveBeenCalledTimes(1);
   expect(cache.rows.get('uncertain')).toMatchObject({state:'failed',unresolved:true,refreshPending:false});
+  await service.close();
+});
+
+it('fetches a truncated replacement subscription through status using the same complete ID set',async()=>{
+  const {service,session,cache,bind}=setup(async(method,params)=>{
+    if(method==='writes.subscribe') {
+      if(params.cursor) throw new Error('SubscribeParams rejects cursor');
+      return {operations:[confirmation('first')],cursor:'88',next_cursor:'subscription-page-2'};
+    }
+    if(params.cursor==='subscription-page-2') return {operations:[confirmation('second',{state:'failed',effect:'unapplied',error:{message:'refused'}})]};
+    return {operations:[]};
+  });
+  for(const operationId of ['first','second']) await cache.put({operationId,request:{method:'tasks.update',params:{}},state:'accepted',revision:1,acknowledged:true,journalIncarnation:'journal-A'});
+  await bind();
+  expect(cache.rows.get('first').state).toBe('succeeded');
+  expect(cache.rows.get('second').state).toBe('failed');
+  const subscribes=session.callRaw.mock.calls.filter(([method])=>method==='writes.subscribe');
+  expect(subscribes).toHaveLength(1);
+  expect(subscribes[0][1]).toEqual({operation_ids:['first','second']});
+  expect(session.callRaw).toHaveBeenCalledWith('writes.status',{operation_ids:['first','second'],cursor:'subscription-page-2'},expect.anything());
+  expect(session.callRaw.mock.calls.some(([,params])=>params.cursor==='88')).toBe(false);
+  await service.close();
+});
+
+it('records an executing summary revision while retaining the original accepted ack',async()=>{
+  const savedAck=ack('running');
+  let terminal=false;
+  const {service,cache,bind}=setup(async(method)=>{
+    if(method==='writes.status' && terminal) return {operations:[{...confirmation('running',{revision:3}),ack:savedAck.write}]};
+    return {operations:[{operation_id:'running',revision:2,state:'executing',ack:savedAck.write,result:savedAck.result}]};
+  });
+  await cache.put({operationId:'running',request:{method:'tasks.update',params:{}},state:'queued',revision:0,acknowledged:false,journalIncarnation:'journal-A'});
+  await bind();
+  expect(cache.rows.get('running')).toMatchObject({state:'executing',revision:2,ack:savedAck});
+  terminal=true;await service.reconcile();
+  expect(cache.rows.get('running')).toMatchObject({state:'succeeded',revision:3,ack:savedAck});
+  await service.handleFrame(savedAck);
+  expect(cache.rows.get('running')).toMatchObject({state:'succeeded',revision:3});
+  await service.close();
+});
+
+it('rejects unknown summary states without treating an attached ack as success',async()=>{
+  const {service,cache,bind}=setup(async()=>({operations:[{operation_id:'unknown-state',revision:7,state:'invented',ack:ack('unknown-state').write,result:{saved:true}}]}));
+  await cache.put({operationId:'unknown-state',request:{method:'tasks.update',params:{}},state:'queued',revision:0,acknowledged:false,journalIncarnation:'journal-A'});
+  await bind();
+  expect(cache.rows.get('unknown-state')).toMatchObject({state:'queued',revision:0,acknowledged:false});
+  await service.close();
+});
+
+it('subscribes the originator explicitly and recovers a confirmation push delivered only to subscribers',async()=>{
+  for(const losePush of [false,true]) {
+    const subscribed=new Set();
+    let listener;
+    let summary={operation_id:'op-A',revision:1,state:'accepted',ack:ack('op-A').write,result:ack('op-A').result};
+    const {service,session,cache,bind}=setup(async(method,params)=>{
+      if(method==='tasks.update') return ack('op-A');
+      if(method==='writes.subscribe') {
+        subscribed.clear();params.operation_ids.forEach(id=>subscribed.add(id));
+      }
+      return {operations:params.operation_ids.map(()=>summary),cursor:'100'};
+    });
+    session.onWriteFrame=fn=>{listener=fn;return()=>{listener=null;};};
+    await bind();
+    await expect(service.submit({method:'tasks.update',params:{task_id:'T'}})).resolves.toEqual({saved:'op-A'});
+    await service.reconcile();
+    expect(subscribed.has('op-A')).toBe(true);
+    summary={...confirmation('op-A'),ack:ack('op-A').write};
+    if(!losePush && subscribed.has('op-A')) listener(confirmation('op-A'));
+    await flush();
+    if(losePush) {
+      expect(cache.rows.get('op-A').state).toBe('accepted');
+      await service.reconcile();
+    }
+    expect(cache.rows.get('op-A').state).toBe('succeeded');
+    expect(session.callRaw.mock.calls.filter(([method])=>method==='tasks.update')).toHaveLength(1);
+    await service.close();
+  }
+});
+
+it('selects the same oldest replacement set when persisted submission clocks tie',async()=>{
+  const {service,session,cache,bind}=setup(async()=>({operations:[],cursor:'1'}));
+  for(let n=129;n>=0;n--) await cache.put({operationId:`id-${String(n).padStart(3,'0')}`,request:{method:'tasks.update',params:{}},state:'accepted',revision:1,acknowledged:true,journalIncarnation:'journal-A',localOrder:5,createdAt:10});
+  await bind();
+  const subscription=session.callRaw.mock.calls.find(([method])=>method==='writes.subscribe');
+  expect(subscription[1].operation_ids).toEqual(Array.from({length:128},(_,n)=>`id-${String(n).padStart(3,'0')}`));
+  await service.close();
+});
+
+it('fences delayed quarantine behind a newer matching-journal acknowledgement',async()=>{
+  let statusCalls=0;
+  const {service,session,cache,bind}=setup(async method=>{
+    if(method==='writes.status' && ++statusCalls===1) return {journal_incarnation:'unexpected-journal',operations:[]};
+    return {operations:[{operation_id:'retained',state:'accepted',revision:1,ack:ack('retained').write,result:ack('retained').result}]};
+  });
+  await cache.put({operationId:'retained',request:{method:'tasks.update',params:{}},state:'queued',revision:0,acknowledged:false,journalIncarnation:'journal-A'});
+  const update=cache.update;
+  let finishQuarantine;
+  let first=true;
+  cache.update=(id,updater,options)=>{
+    if(first) {first=false;return new Promise(resolve=>{finishQuarantine=()=>resolve(update(id,updater,options));});}
+    return update(id,updater,options);
+  };
+  const old=bind();await flush();
+  expect(finishQuarantine).toBeTypeOf('function');
+  await service.bind({session,greeting});
+  expect(cache.rows.get('retained')).toMatchObject({state:'accepted',revision:1,acknowledged:true});
+  finishQuarantine();await old;
+  expect(cache.rows.get('retained')).toMatchObject({state:'accepted',revision:1,acknowledged:true});
+  expect(cache.rows.get('retained').unresolved).not.toBe(true);
+  await service.close();
+});
+
+it('keeps a direct confirmation result reference unresolved before the ack arrives',async()=>{
+  const {service,session,cache,bind}=setup((method,params)=>method==='writes.status'?{operations:params.operation_ids.map(operation_id=>({operation_id,state:'not_found'}))}:method==='writes.subscribe'?{operations:[]}:new Promise(()=>{}));
+  await bind();
+  const outcome=service.submit({method:'tasks.update',params:{task_id:'T'}}).then(value=>({value}),error=>({error}));
+  await flush();
+  await service.handleFrame(confirmation('op-A',{result:undefined,result_ref:{operation_id:'op-A',revision:2}}));
+  expect((await outcome).error).toMatchObject({uncertain:true,error_code:'outcome_unknown'});
+  expect(cache.rows.get('op-A')).toMatchObject({state:'outcome_unknown',revision:2,unresolved:true,unresolvedReason:'result_reference'});
+  await service.handleFrame(ack('op-A'));
+  await service.checkAgain('op-A');
+  expect(cache.rows.get('op-A')).toMatchObject({state:'outcome_unknown',revision:2,unresolved:true});
+  expect(session.callRaw.mock.calls.filter(([method])=>method==='tasks.update')).toHaveLength(1);
+  await service.close();
+});
+
+it('fences a delayed expired summary behind a newer current-opening ack',async()=>{
+  let statusCalls=0;
+  const {service,session,cache,bind}=setup(async method=>{
+    if(method==='writes.status' && ++statusCalls===1) return {operations:[{operation_id:'retained',state:'result_expired',revision:0}]};
+    return {operations:[{operation_id:'retained',state:'accepted',revision:1,ack:ack('retained').write,result:ack('retained').result}]};
+  });
+  await cache.put({operationId:'retained',request:{method:'tasks.update',params:{}},state:'queued',revision:0,acknowledged:false,journalIncarnation:'journal-A'});
+  const update=cache.update;
+  let finishExpired;
+  let first=true;
+  cache.update=(id,updater,options)=>{
+    if(first) {first=false;return new Promise(resolve=>{finishExpired=()=>resolve(update(id,updater,options));});}
+    return update(id,updater,options);
+  };
+  const old=bind();await flush();
+  expect(finishExpired).toBeTypeOf('function');
+  await service.bind({session,greeting});
+  finishExpired();await old;
+  expect(cache.rows.get('retained')).toMatchObject({state:'accepted',revision:1,acknowledged:true});
+  expect(cache.rows.get('retained').unresolved).not.toBe(true);
+  await service.close();
+});
+
+it('ignores already obsolete expiry and result-reference summaries after a newer ack',async()=>{
+  for(const stale of [{state:'result_expired',revision:2},{state:'succeeded',revision:2,result_ref:{revision:2}}]) {
+    const {service,cache,bind}=setup(async()=>({operations:[{operation_id:'newer',...stale}]}));
+    const latestAck=ack('newer');latestAck.write.revision=3;
+    await cache.put({operationId:'newer',request:{method:'tasks.update',params:{}},state:'accepted',revision:3,acknowledged:true,ack:latestAck,journalIncarnation:'journal-A'});
+    await bind();
+    expect(cache.rows.get('newer')).toMatchObject({state:'accepted',revision:3,acknowledged:true});
+    expect(cache.rows.get('newer').unresolved).not.toBe(true);
+    await service.close();
+  }
+});
+
+it('fences an ACK result reference at its nested revision and refuses equal-revision healing',async()=>{
+  const {service,cache,bind}=setup(method=>method.startsWith('writes.')?{operations:[]}:new Promise(()=>{}));
+  await bind();
+  const outcome=service.submit({method:'tasks.update',params:{task_id:'T'}}).catch(error=>error);await flush();
+  await service.handleFrame({...ack('op-A'),result:undefined,result_ref:{revision:1}});
+  expect(await outcome).toMatchObject({uncertain:true,error_code:'outcome_unknown'});
+  expect(cache.rows.get('op-A')).toMatchObject({state:'outcome_unknown',revision:1,unresolved:true});
+  await service.handleFrame(ack('op-A'));
+  expect(cache.rows.get('op-A')).toMatchObject({state:'outcome_unknown',revision:1,unresolved:true});
+  await service.close();
+});
+
+it('reconciles every known summary variant across bounded status pages',async()=>{
+  const accepted=id=>({operation_id:id,state:'accepted',revision:1,ack:ack(id).write,result:ack(id).result});
+  const pages=[
+    [accepted('accepted'),{...accepted('executing'),state:'executing',revision:2}],
+    [{...confirmation('succeeded'),ack:ack('succeeded').write},{...confirmation('failed',{state:'failed',effect:'unapplied',error:{message:'refused'}}),ack:ack('failed').write}],
+    [{operation_id:'missing',state:'not_found'},{operation_id:'expired',state:'result_expired',revision:4}],
+  ];
+  const {service,session,cache,bind}=setup(async(method,params)=>{
+    if(method==='writes.subscribe') return {operations:[],cursor:'909'};
+    const page=params.cursor?Number(params.cursor.slice(5)):0;
+    return {operations:pages[page],...(page<2?{next_cursor:`page-${page+1}`}:{})};
+  });
+  const ids=['accepted','executing','succeeded','failed','missing','expired'];
+  for(const [localOrder,operationId] of ids.entries()) await cache.put({operationId,request:{method:'tasks.update',params:{}},state:'queued',revision:0,acknowledged:operationId==='missing',journalIncarnation:'journal-A',localOrder});
+  await bind();
+  expect(ids.map(id=>cache.rows.get(id).state)).toEqual(['accepted','executing','succeeded','failed','outcome_unknown','result_expired']);
+  expect(cache.rows.get('executing')).toMatchObject({revision:2,ack:ack('executing')});
+  expect(cache.rows.get('expired')).toMatchObject({revision:4,unresolved:true});
+  const statuses=session.callRaw.mock.calls.filter(([method])=>method==='writes.status');
+  expect(statuses.map(([,params])=>params.cursor)).toEqual([undefined,'page-1','page-2']);
+  expect(statuses.every(([,params])=>JSON.stringify(params.operation_ids)===JSON.stringify(ids))).toBe(true);
+  const subscriptions=session.callRaw.mock.calls.filter(([method])=>method==='writes.subscribe');
+  expect(subscriptions).toHaveLength(1);
+  expect(subscriptions[0][1].operation_ids).toEqual(['accepted','executing']);
   await service.close();
 });

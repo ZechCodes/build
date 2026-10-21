@@ -2,6 +2,8 @@
 export const WRITE_STATUS_LIMIT = 128;
 export const WRITE_RETRY_DELAYS = [1000, 2000, 5000, 10000, 30000];
 const TERMINAL = new Set(["succeeded", "failed", "result_expired"]);
+const SUMMARY_STATES = new Set(["accepted", "executing", "succeeded", "failed", "not_found", "result_expired"]);
+export const knownWriteSummary = summary => SUMMARY_STATES.has(summary?.state);
 export const terminalWrite = row => TERMINAL.has(row?.state);
 export const needsWriteStatus = row => !terminalWrite(row) && !row?.unresolved;
 function canonical(value) {
@@ -29,6 +31,11 @@ export function writeDependencies(input, rows) {
   if (after.length > 8) throw new Error("A write supports at most eight dependencies");
   return input.after === undefined && !after.length ? undefined : after;
 }
+export function writeSubmissionOrder(left, right) {
+  const leftOrder = left.localOrder ?? left.createdAt ?? 0;
+  const rightOrder = right.localOrder ?? right.createdAt ?? 0;
+  return leftOrder - rightOrder || (left.createdAt || 0) - (right.createdAt || 0) || left.operationId.localeCompare(right.operationId);
+}
 export function writeRefusal(message, code = "write_unsupported") {
   return Object.assign(new Error(message), { error_code: code, retryable: false });
 }
@@ -40,6 +47,7 @@ export function wireRevision(frame) {
 }
 export function writeSummaryFrame(summary, epoch) {
   if (summary.confirmation) return { ...summary.confirmation, bridge_epoch: epoch };
+  if (["succeeded", "failed"].includes(summary.state)) return { ...summary, bridge_epoch: epoch, type: "writes.confirmed" };
   if (summary.ack) return { ok: true, bridge_epoch: epoch, write: summary.ack, result: summary.result };
   if (summary.write || summary.type) return summary;
   return { ...summary, bridge_epoch: summary.bridge_epoch || epoch, type: "writes.confirmed" };

@@ -2,7 +2,7 @@ import { createWriteOperationCache } from "./writeOperationCache.js";
 import { createWriteOperationWorker } from "./writeOperationWorker.js";
 import {
   copyIntent, needsWriteStatus, terminalWrite, writeDependencies, writeRefusal,
-  wireOperationId, wireRevision, writeSummaryFrame, operationFailure, WRITE_STATUS_LIMIT,
+  wireOperationId, wireRevision, writeSummaryFrame, writeSubmissionOrder, knownWriteSummary, operationFailure, WRITE_STATUS_LIMIT,
 } from "./writeOperationIntent.js";
 
 /** Per authenticated device, durable intent owns retries; sessions own transport.
@@ -173,6 +173,12 @@ export function createWriteOperationService(options) {
     const id = wireOperationId(frame);
     const row = await cache.get(id);
     if (!eligibleFrame(row, frame, held)) return false;
+    if (Object.hasOwn(frame, "result_ref")) {
+      await quarantine(row, "result_reference", held, frame);
+      worker.reset();
+      await refreshSnapshot();
+      return true;
+    }
     if (frame.write?.phase === "ack") await accept(frame, row, held);
     else if (frame.type === "writes.confirmed") await confirm(frame, row, held);
     else return false;
@@ -190,7 +196,12 @@ export function createWriteOperationService(options) {
     if (!row || !current(held) || terminalWrite(row)) return false;
     if (row.journalIncarnation !== held.greeting.journal_incarnation) return false;
     const revision = wireRevision(frame);
-    return Number.isSafeInteger(revision) && (revision > row.revision || (row.unresolvedReason && revision === row.revision));
+    return advancesRevision(row, revision);
+  }
+  function advancesRevision(row, revision) {
+    if (!Number.isSafeInteger(revision)) return false;
+    if (row.unresolvedReason === "result_reference") return revision > row.revision;
+    return revision > row.revision || (row.unresolvedReason && revision === row.revision);
   }
   async function normalizedEffects(normalize, frame, row) {
     try { return await normalize?.(frame, row) || {}; }
@@ -241,44 +252,73 @@ export function createWriteOperationService(options) {
     await refreshSnapshot();
   }
   function refreshRequired(row) {
-    if (row.refreshPending === false) return false;
+    if (!row || row.refreshPending === false) return false;
     return Boolean(row.confirmation?.refresh?.length);
   }
-  async function quarantine(row, reason) {
-    await cache.update(row.operationId, value => ({ ...value, state: "outcome_unknown", unresolved: true, unresolvedReason: reason }));
+  async function updateEvidence(row, held, fields) {
+    const expectedRevision = row.revision;
+    return cache.update(row.operationId, value => {
+      if (!value || terminalWrite(value) || value.revision !== expectedRevision) return null;
+      return { ...value, ...fields };
+    }, { accept: () => current(held) });
+  }
+  function summaryRevision(summary, row) {
+    const revision = wireRevision(summary);
+    return Number.isSafeInteger(revision) ? Math.max(row.revision, revision) : row.revision;
+  }
+  async function quarantine(row, reason, held, evidence) {
+    const fields = { state: "outcome_unknown", unresolved: true, unresolvedReason: reason };
+    if (evidence) Object.assign(fields, { revision: summaryRevision(evidence, row), resultReference: evidence.result_ref });
+    await updateEvidence(row, held, fields);
   }
   async function processSummary(summary, held, retries) {
+    if (!knownWriteSummary(summary)) throw new Error("The bridge returned an unknown write state");
     const id = wireOperationId(summary);
     const row = await cache.get(id);
     if (!row || !current(held)) return;
+    if (obsoleteSummary(summary, row)) return;
     if (summary.state === "not_found") {
-      if (row.acknowledged) await quarantine(row, "acknowledged_missing");
+      if (row.acknowledged) await quarantine(row, "acknowledged_missing", held);
       else retries.add(id);
       return;
     }
-    if (summary.result_ref) {
-      await quarantine(row, "result_reference");
+    if (Object.hasOwn(summary, "result_ref")) {
+      await quarantine(row, "result_reference", held, summary);
       return;
     }
     if (summary.state === "result_expired") {
-      await cache.update(id, value => ({ ...value, state: "result_expired", acknowledged: true, unresolved: true }));
+      await updateEvidence(row, held, { state: "result_expired", acknowledged: true, unresolved: true, revision: summaryRevision(summary, row) });
       return;
     }
     await handleFrame(writeSummaryFrame(summary, held.greeting.bridge_epoch), held);
+    if (summary.state === "executing") await recordExecuting(summary, held);
+  }
+  function obsoleteSummary(summary, row) {
+    const revision = wireRevision(summary);
+    return Number.isSafeInteger(revision) && revision < row.revision;
+  }
+  async function recordExecuting(summary, held) {
+    if (!Number.isSafeInteger(summary.revision)) return;
+    await cache.update(summary.operation_id, value => {
+      if (!value?.acknowledged || terminalWrite(value) || summary.revision <= value.revision) return null;
+      return { ...value, state: "executing", revision: summary.revision };
+    }, { accept: () => current(held) });
   }
   function assertLease(leaseActive) {
     if (!leaseActive()) throw writeRefusal("The write worker lease ended", "scope_ended");
   }
   async function readPages(method, ids, held, retries, leaseActive) {
     let cursor;
+    let nextMethod = method;
     const seen = new Set();
     do {
-      const result = await raw(held, method, { operation_ids: ids, ...(cursor ? { cursor } : {}) }, { assertCurrent: () => assertLease(leaseActive) });
+      const result = await raw(held, nextMethod, { operation_ids: ids, ...(cursor ? { cursor } : {}) }, { assertCurrent: () => assertLease(leaseActive) });
       if (!current(held)) return;
       if (!await verifyJournal(result, ids, held)) return;
       for (const summary of result.operations || []) await processSummary(summary, held, retries);
       cursor = nextCursor(result.next_cursor, seen);
-      if (method === "writes.subscribe") rememberCursor(held, result.cursor);
+      if (nextMethod === "writes.subscribe") rememberCursor(held, result.cursor);
+      nextMethod = "writes.status";
     } while (cursor && current(held) && leaseActive());
   }
   function nextCursor(cursor, seen) {
@@ -293,15 +333,19 @@ export function createWriteOperationService(options) {
   }
   async function verifyJournal(result, ids, held) {
     if (result.journal_incarnation === held.greeting.journal_incarnation) return true;
-    for (const id of ids) await quarantine(await cache.get(id), "journal_changed");
+    for (const id of ids) await quarantine(await cache.get(id), "journal_changed", held);
     return false;
   }
-  async function statusBatch(rows, held, leaseActive) {
-    const ids = rows.map(row => row.operationId);
-    const retries = new Set();
-    await readPages("writes.status", ids, held, retries, leaseActive);
-    if (!leaseActive()) return;
-    await readPages("writes.subscribe", ids, held, retries, leaseActive);
+  async function statusBatch(rows, held, leaseActive, retries) {
+    await readPages("writes.status", rows.map(row => row.operationId), held, retries, leaseActive);
+  }
+  async function replaceSubscription(held, leaseActive, retries) {
+    if (!current(held) || !leaseActive()) return;
+    const rows = (await cache.list()).filter(row => needsWriteStatus(row) && row.journalIncarnation === held.greeting.journal_incarnation);
+    const ids = rows.sort(writeSubmissionOrder).slice(0, WRITE_STATUS_LIMIT).map(row => row.operationId);
+    if (ids.length) await readPages("writes.subscribe", ids, held, retries, leaseActive);
+  }
+  async function dispatchRetries(retries, held) {
     for (const id of retries) {
       const row = await cache.get(id);
       if (row && !row.acknowledged && !terminalWrite(row) && !row.unresolved) {
@@ -314,8 +358,8 @@ export function createWriteOperationService(options) {
     for (const row of rows) {
       if (row.journalIncarnation !== held.greeting.journal_incarnation) continue;
       if (!refreshRequired(row) || refreshes.has(row.operationId)) continue;
-      const stored = await cache.update(row.operationId, value => ({ ...value, refreshPending: true }), { accept: () => current(held) });
-      if (current(held)) refreshes.set(row.operationId, { frame: stored.confirmation, row: stored, held, running: false });
+      const stored = await cache.update(row.operationId, value => refreshRequired(value) ? { ...value, refreshPending: true } : null, { accept: () => current(held) });
+      if (current(held) && refreshRequired(stored)) refreshes.set(row.operationId, { frame: stored.confirmation, row: stored, held, running: false });
     }
   }
   async function statusPass(leaseActive) {
@@ -329,11 +373,14 @@ export function createWriteOperationService(options) {
     checks.clear();
     const compatible = [];
     for (const row of rows) {
-      if (!held.greeting.capabilities?.includes("bridge.epoch")) await quarantine(row, "bridge_incapable");
-      else if (row.journalIncarnation !== held.greeting.journal_incarnation) await quarantine(row, "journal_changed");
+      if (!held.greeting.capabilities?.includes("bridge.epoch")) await quarantine(row, "bridge_incapable", held);
+      else if (row.journalIncarnation !== held.greeting.journal_incarnation) await quarantine(row, "journal_changed", held);
       else compatible.push(row);
     }
-    for (let at = 0; at < compatible.length && current(held) && leaseActive(); at += WRITE_STATUS_LIMIT) await statusBatch(compatible.slice(at, at + WRITE_STATUS_LIMIT), held, leaseActive);
+    const retries = new Set();
+    for (let at = 0; at < compatible.length && current(held) && leaseActive(); at += WRITE_STATUS_LIMIT) await statusBatch(compatible.slice(at, at + WRITE_STATUS_LIMIT), held, leaseActive, retries);
+    await replaceSubscription(held, leaseActive, retries);
+    await dispatchRetries(retries, held);
     await refreshSnapshot();
   }
   function rebindRefreshes(held) {

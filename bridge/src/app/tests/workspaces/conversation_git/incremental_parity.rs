@@ -10,6 +10,7 @@ const LATER_CLOCK: &str = "2026-01-01T00:01:00Z";
 
 mod named_branch;
 mod owner_closure;
+mod project_capture;
 
 fn fixture() -> (tempfile::TempDir, AppState) {
     fixture_with_count(4)

@@ -14,7 +14,8 @@ impl GlobalProjection {
         #[cfg(test)]
         let _layout_phase =
             crate::timing::phase_samples::phase("publication.incremental.layout_check");
-        let current = Arc::new(Layout::capture(app));
+        let projects = app.project_list_rows();
+        let current = Arc::new(Layout::capture_with_projects(app, Some(&projects)));
         if self.layout.as_ref()? != &current {
             return None;
         }
@@ -58,7 +59,7 @@ impl GlobalProjection {
         refresh_runs(app, &owners, &mut next.runs);
         refresh_winners(app, &owners, &mut next.winners);
         refresh_workspaces(app, &owners, &mut next.workspaces)?;
-        refresh_projects(app, &owners, &mut next.projects);
+        refresh_projects(app, &owners, &mut next.projects, projects);
         next.tasks = rows::tasks(app, &self.tasks);
         next.captures = captures(app);
         #[cfg(test)]
@@ -156,7 +157,12 @@ fn refresh_workspaces(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row
     Some(())
 }
 
-fn refresh_projects(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row]) {
+fn refresh_projects(
+    app: &AppState,
+    owners: &BTreeSet<String>,
+    rows: &mut [Row],
+    captured: Vec<crate::app::ProjectListRow>,
+) {
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("publication.incremental.project_rows");
     #[cfg(test)]
@@ -168,8 +174,7 @@ fn refresh_projects(app: &AppState, owners: &BTreeSet<String>, rows: &mut [Row])
         .chain(owners.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
     let observed = app.snapshot_observations.projects.lock().unwrap();
-    let mut captured = app
-        .project_list_rows()
+    let mut captured = captured
         .into_iter()
         .filter(|row| projects.contains(row.project_id.as_str()))
         .map(|row| (row.project_id.clone(), row))

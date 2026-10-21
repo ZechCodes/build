@@ -51,6 +51,13 @@ struct AgentLayout {
 
 impl Layout {
     pub fn capture(app: &AppState) -> Self {
+        Self::capture_with_projects(app, None)
+    }
+
+    pub fn capture_with_projects(
+        app: &AppState,
+        projects: Option<&[crate::app::ProjectListRow]>,
+    ) -> Self {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.incremental.layout_capture");
         #[cfg(test)]
@@ -67,7 +74,7 @@ impl Layout {
         Self {
             state_root: app.state_root.clone(),
             owners: owner_layouts(app),
-            projects: project_layouts(app),
+            projects: project_layouts(app, projects),
             parked_projects: app.projects.parked().to_vec(),
             project_paths: app
                 .projects
@@ -313,10 +320,18 @@ fn owner_layouts(app: &AppState) -> Vec<OwnerLayout> {
     runs.chain(plans).collect()
 }
 
-fn project_layouts(app: &AppState) -> Vec<Value> {
+fn project_layouts(app: &AppState, projects: Option<&[crate::app::ProjectListRow]>) -> Vec<Value> {
     #[cfg(test)]
     let _phase = crate::timing::phase_samples::phase("publication.incremental.layout_projects");
-    app.project_list_rows().into_iter().map(|row| json!({
+    let captured;
+    let projects = match projects {
+        Some(projects) => projects,
+        None => {
+            captured = app.project_list_rows();
+            &captured
+        }
+    };
+    projects.iter().map(|row| json!({
         "id": row.project_id, "name": row.name, "base": row.base_branch, "git": row.is_git,
         "sources": row.sources.iter().map(|source| source.wire_observed(Value::Null)).collect::<Vec<_>>(),
         "isolation": row.isolation, "default": row.isolation_default,

@@ -93,7 +93,19 @@ impl Fixture {
         }
     }
 
-    fn commit(&self, plan: bool, sample: usize) {
+    fn commit(
+        &self,
+        plan: bool,
+        sample: usize,
+    ) -> crate::app::snapshot_projection::work_counts::detail_scans::Counts {
+        let (_, counts) =
+            crate::app::snapshot_projection::work_counts::detail_scans::measure(|| {
+                self.commit_measured(plan, sample);
+            });
+        counts
+    }
+
+    fn commit_measured(&self, plan: bool, sample: usize) {
         let clock = Arc::clone(&self.state.lock().unwrap().frame_clock);
         let timer = clock.frame("agent.choose");
         timer.sample_tool(if plan {
@@ -113,9 +125,19 @@ impl Fixture {
         }
     }
 
-    fn assert_publication(&self) {
+    fn assert_publication(&self, enabled: bool) {
         let app = self.state.lock().unwrap();
         let view = app.read_view.load();
+        assert_eq!(
+            app.plans[&self.task].last_summary,
+            Some(format!("plan sample {}", SAMPLES - 1))
+        );
+        assert!(view.get_owned("agent.list", &self.run).is_some());
+        if !enabled {
+            assert!(view.get_owned("task.get", &self.task).is_none());
+            assert!(view.get_owned("task.stages", &self.task).is_none());
+            return;
+        }
         let task = view.get_owned("task.get", &self.task).unwrap();
         assert_eq!(task["summary"], format!("plan sample {}", SAMPLES - 1));
         let lineage = task["implementation_lineage"].as_array().unwrap();
@@ -197,9 +219,11 @@ fn stage_progress() -> Vec<crate::run::StageProgress> {
     vec![complete, building]
 }
 
-#[test]
-fn owner_commit_native_snapshot_scale() {
-    for agents_per_run in [1, 4, 16, 32] {
+// The control omits only new native task/projection work and its linked-task
+// edges, including same-mode initialization. It is not a checkout of main:
+// document observation and unrelated changes remain identical in both modes.
+fn measure_scale(agents_per_run: usize, enabled: bool) -> Vec<Value> {
+    AppState::with_native_task_projection_control(enabled, || {
         let fixture = Fixture::new(agents_per_run);
         // Keep initialization and first-use allocation outside measured commits.
         fixture.commit(true, usize::MAX);
@@ -207,31 +231,69 @@ fn owner_commit_native_snapshot_scale() {
         let clock = Arc::clone(&fixture.state.lock().unwrap().frame_clock);
         let phases = clock.capture_phases();
         let load_before = std::fs::read_to_string("/proc/loadavg").unwrap();
+        let mut scans = Vec::new();
+        let mut selected = Vec::new();
         for sample in 0..SAMPLES {
-            fixture.commit(true, sample);
-            fixture.commit(false, sample);
+            for plan in [true, false] {
+                let counts = fixture.commit(plan, sample);
+                scans.push(json!({"sample":sample,"owner":if plan {"plan"} else {"linked_run"},
+                    "registry_scans":counts.registry_scans,"registry_rows":counts.registry_rows,
+                    "previous_bases":counts.previous_bases,"base_renders":counts.base_renders,
+                    "variant_renders":counts.variant_renders,"tombstone_keys":counts.tombstone_keys,
+                    "indexed_values":counts.indexed_values,"materialized_nodes":counts.materialized_nodes}));
+                selected.push(json!([
+                    counts.registry_scans,
+                    counts.registry_rows,
+                    counts.previous_bases,
+                    counts.base_renders,
+                    counts.variant_renders,
+                    counts.tombstone_keys
+                ]));
+            }
         }
-        fixture.assert_publication();
+        fixture.assert_publication(enabled);
         let measured = phases.snapshot();
         for label in ["agent.choose:plan_commit", "agent.choose:linked_run_commit"] {
             assert_eq!(measured[label]["frame.held"]["count"], SAMPLES);
-            assert!(
-                measured[label]["publication.native_owners"]["count"]
-                    .as_u64()
-                    .is_some_and(|count| count >= SAMPLES as u64),
-                "missing native preparation samples: {measured}"
-            );
+            if enabled {
+                assert!(
+                    measured[label]["publication.native_owners"]["count"]
+                        .as_u64()
+                        .is_some_and(|count| count >= SAMPLES as u64),
+                    "missing native preparation samples: {measured}"
+                );
+            } else {
+                assert!(measured[label].get("publication.native_owners").is_none());
+            }
         }
         eprintln!(
             "{}",
             json!({"benchmark":"owner_commit_native_snapshot_scale",
-                "tasks":TASKS,"runs":RUNS,"agents_per_run":agents_per_run,
-                "configured_agents":TASKS+RUNS*agents_per_run,"ordinary_resident_messages_per_conversation":ITEMS,
-                "task_resident_items":ITEMS+STAGES*COMMENTS,"private_run_resident_items":ITEMS,
-                "live_sessions":0,"stages_per_task":STAGES,"comments_per_stage":COMMENTS,
-                "plan_commits":SAMPLES,"linked_run_commits":SAMPLES,
-                "phases_ms":measured,"load_before":load_before.trim(),
-                "load_after":std::fs::read_to_string("/proc/loadavg").unwrap().trim()})
+            "native_task_projection":enabled,
+            "control_excludes":["new task detail/stage/implementation chunks", "linked-task edges", "project columns publication"],
+            "tasks":TASKS,"runs":RUNS,"agents_per_run":agents_per_run,
+            "configured_agents":TASKS+RUNS*agents_per_run,
+            "ordinary_resident_messages_per_conversation":ITEMS,
+            "task_resident_items":ITEMS+STAGES*COMMENTS,"private_run_resident_items":ITEMS,
+            "live_sessions":0,"stages_per_task":STAGES,"comments_per_stage":COMMENTS,
+            "plan_commits":SAMPLES,"linked_run_commits":SAMPLES,"detail_scans":scans,
+            "phases_ms":measured,"load_before":load_before.trim(),
+            "load_after":std::fs::read_to_string("/proc/loadavg").unwrap().trim()})
+        );
+        selected
+    })
+}
+
+#[test]
+fn owner_commit_native_snapshot_scale() {
+    for (index, agents_per_run) in [1, 4, 16, 32].into_iter().enumerate() {
+        // Alternate order to make a systematic warm-host bias visible.
+        let first_enabled = index % 2 == 0;
+        let first = measure_scale(agents_per_run, first_enabled);
+        let second = measure_scale(agents_per_run, !first_enabled);
+        assert_eq!(
+            first, second,
+            "native task projection changed selected workspace work at {agents_per_run} agents/run"
         );
     }
 }

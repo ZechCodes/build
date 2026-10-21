@@ -82,6 +82,11 @@ impl AppState {
                 })
             })
             .collect::<BTreeSet<_>>();
+        #[cfg(test)]
+        if !super::native_reads::task_projection_enabled() {
+            affected.insert(owner.to_string());
+            return affected;
+        }
         if let Some(plan) = self
             .runs
             .get(owner)

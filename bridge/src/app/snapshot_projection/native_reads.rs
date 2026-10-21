@@ -4,7 +4,39 @@ use crate::app::read_view::SharedJson;
 use crate::app::DigestScope;
 use crate::thread::ThreadDetail;
 
+#[cfg(test)]
+thread_local! {
+    static TASK_PROJECTION_ENABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+#[cfg(test)]
+pub(super) fn task_projection_enabled() -> bool {
+    TASK_PROJECTION_ENABLED.get()
+}
+
+#[cfg(test)]
+struct RestoreTaskProjection(bool);
+
+#[cfg(test)]
+impl Drop for RestoreTaskProjection {
+    fn drop(&mut self) {
+        TASK_PROJECTION_ENABLED.set(self.0);
+    }
+}
+
 impl AppState {
+    /// Matched measurement control: omit new task/detail/stage/implementation
+    /// chunks, project columns and linked-task edges during the entire fixture.
+    /// The ordinary owner, workspace, history and persistence pipeline stays on.
+    #[cfg(test)]
+    pub(in crate::app) fn with_native_task_projection_control<T>(
+        enabled: bool,
+        work: impl FnOnce() -> T,
+    ) -> T {
+        let _restore = RestoreTaskProjection(TASK_PROJECTION_ENABLED.replace(enabled));
+        work()
+    }
+
     pub(super) fn initialize_native_snapshots(&self) {
         let mut delta = SnapshotDelta::new(self.read_view.next_version());
         for (id, capture) in &self.captures {
@@ -39,6 +71,10 @@ impl AppState {
         mut delta: SnapshotDelta,
         previous: &ReadView,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        if !task_projection_enabled() {
+            return delta;
+        }
         for project in self.projects.iter() {
             if previous.get_shared("tasks.columns", &project.id).is_none() {
                 delta = delta.put(
@@ -67,6 +103,10 @@ impl AppState {
         previous: &ReadView,
         owners: &BTreeSet<String>,
     ) -> SnapshotDelta {
+        #[cfg(test)]
+        if !task_projection_enabled() {
+            return delta;
+        }
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.native_owners");
         for owner in owners {

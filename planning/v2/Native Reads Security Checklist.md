@@ -5,12 +5,11 @@ Scope: #752 moves `capture.get`, `task.get`, `task.stages`, `tasks.columns`,
 read lanes. Authentication, pairing, write authorization, and deployment are
 unchanged and are outside this score.
 
-Status: **reopened after #761/#762 review; final score pending**. The earlier
-90/100 focused checkpoint did not cover screen/admission contention, terminal
-publication during a borrowed owner, or filesystem probes during maintenance.
-Those controls now require populated and contended fixtures. Both Clippy
-toolchains and the vendored gate are released; the assigning agent delegated
-the full bridge suite to the serial merge gate. Each control is worth ten points.
+Status: **review fixes verified; final gates and score pending**. Populated
+screen contention, real update-service contention, borrowed-owner terminal
+publication, and stalled filesystem probes now have actual red-to-green
+evidence. The assigning agent delegated the full bridge suite to the serial
+merge gate. Each control is worth ten points.
 
 | # | Control | Evidence (review findings must be reverified) |
 |---|---|---|
@@ -18,33 +17,33 @@ the full bridge suite to the serial merge gate. Each control is worth ten points
 | 2 | Existing typed input/result validation and legacy refusal behavior remain in place. Unknown and malformed scopes cannot select another owner. | Native malformed/unknown scope tests, API contract suite, and terminal refusal comparisons against the existing route. |
 | 3 | Task detail preserves explicit agent and conversation bindings, pagination, stale-address refusals, and the resident-history boundary of unwindowed reads. | `task_snapshot_preserves_named_conversation_pages_and_stale_refusals`, `task_snapshot_full_keeps_reloaded_resident_tail_and_complete_windows`, and existing conversation/snapshot regressions. |
 | 4 | Revision reads use the existing read-only SQL transaction and final admission fence; they cannot return unsaved history or another conversation's revision. | `sql_thread_revision_matches_content_alias_and_address_errors`, `sql_thread_revision_keeps_one_committed_snapshot_across_reset`, and `store_free_thread_revision_publishes_only_successful_rosters`. |
-| 5 | Task and stage snapshots change only at the existing committed owner boundary; linked implementation updates and owner retirement refresh dependent reads. Temporarily borrowed tasks keep their published document availability. | Native committed task/stage and retirement tests, `borrowed_task_keeps_document_availability_across_maintenance`, plus existing publication and rollback tests. |
+| 5 | Task and stage snapshots change at the committed owner boundary; linked updates and retirement refresh dependent reads. Directory probes run outside the app mutex, and delayed observations cannot overwrite successful ingestion. | Native committed task/stage tests, borrowed-task maintenance, three plan-document regressions, and existing publication/rollback tests. |
 | 6 | Capture snapshots expose saved records and remove retired records, including project deletion. | `capture_snapshot_is_current_after_save_and_retirement` and `project_deletion_retires_its_published_captures`. |
-| 7 | Terminal listing resolves recorded roots on the observation lane, keeps source ownership checks, and validates captured bindings before replying. Published terminal facts retain screen handles rather than sessions or processes. | Terminal source-fence, workspace-container root, resize, and retirement tests. |
+| 7 | Terminal listing preserves root/source fences, reads coherent atomic dimensions without the screen mutex, and publishes create/close membership while unrelated owners are borrowed. | Populated held-screen regression, borrowed-owner create/close regressions, source fences, workspace roots, resize, retirement, and screen tests. |
 | 8 | Stream reads remain QA-only, preserve bounded replay, and publish each event with its corresponding head and summary. Output length/checksum handle empty and Unicode chunks exactly. | Native QA gate/replay tests and `app::streams::tests`, including retained-root immutability. |
-| 9 | New reads preserve update admission and project-deletion policy without new locks, executors, or SQLite access under the application mutex. | Existing admission/deletion tests, native column deletion refusal, and review of snapshot/SQL/observation integration. |
-| 10 | Required functional gates and security scans pass on the completed source, including cargo-built CLI and Pi integration tests. | Full bridge tests, both Clippy toolchains, format, vendored tests, Pi fixture checks, Semgrep, Gitleaks, and diff whitespace check; exit codes recorded in the task report. |
+| 9 | Update handoff runs its busy probe outside the admission mutex. Reads succeed during a pending claim, their leases prevent premature closure, and non-read work remains excluded. | Six real-service intake regressions, active SQL lease witness, writer exclusion, reopen generation and panic rollback tests, plus existing update/MCP admission tests. |
+| 10 | Required local functional gates and security scans pass, including cargo-built CLI and Pi integration tests. | Focused tests, both Clippy toolchains, format, vendored tests, Pi fixture checks, Semgrep, Gitleaks and whitespace check. The full bridge suite remains assigned to the serial merge gate. |
 
 The no-app-lock assertion on #722's unmerged qualification branch was inspected
 before writing these tests. These focused tests model its requirements without
 importing or changing that harness. They do not claim the full #722 workload
 qualification has run on this branch.
 
-Focused validation used `nice -n 10` throughout, with actual process exits:
+Review validation uses `nice -n 10` throughout and records actual exits:
 
-- Native carrier tests: exit 0, 18/18. Fifty-five encrypted replies across the
-  six snapshot verbs and `term.list` completed while the app mutex was held;
-  the maximum was 28.595 ms and recorded lock wait/hold were zero.
-- SQL revision tests: exit 0, 5/5, including the eighth verb's held-mutex
-  carrier test, its 100 ms bound, and nonempty zero-wait/hold timing samples.
-- Existing read-view, snapshot projection/publication, conversation SQL,
-  runtime SQL, admission, and observation filters: exits 0 (38/10/7/16/2/8/1
-  tests respectively). Terminal and QA stream tests also passed.
-- Targeted integrations: exit 0; API contract 46/46, complexity ratchet 2/2,
-  cargo-built CLI version 2/2, and Pi extension 25/25. No integration target
-  was skipped on account of launching its cargo-built binary.
-- Pi fixture install, compaction tests, and typecheck: exits 0. Format check:
-  initial exit 1 for module declaration ordering; corrected check exit 0.
+- Focused review run: 321 tests passed, every selected gate exit 0. This
+  includes native carrier 28, terminals 22, screens 16, update-related 102,
+  runtime updates 16, MCP reads 57, read view 38, snapshot projection 9,
+  snapshot publication 7, conversation SQL 16, runtime SQL 2, observations 5,
+  streams 2, and the initial matched owner measurement 1.
+- The six intake reads returned successful unchanged results in 2.044–5.536 ms
+  with the real update service's busy callback held through reply. The stalled
+  directory probe allowed a real `capture.cancel` writer to finish in 1.882 ms.
+  The populated held-screen test and both borrowed-owner terminal tests passed.
+- `thread.revision` logged 2.910 ms alongside its 100 ms assertion. All eight
+  verbs retain nonempty timing samples with zero app-lock wait and hold.
+- Pi fixture install, compaction tests, and typecheck passed on Node 22.23.4
+  and npm 12.0.2. Cargo-built CLI/Pi integrations are included in the final gates.
 
 The observed red runs exited 101 before their corresponding fixes. The resumed
 red-first sequence established `term.list`'s app-lock wait and then three
@@ -55,8 +54,14 @@ the decrypted final reply is the completion witness. The held mutex, 100 ms
 bound, and nonempty zero-lock timing assertions remain unchanged. No focused
 failure was attributed to load and no sleeps or relaxed limits were added.
 
-The earlier task handoff records security scan exits and its pushed head. The
-review revisions require fresh focused checks, both Clippy toolchains, the
-vendored gate, format and security scans. The full bridge suite is assigned to
-the serial merge gate. SPA source has not changed in the task delta against
-current main.
+Review reds at committed `f11570e9` exited 101: held-screen 1, borrowed-owner
+create/close 2, directory-probe 2, and admission 9 failures. Fixes were committed
+after those failures. No deadline was relaxed and no sleeps were added.
+
+The owner measurement compares identical realistic fixtures with the new task
+projection enabled and disabled, including shared and independent run
+conversations. It is a scoped test control, not a separate main checkout.
+Workspace rebuild counts match. The coordinator assigned the existing large
+owner holds to #764 and explicitly kept a publication rewrite out of #752.
+The task report includes the measured control/enabled timings and work counts.
+SPA source has not changed in the task delta against merged main `c8ededc68`.

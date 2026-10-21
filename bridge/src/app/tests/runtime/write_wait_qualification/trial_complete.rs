@@ -34,8 +34,8 @@ type Work<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
 #[path = "trial/model.rs"]
 mod model;
 pub use model::{
-    ControlExecution, ControlProofGap, Envelope, ExecutionProof, ReadCatalog, ReadCohort, Recipe,
-    Route, Slot, Stage, Traffic, TrialName, WriteClass, ORIGINAL_TRIALS,
+    ControlExecution, ControlProofGap, ControlRefusal, Envelope, ExecutionProof, ReadCatalog,
+    ReadCohort, Recipe, Route, Slot, Stage, Traffic, TrialName, WriteClass, ORIGINAL_TRIALS,
 };
 
 #[path = "trial/schedule.rs"]
@@ -84,8 +84,8 @@ mod metrics;
 #[path = "trial/runner.rs"]
 mod runner;
 pub use runner::{
-    run_pipeline_control, run_trial, PipelineControl, PipelineControlReport, PipelineControlRun,
-    TrialRun, UnfinishedCleanup,
+    run_fault_plan, run_pipeline_control, run_trial, FaultOverloadState, PipelineControl,
+    PipelineControlReport, PipelineControlRun, TrialRun, UnfinishedCleanup,
 };
 
 #[path = "trial/gates.rs"]

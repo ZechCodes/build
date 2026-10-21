@@ -183,6 +183,13 @@ impl RunState<'_> {
                 self.observe.control_gap(&done.original_id, &gap.detail);
                 self.control_gaps.push(gap);
             }
+            Ok(ControlExecution::Refused(refusal)) if refusal.original_id == done.original_id => {
+                self.record_fault_refusal(refusal)
+            }
+            Ok(ControlExecution::Refused(_)) => self.observe.completed(
+                &done.original_id,
+                Err("actual refusal completion original mismatch".into()),
+            ),
             Ok(ControlExecution::ProofGap(_)) => self.observe.completed(
                 &done.original_id,
                 Err("control-only proof gap reached normal runner".into()),

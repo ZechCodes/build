@@ -99,6 +99,11 @@ pub trait TrialBackend: Send + Sync + 'static {
     /// Ask wire receivers/services to close only after all obligations drain.
     fn request_close(&self);
     fn closed(&self) -> bool;
+    /// Separate fault-only final proof. Normal implementations cannot certify
+    /// a refusal; all native/accepted/transport audits must have closed first.
+    fn confirm_overload_refusal(&self, _slot: &Slot, _method: &str) -> Result<(), String> {
+        Err("backend has no final overload refusal proof".into())
+    }
 }
 pub trait FixtureFactory: Send + Sync {
     fn create(&self, name: TrialName) -> Work<'_, Arc<dyn TrialBackend>>;

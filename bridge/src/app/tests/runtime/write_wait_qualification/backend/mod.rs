@@ -5,6 +5,7 @@ mod completed_origins;
 mod control;
 mod counts;
 mod exempt;
+pub(super) mod faults;
 mod final_transport;
 mod git_support;
 mod native_archive;
@@ -14,6 +15,8 @@ mod native_read_tests;
 #[cfg(test)]
 #[path = "normal_tests.rs"]
 mod normal_tests;
+mod optional_notices;
+mod overload_refusals;
 #[cfg(test)]
 #[path = "preparation_tests.rs"]
 mod preparation_tests;
@@ -72,6 +75,7 @@ pub(super) struct PreparedBackend {
     // One final failed export only; not a second lifecycle ledger.
     transport_archive: Option<serde_json::Value>,
     native_archive: Option<serde_json::Value>,
+    optional_notices: Option<optional_notices::OptionalNoticeEvidence>,
     mcp_shutdown: Option<super::mcp_adapter::McpShutdownReport>,
     catalog: ReadCatalog,
     common: BTreeMap<String, CommonRequest>,
@@ -133,6 +137,7 @@ impl PreparedBackend {
             full_plan: Vec::new(),
             transport_archive: None,
             native_archive: None,
+            optional_notices: None,
             mcp_shutdown: None,
             catalog: ReadCatalog {
                 rpc: Vec::new(),

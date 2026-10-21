@@ -495,6 +495,17 @@ impl ConcreteProducers {
     ) -> Result<Self, String> {
         Self::with_window(name, registry, bodies, Duration::from_secs(2))
     }
+    pub fn fault_control(
+        name: TrialName,
+        registry: Arc<WriteWaitRegistry>,
+        bodies: ProductionBodies,
+        window: Duration,
+    ) -> Result<Self, String> {
+        if window != Duration::from_secs(1) {
+            return Err("only explicit one-second overload producer window accepted".into());
+        }
+        Self::with_window(name, registry, bodies, window)
+    }
     fn with_window(
         name: TrialName,
         registry: Arc<WriteWaitRegistry>,

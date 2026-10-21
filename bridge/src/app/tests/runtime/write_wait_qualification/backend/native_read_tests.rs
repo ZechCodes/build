@@ -313,6 +313,9 @@ async fn collect(prepared: &mut PreparedBackend, artifacts: &Path) -> Result<Col
                 ControlExecution::ProofGap(gap) => {
                     Err(format!("native read proof gap: {}", gap.detail))
                 }
+                ControlExecution::Refused(refusal) => Err(format!(
+                    "unexpected refusal on native read {}: {}", refusal.original_id, refusal.method
+                )),
             });
         settle_unreturned_failure(&watch, &slot.original_id, &proof);
         save(

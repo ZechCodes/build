@@ -14,10 +14,14 @@ impl ControlBackend {
         let result = self
             .prove_common_write(prepared, slot, recipe, observe)
             .await;
-        self.saved_evidence.archive.outcome(
-            &slot.original_id,
-            result.as_ref().map(|_| ()).map_err(Clone::clone),
-        );
+        // take_rejected records its own distinct pending refusal outcome.
+        // Never label a refused original as a verified saved mutation.
+        if !matches!(&result, Ok(ControlExecution::Refused(_))) {
+            self.saved_evidence.archive.outcome(
+                &slot.original_id,
+                result.as_ref().map(|_| ()).map_err(Clone::clone),
+            );
+        }
         result
     }
     async fn prove_common_write(
@@ -38,6 +42,15 @@ impl ControlBackend {
             Ok(reply) => super::super::transport::record_reply(slot, reply, observe),
             Err(error) => Err(error.clone()),
         };
+        if let Ok(reply) = &dispatched {
+            if let Some(refusal) = self
+                .overload_refusal(prepared, slot, recipe, reply, observe)
+                .await?
+            {
+                endpoints?;
+                return Ok(refusal);
+            }
+        }
         // Existing immutable intended+5s bound; no new deadline at wait time.
         let deadline = tokio::time::Instant::from_std(
             *self.start.get().ok_or("actual control start missing")?

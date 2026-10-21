@@ -150,6 +150,9 @@ impl OptionalNotices {
             .collect()
     }
     pub(crate) fn summary(&self) -> OptionalNoticeSummary {
+        self.snapshot().0
+    }
+    pub(crate) fn snapshot(&self) -> (OptionalNoticeSummary, Vec<OptionalNoticeSample>) {
         let samples = self.samples();
         let completed: Vec<_> = samples
             .iter()
@@ -165,7 +168,7 @@ impl OptionalNotices {
             .collect();
         let (completed_p95, completed_maximum) = percentiles(&completed);
         let (active_age_p95, active_age_maximum) = percentiles(&active);
-        OptionalNoticeSummary {
+        let summary = OptionalNoticeSummary {
             offered: self.offered.load(Ordering::Relaxed),
             created: samples.len(),
             completed: completed.len(),
@@ -175,7 +178,8 @@ impl OptionalNotices {
             completed_maximum,
             active_age_p95,
             active_age_maximum,
-        }
+        };
+        (summary, samples)
     }
     pub(crate) fn cleanup_candidates(&self) -> Result<BTreeSet<WriteId>, &'static str> {
         let active = self.registry.active_snapshot();

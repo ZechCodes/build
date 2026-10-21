@@ -94,6 +94,7 @@ impl<'a> RunState<'a> {
             failed: startup_error.is_some(),
             infrastructure: startup_error,
             failures: Vec::new(),
+            fault_overload: None,
             control: offer_window == Duration::from_secs(2),
             control_effects: BTreeSet::new(),
             control_gaps: Vec::new(),

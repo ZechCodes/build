@@ -81,7 +81,7 @@ impl PreparedBackend {
         self.targets = Some(targets);
         Ok(())
     }
-    fn prepare_bounded_recipes(&mut self) -> Result<(), String> {
+    pub(super) fn prepare_bounded_recipes(&mut self) -> Result<(), String> {
         let fixture = self.fixture.as_ref().ok_or("fixture ownership missing")?;
         let seed = self
             .bounded_reads
@@ -127,7 +127,7 @@ impl PreparedBackend {
         }));
         Ok(())
     }
-    async fn wait_bootstrap_terminal(&self) -> Result<(), String> {
+    pub(super) async fn wait_bootstrap_terminal(&self) -> Result<(), String> {
         let registry = &self
             .fixture
             .as_ref()

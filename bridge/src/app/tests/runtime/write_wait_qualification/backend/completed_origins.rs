@@ -120,6 +120,38 @@ impl CompletedOrigins {
         }
     }
 
+    /// Separate overload audit. Normal import/wait/audit remain strict. A
+    /// canceled row may only leave its slot empty when the final private
+    /// verifier has proved that exact original as a pre-durable refusal.
+    pub(super) fn audit_overload(
+        &self,
+        refused: &super::overload_refusals::VerifiedRefusals,
+    ) -> Vec<String> {
+        let mut errors = Vec::new();
+        for original in refused.originals() {
+            if !self.slots.contains_key(original) {
+                errors.push(format!("unknown_verified_refusal: {original}"));
+            }
+        }
+        for (original, slot) in &self.slots {
+            match slot.result.lock() {
+                Ok(stored) => match refused.get(original) {
+                    Some(proof) if proof.method() == slot.method && stored.is_none() => {}
+                    Some(_) => {
+                        errors.push(format!("refusal_overlaps_native_completion: {original}"))
+                    }
+                    None => match stored.as_ref() {
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => errors.push(error.clone()),
+                        None => errors.push(format!("missing_native_completion: {original}")),
+                    },
+                },
+                Err(_) => errors.push(format!("completion_state_poisoned: {original}")),
+            }
+        }
+        errors
+    }
+
     pub(super) fn audit(&self) -> Vec<String> {
         self.slots
             .iter()

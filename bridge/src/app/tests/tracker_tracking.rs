@@ -1530,4 +1530,4 @@ fn the_prompt_says_a_notice_is_one_line_and_where_to_answer() {
 }
 
 #[path = "tracker_tracking/optional_notices.rs"]
-mod optional_notices;
+pub(in crate::app::tests) mod optional_notices;

@@ -5,18 +5,18 @@ use crate::timing::write_wait::{WriteCohort, WriteWaitRegistry, WAIT_BUDGET};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-struct Fixture {
+pub(in crate::app::tests) struct Fixture {
     _directory: tempfile::TempDir,
     _repository: tempfile::TempDir,
-    state: AppState,
+    pub(in crate::app::tests) state: AppState,
     project: String,
-    watcher: (String, String),
-    task: String,
-    registry: Arc<WriteWaitRegistry>,
+    pub(in crate::app::tests) watcher: (String, String),
+    pub(in crate::app::tests) task: String,
+    pub(in crate::app::tests) registry: Arc<WriteWaitRegistry>,
     now: Arc<Mutex<Instant>>,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(in crate::app::tests) fn new() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let (repository, mut state, project) = tracked(directory.path());
         let (watcher, task) = watching(&mut state, &project, "optional notice witness");
@@ -41,7 +41,10 @@ impl Fixture {
             .frame_clock
             .capture_optional_notices(vec![(original.into(), kind)])
     }
-    fn update(&mut self, original: &str) -> crate::timing::write_wait::WriteContext {
+    pub(in crate::app::tests) fn update(
+        &mut self,
+        original: &str,
+    ) -> crate::timing::write_wait::WriteContext {
         let root = self
             .registry
             .begin(original, "tasks.update", *self.now.lock().unwrap());
@@ -59,17 +62,17 @@ impl Fixture {
         assert_eq!(reply["ok"], true, "{reply}");
         context
     }
-    fn advance(&self, seconds: u64) {
+    pub(in crate::app::tests) fn advance(&self, seconds: u64) {
         *self.now.lock().unwrap() += Duration::from_secs(seconds);
     }
-    fn finish(&mut self) {
+    pub(in crate::app::tests) fn finish(&mut self) {
         self.state.delivery_queue.lapse_settle_windows();
         let mut turns = self.state.delivery_queue.take_ready(|_| false);
         for turn in &mut turns {
             turn.complete_logical_origins();
         }
     }
-    fn row(&self, id: &str) -> crate::timing::write_wait::WriteSnapshot {
+    pub(in crate::app::tests) fn row(&self, id: &str) -> crate::timing::write_wait::WriteSnapshot {
         self.registry
             .snapshot()
             .into_iter()

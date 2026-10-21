@@ -15,6 +15,7 @@ struct CloseJob {
     observation: Option<Observation>,
     sink: Arc<dyn ArtifactSink>,
     saved_evidence: Arc<saved_evidence::SavedEvidence>,
+    overload: Option<Arc<overload_refusals::RefusalAudit>>,
 }
 impl ControlBackend {
     pub(super) fn start_close(&self) {
@@ -30,6 +31,7 @@ impl ControlBackend {
             observation: self.observation.lock().unwrap().clone(),
             sink: Arc::clone(&self.sink),
             saved_evidence: Arc::clone(&self.saved_evidence),
+            overload: self.overload.clone(),
         };
         *self.cleanup_task.lock().unwrap() = Some(tokio::spawn(job.run()));
     }
@@ -93,11 +95,16 @@ impl CloseJob {
         let native_joined = self.close_native(prepared).await;
         // One final export after cleanup includes native completions that
         // arrived after their original proof waiter returned.
-        self.final_archive(prepared);
+        if self.overload.is_none() {
+            self.final_archive(prepared, None);
+        }
         let accepted =
             self.saved_evidence
                 .archive
                 .finish(prepared.name, &*self.sink, native_joined);
+        if self.overload.is_some() {
+            self.final_archive(prepared, Some(accepted.refused.as_ref()));
+        }
         for error in accepted.errors {
             self.error(error);
         }
@@ -154,18 +161,32 @@ impl CloseJob {
             self.error("actual MCP report missing before final transport export");
             return false;
         };
-        let result = super::super::final_transport::archive_final(
-            prepared.name,
-            &prepared.plan,
-            super::super::final_transport::ClientAudit {
-                watch: prepared.watch.as_ref(),
-                before_cleanup: before,
-            },
-            report,
-            mcp,
-            native_joined,
-            &*self.sink,
-        );
+        let client = super::super::final_transport::ClientAudit {
+            watch: prepared.watch.as_ref(),
+            before_cleanup: before,
+        };
+        let verified = self.overload.as_ref().and_then(|audit| audit.verified());
+        let result = if let Some(verified) = verified {
+            super::super::final_transport::archive_final_overload(
+                prepared.name,
+                (&prepared.plan, &verified),
+                client,
+                report,
+                mcp,
+                native_joined,
+                &*self.sink,
+            )
+        } else {
+            super::super::final_transport::archive_final(
+                prepared.name,
+                &prepared.plan,
+                client,
+                report,
+                mcp,
+                native_joined,
+                &*self.sink,
+            )
+        };
         for error in result.errors {
             self.error(error);
         }
@@ -174,7 +195,11 @@ impl CloseJob {
         }
         result.persisted
     }
-    fn final_archive(&self, prepared: &mut PreparedBackend) {
+    fn final_archive(
+        &self,
+        prepared: &mut PreparedBackend,
+        accepted: Option<Option<&saved_evidence::AcceptedRefusals>>,
+    ) {
         let Some(observe) = &self.observation else {
             self.error("actual control observation missing at cleanup");
             return;
@@ -182,12 +207,14 @@ impl CloseJob {
         if let Err(error) = prepared.frames.drain_into(observe) {
             self.error(error);
         }
-        if let Err(error) =
-            self.archive
-                .lock()
-                .unwrap()
-                .finish(prepared, &self.registry, observe, &*self.sink)
-        {
+        let mut archive = self.archive.lock().unwrap();
+        let result = match accepted {
+            Some(accepted) => {
+                archive.finish_overload(prepared, &self.registry, observe, &*self.sink, accepted)
+            }
+            None => archive.finish(prepared, &self.registry, observe, &*self.sink),
+        };
+        if let Err(error) = result {
             self.error(error);
         }
     }

@@ -42,7 +42,7 @@ pub(super) fn persist(
     }
     result
 }
-fn native_row(row: &WriteSnapshot, anchor: Instant) -> Value {
+pub(super) fn native_row(row: &WriteSnapshot, anchor: Instant) -> Value {
     json!({
         "write_id":format!("{:?}",row.id),"original_id":row.original_id,"method":row.method,"cohort":format!("{:?}",row.cohort),
         "intake_relative_us":at(row.intake,anchor),"admitted_relative_us":row.admitted_at.map(|value| at(value,anchor)),

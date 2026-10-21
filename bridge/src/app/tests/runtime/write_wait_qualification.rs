@@ -11,6 +11,7 @@ mod common_requests;
 mod coverage;
 mod entrypoint;
 mod factory;
+mod fault_tests;
 mod finite_watch;
 mod fixture;
 mod history_fill;

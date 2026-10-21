@@ -151,7 +151,23 @@ pub struct ExecutionProof {
 pub enum ControlExecution {
     Verified(ExecutionProof),
     ProofGap(ControlProofGap),
+    Refused(ControlRefusal),
 }
+/// Actual persisted refusal candidate, never a successful effect proof.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ControlRefusal {
+    pub original_id: String,
+    pub method: String,
+    pub raw_response_artifact: String,
+    pub sent_to_decoded_final_ns: u64,
+    pub intended_to_decoded_final_ns: u64,
+    pub decoded_response: Value,
+    pub native_terminal_rows: Vec<Value>,
+    pub acceptance_records: Option<Vec<Value>>,
+    pub evidence_errors: Vec<String>,
+    pub pending_pre_durable_verification: bool,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ControlProofGap {
     pub original_id: String,

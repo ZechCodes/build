@@ -17,6 +17,7 @@ pub(super) struct Pump {
     actual_interval_rows: usize,
     actual_finite_ids: BTreeSet<crate::timing::write_wait::WaitId>,
     finalized: bool,
+    overload: Option<Arc<super::super::overload_refusals::RefusalAudit>>,
 }
 impl Pump {
     pub fn new(
@@ -35,7 +36,15 @@ impl Pump {
             actual_interval_rows: 0,
             actual_finite_ids: BTreeSet::new(),
             finalized: false,
+            overload: None,
         }
+    }
+    pub fn enable_overload(&mut self, audit: Arc<super::super::overload_refusals::RefusalAudit>) {
+        assert!(
+            !self.finalized && self.imported.is_empty() && self.overload.is_none(),
+            "overload capability attaches before any traffic"
+        );
+        self.overload = Some(audit);
     }
     pub fn tick(
         &mut self,
@@ -81,8 +90,14 @@ impl Pump {
             // The cursor advanced over this entire batch. Process every row,
             // even after a prior import error, and validate cohort before any
             // proof credit. Publish after stages so waiters see real milestones.
-            if let Err(error) = self.completed.import(&row) {
-                self.errors.insert(error);
+            let quarantined = self
+                .overload
+                .as_ref()
+                .is_some_and(|audit| audit.quarantine(&row));
+            if !quarantined {
+                if let Err(error) = self.completed.import(&row) {
+                    self.errors.insert(error);
+                }
             }
         }
         let intervals = registry
@@ -135,6 +150,26 @@ impl Pump {
         observe: &Observation,
         sink: &dyn ArtifactSink,
     ) -> Result<(), String> {
+        self.finish_inner(prepared, registry, observe, sink, None)
+    }
+    pub fn finish_overload(
+        &mut self,
+        prepared: &mut PreparedBackend,
+        registry: &WriteWaitRegistry,
+        observe: &Observation,
+        sink: &dyn ArtifactSink,
+        accepted: Option<&super::super::saved_evidence::AcceptedRefusals>,
+    ) -> Result<(), String> {
+        self.finish_inner(prepared, registry, observe, sink, Some(accepted))
+    }
+    fn finish_inner(
+        &mut self,
+        prepared: &mut PreparedBackend,
+        registry: &WriteWaitRegistry,
+        observe: &Observation,
+        sink: &dyn ArtifactSink,
+        accepted: Option<Option<&super::super::saved_evidence::AcceptedRefusals>>,
+    ) -> Result<(), String> {
         if self.finalized {
             return Ok(());
         }
@@ -177,7 +212,22 @@ impl Pump {
         if let Err(error) = cursor_result {
             self.errors.insert(error);
         }
-        self.errors.extend(self.completed.audit());
+        if let Some(accepted) = accepted {
+            match self
+                .overload
+                .as_ref()
+                .ok_or_else(|| "overload completion audit capability missing".to_owned())
+                .and_then(|audit| audit.finish(&rows, &intervals, observe, accepted))
+            {
+                Ok(refused) => self.errors.extend(self.completed.audit_overload(&refused)),
+                Err(error) => {
+                    self.errors.insert(error);
+                    self.errors.extend(self.completed.audit());
+                }
+            }
+        } else {
+            self.errors.extend(self.completed.audit());
+        }
         let finite_missing = intervals
             .iter()
             .filter(|interval| interval.category == IntervalCategory::FiniteService)

@@ -19,10 +19,24 @@ pub struct Observation {
     pub(super) next_frame_observer: Arc<AtomicU64>,
 }
 impl Observation {
+    /// Final off-lock archive clone; no inferred or synthetic lifecycle fields.
+    pub fn archived_row(&self, original: &str) -> Result<Row, String> {
+        self.ledger
+            .lock()
+            .map_err(|_| "observation archive poisoned")?
+            .rows
+            .get(original)
+            .cloned()
+            .ok_or_else(|| format!("missing final observation for {original}"))
+    }
+
     pub fn at_us(&self, at: Instant) -> u64 {
         at.saturating_duration_since(self.start)
             .as_micros()
             .min(u64::MAX as u128) as u64
+    }
+    pub fn original_due(&self, slot: &Slot) -> Instant {
+        self.start + Duration::from_micros(slot.due_us)
     }
     pub fn now_us(&self) -> u64 {
         self.at_us(Instant::now())

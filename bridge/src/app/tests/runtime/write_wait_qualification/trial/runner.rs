@@ -58,6 +58,7 @@ struct RunState<'a> {
     failed: bool,
     infrastructure: Option<String>,
     failures: Vec<FailureSnapshot>,
+    fault_overload: Option<FaultOverloadState>,
     control: bool,
     control_effects: BTreeSet<String>,
     control_gaps: Vec<ControlProofGap>,
@@ -73,6 +74,8 @@ mod credits;
 mod dispatch;
 #[path = "runner/drain.rs"]
 mod drain;
+#[path = "runner/fault.rs"]
+mod fault_plan;
 #[path = "runner/finish.rs"]
 mod finish;
 #[path = "runner/setup.rs"]
@@ -80,6 +83,7 @@ mod setup;
 pub use control::{
     run_pipeline_control, PipelineControl, PipelineControlReport, PipelineControlRun,
 };
+pub use fault_plan::{run_fault_plan, FaultOverloadState};
 
 pub async fn run_trial(
     name: TrialName,
@@ -101,6 +105,7 @@ impl RunState<'_> {
                 self.dispatch_ready();
             }
             self.collect_done().await;
+            self.censor_fault_dependents();
             self.detect_crashed();
             if let Err(error) = self.backend.archive_into(&self.observe) {
                 self.observe.fail(None, "archive", error);

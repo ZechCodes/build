@@ -44,6 +44,7 @@ async fn actual_close_job_audits_failed_terminal_watch_before_full_native_cleanu
             );
         }
     };
+    let optional_capture_installed = prepared.optional_notices.is_some();
     let watch = prepared.watch.as_ref().unwrap().clone();
     let owner = Arc::clone(prepared.lifecycle.as_ref().unwrap());
     let weak = Arc::downgrade(&prepared.fixture.as_ref().unwrap().state);
@@ -167,6 +168,51 @@ async fn actual_close_job_audits_failed_terminal_watch_before_full_native_cleanu
         assert!(!archived[key]["violations"].as_array().unwrap().is_empty());
     }
     assert!(!archived["audit_violations"].as_array().unwrap().is_empty());
+    assert!(
+        optional_capture_installed,
+        "actual prepare_collectors must capture optional notices"
+    );
+    let native: Value = serde_json::from_reader(
+        std::fs::File::open(
+            artifacts
+                .join("engine")
+                .join(name.label())
+                .join("native-registry-final.json"),
+        )
+        .expect("actual final native archive survives failed workload"),
+    )
+    .unwrap();
+    let notices = &native["optional_notices"];
+    assert_eq!(notices["enabled"], true);
+    assert_eq!(notices["native_cleanup_attempted"], true);
+    assert_eq!(
+        notices["declared_enrollment_counts"]["TrackerWatchNotice"],
+        0
+    );
+    assert_eq!(notices["declared_enrollment_counts"]["CompleteReminder"], 0);
+    for phase in ["before_cleanup", "after_cleanup_attempt"] {
+        for count in [
+            "offered",
+            "created",
+            "completed",
+            "active",
+            "cancelled_for_cleanup",
+        ] {
+            assert_eq!(
+                notices[phase][count], 0,
+                "zero optional cohort is still explicit: {notices}"
+            );
+        }
+        assert_eq!(
+            notices[phase]["completed_lifetime_us"],
+            json!({"count":0,"p95":0,"max":0})
+        );
+        assert_eq!(
+            notices[phase]["active_age_us"],
+            json!({"censored":true,"count":0,"p95":0,"max":0})
+        );
+        assert!(notices[phase]["samples"].as_array().unwrap().is_empty());
+    }
 }
 
 async fn prepare_one(

@@ -48,18 +48,19 @@ impl Drop for HeldApp {
     }
 }
 
-struct DeliveryFixture {
-    _directory: tempfile::TempDir,
-    state: Arc<Mutex<AppState>>,
-    registry: Arc<WriteWaitRegistry>,
-    rpc: Arc<RpcHarness>,
-    key: TabKey,
-    spawned: mpsc::Receiver<()>,
-    spawn_release: mpsc::Sender<()>,
-    waits: tokio::sync::mpsc::UnboundedReceiver<String>,
+pub(in crate::app::tests::runtime::write_wait_qualification) struct DeliveryFixture {
+    pub(in crate::app::tests::runtime::write_wait_qualification) _directory: tempfile::TempDir,
+    pub(in crate::app::tests::runtime::write_wait_qualification) state: Arc<Mutex<AppState>>,
+    pub(in crate::app::tests::runtime::write_wait_qualification) registry: Arc<WriteWaitRegistry>,
+    pub(in crate::app::tests::runtime::write_wait_qualification) rpc: Arc<RpcHarness>,
+    pub(in crate::app::tests::runtime::write_wait_qualification) key: TabKey,
+    pub(in crate::app::tests::runtime::write_wait_qualification) spawned: mpsc::Receiver<()>,
+    pub(in crate::app::tests::runtime::write_wait_qualification) spawn_release: mpsc::Sender<()>,
+    pub(in crate::app::tests::runtime::write_wait_qualification) waits:
+        tokio::sync::mpsc::UnboundedReceiver<String>,
 }
 impl DeliveryFixture {
-    fn new() -> Self {
+    pub(in crate::app::tests::runtime::write_wait_qualification) fn new() -> Self {
         let (directory, repo) = init_repo();
         let state = qa_state(&repo, directory.path()).shared();
         let root = insert_run_without_agent(&state, &repo, directory.path().join("side"), OWNER);

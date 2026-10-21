@@ -202,6 +202,7 @@ fn final_export_metadata(plan: Vec<Slot>, root: &std::path::Path) -> PreparedBac
         full_plan: Vec::new(),
         transport_archive: None,
         native_archive: None,
+        optional_notices: None,
         mcp_shutdown: None,
         catalog: ReadCatalog {
             rpc: Vec::new(),

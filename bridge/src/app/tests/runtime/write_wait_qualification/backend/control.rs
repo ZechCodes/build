@@ -1,5 +1,6 @@
 //! Actual312-request mixed control. Proof gaps are typed RED after traffic;
 //! normal qualification is unavailable through this concrete backend.
+use super::super::rpc::ReplyProof;
 use super::super::trial_complete::*;
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,6 +12,8 @@ mod close;
 #[path = "control/effects.rs"]
 mod effects;
 pub(super) use effects::prove_native_read;
+#[path = "control/overload.rs"]
+mod overload_policy;
 #[path = "control/archive.rs"]
 mod receipt_archive;
 
@@ -31,6 +34,7 @@ pub(in super::super) struct ControlBackend {
     archive: Arc<Mutex<receipt_archive::Pump>>,
     observation: Arc<Mutex<Option<Observation>>>,
     start: OnceLock<Instant>,
+    overload: Option<Arc<overload_refusals::RefusalAudit>>,
     close_started: AtomicBool,
     cleanup_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     closed: Arc<AtomicBool>,
@@ -134,6 +138,7 @@ impl ControlBackend {
             sink,
             observation: Arc::new(Mutex::new(None)),
             start: OnceLock::new(),
+            overload: None,
             close_started: AtomicBool::new(false),
             cleanup_task: Mutex::new(None),
             closed: Arc::new(AtomicBool::new(false)),
@@ -240,6 +245,17 @@ impl TrialBackend for ControlBackend {
         }
         Ok(())
     }
+    fn confirm_overload_refusal(&self, slot: &Slot, method: &str) -> Result<(), String> {
+        if !self.closed() || !self.close_error.lock().unwrap().is_empty() {
+            return Err(
+                "overload final native/accepted/transport audit is not cleanly closed".into(),
+            );
+        }
+        self.overload
+            .as_ref()
+            .ok_or("backend has no final overload refusal proof")?
+            .confirm(slot, method)
+    }
     fn request_close(&self) {
         self.start_close();
     }
@@ -302,7 +318,7 @@ pub(super) fn expected_read_cohort(
     prepared: &PreparedBackend,
     slot: &Slot,
 ) -> Result<Option<ReadCohort>, String> {
-    use super::super::read_recipes::{FullReadForm, mcp_cases, mcp_read_method, mcp_recipe_form};
+    use super::super::read_recipes::{mcp_cases, mcp_read_method, mcp_recipe_form, FullReadForm};
     if slot.traffic != Traffic::Read {
         return Ok(None);
     }

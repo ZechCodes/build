@@ -39,12 +39,26 @@ const newSessionId = () => "sess-" + Math.random().toString(36).slice(2, 10);
  *  reads it). The first name wins: a socket error that later surfaces through
  *  the deadline it beat is still the socket's. A non-object rejection is
  *  wrapped so there is something to name. */
+const namedAt = (step, error) => {
+  const named = error !== null && typeof error === "object" ? error : new Error(String(error));
+  if (!named.dialStep) named.dialStep = step;
+  return named;
+};
 const atStep = (step, pending) =>
   pending.catch((error) => {
-    const named = error !== null && typeof error === "object" ? error : new Error(String(error));
-    if (!named.dialStep) named.dialStep = step;
-    throw named;
+    throw namedAt(step, error);
   });
+/** The same, for a step that throws in place. */
+const stepping = (step, run) => {
+  try {
+    return run();
+  } catch (error) {
+    throw namedAt(step, error);
+  }
+};
+/** A write to the relay. A socket that went CLOSING under it — after a resume,
+ *  before its close event — refuses here, and the report should say so. */
+const sendAsStep = (ws, text) => stepping("relay-send", () => sendOverSocket(ws, text));
 
 /**
  * @param deviceId the one machine this rendezvous is with. A relay socket is
@@ -111,7 +125,7 @@ export function createRelayRendezvous({
     // Called off while that token was in flight: the socket this would have
     // opened has no owner, so it is not opened at all.
     if (dialledIn !== era) throw closedRendezvous();
-    const ws = new WebSocketImpl(`${relayUrl}/ws/client`);
+    const ws = stepping("relay-socket", () => new WebSocketImpl(`${relayUrl}/ws/client`));
     socket = ws;
     ws.addEventListener("message", (event) => {
       try {
@@ -124,7 +138,7 @@ export function createRelayRendezvous({
     try {
       await openedWithin(ws, openTimeoutMs);
       if (dialledIn !== era) throw closedRendezvous(); // shut below, with nothing sent on it
-      sendOverSocket(ws, JSON.stringify({ type: "authenticate", token }));
+      sendAsStep(ws, JSON.stringify({ type: "authenticate", token }));
     } catch (error) {
       try {
         ws.close();
@@ -188,28 +202,28 @@ export function createRelayRendezvous({
    */
   async function mint({ sessionId, sessionKeyB64 } = {}) {
     const ws = await open();
-    const pinnedKeyB64 = await getPinnedDeviceKey(deviceId);
-    if (!pinnedKeyB64) {
-      throw Object.assign(new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`), {
-        securityCritical: true,
-      });
-    }
     const id = sessionId || newSessionId();
-    const init = await transport.createSessionInit({
-      sessionId: id,
-      deviceId,
-      deviceTransportPublicKeyB64: pinnedKeyB64,
-      sessionKeyB64,
-    });
+    const init = await atStep("session-init", sealedInit({ sessionId: id, sessionKeyB64 }));
     const answer = accepted(id);
     answer.catch(() => {}); // awaited below; a send that throws first must not leave it unhandled
-    sendOverSocket(
+    sendAsStep(
       ws,
       JSON.stringify({ type: "session_init", session_id: id, route_to: `device:${deviceId}`, session_init: init.sessionInit }),
     );
     const { envelope } = await answer;
     await atStep("session-accept", Promise.resolve().then(() => transport.openSessionAccept({ sessionKeyB64: init.sessionKeyB64, envelope })));
     return { sessionId: id, sessionKeyB64: init.sessionKeyB64, deviceId };
+  }
+
+  /** The session init, sealed to the key the api pinned for this device. */
+  async function sealedInit({ sessionId, sessionKeyB64 }) {
+    const pinnedKeyB64 = await getPinnedDeviceKey(deviceId);
+    if (!pinnedKeyB64) {
+      throw Object.assign(new Error(`no pinned transport key for device ${deviceId} — refusing to open a session`), {
+        securityCritical: true,
+      });
+    }
+    return transport.createSessionInit({ sessionId, deviceId, deviceTransportPublicKeyB64: pinnedKeyB64, sessionKeyB64 });
   }
 
   return {

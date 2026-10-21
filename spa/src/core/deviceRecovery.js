@@ -52,11 +52,15 @@ export function createDeviceRecoverySupervisor({
     failedAttempts: record.failedAttempts,
     nextAttemptAt: record.nextAttemptAt,
   });
-  const start = (deviceId, failedAttempts, epoch, { defer = false } = {}) => {
+  /** `early`: this dial was brought forward by a nudge, which spends the
+   *  nudge allowance until the ladder's own timer has dialled again. */
+  const start = (deviceId, failedAttempts, epoch, { defer = false, early = false } = {}) => {
     if (!online.has(deviceId) || epochs.get(deviceId) !== epoch) return;
     const prior = records.get(deviceId);
     cancelTimer(prior);
-    records.set(deviceId, { deviceId, status: "attempting", failedAttempts, nextAttemptAt: null, timer: null, epoch });
+    records.set(deviceId, {
+      deviceId, status: "attempting", failedAttempts, nextAttemptAt: null, timer: null, epoch, early,
+    });
     notify();
     const run = () => {
       if (!online.has(deviceId) || epochs.get(deviceId) !== epoch) return;
@@ -106,6 +110,26 @@ export function createDeviceRecoverySupervisor({
       return { reason, woke: waiting.map((record) => record.deviceId) };
     },
 
+    /**
+     * A hint that now might be a good time, too weak to reset the ladder.
+     *
+     * Window focus is the one this is for. It fires on every alt-tab, and says
+     * nothing about whether the cause of the last failure has gone, so it may
+     * bring a waiting device's next dial forward but keeps its failure count:
+     * if that dial fails, the ladder climbs as it would have. And it may do so
+     * once per back-off window — a dial it brought forward that fails spends
+     * the allowance until the ladder's own timer has dialled again, so a
+     * window flipping focus faster than dials fail cannot dial at its pace
+     * (review #743: ten extra dials in a second, the count stuck at 1).
+     */
+    nudge(reason = "nudge") {
+      const due = [...records.values()].filter((record) => record.status === "waiting" && !record.early);
+      for (const record of due) {
+        start(record.deviceId, record.failedAttempts, nextEpoch(record.deviceId), { defer: true, early: true });
+      }
+      return { reason, woke: due.map((record) => record.deviceId) };
+    },
+
     recoverNow(deviceId) {
       if (!online.has(deviceId)) return null;
       const epoch = nextEpoch(deviceId);
@@ -145,7 +169,9 @@ export function createDeviceRecoverySupervisor({
       const nextAttemptAt = now() + delay;
       const timer = setTimer(() => start(deviceId, failedAttempts, epoch), delay);
       cancelTimer(previous);
-      records.set(deviceId, { deviceId, status: "waiting", failedAttempts, nextAttemptAt, timer, epoch });
+      records.set(deviceId, {
+        deviceId, status: "waiting", failedAttempts, nextAttemptAt, timer, epoch, early: Boolean(previous?.early),
+      });
       notify();
     },
 

@@ -124,16 +124,21 @@ const WAKE_SIGNALS = Object.freeze([
   ["network-change", () => true],
   // The desktop app's window coming to the front. A window that was covered or
   // on another workspace, rather than minimised, was never hidden, so focusing
-  // it fires no visibilitychange — and on 2026-10-21 a laptop opened and
-  // focused waited out its full ten-second step with its network already back.
+  // it fires no visibilitychange. Focus says nothing about whether the cause of
+  // the last failure has gone — the 2026-10-21 report shows at least 30 s of
+  // fast failures after a wake, and whether the network was back is what the
+  // dial-failed `online` field now records — so it is only a hint to dial
+  // early: it brings one dial forward and the back-off still governs.
   ["focus", () => true],
 ]);
 
 let stopWakeWatch = null;
 
-/** Retry every waiting device now, from the floor, because something changed. */
-function wakeRecovery(reason) {
-  const woken = deviceRecovery.wake(reason);
+/** Retry every waiting device now, from the floor, because something changed —
+ *  or, for a hint too weak to reset the ladder, bring the next dial forward
+ *  within it (`deviceRecovery.nudge`). */
+function wakeRecovery(reason, { hint = false } = {}) {
+  const woken = hint ? deviceRecovery.nudge(reason) : deviceRecovery.wake(reason);
   // Only worth a line when it did something: a visibility flip on a healthy app
   // happens all day and says nothing.
   if (woken.woke.length) {
@@ -143,7 +148,7 @@ function wakeRecovery(reason) {
 }
 
 /**
- * Listen for the three wake signals while the app is up. Re-entrant: asking
+ * Listen for the four wake signals while the app is up. Re-entrant: asking
  * again re-arms the one set rather than adding a second.
  */
 export function watchForWake() {
@@ -154,9 +159,9 @@ export function watchForWake() {
   };
   const onOnline = () => wakeRecovery("online");
   const onNetworkChange = () => wakeRecovery("network-change");
-  const onFocus = () => wakeRecovery("focus");
+  const onFocus = () => wakeRecovery("focus", { hint: true });
   // `navigator.connection` is absent on Safari and on desktop Firefox; a missing
-  // signal costs nothing here because the other two still fire.
+  // signal costs nothing here because the other three still fire.
   const radio = globalThis.navigator?.connection;
   document.addEventListener("visibilitychange", onVisible);
   globalThis.addEventListener?.("online", onOnline);

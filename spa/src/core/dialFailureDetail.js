@@ -19,6 +19,8 @@ const OWN_WORDS = new Set([
   "the rendezvous closed",
   "the relay did not answer",
   "device did not answer",
+  // core/carrier.js
+  "the relay socket closed",
   // api.js
   "could not mint a gateway token",
   // core/session.js

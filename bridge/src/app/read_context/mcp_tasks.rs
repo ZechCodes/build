@@ -12,6 +12,8 @@ pub(in crate::app) enum TaskQuery {
         state: Option<String>,
         status: Option<String>,
         label: Option<String>,
+        limit: Option<u64>,
+        cursor: Option<String>,
     },
     Dependents {
         task_id: String,
@@ -30,10 +32,14 @@ impl TaskQuery {
                 state,
                 status,
                 label,
+                limit,
+                cursor,
             } => Self::List {
                 state: state.clone(),
                 status: status.clone(),
                 label: label.clone(),
+                limit: *limit,
+                cursor: cursor.clone(),
             },
             BridgeAction::TrackerTaskDependents {
                 task_id,
@@ -72,12 +78,20 @@ impl TaskQuery {
                 state,
                 status,
                 label,
+                limit,
+                cursor,
             } => {
                 let mut params = json!({"project_id":project});
                 for (name, value) in [("state", state), ("status", status), ("label", label)] {
                     if let Some(value) = value {
                         params[name] = json!(value);
                     }
+                }
+                if let Some(limit) = limit {
+                    params["limit"] = json!(limit);
+                }
+                if let Some(cursor) = cursor {
+                    params["cursor"] = json!(cursor);
                 }
                 params
             }
@@ -106,7 +120,7 @@ impl TaskQuery {
     ) -> Result<Value, String> {
         match self {
             Self::Get { .. } => context.tasks_get(transaction, params),
-            Self::List { .. } => context.tasks_list(transaction, params),
+            Self::List { .. } => context.mcp_tasks_list(transaction, params),
             Self::Dependents { .. } => context.tasks_waiting_on_blocks(transaction, params),
         }
     }

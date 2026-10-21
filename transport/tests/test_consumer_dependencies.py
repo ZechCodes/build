@@ -49,8 +49,8 @@ class ConsumerDependencies(unittest.TestCase):
             with self.subTest(consumer=consumer):
                 package = read_json(f'{consumer}/package.json')
                 self.assertEqual(package['packageManager'], 'npm@12.0.2')
-                self.assertEqual(package['engines']['node'], '>=22.23.3 <23')
-                self.assertEqual((ROOT / consumer / '.nvmrc').read_text().strip(), '22.23.3')
+                self.assertEqual(package['engines']['node'], '>=22.23.4 <23')
+                self.assertEqual((ROOT / consumer / '.nvmrc').read_text().strip(), '22.23.4')
                 config = (ROOT / consumer / '.npmrc').read_text().splitlines()
                 self.assertIn('ignore-scripts=true', config)
                 self.assertIn('min-release-age=7', config)

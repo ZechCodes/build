@@ -100,15 +100,15 @@ pub(super) async fn group(
                 .map_err(|error| error.to_string())
                 .and_then(|answer| answer.map_err(|error| error.to_string())),
         };
-        answers.push((row.request, answer, timely));
+        answers.push((row.request, answer, timely, row.elapsed));
     }
     let late = answers
         .iter()
-        .filter(|(_, _, timely)| !timely)
-        .map(|(request, _, _)| request.label.as_str())
+        .filter(|(_, _, timely, _)| !timely)
+        .map(|(request, _, _, elapsed)| (request.label.as_str(), *elapsed))
         .collect::<Vec<_>>();
     assert_eq!(turn_count, 2);
-    for (request, answer, _) in &answers {
+    for (request, answer, _, _) in &answers {
         assert_eq!(
             without_now(answer.as_ref().expect("socket worker failed").clone()),
             without_now(request.expected.clone()),

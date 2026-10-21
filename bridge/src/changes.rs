@@ -116,8 +116,10 @@ pub const CHANGES_EVENT: &str = "changes";
 /// The change events a browser session can be told about, announced in the
 /// `session.hello` greeting so a client knows what it may hear. `changes` is
 /// what a subscription delivers.
-pub const ANNOUNCED_EVENTS: [&str; 6] = [
+pub const ANNOUNCED_EVENTS: [&str; 8] = [
     CHANGES_EVENT,
+    "bridge.restarting",
+    "writes.confirmed",
     "bridge.update_status",
     MODELS_CHANGED_EVENT,
     "rtc.diagnostics",
@@ -2454,7 +2456,13 @@ mod subscriptions {
     ) -> Vec<Value> {
         let mut seen = Vec::new();
         while let Ok(message) = rx.try_recv() {
-            seen.push(SessionSender::decrypt_push(key, &message));
+            let frame = SessionSender::decrypt_push(key, &message);
+            assert_eq!(
+                frame["bridge_epoch"],
+                crate::bridge_epoch::current(),
+                "subscription frames carry their sending bridge process epoch"
+            );
+            seen.push(frame);
         }
         seen
     }
@@ -2515,6 +2523,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-focus",
                 "items": [{ "entity_id": "run-7", "state": {} }],
             })]
@@ -2548,6 +2557,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {} }],
             })],
@@ -2568,6 +2578,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {}, "state": {} }],
             })],
@@ -2601,6 +2612,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 "items": [{ "entity_id": "run-7", "git": {} }],
             })],
@@ -2642,6 +2654,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-bg",
                 // run-7's row rides this interval: its git went out on the
                 // last one, and a row moves with its checkout.
@@ -2680,6 +2693,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-idle",
                 "items": [{ "entity_id": "run-7", "thread": [] }],
             })],
@@ -2809,6 +2823,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-focus",
                 "items": [{ "entity_id": "run-7", "state": {} }],
             })],
@@ -2874,6 +2889,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-board",
                 "items": [{ "entity_id": "board", "state": { "revision": 2 } }],
             })]
@@ -4211,6 +4227,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-source",
                 "items": [{
                     "entity_id": new.entity_id(),
@@ -4264,6 +4281,7 @@ mod subscriptions {
             frames(drained(&mut rx, &key)),
             vec![json!({
                 "type": "changes",
+                "bridge_epoch": crate::bridge_epoch::current(),
                 "subscription_id": "s-all",
                 "items": [{
                     "entity_id": "run-7",
@@ -4277,6 +4295,12 @@ mod subscriptions {
 #[cfg(test)]
 mod compaction_events {
     use super::*;
+
+    fn expected_payload(scope: &str, owner_id: Option<&str>) -> Value {
+        let mut payload = compaction_changed_payload(scope, owner_id);
+        payload["bridge_epoch"] = json!(crate::bridge_epoch::current());
+        payload
+    }
 
     fn spec(kind: Kind) -> SubscriptionSpec {
         SubscriptionSpec {
@@ -4299,7 +4323,7 @@ mod compaction_events {
         assert_eq!(bus.flush(), 1);
         assert!(old_rx.try_recv().is_err());
         let frame = SessionSender::decrypt_push(&key, &new_rx.try_recv().unwrap());
-        assert_eq!(frame, compaction_changed_payload("project", Some("proj-1")));
+        assert_eq!(frame, expected_payload("project", Some("proj-1")));
         bus.note_compaction("device", None);
         bus.subscribe(&new, spec(Kind::State));
         assert_eq!(
@@ -4386,7 +4410,7 @@ mod compaction_events {
             ("conversation", "conversation-c"),
         ] {
             assert!(
-                events.contains(&compaction_changed_payload(scope, Some(owner))),
+                events.contains(&expected_payload(scope, Some(owner))),
                 "missing {scope}: {events:?}"
             );
         }
@@ -4396,7 +4420,7 @@ mod compaction_events {
     fn compaction_wire_requeue_preserves_a_collapsed_device_invalidation() {
         assert_eq!(
             requeued_events(true),
-            vec![compaction_changed_payload("device", None)]
+            vec![expected_payload("device", None)]
         );
     }
     #[test]
@@ -4490,7 +4514,7 @@ mod compaction_events {
                 assert_eq!(item["state"]["removed"], json!(["run-old"]));
                 board = item["state"].get("revision").is_some();
             }
-            device |= frame == compaction_changed_payload("device", None);
+            device |= frame == expected_payload("device", None);
         }
         assert!(
             board,

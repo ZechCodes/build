@@ -1333,10 +1333,15 @@ fn compaction_wire_mutations_invalidate_other_clients_only_after_commit() {
         json!({"compaction_thresholds":{"pi":123456}}),
     );
     assert_eq!(bus.flush(), 2);
-    for (rx, key) in [(&mut saving_rx, &saving_key), (&mut other_rx, &other_key)] {
+    for (rx, key, sender) in [
+        (&mut saving_rx, &saving_key, &saving),
+        (&mut other_rx, &other_key, &other),
+    ] {
+        let mut expected = crate::changes::compaction_changed_payload("device", None);
+        expected["bridge_epoch"] = json!(sender.bridge_epoch());
         assert_eq!(
             crate::carrier::SessionSender::decrypt_push(key, &rx.try_recv().unwrap()),
-            crate::changes::compaction_changed_payload("device", None)
+            expected
         );
     }
     let old = state.settings_get();

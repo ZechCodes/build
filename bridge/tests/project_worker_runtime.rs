@@ -10,7 +10,9 @@
 
 mod project_bridge;
 
-use project_bridge::{ids, init_repo, private_path, scratch_of, Bridge, PATIENCE};
+use project_bridge::{
+    delete_after_delivery_settles, ids, init_repo, private_path, scratch_of, Bridge, PATIENCE,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -166,10 +168,7 @@ fn deleting_the_project_keeps_its_sources(bridge: &Bridge, project: &Project) {
     let edit = project.repo.join("uncommitted.txt");
     std::fs::write(&edit, "mine\n").unwrap();
     let scratch = scratch_of(&project.root);
-    bridge.ok(
-        "project.delete",
-        json!({ "project_id": project.project_id, "confirm": true }),
-    );
+    delete_after_delivery_settles(bridge, &project.project_id);
     assert_eq!(bridge.ok("project.list", json!({}))["projects"], json!([]));
     assert!(!scratch.exists(), "Build's scratch for the project is gone");
     assert!(project.repo.join(".git").is_dir());

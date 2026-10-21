@@ -12,7 +12,7 @@ App and QA builds use the repository root as their context, with recipes
 [`skriftapp/Containerfile`](../skriftapp/Containerfile) and
 [`web/Containerfile`](../web/Containerfile). Both copy `transport/js` beside
 their consumer, install transport from its lock with scripts disabled, then
-install the committed consumer lock. Node 22.23.3/npm 12.0.2 match local setup;
+install the committed consumer lock. Node 22.23.4/npm 12.0.2 match local setup;
 SPA uses `--legacy-peer-deps`, QA retains `--omit=dev`. For a standalone QA
 image build, run `podman build -f web/Containerfile .` from the repo root.
 A web-only context cannot supply the in-tree binding. The Build commit pins

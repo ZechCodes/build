@@ -10,9 +10,11 @@ pub(super) enum AggregateMode {
     Enforce { limit_ms: f64 },
 }
 
-// Coordinator installs a reviewed explicit limit only after real-runner
-// calibration. This mode never yields an overall passing qualification.
-pub(super) const MODE: AggregateMode = AggregateMode::Calibration;
+// Runner runs 39627704997 / 39630419837 / 39630431116 at afd65d082
+// measured pooled writer p95s of 61.463 / 76.387 / 60.576 ms. The reviewed
+// rule rounds 1.20 * the largest p95 upward to the next 5 ms: 95 ms.
+// Independent read, response and per-verb maximum limits remain mandatory.
+pub(super) const MODE: AggregateMode = AggregateMode::Enforce { limit_ms: 95.0 };
 
 const WRITERS: [&str; 12] = [
     "mcp.control:create_task",

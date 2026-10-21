@@ -4,15 +4,27 @@ use std::os::unix::fs::PermissionsExt;
 
 #[tokio::test]
 async fn terminal_creation_pushes_open_and_close_before_observations_are_ready() {
-    assert_unpublished_terminal_pushes(false).await;
+    assert_unpublished_terminal_pushes(Unpublished::Initial).await;
 }
 
 #[tokio::test]
 async fn terminal_creation_pushes_open_and_close_for_a_new_checkout_alias() {
-    assert_unpublished_terminal_pushes(true).await;
+    assert_unpublished_terminal_pushes(Unpublished::Run).await;
 }
 
-async fn assert_unpublished_terminal_pushes(new_alias: bool) {
+#[tokio::test]
+async fn terminal_creation_workspace_push_survives_an_unrelated_full_publication() {
+    assert_unpublished_terminal_pushes(Unpublished::Workspace).await;
+}
+
+#[derive(Clone, Copy)]
+enum Unpublished {
+    Initial,
+    Run,
+    Workspace,
+}
+
+async fn assert_unpublished_terminal_pushes(case: Unpublished) {
     let directory = tempfile::tempdir().unwrap();
     let repo = crate::git_fixture::init_repo_named(directory.path(), "repo");
     let mut app = fixture(directory.path()).with_change_window(std::time::Duration::ZERO);
@@ -21,21 +33,37 @@ async fn assert_unpublished_terminal_pushes(new_alias: bool) {
     std::fs::write(&shell, "#!/bin/sh\nwhile IFS= read -r line; do :; done\n").unwrap();
     std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o700)).unwrap();
     app.term_shell = shell.display().to_string();
-    let (entity, selector) = if new_alias {
-        app.initialize_snapshot_projection();
-        let alias = "run-new-terminal-alias";
-        let active = crate::orchestrator::ActiveRun::workspace_conversation(
-            crate::run::RunId::new(alias),
-            "New checkout alias".into(),
-            repo,
-            Default::default(),
-        );
-        app.projects.bind_entity(alias.into(), project);
-        app.runs.insert(alias.into(), active);
-        (alias.to_owned(), json!({"run_id":alias}))
-    } else {
-        assert!(!app.snapshot_observations.ready);
-        (project.clone(), json!({"project_id":project}))
+    let (entity, selector) = match case {
+        Unpublished::Initial => {
+            assert!(!app.snapshot_observations.ready);
+            (project.clone(), json!({"project_id":project}))
+        }
+        Unpublished::Run => {
+            app.initialize_snapshot_projection();
+            let alias = "run-new-terminal-alias";
+            let active = crate::orchestrator::ActiveRun::workspace_conversation(
+                crate::run::RunId::new(alias),
+                "New checkout alias".into(),
+                repo,
+                Default::default(),
+            );
+            app.projects.bind_entity(alias.into(), project);
+            app.runs.insert(alias.into(), active);
+            (alias.to_owned(), json!({"run_id":alias}))
+        }
+        Unpublished::Workspace => {
+            app.initialize_snapshot_projection();
+            let alias = "workspace-new-terminal-alias";
+            app.workspaces.adopt_root(
+                &project,
+                alias.into(),
+                "New terminal workspace".into(),
+                repo,
+                "source-1".into(),
+                true,
+            );
+            (alias.to_owned(), json!({"workspace_id":alias}))
+        }
     };
     let state = Arc::new(Mutex::new(app));
     let (bus, clock) = {
@@ -63,6 +91,9 @@ async fn assert_unpublished_terminal_pushes(new_alias: bool) {
         let timer = clock.frame("term.create");
         crate::app::runtime::terminals::term_create(&state, &selector, &timer).unwrap()
     };
+    if matches!(case, Unpublished::Workspace) {
+        state.lock().unwrap().publish_snapshot_projection();
+    }
     bus.flush();
     let opened = drain_terminal_rows(&mut received, &key, &entity);
     let child = {
@@ -78,6 +109,9 @@ async fn assert_unpublished_terminal_pushes(new_alias: bool) {
         .term_close(&json!({"term_id":created["term_id"]}));
     child.end();
     let reaped = child.exited_within(std::time::Duration::from_secs(2));
+    if matches!(case, Unpublished::Workspace) {
+        state.lock().unwrap().publish_snapshot_projection();
+    }
     bus.flush();
     let closed_rows = drain_terminal_rows(&mut received, &key, &entity);
     // Cleanup precedes assertions so a red push regression cannot leak a PTY.

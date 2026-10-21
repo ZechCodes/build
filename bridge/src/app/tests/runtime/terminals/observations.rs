@@ -183,3 +183,69 @@ async fn terminal_observation_lists_live_shell_while_its_screen_mutex_is_held() 
     assert_eq!(rows[0]["cols"], 111);
     assert_eq!(rows[0]["rows"], 37);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_observation_publishes_created_shell_while_unrelated_plan_is_borrowed() {
+    use crate::app::tests::runtime::native_reads::NativeReads;
+
+    let mut reads = NativeReads::new();
+    reads.state.lock().unwrap().term_shell = "/bin/bash".into();
+    let handler = AppState::handler(Arc::clone(&reads.state));
+    let project = reads.project.clone();
+    let borrowed = {
+        let mut app = reads.state.lock().unwrap();
+        let borrowed = app.take_plan(&reads.task).unwrap();
+        assert!(app.committed_entities.has_borrowed(&app));
+        borrowed
+    };
+    let created = call(&handler, "term.create", json!({"project_id":project}));
+    assert_eq!(created["ok"], true, "{created}");
+    let id = created["result"]["term_id"].as_str().unwrap();
+    let listed = reads
+        .held_read("term.list", json!({"project_id":project}))
+        .await;
+    reads
+        .state
+        .lock()
+        .unwrap()
+        .plans
+        .insert(reads.task.clone(), borrowed);
+    let closed = call(&handler, "term.close", json!({"term_id":id}));
+    assert_eq!(closed["ok"], true, "{closed}");
+    assert_eq!(listed_ids(&listed), [id], "{listed}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_observation_publishes_closed_shell_while_unrelated_plan_is_borrowed() {
+    use crate::app::tests::runtime::native_reads::NativeReads;
+
+    let mut reads = NativeReads::new();
+    reads.state.lock().unwrap().term_shell = "/bin/bash".into();
+    let handler = AppState::handler(Arc::clone(&reads.state));
+    let project = reads.project.clone();
+    let created = call(&handler, "term.create", json!({"project_id":project}));
+    assert_eq!(created["ok"], true, "{created}");
+    let id = created["result"]["term_id"].as_str().unwrap();
+    let before = reads
+        .held_read("term.list", json!({"project_id":project}))
+        .await;
+    assert_eq!(listed_ids(&before), [id], "{before}");
+    let borrowed = {
+        let mut app = reads.state.lock().unwrap();
+        let borrowed = app.take_plan(&reads.task).unwrap();
+        assert!(app.committed_entities.has_borrowed(&app));
+        borrowed
+    };
+    let closed = call(&handler, "term.close", json!({"term_id":id}));
+    assert_eq!(closed["ok"], true, "{closed}");
+    let listed = reads
+        .held_read("term.list", json!({"project_id":project}))
+        .await;
+    reads
+        .state
+        .lock()
+        .unwrap()
+        .plans
+        .insert(reads.task.clone(), borrowed);
+    assert!(listed_ids(&listed).is_empty(), "{listed}");
+}

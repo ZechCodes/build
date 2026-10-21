@@ -87,14 +87,7 @@ async fn isolated_reads(two_types: bool) {
     // capture its wire oracle before creating the router used by these reads.
     let expected_review = history_reviews::legacy_review(&fixture, review.clone()).await;
     let (_, router) = snapshot_reads::router(&fixture);
-    let mut slow = vec![fixture.get()];
-    if two_types {
-        slow.push(BridgeAction::ReadConversation {
-            entity_id: fixture.owner.clone(),
-            agent_id: Some(fixture.agent.clone()),
-            limit: 5,
-        });
-    }
+    let slow = slow_actions(&fixture, two_types);
     let fast = fast_requests(&fixture, &router, comment, review, expected_review).await;
     let (probe, mut pins) = SqlReadProbe::new(slow.iter().map(BridgeAction::tool_name).collect());
     let other_plane = {
@@ -104,41 +97,18 @@ async fn isolated_reads(two_types: bool) {
     };
     let mut readings = Vec::new();
     for action in slow {
-        for _ in 0..PINNED_PER_SLOW_TYPE {
-            readings.push(start(
-                &fixture,
-                fixture.plane.clone(),
-                &router,
-                action.clone(),
-            ));
-            assert_eq!(
-                tokio::time::timeout(WATCHDOG, pins.next()).await.unwrap(),
-                SqlReadProbeEvent::Pinned(action.tool_name())
-            );
-        }
-        // Independently captured planes must share the same per-pool quota.
-        readings.push(start(
-            &fixture,
+        let arrivals = slow_arrivals(
+            fixture.plane.clone(),
             other_plane.clone(),
-            &router,
-            action.clone(),
-        ));
-        assert_eq!(
-            tokio::time::timeout(WATCHDOG, pins.next()).await.unwrap(),
-            SqlReadProbeEvent::Waiting(action.tool_name()),
-            "a third {} borrowed SQL capacity instead of waiting for its type quota",
-            action.tool_name()
+            action.tool_name(),
         );
-        for _ in PINNED_PER_SLOW_TYPE + 1..SQL_READERS {
-            readings.push(start(
-                &fixture,
-                other_plane.clone(),
-                &router,
-                action.clone(),
-            ));
+        for (plane, expected) in arrivals {
+            readings.push(start(&fixture, plane, &router, action.clone()));
             assert_eq!(
                 tokio::time::timeout(WATCHDOG, pins.next()).await.unwrap(),
-                SqlReadProbeEvent::Waiting(action.tool_name())
+                expected,
+                "{} must pin only its first two requests and queue the remaining six",
+                action.tool_name()
             );
         }
     }
@@ -152,6 +122,35 @@ async fn isolated_reads(two_types: bool) {
             .unwrap();
         assert_eq!(reply["ok"], true, "{reply}");
     }
+}
+
+fn slow_actions(fixture: &Fixture, two_types: bool) -> Vec<BridgeAction> {
+    let mut actions = vec![fixture.get()];
+    if two_types {
+        actions.push(BridgeAction::ReadConversation {
+            entity_id: fixture.owner.clone(),
+            agent_id: Some(fixture.agent.clone()),
+            limit: 5,
+        });
+    }
+    actions
+}
+
+fn slow_arrivals(
+    first_plane: Arc<ControlPlane>,
+    other_plane: Arc<ControlPlane>,
+    tool: &'static str,
+) -> impl Iterator<Item = (Arc<ControlPlane>, SqlReadProbeEvent)> {
+    let pinned = std::iter::repeat_n(
+        (first_plane, SqlReadProbeEvent::Pinned(tool)),
+        PINNED_PER_SLOW_TYPE,
+    );
+    // Independently captured planes must share the same per-pool quota.
+    let waiting = std::iter::repeat_n(
+        (other_plane, SqlReadProbeEvent::Waiting(tool)),
+        SQL_READERS - PINNED_PER_SLOW_TYPE,
+    );
+    pinned.chain(waiting)
 }
 
 fn start(

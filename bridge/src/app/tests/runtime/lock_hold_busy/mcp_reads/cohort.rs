@@ -66,12 +66,7 @@ pub(super) async fn measure(load: Load) {
         }
     }
     start.wait().await;
-    let mut failures = Vec::new();
-    for call in calls {
-        if let Err(error) = call.await {
-            failures.push(error.to_string());
-        }
-    }
+    let failures = join_calls(calls).await;
     let measurements = wait_for_fixture_idle(&busy).await;
     println!(
         "TASK741_MCP_READS {}",
@@ -89,11 +84,28 @@ pub(super) async fn measure(load: Load) {
         failures.is_empty(),
         "all socket callers complete: {failures:?}"
     );
+    assert_load(
+        load,
+        completed.load(Ordering::Relaxed),
+        &overlap,
+        &measurements,
+    );
+    assert_measurements(&measurements, load.task_lists());
+}
+
+async fn join_calls(calls: Vec<tokio::task::JoinHandle<()>>) -> Vec<String> {
+    let mut failures = Vec::new();
+    for call in calls {
+        if let Err(error) = call.await {
+            failures.push(error.to_string());
+        }
+    }
+    failures
+}
+
+fn assert_load(load: Load, completed: usize, overlap: &Overlap, measurements: &Value) {
     if load.busy() {
-        assert_eq!(
-            completed.load(Ordering::Relaxed),
-            AGENTS * ROUNDS * CONTROL_TOOLS.len()
-        );
+        assert_eq!(completed, AGENTS * ROUNDS * CONTROL_TOOLS.len());
         for (method, expected) in expected_request_samples() {
             assert_eq!(
                 measurements[&method]["client.total"]["count"], expected,
@@ -117,7 +129,6 @@ pub(super) async fn measure(load: Load) {
             "all six reads overlap task-list requests"
         );
     }
-    assert_measurements(&measurements, load.task_lists());
 }
 
 struct Reader {

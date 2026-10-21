@@ -386,11 +386,11 @@ mod controls {
     async fn mcp_recipe_basic_tracker_control() {
         crate::git_fixture::environment::isolated_git_test!();
         let steps = super::execute().await;
-        let actions: Vec<_> = steps
+        let actions: Vec<&serde_json::Value> = steps
             .iter()
             .map(|step| step.mcp_action.as_ref().unwrap())
-            .collect::<std::collections::BTreeSet<_>>();
-        let observed: std::collections::BTreeSet<_> = actions
+            .collect();
+        let observed: std::collections::BTreeSet<&str> = actions
             .iter()
             .map(|action| action["action"].as_str().unwrap())
             .collect::<std::collections::BTreeSet<_>>();

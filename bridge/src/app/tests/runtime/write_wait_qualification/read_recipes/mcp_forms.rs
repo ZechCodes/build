@@ -52,6 +52,7 @@ pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_recipe_laten
 pub(in crate::app::tests::runtime::write_wait_qualification) fn mcp_method_latency_policy(
     method: &str,
 ) -> Option<LoadedReadPolicy> {
+    let method = method.strip_prefix("mcp.control:").unwrap_or(method);
     matches!(
         method,
         "get_task"

@@ -21,7 +21,11 @@ export function deactivateOperationProjection(scope, owner) {
   if (activeScopes.get(scope.deviceId)?.owner === owner) activeScopes.delete(scope.deviceId);
 }
 
-const matchingFence = (left, right) => left.kind === right.kind && left.id === right.id;
+const nonnegativeInteger = (value) => Number.isSafeInteger(value) && value >= 0;
+export const validPublicationFence = (fence) => Boolean(fence && typeof fence.kind === "string" &&
+  typeof fence.id === "string" && nonnegativeInteger(fence.generation) && nonnegativeInteger(fence.sequence));
+const matchingFence = (left, right) => validPublicationFence(left) && validPublicationFence(right) &&
+  left.kind === right.kind && left.id === right.id && left.generation === right.generation;
 export function publicationCovers(observed, required) {
   return required.length > 0 && required.every((fence) => observed.some((seen) =>
     matchingFence(seen, fence) && Number.isSafeInteger(seen.sequence) && seen.sequence >= fence.sequence));

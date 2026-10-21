@@ -5,7 +5,7 @@ import { createAnnouncer, randomToken, recordKey, writeStamp } from "./idbRecord
 import { announceWriteOperationCache, recordWriteOf, transactWriteOperations } from "./localCache.js";
 import {
   activateOperationProjection, clearOperationProjections, deactivateOperationProjection, layerPublished,
-  leaseKey, operationKey, operationNamespace,
+  leaseKey, operationKey, operationNamespace, validPublicationFence,
 } from "./writeOperationProjection.js";
 
 const notifications = createAnnouncer("build-write-operations");
@@ -24,6 +24,13 @@ function validateScope(scope) {
 function validateRecord(record) {
   if (typeof record?.operationId !== "string" || !record.operationId) throw new TypeError("Missing operation identity");
   if (!Number.isSafeInteger(record.revision) || record.revision < 0) throw new TypeError("Invalid operation revision");
+  validateFences(record.owners || []);
+  validateFences(record.published || []);
+  validateFences(record.confirmation?.published || []);
+}
+
+function validateFences(fences) {
+  if (!Array.isArray(fences) || !fences.every(validPublicationFence)) throw new TypeError("Invalid generation-scoped publication fence");
 }
 
 function canAdvance(previous, next) {
@@ -60,6 +67,7 @@ function writeCanonical(records, entries, accept, done) {
       if (!accept()) return done([]);
       const written = [];
       for (const { address, value, publication = [], guard } of entries) {
+        validateFences(publication);
         if (guard && recordWriteOf(held.get(recordKey(address))) !== guard.written) continue;
         if (!putOrAbort(records, { ...writeStamp(), value, publication }, recordKey(address))) return;
         written.push(address);

@@ -4,7 +4,7 @@ import { IDBFactory, IDBKeyRange, IDBObjectStore } from "fake-indexeddb";
 
 const scope = { accountId: "account-a", deviceId: "device-a", principalId: "principal-a" };
 const address = { deviceId: scope.deviceId, entityId: "project", kind: "task" };
-const publication = [{ kind: "project", id: "project", sequence: 7 }];
+const publication = [{ kind: "project", id: "project", sequence: 7, generation: 0 }];
 let cache, operations, factory;
 const intent = (operationId = "op-a", extra = {}) => ({
   operationId, revision: 0, request: { method: "tasks.comment", params: { body: "draft" } }, draft: "draft", ...extra,
@@ -295,8 +295,35 @@ describe("typed protocol evidence", () => {
   it("orders accepted edits by a shared owner beyond the first owner", async () => {
     await operations.put(intent("op-a", { createdAt: 1 }));
     await operations.put(intent("op-b", { createdAt: 2 }));
-    await operations.accept("op-a", { ack: {}, revision: 1, owners: [{ kind: "task", id: "a", sequence: 1 }, { kind: "project", id: "shared", sequence: 2 }], overlay: overlay({ body: "later" }) });
-    await operations.accept("op-b", { ack: {}, revision: 1, owners: [{ kind: "task", id: "b", sequence: 1 }, { kind: "project", id: "shared", sequence: 1 }], overlay: overlay({ body: "earlier" }) });
+    await operations.accept("op-a", { ack: {}, revision: 1, owners: [{ kind: "task", id: "a", sequence: 1, generation: 0 }, { kind: "project", id: "shared", sequence: 2, generation: 0 }], overlay: overlay({ body: "later" }) });
+    await operations.accept("op-b", { ack: {}, revision: 1, owners: [{ kind: "task", id: "b", sequence: 1, generation: 0 }, { kind: "project", id: "shared", sequence: 1, generation: 0 }], overlay: overlay({ body: "earlier" }) });
     expect((await cache.readCached(address)).value.body).toBe("later");
+  });
+});
+
+
+describe("owner generation fences", () => {
+  it("keeps an accepted layer when publication belongs to a replacement owner generation", async () => {
+    await operations.put(intent());
+    await operations.accept("op-a", { ack: {}, revision: 1, overlay: overlay({ body: "accepted" }) });
+    await operations.confirm("op-a", { revision: 2, confirmation: { state: "succeeded", published: publication } });
+    const replacement = publication.map((fence) => ({ ...fence, generation: 1, sequence: 100 }));
+    await operations.observePublication({ canonical: [{ address, value: { body: "replacement owner" }, publication: replacement }] });
+    expect((await operations.get("op-a")).overlayActive).toBe(true);
+    expect((await cache.readCached(address)).value.body).toBe("accepted");
+  });
+
+  it("orders different owner generations by local submission rather than owner sequence", async () => {
+    await operations.put(intent("op-a", { createdAt: 1 }));
+    await operations.put(intent("op-b", { createdAt: 2 }));
+    await operations.accept("op-a", { ack: {}, revision: 1, owners: [{ kind: "project", id: "shared", generation: 0, sequence: 100 }], overlay: overlay({ body: "old generation" }) });
+    await operations.accept("op-b", { ack: {}, revision: 1, owners: [{ kind: "project", id: "shared", generation: 1, sequence: 1 }], overlay: overlay({ body: "new generation" }) });
+    expect((await cache.readCached(address)).value.body).toBe("new generation");
+  });
+
+  it.each([undefined, -1, Infinity, Number.MAX_SAFE_INTEGER + 1])("rejects invalid owner generation %s", async (generation) => {
+    await operations.put(intent());
+    await expect(operations.accept("op-a", { ack: {}, revision: 1, owners: [{ kind: "project", id: "shared", sequence: 1, generation }], overlay: overlay({ body: "invalid" }) })).rejects.toThrow();
+    expect((await operations.get("op-a")).revision).toBe(0);
   });
 });

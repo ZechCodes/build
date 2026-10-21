@@ -12,7 +12,8 @@ greeting advertises `bridge.epoch` and the real `writes.status` and
 - `ack.json` is durable acceptance, distinct from `{id, accepted: true}` transport
   receipts. Its result restores the accepted cache overlay and reserved IDs.
 - `confirmed-success.json` includes the complete existing `tasks.comment` result,
-  owner publication fences, and precise refresh addresses.
+  owner publication fences, and precise refresh addresses. Each owner fence includes
+  its generation: sequence order applies only within that generation.
 - `confirmed-failure.json` names the effect outcome so an unapplied failure can
   remove only its own accepted overlay.
 - `status.json` returns authorized saved operation summaries for at most 128 IDs.

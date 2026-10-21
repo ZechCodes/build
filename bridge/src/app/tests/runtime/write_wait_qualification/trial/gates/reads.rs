@@ -57,4 +57,5 @@ fn validate_case(method: &str, scenario: &str, samples: Vec<(String, u64)>, obse
     }
 }
 
+#[path = "reads/policy_tests.rs"]
 mod policy_tests;

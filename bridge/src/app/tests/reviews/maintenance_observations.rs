@@ -38,7 +38,8 @@ fn refresh_with_writer_held(all: bool) {
     let (finished, complete) = mpsc::channel();
     let state = shared.clone();
     let worker = std::thread::spawn(move || {
-        let timer = clock.frame("maintenance-review-refresh");
+        let timer = clock.frame("other");
+        timer.sample_tool("maintenance-review-refresh");
         let mut app = timer.lock(&state);
         started.send(()).unwrap();
         refresh(&mut app, &workspace, all);
@@ -73,7 +74,8 @@ fn maintenance_review_refresh_native_hold_samples() {
     let clock = shared.lock().unwrap().frame_clock.clone();
     let samples = clock.capture_phases();
     for _ in 0..8 {
-        let timer = clock.frame("maintenance-turn");
+        let timer = clock.frame("other");
+        timer.sample_tool("maintenance-turn");
         // These are the complete capture/apply sections of the maintenance loop.
         let refresh = {
             let mut app = timer.lock(&shared);
@@ -89,7 +91,8 @@ fn maintenance_review_refresh_native_hold_samples() {
         app.publish_snapshot_projection();
     }
     for _ in 0..8 {
-        let timer = clock.frame("maintenance-workspace");
+        let timer = clock.frame("other");
+        timer.sample_tool("maintenance-workspace");
         refresh(&mut timer.lock(&shared), &workspace, false);
     }
     println!("TASK735_REFRESH_NATIVE_HOLDS {}", samples.snapshot());

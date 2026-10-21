@@ -54,22 +54,26 @@ fn capture(
     let work_digest = matches!(action, BridgeAction::ListWork);
     let prepared = PreparedRead::query(None, move |_| {
         Ok(ReadWork::external(move || {
-            let value = {
-                #[cfg(test)]
-                let _phase = crate::timing::phase_samples::phase("snapshot.materialize");
-                value.materialize()
-            };
-            Ok(if work_digest {
-                router_work_digest(value)
-            } else {
-                value
-            })
+            Ok(snapshot_value(&value, work_digest))
         }))
     });
     Ok(match scope {
         Some(scope) => prepared.for_project(scope),
         None => prepared,
     })
+}
+
+fn snapshot_value(value: &SharedJson, work_digest: bool) -> Value {
+    let value = {
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("snapshot.materialize");
+        value.materialize()
+    };
+    if work_digest {
+        router_work_digest(value)
+    } else {
+        value
+    }
 }
 
 /// Match the router's existing compact wire shape and capture exclusion. The
@@ -100,3 +104,7 @@ fn router_work_digest(board: Value) -> Value {
         .collect::<Vec<_>>();
     json!({"work":work})
 }
+
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod tests;

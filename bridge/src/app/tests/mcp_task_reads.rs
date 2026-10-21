@@ -16,6 +16,7 @@ mod guardfree;
 mod history_reviews;
 mod immediate_authority;
 mod metadata;
+mod paging;
 mod races;
 mod reset_retirement;
 mod roster_observations;

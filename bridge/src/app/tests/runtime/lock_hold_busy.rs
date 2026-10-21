@@ -3,7 +3,7 @@
 use super::*;
 use crate::app::mcp::{handle_done_stream, ControlPlane};
 use crate::app::read_view::ReadViewSlot;
-use crate::app::tests::tracker::{filed, tracked};
+use crate::app::tests::tracker::tracked;
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
 use crate::mcp::BridgeAction;

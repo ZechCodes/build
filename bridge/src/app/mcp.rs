@@ -307,7 +307,9 @@ pub(in crate::app) async fn handle_done_stream(
         if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
             #[cfg(test)]
             let serialized = match tool {
-                Some(tool) => plane.clock.sample_serialization(tool, || response.to_string()),
+                Some(tool) => plane
+                    .clock
+                    .sample_serialization(tool, || response.to_string()),
                 None => response.to_string(),
             };
             #[cfg(not(test))]

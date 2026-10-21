@@ -117,11 +117,7 @@ async fn reader(
         for (endpoint, action) in [
             (
                 &agent,
-                BridgeAction::TrackerListTasks {
-                    state: None,
-                    status: None,
-                    label: None,
-                },
+                serde_json::from_value(json!({"action":"tracker_list_tasks","limit":20})).unwrap(),
             ),
             (&router, BridgeAction::ListWork),
         ] {
@@ -161,41 +157,15 @@ async fn reader(
             } else {
                 "work"
             };
-            assert!(reply["result"][rows].as_array().unwrap().len() >= TASKS);
+            let count = reply["result"][rows].as_array().unwrap().len();
+            if rows == "tasks" {
+                assert_eq!(count, 20);
+                assert!(reply["result"]["next_cursor"].is_string());
+            } else {
+                assert!(count >= TASKS);
+            }
         }
     }
     drop(client);
     server.await.unwrap();
-}
-
-#[test]
-fn task_list_summary_queries_are_bounded_by_batches() {
-    let root = tempfile::tempdir().unwrap();
-    let (_home, mut app, project) = tracked(root.path());
-    for i in 0..24 {
-        filed(&mut app, &project, &format!("summary query witness {i}"));
-    }
-    let clock = crate::timing::FrameClock::reporting_to(Arc::new(|_| {}));
-    let samples = clock.capture_phases();
-    let timer = clock.frame("mcp.control");
-    timer.sample_tool("list_tasks");
-    let answer = timer
-        .sample_read_work(|| {
-            app.task_read_context()
-                .tasks_list(app.store.as_ref().unwrap(), &json!({"project_id":project}))
-        })
-        .unwrap();
-    assert_eq!(answer["tasks"].as_array().unwrap().len(), 24);
-    let captured = samples.snapshot();
-    let queries: u64 = captured["mcp.control:list_tasks"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .filter(|(phase, _)| phase.starts_with("entered.sql."))
-        .map(|(_, metric)| metric["count"].as_u64().unwrap())
-        .sum();
-    assert!(
-        queries <= 16,
-        "24 task summaries must use bounded batch queries, observed {queries}: {captured}"
-    );
 }

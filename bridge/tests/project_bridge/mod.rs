@@ -200,6 +200,31 @@ pub fn ids(roster: &Value) -> Vec<String> {
         .collect()
 }
 
+/// A session can be live before its initial delivery ticket settles. Only
+/// that preflight refusal is transient here; deletion retires the live agent.
+pub fn delete_after_delivery_settles(bridge: &Bridge, project: &str) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let answer = bridge.call(
+            "project.delete",
+            json!({"project_id": project, "confirm": true}),
+        );
+        if answer["ok"] == true {
+            return;
+        }
+        assert_eq!(answer["error_code"], "conflict", "{answer}");
+        assert_eq!(
+            answer["error"], "Stop running agents before deleting the project",
+            "{answer}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "initial delivery never settled: {answer}"
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
 pub fn purposes(roster: &Value) -> Vec<String> {
     roster["agents"]
         .as_array()

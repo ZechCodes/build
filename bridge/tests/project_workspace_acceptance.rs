@@ -11,7 +11,10 @@ mod project_bridge;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use build_bridge::source_sync::{sync_base, Fetch, SyncLock, SyncOutcome};
-use project_bridge::{git, ids, init_repo, private_path, purposes, scratch_of, Bridge, PATIENCE};
+use project_bridge::{
+    delete_after_delivery_settles, git, ids, init_repo, private_path, purposes, scratch_of, Bridge,
+    PATIENCE,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -479,31 +482,6 @@ fn removal_and_move(
         project.pin
     );
     moved
-}
-
-/// A session can be live before its initial delivery ticket settles. Only
-/// that preflight refusal is transient here; deletion retires the live agent.
-fn delete_after_delivery_settles(bridge: &Bridge, project: &str) {
-    let deadline = Instant::now() + PATIENCE;
-    loop {
-        let answer = bridge.call(
-            "project.delete",
-            json!({"project_id": project, "confirm": true}),
-        );
-        if answer["ok"] == true {
-            return;
-        }
-        assert_eq!(answer["error_code"], "conflict", "{answer}");
-        assert_eq!(
-            answer["error"], "Stop running agents before deleting the project",
-            "{answer}"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "initial delivery never settled: {answer}"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
 }
 
 fn delete_preserves_originals(

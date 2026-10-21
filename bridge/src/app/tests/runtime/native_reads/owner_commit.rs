@@ -321,16 +321,42 @@ fn complete_independent_stage(
 ) -> crate::app::snapshot_projection::work_counts::detail_scans::Counts {
     AppState::with_native_task_projection_control(enabled, || {
         let fixture = Fixture::new(4, false);
+        // A state transition changes Layout and legitimately rebuilds every
+        // workspace. Warm that transition, then measure only stage progress.
+        {
+            let mut app = fixture.state.lock().unwrap();
+            let mut active = app.take_run(&fixture.run).unwrap();
+            active.run.state = RunState::Review;
+            app.finish_run_mutation(fixture.run.clone(), active)
+                .unwrap();
+            if enabled {
+                assert_eq!(
+                    app.read_view
+                        .load()
+                        .get_owned("task.get", &fixture.task)
+                        .unwrap()["implementation_complete"],
+                    false
+                );
+            }
+        }
         let clock = Arc::clone(&fixture.state.lock().unwrap().frame_clock);
         let (_, counts) =
             crate::app::snapshot_projection::work_counts::detail_scans::measure(|| {
                 let timer = clock.frame("agent.choose");
                 let mut app = timer.lock(&fixture.state);
                 let mut active = app.take_run(&fixture.run).unwrap();
-                active.run.state = RunState::Review;
-                active.stages[1].state = crate::run::StageProgressState::Completed;
-                active.stages[1].built_sha = Some("c".repeat(40));
-                active.stages[1].completion_sha = Some("c".repeat(40));
+                active.stages = (0..STAGES)
+                    .map(|index| {
+                        let mut progress = crate::run::StageProgress::dispatched(format!(
+                            "stage-native-scale-{index}"
+                        ));
+                        progress.state = crate::run::StageProgressState::Completed;
+                        progress.start_sha = Some("b".repeat(40));
+                        progress.built_sha = Some("c".repeat(40));
+                        progress.completion_sha = Some("c".repeat(40));
+                        progress
+                    })
+                    .collect();
                 app.finish_run_mutation(fixture.run.clone(), active)
                     .unwrap();
             });
@@ -344,6 +370,7 @@ fn complete_independent_stage(
             let task = view.get_owned("task.get", &fixture.task).unwrap();
             assert_eq!(task["current_implementation_id"], fixture.run);
             assert_eq!(task["current_implementation"]["state"], "review");
+            assert_eq!(task["implementation_complete"], true);
             assert!(
                 task["execution_context"].is_null(),
                 "private run agent cannot inherit Task conversation"
@@ -360,6 +387,8 @@ fn independent_task_dependency_updates_native_reads_without_widening_workspace_w
     eprintln!(
         "independent linked Task selected workspace work: control={control:?} enabled={enabled:?}"
     );
+    assert_eq!(control.registry_scans, 1, "control used a full fallback");
+    assert_eq!(enabled.registry_scans, 1, "enabled used a full fallback");
     assert_eq!(
         enabled.base_renders, control.base_renders,
         "linked Task metadata widened workspace base rendering"

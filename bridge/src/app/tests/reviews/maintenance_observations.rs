@@ -77,16 +77,18 @@ fn maintenance_review_refresh_native_hold_samples() {
         let timer = clock.frame("other");
         timer.sample_tool("maintenance-turn");
         // These are the complete capture/apply sections of the maintenance loop.
-        let refresh = {
+        let (refresh, reviews) = {
             let mut app = timer.lock(&shared);
             app.revive_parked_projects();
             app.refresh_workspace_snapshot_observations();
             app.board_list();
-            app.refresh_snapshot_observations();
-            app.capture_project_snapshot_refresh()
+            let reviews = app.refresh_snapshot_observations();
+            (app.capture_project_snapshot_refresh(), reviews)
         };
         let rendered = refresh.render();
-        let app = timer.lock(&shared);
+        let reviews = reviews.load();
+        let mut app = timer.lock(&shared);
+        app.install_workspace_review_refresh(reviews);
         app.install_project_snapshot_refresh(rendered);
         app.publish_snapshot_projection();
     }
@@ -95,7 +97,15 @@ fn maintenance_review_refresh_native_hold_samples() {
         timer.sample_tool("maintenance-workspace");
         refresh(&mut timer.lock(&shared), &workspace, false);
     }
-    println!("TASK735_REFRESH_NATIVE_HOLDS {}", samples.snapshot());
+    let captured = samples.snapshot();
+    let turns = &captured["other:maintenance-turn"];
+    assert_eq!(turns["frame.held"]["count"], 8);
+    assert_eq!(turns["entered.lock"]["count"], 16);
+    assert_eq!(
+        captured["other:maintenance-workspace"]["frame.held"]["count"],
+        8
+    );
+    println!("TASK735_REFRESH_NATIVE_HOLDS {captured}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -133,5 +143,137 @@ async fn periodic_maintenance_loads_review_sql_while_app_mutex_is_held_elsewhere
         loaded.release();
     }
     drop(held);
-    assert!(mutex_available, "maintenance held the app mutex during review SQL");
+    assert!(
+        mutex_available,
+        "maintenance held the app mutex during review SQL"
+    );
+}
+
+fn summary(shared: &Arc<Mutex<AppState>>, workspace: &str) -> Value {
+    shared
+        .lock()
+        .unwrap()
+        .read_view
+        .load()
+        .get("workspace.get", workspace)
+        .unwrap()["active_review"]
+        .clone()
+}
+
+fn call(handler: &FrameHandler, method: &str, params: Value) -> Value {
+    let answer = handler.call(
+        SessionSender::detached("maintenance-review"),
+        req(method, params),
+    );
+    assert_eq!(answer["ok"], true, "{answer}");
+    answer["result"].clone()
+}
+
+#[test]
+fn delayed_maintenance_batch_preserves_newer_close_and_replacement_review() {
+    for replace in [false, true] {
+        let (_home, _repository, shared, workspace) = fixture();
+        let before = summary(&shared, &workspace);
+        let refresh = shared.lock().unwrap().refresh_snapshot_observations();
+        let delayed = refresh.load();
+        let handler = AppState::handler(shared.clone());
+        call(
+            &handler,
+            "tasks.review.close",
+            json!({
+                "task_id":before["task_id"], "expected_version":before["version"],
+                "description":"Newer lifecycle observation",
+            }),
+        );
+        if replace {
+            call(
+                &handler,
+                "tasks.review.open",
+                json!({
+                    "workspace_id":workspace, "request_id":"replacement-after-maintenance",
+                    "title":"Replacement review", "description":"New task generation",
+                }),
+            );
+        }
+        let expected = summary(&shared, &workspace);
+        assert_eq!(expected["status"], if replace { "open" } else { "closed" });
+        {
+            let mut app = shared.lock().unwrap();
+            app.install_workspace_review_refresh(delayed);
+            app.publish_snapshot_projection();
+        }
+        assert_eq!(summary(&shared, &workspace), expected);
+    }
+}
+
+#[test]
+fn delayed_maintenance_batch_does_not_restore_a_deleted_workspace_review() {
+    let (_home, _repository, shared, workspace) = fixture();
+    let refresh = shared.lock().unwrap().refresh_snapshot_observations();
+    let delayed = refresh.load();
+    let mut app = shared.lock().unwrap();
+    app.workspaces.forget(&workspace);
+    app.refresh_snapshot_observations();
+    app.install_workspace_review_refresh(delayed);
+    app.publish_snapshot_projection();
+    let mut row = json!({});
+    app.snapshot_workspace_review(&workspace, &mut row);
+    assert!(row.get("active_review").is_none(), "{row}");
+    assert!(app
+        .read_view
+        .load()
+        .get("workspace.get", &workspace)
+        .is_none());
+}
+
+fn refresh_reviews(shared: &Arc<Mutex<AppState>>) {
+    let refresh = shared.lock().unwrap().refresh_snapshot_observations();
+    let reviews = refresh.load();
+    let mut app = shared.lock().unwrap();
+    app.install_workspace_review_refresh(reviews);
+    app.publish_snapshot_projection();
+}
+
+#[test]
+fn maintenance_failure_preserves_accepted_summary_and_next_turn_repairs_it() {
+    let (_home, _repository, shared, workspace) = fixture();
+    let before = summary(&shared, &workspace);
+    let store = shared.lock().unwrap().store.clone().unwrap();
+    let task = before["task_id"].as_str().unwrap();
+    let record: String = {
+        let writer = store.writer_for_test();
+        let record = writer
+            .query_row(
+                "SELECT record FROM reviews WHERE task_id = ?1",
+                [task],
+                |row| row.get(0),
+            )
+            .unwrap();
+        writer
+            .execute(
+                "UPDATE reviews SET record = '{}' WHERE task_id = ?1",
+                [task],
+            )
+            .unwrap();
+        record
+    };
+    refresh_reviews(&shared);
+    assert_eq!(summary(&shared, &workspace), before);
+    let mut repaired: Value = serde_json::from_str(&record).unwrap();
+    repaired["version"] = json!(before["version"].as_u64().unwrap() + 1);
+    store
+        .writer_for_test()
+        .execute(
+            "UPDATE reviews SET version = ?1, record = ?2 WHERE task_id = ?3",
+            rusqlite::params![
+                repaired["version"].as_i64().unwrap(),
+                repaired.to_string(),
+                task
+            ],
+        )
+        .unwrap();
+    refresh_reviews(&shared);
+    let after = summary(&shared, &workspace);
+    assert_eq!(after["task_id"], before["task_id"]);
+    assert_eq!(after["version"], repaired["version"]);
 }

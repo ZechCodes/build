@@ -229,3 +229,8 @@ mod verify;
 pub(super) use full_seed::{PreparedReadInputs, ReadyReadInputs};
 pub(super) use rpc_full::{Case as FullRpcCase, Outcome as FullReadOutcome};
 pub(super) use verify::{collect_native_rpc_reads, verify_native_rpc_reads};
+
+/// Prepare the same private finite PTY executable used by complete read setup.
+pub(super) fn prepare_finite_shell(app: &mut crate::app::AppState, root: &std::path::Path) {
+    full_seed::prepare_finite_shell(app, root);
+}

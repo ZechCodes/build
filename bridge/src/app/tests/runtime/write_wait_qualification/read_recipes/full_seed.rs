@@ -594,3 +594,10 @@ impl Drop for ReadCleanup {
         }
     }
 }
+
+pub(in crate::app::tests::runtime::write_wait_qualification) fn prepare_finite_shell(
+    app: &mut AppState,
+    root: &Path,
+) {
+    qa::prepare_shell(app, root);
+}

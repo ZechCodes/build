@@ -50,7 +50,7 @@ async fn pause_read(fixture: &Fixture, frame: Value, gate: OffLockGateHandle) ->
     paused
 }
 
-fn comment(fixture: &Fixture) -> String {
+pub(super) fn comment(fixture: &Fixture) -> String {
     let reply = fixture.state.lock().unwrap().handle(req(
         "tasks.comment",
         json!({
@@ -61,7 +61,7 @@ fn comment(fixture: &Fixture) -> String {
     reply["result"]["comment"]["id"].as_str().unwrap().into()
 }
 
-fn history(fixture: &Fixture) {
+pub(super) fn history(fixture: &Fixture) {
     let mut app = fixture.state.lock().unwrap();
     let mut active = app.take_run(&fixture.owner).unwrap();
     let thread = &mut active.agents.by_id_mut(&fixture.agent).unwrap().thread;
@@ -95,7 +95,7 @@ fn history(fixture: &Fixture) {
     app.delivery_queue.clear_queued();
 }
 
-fn sentry(fixture: &Fixture) {
+pub(super) fn sentry(fixture: &Fixture) {
     let mut app = fixture.state.lock().unwrap();
     app.delivery_queue.clear_queued();
     app.delivery_queue.enqueue(PendingAgentTurn {
@@ -114,7 +114,7 @@ fn sentry(fixture: &Fixture) {
     });
 }
 
-fn assert_no_drain(fixture: &Fixture, before: &Arc<crate::app::read_view::ReadView>) {
+pub(super) fn assert_no_drain(fixture: &Fixture, before: &Arc<crate::app::read_view::ReadView>) {
     let app = fixture.state.lock().unwrap();
     assert!(
         Arc::ptr_eq(before, &app.read_view.load()),
@@ -232,7 +232,7 @@ async fn mcp_history_router_read_matches_full_transcript_and_errors_without_writ
     assert_eq!(held.len(), 2);
 }
 
-async fn legacy_review(fixture: &Fixture, action: BridgeAction) -> Value {
+pub(super) async fn legacy_review(fixture: &Fixture, action: BridgeAction) -> Value {
     // Keep the pre-read-lane MCP path as an independent oracle, including its
     // deferred external job. Fixture::legacy alone returns its initial Null.
     let (clock, generation) = {
@@ -256,7 +256,7 @@ async fn legacy_review(fixture: &Fixture, action: BridgeAction) -> Value {
     .unwrap()
 }
 
-fn review_actions(fixture: &Fixture) -> Vec<BridgeAction> {
+pub(super) fn review_actions(fixture: &Fixture) -> Vec<BridgeAction> {
     let reply = fixture.state.lock().unwrap().handle(req(
         "tasks.review.snapshot",
         json!({

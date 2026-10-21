@@ -178,7 +178,45 @@ pub(super) fn probe_guarded_read(
     frame: &Value,
     before_final: impl FnOnce(),
 ) -> (Value, usize) {
-    use crate::app::workspaces::count_path_canonicalizations;
+    probe_guarded_stages(state, frame, before_final, ProbeKind::CanonicalPaths)
+}
+
+#[cfg(test)]
+pub(super) fn probe_guarded_executables(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+) -> (Value, usize) {
+    probe_guarded_stages(state, frame, || {}, ProbeKind::GuardedExecutables)
+}
+
+#[cfg(test)]
+enum ProbeKind {
+    CanonicalPaths,
+    GuardedExecutables,
+}
+
+#[cfg(test)]
+impl ProbeKind {
+    fn measure<T>(&self, guarded: bool, work: impl FnOnce() -> T) -> (T, usize) {
+        match self {
+            Self::CanonicalPaths => crate::app::workspaces::count_path_canonicalizations(work),
+            Self::GuardedExecutables if guarded => {
+                let (value, probes) =
+                    crate::harness::installed::executable::probe_counts::measure(work);
+                (value, probes.total())
+            }
+            Self::GuardedExecutables => (work(), 0),
+        }
+    }
+}
+
+#[cfg(test)]
+fn probe_guarded_stages(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    before_final: impl FnOnce(),
+    probe: ProbeKind,
+) -> (Value, usize) {
     let action = action(frame).expect("the fixture supplies an exact supported read");
     assert!(
         guarded::supports(&action),
@@ -186,8 +224,7 @@ pub(super) fn probe_guarded_read(
     );
     let clock = Arc::clone(&state.lock().unwrap().frame_clock);
     let timer = clock.frame(super::MCP_CONTROL_METHOD);
-    let (admitted, admission_probes) =
-        count_path_canonicalizations(|| admit(state, frame, &action, &timer));
+    let (admitted, admission_probes) = probe.measure(true, || admit(state, frame, &action, &timer));
     let Admitted {
         session,
         read,
@@ -198,12 +235,12 @@ pub(super) fn probe_guarded_read(
     };
     let PreparedRead { pool, query, scope } = read;
     assert!(pool.is_none(), "the probe cannot bypass SQL pool ownership");
-    let (outcome, work_probes) = count_path_canonicalizations(|| match query(None) {
+    let (outcome, work_probes) = probe.measure(false, || match query(None) {
         Ok(work) => work.run(),
         Err(error) => job::Outcome::error(error),
     });
     before_final();
-    let (answer, final_probes) = count_path_canonicalizations(|| {
+    let (answer, final_probes) = probe.measure(true, || {
         let _lease = lease;
         finish(state, frame, &action, &timer, session, scope, outcome)
     });

@@ -5,7 +5,7 @@ use crate::update::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Default)]
-struct Backend {
+pub(super) struct Backend {
     launches: AtomicUsize,
 }
 
@@ -25,7 +25,7 @@ impl UpdateBackend for Backend {
     }
 }
 
-fn update_service(root: &Path, backend: Arc<Backend>) -> Arc<UpdateService> {
+pub(super) fn update_service(root: &Path, backend: Arc<Backend>) -> Arc<UpdateService> {
     Arc::new(
         UpdateService::new(
             UpdateConfig {

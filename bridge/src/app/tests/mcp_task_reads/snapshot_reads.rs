@@ -2,7 +2,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-fn router(fixture: &Fixture) -> (String, String) {
+pub(super) fn router(fixture: &Fixture) -> (String, String) {
     let mut app = fixture.state.lock().unwrap();
     let (capture, agent) =
         super::super::routing::router::captured(&mut app, "published read-lane route");
@@ -12,7 +12,7 @@ fn router(fixture: &Fixture) -> (String, String) {
     (capture, agent)
 }
 
-fn router_frame(agent: &str, action: BridgeAction) -> Value {
+pub(super) fn router_frame(agent: &str, action: BridgeAction) -> Value {
     json!({"task_id":agent,"session_token":TOKEN,"request":action})
 }
 

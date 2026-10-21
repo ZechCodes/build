@@ -66,6 +66,14 @@ pub(in crate::app) fn probe_guarded_mcp_read(
     read_lane::probe_guarded_read(state, frame, before_final)
 }
 
+#[cfg(all(test, unix))]
+pub(in crate::app) fn probe_guarded_mcp_executables(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+) -> (Value, usize) {
+    read_lane::probe_guarded_executables(state, frame)
+}
+
 /// The arrival clock shared by every control stream and the bounded mutation
 /// turns used by writers and completion reports.
 pub(in crate::app) struct ControlPlane {

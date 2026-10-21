@@ -39,6 +39,13 @@ protocol versions; see
 
 Wire 3.24.0.
 
+### Security
+
+This release removes a compromised certificate authority from the bridge's trusted roots; upgrade promptly.
+
+- Update the bridge's Rust CA bundles to remove a compromised root certificate
+  (#753).
+
 ### Fixed
 
 - Publish newly opened workspace reviews before notifying clients, and
@@ -76,6 +83,62 @@ Wire 3.24.0.
   current watch began. Watch baselines survive restart; rewatching excludes
   earlier history. Cached SPA badges also suppress unwatched agents on older
   bridges (#474).
+
+- Read marks publish the conversation owner's updated badge state. Chat read
+  reports survive transient failures with bounded backoff and work when a
+  cached unread count lags behind the transcript. Accepted reads are confirmed
+  from the reported cursor, so reading earlier history unblocks the tail; older
+  bridges get a conditional attention-only roster refresh that preserves detail
+  fields and skips unchanged values (#473).
+
+- Chat message ages update live and on return to the foreground without moving
+  rows; refresh pauses while chat is hidden or Agents overview is open (#467).
+- Recognize Claude's saved API key using its config precedence, and treat blank
+  or non-string credentials as absent across harnesses (#434, #466).
+- Detect installed or removed harness CLIs in model listings without restarting
+  the bridge (#434).
+- Keep Codex sessions alive through late items and compaction turns, queuing
+  messages during compaction for their own turn (#421).
+- Preserve the last applied model and effort, including defaults, when
+  adopting a Codex-started turn (#421).
+- Cap WebRTC GSO batches at the peer family's UDP payload limit, including
+  IPv4-mapped peers, to prevent whole-batch drops (#375).
+- Move LAN sweep interface and neighbour reads outside the WebRTC core lock,
+  stopping probes when ownership changes or cached state expires (#376).
+- Treat an overflowed LAN sweep address watch as a change until drained,
+  so stale interface ownership cannot authorize probes (#376).
+- Report IPv6 and oversized neighbour-table sweep skips accurately, and allow
+  bounded scouting when neighbour GC thresholds are equal (#376).
+- Refresh after mutations during a cache pass, so Git initialization and other
+  changes appear without waiting for an unrelated refresh (#454).
+- Stop superseded cache reads without blocking fresh diff reads; abandoned
+  session waits cannot restart sync or clear a new sync's marker (#454, #460).
+- Read newly created files before opening them, replacing earlier deleted-file
+  contents without overwriting newer concurrent cache updates (#433).
+- Keep cached PR status and sync observations current across delayed replies,
+  cleared reviews and reconnects, preserving review drafts (#406).
+- Bound and reuse commits-since-review history reads, and reject counts for a
+  different displayed snapshot head (#427, #453).
+- Wait briefly for overlapping explicit PR synchronization, and release capture
+  and merge leases when their operations finish even if a child retains an
+  inherited descriptor (#404).
+- Preserve effective project Git hooks and their nested Git configuration during
+  fenced PR merges; recover registered hook fence resources at startup after
+  verifying ownership and process death, preserving live or uncertain launches
+  (#423).
+- Retain workspaces and build output while PR merge or saved publication is
+  unsettled, preserve concurrent merge completion during task comments and read
+  backfills, and classify legacy PR action refusals as client errors (#404, #423).
+- Keep PR push bursts coalesced across polling, bound metadata registration,
+  share linked-worktree metadata watches without watching private pins, and
+  recover interrupted unpublished snapshot captures (#403).
+- Recover interrupted initial PR receiving-ref writes and preserve review
+  opening setup when another worktree holds the original branch (#402).
+- Establish recoverable PR tracking refs before opening succeeds, so the first
+  UI Push publishes to the review receiver even without origin (#402).
+- Keep long task comments and loaded images in place when ages, references or
+  review metadata refresh, and follow new comments when reading at the bottom
+  (#410).
 
 ### Added
 
@@ -186,69 +249,6 @@ Wire 3.24.0.
 - Keep SPA controls, labels and navigation chrome unselectable, with shared
   pointer, keyboard and touch feedback while preserving selection in content,
   form fields and the terminal (#397).
-
-### Fixed
-
-- Read marks publish the conversation owner's updated badge state. Chat read
-  reports survive transient failures with bounded backoff and work when a
-  cached unread count lags behind the transcript. Accepted reads are confirmed
-  from the reported cursor, so reading earlier history unblocks the tail; older
-  bridges get a conditional attention-only roster refresh that preserves detail
-  fields and skips unchanged values (#473).
-
-- Chat message ages update live and on return to the foreground without moving
-  rows; refresh pauses while chat is hidden or Agents overview is open (#467).
-- Recognize Claude's saved API key using its config precedence, and treat blank
-  or non-string credentials as absent across harnesses (#434, #466).
-- Detect installed or removed harness CLIs in model listings without restarting
-  the bridge (#434).
-- Keep Codex sessions alive through late items and compaction turns, queuing
-  messages during compaction for their own turn (#421).
-- Preserve the last applied model and effort, including defaults, when
-  adopting a Codex-started turn (#421).
-- Cap WebRTC GSO batches at the peer family's UDP payload limit, including
-  IPv4-mapped peers, to prevent whole-batch drops (#375).
-- Move LAN sweep interface and neighbour reads outside the WebRTC core lock,
-  stopping probes when ownership changes or cached state expires (#376).
-- Treat an overflowed LAN sweep address watch as a change until drained,
-  so stale interface ownership cannot authorize probes (#376).
-- Report IPv6 and oversized neighbour-table sweep skips accurately, and allow
-  bounded scouting when neighbour GC thresholds are equal (#376).
-- Refresh after mutations during a cache pass, so Git initialization and other
-  changes appear without waiting for an unrelated refresh (#454).
-- Stop superseded cache reads without blocking fresh diff reads; abandoned
-  session waits cannot restart sync or clear a new sync's marker (#454, #460).
-- Read newly created files before opening them, replacing earlier deleted-file
-  contents without overwriting newer concurrent cache updates (#433).
-- Keep cached PR status and sync observations current across delayed replies,
-  cleared reviews and reconnects, preserving review drafts (#406).
-- Bound and reuse commits-since-review history reads, and reject counts for a
-  different displayed snapshot head (#427, #453).
-- Wait briefly for overlapping explicit PR synchronization, and release capture
-  and merge leases when their operations finish even if a child retains an
-  inherited descriptor (#404).
-- Preserve effective project Git hooks and their nested Git configuration during
-  fenced PR merges; recover registered hook fence resources at startup after
-  verifying ownership and process death, preserving live or uncertain launches
-  (#423).
-- Retain workspaces and build output while PR merge or saved publication is
-  unsettled, preserve concurrent merge completion during task comments and read
-  backfills, and classify legacy PR action refusals as client errors (#404, #423).
-- Keep PR push bursts coalesced across polling, bound metadata registration,
-  share linked-worktree metadata watches without watching private pins, and
-  recover interrupted unpublished snapshot captures (#403).
-- Recover interrupted initial PR receiving-ref writes and preserve review
-  opening setup when another worktree holds the original branch (#402).
-- Establish recoverable PR tracking refs before opening succeeds, so the first
-  UI Push publishes to the review receiver even without origin (#402).
-- Keep long task comments and loaded images in place when ages, references or
-  review metadata refresh, and follow new comments when reading at the bottom
-  (#410).
-
-### Security
-
-- Update the bridge's Rust CA bundles to remove a compromised root certificate
-  (#753).
 
 ## [0.2.12] - 2026-10-07
 

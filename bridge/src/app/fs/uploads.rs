@@ -1,15 +1,14 @@
-//! Session-owned uploads; staging files clean themselves up when their state is dropped.
-
+//! Session-owned uploads. App owns admission; file services own staging I/O.
+use super::deferred::{FileTarget, PreparedFile};
 use super::{AppState, FileScope};
-use crate::api::v1::git::{
-    FsUploadAbortResult, FsUploadBeginParams, FsUploadBeginResult, FsUploadChunkParams,
-    FsUploadChunkResult, FsUploadFinishResult, FsUploadIdParams,
-};
+use crate::api::v1::git::{FsUploadBeginParams, FsUploadChunkParams, FsUploadIdParams};
 use crate::api::ApiError;
 use crate::carrier::{Opening, SessionSender};
 use crate::scoped_upload::{Destination, StagedFile};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,15 +18,74 @@ const UPLOAD_SESSION_LIMIT: usize = 8;
 const UPLOAD_TOTAL_LIMIT: usize = 64;
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+type UploadFailure = (ApiError, bool);
+type ReopenResult = Result<Option<crate::workspace::FileReopen>, ApiError>;
+type FinishedUpload = (String, ReopenResult);
+
+struct UploadFile {
+    staged: StagedFile,
+    received: u64,
+}
+
+/// Clones reserve quota and keep staging alive while an off-lock service runs.
+/// No app-lock path takes `file`; source serialization precedes its acquisition.
+#[derive(Clone)]
 pub(in crate::app) struct Upload {
-    scope: FileScope,
+    target: FileTarget,
     root: PathBuf,
     owner: String,
     opening: Opening,
     size: u64,
-    received: u64,
     last_chunk_at: Instant,
-    staged: StagedFile,
+    file: Arc<Mutex<Option<UploadFile>>>,
+    cancelled: Arc<AtomicBool>,
+}
+
+impl Upload {
+    fn validate(&self) -> Result<(), ApiError> {
+        if self.cancelled.load(Ordering::Acquire) || !self.opening.is_open() {
+            return Err(ApiError::not_found("unknown upload_id"));
+        }
+        Ok(())
+    }
+
+    fn validate_scope(&self, app: &AppState, root: &Path) -> Result<(), ApiError> {
+        let checked = self.target.validate(app, root);
+        if let Err(error) = checked {
+            let explicit_path = matches!(
+                &self.target.scope,
+                Some(FileScope::ProjectSource {
+                    source_path: Some(_),
+                    ..
+                })
+            );
+            if error.code() == "conflict" && !explicit_path {
+                return Err(ApiError::invalid_params(
+                    "upload scope changed since upload began",
+                ));
+            }
+            return Err(error);
+        }
+        if root != self.root {
+            return Err(ApiError::invalid_params(
+                "upload scope changed since upload began",
+            ));
+        }
+        Ok(())
+    }
+
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.file, &other.file)
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub(in crate::app) fn dispose(self) {
+        self.cancel();
+        self.file.lock().unwrap().take();
+    }
 }
 
 impl AppState {
@@ -60,9 +118,21 @@ impl AppState {
             .sum()
     }
 
-    pub(in crate::app) fn drop_ended_session_uploads(&mut self, session_id: &str) {
-        self.uploads
-            .retain(|_, upload| upload.owner != session_id || upload.opening.is_open());
+    pub(in crate::app) fn drop_ended_session_uploads(&mut self, session_id: &str) -> Vec<Upload> {
+        self.take_uploads(|upload| upload.owner == session_id && !upload.opening.is_open())
+    }
+
+    fn take_uploads(&mut self, remove: impl Fn(&Upload) -> bool) -> Vec<Upload> {
+        let ids: Vec<String> = self
+            .uploads
+            .iter()
+            .filter(|(_, upload)| remove(upload))
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.uploads.remove(&id))
+            .inspect(Upload::cancel)
+            .collect()
     }
 
     pub(in crate::app) fn upload_open_within(&self, root: &Path) -> bool {
@@ -77,67 +147,31 @@ impl AppState {
                 tokio::time::sleep(interval).await;
                 let sweeping = Arc::clone(&state);
                 crate::app::runtime::off_the_workers::off_the_workers(move || {
-                    sweeping
-                        .lock()
-                        .unwrap()
-                        .reap_idle_uploads_at(Instant::now())
+                    let removed = sweeping.lock().unwrap().take_idle_uploads(Instant::now());
+                    for upload in removed {
+                        upload.dispose();
+                    }
                 })
                 .await;
             }
         });
     }
 
-    pub(in crate::app) fn reap_idle_uploads_at(&mut self, now: Instant) -> usize {
-        let before = self.uploads.len();
-        self.uploads.retain(|_, upload| {
-            upload.opening.is_open()
-                && now.saturating_duration_since(upload.last_chunk_at) < UPLOAD_IDLE_TIMEOUT
-        });
-        before - self.uploads.len()
-    }
-
-    pub(crate) fn fs_upload_abort(
-        &mut self,
-        params: FsUploadIdParams,
-        caller: &SessionSender,
-    ) -> Result<FsUploadAbortResult, ApiError> {
-        #[cfg(test)]
-        super::service_test::service();
-        self.owned_upload(&params.upload_id, caller)?;
-        self.uploads.remove(&params.upload_id);
-        Ok(FsUploadAbortResult {})
-    }
-
-    pub(crate) fn fs_upload_finish(
-        &mut self,
-        params: FsUploadIdParams,
-        caller: &SessionSender,
-    ) -> Result<FsUploadFinishResult, ApiError> {
-        #[cfg(test)]
-        super::service_test::service();
-        self.owned_upload(&params.upload_id, caller)?;
-        if let Err(error) = self.validate_upload_scope(&params.upload_id, caller) {
-            if error.code() != "busy" {
-                self.uploads.remove(&params.upload_id);
-            }
-            return Err(error);
-        }
-        let upload = self.owned_upload(&params.upload_id, caller)?;
-        if upload.received != upload.size {
-            return Err(ApiError::invalid_params(
-                "upload must receive the declared size before finishing",
-            ));
-        }
-        let mut upload = self
-            .uploads
-            .remove(&params.upload_id)
-            .expect("validated upload");
-        let path = upload.staged.finish(upload.size)?;
-        self.finish_file_mutation(&upload.scope, &upload.root)?;
-        Ok(FsUploadFinishResult {
-            path,
-            size: upload.size,
+    fn take_idle_uploads(&mut self, now: Instant) -> Vec<Upload> {
+        self.take_uploads(|upload| {
+            !upload.opening.is_open()
+                || now.saturating_duration_since(upload.last_chunk_at) >= UPLOAD_IDLE_TIMEOUT
         })
+    }
+
+    #[cfg(test)]
+    pub(in crate::app) fn reap_idle_uploads_at(&mut self, now: Instant) -> usize {
+        let removed = self.take_idle_uploads(now);
+        let count = removed.len();
+        for upload in removed {
+            upload.dispose();
+        }
+        count
     }
 
     fn owned_upload(&self, id: &str, caller: &SessionSender) -> Result<&Upload, ApiError> {
@@ -151,77 +185,60 @@ impl AppState {
             .ok_or_else(|| ApiError::not_found("unknown upload_id"))
     }
 
-    fn validate_upload_scope(&mut self, id: &str, caller: &SessionSender) -> Result<(), ApiError> {
-        let upload = self.owned_upload(id, caller)?;
-        let (scope, root) = (upload.scope.clone(), upload.root.clone());
-        self.refuse_writers_while_reserved(&root)
-            .map_err(ApiError::classify)?;
-        let current = scope.resolve_root(self).map_err(ApiError::classify)?;
-        let current = std::fs::canonicalize(current).map_err(|error| {
-            ApiError::invalid_params(format!("cannot resolve upload root: {error}"))
-        })?;
-        if current != root {
-            return Err(ApiError::invalid_params(
-                "upload scope changed since upload began",
-            ));
-        }
-        self.owned_upload(id, caller)?
-            .staged
-            .validate_parent(&current)
+    fn upload_is_current(&self, id: &str, upload: &Upload) -> Result<(), ApiError> {
+        upload.validate()?;
+        self.uploads
+            .get(id)
+            .filter(|current| current.same(upload))
+            .map(|_| ())
+            .ok_or_else(|| ApiError::not_found("unknown upload_id"))
     }
 
-    pub(crate) fn fs_upload_chunk(
+    pub(crate) fn fs_upload_abort(
         &mut self,
-        params: FsUploadChunkParams,
+        params: FsUploadIdParams,
         caller: &SessionSender,
-    ) -> Result<FsUploadChunkResult, ApiError> {
-        #[cfg(test)]
-        super::service_test::service();
-        self.validate_upload_scope(&params.upload_id, caller)?;
+    ) -> Result<Value, ApiError> {
+        self.owned_upload(&params.upload_id, caller)?;
         let upload = self
             .uploads
-            .get_mut(&params.upload_id)
-            .expect("validated upload");
-        if params.offset != upload.received {
-            return Err(ApiError::invalid_params(
-                "upload offset must equal received bytes",
-            ));
-        }
-        if params.content_b64.len() as u64 > UPLOAD_CHUNK_BYTES.div_ceil(3) * 4 {
-            return Err(ApiError::invalid_params(
-                "upload chunk exceeds the 4194304-byte limit",
-            ));
-        }
-        let bytes =
-            crate::encoding::b64decode(&params.content_b64).map_err(ApiError::invalid_params)?;
-        if bytes.len() as u64 > UPLOAD_CHUNK_BYTES
-            || upload.received + bytes.len() as u64 > upload.size
-        {
-            return Err(ApiError::invalid_params(
-                "upload chunk exceeds chunk size or declared upload size",
-            ));
-        }
-        if let Err(error) = upload.staged.write_chunk(params.offset, &bytes) {
-            self.uploads.remove(&params.upload_id);
-            return Err(error);
-        }
-        upload.received += bytes.len() as u64;
-        upload.last_chunk_at = Instant::now();
-        Ok(FsUploadChunkResult {
-            received: upload.received,
-        })
+            .remove(&params.upload_id)
+            .expect("owned upload");
+        upload.cancel();
+        Ok(self.defer_file(
+            move || {
+                #[cfg(test)]
+                super::service_test::service();
+                // A preceding chunk/finish owns another reference; cancellation
+                // prevents it publishing and its off-lock drop owns cleanup.
+                upload.dispose();
+                json!({})
+            },
+            |_app, answer| Ok(answer),
+        ))
     }
 
     pub(crate) fn fs_upload_begin(
         &mut self,
         params: FsUploadBeginParams,
         caller: &SessionSender,
-    ) -> Result<FsUploadBeginResult, ApiError> {
-        #[cfg(test)]
-        super::service_test::service();
-        self.reap_idle_uploads_at(Instant::now());
+    ) -> Result<Value, ApiError> {
+        let target = FileTarget::capture(
+            self,
+            FileScope::parse(&crate::api::v1::WireParams::wire(&params.scope))
+                .map_err(ApiError::classify)?,
+        )?;
+        let removed = self.take_idle_uploads(Instant::now());
         if !caller.session_is_open() {
-            return Err(ApiError::not_found("client session has ended"));
+            // No staging can be dropped under app on an admission refusal.
+            return Ok(self.defer_file(
+                move || {
+                    for upload in removed {
+                        upload.dispose();
+                    }
+                },
+                |_app, ()| Err(ApiError::not_found("client session has ended")),
+            ));
         }
         let owned = self
             .uploads
@@ -229,37 +246,300 @@ impl AppState {
             .filter(|upload| upload.owner == caller.session_id())
             .count();
         if self.uploads.len() >= UPLOAD_TOTAL_LIMIT || owned >= UPLOAD_SESSION_LIMIT {
-            return Err(ApiError::busy(
-                "too many open uploads; finish or abort an upload first",
+            return Ok(self.defer_file(
+                move || {
+                    for upload in removed {
+                        upload.dispose();
+                    }
+                },
+                |_app, ()| {
+                    Err(ApiError::busy(
+                        "too many open uploads; finish or abort an upload first",
+                    ))
+                },
             ));
         }
         if params.size > UPLOAD_MAX_BYTES {
-            return Err(ApiError::invalid_params(
-                "upload size exceeds the 268435456-byte limit",
+            return Ok(self.defer_file(
+                move || {
+                    for upload in removed {
+                        upload.dispose();
+                    }
+                },
+                |_app, ()| {
+                    Err(ApiError::invalid_params(
+                        "upload size exceeds the 268435456-byte limit",
+                    ))
+                },
             ));
         }
-        let (scope, root) = self.file_mutation_scope(&params.scope)?;
-        let destination = Destination::open(&root, &params.parent, &params.name)?;
-        let path = destination.path().to_string();
-        let upload_id = uuid::Uuid::new_v4().to_string();
-        let staged = destination.stage(&upload_id, params.replace.unwrap_or(false))?;
-        self.uploads.insert(
-            upload_id.clone(),
-            Upload {
-                scope,
-                root,
-                owner: caller.session_id().into(),
-                opening: caller.opening(),
-                size: params.size,
-                received: 0,
-                last_chunk_at: Instant::now(),
-                staged,
+        let id = uuid::Uuid::new_v4().to_string();
+        let upload = Upload {
+            root: target.recorded_root.clone(),
+            target: target.clone(),
+            owner: caller.session_id().into(),
+            opening: caller.opening(),
+            size: params.size,
+            last_chunk_at: Instant::now(),
+            file: Arc::new(Mutex::new(None)),
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        self.uploads.insert(id.clone(), upload.clone());
+        // Clean expired staging on the same off-lock preparation trip.
+        let captured = target.clone();
+        Ok(self.defer_file(
+            move || {
+                for upload in removed {
+                    upload.dispose();
+                }
+                captured.prepare()
             },
-        );
-        Ok(FsUploadBeginResult {
-            upload_id,
-            path,
-            chunk_bytes: UPLOAD_CHUNK_BYTES,
-        })
+            move |app, prepared| {
+                let result = app.start_upload_begin(id.clone(), upload, params, prepared);
+                if result.is_err() {
+                    app.uploads.remove(&id);
+                }
+                result
+            },
+        ))
     }
+
+    fn discard_upload(&mut self, id: String, upload: Upload, error: ApiError) -> Value {
+        if self
+            .uploads
+            .get(&id)
+            .is_some_and(|current| current.same(&upload))
+        {
+            self.uploads.remove(&id);
+        }
+        upload.cancel();
+        self.defer_file(move || upload.dispose(), |_app, ()| Err(error))
+    }
+
+    fn start_upload_begin(
+        &mut self,
+        id: String,
+        mut upload: Upload,
+        params: FsUploadBeginParams,
+        prepared: Result<PreparedFile, ApiError>,
+    ) -> Result<Value, ApiError> {
+        let prepared = prepared?;
+        self.upload_is_current(&id, &upload)?;
+        upload.target.validate(self, &prepared.root)?;
+        upload.root = prepared.root.clone();
+        self.uploads.get_mut(&id).expect("admitted upload").root = prepared.root.clone();
+        let work = upload.clone();
+        Ok(self.defer_file(
+            move || {
+                #[cfg(test)]
+                super::service_test::service();
+                work.validate()?;
+                let destination = Destination::open(&prepared.root, &params.parent, &params.name)?;
+                let path = destination.path().to_string();
+                let mut file = work.file.lock().unwrap();
+                work.validate()?;
+                let staged = destination.stage(&id, params.replace.unwrap_or(false))?;
+                *file = Some(UploadFile {
+                    staged,
+                    received: 0,
+                });
+                drop(file);
+                Ok((id, path, work, prepared))
+            },
+            move |app, result: Result<_, ApiError>| match result {
+                Ok((id, path, work, _prepared)) => {
+                    let checked = app
+                        .upload_is_current(&id, &work)
+                        .and_then(|()| work.target.validate(app, &_prepared.root));
+                    if let Err(error) = checked {
+                        return Ok(app.discard_upload(id, work, error));
+                    }
+                    Ok(json!({"upload_id":id,"path":path,"chunk_bytes":UPLOAD_CHUNK_BYTES}))
+                }
+                Err(error) => {
+                    app.uploads.retain(|_, current| !current.same(&upload));
+                    Err(error)
+                }
+            },
+        ))
+    }
+
+    pub(crate) fn fs_upload_chunk(
+        &mut self,
+        params: FsUploadChunkParams,
+        caller: &SessionSender,
+    ) -> Result<Value, ApiError> {
+        let upload = self.owned_upload(&params.upload_id, caller)?.clone();
+        let target = upload.target.clone();
+        Ok(self.prepare_file(target, move |app, _target, prepared| {
+            let prepared = prepared?;
+            app.upload_is_current(&params.upload_id, &upload)?;
+            upload.validate_scope(app, &prepared.root)?;
+            let work = upload.clone();
+            Ok(app.defer_file(
+                move || {
+                    let result = write_upload_chunk(&work, &params, &prepared.root);
+                    if result.as_ref().is_err_and(|(_, fatal)| *fatal) {
+                        work.file.lock().unwrap().take();
+                    }
+                    (result, params.upload_id, work, prepared)
+                },
+                move |app, (result, id, work, _prepared)| {
+                    if let Err(error) = app.upload_is_current(&id, &work) {
+                        return Ok(app.discard_upload(id, work, error));
+                    }
+                    match result {
+                        Ok(received) => {
+                            app.uploads
+                                .get_mut(&id)
+                                .expect("owned upload")
+                                .last_chunk_at = Instant::now();
+                            Ok(json!({"received":received}))
+                        }
+                        Err((error, fatal)) => {
+                            if fatal {
+                                app.uploads.remove(&id);
+                            }
+                            Err(error)
+                        }
+                    }
+                },
+            ))
+        }))
+    }
+
+    pub(crate) fn fs_upload_finish(
+        &mut self,
+        params: FsUploadIdParams,
+        caller: &SessionSender,
+    ) -> Result<Value, ApiError> {
+        let upload = self.owned_upload(&params.upload_id, caller)?.clone();
+        let target = upload.target.clone();
+        Ok(self.prepare_file(target, move |app, target, prepared| {
+            let prepared = prepared?;
+            app.upload_is_current(&params.upload_id, &upload)?;
+            if let Err(error) = upload.validate_scope(app, &prepared.root) {
+                if error.code() == "busy" {
+                    return Err(error);
+                }
+                return Ok(app.discard_upload(params.upload_id, upload, error));
+            }
+            let reopened = app.file_reopen(&target)?;
+            let work = upload.clone();
+            let root = prepared.root.clone();
+            Ok(app.defer_file(
+                move || {
+                    let result = finish_upload(&work, &root, reopened);
+                    if result.as_ref().is_err_and(|(_, fatal)| *fatal) {
+                        work.file.lock().unwrap().take();
+                    }
+                    (result, params.upload_id, work, prepared)
+                },
+                move |app, (result, id, work, prepared)| {
+                    if let Err(error) = app.upload_is_current(&id, &work) {
+                        return Ok(app.discard_upload(id, work, error));
+                    }
+                    match result {
+                        Ok((path, reopened)) => {
+                            app.uploads.remove(&id);
+                            app.publish_file_mutation(&target, &prepared.root, reopened)?;
+                            Ok(json!({"path":path,"size":work.size}))
+                        }
+                        Err((error, fatal)) => {
+                            if fatal {
+                                app.uploads.remove(&id);
+                            }
+                            Err(error)
+                        }
+                    }
+                },
+            ))
+        }))
+    }
+}
+
+fn write_upload_chunk(
+    upload: &Upload,
+    params: &FsUploadChunkParams,
+    root: &Path,
+) -> Result<u64, (ApiError, bool)> {
+    #[cfg(test)]
+    super::service_test::service();
+    let checked = || -> Result<Vec<u8>, ApiError> {
+        upload.validate()?;
+        if root != upload.root {
+            return Err(ApiError::invalid_params(
+                "upload scope changed since upload began",
+            ));
+        }
+        if params.content_b64.len() as u64 > UPLOAD_CHUNK_BYTES.div_ceil(3) * 4 {
+            return Err(ApiError::invalid_params(
+                "upload chunk exceeds the 4194304-byte limit",
+            ));
+        }
+        crate::encoding::b64decode(&params.content_b64).map_err(ApiError::invalid_params)
+    };
+    let bytes = checked().map_err(|error| (error, false))?;
+    let mut file = upload.file.lock().unwrap();
+    let file = file
+        .as_mut()
+        .ok_or_else(|| (ApiError::busy("upload is still beginning"), false))?;
+    file.staged
+        .validate_parent(root)
+        .map_err(|error| (error, false))?;
+    if params.offset != file.received {
+        return Err((
+            ApiError::invalid_params("upload offset must equal received bytes"),
+            false,
+        ));
+    }
+    if bytes.len() as u64 > UPLOAD_CHUNK_BYTES || file.received + bytes.len() as u64 > upload.size {
+        return Err((
+            ApiError::invalid_params("upload chunk exceeds chunk size or declared upload size"),
+            false,
+        ));
+    }
+    upload.validate().map_err(|error| (error, false))?;
+    file.staged
+        .write_chunk(params.offset, &bytes)
+        .map_err(|error| (error, true))?;
+    file.received += bytes.len() as u64;
+    Ok(file.received)
+}
+
+fn finish_upload(
+    upload: &Upload,
+    root: &Path,
+    reopened: Option<crate::workspace::FileReopen>,
+) -> Result<FinishedUpload, UploadFailure> {
+    #[cfg(test)]
+    super::service_test::service();
+    upload.validate().map_err(|error| (error, true))?;
+    if root != upload.root {
+        return Err((
+            ApiError::invalid_params("upload scope changed since upload began"),
+            true,
+        ));
+    }
+    let mut file = upload.file.lock().unwrap();
+    let active = file
+        .as_mut()
+        .ok_or_else(|| (ApiError::busy("upload is still beginning"), false))?;
+    if active.received != upload.size {
+        return Err((
+            ApiError::invalid_params("upload must receive the declared size before finishing"),
+            false,
+        ));
+    }
+    active
+        .staged
+        .validate_parent(root)
+        .map_err(|error| (error, true))?;
+    let path = active
+        .staged
+        .finish(upload.size)
+        .map_err(|error| (error, true))?;
+    // Remove the published staging descriptor off-lock, including failures.
+    file.take();
+    Ok((path, super::deferred::persist_reopen(reopened)))
 }

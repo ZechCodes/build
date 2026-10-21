@@ -394,6 +394,9 @@ impl ApiError {
     /// <thing>`), and `internal` for everything else — which a test counts,
     /// so the list shrinks over time.
     pub fn classify(message: String) -> ApiError {
+        if let Some(error) = crate::app::AppState::decode_file_error(&message) {
+            return error;
+        }
         if let Some(error) = v1::reviews::errors::decode(&message) {
             return error;
         }

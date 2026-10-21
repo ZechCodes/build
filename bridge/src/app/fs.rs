@@ -1,4 +1,4 @@
-use crate::api::v1::git::{FsCreateDirectoryParams, FsCreateDirectoryResult, SourceScopeParams};
+use crate::api::v1::git::FsCreateDirectoryParams;
 use crate::api::v1::WireParams;
 use crate::api::ApiError;
 use crate::app::{expand_tilde, mime_hint};
@@ -12,7 +12,10 @@ use serde_json::{json, Value};
 
 use super::{b64encode, fenced_scope_path, media_mime_hint, require_str, AppState, TermScope};
 
+mod deferred;
+mod errors;
 pub(in crate::app) mod uploads;
+use deferred::FileTarget;
 
 #[cfg(test)]
 #[path = "fs/service_test.rs"]
@@ -265,64 +268,34 @@ impl AppState {
     pub(crate) fn fs_create_directory(
         &mut self,
         params: FsCreateDirectoryParams,
-    ) -> Result<FsCreateDirectoryResult, ApiError> {
-        let (scope, root) = self.file_mutation_scope(&params.scope)?;
-        #[cfg(test)]
-        service_test::service();
-        let destination =
-            crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
-        destination.create_directory()?;
-        self.finish_file_mutation(&scope, &root)?;
-        Ok(FsCreateDirectoryResult {
-            path: destination.path().into(),
-        })
+    ) -> Result<Value, ApiError> {
+        self.create_scoped_entry(params, true)
     }
 
-    /// Create one empty file beside `fs.createDirectory`, under the same
-    /// scope, fence and refusal of an existing name. `fs.write` only replaces
-    /// a file it has read, so a new file starts here.
     pub(crate) fn fs_create_file(
         &mut self,
         params: FsCreateDirectoryParams,
-    ) -> Result<FsCreateDirectoryResult, ApiError> {
-        let (scope, root) = self.file_mutation_scope(&params.scope)?;
-        #[cfg(test)]
-        service_test::service();
-        let destination =
-            crate::scoped_upload::Destination::open(&root, &params.parent, &params.name)?;
-        destination.create_file()?;
-        self.finish_file_mutation(&scope, &root)?;
-        Ok(FsCreateDirectoryResult {
-            path: destination.path().into(),
-        })
+    ) -> Result<Value, ApiError> {
+        self.create_scoped_entry(params, false)
     }
 
-    fn file_mutation_scope(
+    fn create_scoped_entry(
         &mut self,
-        params: &SourceScopeParams,
-    ) -> Result<(FileScope, std::path::PathBuf), ApiError> {
-        let scope = FileScope::parse(&params.wire()).map_err(ApiError::classify)?;
-        let root = scope.resolve_root(self).map_err(ApiError::classify)?;
-        self.refuse_writers_while_reserved(&root)
-            .map_err(ApiError::classify)?;
-        let root = std::fs::canonicalize(root).map_err(|error| {
-            ApiError::invalid_params(format!("cannot resolve scope root: {error}"))
-        })?;
-        Ok((scope, root))
-    }
-
-    fn finish_file_mutation(
-        &mut self,
-        scope: &FileScope,
-        root: &std::path::Path,
-    ) -> Result<(), ApiError> {
-        self.invalidate_snapshot_checkout_observations(root);
-        if let FileScope::WorkspaceSource { workspace_id, .. } = scope {
-            self.reopen_workspace(workspace_id)
-                .map_err(ApiError::classify)?;
-        }
-        self.invalidate_file_scope(scope);
-        Ok(())
+        params: FsCreateDirectoryParams,
+        directory: bool,
+    ) -> Result<Value, ApiError> {
+        let scope = FileScope::parse(&params.scope.wire()).map_err(ApiError::classify)?;
+        let target = FileTarget::capture(self, scope)?;
+        Ok(self.file_mutation(target, move |root| {
+            let destination =
+                crate::scoped_upload::Destination::open(root, &params.parent, &params.name)?;
+            if directory {
+                destination.create_directory()?;
+            } else {
+                destination.create_file()?;
+            }
+            Ok(json!({"path": destination.path()}))
+        }))
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
@@ -336,33 +309,13 @@ impl AppState {
     /// The parent follows `fs.list`'s host-browsing authority; accepting the
     /// child separately keeps traversal and implicit parent creation out of the
     /// mutation surface.
-    pub(crate) fn fs_mkdir(&self, params: &Value) -> Result<Value, String> {
-        #[cfg(test)]
-        service_test::service();
-        let parent_value = require_str(params, "parent")?;
-        let parent = std::fs::canonicalize(expand_tilde(&parent_value))
-            .map_err(|error| format!("cannot open parent folder: {error}"))?;
-        if !parent.is_dir() {
-            return Err("parent is not a directory".to_string());
-        }
-        let name = require_str(params, "name")?;
-        let is_single_component = !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.contains(['/', '\\'])
-            && std::path::Path::new(&name)
-                .components()
-                .all(|part| matches!(part, std::path::Component::Normal(_)));
-        if !is_single_component {
-            return Err("name must be a single folder name".to_string());
-        }
-        self.refuse_writers_while_reserved(&parent)?;
-        let target = parent.join(name);
-        std::fs::create_dir(&target)
-            .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
-        let path = std::fs::canonicalize(&target)
-            .map_err(|error| format!("cannot open created folder: {error}"))?;
-        Ok(json!({ "path": path.display().to_string() }))
+    pub(crate) fn fs_mkdir(&mut self, params: &Value) -> Result<Value, String> {
+        let parent = expand_tilde(&require_str(params, "parent")?);
+        let target = FileTarget::host(parent);
+        let params = params.clone();
+        Ok(self.file_mutation(target, move |root| {
+            make_host_directory(root, &params).map_err(ApiError::classify)
+        }))
     }
 
     /// One directory level of a source or worktree scope (spec §4.2): server-side
@@ -391,33 +344,12 @@ impl AppState {
     /// the editor opened. The descriptor-relative helper holds the fenced
     /// parent through the atomic rename, defeating ancestor symlink swaps.
     pub(crate) fn fs_write(&mut self, params: &Value) -> Result<Value, String> {
-        #[cfg(test)]
-        service_test::service();
         let scope = FileScope::parse(params)?;
-        let root = scope.resolve_root(self)?;
-        let path = require_str(params, "path")?;
-        let expected_revision = require_str(params, "expected_revision")?;
-        let encoded = require_str(params, "content_b64")?;
-        if encoded.len() > (EDITABLE_MAX_BYTES * 4).div_ceil(3) + 4 {
-            return Err("replacement exceeds the 1048576-byte limit".to_string());
-        }
-        let replacement = b64decode(&encoded)?;
-        if replacement.len() > EDITABLE_MAX_BYTES {
-            return Err("replacement exceeds the 1048576-byte limit".to_string());
-        }
-
-        self.refuse_writers_while_reserved(&root)?;
-        let current = self.fs_read(params)?;
-        if current.get("editable") != Some(&Value::Bool(true)) {
-            return Err("file is not editable UTF-8 text".to_string());
-        }
-        replace_text(&root, &path, &expected_revision, &replacement)?;
-        self.invalidate_snapshot_checkout_observations(&root);
-        if let FileScope::WorkspaceSource { workspace_id, .. } = &scope {
-            self.reopen_workspace(workspace_id)?;
-        }
-        self.invalidate_file_scope(&scope);
-        self.fs_read(params)
+        let target = FileTarget::capture(self, scope).map_err(deferred::encode_error)?;
+        let params = params.clone();
+        Ok(self.file_mutation(target, move |root| {
+            replace_scoped_file(root, &params).map_err(ApiError::classify)
+        }))
     }
 
     fn invalidate_file_scope(&mut self, scope: &FileScope) {
@@ -440,6 +372,48 @@ impl AppState {
         }
         self.note_board_changed();
     }
+}
+
+fn make_host_directory(parent: &std::path::Path, params: &Value) -> Result<Value, String> {
+    if !parent.is_dir() {
+        return Err("parent is not a directory".into());
+    }
+    let name = require_str(params, "name")?;
+    let is_single_component = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && std::path::Path::new(&name)
+            .components()
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+    if !is_single_component {
+        return Err("name must be a single folder name".into());
+    }
+    let target = parent.join(name);
+    std::fs::create_dir(&target)
+        .map_err(|error| format!("cannot create {}: {error}", target.display()))?;
+    let path = std::fs::canonicalize(&target)
+        .map_err(|error| format!("cannot open created folder: {error}"))?;
+    Ok(json!({"path": path.display().to_string()}))
+}
+
+fn replace_scoped_file(root: &std::path::Path, params: &Value) -> Result<Value, String> {
+    let path = require_str(params, "path")?;
+    let expected_revision = require_str(params, "expected_revision")?;
+    let encoded = require_str(params, "content_b64")?;
+    if encoded.len() > (EDITABLE_MAX_BYTES * 4).div_ceil(3) + 4 {
+        return Err("replacement exceeds the 1048576-byte limit".into());
+    }
+    let replacement = b64decode(&encoded)?;
+    if replacement.len() > EDITABLE_MAX_BYTES {
+        return Err("replacement exceeds the 1048576-byte limit".into());
+    }
+    let current = read_scoped_file(root, params)?;
+    if current.get("editable") != Some(&Value::Bool(true)) {
+        return Err("file is not editable UTF-8 text".into());
+    }
+    replace_text(root, &path, &expected_revision, &replacement)?;
+    read_scoped_file(root, params)
 }
 
 /// One page of an open file (`fs.read` with a `range`, #95): whole lines for

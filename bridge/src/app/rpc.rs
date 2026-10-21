@@ -630,10 +630,13 @@ impl AppState {
         })
         .with_snapshot_reads(move |frame| snapshots.call(frame))
         .on_session_end(move |session_id| {
-            ending
+            let removed = ending
                 .lock()
                 .unwrap()
                 .drop_ended_session_uploads(session_id);
+            for upload in removed {
+                upload.dispose();
+            }
         })
     }
 

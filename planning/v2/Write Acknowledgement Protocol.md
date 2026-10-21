@@ -1,7 +1,8 @@
 # Write Acknowledgement and Bridge Epoch Protocol
 
 Task #710, amendment to [Bridge Concurrency Plan](<Bridge Concurrency Plan.md>),
-2026-10-20. **Proposed; planning only.** Baseline
+2026-10-20; compatibility decision amended 2026-10-21. **Implementation contract;
+Step 6a foundation in #739, SPA in #740.** Original baseline
 `82b5ce0c47b3016fb237cd0a2db5376384d019c2`, wire 3.23.0, Store schema 17.
 Names below are proposed unless identified as existing. This document does
 not describe shipped behavior. Implementation releases and gates are in the
@@ -248,18 +249,19 @@ PTY bytes, messages or unrelated later edits.
 
 ## 3. Wire contract
 
-Introduce `writes.ackConfirm`, `bridge.epoch` and `writes.status`, initially
-for a negotiated list `ack_confirm_methods`. Every supported invocation
-explicitly opts in with `write.mode`; advertising a capability alone never
-changes a legacy caller's result shape. New result envelopes have their own
-typed validators; the existing method's result validator applies to the
-confirmation, not to the provisional ack. The adapter must not resolve an
-old typed API Promise with a new ack object by accident.
+Announce `bridge.epoch` and serve `writes.status` and `writes.subscribe`.
+The bridge and SPA ship together at wire 3.24.0; the SPA requires that version.
+There is no `write.mode` opt-in or separate ack-confirm capability negotiation.
+The internal `ack_confirm_methods` allowlist starts empty in Step 6a and enables
+each method only after its admission, execution and recovery tests pass.
+Once enabled, a method uses the new envelopes for all callers. New result
+envelopes have their own typed validators; the method result validator applies
+to the confirmation, not to the provisional ack. See §7 for Zech’s decision.
 
 Example request:
 
 ```json
-{"id":"r-17","method":"tasks.comment","params":{"task_id":"task-A","body":"Ready for review"},"write":{"mode":"ack_confirm","operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a","after":[]}}
+{"id":"r-17","method":"tasks.comment","params":{"task_id":"task-A","body":"Ready for review"},"write":{"operation_id":"5d9b2df9-cd22-4cc0-9c50-eef3c7c3301a","after":[]}}
 ```
 
 The existing transport receipt may precede this durable ack:
@@ -312,7 +314,7 @@ at-least-once and independent of the 250 ms ordinary change coalescer.
 Duplicates/out-of-order responses cannot regress an operation revision.
 Fast writes still send the ack and confirmation separately in v1 of this
 protocol, possibly consecutively; combining them is a future optimization
-requiring a fixture and negotiated semantics.
+requiring a fixture and a coordinated wire version change.
 
 ### Read-your-own-write
 
@@ -344,7 +346,7 @@ its canonical visibility guarantee now attaches to confirmation.
 The plan's §5 policy table is exhaustive. “Already fast” is an execution
 target, not permission to emit an undurable ack: a short command can finish
 application before sending ack, then send the saved confirmation immediately.
-All opted-in semantic write RPCs and MCP writes use the same envelope.
+All enabled semantic write RPCs and MCP writes use the same envelope.
 Session-bound semantic commands such as uploads still record an
 intent/claim/outcome; their recovery can end in `scope_ended` or
 `outcome_unknown`, never replay of stale handles.
@@ -366,7 +368,7 @@ into the semantic command path rather than hidden inside this exception.
 
 Generate one random `bridge_epoch` per daemon start; all sessions/carriers
 in that process share it. Separately persist `journal_incarnation`.
-`session.hello` returns both and the negotiated capabilities. A boot epoch
+`session.hello` returns both and the bridge capabilities. A boot epoch
 alone never proves journal integrity; restore tooling is outside this
 process-restart scope. Stamp every
 authenticated application reply, receipt, write ack, confirmation and push
@@ -399,9 +401,9 @@ Compare epochs for the authenticated device and current connection lifetime:
    on the new opening, subject to its current terminal identity; input bytes
    and QA stream starts are never replayed automatically. New hello/RTC
    negotiation belongs to the new connection lifetime.
-5. New journal incarnation or incapable downgrade: retain pending records
-   and do not replay them through legacy write APIs. Reconcile through a
-   compatible bridge or expose an operation-specific unresolved result.
+5. New journal incarnation: retain pending records and do not replay them
+   as new writes. Require operation-specific reconciliation. Older bridge/SPA
+   combinations and binary downgrades are unsupported (§7).
 
 The current product's relay is rendezvous/signaling only; application RPCs
 ride direct or TURN-relayed WebRTC DataChannels. Apply the same authenticated
@@ -486,11 +488,11 @@ Add an exhaustive policy match over `mcp.rs::BridgeAction` plus coding/router
 admission through captured authenticated contexts, with current thread
 generation validation. Write actions use the same journal and owner
 scheduler as RPC. `mcp.rs` tool schemas and control client carry an optional
-caller-supplied `operation_id`. An authenticated control handshake negotiates
-the daemon's epoch/incarnation, `writes.ackConfirm` and exact action/report
-support. Each control frame opts in explicitly; without handshake/opt-in the
-daemon returns the legacy final result. Test old adapters/new daemons and the
-reverse, including an adapter surviving a daemon downgrade.
+caller-supplied `operation_id`. An authenticated control handshake supplies
+the daemon’s epoch/incarnation and wire version. Internal action/report
+allowlists enable the tested semantic writes; they do not negotiate legacy
+reply behavior. Adapters and daemon ship together. MCP enablement belongs
+to Step 6b, not the Step 6a foundation.
 
 The adapter persists a random harness-session namespace and a mapping from
 stable provider invocation identity to one operation UUID before sending.
@@ -520,21 +522,28 @@ Failure notices use the existing durable agent-notice machinery when the
 agent must act. Agent-triggering followups run from committed domain
 state, not from a speculative success token.
 
-Completion reports currently return no response; add a negotiated ack
+Completion reports currently return no response; add an ack
 channel and durable report ID, keep the agent/session alive until admission
 is known, and preserve task completion-authority fences. Tool actions that
 change Complete/Blocked status may resolve the model call at ack, while
-bridge finalization happens only after committed execution. Old adapters
-continue awaiting the old final result. Mutable nested writes and router
+bridge finalization happens only after committed execution. Mutable nested writes and router
 actions are included, not just the common tracker tools.
 
 ## 7. Compatibility, tests and rollback
 
-Minor versions suffice because envelopes are explicitly opt-in and existing
-requests/replies are preserved. Allocate 3.24–3.26 as described in the plan
-only if still available at implementation time; check then-current main,
-advance once per release and update `API_VERSION`, version fixtures, method/
-event fixtures, announced capabilities and SPA capability adapters together.
+**Zech’s decision, 2026-10-21:** “save time by not focusing on backwards
+compat. We’ll eat it on this one.” The bridge and SPA ship together. Old SPA
+clients against the new bridge may break; there is no legacy `write.mode`
+opt-in, final-reply compatibility branch or ack-confirm capability negotiation.
+Wire 3.24.0 is the Step 6a foundation version and the SPA requires it. Update
+`API_VERSION`, version/method/event fixtures and the SPA’s required version
+together. Keep `bridge.epoch`; the exact `ack_confirm_methods` list is internal
+and initially empty. Method capabilities for the actual status/subscribe
+reads remain ordinary registry entries. A forward schema migration suffices.
+
+Durable acceptance, same-ID idempotency, crash recovery, epoch stamping,
+retained status and atomic subscribe reconciliation remain required. The
+compatibility simplification does not weaken those guarantees.
 
 Test first, then implement each slice:
 
@@ -552,8 +561,8 @@ Test first, then implement each slice:
 - Failed save and nested partial success, publication after disconnected
   caller, failed terminal-outbox save, retained canonical revision and
   per-operation rollback without undoing subsequent edits.
-- Reload before send/after ack, offline cached paint, IDB failure, cold mount
-  before greeting, old-client/new-bridge and new-client/old-bridge combinations.
+- Reload before send/after ack, offline cached paint, IDB failure and cold mount
+  before greeting, with matching bridge/SPA versions.
 - Full MCP action/report manifest, tool result at ack, sequential dependent
   calls, notification fallback, auth/thread replacement and internal delivery.
 - Held-executor checklist and create-then-comment chains from §2, including
@@ -570,23 +579,13 @@ Test first, then implement each slice:
   report ack latency (target p99 ≤100 ms for hot bounded commands) and time
   to confirmation. Never use receipts as ack timing.
 
-Rollback disables **new** early-admission methods through the advertised
-allowlist. The rollback build must understand the migrated schema and preserve
-status, idempotency, retained outcomes/tombstones and confirmation recovery
-for all previously accepted commands, including terminal ones. Draining
-execution is not sufficient: a caller may retry a completed operation whose
-confirmation was lost. Keep pending-cache reconciliation and applicable
-recovery workers; a schema-unaware binary is never an acceptable rollback
-onto the migrated database. A method can return to synchronous execution
-behind the same journal/protocol without changing identities. Never turn
-accepted operations into legacy retries or drop the journal.
-
-Required rollback tests upgrade a temporary database, accept/apply commands,
-drain all execution, then open it with the candidate rollback build. Status
-and same-ID retries must return retained outcomes without new effects; a
-conflicting payload must still conflict. Lose a terminal confirmation before
-rollback and prove the reconnecting SPA/MCP recovers that outcome exactly
-once. Include a compacted tombstone and refuse schema-incompatible startup.
+Rollback-build tests, schema-unaware-downgrade tests, and guarantees for a
+rollback binary opening a migrated database are out of scope by the same
+2026-10-21 decision. Test forward migration and restart against the intact
+migrated store. Preserve existing schema safety checks; this decision is not
+permission to discard accepted commands, their outcomes or their identity
+fences. The internal method allowlist is an implementation rollout control,
+not a binary rollback or client compatibility mechanism.
 
 ## 8. Settled scope decisions
 

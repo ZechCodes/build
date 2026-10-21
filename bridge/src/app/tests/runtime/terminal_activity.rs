@@ -14,10 +14,7 @@ async fn terminal_activity_waits_for_store_without_holding_app_state() {
     let handler = AppState::handler(Arc::clone(&state));
     let (store, before_session) = {
         let app = state.lock().unwrap();
-        (
-            app.store.clone().unwrap(),
-            app.user_session(),
-        )
+        (app.store.clone().unwrap(), app.user_session())
     };
     let writer = store.writer_for_test();
     let creating = handler.clone();
@@ -79,6 +76,7 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
     let directory = tempfile::tempdir().unwrap();
     let (_repository, mut app, project) = tracker::tracked(directory.path());
     app.term_shell = "/bin/sh".into();
+    app.initialize_snapshot_projection();
     let entity = if run_scope {
         let root = app.projects.get(&project).unwrap().repo_path.clone();
         adopted_run(&mut app, &root, directory.path(), "terminal-attention")
@@ -107,7 +105,8 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
     let before_revision = app.changes().board_revision();
     let samples = app.frame_clock.capture_phases();
     let store = app.store.clone().unwrap();
-    let state = app.shared();
+    let state = Arc::new(Mutex::new(app));
+    state.lock().unwrap().self_handle = Some(Arc::downgrade(&state));
     let handler = AppState::handler(Arc::clone(&state));
     let writer = store.writer_for_test();
     let selector = if run_scope {
@@ -119,8 +118,10 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
     let worker = {
         let handler = handler.clone();
         std::thread::spawn(move || {
-            sent.send(work_counts::measure(|| call(&handler, "term.create", selector)))
-                .unwrap();
+            sent.send(work_counts::measure(|| {
+                call(&handler, "term.create", selector)
+            }))
+            .unwrap();
         })
     };
     let early = received.recv_timeout(Duration::from_secs(2));
@@ -162,10 +163,17 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
     let reaped = child.exited_within(Duration::from_secs(2));
     assert!(reaped);
     assert_eq!(closed["ok"], true, "{closed}");
-    assert!(replied_while_writer_busy, "attention persistence delayed the terminal reply");
+    assert!(
+        replied_while_writer_busy,
+        "attention persistence delayed the terminal reply"
+    );
     let attention = attention.expect("successful terminal creation records attention");
     assert_ne!(attention.last_interaction_at.as_deref(), Some(OLD));
-    assert_eq!(revision, before_revision + 1, "terminal open must bump board recency once");
+    assert_eq!(
+        revision,
+        before_revision + 1,
+        "terminal open must bump board recency once"
+    );
     if run_scope {
         let row = published["runs"]
             .as_array()
@@ -177,12 +185,20 @@ fn assert_terminal_attention_does_not_wait(run_scope: bool) {
     }
     assert_eq!(counts.workspace_details_full, 0, "{counts:?}");
     assert!(counts.workspace_details_scoped <= 1, "{counts:?}");
-    assert!(phases["term.create"].get("entered.publication.global").is_none(), "{phases}");
-    assert!(settles(|| {
-        store.load_attention().get(&entity).is_some_and(|saved| {
-            saved.last_interaction_at == attention.last_interaction_at
-                && saved.muted
-                && saved.seen_state_at == newer.seen_state_at
-        })
-    }), "delayed interaction must merge with current durable seen/mute state");
+    assert!(
+        phases["term.create"]
+            .get("entered.publication.global")
+            .is_none(),
+        "{phases}"
+    );
+    assert!(
+        settles(|| {
+            store.load_attention().get(&entity).is_some_and(|saved| {
+                saved.last_interaction_at == attention.last_interaction_at
+                    && saved.muted
+                    && saved.seen_state_at == newer.seen_state_at
+            })
+        }),
+        "delayed interaction must merge with current durable seen/mute state"
+    );
 }

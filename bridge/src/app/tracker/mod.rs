@@ -405,6 +405,8 @@ impl AppState {
         write.task = observation.current.task.clone();
         write.events.extend(additional);
         self.publish_observed_task_write(project_id, &write, &observation);
+        #[cfg(test)]
+        self.test_record_accepted_task(&write.task, &write.events);
         Ok(json!({ "task": self.observed_task_json(project_id, &observation.current) }))
     }
 

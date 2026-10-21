@@ -600,6 +600,8 @@ pub struct AppState {
     /// this mutex is exactly when the counters are needed, so the frame reads
     /// them off the clock its own timer holds.
     frame_clock: Arc<FrameClock>,
+    #[cfg(test)]
+    accepted_records: Option<Arc<accepted_records::AcceptedRecords>>,
 }
 
 impl AppState {
@@ -773,6 +775,8 @@ impl AppState {
             watchers,
             facts_handle,
             frame_clock: FrameClock::new(),
+            #[cfg(test)]
+            accepted_records: None,
         };
         if let Some(repo_path) = repo_path {
             state.add_project(repo_path, base_branch);

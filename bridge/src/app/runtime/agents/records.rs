@@ -565,6 +565,8 @@ impl AppState {
         if !found {
             return Err(format!("agent {agent_id} is not on {owner}"));
         }
+        #[cfg(test)]
+        self.test_record_accepted_agent(owner, agent_id);
         Ok(serde_json::json!({ "topic": topic }))
     }
 
@@ -609,6 +611,8 @@ impl AppState {
         if !found {
             return Err(format!("agent {agent_id} is not on {owner}"));
         }
+        #[cfg(test)]
+        self.test_record_accepted_agent(owner, agent_id);
         Ok(serde_json::json!({ "name": name }))
     }
 

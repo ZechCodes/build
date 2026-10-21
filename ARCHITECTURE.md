@@ -2874,7 +2874,7 @@ Vanilla JavaScript ES modules with no framework, bundled by Vite
 dependency is self-hosted. `@build/secure-transport` is a `file:../transport/js`
 dependency within this checkout (`spa/package.json`). SPA and web commit their
 portable npm locks; install `transport/js` from its own lock before either
-consumer, using Node 22.23.3/npm 12.0.2 and the install sequence in
+consumer, using Node 22.23.4/npm 12.0.2 and the install sequence in
 [AGENTS.md](AGENTS.md#working-rules). App and QA images build the binding from
 this same checkout; the Build commit pins the shipped transport. The Vite libsodium shim uses SPA-local libsodium 0.7.16, matching the
 transport lock; Node resolves the binding's dependencies from `transport/js`.

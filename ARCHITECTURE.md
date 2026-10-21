@@ -1614,14 +1614,21 @@ Clients name stable IDs and branches, never repository paths or actors. The
 bridge attributes RPC calls to the user and MCP calls to the authenticated
 agent in that project.
 
-Review opening loads its workspace review observation from SQLite during the
-deferred off-lock phase, after durable publication. Invalidation installs the
-owned observation before its workspace/task publication and the successful
-reply. A monotonic observation generation prevents a delayed opening from replacing a
-newer lifecycle observation, even when another review task now owns the
-workspace. A failed observation load preserves the accepted summary and
-returns the opening's existing same-request retry guidance. Other review
-lifecycle producers retain their synchronous observation refreshes.
+Review opening and the explicit lifecycle jobs load their workspace review
+observations from SQLite off the app mutex, after durable publication.
+Invalidation installs the owned observation before publishing its workspace
+summary and replying. Close commits off the mutex and captures its completed
+task and events in that same transaction. Apply installs the review summary
+before publishing the task and delivering its completion notices once;
+immediate workspace reads after RPC or MCP close see the closed review.
+Merge progress and background review sync load observations
+off the mutex at their existing publication checkpoints, then take the mutex
+to install them. A monotonic observation generation prevents a delayed load
+from replacing a newer lifecycle observation, even when another review task
+now owns the workspace; installation also rejects a removed workspace.
+A failed observation load preserves the accepted summary for maintenance to
+refresh. Once opening has published durably, an observation failure does not
+turn it into an error or skip settlement.
 
 | RPC verb | MCP tool | Contract |
 | --- | --- | --- |

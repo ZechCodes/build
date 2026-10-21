@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub(in crate::app) use workspace_reviews::WorkspaceReviewObservation;
+pub(in crate::app) use workspace_reviews::{WorkspaceReviewObservation, WorkspaceReviewReader};
 
 #[derive(Default)]
 pub(in crate::app) struct SnapshotObservations {

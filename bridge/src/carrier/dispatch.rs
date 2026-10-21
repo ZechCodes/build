@@ -212,6 +212,9 @@ impl FrameHandler {
         frame: Frame,
         arrived: WaitTimer,
     ) -> Value {
+        if let Err(error) = crate::api::v1::validate_write_metadata(&frame.payload) {
+            return error.into_reply(frame.payload.get("id").cloned().unwrap_or(Value::Null));
+        }
         let arrived = match self.snapshot_since(&frame, arrived) {
             Ok(answer) => return answer,
             Err(arrived) => arrived,

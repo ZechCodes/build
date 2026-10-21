@@ -6,6 +6,8 @@ import { SQL_READ_METHODS } from "../src/core/sqlReadCredits.js";
 import { readFileSync } from "node:fs";
 
 const METHODS = ["thread.page", "thread.activity", "thread.operation", "tasks.list", "tasks.get", "tasks.waiting_on.blocks"];
+const WRITE_READS = ["writes.status", "writes.subscribe"];
+const PACED_METHODS = [...METHODS, ...WRITE_READS];
 const flush = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
 const transport = {
   encryptFrame: async ({ frameFields }) => frameFields,
@@ -59,16 +61,17 @@ describe("SQL reads share eight sender credits per opening", () => {
     for (let n = 0; n < 4; n += 1) ask(METHODS[n], { priority: "background" });
     await flush();
     rpc.rideOn(other);
-    for (let n = 4; n < 12; n += 1) ask(METHODS[n % METHODS.length]);
+    for (let n = 4; n < 12; n += 1) ask(PACED_METHODS[n % PACED_METHODS.length]);
     await flush();
     expect(wire.sent).toHaveLength(4);
     expect(other.sent).toHaveLength(4);
+    expect([...wire.sent, ...other.sent].map((entry) => entry.method)).toEqual(PACED_METHODS);
 
     ask("ping");
     ask("board.list");
     ask("thread.post");
     await flush();
-    expect(other.sent.map((entry) => entry.method)).toEqual([...METHODS.slice(4), ...METHODS.slice(0, 2), "ping", "board.list", "thread.post"]);
+    expect(other.sent.map((entry) => entry.method)).toEqual([...METHODS.slice(4), ...WRITE_READS, "ping", "board.list", "thread.post"]);
     wire.deliver({ id: wire.sent[0].id, ok: true, result: {} });
     await flush();
     expect(other.sent).toHaveLength(8);

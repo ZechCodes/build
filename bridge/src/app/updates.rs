@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::app::{off_the_workers, AppState};
 use crate::carrier::SessionSender;
-use crate::update::{AdmissionGate, UpdateService, UpdateStatus};
+use crate::update::{AdmissionGate, UpdateService, UpdateState, UpdateStatus};
 
 impl AppState {
     pub fn with_update_service(mut self, updates: Arc<UpdateService>) -> Self {
@@ -83,12 +83,12 @@ impl AppState {
         let sender = sender.clone();
         let task = tokio::spawn(async move {
             let first = updates.borrow_and_update().clone();
-            if !sender.push(status_event(&first)) {
+            if !push_status(&sender, &first) {
                 return;
             }
             while updates.changed().await.is_ok() {
                 let next = updates.borrow_and_update().clone();
-                if !sender.push(status_event(&next)) {
+                if !push_status(&sender, &next) {
                     break;
                 }
             }
@@ -101,6 +101,15 @@ impl AppState {
             task.abort();
         }
     }
+}
+
+pub(super) fn push_status(sender: &SessionSender, status: &UpdateStatus) -> bool {
+    // Installing is published immediately before helper handoff. This notice
+    // is advisory: the process may exit before a subscriber or carrier runs.
+    if status.state == UpdateState::Installing {
+        sender.push(json!({"type": "bridge.restarting"}));
+    }
+    sender.push(status_event(status))
 }
 
 pub(super) fn status_event(status: &UpdateStatus) -> Value {

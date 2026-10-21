@@ -136,7 +136,8 @@ same manifest retry path and canonical SyncLock as workspace retry; changed
 project settings cannot redirect the saved cut or leave Git materialization
 without a pinned commit. Worker source-location holds remain independent.
 
-**Frames.** A request is `{id, method, params}`; a reply is
+**Frames.** A request is `{id, method, params}`, with optional typed `write`
+metadata (`operation_id`, optional `after`) for journaled commands; a reply is
 `{id, ok: true, result}` or `{id, ok: false, error, error_code, retryable, details}`.
 A push is a frame with a `type` that answers no pending request. The SPA's
 `spa/src/core/sessionRpc.js` first matches `id` against its pending calls
@@ -153,8 +154,9 @@ every verb live in `fixtures/api/v1/` and are checked by
 - It answers signaling (`rtc.*`) and attachment writes at once, without
   queueing, so a negotiation never waits behind other work.
 
-The six SQL reads (`thread.page`, `thread.activity`, `thread.operation`,
-`tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`) enter a separate lane
+The eight SQL-lane methods (`thread.page`, `thread.activity`, `thread.operation`,
+`tasks.list`, `tasks.get`, `tasks.waiting_on.blocks`, `writes.status` and
+`writes.subscribe`) enter a separate lane
 before terminal or write admission. `carrier/sql.rs` owns eight dedicated
 threads and a fair queue with at most 16 waiting callers per session opening.
 Callers waiting for a read connection still count against that bound. Excess
@@ -312,8 +314,8 @@ section on the blocking pool. A worker parked on the lock behind a slow frame
 would stop the runtime's I/O driver; `bridge/src/app/tests/runtime/off_the_workers.rs`
 holds that line on a one-worker runtime. Parts that must not wait on the lock have their
 own: WebRTC peers sit behind an `RwLock` (`PeersSlot` in `bridge/src/app/rtc.rs`),
-and `Store` wraps its own connection mutex (`bridge/src/store.rs`). Store
-clones share one writer connection. The six migrated SQL RPCs instead borrow
+and `store/writer.rs::StoreWriter` wraps the sole writable connection. Store
+clones and journal admission share that connection. The eight SQL-lane RPCs instead borrow
 one of eight read-only, query-only WAL connections from `store/read_pool.rs`.
 A fair asynchronous permit supplies one borrower; a fresh request transaction
 covers all related rows and ends before the connection returns. Those RPCs
@@ -604,7 +606,22 @@ runtime that starts them.
 ### Wire versioning and capabilities
 
 - `API_VERSION` in `bridge/src/api/mod.rs` is the wire version, currently
-  `3.23.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  `3.24.0`. `fixtures/api/versions.json` (`"current"`) must match it.
+  3.24.0 adds the durable write foundation: `bridge.epoch`, bounded
+  `writes.status`/`writes.subscribe`, and typed ack/confirmation envelopes.
+  Every authenticated outgoing application frame is stamped with the same
+  per-process UUID at `SessionSender::seal`, including replies, receipts,
+  terminal/service pushes and authenticated signaling. `session.hello` returns
+  that `bridge_epoch` and the persistent `journal_incarnation`. Planned update
+  handoff emits a best-effort `bridge.restarting`; reconnect greeting remains
+  authoritative when that event is lost.
+  Hello advertises `ack_confirm_methods`, mirroring
+  `api::writes::ACK_CONFIRM_METHODS`; it is empty in #739. Clients use
+  ack/confirm only for methods in that list. There is no `write.mode` or
+  separate ack-confirm capability negotiation.
+  Bridge and SPA ship together; #740 raises the SPA requirement to this version
+  under Zech’s 2026-10-21 decision. Shared envelopes are in
+  `fixtures/api/v1/writes/`; their Rust contracts live in `api/writes.rs`.
   3.23.0 populates the existing `attachments` descriptors on agent replies,
   outgoing agent messages and the corresponding incoming messages (#696).
   The thread page fixture shows all three. No new capability is needed:
@@ -888,6 +905,43 @@ and its controls are
   (`bridge/src/identity.rs`), workspace manifests `.build-workspace.json`
   (`MANIFEST_FILE` in `bridge/src/workspace.rs`), and update status and job files
   (`bridge/src/update/`).
+
+#### Durable write foundation (#739)
+
+Schema 18 adds `mutation_commands`, per-owner ordering, dependency edges,
+resource reservations and a terminal outbox. `StoreWriter` owns the same
+connection used by existing Store methods; no second writer is opened.
+New journal admission is a short SQL-only transaction entered outside the app
+and domain guards. Existing Store callers are converted incrementally; this
+foundation does not claim to have removed their existing lock-held SQL.
+
+A command is keyed by the server-derived principal and a canonical operation
+UUID. The normalized semantic intent and saved dependencies fence conflicting
+retries. Admission reserves identities and durable owner order before returning.
+Canonical SQL and the committed marker share one transaction; publication and
+terminal confirmation follow. Reopening the intact store retains its journal
+incarnation and outbox. SQL-only claimed work can return to accepted, while
+ambiguous external claims retain an unknown outcome and block conflicting
+execution until reconciliation. Committed work is returned for the enabled
+verb’s publication recovery and is never applied twice. No verb executor is
+enabled by this slice. The journal exposes 30-day terminal-result compaction for the future enabled
+command service; identity/outcome tombstones remain, and unresolved partial/unknown
+evidence is retained until reconciliation. Active owner fences and the
+principal/cursor outbox index keep settled lifetime history out of claim and
+caught-up subscription queries. Admission limits are 128 nonterminal commands
+per principal, 4,096 per store and 64 KiB per admission payload; terminal outcomes
+are limited to 256 KiB, checked before committing canonical SQL.
+
+`app/mutations.rs` reads journal status using the existing independent SQL lane
+and read-only pool. Status accepts at most 128 operation IDs and returns at most
+512 KiB per page with a cursor bound to the operation set and journal incarnation.
+Subscribe captures the current outbox cursor and states in one SQL snapshot,
+then replays later durable outcomes outside ordinary change coalescing. Readers
+never take the app guard or writer connection. Current RPC authorization is the
+paired device account, represented by a server-owned database-local principal;
+client hints and session IDs do not grant identity. Reads additionally validate
+the original owner scope against current published authority. MCP agent
+principals and semantic method enablement belong to Step 6b.
 
 #### Compaction policy configuration
 

@@ -18,7 +18,8 @@ describe("compaction wire fixtures", () => {
     const events = fixture("events").events.filter(({ type }) => type === "compaction.changed");
     expect(events.map(({ scope }) => scope)).toEqual(["device", "project", "workspace", "conversation"]);
     for (const event of events) {
-      expect(Object.keys(event).sort()).toEqual(["owner_id", "scope", "type"]);
+      expect(Object.keys(event).sort()).toEqual(["bridge_epoch", "owner_id", "scope", "type"]);
+      expect(event.bridge_epoch).toBe(hello.bridge_epoch);
       expect(v1.parseEvent(event)).not.toBeNull();
     }
   });

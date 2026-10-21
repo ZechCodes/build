@@ -98,7 +98,11 @@ async fn an_offer_is_answered_and_candidates_trickle_both_ways() {
     );
     assert_eq!(
         pushed,
-        json!({ "type": "rtc.ice", "candidate": { "candidate": "candidate:2 1 udp" } })
+        json!({
+            "type": "rtc.ice",
+            "candidate": { "candidate": "candidate:2 1 udp" },
+            "bridge_epoch": sender.bridge_epoch(),
+        })
     );
 }
 

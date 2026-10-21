@@ -436,7 +436,11 @@ impl SessionRegistry {
     pub(in crate::app) fn projection_agent_owners(&self) -> std::collections::BTreeSet<String> {
         self.tabs
             .values()
-            .filter_map(|tab| tab.role.agent().map(|(owner, _)| owner.to_owned()))
+            .filter_map(|tab| {
+                #[cfg(test)]
+                crate::app::snapshot_projection::work_counts::owner_closure::registry_tab();
+                tab.role.agent().map(|(owner, _)| owner.to_owned())
+            })
             .collect()
     }
 

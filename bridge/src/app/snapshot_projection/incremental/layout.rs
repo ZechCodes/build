@@ -117,16 +117,22 @@ impl Layout {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("publication.incremental.owner_closure");
         let mut owners = requested.clone();
+        #[cfg(test)]
+        let _discovery = super::super::work_counts::owner_closure::discover();
         owners.extend(app.session_registry.projection_agent_owners());
         owners.extend(
             self.owners
                 .iter()
                 .filter(|owner| {
+                    #[cfg(test)]
+                    super::super::work_counts::owner_closure::discovery_owner(&owner.id);
                     app.entity_agents_working(&owner.id)
                         || app.board.attention().clock(&owner.id).created_at.is_none()
                 })
                 .map(|owner| owner.id.clone()),
         );
+        #[cfg(test)]
+        drop(_discovery);
         let indexes = OwnerIndexes::new(&self.owners);
         let mut pending = owners.iter().cloned().collect::<Vec<_>>();
         while let Some(id) = pending.pop() {
@@ -148,12 +154,16 @@ struct OwnerIndexes<'a> {
 
 impl<'a> OwnerIndexes<'a> {
     fn new(owners: &'a [OwnerLayout]) -> Self {
+        #[cfg(test)]
+        super::super::work_counts::owner_closure::index_build();
         let mut indexes = Self {
             owners: HashMap::new(),
             conversations: HashMap::new(),
             roots: HashMap::new(),
         };
         for owner in owners {
+            #[cfg(test)]
+            super::super::work_counts::owner_closure::index_owner(&owner.id);
             indexes.owners.insert(&owner.id, owner);
             for agent in &owner.agents {
                 indexes

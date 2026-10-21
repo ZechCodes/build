@@ -42,6 +42,8 @@ impl GlobalProjection {
         let owners = current.expand_owners(app, &requested);
         let active_owners = current.expand_owners(app, &BTreeSet::new());
         #[cfg(test)]
+        super::super::work_counts::owner_closure::outputs(&owners, &active_owners);
+        #[cfg(test)]
         drop(_owners_phase);
         #[cfg(test)]
         let _clone_phase =

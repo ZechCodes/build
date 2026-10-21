@@ -21,6 +21,11 @@ pub(in crate::app) struct GlobalProjection {
 
 impl GlobalProjection {
     #[cfg(test)]
+    pub(in crate::app) fn active_owners_for_test(&self) -> &BTreeSet<String> {
+        &self.active_owners
+    }
+
+    #[cfg(test)]
     pub(in crate::app) fn named_winner_for_test(&self, owner: &str) -> Option<SharedJson> {
         self.winners
             .iter()

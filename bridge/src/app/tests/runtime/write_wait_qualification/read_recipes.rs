@@ -234,3 +234,6 @@ pub(super) use verify::{collect_native_rpc_reads, verify_native_rpc_reads};
 pub(super) fn prepare_finite_shell(app: &mut crate::app::AppState, root: &std::path::Path) {
     full_seed::prepare_finite_shell(app, root);
 }
+
+mod mcp_forms;
+pub(super) use rpc_full::Form as FullReadForm;

@@ -56,3 +56,5 @@ fn validate_case(method: &str, scenario: &str, samples: Vec<(String, u64)>, obse
         }
     }
 }
+
+mod policy_tests;

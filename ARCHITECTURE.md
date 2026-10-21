@@ -417,6 +417,12 @@ history chunks; response paging preserves the existing cursor and full-history
 contracts without cloning retained history on each publication. Inventory,
 update status and CLI catalogs have their own atomic service snapshots.
 
+An incremental publication captures project rows once, borrows those rows for
+the structural layout check, then renders affected projects from that same
+candidate-local capture. Observed remote and isolation values are still applied
+at rendering. Full rebuilds capture independently; failed or stale candidates
+retain no project-row cache across publications.
+
 Plan/run finishers stage projections before saving and restore committed
 canonical fields after a failed save. Their checkpoints exclude live PTYs;
 actual retirement remains observable separately, even when a failed roster

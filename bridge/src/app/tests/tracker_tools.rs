@@ -90,6 +90,8 @@ fn the_socket_refuses_a_task_tool_from_the_router() {
         state: None,
         status: None,
         label: None,
+        limit: None,
+        cursor: None,
     };
     assert!(action.allowed_on(McpSurface::Coding));
     assert!(action.allowed_on(McpSurface::Project));
@@ -331,6 +333,8 @@ fn assert_label_removal_and_validation(
             state: None,
             status: None,
             label: Some("public launch".into()),
+            limit: None,
+            cursor: None,
         },
     )
     .unwrap();
@@ -637,6 +641,8 @@ fn list_tasks_answers_this_agents_own_project_only() {
             state: None,
             status: None,
             label: None,
+            limit: None,
+            cursor: None,
         },
     )
     .expect("an agent lists its own project's tasks");

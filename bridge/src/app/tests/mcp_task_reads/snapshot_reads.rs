@@ -2,6 +2,20 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn mcp_response_envelope_preserves_owned_payload_allocations() {
+    let title = "already assembled response content ".repeat(100);
+    let allocation = title.as_ptr();
+    let result = Value::String(title);
+    let reply = crate::app::mcp::mcp_action_response(Ok(result));
+    assert_eq!(reply["ok"], true);
+    assert_eq!(
+        reply["result"].as_str().unwrap().as_ptr(),
+        allocation,
+        "wrapping an owned response must move its payload without serializing a copy"
+    );
+}
+
 pub(super) fn router(fixture: &Fixture) -> (String, String) {
     let mut app = fixture.state.lock().unwrap();
     let (capture, agent) =

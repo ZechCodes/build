@@ -302,8 +302,19 @@ pub(in crate::app) async fn handle_done_stream(
         let Ok(frame) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        #[cfg(test)]
+        let tool = read_lane::action(&frame).map(|action| action.tool_name());
         if let Some(response) = plane.answer(Arc::clone(&state), frame).await {
-            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+            #[cfg(test)]
+            let serialized = match tool {
+                Some(tool) => plane
+                    .clock
+                    .sample_serialization(tool, || response.to_string()),
+                None => response.to_string(),
+            };
+            #[cfg(not(test))]
+            let serialized = response.to_string();
+            let _ = write_half.write_all(serialized.as_bytes()).await;
             let _ = write_half.write_all(b"\n").await;
             let _ = write_half.flush().await;
         }
@@ -456,7 +467,12 @@ fn parse_action_request(frame: &Value) -> Result<BridgeAction, String> {
 
 pub(in crate::app) fn mcp_action_response(result: Result<Value, String>) -> Value {
     match result {
-        Ok(result) => json!({ "ok": true, "result": result }),
+        Ok(result) => {
+            let mut response = serde_json::Map::new();
+            response.insert("ok".into(), Value::Bool(true));
+            response.insert("result".into(), result);
+            Value::Object(response)
+        }
         Err(error) => match crate::api::v1::reviews::errors::decode(&error) {
             Some(error) => {
                 let mut response = error.into_reply(Value::Null);

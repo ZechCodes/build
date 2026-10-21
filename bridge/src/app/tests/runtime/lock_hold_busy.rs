@@ -3,7 +3,7 @@
 use super::*;
 use crate::app::mcp::{handle_done_stream, ControlPlane};
 use crate::app::read_view::ReadViewSlot;
-use crate::app::tests::tracker::{filed, tracked};
+use crate::app::tests::tracker::tracked;
 use crate::carrier::testing::{client_request, session_init, ChannelWire};
 use crate::carrier::{FrameIntake, OutboundEnvelope};
 use crate::mcp::BridgeAction;
@@ -55,14 +55,27 @@ struct Busy {
     logs: Vec<SessionLog>,
 }
 
+mod mcp_lists;
+
 impl Busy {
     fn new() -> Self {
+        Self::with_task_body("")
+    }
+
+    fn with_task_body(body: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (home, mut app, project) = tracked(root.path());
         let repo = app.project_at(0).repo_path.clone();
         let tasks: Vec<String> = (0..TASKS)
             .map(|i| {
-                filed(&mut app, &project, &format!("busy task {i}"))["id"]
+                let created = app.handle(req(
+                    "tasks.create",
+                    json!({
+                        "project_id":project,"title":format!("busy task {i}"),"body":body
+                    }),
+                ));
+                assert_eq!(created["ok"], true, "{created}");
+                created["result"]["task"]["id"]
                     .as_str()
                     .unwrap()
                     .to_string()

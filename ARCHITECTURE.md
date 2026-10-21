@@ -2321,6 +2321,18 @@ finishes, and responses retain their ordinary shape. Calls on one socket remain
 ordered; independent sockets read while mutation turns or the app mutex are
 occupied.
 
+MCP `list_tasks` returns at most 20 full task rows, defaulting to 20. Its
+optional `limit` accepts 1–20; `cursor` continues the same state/status/label
+filter. The reply is `{project_id, tasks, user_session, next_cursor?}`.
+Only an absent `next_cursor` ends the walk: a filtered page may be empty.
+The existing store/project/filter-scoped cursor seeks below an immutable task
+number, in descending order, so editing a task does not move it between pages.
+Selection and the cursor probe precede timeline, identity and summary hydration.
+`get_task` retains the complete task and timeline. This MCP paging contract
+does not change the SPA's separate `tasks.list` RPC or its 100-row page requests.
+Router `list_work` selects its compact fields directly from the accepted shared
+board fragments, without materializing the full board first.
+
 The tools an agent sees depend on its surface (`McpSurface`: `Coding`, `Router`,
 `Project`), which a project's agents take from their persisted purpose (see
 A project's agents below). Each action is a `BridgeAction` variant. The tool lists are
@@ -2839,6 +2851,16 @@ queued deliveries must finish before assertions. The five-second maximum
 applies to all frame and caller totals, alongside the hold percentile and
 maximum gates. Status timing covers observation work, not watch-notification
 delivery latency.
+
+The focused `busy_mcp_lists_finish_within_100ms` release regression reuses the
+main busy fixture with 700 tasks, 200 conversations and 190 worktrees. Twelve
+readers request both MCP lists alongside the normal writers and status
+observations. It measures through socket transfer and reply parsing, enforcing
+the 100 ms maximum and p99 for each page. Test-only phase tracing separates SQL
+methods (including record decoding), row construction, snapshot projection and
+reply serialization. The release timing workflow runs this regression alongside
+the existing busy lock test. Normal tests cover bounded page work and keyset
+continuation independently of machine timing.
 
 Unit tests sit beside the code (`#[cfg(test)]` modules, and directories such as
 `bridge/src/app/tests/` and `bridge/src/store/tests/`). Integration tests are in

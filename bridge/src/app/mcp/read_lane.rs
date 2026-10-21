@@ -256,6 +256,9 @@ async fn blocking<T: Send + 'static>(
     let waiting = WaitTimer::start();
     off_the_workers(move || {
         timer.record_pool_wait(waiting.elapsed());
+        #[cfg(test)]
+        return timer.sample_read_work(work);
+        #[cfg(not(test))]
         work()
     })
     .await

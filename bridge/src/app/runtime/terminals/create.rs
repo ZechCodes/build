@@ -17,12 +17,17 @@ pub(super) fn create(
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     let mut reserved = reserve(state, params, timer)?;
-    let (mut tab, output) = Tab::spawn_shell(
-        &shell_harness_spec(&reserved.shell),
-        reserved.key.tab_id.clone(),
-        reserved.key.root.clone(),
-        terminal_size(cols, rows),
-    )?;
+    let (mut tab, output) = {
+        // The collector records this phase only if an app guard is held.
+        #[cfg(test)]
+        let _phase = crate::timing::phase_samples::phase("term.create.spawn");
+        Tab::spawn_shell(
+            &shell_harness_spec(&reserved.shell),
+            reserved.key.tab_id.clone(),
+            reserved.key.root.clone(),
+            terminal_size(cols, rows),
+        )
+    }?;
     tab.project_source = reserved.scope.source.clone();
     let mut opened = UnpublishedShell(Some((tab, output)));
     #[cfg(test)]

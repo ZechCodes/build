@@ -28,9 +28,113 @@ impl Fixture {
         std::thread::spawn(Self::build).join().unwrap()
     }
 
+    pub fn database_path(&self) -> std::path::PathBuf {
+        self._root.path().join("store/build.db")
+    }
+
+    pub fn spare_blocker(&self) -> String {
+        let mut app = self.state.lock().unwrap();
+        let project = app
+            .projects
+            .iter()
+            .find(|project| project.repo_path.to_str() == Some(self.intent.project_path.as_str()))
+            .unwrap()
+            .id
+            .clone();
+        filed(&mut app, &project, "lifecycle spare blocker")["id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// Real transports must be closed before releasing the fixture's last
+    /// AppState owner. Remaining workers are observed, never forcibly stopped.
+    async fn retire(self, transport_clean: bool) -> Result<RetiredFixture, String> {
+        let Self {
+            _root,
+            _repo,
+            state,
+            intent,
+            owner,
+            agent,
+            warm,
+        } = self;
+        let retired = RetiredFixture {
+            root: _root,
+            repo: _repo,
+            intent,
+            owner,
+            agent,
+        };
+        warm.end();
+        let weak = Arc::downgrade(&state);
+        drop(warm);
+        drop(state);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while weak.strong_count() != 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let owners = weak.strong_count();
+        if !transport_clean || owners != 0 {
+            return Err(retired.preserve(format!(
+                "fixture cleanup unconfirmed: transport_clean={transport_clean}, AppState owners={owners}"
+            )));
+        }
+        Ok(retired)
+    }
+
+    pub async fn finish_owned(self, transport_clean: bool) -> Result<(), String> {
+        drop(self.retire(transport_clean).await?);
+        Ok(())
+    }
+
+    /// Reopen only after the old native owners have disappeared. A failed
+    /// teardown preserves both roots; it cannot pretend that restart happened.
+    pub async fn reopen(self, transport_clean: bool) -> Result<Self, String> {
+        let retired = self.retire(transport_clean).await?;
+        std::thread::spawn(move || {
+            let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut app = crate::app::tests::project_agent::rooted(retired.root.path())
+                    .with_config(retired.root.path().join("config.json"))
+                    .map_err(|error| error.to_string())?
+                    .with_task_store(retired.root.path().join("store"))?;
+                let warm = WarmSession::install(&mut app, &retired.owner, &retired.agent);
+                Ok::<_, String>((app.shared(), warm))
+            }));
+            match opened {
+                Ok(Ok((state, warm))) => Ok(Self {
+                    _root: retired.root,
+                    _repo: retired.repo,
+                    intent: retired.intent,
+                    owner: retired.owner,
+                    agent: retired.agent,
+                    state,
+                    warm,
+                }),
+                Ok(Err(error)) => Err(retired.preserve(format!("fixture reopen failed: {error}"))),
+                Err(_) => Err(retired.preserve("fixture reopen panicked".into())),
+            }
+        })
+        .join()
+        .map_err(|_| "joined fixture reopen worker panicked".to_owned())?
+    }
+
     fn build() -> Self {
+        Self::build_configured(false)
+    }
+
+    pub fn restartable() -> Self {
+        std::thread::spawn(|| Self::build_configured(true))
+            .join()
+            .unwrap()
+    }
+
+    fn build_configured(restartable: bool) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (repo, mut app, project) = tracked(root.path());
+        if restartable {
+            app = app.with_config(root.path().join("config.json")).unwrap();
+        }
         let (owner, agent) = project_agent(&mut app, &project);
         let intent = failed_ready_assignment(&mut app, &project, &agent);
         let warm = WarmSession::install(&mut app, &owner, &agent);
@@ -43,6 +147,9 @@ impl Fixture {
             assert!(steps < 32, "bounded setup notices must drain");
         }
         app.delivery_queue.lapse_settle_windows();
+        if restartable {
+            app.persist();
+        }
         let state = app.shared();
         let clock = Arc::clone(&state.lock().unwrap().frame_clock);
         DeliveryRunner::drain(&state, &clock.frame("qualification.saved_retry_setup"));
@@ -65,6 +172,27 @@ impl Fixture {
             agent,
             warm,
         }
+    }
+}
+
+struct RetiredFixture {
+    root: tempfile::TempDir,
+    repo: tempfile::TempDir,
+    intent: DeliveryIntent,
+    owner: String,
+    agent: String,
+}
+
+impl RetiredFixture {
+    fn preserve(self, error: String) -> String {
+        let root = self.root.keep();
+        let repo = self.repo.keep();
+        format!(
+            "{error}; private roots preserved: {}, {}; pid={}",
+            root.display(),
+            repo.display(),
+            std::process::id()
+        )
     }
 }
 

@@ -10,6 +10,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 mod fixture;
+mod lifecycle;
 
 const ORIGINAL: &str = "qualification/saved-retry/original";
 const SAFETY: Duration = Duration::from_secs(20);

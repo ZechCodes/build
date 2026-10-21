@@ -78,7 +78,7 @@ separate byte quotas and reserved capacity for small presence/read-mark
 writes. These are proposed engineering bounds, to be tuned by measurement;
 write overload may return retryable `busy`, reads may not.
 
-**Step 6a implementation boundary (#739):** the internal allowlist is empty.
+**Step 6a implementation boundary (#739):** the hello-advertised allowlist is empty.
 The journal supplies typed admission/execution/recovery primitives with one
 writer connection, 128 nonterminal commands per principal, 4,096 per store,
 64 KiB admission records and 256 KiB terminal outcomes. Its current byte
@@ -266,8 +266,10 @@ PTY bytes, messages or unrelated later edits.
 Announce `bridge.epoch` and serve `writes.status` and `writes.subscribe`.
 The bridge and SPA ship together at wire 3.24.0; the SPA requires that version.
 There is no `write.mode` opt-in or separate ack-confirm capability negotiation.
-The internal `ack_confirm_methods` allowlist starts empty in Step 6a and enables
-each method only after its admission, execution and recovery tests pass.
+Hello advertises `ack_confirm_methods`, always mirroring the bridge's
+`ACK_CONFIRM_METHODS` allowlist. It is empty in Step 6a. Clients use ack/confirm
+only for listed methods; a method is listed only after its admission,
+execution and recovery tests pass.
 Once enabled, a method uses the new envelopes for all callers. New result
 envelopes have their own typed validators; the method result validator applies
 to the confirmation, not to the provisional ack. See §7 for Zech’s decision.
@@ -551,8 +553,9 @@ clients against the new bridge may break; there is no legacy `write.mode`
 opt-in, final-reply compatibility branch or ack-confirm capability negotiation.
 Wire 3.24.0 is the Step 6a foundation version and the SPA requires it. Update
 `API_VERSION`, version/method/event fixtures and the SPA’s required version
-together. Keep `bridge.epoch`; the exact `ack_confirm_methods` list is internal
-and initially empty. Method capabilities for the actual status/subscribe
+together. Keep `bridge.epoch`; hello advertises the exact `ack_confirm_methods`
+allowlist, initially empty and always mirroring `ACK_CONFIRM_METHODS`.
+Method capabilities for the actual status/subscribe
 reads remain ordinary registry entries. A forward schema migration suffices.
 
 Step 6a (#739) keeps every confirmation result inline: it never emits a
@@ -603,8 +606,8 @@ rollback binary opening a migrated database are out of scope by the same
 2026-10-21 decision. Test forward migration and restart against the intact
 migrated store. Preserve existing schema safety checks; this decision is not
 permission to discard accepted commands, their outcomes or their identity
-fences. The internal method allowlist is an implementation rollout control,
-not a binary rollback or client compatibility mechanism.
+fences. The hello-advertised method allowlist tells clients which methods
+use ack/confirm; it is not a binary rollback guarantee or a legacy opt-in.
 
 ## 8. Settled scope decisions
 

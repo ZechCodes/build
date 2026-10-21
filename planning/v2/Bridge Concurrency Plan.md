@@ -442,8 +442,9 @@ reload before/after ack and cached paint throughout epoch changes. MCP reads
 must not wait for a write permit or app mutex.
 
 Wire: **3.24.0** foundation, `bridge.epoch`, `writes.status` and
-`writes.subscribe`. The internal `ack_confirm_methods` allowlist starts empty
-in 6a, with MCP actions enabled separately in 6b. Add request metadata,
+`writes.subscribe`. Hello advertises `ack_confirm_methods`, mirroring the
+bridge allowlist and empty in 6a. Clients use ack/confirm only for listed
+methods, with MCP actions enabled separately in 6b. Add request metadata,
 typed ack/confirmation fixtures and all-push epoch stamping. Per Zech’s
 2026-10-21 decision, bridge and SPA ship together and the SPA requires this
 version: no `write.mode`, legacy final-reply branch or ack-confirm capability
@@ -474,13 +475,13 @@ existing operation-specific rollback and §3's order.
 | `projects/requests.rs::project_*`, `projects/source_update.rs::project_update_source`, `projects/deletion.rs::project_delete`, `projects/conversation.rs::project_ensure_conversation`, `projects/base_sync.rs::project_sync_source`; `config/persistence.rs::{config_value_with_project,persist_config}`, `config/settings.rs::settings_set`, `config/compaction_wire.rs::{set_project_compaction,set_workspace_compaction}` | Config serialization retains concurrent project/workspace edits; disk failure, descendant deletion, parked IDs and stale source generations. |
 | `tracker/reviews.rs::review_*` and `tracker/reviews/{opening,publication,merge,lifecycle}.rs`; `captures/mod.rs::{capture_create,capture_answer,capture_cancel,capture_reroute}` | Explicit/background review conflicts and deletion, receiver-lock order, existing capture recovery, cross-owner destinations and version guards. |
 
-Wire: proposed **3.25.0**, extend the internal `ack_confirm_methods`
+Wire: proposed **3.25.0**, extend the hello-advertised `ack_confirm_methods`
 and MCP action allowlists as each family is qualified.
 No generic “all writes supported” flag before registry coverage passes.
 Tests add process-death interleavings around each external claim/effect,
 staged attachment retention, upload offset/hash deduplication, partial
 effects, multi-owner deletion and terminal-outbox persistence failure.
-The internal allowlist controls new method enablement. Binary rollback onto
+The hello-advertised allowlist controls new method enablement. Binary rollback onto
 the migrated journal and rollback-build tests are out of scope under Zech’s
 2026-10-21 decision; status/idempotency and intact-store restart recovery
 remain required for every enabled family (protocol §7).

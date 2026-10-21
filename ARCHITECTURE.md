@@ -615,8 +615,10 @@ runtime that starts them.
   that `bridge_epoch` and the persistent `journal_incarnation`. Planned update
   handoff emits a best-effort `bridge.restarting`; reconnect greeting remains
   authoritative when that event is lost.
-  The internal `api::writes::ACK_CONFIRM_METHODS` is empty: no semantic method
-  is enabled in #739. There is no `write.mode` or ack-confirm negotiation.
+  Hello advertises `ack_confirm_methods`, mirroring
+  `api::writes::ACK_CONFIRM_METHODS`; it is empty in #739. Clients use
+  ack/confirm only for methods in that list. There is no `write.mode` or
+  separate ack-confirm capability negotiation.
   Bridge and SPA ship together; #740 raises the SPA requirement to this version
   under Zech’s 2026-10-21 decision. Shared envelopes are in
   `fixtures/api/v1/writes/`; their Rust contracts live in `api/writes.rs`.

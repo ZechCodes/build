@@ -6,7 +6,7 @@
 use serde::{de::Error, Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-/// Internal rollout policy; this is deliberately absent from capabilities.
+/// Method enablement policy, advertised by hello rather than capability names.
 pub const ACK_CONFIRM_METHODS: &[&str] = &[];
 pub const MAX_DEPENDENCIES: usize = 8;
 pub const MAX_STATUS_OPERATIONS: usize = 128;

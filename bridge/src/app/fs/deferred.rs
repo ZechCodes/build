@@ -146,7 +146,11 @@ pub(super) struct FileLocks {
     _destination: Option<DestinationLock>,
 }
 
-/// The bytes may already have changed even if constructing the readback fails.
+/// Disk changes can precede an error response: readback or reopen persistence
+/// may fail, or publication may refuse a moved source or a new reservation.
+/// Those failures do not roll back bytes already written. Closing the general
+/// service-to-publication window belongs to step 6b's acknowledgement and
+/// confirmation work.
 pub(super) struct FileMutation {
     pub(super) answer: Result<Value, ApiError>,
     pub(super) changed: bool,

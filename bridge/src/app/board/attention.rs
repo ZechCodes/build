@@ -1,5 +1,8 @@
 mod post_scope;
 
+#[cfg(test)]
+use crate::app::accepted_records::SeenProbe;
+
 use crate::app::{named_agent_id, require_str, thread_cursor, thread_detail};
 use crate::run::RunState;
 use crate::store::now_rfc3339;
@@ -341,15 +344,39 @@ impl AppState {
         agent_id: Option<&str>,
         report: ReadReport,
     ) {
+        self.see_attention_with_witness(
+            id,
+            agent_id,
+            report,
+            #[cfg(test)]
+            false,
+        );
+    }
+
+    fn see_attention_with_witness(
+        &mut self,
+        id: &str,
+        agent_id: Option<&str>,
+        report: ReadReport,
+        #[cfg(test)] capture_seen: bool,
+    ) {
         let Some(state_changed_at) = self.entity_state_clock(id) else {
             return;
         };
         let read_through = self.conversation_last_sequences(id, agent_id, report);
+        #[cfg(test)]
+        let seen = capture_seen
+            .then(|| self.test_prepare_seen(id, agent_id, &read_through))
+            .flatten();
         self.board
             .attention_mut()
             .mark_seen(id, Some(&state_changed_at), &read_through);
         self.mark_snapshot_owner_pending(id);
-        self.persist_attention_for_owner(id);
+        self.persist_attention_for_owner_with_seen(
+            id,
+            #[cfg(test)]
+            seen,
+        );
     }
 
     /// How far each of an entity's conversations has got, as
@@ -650,6 +677,13 @@ impl AppState {
     /// (one small file) and done on every stamp, so a crash costs at most the
     /// action in flight rather than the day's ordering.
     pub(in crate::app) fn persist_attention(&mut self) {
+        self.persist_attention_with_seen(
+            #[cfg(test)]
+            None,
+        );
+    }
+
+    fn persist_attention_with_seen(&mut self, #[cfg(test)] seen: Option<SeenProbe>) {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.attention");
         // The inbox is ordered and coloured by this map, so a stamp on it IS a
@@ -657,21 +691,42 @@ impl AppState {
         // ahead of the write, because the map moved whether or not there is a
         // store under this bridge to write it to.
         self.note_board_changed();
-        self.save_attention_map();
+        self.save_attention_map_with_seen(
+            #[cfg(test)]
+            seen,
+        );
     }
 
     /// Keep known-owner stamps scoped while retaining full publication for
     /// workspace, external checkout and entity-less attention identities.
     pub(in crate::app) fn persist_attention_for_owner(&mut self, owner: &str) {
+        self.persist_attention_for_owner_with_seen(
+            owner,
+            #[cfg(test)]
+            None,
+        );
+    }
+
+    fn persist_attention_for_owner_with_seen(
+        &mut self,
+        owner: &str,
+        #[cfg(test)] seen: Option<SeenProbe>,
+    ) {
         if !self.plans.contains_key(owner) && !self.runs.contains_key(owner) {
-            self.persist_attention();
+            self.persist_attention_with_seen(
+                #[cfg(test)]
+                seen,
+            );
             return;
         }
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("finisher.attention");
         self.mark_snapshot_owner_pending(owner);
         self.note_owner_board_changed(owner);
-        self.save_attention_map();
+        self.save_attention_map_with_seen(
+            #[cfg(test)]
+            seen,
+        );
     }
 
     /// Only StatusPump::observe may defer this wire projection: it publishes
@@ -697,6 +752,13 @@ impl AppState {
     }
 
     fn save_attention_map(&self) {
+        self.save_attention_map_with_seen(
+            #[cfg(test)]
+            None,
+        );
+    }
+
+    fn save_attention_map_with_seen(&self, #[cfg(test)] seen: Option<SeenProbe>) {
         let Ok(store) = self.require_store() else {
             return;
         };
@@ -715,8 +777,15 @@ impl AppState {
             .into_entries()
             .into_iter()
             .collect();
-        if let Err(e) = store.save_attention(&attention, &live) {
-            eprintln!("attention: {e}");
+        match store.save_attention(&attention, &live) {
+            Ok(()) =>
+            {
+                #[cfg(test)]
+                if let Some(seen) = seen {
+                    self.test_record_saved_seen(seen, &attention, &live);
+                }
+            }
+            Err(e) => eprintln!("attention: {e}"),
         }
     }
 
@@ -812,7 +881,13 @@ impl AppState {
             window_floor: params.get("read_from_sequence").and_then(Value::as_u64),
             through: params.get("read_through_sequence").and_then(Value::as_u64),
         };
-        self.see_attention(&entity_id, agent_id.as_deref(), report);
+        self.see_attention_with_witness(
+            &entity_id,
+            agent_id.as_deref(),
+            report,
+            #[cfg(test)]
+            true,
+        );
         self.changes
             .note_kind(&entity_id, crate::changes::Kind::State);
         Ok(json!({ "ok": true }))

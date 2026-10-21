@@ -3,6 +3,25 @@ use crate::orchestrator::ActiveRun;
 use crate::session_summary::{message_millis, SessionSummary, UserSession};
 use crate::thread::ThreadItem;
 
+enum UserActivityPersistence {
+    Saved,
+    SaveFailed,
+    NoStore,
+    UnchangedNoSave,
+}
+
+#[cfg(test)]
+impl From<UserActivityPersistence> for super::accepted_records::PresencePersistence {
+    fn from(value: UserActivityPersistence) -> Self {
+        match value {
+            UserActivityPersistence::Saved => Self::Saved,
+            UserActivityPersistence::SaveFailed => Self::SaveFailed,
+            UserActivityPersistence::NoStore => Self::NoStore,
+            UserActivityPersistence::UnchangedNoSave => Self::UnchangedNoSave,
+        }
+    }
+}
+
 impl AppState {
     /// Observe only newly appended words. An in-place edit of an older item
     /// keeps its creation sequence and therefore cannot move an inbox row.
@@ -111,18 +130,32 @@ impl AppState {
     /// user spent on their phone. Activity inside a session pushes nothing;
     /// no client decides anything from `last_activity_ms` alone for long.
     pub(in crate::app) fn note_user_activity(&mut self, ts: i64) {
+        self.note_user_activity_outcome(ts);
+    }
+
+    fn note_user_activity_outcome(&mut self, ts: i64) -> UserActivityPersistence {
         let before = self.user_session;
         let updated = before.updated(ts);
         if updated == before {
-            return;
+            return UserActivityPersistence::UnchangedNoSave;
         }
         self.user_session = updated;
         self.publish_read_user_session();
-        if let Some(store) = self.store.as_ref() {
-            if let Err(error) = store.save_user_session(&updated) {
-                eprintln!("user session persist failed: {error}");
+        let persistence = if let Some(store) = self.store.as_ref() {
+            match store.save_user_session(&updated) {
+                Ok(()) => {
+                    #[cfg(test)]
+                    self.test_note_saved_user_session(updated);
+                    UserActivityPersistence::Saved
+                }
+                Err(error) => {
+                    eprintln!("user session persist failed: {error}");
+                    UserActivityPersistence::SaveFailed
+                }
             }
-        }
+        } else {
+            UserActivityPersistence::NoStore
+        };
         let new_boundary = updated.session_started_ms != before.session_started_ms
             || updated.previous_session_ended_ms != before.previous_session_ended_ms;
         if new_boundary {
@@ -130,12 +163,14 @@ impl AppState {
                 self.changes.note_tasks(&project.id, &[]);
             }
         }
+        persistence
     }
 
-    /// Deterministic native-source control only; no outcome emitter yet.
+    /// Deterministic native-source control of the explicit Presence path.
     #[cfg(test)]
     pub(in crate::app) fn test_note_presence_at(&mut self, ts: i64) {
-        self.note_user_activity(ts);
+        let persistence = self.note_user_activity_outcome(ts);
+        self.test_record_presence(persistence.into());
     }
 
     #[cfg(test)]
@@ -162,7 +197,9 @@ impl AppState {
     /// clock, so a reload, or another client, reads the same arrival.
     pub(crate) fn user_present(&mut self) -> serde_json::Value {
         let now = i64::try_from(crate::agent::now_ms()).unwrap_or(i64::MAX);
-        self.note_user_activity(now);
+        let _persistence = self.note_user_activity_outcome(now);
+        #[cfg(test)]
+        self.test_record_presence(_persistence.into());
         serde_json::json!({ "user_session": self.user_session_json() })
     }
 

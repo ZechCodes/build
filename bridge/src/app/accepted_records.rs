@@ -2,6 +2,9 @@
 //!
 //! Native topic/name records have no product revision. The task timestamp is
 //! retained as-is and is not promoted into a monotonic revision.
+mod saved_effects;
+pub(in crate::app) use saved_effects::SeenProbe;
+
 use super::AppState;
 use crate::session_summary::UserSession;
 use crate::tracker::{Task, TaskEvent, TaskEventKind, TaskPriority, TaskState};
@@ -105,7 +108,6 @@ impl AcceptedRecords {
     }
 
     /// Seed exactly once from the actual setup Store load before listener setup.
-    /// No producer writes or emits Presence outcomes in this TESTFIRST scaffold.
     pub(crate) fn seed_known_durable_user_session(&self, session: Option<UserSession>) {
         let mut known = self.known_durable_user_session.lock().unwrap();
         assert!(

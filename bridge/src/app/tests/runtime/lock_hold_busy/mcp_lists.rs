@@ -3,6 +3,34 @@ use super::*;
 
 const LIST_ROUNDS: usize = 3;
 
+struct FilteredTaskCase {
+    name: &'static str,
+    arguments: Value,
+    rows: usize,
+}
+
+fn filtered_task_cases() -> Vec<FilteredTaskCase> {
+    Vec::new()
+}
+
+#[test]
+fn busy_task_filter_inventory_covers_supported_filters_and_page_shapes() {
+    let cases = filtered_task_cases();
+    assert_eq!(
+        cases.iter().map(|case| case.name).collect::<Vec<_>>(),
+        ["state", "status", "label_short", "label_empty"]
+    );
+    for (case, arguments, rows) in [
+        (&cases[0], json!({"state":"open"}), 20),
+        (&cases[1], json!({"status":"backlog"}), 20),
+        (&cases[2], json!({"label":"busy-short"}), 5),
+        (&cases[3], json!({"label":"busy-missing"}), 0),
+    ] {
+        assert_eq!(case.arguments, arguments);
+        assert_eq!(case.rows, rows);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "release-only 700-task/200-conversation busy MCP list latency regression"]
 async fn busy_mcp_lists_finish_within_100ms() {

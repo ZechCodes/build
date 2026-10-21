@@ -1,6 +1,18 @@
 use super::*;
 use crate::app::snapshot_projection::work_counts::detail_scans;
 
+#[test]
+fn work_envelope_preserves_owned_payload_allocations() {
+    let title = "already projected work row ".repeat(100);
+    let allocation = title.as_ptr();
+    let reply = work::work_reply(vec![Value::String(title)]);
+    assert_eq!(
+        reply["work"][0].as_str().unwrap().as_ptr(),
+        allocation,
+        "wrapping projected rows must move their payload without serializing a copy"
+    );
+}
+
 fn split(value: &Value) -> SharedJson {
     match value {
         Value::Object(fields) => SharedJson::object(

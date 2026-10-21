@@ -57,6 +57,10 @@ pub(super) fn digest(board: &SharedJson) -> Value {
         .filter(|row| row.field("kind").string() != Some("capture"))
         .map(row_digest)
         .collect::<Vec<_>>();
+    work_reply(work)
+}
+
+pub(super) fn work_reply(work: Vec<Value>) -> Value {
     json!({"work":work})
 }
 

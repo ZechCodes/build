@@ -2240,7 +2240,7 @@ Saved immutable addressing retains roster order, canonical bindings, thread
 identity and persisted pin/name policy. Failed saves cannot admit candidate
 identities; temporarily borrowed owners retain their saved records. Roster and
 list reads use accepted producer fragments and scope/selection metadata, with
-roster target stamps taken from the captured payload itself. Admission and final
+roster target stamps taken from the captured payload itself. Read preparation and final
 validation compare those targets with saved addresses and current authority;
 changed bindings, generations, selections or project paths refuse the captured
 request instead of retargeting it. No request initializes producers, probes

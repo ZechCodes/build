@@ -290,8 +290,7 @@ fn queue_and_install_live_agent(app: &mut AppState, fixture: &Fixture) -> (TabKe
         DictatedSession::reporting(crate::harness::AgentStatus::Working).recording_into(&log),
     );
     app.session_registry.test_insert_tab(key.clone(), tab);
-    app.session_registry
-        .install_mcp_token(fixture.removed.clone(), "identity-test-token".into());
+    app.test_install_mcp_token(fixture.removed.clone(), "identity-test-token".into());
     (key, log)
 }
 

@@ -300,9 +300,7 @@ async fn stale_project_sessions_cannot_act_for_the_pin_or_a_removed_worker() {
     let pin = state.project_pin(&owner).unwrap().to_string();
     let worker = add_worker(&mut state, &owner, json!({}));
 
-    state
-        .session_registry
-        .test_install_token(worker.clone(), "worker-token".into());
+    state.test_install_mcp_token(worker.clone(), "worker-token".into());
     let removed = state.handle(req(
         "agent.remove",
         json!({ "entity_id": owner, "agent_id": worker }),
@@ -314,9 +312,7 @@ async fn stale_project_sessions_cannot_act_for_the_pin_or_a_removed_worker() {
         None
     );
 
-    state
-        .session_registry
-        .test_install_token(pin.clone(), "pin-token".into());
+    state.test_install_mcp_token(pin.clone(), "pin-token".into());
     let frame = json!({
         "task_id": pin, "session_token": "pin-token",
         "request": BridgeAction::SetTopic { topic: "Old topic".into() },

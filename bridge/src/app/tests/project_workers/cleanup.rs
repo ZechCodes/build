@@ -50,8 +50,7 @@ impl LiveProject {
             shared
                 .lock()
                 .unwrap()
-                .session_registry
-                .test_install_token(agent.clone(), format!("{agent}-token"));
+                .test_install_mcp_token(agent.clone(), format!("{agent}-token"));
         }
         let cwds: Vec<_> = spawns
             .lock()

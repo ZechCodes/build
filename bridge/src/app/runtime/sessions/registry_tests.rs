@@ -156,8 +156,16 @@ fn claim_take_and_settle_are_infallible() {
 #[test]
 fn conditional_token_revoke_preserves_a_newer_rotation() {
     let mut registry = SessionRegistry::new();
-    let old = registry.install_mcp_token("agent-a".into(), "old".into());
-    let _new = registry.install_mcp_token("agent-a".into(), "new".into());
+    let issuer = super::McpIssuer::Coding(crate::app::read_context::IssuedCodingAddress {
+        owner: "matcher-owner".into(),
+        agent: "agent-a".into(),
+        canonical_owner: "matcher-owner".into(),
+        conversation: "agent-a".into(),
+        thread_id: "matcher-thread".into(),
+        generation: 0,
+    });
+    let old = registry.install_mcp_token("agent-a".into(), "old".into(), issuer.clone());
+    let _new = registry.install_mcp_token("agent-a".into(), "new".into(), issuer);
     registry.revoke_mcp_token_if_current(&old);
     assert!(registry.token_matches("agent-a", "new"));
     assert!(!registry.token_matches("agent-a", "old"));

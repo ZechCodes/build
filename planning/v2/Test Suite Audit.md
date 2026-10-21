@@ -8,7 +8,7 @@ Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
 exit code; a green test summary does not clear an unhandled Vitest error.
 
 Current setup after #577/#578: SPA resolves `file:../transport/js` inside
-Build. With Node 22.23.3/npm 12.0.2, run `npm ci --prefix transport/js
+Build. With Node 22.23.4/npm 12.0.2, run `npm ci --prefix transport/js
 --ignore-scripts` from the root, then `npm ci --legacy-peer-deps` in SPA.
 The lock is committed and portable. Dependency edits use `npm install
 --legacy-peer-deps` and commit the lock; do not share another checkout’s

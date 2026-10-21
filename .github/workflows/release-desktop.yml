@@ -23,6 +23,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
+
       - id: derive
         env:
           TAG: ${{ github.ref_name }}
@@ -108,7 +112,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "22.23.4"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -193,7 +197,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "22"
+          node-version: "22.23.4"
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -232,6 +236,10 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22.23.4"
 
       # Checkout contains assets/brand. Release artifacts must never share it.
       - name: Prepare isolated release staging

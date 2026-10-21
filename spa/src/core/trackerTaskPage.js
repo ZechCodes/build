@@ -69,6 +69,7 @@ import { mountTaskWaitingOn } from "./taskWaitingOnPage.js";
 import { readTaskWaitingOnSupport, taskWaitingOnSupportAddress } from "./taskWaitingOnSupport.js";
 import { mountMeasuredHeight } from "./measuredInset.js";
 import { mountTaskCommentRecovery } from "./taskCommentRecovery.js";
+import { provenExpiredFailure } from "./writeOperationIntent.js";
 
 /** Whether one flush of `tasks` items says anything about this task. */
 const namesTask = (items, taskId) =>
@@ -711,7 +712,8 @@ export function mountTaskPage(host, options) {
   }
 
   function unappliedComment(operation) {
-    return operation.state === "failed" && (operation.effect || operation.confirmation?.effect) === "unapplied";
+    return provenExpiredFailure(operation)
+      || operation.state === "failed" && (operation.effect || operation.confirmation?.effect) === "unapplied";
   }
 
   function submittedComment() {

@@ -727,6 +727,38 @@ describe("the composer", () => {
     expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(false);
   });
 
+  it.each([true, false])("preserves or restores an expired failed-unapplied comment and retries with a new ID (owned draft: %s)", async (ownedDraft) => {
+    const { writeUiRecord } = await import("../src/core/localUiStore.js");
+    const { uiAddress } = await import("../src/core/localUiState.js");
+    const row = {
+      operationId: "expired-comment", state: "result_expired", outcome: "failed", effect: "unapplied",
+      unresolved: false, overlayActive: false, acknowledged: true,
+      owner: { kind: "task-comment", taskId: "task-1", projectId: "proj-1" },
+      draft: { body: "keep this expired comment", attachments: [] },
+    };
+    if (ownedDraft) {
+      await writeUiRecord(uiAddress({ deviceId: "dev-1", entityId: "task-1", view: "tracker-task", kind: "draft", sub: "proj-1" }), {
+        body: row.draft.body, submittedOperationId: row.operationId,
+      });
+    }
+    const service = { readOperations: () => [row], subscribe: () => () => {}, dismiss: vi.fn(async () => {}) };
+    call = vi.fn(async (method, _params, options) => {
+      if (method === "tasks.comment") return { phase: "ack", operation_id: options.operationId };
+      return method === "tasks.get" ? answerFor() : {};
+    });
+    await mount({ writeOperations: service });
+    expect(host.querySelector("#task-comment").value).toBe(row.draft.body);
+    expect(host.querySelector('[data-task-composer] button[type="submit"]').disabled).toBe(false);
+    expect(host.querySelector('[data-write-action="retry"]').textContent).toBe("Retry");
+    host.querySelector('[data-write-action="retry"]').click();
+    await flush();
+    expect(listed("tasks.comment")).toHaveLength(1);
+    expect(listed("tasks.comment")[0][1].body).toBe(row.draft.body);
+    expect(listed("tasks.comment")[0][2].operationId).not.toBe(row.operationId);
+    expect(service.dismiss).toHaveBeenCalledWith(row.operationId);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
   it("blocks a restored submitted draft while its durable ownership lookup is still loading", async () => {
     const { writeUiRecord } = await import("../src/core/localUiStore.js");
     const { uiAddress } = await import("../src/core/localUiState.js");

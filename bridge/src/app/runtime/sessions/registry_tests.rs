@@ -249,36 +249,40 @@ fn retirement_returns_the_instance_and_removes_only_the_named_tab() {
 #[test]
 fn shell_tabs_preserve_the_agent_projection_layout_through_capacity_growth() {
     let root = Path::new("/fixture/checkout");
-    let mut registry = SessionRegistry::new();
-    for index in 0..64 {
-        let agent = format!("agent-{index}");
-        let (tab, _, _) = agent_tab(root, &agent, &agent, &agent);
-        registry.insert_opened(TabKey::agent(root, &agent), tab);
-    }
-    let before = registry.projection_layout();
-    let mut shells = Vec::new();
-    for _ in 0..crate::app::runtime::terminals::MAX_USER_TERMINALS {
-        let id = registry.next_terminal_id();
-        let key = TabKey {
-            root: root.into(),
-            tab_id: id.clone(),
-        };
-        let (mut tab, _, _) = agent_tab(root, "unused", "unused", "unused");
-        tab.role = TabRole::Shell;
-        tab.tab_id = id;
-        tab.session_instance = None;
-        registry.test_insert_tab(key.clone(), tab);
-        assert!(
-            before == registry.projection_layout(),
-            "opening a shell changed agent layout"
-        );
-        shells.push(key);
-    }
-    for key in shells {
-        registry.retire_tab(&key, "closed", diagnostic()).unwrap();
-        assert!(
-            before == registry.projection_layout(),
-            "closing a shell changed agent layout"
-        );
+    for agent_count in [3, 27, 200] {
+        let mut registry = SessionRegistry::new();
+        for index in 0..agent_count {
+            let agent = format!("agent-{index}");
+            let (tab, _, _) = agent_tab(root, &agent, &agent, &agent);
+            registry.insert_opened(TabKey::agent(root, &agent), tab);
+        }
+        let before = registry.projection_layout();
+        for _ in 0..256 {
+            let mut shells = Vec::new();
+            for _ in 0..crate::app::runtime::terminals::MAX_USER_TERMINALS {
+                let id = registry.next_terminal_id();
+                let key = TabKey {
+                    root: root.into(),
+                    tab_id: id.clone(),
+                };
+                let (mut tab, _, _) = agent_tab(root, "unused", "unused", "unused");
+                tab.role = TabRole::Shell;
+                tab.tab_id = id;
+                tab.session_instance = None;
+                registry.test_insert_tab(key.clone(), tab);
+                assert!(
+                    before == registry.projection_layout(),
+                    "opening a shell changed agent layout"
+                );
+                shells.push(key);
+            }
+            for key in shells {
+                registry.test_remove_tab(&key).unwrap();
+                assert!(
+                    before == registry.projection_layout(),
+                    "closing a shell changed agent layout"
+                );
+            }
+        }
     }
 }

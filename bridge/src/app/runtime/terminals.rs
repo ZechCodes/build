@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 mod cleanup;
+mod create;
 mod scope;
 
 use scope::resolve_terminal_scope;
@@ -220,61 +221,7 @@ pub(in crate::app) fn term_create(
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
-    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-    require_shell_kind(params)?;
-
-    let (key, pumps) = {
-        let mut s = timer.lock(state);
-        #[cfg(test)]
-        let _phase = crate::timing::phase_samples::phase("term.create.reserve");
-        // RPC admission can precede deletion's retirement collection. Recheck
-        // under the spawn guard so a shell cannot appear after that collection.
-        if s.project_deletion_in_progress {
-            return Err(crate::app::rpc::PROJECT_DELETION_IN_PROGRESS.into());
-        }
-        let scope = resolve_terminal_scope(&mut s, params)?;
-        let root = scope.root;
-        s.refuse_source_shell_start_at(&root)?;
-        s.refuse_writers_while_reserved(&root)?;
-        // The cap counts the human's shells and never an agent: sixteen open
-        // terminals must not be able to crowd a worktree's agent out of a
-        // registry they now share.
-        if s.shell_tab_count() >= MAX_USER_TERMINALS {
-            return Err(format!(
-                "terminal limit reached ({MAX_USER_TERMINALS} open terminals) — close one first"
-            ));
-        }
-        let tab_id = s.session_registry.next_terminal_id();
-        let shell = s.term_shell.clone();
-        let key = TabKey {
-            root: root.clone(),
-            tab_id: tab_id.clone(),
-        };
-        #[cfg(test)]
-        let spawn_phase = crate::timing::phase_samples::phase("term.create.spawn");
-        let (mut tab, rx) = Tab::spawn_shell(
-            &shell_harness_spec(&shell),
-            tab_id,
-            root,
-            terminal_size(cols, rows),
-        )?;
-        #[cfg(test)]
-        drop(spawn_phase);
-        #[cfg(test)]
-        let _commit_phase = crate::timing::phase_samples::phase("term.create.commit");
-        tab.project_source = scope.source;
-        let pumps = s.session_registry.insert_shell(key.clone(), tab, rx);
-        s.note_terminals_at(&key.root);
-        (key, pumps)
-    };
-    spawn_tab_pumps(state, key.clone(), pumps);
-    Ok(json!({
-        "term_id": key.tab_id,
-        "kind": SHELL_TAB_KIND,
-        "cols": cols,
-        "rows": rows,
-    }))
+    create::create(state, params, timer)
 }
 
 /// Attach this client to a tab by its wire id — `term-<n>` or

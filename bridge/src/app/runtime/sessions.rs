@@ -287,7 +287,7 @@ impl Tab {
 
     /// The human's own shell: always a terminal, and the one session never
     /// handed a turn, so it is not waited on — a login shell may never announce
-    /// a line editor at all and `term.create` holds the state lock across this.
+    /// a line editor at all. `term.create` opens it outside the state lock.
     pub(in crate::app) fn spawn_shell(
         spec: &HarnessSpec,
         tab_id: String,

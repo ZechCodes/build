@@ -985,6 +985,16 @@ async fn wait_for_fixture_idle(busy: &Busy) -> Value {
 #[ignore = "realistic 200-conversation/190-worktree/700-task terminal hold fixture"]
 async fn busy_term_create_keeps_app_lock_hold_below_50ms() {
     let busy = Busy::with_history_items(500);
+    let retained_items = busy
+        .state
+        .lock()
+        .unwrap()
+        .runs
+        .values()
+        .map(|run| run.agents.primary().unwrap().thread.total_item_count())
+        .sum::<u64>();
+    assert!(retained_items >= 100_000);
+    eprintln!("terminal fixture: {CONVERSATIONS} conversations, {WORKTREES} Git worktrees, {TASKS} tasks, {retained_items} retained items");
     let handler = AppState::handler(Arc::clone(&busy.state));
     let workspace = busy.owners[AGENTS + 1].0.clone();
     let (created, work) = crate::app::snapshot_projection::work_counts::measure(|| {

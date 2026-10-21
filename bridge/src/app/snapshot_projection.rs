@@ -315,7 +315,7 @@ impl AppState {
         }
     }
 
-    fn can_publish_snapshot_projection(&self) -> bool {
+    pub(in crate::app) fn can_publish_snapshot_projection(&self) -> bool {
         self.snapshot_observations.ready && !self.committed_entities.has_borrowed(self)
     }
 

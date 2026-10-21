@@ -1023,8 +1023,7 @@ impl AppState {
     pub(in crate::app) fn note_terminals_at(&self, root: &std::path::Path) {
         #[cfg(test)]
         let _phase = crate::timing::phase_samples::phase("terminals.publish");
-        self.publish_snapshot_projection();
-        for entity_id in self.entities_rooted_at(root) {
+        for entity_id in self.publish_terminal_facts_at(root) {
             self.changes.note_terminals(&entity_id);
         }
     }

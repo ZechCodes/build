@@ -16,6 +16,9 @@ use crate::thread::SessionInstance;
 use super::{LifecycleDiagnostic, MintedCallRow, Tab, TabKey, TabPumps, TabRole};
 use crate::app::runtime::terminals::{TabAttachment, TabFacts};
 
+mod tabs;
+use tabs::Tabs;
+
 /// Compare an MCP token without making the compared byte position depend on
 /// either input's length. This is the exact body currently used by AppState.
 pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
@@ -37,7 +40,7 @@ pub(in crate::app) fn constant_time_token_eq(actual: &str, expected: &str) -> bo
 /// In particular, `spawn_finished` is paired with that original mutex guard;
 /// SessionRegistry must never acquire an independent mutex.
 pub(in crate::app) struct SessionRegistry {
-    tabs: HashMap<TabKey, Tab>,
+    tabs: Tabs,
     spawn_claims: HashSet<TabKey>,
     spawn_finished: Arc<Condvar>,
     waiting_screens: HashMap<TabKey, ScreenHandle>,
@@ -217,7 +220,7 @@ pub(in crate::app) struct RetainedTab {
 impl SessionRegistry {
     pub(in crate::app) fn new() -> Self {
         Self {
-            tabs: HashMap::new(),
+            tabs: Tabs::new(),
             spawn_claims: HashSet::new(),
             spawn_finished: Arc::new(Condvar::new()),
             waiting_screens: HashMap::new(),
@@ -248,7 +251,24 @@ impl SessionRegistry {
     }
 
     pub(in crate::app) fn pending_shell_count(&self) -> usize {
-        self.spawn_claims.iter().filter(|key| !key.is_agent()).count()
+        self.spawn_claims
+            .iter()
+            .filter(|key| !key.is_agent())
+            .count()
+    }
+
+    pub(in crate::app) fn shell_holds_at(&self, root: &Path) -> Vec<String> {
+        self.tabs
+            .iter()
+            .filter(|(key, tab)| key.root.starts_with(root) && tab.role == TabRole::Shell)
+            .map(|(key, _)| key)
+            .chain(
+                self.spawn_claims
+                    .iter()
+                    .filter(|key| !key.is_agent() && key.root.starts_with(root)),
+            )
+            .map(|key| key.tab_id.clone())
+            .collect()
     }
 
     pub(in crate::app) fn shell_count(&self) -> usize {
@@ -420,6 +440,9 @@ impl SessionRegistry {
     pub(in crate::app) fn projection_layout(&self) -> Vec<ProjectionRegistration> {
         self.tabs
             .iter()
+            // Shells publish only terminal facts. Their membership never
+            // changes board/workspace/history projection structure.
+            .filter(|(_, tab)| tab.role.agent().is_some())
             .map(|(key, tab)| ProjectionRegistration::Tab {
                 key: key.clone(),
                 role: tab.role.clone(),

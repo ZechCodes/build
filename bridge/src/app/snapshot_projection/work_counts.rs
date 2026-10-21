@@ -79,3 +79,6 @@ pub(in crate::app) mod named_branch;
 
 // Actual candidate-local owner index and active discovery work.
 pub(in crate::app) mod owner_closure;
+
+// Real native project-list capture work.
+pub(in crate::app) mod project_capture;

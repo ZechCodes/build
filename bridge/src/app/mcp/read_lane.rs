@@ -83,6 +83,8 @@ fn admit(
     frame: &Value,
     action: &BridgeAction,
 ) -> Result<Admitted, String> {
+    #[cfg(test)]
+    let _stage = crate::timing::phase_samples::stage("read.admission");
     let lease = service
         .admission
         .as_ref()
@@ -126,15 +128,30 @@ pub(super) async fn answer(
     };
     let PreparedRead { pool, query, scope } = read;
     let mut connection = match pool {
-        Some(pool) => Some(pool.acquire().await),
+        Some(pool) => {
+            #[cfg(test)]
+            let waiting = WaitTimer::start();
+            let connection = pool.acquire().await;
+            #[cfg(test)]
+            timer.sample_read_duration("read.sql_wait", waiting.elapsed());
+            Some(connection)
+        }
         None => None,
     };
     let (outcome, lease) = blocking(Arc::clone(&timer), move || {
-        let prepared = query(connection.as_mut());
+        let prepared = {
+            #[cfg(test)]
+            let _stage = crate::timing::phase_samples::stage("read.query");
+            query(connection.as_mut())
+        };
         // Mixed/external reads must never retain SQL capacity during I/O.
         drop(connection);
         let outcome = match prepared {
-            Ok(work) => work.run(),
+            Ok(work) => {
+                #[cfg(test)]
+                let _stage = crate::timing::phase_samples::stage("read.run");
+                work.run()
+            }
             Err(error) => job::Outcome::error(error),
         };
         // A cancelled caller cannot release admission while this blocking
@@ -157,6 +174,8 @@ fn finish(
     scope: Option<service::ProjectScope>,
     outcome: job::Outcome,
 ) -> Value {
+    #[cfg(test)]
+    let _stage = crate::timing::phase_samples::stage("read.finish");
     let mut outcome = Some(outcome);
     let inputs = service.inputs();
     let result = session
@@ -256,6 +275,9 @@ async fn blocking<T: Send + 'static>(
     let waiting = WaitTimer::start();
     off_the_workers(move || {
         timer.record_pool_wait(waiting.elapsed());
+        #[cfg(test)]
+        return timer.sample_read_work(work);
+        #[cfg(not(test))]
         work()
     })
     .await

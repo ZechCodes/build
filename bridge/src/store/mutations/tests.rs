@@ -192,3 +192,36 @@ fn malformed_terminal_data_never_replaces_recoverable_state() {
         json!([{"kind":"project","id":"p"}])
     );
 }
+
+#[test]
+fn settled_owner_history_is_not_loaded_when_claiming_the_next_command() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path()).unwrap();
+    let writer = store.writer();
+    let command = command();
+    writer.admit_mutation(&command).unwrap();
+    writer
+        .claim_mutation("test", &command.operation_id)
+        .unwrap();
+    writer
+        .commit_mutation("test", &command.operation_id, |_| {
+            Ok(json!({"large": "x".repeat(200_000)}))
+        })
+        .unwrap();
+    writer
+        .confirm_mutation("test", &command.operation_id, json!({}))
+        .unwrap();
+    // Poison only the retired record's decode path: scheduling must consult
+    // its released owner fence without reading historical result bodies.
+    store
+        .connection()
+        .execute(
+            "UPDATE mutation_commands SET record='not-json' WHERE operation_id=?1",
+            [&command.operation_id],
+        )
+        .unwrap();
+    let mut next = command.clone();
+    next.operation_id = "22222222-2222-4222-8222-222222222222".into();
+    writer.admit_mutation(&next).unwrap();
+    assert!(writer.claim_mutation("test", &next.operation_id).unwrap());
+}

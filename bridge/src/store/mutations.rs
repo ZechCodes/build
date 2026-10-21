@@ -89,8 +89,10 @@ CREATE INDEX IF NOT EXISTS mutation_commands_state ON mutation_commands(state, c
 CREATE TABLE IF NOT EXISTS mutation_owner_order (
  kind TEXT NOT NULL, owner_id TEXT NOT NULL, generation INTEGER NOT NULL,
  sequence INTEGER NOT NULL, command_id INTEGER NOT NULL REFERENCES mutation_commands(command_id),
+ active INTEGER NOT NULL DEFAULT 1,
  PRIMARY KEY(kind, owner_id, generation, sequence));
 CREATE INDEX IF NOT EXISTS mutation_order_command ON mutation_owner_order(command_id);
+CREATE INDEX IF NOT EXISTS mutation_active_order ON mutation_owner_order(kind, owner_id, generation, sequence) WHERE active=1;
 CREATE TABLE IF NOT EXISTS mutation_dependencies (
  command_id INTEGER NOT NULL REFERENCES mutation_commands(command_id),
  predecessor INTEGER NOT NULL REFERENCES mutation_commands(command_id),

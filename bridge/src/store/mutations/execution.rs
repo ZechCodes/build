@@ -37,6 +37,12 @@ fn terminal(
     record.state = state.into();
     record.revision += 1;
     record.outcome = Some(outcome);
+    if !blocks(record) {
+        transaction.execute(
+            "UPDATE mutation_owner_order SET active=0 WHERE command_id=?1",
+            [record.command_id],
+        )?;
+    }
     save(transaction, record)?;
     transaction.execute(
         "UPDATE mutation_commands SET terminal_at=unixepoch() WHERE command_id=?1",
@@ -66,14 +72,15 @@ fn owner_blocked(
     transaction: &Transaction<'_>,
     record: &MutationRecord,
 ) -> Result<bool, StoreError> {
-    let mut statement=transaction.prepare("SELECT DISTINCT c.record FROM mutation_owner_order current JOIN mutation_owner_order previous ON previous.kind=current.kind AND previous.owner_id=current.owner_id AND previous.generation=current.generation AND previous.sequence<current.sequence JOIN mutation_commands c ON c.command_id=previous.command_id WHERE current.command_id=?1")?;
-    let rows = statement.query_map([record.command_id], |row| row.get::<_, String>(0))?;
-    for row in rows {
-        if blocks(&decode(row?)?) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM mutation_owner_order current
+         JOIN mutation_owner_order previous ON previous.kind=current.kind
+          AND previous.owner_id=current.owner_id AND previous.generation=current.generation
+          AND previous.sequence<current.sequence AND previous.active=1
+         WHERE current.command_id=?1)",
+        [record.command_id],
+        |row| row.get(0),
+    )?)
 }
 fn predecessor_state(
     transaction: &Transaction<'_>,

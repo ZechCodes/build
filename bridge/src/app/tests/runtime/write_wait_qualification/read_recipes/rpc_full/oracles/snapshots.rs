@@ -11,7 +11,7 @@ pub(super) fn check(method: &str, value: &Value, e: &Witnesses) -> bool {
         "board.list" => {
             row(value, "/items", "task_id", &i.task);
             assert!(value["runs"].is_array());
-            assert!(value["checkouts"].is_array());
+            assert!(value["external_worktrees"].is_array());
         }
         "project.list" => {
             for id in &e.all_projects {

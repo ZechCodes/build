@@ -2,6 +2,13 @@
 use super::*;
 use crate::mcp::McpSurface;
 
+mod actor;
+mod fixture;
+mod progress;
+pub(super) use actor::{run, Reader};
+pub(super) use fixture::{seed_project_owner, Fixture};
+pub(super) use progress::Progress;
+
 pub(super) const TOOLS: [&str; 14] = [
     "get_task",
     "list_tasks",
@@ -196,4 +203,82 @@ fn busy_cohort_covers_all_fourteen_independent_mcp_reads() {
         missing.is_empty(),
         "every read must have24actual callers in the busy cohort: {missing:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_busy_read_recipe_returns_its_real_saved_witness() {
+    let root = tempfile::tempdir().unwrap();
+    let (_home, mut app, project) = tracked(root.path());
+    let task = filed(&mut app, &project, "busy read recipe task")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let dependent = filed(&mut app, &project, "busy read recipe dependent")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let workspace =
+        crate::app::tests::project_agent::workspace(&mut app, &project, "busy-read-recipes");
+    let selected = app.handle(req(
+        "workspace.ensure_conversation",
+        json!({"workspace_id":workspace}),
+    ));
+    assert_eq!(selected["ok"], true, "{selected}");
+    let owner = selected["result"]["entity_id"].as_str().unwrap().to_owned();
+    let agent = primary_agent_id(&app, &owner);
+    let mut active = app.take_run(&owner).unwrap();
+    seed_history(&mut active.agents.by_id_mut(&agent).unwrap().thread);
+    app.finish_run_mutation(owner.clone(), active).unwrap();
+    let repo = app.project_at(0).repo_path.clone();
+    let project_owner = adopted_run(&mut app, &repo, root.path(), "busy-read-project");
+    let mut project_active = app.take_run(&project_owner).unwrap();
+    seed_history(&mut project_active.agents.primary_mut().unwrap().thread);
+    app.finish_run_mutation(project_owner.clone(), project_active)
+        .unwrap();
+    seed_project_owner(&mut app, &project_owner);
+    let fixture = Fixture::seed(&mut app, &workspace, &agent, &task, &dependent);
+    app.test_install_mcp_token(agent.clone(), format!("busy-token-{agent}"));
+    app.delivery_queue.clear_queued();
+    app.initialize_read_context();
+    app.initialize_snapshot_projection();
+    // No independent service may consume the intentionally passive router.
+    let state = Arc::new(Mutex::new(app));
+    let plane = ControlPlane::new(&state.lock().unwrap());
+    let (client, daemon) = tokio::net::UnixStream::pair().unwrap();
+    let mut server = tokio::spawn(handle_done_stream(state.clone(), daemon, plane));
+    let mut client = tokio::io::BufReader::new(client);
+    let mut replies = Vec::new();
+    for (_, action) in cases(&fixture.ids(&owner, &agent)) {
+        let reply = tokio::time::timeout(
+            Duration::from_secs(5),
+            control_reply(&mut client, fixture.frame(&agent, &action)),
+        )
+        .await;
+        let complete = reply.is_ok();
+        replies.push((action, reply));
+        if !complete {
+            break;
+        }
+    }
+    drop(client);
+    let joined = tokio::time::timeout(Duration::from_secs(5), &mut server).await;
+    if joined.is_err() {
+        server.abort();
+        let _ = server.await;
+    } else {
+        joined.unwrap().unwrap();
+    }
+    assert_eq!(
+        replies.len(),
+        TOOLS.len(),
+        "all real recipes must complete before inspecting their results"
+    );
+    for (action, reply) in replies {
+        fixture.assert_reply(&action, &reply.expect("saved read recipe timed out"));
+    }
+    assert!(state
+        .lock()
+        .unwrap()
+        .session_registry
+        .token_matches(&fixture.router, &format!("busy-token-{}", fixture.router)));
 }

@@ -1,24 +1,298 @@
-//! Explicit calibration never constitutes a passing aggregate qualification.
+//! Qualification uses explicit hard limits and an undiluted raw writer pool.
 use super::*;
 use std::collections::BTreeMap;
 
-type RawHolds = BTreeMap<String, Vec<f64>>;
+pub(super) type RawHolds = BTreeMap<String, Vec<f64>>;
 
 #[derive(Clone, Copy)]
-enum AggregateMode {
+pub(super) enum AggregateMode {
     Calibration,
     Enforce { limit_ms: f64 },
 }
 
-// Test-first seam: preserve the current qualification policy until its real
-// missing coverage and changed policy have been observed RED. The new raw pool
-// and explicit mode have no acceptance effect yet; implementation follows RED.
-fn assert_policy(measurements: &Value, raw: &RawHolds, mode: AggregateMode) {
-    let _ = raw;
-    if let AggregateMode::Enforce { limit_ms } = mode {
-        let _ = limit_ms;
+// Coordinator installs a reviewed explicit limit only after real-runner
+// calibration. This mode never yields an overall passing qualification.
+pub(super) const MODE: AggregateMode = AggregateMode::Calibration;
+
+const WRITERS: [&str; 12] = [
+    "mcp.control:create_task",
+    "mcp.control:move_task",
+    "mcp.control:message_agent",
+    "mcp.control:set_topic",
+    "mcp.control:comment_task",
+    "mcp.control:post_thread_message",
+    "entity.seen",
+    "thread.post",
+    "user.present",
+    "agent.poll_status",
+    "agent.deliver",
+    "tasks.delivery_service",
+];
+
+#[derive(Default)]
+struct Checks(Vec<String>);
+
+impl Checks {
+    fn require(&mut self, condition: bool, message: impl FnOnce() -> String) {
+        if !condition {
+            self.0.push(message());
+        }
     }
-    assert_expected_samples(measurements);
+
+    fn metric(
+        &mut self,
+        measurements: &Value,
+        method: &str,
+        phase: &str,
+        field: &str,
+    ) -> Option<f64> {
+        let number = measurements[method][phase][field]
+            .as_f64()
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        self.require(number.is_some(), || {
+            format!("{method} {phase}.{field} needs a finite nonnegative sample")
+        });
+        number
+    }
+
+    fn limit(
+        &mut self,
+        measurements: &Value,
+        method: &str,
+        phase: &str,
+        ceiling: f64,
+        strict: bool,
+    ) {
+        if let Some(maximum) = self.metric(measurements, method, phase, "max_ms") {
+            let allowed = if strict {
+                maximum < ceiling
+            } else {
+                maximum <= ceiling
+            };
+            self.require(allowed, || {
+                format!(
+                    "{method} {phase}.max_ms={maximum} violates {}{ceiling}ms",
+                    if strict { "<" } else { "<=" }
+                )
+            });
+        }
+    }
+
+    fn count(&mut self, measurements: &Value, method: &str, phase: &str, expected: usize) {
+        let count = measurements[method][phase]["count"].as_u64();
+        self.require(count == Some(expected as u64), || {
+            format!("{method} {phase} requires {expected} samples, got {count:?}")
+        });
+    }
+}
+
+pub(super) fn assert_policy(measurements: &Value, raw: &RawHolds, mode: AggregateMode) {
+    let mut checks = hard_limits(measurements);
+    let pool = writer_pool(measurements, raw, &mut checks);
+    mode_checks(&pool, mode, &mut checks);
+    assert!(
+        checks.0.is_empty(),
+        "busy qualification violations:\n{}",
+        checks.0.join("\n")
+    );
+}
+
+fn mode_checks(pool: &[f64], mode: AggregateMode, checks: &mut Checks) {
+    match mode {
+        AggregateMode::Calibration => checks
+            .0
+            .push("aggregate writer hold limit unconfigured (calibration mode cannot pass)".into()),
+        AggregateMode::Enforce { limit_ms } => {
+            checks.require(limit_ms.is_finite() && limit_ms > 0.0, || {
+                "aggregate writer hold limit must be finite and positive".into()
+            });
+            if let Some(p95) = percentile(pool, 95) {
+                checks.require(p95 <= limit_ms, || {
+                    format!(
+                        "aggregate writer frame.held p95={p95}ms exceeds configured {limit_ms}ms"
+                    )
+                });
+            }
+        }
+    }
+}
+
+fn hard_limits(measurements: &Value) -> Checks {
+    let mut checks = Checks::default();
+    for (method, count) in expected_request_samples() {
+        checks.count(measurements, &method, "frame.held", count);
+        checks.count(measurements, &method, "client.total", count);
+    }
+    let delivered = measurements["agent.deliver"]["frame.held"]["count"]
+        .as_u64()
+        .unwrap_or(0);
+    checks.require(delivered > 0, || {
+        "actual agent.deliver work must complete".into()
+    });
+    for (method, phases) in measurements.as_object().into_iter().flatten() {
+        let count = phases["frame.held"]["count"].as_u64().unwrap_or(0) as usize;
+        checks.require(count > 0, || {
+            format!("{method} must include completed frame samples")
+        });
+        for phase in [
+            "frame.lock_wait",
+            "frame.queued",
+            "frame.permit_wait",
+            "frame.pool_wait",
+            "frame.queue_and_lock_wait",
+            "frame.queue_permit_and_lock_wait",
+            "frame.total",
+        ] {
+            checks.count(measurements, method, phase, count);
+            let _ = checks.metric(measurements, method, phase, "max_ms");
+        }
+        checks.limit(measurements, method, "frame.held", 200.0, true);
+        checks.limit(
+            measurements,
+            method,
+            "frame.lock_wait",
+            MAX_BUSY_LOCK_WAIT_MS,
+            false,
+        );
+        checks.limit(
+            measurements,
+            method,
+            "frame.queue_permit_and_lock_wait",
+            MAX_BUSY_RESPONSE_MS,
+            false,
+        );
+        checks.limit(
+            measurements,
+            method,
+            "frame.total",
+            MAX_BUSY_RESPONSE_MS,
+            false,
+        );
+        if phases.get("client.total").is_some() {
+            checks.count(measurements, method, "client.total", count);
+            checks.limit(
+                measurements,
+                method,
+                "client.total",
+                MAX_BUSY_RESPONSE_MS,
+                false,
+            );
+        }
+    }
+    read_limits(measurements, &mut checks);
+    checks
+}
+
+fn read_limits(measurements: &Value, checks: &mut Checks) {
+    for (method, count) in read_samples() {
+        checks.count(measurements, &method, "client.total", count);
+        checks.limit(
+            measurements,
+            &method,
+            "client.total",
+            MAX_BUSY_MCP_READ_RESPONSE_MS,
+            false,
+        );
+    }
+}
+
+pub(super) fn assert_read_latency(measurements: &Value) {
+    let mut checks = Checks::default();
+    read_limits(measurements, &mut checks);
+    assert!(
+        checks.0.is_empty(),
+        "busy read latency violations:\n{}",
+        checks.0.join("\n")
+    );
+}
+
+pub(super) fn read_samples() -> Vec<(String, usize)> {
+    reads::TOOLS
+        .into_iter()
+        .map(|tool| (format!("mcp.control:{tool}"), AGENTS * ROUNDS))
+        .chain([
+            ("git.show".into(), RPC_SAMPLES),
+            ("tasks.review.get".into(), RPC_SAMPLES),
+        ])
+        .collect()
+}
+
+fn writer_pool(measurements: &Value, raw: &RawHolds, checks: &mut Checks) -> Vec<f64> {
+    let read_labels = read_samples()
+        .into_iter()
+        .map(|(method, _)| method)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut pool = Vec::new();
+    for (method, phases) in measurements.as_object().into_iter().flatten() {
+        let count = phases["frame.held"]["count"].as_u64().unwrap_or(0) as usize;
+        let values = raw.get(method).map(Vec::as_slice).unwrap_or(&[]);
+        checks.require(values.len() == count && count > 0, || {
+            format!(
+                "{method} raw hold count={} differs from summary count={count}",
+                values.len()
+            )
+        });
+        checks.require(
+            values
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0),
+            || format!("{method} raw holds must be finite and nonnegative"),
+        );
+        if WRITERS.contains(&method.as_str()) {
+            pool.extend_from_slice(values);
+        } else {
+            checks.require(read_labels.contains(method), || {
+                format!("{method} has no declared writer/read cohort classification")
+            });
+        }
+    }
+    for method in raw.keys() {
+        checks.require(measurements.get(method).is_some(), || {
+            format!("{method} raw holds have no completed summary")
+        });
+    }
+    checks.require(!pool.is_empty(), || {
+        "aggregate writer hold population is empty".into()
+    });
+    pool.retain(|value| value.is_finite() && *value >= 0.0);
+    pool.sort_by(f64::total_cmp);
+    pool
+}
+
+fn percentile(sorted: &[f64], percent: usize) -> Option<f64> {
+    (!sorted.is_empty()).then(|| sorted[(sorted.len() * percent).div_ceil(100) - 1])
+}
+
+pub(super) fn report(measurements: &Value, raw: &RawHolds, mode: AggregateMode) -> Value {
+    let mut checks = hard_limits(measurements);
+    let pool = writer_pool(measurements, raw, &mut checks);
+    let writers = raw
+        .iter()
+        .filter(|(method, _)| WRITERS.contains(&method.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    let excluded = read_samples()
+        .into_iter()
+        .map(|(method, _)| {
+            let count = raw.get(&method).map_or(0, Vec::len);
+            (method, count)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let (name, configured, limit) = match mode {
+        AggregateMode::Calibration => ("calibration", false, None),
+        AggregateMode::Enforce { limit_ms } => ("enforce", true, Some(limit_ms)),
+    };
+    let hard_violations = checks.0.clone();
+    mode_checks(&pool, mode, &mut checks);
+    json!({
+        "mode":name,"configured":configured,"limit_ms":limit,
+        "verdict":if !configured {"unconfigured"} else if !checks.0.is_empty() {"fail"} else {"pass"},
+        "quantile":"nearest rank ceil(percent*N/100)-1; raw writer frames pooled before sorting",
+        "writer_methods":WRITERS,"writer_samples_ms":writers,
+        "writer_distribution":{"count":pool.len(),"sum_ms":pool.iter().sum::<f64>(),"p50_ms":percentile(&pool,50),"p95_ms":percentile(&pool,95),"max_ms":pool.last()},
+        "excluded_read_counts":excluded,"excluded_read_count":excluded.values().sum::<usize>(),
+        "per_verb_p95_policy":"report only; strict per-verb max<200ms remains hard",
+        "hard_violations":hard_violations,"violations":checks.0,
+    })
 }
 
 fn metric(count: usize, p95: f64, maximum: f64) -> Value {
@@ -188,4 +462,15 @@ fn calibration_mode_reports_unconfigured_and_cannot_pass() {
             .is_some_and(|message| message.contains("unconfigured")),
         "uncalibrated aggregate qualification must never reportPASS: {message:?}"
     );
+}
+
+#[test]
+fn malformed_aggregate_limits_never_report_a_pass() {
+    let (measurements, raw) = fixture();
+    for limit_ms in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mode = AggregateMode::Enforce { limit_ms };
+        let report = report(&measurements, &raw, mode);
+        assert_eq!(report["verdict"], "fail", "{report}");
+        assert!(failure(|| assert_policy(&measurements, &raw, mode)).is_some());
+    }
 }

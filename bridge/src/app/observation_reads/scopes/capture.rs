@@ -7,6 +7,7 @@ mod workspace_dependents_tests;
 
 #[derive(Default)]
 pub(in crate::app::observation_reads) struct ScopePatch {
+    terminals: Option<(u64, Arc<Vec<crate::app::runtime::sessions::ShellTabFact>>)>,
     runs: BTreeMap<String, Option<Arc<RunInput>>>,
     plan_projects: BTreeMap<String, Option<String>>,
     projects: BTreeMap<String, Option<Arc<ProjectInput>>>,
@@ -70,6 +71,12 @@ fn run(app: &AppState, id: &str) -> Option<Arc<RunInput>> {
 }
 
 impl ScopePatch {
+    pub fn terminals(&mut self, app: &AppState) {
+        self.terminals = Some((
+            app.session_registry.shell_generation(),
+            Arc::new(app.session_registry.shell_tabs()),
+        ));
+    }
     pub fn owner(&mut self, app: &AppState, owner: &str) {
         self.runs.insert(owner.into(), run(app, owner));
         self.plan_project(app, owner);
@@ -115,6 +122,7 @@ impl ScopePatch {
 impl ScopeReadContext {
     pub fn capture(app: &AppState) -> Self {
         let mut patch = ScopePatch::default();
+        patch.terminals(app);
         for id in app.projects.iter().map(|project| &project.id) {
             patch.project(app, id);
         }
@@ -131,6 +139,10 @@ impl ScopeReadContext {
         let mut context = Self::default();
         context.apply(&patch);
         context
+    }
+
+    pub(in crate::app::observation_reads) fn terminals_changed(&self, app: &AppState) -> bool {
+        self.terminal_generation != app.session_registry.shell_generation()
     }
 
     pub(in crate::app) fn physical_changed(&self, app: &AppState, id: &str) -> bool {
@@ -254,6 +266,10 @@ impl ScopeReadContext {
     }
 
     pub(in crate::app::observation_reads) fn apply(&mut self, patch: &ScopePatch) {
+        if let Some((generation, terminals)) = &patch.terminals {
+            self.terminal_generation = *generation;
+            self.terminals = terminals.clone();
+        }
         for (id, row) in &patch.projects {
             replace(&mut self.projects, id, row);
         }

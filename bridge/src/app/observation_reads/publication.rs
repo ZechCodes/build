@@ -12,6 +12,7 @@ pub(in crate::app) enum InputKey {
     Topology,
     ProjectOrder,
     Gate,
+    Terminals,
 }
 
 #[derive(Default)]
@@ -178,6 +179,10 @@ impl AppState {
                 .set_observation_receipts(receipts);
         };
         let mut patch = ObservationPatch::default();
+        if context.scopes.terminals_changed(self) {
+            patch.keys.insert(InputKey::Terminals);
+            patch.scopes.terminals(self);
+        }
         let owners = receipts
             .owners
             .iter()

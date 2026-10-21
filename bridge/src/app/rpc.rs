@@ -243,7 +243,11 @@ fn conversation_session_refusal(error: String) -> ApiError {
     }
 }
 
-fn terminal_session_refusal(method: &str, params: &Value, error: String) -> ApiError {
+pub(in crate::app) fn terminal_session_refusal(
+    method: &str,
+    params: &Value,
+    error: String,
+) -> ApiError {
     if (method.starts_with("term.") && super::runtime::terminals::source_scope_requested(params))
         || error == crate::app::SOURCE_TERMINAL_BUSY
     {
